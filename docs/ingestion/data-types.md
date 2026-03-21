@@ -1,0 +1,89 @@
+# Supported Data Types
+
+This reference lists every data type the pipeline supports, along with mappings to PostgreSQL and Spark types used during storage and transformation.
+
+## Type Reference
+
+| Pipeline Type | Description | PostgreSQL Type | Spark Type |
+|---|---|---|---|
+| `boolean` | True or false | `boolean` | `BooleanType` |
+| `tinyint` | 8-bit signed integer (-128 to 127) | `smallint` | `ByteType` |
+| `smallint` | 16-bit signed integer (-32768 to 32767) | `smallint` | `ShortType` |
+| `int` | 32-bit signed integer | `integer` | `IntegerType` |
+| `bigint` | 64-bit signed integer | `bigint` | `LongType` |
+| `float` | 32-bit IEEE 754 floating point | `real` | `FloatType` |
+| `double` | 64-bit IEEE 754 floating point | `double precision` | `DoubleType` |
+| `decimal(p,s)` | Fixed-precision number with `p` total digits and `s` fractional digits | `numeric(p,s)` | `DecimalType(p,s)` |
+| `string` | Variable-length text, unbounded | `text` | `StringType` |
+| `varchar(n)` | Variable-length text up to `n` characters | `varchar(n)` | `StringType` |
+| `char(n)` | Fixed-length text of exactly `n` characters | `char(n)` | `StringType` |
+| `date` | Calendar date without time | `date` | `DateType` |
+| `timestamp` | Date and time with microsecond precision | `timestamp` | `TimestampType` |
+
+## Precision and Scale for Decimal
+
+The `decimal(p,s)` type requires two parameters:
+
+- **p (precision)**: total number of digits, range 1 to 38.
+- **s (scale)**: number of digits to the right of the decimal point, range 0 to p.
+
+Examples:
+
+| Declaration | Stores | Max Value |
+|---|---|---|
+| `decimal(5,2)` | Up to 5 digits, 2 after the decimal | 999.99 |
+| `decimal(10,0)` | Up to 10 integer digits, no fractional part | 9999999999 |
+| `decimal(18,6)` | 18 total digits, 6 fractional | 999999999999.999999 |
+
+## Integer Type Selection
+
+Choose the narrowest integer type that fits your data to reduce storage and improve Spark performance:
+
+| Type | Byte Size | Range |
+|---|---|---|
+| `tinyint` | 1 | -128 to 127 |
+| `smallint` | 2 | -32,768 to 32,767 |
+| `int` | 4 | -2,147,483,648 to 2,147,483,647 |
+| `bigint` | 8 | -9.2 x 10^18 to 9.2 x 10^18 |
+
+## String Type Selection
+
+| Type | Use When |
+|---|---|
+| `string` | Maximum length is unknown or varies widely |
+| `varchar(n)` | A known upper bound exists and you want the database to enforce it |
+| `char(n)` | Values are always exactly `n` characters (e.g., ISO country codes, fixed-format identifiers) |
+
+All three string types map to `StringType` in Spark. The length constraint is enforced only at the PostgreSQL layer.
+
+## JSON and XML Special Types
+
+Fields whose names end with `_json` or `_xml` receive special handling during ingestion:
+
+| Suffix | Behavior |
+|---|---|
+| `_json` | The field value is treated as a nested JSON document. It is stored as-is in a `text` column in PostgreSQL and as a `StringType` in Spark. No schema validation is applied to the nested content. |
+| `_xml` | The field value is treated as an XML fragment. It is stored as-is in a `text` column in PostgreSQL and as a `StringType` in Spark. |
+
+Declare these fields with type `string` in the schema:
+
+```json
+{
+  "fields": [
+    { "name": "id", "type": "bigint" },
+    { "name": "payload_json", "type": "string" },
+    { "name": "metadata_xml", "type": "string" }
+  ]
+}
+```
+
+During ingestion, the pipeline detects the `_json` and `_xml` suffixes and preserves the raw content without attempting to parse it into individual columns. This is useful for semi-structured data that should be queried with JSON or XML functions downstream.
+
+## Type Coercion
+
+When a value cannot be parsed as the declared type, the pipeline applies these rules:
+
+1. **Null or empty string** -- stored as `NULL` regardless of the target type.
+2. **Numeric overflow** -- if a value exceeds the range of the declared integer type, ingestion records a data quality error for that row.
+3. **Invalid format** -- a value like `"abc"` in an `int` column is rejected and recorded as a data quality error.
+4. **Timestamp parsing** -- the pipeline accepts ISO-8601 strings, epoch milliseconds, and common date formats (`yyyy-MM-dd`, `MM/dd/yyyy`). Ambiguous formats are resolved using the `dateFormat` property in the dataset configuration when present.

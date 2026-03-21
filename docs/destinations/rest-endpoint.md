@@ -1,0 +1,95 @@
+# REST Endpoint Destination
+
+The REST endpoint destination POSTs data to an HTTP endpoint. It supports synchronous and asynchronous modes, bearer token authentication, and configurable timeouts.
+
+## Request
+
+The pipeline sends an HTTP POST request with the following JSON payload:
+
+```json
+{
+  "pipelineToken": "abc-123",
+  "datasetName": "orders",
+  "data": {
+    "size": 100,
+    "header": ["order_id", "amount", "region"],
+    "rows": [
+      ["1001", "59.99", "us-east"],
+      ["1002", "24.50", "eu-west"]
+    ],
+    "rawData": null
+  }
+}
+```
+
+| Payload Field  | Description                                                       |
+|----------------|-------------------------------------------------------------------|
+| `pipelineToken`| Token identifying the pipeline run                                |
+| `datasetName`  | Name of the dataset being sent                                    |
+| `data.size`    | Number of rows in this batch                                      |
+| `data.header`  | Array of column names                                             |
+| `data.rows`    | Array of row arrays, each matching the header order               |
+| `data.rawData` | Raw string content when sending JSON or XML data instead of rows  |
+
+## Expected Response
+
+The endpoint must return a JSON response with the following structure:
+
+```json
+{
+  "data": {
+    "size": 100,
+    "header": ["order_id", "status"],
+    "rows": [
+      ["1001", "accepted"],
+      ["1002", "accepted"]
+    ],
+    "rawData": null
+  }
+}
+```
+
+The response data is forwarded to downstream steps in the pipeline.
+
+## Sync and Async Modes
+
+Set `async` to control whether the pipeline waits for a response:
+
+| `async` | Behavior                                                                              |
+|---------|---------------------------------------------------------------------------------------|
+| `false` | The pipeline waits for the endpoint to return a response before proceeding (default). |
+| `true`  | The pipeline sends the request and continues without waiting for a response.          |
+
+## Authentication
+
+Set `bearerToken` to include an `Authorization: Bearer {token}` header on every request. If omitted, requests are sent without authentication.
+
+## Timeout
+
+The `timeoutSeconds` field controls the maximum time in seconds the pipeline will wait for a response when `async` is `false`. The default is `300` seconds.
+
+## Configuration Example
+
+```json
+{
+  "name": "orders_rest",
+  "source": { "..." : "..." },
+  "destination": {
+    "restEndpoint": {
+      "endpoint": "https://api.example.com/ingest",
+      "async": false,
+      "bearerToken": "eyJhbGciOiJIUzI1NiIs...",
+      "timeoutSeconds": 300
+    }
+  }
+}
+```
+
+### Field Reference
+
+| Field            | Required | Default | Description                                           |
+|------------------|----------|---------|-------------------------------------------------------|
+| `endpoint`       | yes      |         | Target endpoint URL                                   |
+| `async`          | no       | `false` | If `true`, send the request and continue without waiting for a response |
+| `bearerToken`    | no       |         | Bearer token added as `Authorization: Bearer` header  |
+| `timeoutSeconds` | no       | `300`   | Response timeout in seconds (sync mode only)          |

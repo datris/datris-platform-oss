@@ -1,0 +1,256 @@
+networks:
+  datris-net:
+    driver: bridge
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datris-net
+
+  activemq:
+    image: apache/activemq-classic:latest
+    container_name: activemq
+    ports:
+      - "61616:61616"
+      - "8161:8161"
+    networks:
+      - datris-net
+
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    networks:
+      - datris-net
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: idata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datris-net
+
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root-token
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8200/v1/sys/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datris-net
+
+  vault-init:
+    image: hashicorp/vault:1.15
+    container_name: vault-init
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root-token
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+    volumes:
+      - ./docker/vault-init.sh:/vault-init.sh
+    entrypoint: ["/bin/sh", "/vault-init.sh"]
+    restart: "no"
+    networks:
+      - datris-net
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - datris-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - datris-net
+
+  datris:
+    build: .
+    container_name: datris
+    ports:
+      - "8080:8080"
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      activemq:
+        condition: service_started
+      mongodb:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root-token
+    volumes:
+      - ./docker/config:/config
+    networks:
+      - datris-net
+
+  ui:
+    build: ./ui
+    container_name: ui
+    ports:
+      - "4200:80"
+    depends_on:
+      - datris
+    networks:
+      - datris-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8085:8080"
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    networks:
+      - datris-net
+
+  mcp-server:
+    build: ./mcp-server
+    container_name: mcp-server
+    ports:
+      - "3000:3000"
+    environment:
+      PIPELINE_URL: http://datris:8080
+      PIPELINE_API_KEY: ${PIPELINE_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-http://host.docker.internal:11434}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      QDRANT_HOST: host.docker.internal
+      QDRANT_PORT: "6333"
+      WEAVIATE_HOST: host.docker.internal
+      WEAVIATE_PORT: "8079"
+      WEAVIATE_GRPC_PORT: "50051"
+      MILVUS_HOST: host.docker.internal
+      MILVUS_PORT: "19530"
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DATABASE: idata
+      PG_USER: postgres
+      PG_PASSWORD: postgres
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DATABASE: oss
+    depends_on:
+      - datris
+    networks:
+      - datris-net
+
+  # ================================================================
+  # Optional Vector Databases
+  # Uncomment whichever vector database you want to use.
+  # pgvector is already included via the PostgreSQL service above.
+  # ================================================================
+
+  # Qdrant - high-performance vector database
+  # qdrant:
+  #   image: qdrant/qdrant:latest
+  #   container_name: qdrant
+  #   ports:
+  #     - "6333:6333"
+  #     - "6334:6334"
+  #   networks:
+  #     - datris-net
+
+  # Weaviate - open-source vector database (port 8079 to avoid conflict with pipeline on 8080)
+  # weaviate:
+  #   image: cr.weaviate.io/semitechnologies/weaviate:latest
+  #   container_name: weaviate
+  #   ports:
+  #     - "8079:8080"
+  #     - "50051:50051"
+  #   networks:
+  #     - datris-net
+
+  # Chroma - lightweight vector database
+  # chroma:
+  #   image: chromadb/chroma:latest
+  #   container_name: chroma
+  #   ports:
+  #     - "8000:8000"
+  #   networks:
+  #     - datris-net
+
+  # Milvus - scalable vector database (requires etcd + minio dependencies)
+  # See https://milvus.io/docs/install_standalone-docker.md for full setup.
+  # Recommended: use the standalone embed script instead:
+  #   curl -sfL https://raw.githubusercontent.com/milvus-io/milvus/master/scripts/standalone_embed.sh -o standalone_embed.sh
+  #   bash standalone_embed.sh start
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+      datris:
+        condition: service_started
+    volumes:
+      - ./docker/minio-init.sh:/minio-init.sh
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    restart: "no"
+    networks:
+      - datris-net
+

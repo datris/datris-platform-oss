@@ -1,0 +1,233 @@
+package ai.datris
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+*/
+
+import ai.datris.model._
+import ai.datris.util.{DatasetConfigIO, NotificationUtil, SecretsUtil}
+import ai.datris.controller.KafkaConsumerRunner
+import org.slf4j.{Logger, LoggerFactory}
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.boot.{ApplicationArguments, ApplicationRunner}
+import org.springframework.stereotype.Component
+
+@Component
+class StartupRunner extends ApplicationRunner {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[StartupRunner])
+
+    @Value("${environment}")
+    var environment: String = _
+
+    @Value("${useApiKeys}")
+    var useApiKeys: Boolean = _
+
+    @Value("${secrets.apiKeysSecretName:}")
+    var apiKeysSecretName: String = _
+
+    @Value("${secrets.postgresSecretName:}")
+    var postgresSecretName: String = _
+
+    @Value("${secrets.minIOSecretName}")
+    var minIOSecretName: String = _
+
+    @Value("${secrets.activeMQSecretName}")
+    var activeMQSecretName: String = _
+
+    @Value("${secrets.mongoDbSecretName}")
+    var mongoDbSecretName: String = _
+
+    @Value("${secrets.kafkaProducerSecretName}")
+    var kafkaProducerSecretName: String = _
+
+    @Value("${sendDatasetNotifications}")
+    var sendDatasetNotifications: Boolean = _
+
+    @Value("${ttlFileNotifierQueueMessages:60}")
+    var ttlFileNotifierQueueMessages: Int = _
+
+    @Value("${kafkaConsumer.enabled}")
+    var kafkaConsumerEnabled: Boolean = _
+
+    @Value("${kafkaConsumer.bootstrapServers}")
+    var kafkaConsumerBootstrapServer: String = _
+
+    @Value("${kafkaConsumer.groupId}")
+    var kafkaConsumerGroupId: String = _
+
+    @Value("${kafkaConsumer.topicPollingInterval}")
+    var kafkaConsumerPollingInterval: Int = _
+
+    @Value("${kafkaConsumer.topicPrefix}")
+    var kafkaConsumerTopicPrefix: String = _
+
+    @Value("${minio.server}")
+    var minioServer: String = _
+
+    @Value("${activemq.server}")
+    var activeMQServer: String = _
+
+    @Value("${mongodb.connectionString}")
+    var mongoDbConnectionString: String = _
+
+    @Value("${mongodb.database}")
+    var mongoDbDatabase: String = _
+
+    @Value("${ai.enabled:false}")
+    var aiEnabled: Boolean = _
+
+    @Value("${ai.provider:anthropic}")
+    var aiProvider: String = _
+
+    @Value("${ai.aiSecretName:}")
+    var aiSecretName: String = _
+
+    @Override
+    def run(args: ApplicationArguments): Unit =  {
+        initDatrisEnvironment()
+        if(kafkaConsumerEnabled)
+            initKafkaConsumerRunner()
+    }
+
+    private def initDatrisEnvironment(): Unit = {
+        // Set default values based upon the environment name
+        val fileNotifierQueue = environment + "-file-notifier"
+        val datasetTableName = environment + "-dataset"
+        val archivedMetadataTableName = environment + "-archived-metadata"
+        val datasetStatusTableName = environment + "-dataset-status"
+        val fileNotifierMessageTableName = environment + "-file-notifier-message"
+        val datasetPullTableName = environment + "-data-pull"
+
+        val kafkaConsumerConfig = {
+            if(kafkaConsumerEnabled) {
+                KafkaConsumerConfig(
+                    kafkaConsumerEnabled,
+                    kafkaConsumerBootstrapServer,
+                    kafkaConsumerGroupId,
+                    kafkaConsumerPollingInterval,
+                    kafkaConsumerTopicPrefix
+                )
+            }
+            else
+                null
+        }
+
+        val mongoDbConfig = MongoDBConfig(
+            mongoDbConnectionString,
+            mongoDbDatabase
+        )
+
+        val pipelineEnvironment = DatrisEnvironment(
+            initialized = false,
+            environment,
+            fileNotifierQueue,
+            ttlFileNotifierQueueMessages,
+            datasetTopic = null,
+            datasetTableName,
+            archivedMetadataTableName,
+            datasetStatusTableName,
+            fileNotifierMessageTableName,
+            datasetPullTableName,
+            useApiKeys,
+            apiKeysSecretName,
+            postgresSecretName,
+            mongoDbSecretName,
+            kafkaProducerSecretName,
+            kafkaConsumerConfig,
+            mongoDbConfig,
+            minIOConfig = null,
+            activeMQConfig = null,
+            aiConfig = null,
+            aiEnabled = false
+        )
+
+        DatrisEnvironment.init(pipelineEnvironment)
+
+        // Initialize MinIO after Pipeline init because SecretsUtil uses the Pipeline env
+        val minIOConfig = {
+            val secret = SecretsUtil.getSecretMap(minIOSecretName)
+                .getOrElse(throw new DatrisException("MinIO secret not found, secret name: " + minIOSecretName))
+            val accessKey = secret.get("accessKey")
+            if(accessKey == null)
+                throw new DatrisException("MinIO accessKey not found in the Secrets Manager, secret: " + minIOSecretName)
+            val secretKey = secret.get("secretKey")
+            if(secretKey == null)
+                throw new DatrisException("MinIO secretKey not found in the Secrets Manager, secret: " + minIOSecretName)
+            MinIOConfig(
+                minioServer,
+                accessKey,
+                secretKey
+            )
+        }
+
+        val activeMQConfig = {
+            val secret = SecretsUtil.getSecretMap(activeMQSecretName)
+                .getOrElse(throw new DatrisException("ActiveMQ secret not found, secret name: " + activeMQSecretName))
+            val username = secret.get("username")
+            if(username == null)
+                throw new DatrisException("ActiveMQ username not found in the Secrets Manager, secret: " + activeMQSecretName)
+            val password = secret.get("password")
+            if(password == null)
+                throw new DatrisException("ActiveMQ password not found in the Secrets Manager, secret: " + activeMQSecretName)
+            ActiveMQConfig(
+                activeMQServer,
+                username,
+                password)
+        }
+        DatrisEnvironment.init(DatrisEnvironment.values.copy(minIOConfig = minIOConfig, activeMQConfig = activeMQConfig))
+
+        // And Notifications, send dataset notifications?
+        val datasetTopic = {
+            if(sendDatasetNotifications)
+                "VirtualTopic." + environment + "-dataset-notification"
+            else
+                null
+        }
+        val aiConfig = {
+            if(aiEnabled && aiSecretName != null && aiSecretName.nonEmpty) {
+                val secret = SecretsUtil.getSecretMap(aiSecretName)
+                    .getOrElse(throw new DatrisException("AI secret not found, secret name: " + aiSecretName))
+                val endpoint = secret.get("endpoint")
+                if(endpoint == null)
+                    throw new DatrisException("'endpoint' not found in AI secret: " + aiSecretName)
+                val model = secret.get("model")
+                if(model == null)
+                    throw new DatrisException("'model' not found in AI secret: " + aiSecretName)
+                val apiKey = Option(secret.get("apiKey")).getOrElse("")
+                if(!Seq("anthropic", "openai", "ollama").contains(aiProvider.toLowerCase))
+                    throw new DatrisException("Unsupported AI provider: '" + aiProvider + "'. Valid values are: anthropic, openai, ollama")
+                AIConfig(aiProvider, endpoint, model, apiKey)
+            }
+            else
+                null
+        }
+        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, datasetTopic = datasetTopic, aiConfig = aiConfig, aiEnabled = aiEnabled))
+    }
+
+    private def initKafkaConsumerRunner(): Unit = {
+        val runner = new KafkaConsumerRunner(
+            DatrisEnvironment.values.kafkaConsumerConfig.bootstrapServers,
+            DatrisEnvironment.values.kafkaConsumerConfig.groupId
+        )
+
+        // Find the dataset configurations with streaming sources
+        val configs = DatasetConfigIO.readAll(DatrisEnvironment.values.datasetTableName)
+        val streamingConfigs = configs.filter(c => {
+            c.source.streamAttributes != null && c.source.streamAttributes.`type`.compareToIgnoreCase("kafka") ==0
+        })
+        val topicNames = streamingConfigs.map(c => {
+            val topicPrefix = {
+                if(DatrisEnvironment.values.kafkaConsumerConfig.topicPrefix != null && DatrisEnvironment.values.kafkaConsumerConfig.topicPrefix.nonEmpty)
+                    DatrisEnvironment.values.kafkaConsumerConfig.topicPrefix
+                else
+                    ""
+            }
+            topicPrefix + "." + c.name
+        })
+
+        runner.addTopics(topicNames)
+
+        new Thread(runner).start()
+    }
+}

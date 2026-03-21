@@ -1,0 +1,160 @@
+package ai.datris
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+*/
+
+import com.google.common.base.Throwables
+import com.google.gson.Gson
+import ai.datris.model.{ObjectStoreEventMessage, DatrisEnvironment}
+import ai.datris.util.{NoSQLDbUtil, QueueUtil}
+import ai.datris.controller.{FileNotifier, JobRunner}
+import ai.datris.model._
+import ai.datris.util.DataPuller
+import org.slf4j.{Logger, LoggerFactory}
+import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.stereotype.Component
+
+import java.util.Calendar
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
+import scala.collection.JavaConverters._
+
+@Component
+class ScheduledBatchTasks {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[ScheduledBatchTasks])
+
+    @Scheduled(fixedRateString = "${schedule.checkDatabaseSourceQueries}")
+    private def checkForDatabaseSourceQueries(): Unit = {
+        try {
+            if(isAppInitialized) {
+                new DataPuller().run()
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("checkForDatabaseSourceQueries error: " + Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @Scheduled(fixedRateString = "${schedule.checkFileNotifierQueue}")
+    private def checkFileNotifierQueue(): Unit = {
+        try {
+            if(isAppInitialized) {
+                val messages = QueueUtil.receiveMessages(DatrisEnvironment.values.fileNotifierQueue, maxMessages = 10, longPolling = true)
+
+                val gson = new Gson
+                messages.asScala.foreach(message => {
+                    val eventMessage = gson.fromJson(message.body, classOf[ObjectStoreEventMessage])
+                    QueueUtil.deleteMessage(DatrisEnvironment.values.fileNotifierQueue, message.receiptHandle)
+
+                    if(eventMessage != null && eventMessage.Records != null) {
+                        if(! hasMessageBeenProcessed(message.messageId, eventMessage))
+                            eventMessage.Records.asScala.map(record => {
+                                    val key = URLDecoder.decode(record.s3.`object`.key, StandardCharsets.UTF_8.name())
+                                    (record.s3.bucket.name, key)
+                                }).toMap
+                                .foreach(record => {
+                                    newFileReceived(record._1, record._2)
+                                })
+                        }
+                    })
+                }
+        } catch {
+            case e: Exception =>
+                logger.error("checkFileNotifierQueue error: " + Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    private def hasMessageBeenProcessed(messageID: String, eventMessageS3: ObjectStoreEventMessage): Boolean = {
+        // Check the NoSQL table to determine if this message has already been processed
+        val message = NoSQLDbUtil.getItemJSON(DatrisEnvironment.values.fileNotifierMessageTableName, "id", messageID, "value")
+        if(message.isEmpty) {
+            // Create a future TTL
+            val now = Calendar.getInstance
+            now.add(Calendar.DATE, DatrisEnvironment.values.ttlFileNotifierQueueMessages) // Days in future for TTL to delete this new entry from the table
+            val epoch = now.getTime.getTime
+            logger.info("File notifier queue message TTL: " + epoch.toString)
+
+            // Write out the Message ID with the future TTL
+            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.values.fileNotifierMessageTableName, "id", messageID, "ttl", epoch.toString)
+            false
+        }
+        else
+            true
+    }
+
+    private def newFileReceived(bucket: String, key: String): Unit = {
+        val jobContext = new FileNotifier().process(bucket, key)
+        GlobalJobContext.addJobContext(jobContext)
+    }
+
+    @Scheduled(fixedRateString = "${schedule.findJobsToStart}")
+    private def findJobsToStart(): Unit = {
+        try {
+            if(isAppInitialized) {
+                startJobs()
+                checkExistingJobs()
+            }
+        }
+        catch {
+            case e: Exception =>
+                logger.error("findJobsToStart error: " + Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    private def startJobs(): Unit = {
+        GlobalJobContext.getAll.foreach(jobContext => {
+            if(jobContext.state == INITIALIZED) {
+                if(!isDatabaseJobForDatasetAlreadyRunning(jobContext))
+                    startJob(jobContext)
+            }
+        })
+
+        // Show running jobs
+        GlobalJobContext.getAll.foreach(jobContext => {
+            if(jobContext.state ==  PROCESSING)
+                logger.info(jobContext.pipelineToken + ": dataset: " + jobContext.config.name + ", " + jobContext.state.toString)
+        })
+    }
+
+    private def isDatabaseJobForDatasetAlreadyRunning(jobContext: JobContext): Boolean = {
+        if(jobContext.config.destination.database != null) {
+            // Find the jobs with the same database table name
+            val jobContextsWithDbTableName = GlobalJobContext.getAll.flatMap(jc => {
+                if(jc.config.destination.database != null && jc.config.destination.database.table.compareTo(jobContext.config.destination.database.table) == 0)
+                    Some(jc)
+                else
+                    None
+            }).toList
+
+            // Do any exist that are running?
+            jobContextsWithDbTableName.exists(_.state == PROCESSING)
+        }
+        else
+            false
+    }
+
+    private def startJob(jobContext: JobContext): Unit = {
+        logger.info("Starting job for the dataset: " + jobContext.config.name)
+
+        // Start the db loading process
+        val thread = new Thread(new JobRunner(jobContext))
+        thread.start()
+        GlobalJobContext.replaceJobContext(jobContext = jobContext.copy(state = PROCESSING, thread = thread))
+    }
+
+    private def checkExistingJobs(): Unit ={
+        GlobalJobContext.getAll.foreach(jobContext => {
+            if(jobContext.state == PROCESSING && jobContext.thread != null && !jobContext.thread.isAlive) {
+                logger.info(jobContext.pipelineToken + ": dataset: " + jobContext.config.name + ", COMPLETED")
+                GlobalJobContext.replaceJobContext(jobContext = jobContext.copy(state = COMPLETED))
+            }
+        })
+    }
+
+    private def isAppInitialized: Boolean = {
+        DatrisEnvironment != null && DatrisEnvironment.values != null && DatrisEnvironment.values.initialized
+    }
+}
+

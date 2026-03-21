@@ -81,53 +81,22 @@ Notifications (published to ActiveMQ topic)
 | Unstructured | PDF, Word, PowerPoint, Excel, HTML, email, EPUB, text | Object store, Qdrant, Weaviate, pgvector |
 | Archives | .zip, .tar, .gz, .jar | Extracted and processed individually |
 
-## Documentation
+## Quick Links
 
-- [Installation](docs/installation.md) - Get running with Docker Compose
-- [Quick Start](docs/quick-start.md) - End-to-end walkthrough
-- [Dataset Configuration](docs/dataset-configuration.md) - Full JSON configuration reference
-- [Schemas](docs/schemas.md) - Schema definition and auto-generation
-- **Ingestion**
-  - [File Upload](docs/ingestion/file-upload.md) - API file upload
-  - [Object Store](docs/ingestion/object-store.md) - MinIO bucket notifications
-  - [Database Pull](docs/ingestion/database-pull.md) - PostgreSQL, MySQL, MSSQL scheduled pulls
-  - [Kafka](docs/ingestion/kafka.md) - Kafka topic consumption
-  - [Data Types](docs/ingestion/data-types.md) - Supported data types
-- [Preprocessor](docs/preprocessor.md) - External preprocessing via REST endpoints
-- **Data Quality**
-  - [Header Validation](docs/data-quality/header-validation.md) - CSV header matching
-  - [Column Rules & AI Rules](docs/data-quality/column-rules.md) - Regex column validation and AI-powered natural language rules
-  - [Row Rules](docs/data-quality/row-rules.md) - JavaScript and REST endpoint rules
-  - [Schema Validation](docs/data-quality/schema-validation.md) - JSON/XML schema validation
-- **Transformations**
-  - [Deduplication](docs/transformation/deduplication.md) - Row deduplication
-  - [Column Trimming](docs/transformation/column-trimming.md) - Whitespace trimming
-  - [Dropping Columns](docs/transformation/dropping-columns.md) - Column filtering via destination schema
-  - [AI Transformation](docs/transformation/ai-transformation.md) - Natural language row transformations
-  - [Row Functions](docs/transformation/row-functions.md) - JavaScript row transformations
-- **Destinations**
-  - [Object Store](docs/destinations/object-store.md) - Spark writes to MinIO (Parquet, ORC)
-  - [PostgreSQL](docs/destinations/postgres.md) - COPY bulk insert
-  - [MongoDB](docs/destinations/mongodb.md) - Document upserts
-  - [Kafka](docs/destinations/kafka.md) - Topic producer
-  - [ActiveMQ](docs/destinations/activemq.md) - Queue destination
-  - [REST Endpoint](docs/destinations/rest-endpoint.md) - HTTP POST destination
-  - [Qdrant](docs/destinations/qdrant.md) - Vector database for RAG — ingest PDFs, text docs with chunking and embeddings
-  - [Weaviate](docs/destinations/weaviate.md) - Vector database for RAG — ingest PDFs, Word docs, text with chunking and embeddings
-  - [Milvus](docs/destinations/milvus.md) - Vector database for RAG — scalable similarity search
-  - [Chroma](docs/destinations/chroma.md) - Vector database for RAG — lightweight, single container
-  - [pgvector](docs/destinations/pgvector.md) - PostgreSQL vector database for RAG — no separate server required
-- [Notifications](docs/notifications.md) - Dataset event notifications and subscriptions
-- [Monitoring](docs/monitoring.md) - Job status and pipeline tokens
-- **API Reference**
-  - [Dataset API](docs/api-reference/dataset-api.md) - CRUD for dataset configurations
-  - [Ingestion API](docs/api-reference/ingestion-api.md) - File upload and generation
-  - [AI Schema Generation](docs/api-reference/schema-generation-api.md) - Generate dataset configs from files using AI
-  - [Status API](docs/api-reference/status-api.md) - Job status and monitoring
-- [AI Data Profiling](docs/ai-data-profiling.md) - Profile data files and get recommended rules
-- [AI Error Explanation](docs/ai-error-explanation.md) - Automatic plain-English error analysis
-- [AI Configuration](docs/ai-configuration.md) - Configure AI providers (Anthropic, OpenAI, Ollama)
-  - [Version API](docs/api-reference/version-api.md) - Version endpoint
-- [Configuration Reference](docs/configuration-reference.md) - Full application.yaml reference
-- [MCP Server](docs/mcp.md) - AI agent integration via Model Context Protocol
-- [Helper Applications](docs/helpers.md) - Vector store chat, Kafka loader, preprocessor, and more
+- [Installation](installation.md) - Get running with Docker Compose
+- [Quick Start](quick-start.md) - End-to-end walkthrough
+- [Dataset Configuration](dataset-configuration.md) - Full JSON configuration reference
+- [Preprocessor](preprocessor.md) - External preprocessing via REST endpoints
+- [API Reference](api-reference/dataset-api.md) - REST API documentation
+- [AI Schema Generation](api-reference/schema-generation-api.md) - Generate dataset configs from files using AI
+- [AI Configuration](ai-configuration.md) - Configure AI providers (Anthropic, OpenAI, Ollama)
+- [AI Data Quality Rules](data-quality/column-rules.md) - Natural language validation with `aiRule`
+- [AI Data Profiling](ai-data-profiling.md) - Profile data files and get recommended rules
+- [AI Error Explanation](ai-error-explanation.md) - Automatic plain-English error analysis
+- [Qdrant Destination](destinations/qdrant.md) - Vector database for RAG with chunking, embeddings, and metadata
+- [Weaviate Destination](destinations/weaviate.md) - Vector database for RAG with chunking, embeddings, and metadata
+- [Milvus Destination](destinations/milvus.md) - Scalable vector database for RAG
+- [Chroma Destination](destinations/chroma.md) - Lightweight vector database for RAG — single container
+- [pgvector Destination](destinations/pgvector.md) - PostgreSQL vector database for RAG — no separate server required
+- [MCP Server](mcp.md) - AI agent integration via Model Context Protocol
+- [Helper Applications](helpers.md) - Vector store chat, Kafka loader, preprocessor, and more

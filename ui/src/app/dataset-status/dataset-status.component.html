@@ -1,0 +1,35 @@
+<div class="container">
+  <div class="header">
+    <input type="text" placeholder="Enter dataset name" />
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Dataset</th>
+          <th>Current Process</th>
+          <th>Start Time</th>
+          <th>End Time</th>
+          <th>Total Time</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let dataset of datasets" (click)="onRowClick(dataset.pipelineToken, dataset.dataset)">
+          <td>{{ dataset.dataset }}</td>
+          <td>{{ dataset.process }}</td>
+          <td>{{ dataset.startTime }}</td>
+          <td>{{ dataset.endTime }}</td>
+          <td>{{ dataset.totalTime }}</td>
+          <td>
+            {{ dataset.status }}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination">
+    <button (click)="onPreviousPage()" [disabled]="page === 1">Previous</button>
+    <button (click)="onNextPage()">Next</button>
+  </div>
+</div>

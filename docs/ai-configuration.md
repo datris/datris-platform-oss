@@ -1,0 +1,205 @@
+# AI Configuration
+
+The pipeline integrates with AI providers for two features:
+
+- **Schema generation** — upload a file to `POST /api/v1/dataset/generate` and receive a complete dataset configuration with inferred field names and types
+- **Data quality rules** — describe validation logic in plain English using `aiRule` instead of writing code
+
+Both features use the same provider configuration.
+
+## Choosing a Provider
+
+The pipeline supports cloud providers (Anthropic, OpenAI) and local models via Ollama.
+
+**Cloud providers are recommended for production use.** They offer larger context windows (128K–200K tokens), higher accuracy, and stronger domain knowledge — all of which matter for AI data quality rules. The `aiRule` feature sends the entire file to the model in a single call, so a larger context window means larger files can be validated without falling back to batching.
+
+| Provider | Context Window | Accuracy | API Key | Best For |
+|----------|---------------|----------|---------|----------|
+| Anthropic (Claude) | 200K tokens | Excellent | Required | Production, large files |
+| OpenAI (GPT-4o) | 128K tokens | Excellent | Required | Production, large files |
+| Ollama (local) | 32K–128K tokens | Good (varies by model) | No | Development, testing, no external dependencies |
+
+Ollama is a good choice for local development and testing — it requires no API key, no external account, and runs entirely on your machine. For production workloads with large datasets or rules requiring strong domain knowledge, use a cloud provider.
+
+## Supported Providers
+
+| Provider | Value | API Key Required |
+|----------|-------|-----------------|
+| Anthropic (Claude) | `anthropic` | Yes |
+| OpenAI (GPT) | `openai` | Yes |
+| Ollama (local) | `ollama` | No |
+
+## application.yaml
+
+Enable AI and set the provider in `application.yaml`:
+
+```yaml
+ai:
+  enabled: "true"
+  provider: "anthropic"   # anthropic, openai, or ollama
+  aiSecretName: "oss/anthropic"
+```
+
+Change `aiSecretName` to match the Vault secret name for your chosen provider.
+
+## Vault Secret
+
+The endpoint and model are stored in Vault. The secret must contain three fields:
+
+| Field | Description |
+|-------|-------------|
+| `endpoint` | API endpoint URL |
+| `model` | Model identifier |
+| `apiKey` | API key (empty string `""` for Ollama) |
+
+### Anthropic (recommended)
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv put secret/oss/anthropic \
+  endpoint="https://api.anthropic.com/v1/messages" \
+  model="claude-sonnet-4-6" \
+  apiKey="your-anthropic-key"
+```
+
+Then update `application.yaml`:
+
+```yaml
+ai:
+  enabled: "true"
+  provider: "anthropic"
+  aiSecretName: "oss/anthropic"
+```
+
+### OpenAI
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv put secret/oss/openai \
+  endpoint="https://api.openai.com/v1/chat/completions" \
+  model="gpt-4o" \
+  apiKey="your-openai-key"
+```
+
+Then update `application.yaml`:
+
+```yaml
+ai:
+  enabled: "true"
+  provider: "openai"
+  aiSecretName: "oss/openai"
+```
+
+### Ollama (local model)
+
+[Ollama](https://ollama.com) runs models locally on the host machine and exposes an OpenAI-compatible API. No API key is required.
+
+**Install Ollama** on your machine from [ollama.com/download](https://ollama.com/download), then pull a model:
+
+```bash
+ollama pull qwen2.5:14b-instruct
+```
+
+The pipeline running in Docker reaches Ollama on the host via `host.docker.internal`. The Vault secret is seeded automatically by `docker/vault-init.sh`. To set it manually:
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv put secret/oss/ollama \
+  endpoint="http://host.docker.internal:11434/v1/chat/completions" \
+  model="qwen2.5:14b-instruct" \
+  apiKey=""
+```
+
+The default model is `qwen2.5:14b-instruct`. To use a different model, set `OLLAMA_MODEL` in your `.env` file and pull it locally:
+
+```bash
+OLLAMA_MODEL=llama3.1:8b
+ollama pull llama3.1:8b
+```
+
+Then `docker-compose up --build` to update the Vault secret.
+
+#### Recommended local models
+
+Choose a model based on your available RAM. Larger models are significantly more accurate — 70B+ models approach cloud-level quality for data validation tasks. Models with 128K context windows work best with the `aiRule` full-file validation mode.
+
+| Model | Size | Context | RAM Needed | Accuracy | Best For |
+|-------|------|---------|------------|----------|----------|
+| `llama3.1:8b` | 8B | 128K | ~6 GB | Good | Lightweight dev/testing |
+| `qwen2.5:14b-instruct` | 14B | 128K | ~10 GB | Good | Default for 16-24 GB machines |
+| `qwen2.5:32b-instruct` | 32B | 128K | ~20 GB | Very good | 32 GB machines |
+| `llama3.3:70b` | 70B | 128K | ~42 GB | Excellent | 64+ GB machines, near cloud quality |
+| `qwen2.5:72b-instruct` | 72B | 128K | ~45 GB | Excellent | 64+ GB machines, near cloud quality |
+
+#### Local model accuracy
+
+Local models work well for obvious violations (e.g., a $5,000,000 stock price) but may miss subtler issues (e.g., high < low, negative volume). In testing, a 14B model caught 1 of 3 intentional violations, while cloud models (Claude Sonnet) caught all three.
+
+For production data quality where accuracy matters, use a cloud provider or a 70B+ local model. For development and testing with small files, 14B models provide fast iteration (2-7 seconds per validation) at acceptable accuracy.
+
+#### Full-file mode and file size limits
+
+The `aiRule` sends the entire file to the model in a single call. The maximum file size depends on the model's context window:
+
+| Model Context | Max File Size (approx) | Typical Rows |
+|---------------|----------------------|--------------|
+| 32K tokens | ~50 KB | ~1,000 rows |
+| 128K tokens | ~400 KB | ~8,000 rows |
+| 200K tokens (Claude) | ~600 KB | ~12,000 rows |
+
+If the file exceeds the model's context window, the pipeline automatically falls back to processing in batches. Batch mode is less accurate with local models — they tend to describe the data rather than validate it.
+
+#### Running Ollama on a cloud instance
+
+For production workloads, consider running Ollama on a GPU-enabled AWS EC2 Spot Instance. This gives you the accuracy of a 70B+ model with no per-token API costs or rate limits, at a fraction of on-demand pricing.
+
+**Recommended instance:** `g5.12xlarge` (4x NVIDIA A10G, 96 GB VRAM) — comfortably runs 70B models. On-demand ~$5.67/hr, Spot ~$1.70/hr.
+
+**Setup with a pre-baked AMI (recommended):**
+
+1. Launch a `g5.12xlarge` on-demand instance
+2. Install Ollama and pull the model:
+   ```bash
+   curl -fsSL https://ollama.com/install.sh | sh
+   ollama serve &
+   sleep 5
+   ollama pull llama3.3:70b
+   ```
+3. Create an AMI from this instance
+4. Terminate the on-demand instance
+5. Launch Spot Instances from the AMI — they boot with Ollama and the model pre-installed, ready to serve in ~1 minute with no download required
+
+Open port `11434` in the instance's security group, then point the pipeline at it:
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv put secret/oss/ollama \
+  endpoint="http://<your-ec2-ip>:11434/v1/chat/completions" \
+  model="llama3.3:70b" \
+  apiKey=""
+```
+
+> **GPU acceleration:** Ollama automatically uses available GPU hardware (NVIDIA CUDA, AMD ROCm, Apple Silicon Metal). For local development on macOS, always run Ollama natively on the host — Docker Desktop does not expose Apple Silicon GPUs to containers.
+
+## Automating with .env
+
+To avoid setting Vault secrets manually after every `docker-compose up --build`, create a `.env` file at the project root (this file is gitignored):
+
+```bash
+OLLAMA_MODEL=qwen2.5:14b-instruct
+ANTHROPIC_API_KEY=your-key-here
+OPENAI_API_KEY=your-key-here
+```
+
+Docker Compose reads `.env` automatically and passes these values to `vault-init`, which seeds the secrets on every startup.
+
+## Verifying the Secret
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv get secret/oss/anthropic
+```
+
+## Disabling AI
+
+Set `ai.enabled: "false"` in `application.yaml`. Schema generation will return an error and AI data quality rules will be rejected at dataset registration time.

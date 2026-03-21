@@ -1,0 +1,5 @@
+{
+	"dataset": "stock_price_object_store_iceberg",
+	"dataFilePath": "s3://idata-poc-raw/bulkupload/",
+	"bulkUpload": true
+}

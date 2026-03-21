@@ -1,0 +1,31 @@
+<h1>Dataset: {{ dataset }}</h1>
+<div class="container">
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 200px">Date</th>
+            <th>Process</th>
+            <th style="width: 300px">Publisher Token</th>
+            <th style="width: 300px">Pipeline Token</th>
+            <th>State</th>
+            <th>Code</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let detail of datasetStatusDetails">
+            <td>{{ detail.dateTime }}</td>
+            <td>{{ detail.processName }}</td>
+            <td>{{ detail.publisherToken }}</td>
+            <td>{{ detail.pipelineToken }}</td>
+            <td>{{ detail.state }}</td>
+            <td>{{ detail.code }}</td>
+            <td>{{ detail.description }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  
+  

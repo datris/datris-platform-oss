@@ -1,0 +1,81 @@
+# sbt
+# (may want to keep parts of 'project')
+bin/
+project/*
+!project/*.sbt
+target/
+build/
+.idea/
+
+# IDE and build server
+.bloop/
+.metals/
+.bsp/
+project/metals.sbt
+
+# VSCode - ignore user-specific settings
+.vscode/
+datrisserver/.vscode/
+
+# Claude
+.claude/
+
+# eclipse
+build
+.classpath
+.project
+.settings
+.worksheet
+
+# intellij idea
+*.log
+*.iml
+*.ipr
+*.iws
+.idea
+.bsp
+
+# mac
+.DS_Store
+
+# other?
+.history
+.scala_dependencies
+.cache
+.cache-main
+
+#general
+*.class
+__pycache__/
+*.pyc
+
+# local secrets
+.env
+docs/config/ec2-ollama.md
+
+# terraform
+.terraform
+.terraform/
+*.hcl
+
+# minio
+minio/
+
+# vault
+vault/
+
+# helpers
+helpers/kafka-csv-loader/myenv/
+
+helpers/preprocessor/my-env/
+
+helpers/data-quality-rest/my-env/
+
+helpers/topic-subscriber/my-env/
+
+helpers/chat-vector-store/my-env/
+helpers/chat-vector-store/.env
+
+# mcp-server
+mcp-server/.env
+mcp-server/my-env/

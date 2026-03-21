@@ -1,0 +1,9 @@
+requests
+python-dotenv
+openai
+anthropic
+qdrant-client
+weaviate-client
+pymilvus
+chromadb
+psycopg2-binary

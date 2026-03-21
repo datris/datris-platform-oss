@@ -1,0 +1,199 @@
+# AI Schema Generation API
+
+The pipeline can automatically generate a ready-to-use dataset configuration from an uploaded file using an AI model. The generated config can be pasted directly into `POST /api/v1/dataset` to register the dataset without writing any JSON by hand.
+
+## How It Works
+
+```
+Uploaded file
+  |
+  v
+File type detection (CSV / JSON / XML)
+  |
+  +-- JSON / XML --> Fixed schema (_json or _xml field)
+  |                  No AI call needed
+  |
+  +-- CSV / other --> First 100 lines sent to AI model
+                      AI infers column names and data types
+                      Returns JSON array of field definitions
+  |
+  v
+Config builder assembles full DatasetConfig JSON
+  - source.schemaProperties.fields  (AI-inferred or fixed)
+  - source.fileAttributes            (csvAttributes / jsonAttributes / xmlAttributes)
+  - destination                      (Postgres for CSV, MongoDB for JSON/XML)
+  |
+  v
+Response: complete DatasetConfig JSON ready to register
+```
+
+The response is **not** registered automatically — it is returned to the caller so you can review it, fill in the placeholder values, and then POST it to `/api/v1/dataset`.
+
+---
+
+## Endpoint
+
+```
+POST /api/v1/dataset/generate
+Content-Type: multipart/form-data
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file` | form-data (file) | Yes | The file to analyze |
+| `dataset` | query | No | Dataset name. If omitted, derived from the filename (lowercased, non-alphanumeric characters replaced with `_`) |
+| `delimiter` | query | No | Column delimiter for delimited files. Defaults to `,` |
+| `header` | query | No | Whether the file has a header row. Defaults to `false` |
+| `x-api-key` | header | No | API key (required if `useApiKeys: true`) |
+
+---
+
+## Schema Rules by File Type
+
+| File type | Schema | Default destination |
+|-----------|--------|---------------------|
+| CSV / delimited | AI infers field names and types from file content | PostgreSQL (`usePostgres: true`) |
+| JSON (`.json`) | Single field: `_json` (type `string`) | MongoDB (`useMongoDB: true`) |
+| XML (`.xml`) | Single field: `_xml` (type `string`) | MongoDB (`useMongoDB: true`) |
+
+JSON and XML files use a fixed schema because the pipeline stores them as raw documents — no column inference is needed.
+
+**Valid AI-inferred types:** `boolean`, `int`, `bigint`, `float`, `double`, `string`, `date`, `timestamp`
+
+---
+
+## Example: CSV File
+
+```bash
+curl -X POST http://localhost:8080/api/v1/dataset/generate \
+  -H "x-api-key: your-api-key" \
+  -F "file=@./stock_price.csv" \
+  -F "dataset=stock_price"
+```
+
+Response:
+```json
+{
+  "name": "stock_price",
+  "source": {
+    "schemaProperties": {
+      "fields": [
+        { "name": "symbol",    "type": "string" },
+        { "name": "date",      "type": "string" },
+        { "name": "open",      "type": "double" },
+        { "name": "high",      "type": "double" },
+        { "name": "low",       "type": "double" },
+        { "name": "close",     "type": "double" },
+        { "name": "volume",    "type": "int"    },
+        { "name": "adj_close", "type": "double" }
+      ]
+    },
+    "fileAttributes": {
+      "csvAttributes": { "delimiter": ",", "header": true, "encoding": "UTF-8" }
+    }
+  },
+  "destination": {
+    "database": {
+      "dbName": "DATABASE_NAME",
+      "schema": "SCHEMA_NAME",
+      "table": "TABLE_NAME",
+      "usePostgres": true
+    }
+  }
+}
+```
+
+Replace `DATABASE_NAME`, `SCHEMA_NAME`, and `TABLE_NAME` with real values, then register the dataset:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/dataset \
+  -H "Content-Type: application/json" \
+  -d '<paste response here>'
+```
+
+---
+
+## Example: JSON File
+
+```bash
+curl -X POST http://localhost:8080/api/v1/dataset/generate \
+  -H "x-api-key: your-api-key" \
+  -F "file=@./events.json"
+```
+
+Response:
+```json
+{
+  "name": "events",
+  "source": {
+    "schemaProperties": {
+      "fields": [
+        { "name": "_json", "type": "string" }
+      ]
+    },
+    "fileAttributes": {
+      "jsonAttributes": { "everyRowContainsObject": false, "encoding": "UTF-8" }
+    }
+  },
+  "destination": {
+    "database": {
+      "dbName": "DATABASE_NAME",
+      "table": "TABLE_NAME",
+      "useMongoDB": true
+    }
+  }
+}
+```
+
+---
+
+## Configuration
+
+AI schema generation is disabled by default. To enable it:
+
+**`application.yaml`** (or `docker/config/application.yaml` for Docker deployments):
+```yaml
+ai:
+  enabled: "true"
+  provider: "anthropic"       # anthropic or openai
+  aiSecretName: "oss/anthropic"
+```
+
+**Vault secret** (stored at `secret/<aiSecretName>`):
+```bash
+vault kv put secret/oss/anthropic \
+  endpoint="https://api.anthropic.com/v1/messages" \
+  model="claude-sonnet-4-6" \
+  apiKey="sk-ant-..."
+```
+
+For OpenAI:
+```bash
+vault kv put secret/oss/openai \
+  endpoint="https://api.openai.com/v1/chat/completions" \
+  model="gpt-4o" \
+  apiKey="sk-..."
+```
+
+The Vault secret must contain three keys:
+
+| Key | Description |
+|-----|-------------|
+| `endpoint` | The AI provider API URL |
+| `model` | The model name to use |
+| `apiKey` | The API key for authentication |
+
+The pipeline reads the secret at startup. If `ai.enabled: true` and the secret is missing or any key is absent, startup will fail with a descriptive error.
+
+---
+
+## Supported Providers
+
+| Provider | `provider` value | Auth header |
+|----------|-----------------|-------------|
+| Anthropic Claude | `anthropic` | `x-api-key` + `anthropic-version: 2023-06-01` |
+| OpenAI | `openai` | `Authorization: Bearer` |
+
+Any other value for `provider` will cause startup to fail with an unsupported provider error.

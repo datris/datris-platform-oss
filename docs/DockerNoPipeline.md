@@ -1,0 +1,62 @@
+# Running Docker Infrastructure with Local Pipeline Server
+
+This guide explains how to run all Docker infrastructure services (MinIO, MongoDB, ActiveMQ, Vault, Kafka) while running the pipeline server locally in VS Code for debugging.
+
+## 1. Start all Docker services
+
+```bash
+docker-compose up -d
+```
+
+## 2. Stop only the pipeline container
+
+```bash
+docker-compose stop pipeline
+```
+
+This leaves all infrastructure services running and accessible on their mapped ports:
+
+| Service | URL |
+|---------|-----|
+| MinIO API | http://localhost:9000 |
+| MinIO Console | http://localhost:9001 |
+| ActiveMQ Broker | tcp://localhost:61616 |
+| ActiveMQ Console | http://localhost:8161 |
+| MongoDB | mongodb://localhost:27017 |
+| Vault | http://localhost:8200 |
+| Kafka | localhost:9092 |
+| Zookeeper | localhost:2181 |
+
+## 3. Launch the pipeline server in VS Code
+
+Open the project in VS Code and use the **Debug Main** launch configuration (`.vscode/launch.json`). This connects to the Docker services via `localhost` using the dev-mode Vault token (`root-token`).
+
+The `application.yaml` in `src/main/resources` is pre-configured with `localhost` endpoints for all services.
+
+Press **F5** or go to **Run > Start Debugging** to launch.
+
+## 4. Initialize MinIO buckets (if needed)
+
+The `minio-init` container runs automatically on first `docker-compose up` to create the required buckets. If you need to re-run it (e.g., after wiping MinIO data):
+
+```bash
+docker-compose run --rm minio-init
+```
+
+## 5. Verify
+
+Once the pipeline server starts in VS Code, verify it's running:
+
+```bash
+curl http://localhost:8080/api/v1/version
+```
+
+## Returning to full Docker mode
+
+To run everything in Docker again:
+
+```bash
+docker-compose up -d
+```
+
+This restarts the pipeline container alongside the infrastructure services.

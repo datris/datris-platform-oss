@@ -1,0 +1,32 @@
+# ActiveMQ Destination
+
+The ActiveMQ destination writes messages to an ActiveMQ queue.
+
+## Message Format
+
+The payload format depends on the source schema:
+
+- **Structured data** -- When the schema contains regular typed columns, each row is serialized as a JSON object and sent as a text message.
+- **JSON or XML** -- When the schema contains a single `_json` or `_xml` field, the raw string value is sent directly as the message body without additional wrapping.
+
+## Configuration Example
+
+```json
+{
+  "name": "orders_activemq",
+  "source": { "..." : "..." },
+  "destination": {
+    "activeMQ": {
+      "queueName": "orders.inbound"
+    }
+  }
+}
+```
+
+ActiveMQ connection credentials are configured globally in `application.yaml` via `secrets.activeMQSecretName`. See [Configuration Reference](../configuration-reference.md) for Vault secret format.
+
+### Field Reference
+
+| Field       | Required | Default | Description       |
+|-------------|----------|---------|-------------------|
+| `queueName` | yes      |         | Target queue name |

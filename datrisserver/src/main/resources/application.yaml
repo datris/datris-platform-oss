@@ -1,0 +1,69 @@
+spring:
+  servlet:
+    multipart:
+      max-file-size: 1GB
+      max-request-size: 1GB
+  server:
+    tomcat:
+      connection-timeout: "600000"
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/oss
+  management:
+    health:
+      probes:
+        enabled: "true"
+      livenessState:
+        enabled: "true"
+      readinessState:
+        enabled: "true"
+logging:
+  level:
+    root: INFO
+    org.springframework.web: INFO
+    ai.datris: INFO
+schedule:
+  checkFileNotifierQueue: "5000"
+  findJobsToStart: "5000"
+  checkDatabaseSourceQueries: "30000"
+environment: oss
+useApiKeys: "false"
+
+# Object store: MinIO
+minio:
+  server: http://localhost:9000
+
+# Secrets: HashiCorp Vault
+secrets:
+  apiKeysSecretName: oss/api-keys
+  postgresSecretName: oss/postgres
+  minIOSecretName: oss/minio
+  activeMQSecretName: oss/activemq
+  mongoDbSecretName: oss/mongodb
+  kafkaProducerSecretName: oss/kafka-producer
+
+# Queue + notifications: ActiveMQ
+activemq:
+  server: tcp://localhost:61616
+
+# NoSQL: MongoDB
+mongodb:
+  connectionString: mongodb://localhost:27017
+  database: oss
+
+sendDatasetNotifications: "true"
+ttlFileNotifierQueueMessages: "60"
+
+# AI schema generation (optional)
+ai:
+  enabled: "true"
+  provider: "ollama"
+  aiSecretName: "oss/ollama"
+
+# Kafka consumer
+kafkaConsumer:
+  enabled: "true"
+  bootstrapServers: localhost:9092
+  groupId: oss-group
+  topicPollingInterval: "500"
+  topicPrefix: oss

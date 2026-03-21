@@ -1,0 +1,9 @@
+  /* Logo styling */
+  .logo {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 180px;
+    height: auto;
+    margin: 10px;
+  }
