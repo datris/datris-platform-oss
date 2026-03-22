@@ -79,3 +79,6 @@ helpers/chat-vector-store/.env
 # mcp-server
 mcp-server/.env
 mcp-server/my-env/
+
+# node
+node_modules/

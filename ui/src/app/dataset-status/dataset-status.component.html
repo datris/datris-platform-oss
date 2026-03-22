@@ -1,6 +1,7 @@
 <div class="container">
+  <h1 class="page-title">Pipeline Status</h1>
   <div class="header">
-    <input type="text" placeholder="Enter dataset name" />
+    <input type="text" placeholder="Search datasets..." />
   </div>
   <div class="table-container">
     <table>
@@ -22,7 +23,12 @@
           <td>{{ dataset.endTime }}</td>
           <td>{{ dataset.totalTime }}</td>
           <td>
-            {{ dataset.status }}
+            <span class="status-pill"
+              [class.status-completed]="dataset.status === 'completed' || dataset.status === 'success'"
+              [class.status-error]="dataset.status === 'error' || dataset.status === 'failed'"
+              [class.status-processing]="dataset.status === 'processing' || dataset.status === 'running'"
+              [class.status-pending]="dataset.status === 'pending' || dataset.status === 'queued'"
+            >{{ dataset.status }}</span>
           </td>
         </tr>
       </tbody>

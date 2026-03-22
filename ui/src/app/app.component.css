@@ -1,9 +1,24 @@
-  /* Logo styling */
-  .logo {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 180px;
-    height: auto;
-    margin: 10px;
-  }
+.top-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  height: 64px;
+  padding: 0 24px;
+  background: rgba(10, 14, 26, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.logo {
+  height: 32px;
+  width: auto;
+}
+
+.main-content {
+  padding-top: 80px;
+}

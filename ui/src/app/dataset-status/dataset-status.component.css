@@ -1,124 +1,178 @@
-/* Container styling */
 .container {
-  padding: 20px;
-  font-family: Arial, sans-serif;
-  color: #333;
+  padding: 0 32px 32px;
+  color: var(--text-primary);
 }
 
-/* Header styling */
-h1 {
+/* Page title with gradient text */
+.page-title {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 24px;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Header / search area */
+.header {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
   margin-bottom: 20px;
-  font-size: 24px;
-  font-weight: normal;
 }
 
-/* Logo styling */
-.logo {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 180px;
-  height: auto;
-  margin: 10px;
+/* Search input */
+input[type="text"] {
+  padding: 10px 16px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  width: 260px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-/* Table container styling */
+input[type="text"]::placeholder {
+  color: var(--text-muted);
+}
+
+input[type="text"]:focus {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px var(--border-focus);
+}
+
+/* Table container with glow */
 .table-container {
   overflow-x: auto;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  border-radius: 8px;
-  background-color: #fff;
-  border: 1px solid #ddd;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 4px 24px var(--shadow-blue), 0 0 48px rgba(0, 180, 255, 0.03);
 }
 
-/* Table styling */
+/* Table */
 table {
   width: 100%;
   border-collapse: collapse;
   min-width: 800px;
 }
 
-/* Table header styling */
+/* Table cells */
 th, td {
-  padding: 12px 15px;
-  border: 1px solid #ddd;
+  padding: 14px 18px;
   text-align: left;
+  border-bottom: 1px solid var(--border-color);
 }
 
+td {
+  border-right: none;
+  border-left: none;
+}
+
+/* Table header */
 th {
-  background-color: #000; /* Black background */
-  color: #fff; /* White text */
-  font-weight: bold;
+  background: var(--bg-header);
+  color: var(--text-muted);
+  font-weight: 600;
   text-transform: uppercase;
-  font-size: 14px;
-}
-
-/* Table row styling */
-tr:nth-child(even) {
-  background-color: #f9f9f9;
-}
-
-tr:hover {
-  background-color: #f1f1f1;
-}
-
-/* Success and error styling */
-.success {
-  color: green;
-  font-weight: bold;
-}
-
-.error {
-  color: red;
-  font-weight: bold;
-}
-
-/* Sticky header */
-table thead th {
+  font-size: 12px;
+  letter-spacing: 0.05em;
   position: sticky;
   top: 0;
-  background-color: #000; /* Black background */
-  color: #fff; /* White text */
   z-index: 1;
 }
 
-/* Input styling */
-input[type="text"] {
-  padding: 10px;
-  font-size: 16px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  width: 200px;
-  margin-bottom: 20px;
+/* Gradient accent line under header */
+thead tr {
+  border-bottom: 2px solid transparent;
+  background-image: linear-gradient(var(--bg-header), var(--bg-header)),
+                    linear-gradient(90deg, var(--accent-cyan), var(--accent-green));
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
 }
 
-/* Flex container for header and input */
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+/* Table rows */
+tbody tr {
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: background-color 0.15s;
 }
 
-.header input {
-  margin-left: auto;
+tbody tr:nth-child(even) {
+  background: var(--bg-card-alt);
 }
 
-/* Pagination buttons styling */
+tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Status pills */
+.status-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+  letter-spacing: 0.02em;
+}
+
+.status-completed {
+  background: rgba(0, 229, 160, 0.15);
+  color: var(--accent-green);
+}
+
+.status-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-red);
+}
+
+.status-processing {
+  background: rgba(0, 180, 255, 0.15);
+  color: var(--accent-cyan);
+}
+
+.status-pending {
+  background: rgba(100, 116, 139, 0.2);
+  color: var(--text-secondary);
+}
+
+/* Pagination */
 .pagination {
-  margin-top: 20px;
-  text-align: center;
+  margin-top: 24px;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
 }
 
 .pagination button {
-  padding: 10px 20px;
-  margin: 0 5px;
-  border: none;
-  background-color: #000;
-  color: #fff;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
   cursor: pointer;
+  transition: all 0.2s;
+}
+
+.pagination button:hover:not(:disabled) {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 12px var(--shadow-blue);
 }
 
 .pagination button:disabled {
-  background-color: #ddd;
+  color: var(--text-muted);
   cursor: not-allowed;
+  opacity: 0.5;
 }

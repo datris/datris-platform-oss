@@ -1,24 +1,39 @@
-# Datris - Open Source Edition
+# Datris — AI Data Platform for Agents and Humans
 
-Datris is an AI-enhanced, cloud-agnostic, open-source data pipeline that makes it effortless to ingest, validate, transform, and load your data into object stores, databases, message queues, vector databases, and REST endpoints. Use AI to automatically generate dataset schemas, validate data quality using plain English rules, transform data without writing code, and ingest unstructured documents into vector databases for retrieval-augmented generation (RAG) — all powered by Anthropic Claude, OpenAI, or local models via Ollama.
+[datris.ai](https://datris.ai)
+
+Ingest, validate, transform, store, and retrieve your data — whether you're an AI agent talking through MCP or a developer writing config. One platform for both.
 
 Deploy on any cloud provider, on-premise, or locally — with no vendor lock-in. Define your entire data pipeline through simple JSON configuration, or extend it with AI instructions, JavaScript functions, and REST endpoints at every stage of the flow. Built entirely on open-source infrastructure, it runs anywhere Docker does.
 
 ### Agent-Ready: Built-In MCP Server
 
-The pipeline also ships with a built-in MCP (Model Context Protocol) server, making it the first open-source data pipeline natively accessible to AI agents. Claude, Cursor, OpenClaw, and any MCP-compatible agent can register datasets, upload files, trigger processing, monitor job status, profile data, run semantic searches across vector databases, and query PostgreSQL and MongoDB — all through natural conversation. This means your AI agents can autonomously build data pipelines, ingest documents into vector stores for RAG, answer questions from ingested data, and diagnose data quality issues without writing integration code.
+Your AI agents are first-class pipeline operators. Datris ships with a native MCP (Model Context Protocol) server — the first open-source data platform natively accessible to AI agents. Claude, Cursor, OpenClaw, and any MCP-compatible agent can register datasets, upload files, trigger processing, monitor job status, profile data, run semantic searches across vector databases, and query PostgreSQL and MongoDB — all through natural conversation. Supports stdio and SSE transports.
+
+## AI-Powered Features
+
+Intelligence at every stage — from ingestion to delivery, Datris makes data engineering accessible through natural language.
+
+- **MCP server (AI agent integration)** - Built-in [MCP](https://modelcontextprotocol.io) server lets AI agents (Claude, Cursor, OpenClaw, custom frameworks) natively interact with the pipeline — register datasets, upload files, trigger jobs, profile data, run semantic searches, and query databases. Supports stdio and SSE transports
+- **AI-powered data quality** - Validate with plain English rules via `aiRule`. The AI model evaluates every row using reasoning and domain knowledge — no regex required. Supports sampling for large files
+- **AI transformations** - Describe row transformations in natural language — date format conversion, data categorization, phone number standardization, entity extraction — no code needed
+- **AI schema generation** - Upload any CSV, JSON, or XML file and receive a complete, ready-to-register dataset configuration — field names and types inferred automatically
+- **AI data profiling** - Upload a file and get summary statistics, quality issues, and suggested validation rules — all powered by AI analysis
+- **AI error explanation** - When jobs fail, AI analyzes the error chain and explains the root cause in plain English. No more digging through stack traces
+- **AI providers** - Anthropic Claude (Opus 4.6, Sonnet 4.6, Haiku), OpenAI (GPT-5, GPT-4.1, o3, embedding models), or local models via Ollama (Llama, Mistral, Phi). No vendor lock-in — switch providers without changing your pipeline config
+
+## RAG Pipeline
+
+Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any major vector database — build retrieval-augmented generation workflows without leaving your pipeline.
+
+- **5 vector databases** - Qdrant, Weaviate, Milvus, Chroma, pgvector (PostgreSQL)
+- **Chunking strategies** - Fixed-size, sentence, paragraph, recursive
+- **Embedding providers** - OpenAI or Ollama (local models)
+- **Document extraction** - PDF, Word, PowerPoint, Excel, HTML, email, EPUB, plain text
 
 ## Key Features
 
 - **Configuration-driven** - Define datasets entirely through JSON, or extend the pipeline with AI instructions, JavaScript functions, REST endpoints, and preprocessors at every stage of the data flow
-- **Vector database (RAG)** - Ingest unstructured documents (PDFs, Word, PowerPoint, Excel, HTML, email, EPUB, text) into Qdrant, Weaviate, Milvus, Chroma, or pgvector (PostgreSQL) for retrieval-augmented generation. The pipeline extracts text, chunks it using configurable strategies (fixed, sentence, paragraph, recursive), generates embeddings via OpenAI or Ollama, and upserts into the vector database with metadata for filtered search
-- **AI-powered data quality** - Define validation rules in plain English using `aiRule`. The AI model receives the full file and evaluates every row against your instruction — catching issues that require reasoning, domain knowledge, or cross-column logic. Supports sampling for large files
-- **AI transformations** - Describe row transformations in plain English — date format conversion, data categorization, phone number standardization, entity extraction — without writing code
-- **AI schema generation** - Upload any CSV, JSON, or XML file to `POST /api/v1/dataset/generate` and receive a complete, ready-to-register dataset configuration — field names and types inferred automatically
-- **AI data profiling** - Upload any file to `POST /api/v1/dataset/profile` and receive an AI-generated profile — summary statistics, quality issues, and a ready-to-use `dataQuality` configuration with suggested regex and AI rules
-- **AI error explanation** - When a pipeline job fails, the AI automatically analyzes the error and provides a plain-English explanation of the root cause and suggested fix
-- **AI providers** - All AI features work with Anthropic Claude, OpenAI, or local models via Ollama
-- **MCP server (AI agent integration)** - Built-in [MCP](https://modelcontextprotocol.io) server lets AI agents (Claude, Cursor, custom frameworks) natively interact with the pipeline — upload files, register datasets, monitor jobs, profile data, and manage configurations. Supports stdio and SSE transports
 - **Multiple ingestion methods** - File upload API, MinIO bucket events, database polling, Kafka streaming
 - **Data quality** - AI rules, regex column checks, JavaScript row rules, REST endpoint row rules, JSON/XML schema validation
 - **Transformations** - AI transformations, deduplication, whitespace trimming, JavaScript row functions
@@ -27,7 +42,9 @@ The pipeline also ships with a built-in MCP (Model Context Protocol) server, mak
 
 ## Architecture
 
-The pipeline runs as a Spring Boot application backed by self-hosted open-source infrastructure:
+Push and pull — one platform, two interfaces. AI agents and humans ingest data through the pipeline, store it across databases and vector stores, and retrieve it back — via API or MCP.
+
+Self-hosted on proven open-source infrastructure — no proprietary services, no vendor lock-in, no surprise bills:
 
 | Service | Purpose |
 |---------|---------|

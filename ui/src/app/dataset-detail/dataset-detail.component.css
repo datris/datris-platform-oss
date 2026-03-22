@@ -1,96 +1,141 @@
-/* Container styling */
 .container {
-    padding: 20px;
-    font-family: Arial, sans-serif;
-    color: #333;
-  }
-  
-  /* Header styling */
-  h1 {
-    margin-top: 60px;
-    margin-bottom: 20px;
-    font-size: 24px;
-    font-weight: normal;
-  }
-  
-  /* Table container styling */
-  .table-container {
-    overflow-x: auto;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    border-radius: 8px;
-    background-color: #fff;
-    border: 1px solid #ddd;
-  }
-  
-  /* Table styling */
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    min-width: 800px;
-  }
-  
-  /* Table header styling */
-  th, td {
-    padding: 12px 15px;
-    border: 1px solid #ddd;
-    text-align: left;
-  }
-  
-  th {
-    background-color: #000; /* Black background */
-    color: #fff; /* White text */
-    font-weight: bold;
-    text-transform: uppercase;
-    font-size: 14px;
-  }
-  
-  /* Table row styling */
-  tr:nth-child(even) {
-    background-color: #f9f9f9;
-  }
-  
-  tr:hover {
-    background-color: #f1f1f1;
-  }
-  
-  /* Success and error styling */
-  .success {
-    color: green;
-    font-weight: bold;
-  }
-  
-  .error {
-    color: red;
-    font-weight: bold;
-  }
-  
-  /* Sticky header */
-  table thead th {
-    position: sticky;
-    top: 0;
-    background-color: #000; /* Black background */
-    color: #fff; /* White text */
-    z-index: 1;
-  }
-  
-  /* Input styling */
-  input[type="text"] {
-    padding: 10px;
-    font-size: 16px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    width: 200px;
-    margin-bottom: 20px;
-  }
-  
-  /* Flex container for header and input */
-  .header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  
-  .header input {
-    margin-left: auto;
-  }
-  
+  padding: 0 32px 32px;
+  color: var(--text-primary);
+}
+
+/* Back link */
+.back-link {
+  display: inline-block;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 14px;
+  transition: color 0.2s;
+}
+
+.back-link:hover {
+  color: var(--accent-cyan);
+}
+
+/* Dataset title with gradient */
+.dataset-title {
+  font-size: 28px;
+  font-weight: 700;
+  margin-top: 4px;
+  margin-bottom: 24px;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Table container with glow */
+.table-container {
+  overflow-x: auto;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 4px 24px var(--shadow-blue), 0 0 48px rgba(0, 180, 255, 0.03);
+}
+
+/* Table */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 800px;
+}
+
+/* Table cells */
+th, td {
+  padding: 14px 18px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+td {
+  border-right: none;
+  border-left: none;
+}
+
+/* Table header */
+th {
+  background: var(--bg-header);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* Gradient accent line under header */
+thead tr {
+  border-bottom: 2px solid transparent;
+  background-image: linear-gradient(var(--bg-header), var(--bg-header)),
+                    linear-gradient(90deg, var(--accent-cyan), var(--accent-green));
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
+/* Table rows */
+tbody tr {
+  background: var(--bg-card);
+  transition: background-color 0.15s;
+}
+
+tbody tr:nth-child(even) {
+  background: var(--bg-card-alt);
+}
+
+tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Monospace text for tokens and codes */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* Muted description */
+.description-text {
+  color: var(--text-secondary);
+}
+
+/* Status pills */
+.status-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+  letter-spacing: 0.02em;
+}
+
+.status-completed {
+  background: rgba(0, 229, 160, 0.15);
+  color: var(--accent-green);
+}
+
+.status-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-red);
+}
+
+.status-processing {
+  background: rgba(0, 180, 255, 0.15);
+  color: var(--accent-cyan);
+}
+
+.status-pending {
+  background: rgba(100, 116, 139, 0.2);
+  color: var(--text-secondary);
+}
