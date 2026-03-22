@@ -128,6 +128,31 @@ docker exec -it datris /bin/bash
 docker exec datris env
 ```
 
+## Publishing to Docker Hub
+
+Images are published automatically via GitHub Actions when you push a git tag:
+
+```bash
+# Tag and push to trigger the build-and-publish workflow
+git tag v1.0.0
+git push origin v1.0.0
+
+# Re-tag (if you need to overwrite an existing tag)
+git tag -d v1.0.0
+git push origin :refs/tags/v1.0.0
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The workflow builds and pushes three images to Docker Hub:
+- `datrisai/datris-server`
+- `datrisai/datris-ui`
+- `datrisai/datris-mcp-server`
+
+Each image is tagged with both the version (e.g., `1.0.0`) and `latest`.
+
+**Prerequisites:** `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` must be set as GitHub repository secrets.
+
 ## Git Configuration for Large Pushes
 
 ```bash
