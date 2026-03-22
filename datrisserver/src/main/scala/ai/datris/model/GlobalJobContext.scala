@@ -40,4 +40,26 @@ object GlobalJobContext {
     def findJobContext(pipelineToken: String): JobContext = {
         jobContexts.find(jobContext => jobContext.pipelineToken.compareTo(pipelineToken) == 0).orNull
     }
+
+    def killJob(pipelineToken: String): Unit = {
+        synchronized {
+            val jobContext = findJobContext(pipelineToken)
+            if (jobContext == null)
+                throw new DatrisException("Job not found for pipeline token: " + pipelineToken)
+            if (jobContext.state != PROCESSING)
+                throw new DatrisException("Job is not running (state: " + jobContext.state + ") for pipeline token: " + pipelineToken)
+            if (jobContext.thread == null || !jobContext.thread.isAlive)
+                throw new DatrisException("Job thread is not alive for pipeline token: " + pipelineToken)
+
+            // Interrupt the thread
+            jobContext.thread.interrupt()
+
+            // Log the cancellation
+            jobContext.statusUtil.error("end", "Job cancelled by user")
+
+            // Update state
+            deleteJobContext(jobContext)
+            addJobContext(jobContext.copy(state = CANCELLED))
+        }
+    }
 }

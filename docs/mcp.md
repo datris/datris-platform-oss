@@ -16,6 +16,7 @@ The MCP server is a lightweight Python service that calls the pipeline's existin
 | `delete_dataset` | Delete a dataset configuration |
 | `upload_file` | Upload a file for processing (returns pipeline token) |
 | `get_job_status` | Get job status by pipeline token or dataset name |
+| `kill_job` | Kill a running job by pipeline token |
 | `generate_schema` | AI-generate a dataset config from a file (CSV, JSON, XML) |
 | `profile_data` | AI-profile data with summary stats and suggested DQ rules |
 | `get_version` | Get pipeline server version |

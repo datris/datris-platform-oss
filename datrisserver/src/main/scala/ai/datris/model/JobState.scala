@@ -9,3 +9,4 @@ sealed trait JobState
 case object INITIALIZED extends JobState
 case object PROCESSING extends JobState
 case object COMPLETED extends JobState
+case object CANCELLED extends JobState

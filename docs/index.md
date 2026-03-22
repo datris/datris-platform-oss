@@ -1,4 +1,4 @@
-# Datris — AI Data Platform for Agents and Humans
+# Datris — The First AI Agent-Native Data Platform
 
 [datris.ai](https://datris.ai)
 
@@ -90,14 +90,16 @@ Notifications (published to ActiveMQ topic)
 ## Retrieval Flow
 
 ```
-AI Agent (Claude, Cursor, OpenClaw, any MCP-compatible agent)
+Client (AI Agent via MCP / Developer via REST API)
   |
   v
-MCP Server (stdio or SSE)
+Interface
+  ├── MCP Server (stdio or SSE)
+  └── REST API (POST /api/v1/query/* and /api/v1/search/*)
   |
   v
 Query Source
-  ├── PostgreSQL (SQL SELECT queries)
+  ├── PostgreSQL (read-only SQL SELECT queries)
   ├── MongoDB (document queries with filters and projections)
   ├── Qdrant (semantic search)
   ├── Weaviate (semantic search)
@@ -138,5 +140,7 @@ Query Source
 - [Milvus Destination](destinations/milvus.md) - Scalable vector database for RAG
 - [Chroma Destination](destinations/chroma.md) - Lightweight vector database for RAG — single container
 - [pgvector Destination](destinations/pgvector.md) - PostgreSQL vector database for RAG — no separate server required
+- [Query API](api-reference/query-api.md) - Query PostgreSQL and MongoDB via REST API
+- [Search API](api-reference/search-api.md) - Semantic search across vector databases via REST API
 - [MCP Server](mcp.md) - AI agent integration via Model Context Protocol
 - [Helper Applications](helpers.md) - Vector store chat, Kafka loader, preprocessor, and more
