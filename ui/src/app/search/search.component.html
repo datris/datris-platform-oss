@@ -55,24 +55,36 @@
 
     <!-- MongoDB fields -->
     <ng-container *ngIf="queryType === 'mongodb'">
-      <div class="form-row">
-        <label class="form-label">Collection</label>
-        <select class="form-input" [(ngModel)]="mongoCollection">
-          <option value="">Select collection...</option>
-          <option *ngFor="let c of mongoCollections" [value]="c">{{ c }}</option>
-        </select>
+      <div class="form-row-inline">
+        <div class="form-field" style="flex: 2">
+          <label class="form-label">Database</label>
+          <select class="form-input" [(ngModel)]="mongoDatabase" (ngModelChange)="onMongoDatabaseChange()">
+            <option value="">Select database...</option>
+            <option *ngFor="let db of mongoDatabases" [value]="db">{{ db }}</option>
+          </select>
+        </div>
+        <div class="form-field" style="flex: 3">
+          <label class="form-label">Collection</label>
+          <select class="form-input" [(ngModel)]="mongoCollection">
+            <option value="">Select collection...</option>
+            <option *ngFor="let c of mongoCollections" [value]="c">{{ c }}</option>
+          </select>
+        </div>
+        <div class="form-field" style="flex: 1">
+          <label class="form-label">Limit</label>
+          <input class="form-input" type="number" [(ngModel)]="mongoLimit">
+        </div>
+        <div class="form-field" style="flex: 1; align-self: flex-end">
+          <button class="retrieve-all-btn" (click)="retrieveAllMongo()" [disabled]="!mongoCollection || loading">Retrieve All</button>
+        </div>
       </div>
       <div class="form-row">
-        <label class="form-label">Filter (JSON)</label>
+        <label class="form-label">Filter (JSON, optional)</label>
         <textarea class="form-input form-textarea" [(ngModel)]="mongoFilter" placeholder='{"status": "active"}' rows="3"></textarea>
       </div>
       <div class="form-row">
         <label class="form-label">Projection (JSON, optional)</label>
         <textarea class="form-input form-textarea" [(ngModel)]="mongoProjection" placeholder='{"name": 1, "_id": 0}' rows="2"></textarea>
-      </div>
-      <div class="form-row">
-        <label class="form-label">Limit</label>
-        <input class="form-input" type="number" [(ngModel)]="mongoLimit" style="max-width: 120px;">
       </div>
     </ng-container>
 
@@ -94,9 +106,9 @@
           </select>
         </div>
         <div class="form-field" *ngIf="queryType === 'pgvector'">
-          <label class="form-label">Table</label>
+          <label class="form-label">Collection</label>
           <select class="form-input" [(ngModel)]="searchTable">
-            <option value="">Select table...</option>
+            <option value="">Select collection...</option>
             <option *ngFor="let t of pgTables" [value]="t">{{ t }}</option>
           </select>
         </div>

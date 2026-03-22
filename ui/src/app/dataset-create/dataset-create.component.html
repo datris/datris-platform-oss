@@ -1,6 +1,6 @@
 <div class="container">
   <a class="back-link" routerLink="/datasets">&#8592; Back to Datasets</a>
-  <h1 class="page-title">Create Dataset</h1>
+  <h1 class="page-title">{{ isEditMode ? 'Edit Dataset' : 'Create Dataset' }}</h1>
 
   <!-- Step indicators -->
   <div class="steps">
@@ -17,14 +17,30 @@
 
   <div class="form-card">
 
-    <!-- Step 1: Basics -->
+    <!-- Step 1: Name + Sample File -->
     <div *ngIf="step === 1">
-      <h2 class="step-title">Dataset Name & Source Type</h2>
+      <h2 class="step-title">Dataset Name & Sample File</h2>
       <div class="form-row">
         <label class="form-label">Dataset Name</label>
         <input class="form-input" [(ngModel)]="datasetName" placeholder="my_dataset">
       </div>
       <div class="form-row">
+        <label class="form-label">Upload a sample file (optional)</label>
+        <p class="form-hint">Upload a sample file to auto-detect the source type and generate the schema.</p>
+        <div class="file-upload-row">
+          <input type="file" (change)="onSampleFileSelected($event)" class="file-input">
+          <button class="secondary-btn" (click)="analyzeSampleFile()" [disabled]="!sampleFile || generatingSchema">
+            {{ generatingSchema ? 'Analyzing...' : 'Analyze File' }}
+          </button>
+        </div>
+      </div>
+      <div class="info-box" *ngIf="sampleFileDetected">
+        Detected source type: <strong>{{ sourceType === 'unstructured' ? 'Document' : sourceType.toUpperCase() }}</strong>
+        <span *ngIf="schemaFields.length > 0 && sourceType !== 'unstructured'"> &mdash; {{ schemaFields.length }} fields detected</span>
+      </div>
+      <hr class="divider" *ngIf="!sampleFileDetected">
+      <div class="form-row" *ngIf="!sampleFileDetected">
+        <p class="form-hint">Or configure manually:</p>
         <label class="form-label">Source Type</label>
         <select class="form-input" [(ngModel)]="sourceType" (ngModelChange)="onSourceTypeChange()">
           <option value="csv">CSV</option>
@@ -61,7 +77,18 @@
         <div class="form-row">
           <label class="checkbox-label">
             <input type="checkbox" [(ngModel)]="jsonEveryRow"> Each line contains a complete JSON object (NDJSON)
+            <span class="info-icon material-icons" (click)="showJsonInfo = !showJsonInfo" title="What is this?">info</span>
           </label>
+        </div>
+        <div class="info-box example-box" *ngIf="showJsonInfo">
+          <p><strong>NDJSON (enabled):</strong> Each line is a separate JSON object</p>
+          <pre class="example-code">{{"{"}}\"name\": \"Alice\", \"age\": 30{{"}"}}
+{{"{"}}\"name\": \"Bob\", \"age\": 25{{"}"}}</pre>
+          <p><strong>JSON array (disabled):</strong> A single JSON array containing all objects</p>
+          <pre class="example-code">[
+  {{"{"}}\"name\": \"Alice\", \"age\": 30{{"}"}},
+  {{"{"}}\"name\": \"Bob\", \"age\": 25{{"}"}}
+]</pre>
         </div>
       </ng-container>
 
@@ -140,12 +167,12 @@
       <div class="form-row">
         <label class="form-label">Destination Type</label>
         <select class="form-input" [(ngModel)]="destType" (ngModelChange)="onDestTypeChange()">
-          <optgroup label="Databases">
-            <option value="postgres">PostgreSQL</option>
-            <option value="mongodb">MongoDB</option>
+          <optgroup label="Databases" *ngIf="sourceType !== 'unstructured'">
+            <option value="postgres" *ngIf="sourceType === 'csv'">PostgreSQL</option>
+            <option value="mongodb" *ngIf="sourceType !== 'csv' || sourceType === 'csv'">MongoDB</option>
           </optgroup>
-          <optgroup label="Storage & Messaging">
-            <option value="objectstore">Object Store (MinIO)</option>
+          <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured'">
+            <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO)</option>
             <option value="kafka">Kafka</option>
             <option value="activemq">ActiveMQ</option>
           </optgroup>
@@ -161,33 +188,48 @@
 
       <!-- PostgreSQL -->
       <ng-container *ngIf="destType === 'postgres'">
+        <div class="form-row">
+          <label class="form-label">Database</label>
+          <select class="form-input" [(ngModel)]="pgDbName" (ngModelChange)="onPgDbChange()">
+            <option *ngFor="let db of pgDatabases" [value]="db">{{ db }}</option>
+          </select>
+          <input class="form-input override-input" [(ngModel)]="pgDbName" placeholder="or type a new database name">
+        </div>
         <div class="form-row-inline">
           <div class="form-field">
-            <label class="form-label">Database</label>
-            <input class="form-input" [(ngModel)]="pgDbName" placeholder="idata">
-          </div>
-          <div class="form-field">
             <label class="form-label">Schema</label>
-            <input class="form-input" [(ngModel)]="pgSchema" placeholder="public">
+            <select class="form-input" [(ngModel)]="pgSchema" (ngModelChange)="onPgSchemaChange()">
+              <option *ngFor="let s of pgSchemas" [value]="s">{{ s }}</option>
+            </select>
+            <input class="form-input override-input" [(ngModel)]="pgSchema" placeholder="or type a new schema">
           </div>
           <div class="form-field">
             <label class="form-label">Table</label>
-            <input class="form-input" [(ngModel)]="pgTable" placeholder="my_table">
+            <select class="form-input" [(ngModel)]="pgTable" *ngIf="pgTables.length > 0">
+              <option value="">New table...</option>
+              <option *ngFor="let t of pgTables" [value]="t">{{ t }}</option>
+            </select>
+            <input class="form-input override-input" [(ngModel)]="pgTable" placeholder="or type a new table name">
           </div>
         </div>
       </ng-container>
 
       <!-- MongoDB -->
       <ng-container *ngIf="destType === 'mongodb'">
-        <div class="form-row-inline">
-          <div class="form-field">
-            <label class="form-label">Database</label>
-            <input class="form-input" [(ngModel)]="mongoDbName" placeholder="idata">
-          </div>
-          <div class="form-field">
-            <label class="form-label">Collection</label>
-            <input class="form-input" [(ngModel)]="mongoTable" placeholder="my_collection">
-          </div>
+        <div class="form-row">
+          <label class="form-label">Database</label>
+          <select class="form-input" [(ngModel)]="mongoDbName" (ngModelChange)="onMongoDbChange()">
+            <option *ngFor="let db of mongoDatabases" [value]="db">{{ db }}</option>
+          </select>
+          <input class="form-input override-input" [(ngModel)]="mongoDbName" placeholder="or type a new database name">
+        </div>
+        <div class="form-row">
+          <label class="form-label">Collection</label>
+          <select class="form-input" [(ngModel)]="mongoTable" *ngIf="mongoCollections.length > 0">
+            <option value="">New collection...</option>
+            <option *ngFor="let c of mongoCollections" [value]="c">{{ c }}</option>
+          </select>
+          <input class="form-input override-input" [(ngModel)]="mongoTable" placeholder="or type a new collection name">
         </div>
       </ng-container>
 
@@ -226,23 +268,30 @@
 
       <!-- Vector Databases -->
       <ng-container *ngIf="isVectorDest()">
-        <div class="form-row-inline">
-          <div class="form-field" *ngIf="destType === 'weaviate'">
-            <label class="form-label">Class Name</label>
-            <input class="form-input" [(ngModel)]="vectorClassName" placeholder="MyDocuments">
-          </div>
-          <div class="form-field" *ngIf="destType === 'pgvector'">
-            <label class="form-label">Table</label>
-            <input class="form-input" [(ngModel)]="vectorTable" placeholder="my_documents">
-          </div>
-          <div class="form-field" *ngIf="destType === 'pgvector'">
+        <div class="form-row-inline" *ngIf="destType === 'pgvector'">
+          <div class="form-field">
             <label class="form-label">Schema</label>
-            <input class="form-input" [(ngModel)]="vectorSchema" placeholder="public">
+            <select class="form-input" [(ngModel)]="vectorSchema" (ngModelChange)="onVectorSchemaChange()">
+              <option *ngFor="let s of pgSchemas" [value]="s">{{ s }}</option>
+            </select>
+            <input class="form-input override-input" [(ngModel)]="vectorSchema" placeholder="or type a new schema">
           </div>
-          <div class="form-field" *ngIf="destType !== 'weaviate' && destType !== 'pgvector'">
+          <div class="form-field">
             <label class="form-label">Collection</label>
-            <input class="form-input" [(ngModel)]="vectorCollection" placeholder="my_documents">
+            <select class="form-input" [(ngModel)]="vectorTable">
+              <option value="">New collection...</option>
+              <option *ngFor="let t of pgTables" [value]="t">{{ t }}</option>
+            </select>
+            <input class="form-input override-input" [(ngModel)]="vectorTable" placeholder="or type a new collection name">
           </div>
+        </div>
+        <div class="form-row" *ngIf="destType === 'weaviate'">
+          <label class="form-label">Class Name</label>
+          <input class="form-input" [(ngModel)]="vectorClassName" placeholder="MyDocuments">
+        </div>
+        <div class="form-row" *ngIf="destType !== 'weaviate' && destType !== 'pgvector'">
+          <label class="form-label">Collection</label>
+          <input class="form-input" [(ngModel)]="vectorCollection" placeholder="my_documents">
         </div>
         <div class="form-row-inline">
           <div class="form-field">
@@ -297,7 +346,7 @@
         Next
       </button>
       <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 5">
-        {{ creating ? 'Creating...' : 'Create Dataset' }}
+        {{ creating ? 'Saving...' : (isEditMode ? 'Save Dataset' : 'Create Dataset') }}
       </button>
     </div>
   </div>

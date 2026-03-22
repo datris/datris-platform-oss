@@ -90,6 +90,31 @@ option {
   background: var(--bg-card);
 }
 
+/* Retrieve All button */
+.retrieve-all-btn {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.retrieve-all-btn:hover:not(:disabled) {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 12px var(--shadow-blue);
+}
+
+.retrieve-all-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Execute button */
 .execute-btn {
   padding: 12px 32px;

@@ -1,6 +1,7 @@
-import { Component } from '@angular/core';
-import { Router } from '@angular/router';
+import { Component, OnInit } from '@angular/core';
+import { ActivatedRoute, Router } from '@angular/router';
 import { DatasetService } from '../dataset.service';
+import { SearchService } from '../search.service';
 
 interface SchemaField {
   name: string;
@@ -12,21 +13,25 @@ interface SchemaField {
   templateUrl: './dataset-create.component.html',
   styleUrls: ['./dataset-create.component.css']
 })
-export class DatasetCreateComponent {
+export class DatasetCreateComponent implements OnInit {
+  isEditMode = false;
   step = 1;
   error = '';
   creating = false;
   generatingSchema = false;
+  sampleFileDetected = false;
 
-  // Step 1 — Basics
+  // Step 1 — Basics + Sample File
   datasetName = '';
+  sampleFile: File | null = null;
   sourceType = 'csv';
 
   // Step 2 — Source config
   csvDelimiter = ',';
   csvEncoding = 'UTF-8';
   csvHeader = true;
-  jsonEveryRow = true;
+  jsonEveryRow = false;
+  showJsonInfo = false;
   xmlEveryRow = true;
   unstructuredExtension = 'pdf';
 
@@ -59,9 +64,205 @@ export class DatasetCreateComponent {
   // Step 5 — Review
   configJson = '';
 
+  // Metadata for dropdowns
+  pgDatabases: string[] = [];
+  pgSchemas: string[] = [];
+  pgTables: string[] = [];
+  mongoDatabases: string[] = [];
+  mongoCollections: string[] = [];
+
   fieldTypes = ['string', 'int', 'bigint', 'float', 'double', 'boolean', 'date', 'timestamp'];
 
-  constructor(private datasetService: DatasetService, private router: Router) { }
+  constructor(private datasetService: DatasetService, private searchService: SearchService, private route: ActivatedRoute, private router: Router) { }
+
+  ngOnInit(): void {
+    const editName = this.route.snapshot.paramMap.get('name');
+    if (editName) {
+      this.isEditMode = true;
+      this.datasetService.getDataset(editName).subscribe({
+        next: (config) => this.loadFromConfig(config),
+        error: (err) => this.error = 'Failed to load dataset: ' + (err.error || err.message)
+      });
+    }
+  }
+
+  loadFromConfig(config: any): void {
+    this.datasetName = config.name || '';
+    this.sampleFileDetected = true; // skip sample file prompt
+
+    // Detect source type
+    const fa = config.source?.fileAttributes;
+    if (fa?.csvAttributes) {
+      this.sourceType = 'csv';
+      this.csvDelimiter = fa.csvAttributes.delimiter || ',';
+      this.csvEncoding = fa.csvAttributes.encoding || 'UTF-8';
+      this.csvHeader = fa.csvAttributes.header !== false;
+    } else if (fa?.jsonAttributes) {
+      this.sourceType = 'json';
+      this.jsonEveryRow = fa.jsonAttributes.everyRowContainsObject || false;
+    } else if (fa?.xmlAttributes) {
+      this.sourceType = 'xml';
+      this.xmlEveryRow = fa.xmlAttributes.everyRowContainsObject || false;
+    } else if (fa?.unstructuredAttributes) {
+      this.sourceType = 'unstructured';
+      this.unstructuredExtension = fa.unstructuredAttributes.fileExtension || 'pdf';
+    }
+
+    // Schema
+    if (config.source?.schemaProperties) {
+      this.schemaDbName = config.source.schemaProperties.dbName || 'idata';
+      if (config.source.schemaProperties.fields) {
+        this.schemaFields = config.source.schemaProperties.fields.map((f: any) => ({
+          name: f.name, type: f.type
+        }));
+      }
+    }
+
+    // Destination
+    const dest = config.destination;
+    if (dest?.database?.usePostgres) {
+      this.destType = 'postgres';
+      this.pgDbName = dest.database.dbName || 'idata';
+      this.pgSchema = dest.database.schema || 'public';
+      this.pgTable = dest.database.table || '';
+    } else if (dest?.database?.useMongoDB) {
+      this.destType = 'mongodb';
+      this.mongoDbName = dest.database.dbName || 'idata';
+      this.mongoTable = dest.database.table || '';
+    } else if (dest?.objectStore) {
+      this.destType = 'objectstore';
+      this.osPrefix = dest.objectStore.prefixKey || '';
+      this.osFormat = dest.objectStore.fileFormat || 'parquet';
+    } else if (dest?.kafka) {
+      this.destType = 'kafka';
+      this.kafkaTopic = dest.kafka.topic || '';
+    } else if (dest?.activeMQ) {
+      this.destType = 'activemq';
+      this.amqQueue = dest.activeMQ.queueName || '';
+    } else if (dest?.qdrant) {
+      this.destType = 'qdrant';
+      this.vectorCollection = dest.qdrant.collectionName || '';
+      this.embeddingSecret = dest.qdrant.embeddingSecretName || 'oss/embedding';
+      this.vectorSecret = dest.qdrant.qdrantSecretName || 'oss/qdrant';
+      this.loadChunking(dest.qdrant.chunking);
+    } else if (dest?.weaviate) {
+      this.destType = 'weaviate';
+      this.vectorClassName = dest.weaviate.className || '';
+      this.embeddingSecret = dest.weaviate.embeddingSecretName || 'oss/embedding';
+      this.vectorSecret = dest.weaviate.weaviateSecretName || 'oss/weaviate';
+      this.loadChunking(dest.weaviate.chunking);
+    } else if (dest?.milvus) {
+      this.destType = 'milvus';
+      this.vectorCollection = dest.milvus.collectionName || '';
+      this.embeddingSecret = dest.milvus.embeddingSecretName || 'oss/embedding';
+      this.vectorSecret = dest.milvus.milvusSecretName || 'oss/milvus';
+      this.loadChunking(dest.milvus.chunking);
+    } else if (dest?.chroma) {
+      this.destType = 'chroma';
+      this.vectorCollection = dest.chroma.collectionName || '';
+      this.embeddingSecret = dest.chroma.embeddingSecretName || 'oss/embedding';
+      this.vectorSecret = dest.chroma.chromaSecretName || 'oss/chroma';
+      this.loadChunking(dest.chroma.chunking);
+    } else if (dest?.pgvector) {
+      this.destType = 'pgvector';
+      this.vectorTable = dest.pgvector.tableName || '';
+      this.vectorSchema = dest.pgvector.schemaName || 'public';
+      this.embeddingSecret = dest.pgvector.embeddingSecretName || 'oss/embedding';
+      this.vectorSecret = dest.pgvector.postgresSecretName || 'oss/pgvector';
+      this.loadChunking(dest.pgvector.chunking);
+    }
+  }
+
+  private loadChunking(chunking: any): void {
+    if (!chunking) return;
+    this.chunkStrategy = chunking.strategy || 'recursive';
+    this.chunkSize = chunking.chunkSize || 500;
+    this.chunkOverlap = chunking.chunkOverlap || 50;
+  }
+
+  loadPgDatabases(): void {
+    this.searchService.getPostgresDatabases().subscribe({
+      next: (databases) => {
+        this.pgDatabases = databases;
+        if (databases.length > 0 && !databases.includes(this.pgDbName)) {
+          this.pgDbName = databases[0];
+        }
+        this.loadPgSchemas();
+      },
+      error: () => { this.pgDatabases = []; }
+    });
+  }
+
+  onPgDbChange(): void {
+    this.pgSchema = '';
+    this.pgTable = '';
+    this.loadPgSchemas();
+  }
+
+  loadMongoDatabases(): void {
+    this.searchService.getMongoDatabases().subscribe({
+      next: (databases) => {
+        this.mongoDatabases = databases;
+        if (databases.length > 0 && !databases.includes(this.mongoDbName)) {
+          this.mongoDbName = databases[0];
+        }
+        this.loadMongoCollections();
+      },
+      error: () => { this.mongoDatabases = []; }
+    });
+  }
+
+  onMongoDbChange(): void {
+    this.mongoTable = '';
+    this.loadMongoCollections();
+  }
+
+  loadPgSchemas(): void {
+    this.searchService.getPostgresSchemas(this.pgDbName).subscribe({
+      next: (schemas) => {
+        this.pgSchemas = schemas;
+        if (schemas.length > 0 && !this.pgSchema) {
+          this.pgSchema = schemas.includes('public') ? 'public' : schemas[0];
+          this.loadPgTables();
+        }
+      },
+      error: () => { this.pgSchemas = []; }
+    });
+  }
+
+  loadPgTables(): void {
+    if (!this.pgSchema) return;
+    this.searchService.getPostgresTables(this.pgDbName, this.pgSchema).subscribe({
+      next: (tables) => { this.pgTables = tables; },
+      error: () => { this.pgTables = []; }
+    });
+  }
+
+  onPgSchemaChange(): void {
+    this.pgTable = '';
+    this.loadPgTables();
+  }
+
+  onVectorSchemaChange(): void {
+    this.vectorTable = '';
+    this.pgSchema = this.vectorSchema;
+    this.loadVectorTables();
+  }
+
+  loadVectorTables(): void {
+    if (!this.vectorSchema) return;
+    this.searchService.getPostgresTables(this.pgDbName || 'idata', this.vectorSchema, true).subscribe({
+      next: (tables) => { this.pgTables = tables; },
+      error: () => { this.pgTables = []; }
+    });
+  }
+
+  loadMongoCollections(): void {
+    this.searchService.getMongoCollections(this.mongoDbName).subscribe({
+      next: (collections) => { this.mongoCollections = collections; },
+      error: () => { this.mongoCollections = []; }
+    });
+  }
 
   isUnstructured(): boolean {
     return this.sourceType === 'unstructured';
@@ -81,19 +282,35 @@ export class DatasetCreateComponent {
 
   onDestTypeChange(): void {
     this.vectorSecret = this.getDefaultVectorSecret();
+    if (this.destType === 'pgvector') {
+      this.loadPgSchemas();
+      if (this.vectorSchema) {
+        this.pgSchema = this.vectorSchema;
+        this.loadVectorTables();
+      }
+    }
   }
 
   onSourceTypeChange(): void {
     if (this.sourceType === 'json') {
       this.schemaFields = [{ name: '_json', type: 'string' }];
+      // JSON can't go to PostgreSQL or Object Store
+      if (this.destType === 'postgres' || this.destType === 'objectstore') {
+        this.destType = 'mongodb';
+      }
     } else if (this.sourceType === 'xml') {
       this.schemaFields = [{ name: '_xml', type: 'string' }];
+      if (this.destType === 'postgres' || this.destType === 'objectstore') {
+        this.destType = 'mongodb';
+      }
     } else if (this.sourceType === 'csv') {
       this.schemaFields = [{ name: '', type: 'string' }];
     }
-    // For unstructured, destination should default to vector
+    // For unstructured, destination must be a vector DB
     if (this.sourceType === 'unstructured') {
-      this.destType = 'pgvector';
+      if (!this.isVectorDest()) {
+        this.destType = 'pgvector';
+      }
       this.onDestTypeChange();
     }
   }
@@ -106,10 +323,82 @@ export class DatasetCreateComponent {
     this.schemaFields.splice(index, 1);
   }
 
+  onSampleFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      this.sampleFile = input.files[0];
+    }
+  }
+
   onFileSelected(event: Event): void {
     const input = event.target as HTMLInputElement;
     if (input.files && input.files.length > 0) {
       this.schemaFile = input.files[0];
+    }
+  }
+
+  detectSourceType(filename: string): string {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const unstructuredExts = ['pdf', 'doc', 'docx', 'pptx', 'ppt', 'xlsx', 'html', 'htm', 'txt', 'md', 'epub', 'eml', 'msg', 'rtf'];
+    if (ext === 'csv' || ext === 'tsv') return 'csv';
+    if (ext === 'json' || ext === 'ndjson') return 'json';
+    if (ext === 'xml') return 'xml';
+    if (unstructuredExts.includes(ext)) return 'unstructured';
+    return 'csv';
+  }
+
+  getFileExtension(filename: string): string {
+    return filename.split('.').pop()?.toLowerCase() || '';
+  }
+
+  analyzeSampleFile(): void {
+    if (!this.sampleFile || !this.datasetName.trim()) {
+      this.error = !this.datasetName.trim() ? 'Dataset name is required' : 'Please select a file';
+      return;
+    }
+
+    const filename = this.sampleFile.name;
+    const detectedType = this.detectSourceType(filename);
+    this.sourceType = detectedType;
+    this.sampleFileDetected = true;
+
+    // Set source-specific defaults from file
+    if (detectedType === 'csv') {
+      const ext = this.getFileExtension(filename);
+      if (ext === 'tsv') this.csvDelimiter = '\t';
+    } else if (detectedType === 'unstructured') {
+      this.unstructuredExtension = this.getFileExtension(filename);
+      this.destType = 'pgvector';
+      this.onDestTypeChange();
+      this.onSourceTypeChange();
+      return; // No schema generation for unstructured
+    }
+
+    this.onSourceTypeChange();
+
+    // For structured files, call schema generation
+    if (detectedType === 'csv' || detectedType === 'json' || detectedType === 'xml') {
+      this.generatingSchema = true;
+      this.error = '';
+
+      this.datasetService.generateSchema(
+        this.sampleFile, this.datasetName,
+        detectedType === 'csv' ? this.csvDelimiter : undefined,
+        detectedType === 'csv' ? this.csvHeader : undefined
+      ).subscribe({
+        next: (response: any) => {
+          if (response.source?.schemaProperties?.fields) {
+            this.schemaFields = response.source.schemaProperties.fields.map((f: any) => ({
+              name: f.name, type: f.type
+            }));
+          }
+          this.generatingSchema = false;
+        },
+        error: (err: any) => {
+          this.error = 'Schema generation failed: ' + (err.error || err.message);
+          this.generatingSchema = false;
+        }
+      });
     }
   }
 
@@ -124,7 +413,6 @@ export class DatasetCreateComponent {
       this.sourceType === 'csv' ? this.csvHeader : undefined
     ).subscribe({
       next: (response: any) => {
-        // Extract schema fields from generated config
         if (response.source?.schemaProperties?.fields) {
           this.schemaFields = response.source.schemaProperties.fields.map((f: any) => ({
             name: f.name, type: f.type
@@ -151,6 +439,12 @@ export class DatasetCreateComponent {
     // Skip schema step (3) for unstructured
     if (this.step === 3 && this.isUnstructured()) {
       this.step = 4;
+    }
+
+    // Load metadata when entering destination step (4)
+    if (this.step === 4) {
+      this.loadPgDatabases();
+      this.loadMongoDatabases();
     }
 
     // Generate config JSON when entering review step (5)

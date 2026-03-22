@@ -27,6 +27,11 @@ export class DatasetsComponent implements OnInit {
     this.router.navigate(['/datasets', name]);
   }
 
+  editDataset(event: Event, name: string): void {
+    event.stopPropagation();
+    this.router.navigate(['/datasets', name, 'edit']);
+  }
+
   deleteDataset(event: Event, name: string): void {
     event.stopPropagation();
     if (!confirm('Delete dataset "' + name + '"? This cannot be undone.')) return;
