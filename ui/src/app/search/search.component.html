@@ -1,0 +1,171 @@
+<div class="container">
+  <h1 class="page-title">Search</h1>
+
+  <div class="search-form">
+    <div class="form-row">
+      <label class="form-label">Query Type</label>
+      <select class="form-input" [(ngModel)]="queryType" (ngModelChange)="onQueryTypeChange()">
+        <optgroup label="Database Query">
+          <option value="postgres">PostgreSQL</option>
+          <option value="mongodb">MongoDB</option>
+        </optgroup>
+        <optgroup label="Vector Search">
+          <option value="qdrant">Qdrant</option>
+          <option value="weaviate">Weaviate</option>
+          <option value="milvus">Milvus</option>
+          <option value="chroma">Chroma</option>
+          <option value="pgvector">pgvector</option>
+        </optgroup>
+      </select>
+    </div>
+
+    <!-- PostgreSQL fields -->
+    <ng-container *ngIf="queryType === 'postgres'">
+      <div class="form-row-inline">
+        <div class="form-field">
+          <label class="form-label">Schema</label>
+          <select class="form-input" [(ngModel)]="pgSelectedSchema" (ngModelChange)="onPgSchemaChange()">
+            <option value="">Select schema...</option>
+            <option *ngFor="let s of pgSchemas" [value]="s">{{ s }}</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label class="form-label">Table</label>
+          <select class="form-input" [(ngModel)]="pgSelectedTable" (ngModelChange)="onPgTableSelect()">
+            <option value="">Select table...</option>
+            <option *ngFor="let t of pgTables" [value]="t">{{ t }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <label class="form-label">SQL Query</label>
+        <textarea class="form-input form-textarea" [(ngModel)]="pgSql" placeholder="SELECT * FROM schema.table LIMIT 10" rows="4"></textarea>
+      </div>
+      <div class="form-row-inline">
+        <div class="form-field">
+          <label class="form-label">Database</label>
+          <input class="form-input" [(ngModel)]="pgDatabase" placeholder="idata">
+        </div>
+        <div class="form-field">
+          <label class="form-label">Limit</label>
+          <input class="form-input" type="number" [(ngModel)]="pgLimit">
+        </div>
+      </div>
+    </ng-container>
+
+    <!-- MongoDB fields -->
+    <ng-container *ngIf="queryType === 'mongodb'">
+      <div class="form-row">
+        <label class="form-label">Collection</label>
+        <select class="form-input" [(ngModel)]="mongoCollection">
+          <option value="">Select collection...</option>
+          <option *ngFor="let c of mongoCollections" [value]="c">{{ c }}</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Filter (JSON)</label>
+        <textarea class="form-input form-textarea" [(ngModel)]="mongoFilter" placeholder='{"status": "active"}' rows="3"></textarea>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Projection (JSON, optional)</label>
+        <textarea class="form-input form-textarea" [(ngModel)]="mongoProjection" placeholder='{"name": 1, "_id": 0}' rows="2"></textarea>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Limit</label>
+        <input class="form-input" type="number" [(ngModel)]="mongoLimit" style="max-width: 120px;">
+      </div>
+    </ng-container>
+
+    <!-- Vector search fields -->
+    <ng-container *ngIf="isVectorSearch()">
+      <div class="form-row">
+        <label class="form-label">Search Query</label>
+        <textarea class="form-input form-textarea" [(ngModel)]="searchQuery" placeholder="Enter your natural language search query..." rows="3"></textarea>
+      </div>
+      <div class="form-row-inline">
+        <div class="form-field" *ngIf="queryType === 'weaviate'">
+          <label class="form-label">Class Name</label>
+          <input class="form-input" [(ngModel)]="searchClassName" placeholder="FinancialDocuments">
+        </div>
+        <div class="form-field" *ngIf="queryType === 'pgvector'">
+          <label class="form-label">Schema</label>
+          <select class="form-input" [(ngModel)]="searchSchema" (ngModelChange)="onSearchSchemaChange()">
+            <option *ngFor="let s of pgSchemas" [value]="s">{{ s }}</option>
+          </select>
+        </div>
+        <div class="form-field" *ngIf="queryType === 'pgvector'">
+          <label class="form-label">Table</label>
+          <select class="form-input" [(ngModel)]="searchTable">
+            <option value="">Select table...</option>
+            <option *ngFor="let t of pgTables" [value]="t">{{ t }}</option>
+          </select>
+        </div>
+        <div class="form-field" *ngIf="queryType !== 'weaviate' && queryType !== 'pgvector'">
+          <label class="form-label">Collection</label>
+          <input class="form-input" [(ngModel)]="searchCollection" placeholder="financial_documents">
+        </div>
+        <div class="form-field">
+          <label class="form-label">Top K</label>
+          <input class="form-input" type="number" [(ngModel)]="topK">
+        </div>
+      </div>
+      <div class="form-row-inline">
+        <div class="form-field">
+          <label class="form-label">Embedding Secret Name</label>
+          <input class="form-input" [(ngModel)]="embeddingSecretName" placeholder="oss/embedding">
+        </div>
+        <div class="form-field">
+          <label class="form-label">{{ getVectorSecretLabel() }}</label>
+          <input class="form-input" [(ngModel)]="vectorSecretName" [placeholder]="getDefaultVectorSecret()">
+        </div>
+      </div>
+    </ng-container>
+
+    <div class="form-row">
+      <button class="execute-btn" (click)="execute()" [disabled]="loading">
+        {{ loading ? 'Executing...' : 'Execute' }}
+      </button>
+    </div>
+  </div>
+
+  <!-- Error -->
+  <div class="error-box" *ngIf="error">
+    <pre>{{ error }}</pre>
+  </div>
+
+  <!-- Results -->
+  <div class="results-section" *ngIf="results.length > 0">
+    <div class="results-header">
+      <span class="results-count">{{ resultCount }} result{{ resultCount !== 1 ? 's' : '' }}</span>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th *ngFor="let col of columns">{{ col }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let row of results">
+            <td *ngFor="let col of columns">
+              <span class="cell-value" [class.score-cell]="col === '_score'">{{ row[col] }}</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- AI Answer (vector search only) -->
+  <div class="ai-answer-section" *ngIf="isVectorSearch() && (aiLoading || aiAnswer || aiError)">
+    <div class="ai-answer-header">
+      <span class="material-icons ai-icon">auto_awesome</span>
+      <span class="ai-title">AI Answer</span>
+      <span class="ai-loading" *ngIf="aiLoading">Thinking...</span>
+    </div>
+    <div class="ai-answer-body">
+      <div class="ai-answer-text" *ngIf="aiAnswer">{{ aiAnswer }}</div>
+      <div class="ai-answer-error" *ngIf="aiError">{{ aiError }}</div>
+    </div>
+  </div>
+</div>

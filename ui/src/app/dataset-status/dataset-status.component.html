@@ -1,7 +1,7 @@
 <div class="container">
-  <h1 class="page-title">Data Ingestion</h1>
-  <div class="header">
-    <input type="text" placeholder="Search datasets..." />
+  <div class="page-header">
+    <h1 class="page-title">Data Ingestion</h1>
+    <button class="create-btn" (click)="openUploadModal()">+ Upload File</button>
   </div>
   <div class="table-container">
     <table>
@@ -37,5 +37,61 @@
   <div class="pagination">
     <button (click)="onPreviousPage()" [disabled]="page === 1">Previous</button>
     <button (click)="onNextPage()">Next</button>
+  </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="modal-overlay" *ngIf="showUploadModal" (click)="closeUploadModal()">
+  <div class="modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Upload File</h2>
+      <button class="modal-close" (click)="closeUploadModal()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+
+    <div class="modal-body">
+      <!-- Dataset selection -->
+      <div class="form-row">
+        <label class="form-label">Dataset</label>
+        <select class="form-input" [(ngModel)]="selectedDataset" (ngModelChange)="onDatasetSelected()">
+          <option value="">Select a dataset...</option>
+          <option *ngFor="let ds of allDatasets" [value]="ds.name">{{ ds.name }}</option>
+        </select>
+      </div>
+
+      <!-- Dataset info card -->
+      <div class="dataset-info" *ngIf="selectedDatasetConfig">
+        <div class="info-row">
+          <span class="info-label">Source Type</span>
+          <span class="info-value">{{ getSourceType(selectedDatasetConfig) }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Destinations</span>
+          <span class="info-value">{{ getDestinations(selectedDatasetConfig) }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Schema Fields</span>
+          <span class="info-value info-fields">{{ getSchemaFields(selectedDatasetConfig) }}</span>
+        </div>
+      </div>
+
+      <!-- File selection -->
+      <div class="form-row" *ngIf="selectedDataset">
+        <label class="form-label">File</label>
+        <input type="file" (change)="onFileSelected($event)" class="file-input">
+      </div>
+
+      <!-- Result / Error -->
+      <div class="success-box" *ngIf="uploadResult">{{ uploadResult }}</div>
+      <div class="error-box" *ngIf="uploadError">{{ uploadError }}</div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="secondary-btn" (click)="closeUploadModal()">Cancel</button>
+      <button class="primary-btn" (click)="upload()" [disabled]="!selectedDataset || !uploadFile || uploading">
+        {{ uploading ? 'Uploading...' : 'Upload & Process' }}
+      </button>
+    </div>
   </div>
 </div>

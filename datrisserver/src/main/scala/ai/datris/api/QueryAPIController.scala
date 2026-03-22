@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.model.GlobalJobContext
-import ai.datris.util.{APIKeyValidator, PostgresQueryUtil, MongoDBQueryUtil}
+import ai.datris.util.{AIUtil, APIKeyValidator, PostgresQueryUtil, MongoDBQueryUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -109,6 +109,38 @@ class QueryAPIController {
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("status", "cancelled")
             response.put("pipelineToken", pipelineToken)
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        }
+        catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @PostMapping(path = Array("/ai/answer"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def aiAnswer(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                 @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /ai/answer called")
+            APIKeyValidator.validate(apiKey)
+
+            val query = Option(body.get("query")).map(_.toString)
+                .getOrElse(throw new ai.datris.model.DatrisException("'query' parameter is required"))
+            val context = Option(body.get("context")).map(_.toString)
+                .getOrElse(throw new ai.datris.model.DatrisException("'context' parameter is required"))
+
+            val systemPrompt = "You are a knowledgeable assistant. Answer the user's question based on the provided context. " +
+                "Be concise and accurate. If the context does not contain enough information to answer, say so."
+
+            val userPrompt = "Context:\n" + context + "\n\nQuestion: " + query
+
+            val aiResponse = AIUtil.callAIWithSystem(systemPrompt, userPrompt)
+            val answer = AIUtil.extractText(aiResponse)
+
+            val gson = new Gson
+            val response = new java.util.LinkedHashMap[String, Any]()
+            response.put("answer", answer)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         }
         catch {

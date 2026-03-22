@@ -19,6 +19,33 @@
   width: auto;
 }
 
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  margin-left: 40px;
+}
+
+.tab {
+  padding: 8px 20px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tab-active {
+  color: var(--accent-cyan);
+  background: rgba(0, 180, 255, 0.1);
+}
+
 .main-content {
   padding-top: 80px;
 }
