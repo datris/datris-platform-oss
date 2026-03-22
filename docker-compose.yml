@@ -119,7 +119,8 @@ services:
       - datris-net
 
   datris:
-    build: .
+    image: datrisai/datris-server:latest
+    # build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
     ports:
       - "8080:8080"
@@ -145,7 +146,8 @@ services:
       - datris-net
 
   ui:
-    build: ./ui
+    image: datrisai/datris-ui:latest
+    # build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: ui
     ports:
       - "4200:80"
@@ -168,7 +170,8 @@ services:
       - datris-net
 
   mcp-server:
-    build: ./mcp-server
+    image: datrisai/datris-mcp-server:latest
+    # build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: mcp-server
     ports:
       - "3000:3000"
