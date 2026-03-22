@@ -39,4 +39,11 @@ export class DatasetStatusService {
   getDatasetStatusDetail(pipelineToken: string) {
     return this.http.get<DatasetStatusDetail[]>(this.apiUrl + "?pipelinetoken=" + pipelineToken);
   }
+
+  uploadFile(file: File, dataset: string): Observable<string> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('dataset', dataset);
+    return this.http.post('/api/v1/dataset/upload', formData, { responseType: 'text' });
+  }
 }

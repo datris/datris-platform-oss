@@ -1,0 +1,136 @@
+.container {
+  padding: 0 32px 32px;
+  color: var(--text-primary);
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.page-title {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.create-btn {
+  padding: 10px 24px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  color: #0a0e1a;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+
+.create-btn:hover {
+  box-shadow: 0 0 20px rgba(0, 180, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.table-container {
+  overflow-x: auto;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 4px 24px var(--shadow-blue), 0 0 48px rgba(0, 180, 255, 0.03);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 14px 18px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+}
+
+th {
+  background: var(--bg-header);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+thead tr {
+  border-bottom: 2px solid transparent;
+  background-image: linear-gradient(var(--bg-header), var(--bg-header)),
+                    linear-gradient(90deg, var(--accent-cyan), var(--accent-green));
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
+tbody tr {
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+tbody tr:nth-child(even) {
+  background: var(--bg-card-alt);
+}
+
+tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.dataset-name {
+  font-weight: 600;
+  color: var(--accent-cyan);
+}
+
+.actions-cell {
+  width: 50px;
+  text-align: center;
+}
+
+.delete-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+}
+
+.delete-btn .material-icons {
+  font-size: 20px;
+}
+
+.delete-btn:hover {
+  color: var(--accent-red);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px;
+  color: var(--text-muted);
+  font-size: 16px;
+}

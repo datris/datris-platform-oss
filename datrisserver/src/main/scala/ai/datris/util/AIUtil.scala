@@ -62,6 +62,61 @@ object AIUtil {
         Math.max(batchSize, 1)
     }
 
+    def callAIWithSystem(systemPrompt: String, userPrompt: String): String = {
+        val aiConfig = DatrisEnvironment.values.aiConfig
+        if (aiConfig == null)
+            throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
+
+        logger.info("Calling AI with custom system prompt, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model)
+
+        val messagesArr = new JsonArray()
+
+        if (!aiConfig.provider.toLowerCase.equals("anthropic")) {
+            val systemMsg = new JsonObject()
+            systemMsg.addProperty("role", "system")
+            systemMsg.addProperty("content", systemPrompt)
+            messagesArr.add(systemMsg)
+        }
+
+        val messageObj = new JsonObject()
+        messageObj.addProperty("role", "user")
+        messageObj.addProperty("content", userPrompt)
+        messagesArr.add(messageObj)
+
+        val requestObj = new JsonObject()
+        requestObj.addProperty("model", aiConfig.model)
+        requestObj.addProperty("max_tokens", 8192)
+        requestObj.add("messages", messagesArr)
+
+        if (aiConfig.provider.toLowerCase.equals("anthropic")) {
+            requestObj.addProperty("system", systemPrompt)
+        }
+
+        val jsonBody = requestObj.toString
+        val client = getClient(aiConfig.provider)
+
+        val httpPost = new HttpPost(aiConfig.endpoint)
+        aiConfig.provider.toLowerCase match {
+            case "openai" =>
+                httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
+            case "ollama" =>
+                if (aiConfig.apiKey != null && aiConfig.apiKey.nonEmpty)
+                    httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
+            case _ =>
+                httpPost.addHeader("x-api-key", aiConfig.apiKey)
+                httpPost.addHeader("anthropic-version", "2023-06-01")
+        }
+        httpPost.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
+        httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8))
+
+        val response = client.execute(httpPost)
+        val statusCode = response.getStatusLine.getStatusCode
+        if (statusCode != 200)
+            throw new DatrisException("AI API returned error status: " + statusCode + ", body: " + EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8))
+
+        EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
+    }
+
     def callAI(prompt: String): String = {
         val aiConfig = DatrisEnvironment.values.aiConfig
         if (aiConfig == null)

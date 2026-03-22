@@ -1,0 +1,304 @@
+<div class="container">
+  <a class="back-link" routerLink="/datasets">&#8592; Back to Datasets</a>
+  <h1 class="page-title">Create Dataset</h1>
+
+  <!-- Step indicators -->
+  <div class="steps">
+    <span class="step-dot" [class.active]="step >= 1">1</span>
+    <span class="step-line" [class.active]="step >= 2"></span>
+    <span class="step-dot" [class.active]="step >= 2">2</span>
+    <span class="step-line" [class.active]="step >= 3" *ngIf="!isUnstructured()"></span>
+    <span class="step-dot" [class.active]="step >= 3" *ngIf="!isUnstructured()">3</span>
+    <span class="step-line" [class.active]="step >= 4"></span>
+    <span class="step-dot" [class.active]="step >= 4">4</span>
+    <span class="step-line" [class.active]="step >= 5"></span>
+    <span class="step-dot" [class.active]="step >= 5">5</span>
+  </div>
+
+  <div class="form-card">
+
+    <!-- Step 1: Basics -->
+    <div *ngIf="step === 1">
+      <h2 class="step-title">Dataset Name & Source Type</h2>
+      <div class="form-row">
+        <label class="form-label">Dataset Name</label>
+        <input class="form-input" [(ngModel)]="datasetName" placeholder="my_dataset">
+      </div>
+      <div class="form-row">
+        <label class="form-label">Source Type</label>
+        <select class="form-input" [(ngModel)]="sourceType" (ngModelChange)="onSourceTypeChange()">
+          <option value="csv">CSV</option>
+          <option value="json">JSON</option>
+          <option value="xml">XML</option>
+          <option value="unstructured">Document (PDF, Word, Excel, PowerPoint, text, etc.)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Step 2: Source Configuration -->
+    <div *ngIf="step === 2">
+      <h2 class="step-title">Source Configuration</h2>
+
+      <ng-container *ngIf="sourceType === 'csv'">
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Delimiter</label>
+            <input class="form-input" [(ngModel)]="csvDelimiter" placeholder=",">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Encoding</label>
+            <input class="form-input" [(ngModel)]="csvEncoding" placeholder="UTF-8">
+          </div>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="csvHeader"> File has header row
+          </label>
+        </div>
+      </ng-container>
+
+      <ng-container *ngIf="sourceType === 'json'">
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="jsonEveryRow"> Each line contains a complete JSON object (NDJSON)
+          </label>
+        </div>
+      </ng-container>
+
+      <ng-container *ngIf="sourceType === 'xml'">
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="xmlEveryRow"> Each line contains a complete XML element
+          </label>
+        </div>
+      </ng-container>
+
+      <ng-container *ngIf="sourceType === 'unstructured'">
+        <div class="form-row">
+          <label class="form-label">File Extension</label>
+          <select class="form-input" [(ngModel)]="unstructuredExtension">
+            <option value="pdf">PDF</option>
+            <option value="docx">Word (DOCX)</option>
+            <option value="doc">Word (DOC)</option>
+            <option value="pptx">PowerPoint (PPTX)</option>
+            <option value="xlsx">Excel (XLSX)</option>
+            <option value="html">HTML</option>
+            <option value="txt">Plain Text</option>
+            <option value="md">Markdown</option>
+            <option value="epub">EPUB</option>
+            <option value="eml">Email (EML)</option>
+            <option value="msg">Email (MSG)</option>
+            <option value="rtf">RTF</option>
+          </select>
+        </div>
+      </ng-container>
+    </div>
+
+    <!-- Step 3: Schema (structured only) -->
+    <div *ngIf="step === 3 && !isUnstructured()">
+      <h2 class="step-title">Schema</h2>
+
+      <ng-container *ngIf="sourceType === 'csv'">
+        <div class="form-row">
+          <label class="form-label">Generate from file (optional)</label>
+          <div class="file-upload-row">
+            <input type="file" (change)="onFileSelected($event)" class="file-input">
+            <button class="secondary-btn" (click)="generateSchema()" [disabled]="!schemaFile || generatingSchema">
+              {{ generatingSchema ? 'Generating...' : 'Generate Schema' }}
+            </button>
+          </div>
+        </div>
+        <hr class="divider">
+      </ng-container>
+
+      <div class="form-row" *ngIf="sourceType !== 'json' && sourceType !== 'xml'">
+        <label class="form-label">Fields</label>
+        <div class="field-row" *ngFor="let field of schemaFields; let i = index">
+          <input class="form-input field-name" [(ngModel)]="field.name" placeholder="field_name">
+          <select class="form-input field-type" [(ngModel)]="field.type">
+            <option *ngFor="let t of fieldTypes" [value]="t">{{ t }}</option>
+          </select>
+          <button class="remove-field-btn" (click)="removeField(i)" *ngIf="schemaFields.length > 1">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
+        <button class="secondary-btn add-field-btn" (click)="addField()">+ Add Field</button>
+      </div>
+
+      <div *ngIf="sourceType === 'json'" class="info-box">
+        Schema automatically set to a single <code>_json</code> field for JSON documents.
+      </div>
+      <div *ngIf="sourceType === 'xml'" class="info-box">
+        Schema automatically set to a single <code>_xml</code> field for XML documents.
+      </div>
+    </div>
+
+    <!-- Step 4: Destination -->
+    <div *ngIf="step === 4">
+      <h2 class="step-title">Destination</h2>
+
+      <div class="form-row">
+        <label class="form-label">Destination Type</label>
+        <select class="form-input" [(ngModel)]="destType" (ngModelChange)="onDestTypeChange()">
+          <optgroup label="Databases">
+            <option value="postgres">PostgreSQL</option>
+            <option value="mongodb">MongoDB</option>
+          </optgroup>
+          <optgroup label="Storage & Messaging">
+            <option value="objectstore">Object Store (MinIO)</option>
+            <option value="kafka">Kafka</option>
+            <option value="activemq">ActiveMQ</option>
+          </optgroup>
+          <optgroup label="Vector Databases">
+            <option value="qdrant">Qdrant</option>
+            <option value="weaviate">Weaviate</option>
+            <option value="milvus">Milvus</option>
+            <option value="chroma">Chroma</option>
+            <option value="pgvector">pgvector</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <!-- PostgreSQL -->
+      <ng-container *ngIf="destType === 'postgres'">
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Database</label>
+            <input class="form-input" [(ngModel)]="pgDbName" placeholder="idata">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Schema</label>
+            <input class="form-input" [(ngModel)]="pgSchema" placeholder="public">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Table</label>
+            <input class="form-input" [(ngModel)]="pgTable" placeholder="my_table">
+          </div>
+        </div>
+      </ng-container>
+
+      <!-- MongoDB -->
+      <ng-container *ngIf="destType === 'mongodb'">
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Database</label>
+            <input class="form-input" [(ngModel)]="mongoDbName" placeholder="idata">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Collection</label>
+            <input class="form-input" [(ngModel)]="mongoTable" placeholder="my_collection">
+          </div>
+        </div>
+      </ng-container>
+
+      <!-- Object Store -->
+      <ng-container *ngIf="destType === 'objectstore'">
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Prefix Key</label>
+            <input class="form-input" [(ngModel)]="osPrefix" placeholder="data/my_dataset/">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Format</label>
+            <select class="form-input" [(ngModel)]="osFormat">
+              <option value="parquet">Parquet</option>
+              <option value="orc">ORC</option>
+            </select>
+          </div>
+        </div>
+      </ng-container>
+
+      <!-- Kafka -->
+      <ng-container *ngIf="destType === 'kafka'">
+        <div class="form-row">
+          <label class="form-label">Topic</label>
+          <input class="form-input" [(ngModel)]="kafkaTopic" placeholder="my_topic">
+        </div>
+      </ng-container>
+
+      <!-- ActiveMQ -->
+      <ng-container *ngIf="destType === 'activemq'">
+        <div class="form-row">
+          <label class="form-label">Queue Name</label>
+          <input class="form-input" [(ngModel)]="amqQueue" placeholder="my_queue">
+        </div>
+      </ng-container>
+
+      <!-- Vector Databases -->
+      <ng-container *ngIf="isVectorDest()">
+        <div class="form-row-inline">
+          <div class="form-field" *ngIf="destType === 'weaviate'">
+            <label class="form-label">Class Name</label>
+            <input class="form-input" [(ngModel)]="vectorClassName" placeholder="MyDocuments">
+          </div>
+          <div class="form-field" *ngIf="destType === 'pgvector'">
+            <label class="form-label">Table</label>
+            <input class="form-input" [(ngModel)]="vectorTable" placeholder="my_documents">
+          </div>
+          <div class="form-field" *ngIf="destType === 'pgvector'">
+            <label class="form-label">Schema</label>
+            <input class="form-input" [(ngModel)]="vectorSchema" placeholder="public">
+          </div>
+          <div class="form-field" *ngIf="destType !== 'weaviate' && destType !== 'pgvector'">
+            <label class="form-label">Collection</label>
+            <input class="form-input" [(ngModel)]="vectorCollection" placeholder="my_documents">
+          </div>
+        </div>
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Chunking Strategy</label>
+            <select class="form-input" [(ngModel)]="chunkStrategy">
+              <option value="recursive">Recursive</option>
+              <option value="fixed">Fixed Size</option>
+              <option value="sentence">Sentence</option>
+              <option value="paragraph">Paragraph</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="form-label">Chunk Size</label>
+            <input class="form-input" type="number" [(ngModel)]="chunkSize">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Chunk Overlap</label>
+            <input class="form-input" type="number" [(ngModel)]="chunkOverlap">
+          </div>
+        </div>
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Embedding Secret Name</label>
+            <input class="form-input" [(ngModel)]="embeddingSecret" placeholder="oss/embedding">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Vector DB Secret Name</label>
+            <input class="form-input" [(ngModel)]="vectorSecret" [placeholder]="getDefaultVectorSecret()">
+          </div>
+        </div>
+      </ng-container>
+    </div>
+
+    <!-- Step 5: Review -->
+    <div *ngIf="step === 5">
+      <h2 class="step-title">Review Configuration</h2>
+      <div class="form-row">
+        <label class="form-label">Dataset Configuration (editable)</label>
+        <textarea class="form-input form-textarea config-editor" [(ngModel)]="configJson" rows="20"></textarea>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div class="error-box" *ngIf="error">{{ error }}</div>
+
+    <!-- Navigation buttons -->
+    <div class="btn-row">
+      <button class="secondary-btn" (click)="prevStep()" *ngIf="step > 1">Back</button>
+      <div class="spacer"></div>
+      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 5">
+        Next
+      </button>
+      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 5">
+        {{ creating ? 'Creating...' : 'Create Dataset' }}
+      </button>
+    </div>
+  </div>
+</div>
