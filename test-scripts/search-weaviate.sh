@@ -5,7 +5,7 @@ curl --location --request POST 'http://localhost:8080/api/v1/search/weaviate' \
 --data-raw '{
   "query": "quarterly revenue projections",
   "className": "FinancialDocuments",
-  "embeddingSecretName": "oss/openai-embedding",
+  "embeddingSecretName": "oss/embedding",
   "weaviateSecretName": "oss/weaviate",
   "topK": 5
 }'

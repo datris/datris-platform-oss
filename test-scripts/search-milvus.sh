@@ -5,7 +5,7 @@ curl --location --request POST 'http://localhost:8080/api/v1/search/milvus' \
 --data-raw '{
   "query": "quarterly revenue projections",
   "collection": "financial_documents",
-  "embeddingSecretName": "oss/openai-embedding",
+  "embeddingSecretName": "oss/embedding",
   "milvusSecretName": "oss/milvus",
   "topK": 5
 }'

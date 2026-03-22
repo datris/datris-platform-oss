@@ -5,7 +5,7 @@ curl --location --request POST 'http://localhost:8080/api/v1/search/qdrant' \
 --data-raw '{
   "query": "quarterly revenue projections",
   "collection": "financial_documents",
-  "embeddingSecretName": "oss/openai-embedding",
+  "embeddingSecretName": "oss/embedding",
   "qdrantSecretName": "oss/qdrant",
   "topK": 5
 }'
