@@ -1,4 +1,4 @@
-# Datris — AI Data Platform for Agents and Humans
+# Datris — The First AI Agent-Native Data Platform
 
 [datris.ai](https://datris.ai)
 
@@ -90,14 +90,16 @@ Notifications (published to ActiveMQ topic)
 ## Retrieval Flow
 
 ```
-AI Agent (Claude, Cursor, OpenClaw, any MCP-compatible agent)
+Client (AI Agent via MCP / Developer via REST API)
   |
   v
-MCP Server (stdio or SSE)
+Interface
+  ├── MCP Server (stdio or SSE)
+  └── REST API (POST /api/v1/query/* and /api/v1/search/*)
   |
   v
 Query Source
-  ├── PostgreSQL (SQL SELECT queries)
+  ├── PostgreSQL (read-only SQL SELECT queries)
   ├── MongoDB (document queries with filters and projections)
   ├── Qdrant (semantic search)
   ├── Weaviate (semantic search)
@@ -164,6 +166,8 @@ Query Source
   - [Ingestion API](docs/api-reference/ingestion-api.md) - File upload and generation
   - [AI Schema Generation](docs/api-reference/schema-generation-api.md) - Generate dataset configs from files using AI
   - [Status API](docs/api-reference/status-api.md) - Job status and monitoring
+  - [Query API](docs/api-reference/query-api.md) - Query PostgreSQL and MongoDB
+  - [Search API](docs/api-reference/search-api.md) - Semantic search across vector databases
 - [AI Data Profiling](docs/ai-data-profiling.md) - Profile data files and get recommended rules
 - [AI Error Explanation](docs/ai-error-explanation.md) - Automatic plain-English error analysis
 - [AI Configuration](docs/ai-configuration.md) - Configure AI providers (Anthropic, OpenAI, Ollama)

@@ -155,6 +155,20 @@ async def list_tools():
             }
         ),
         Tool(
+            name="kill_job",
+            description="Kill a running pipeline job by its pipeline token. The job thread will be interrupted and the job marked as cancelled.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline_token": {
+                        "type": "string",
+                        "description": "Pipeline token of the running job to kill"
+                    }
+                },
+                "required": ["pipeline_token"]
+            }
+        ),
+        Tool(
             name="generate_schema",
             description="Upload a file and use AI to automatically generate a dataset configuration (schema, field names, types). Supports CSV, JSON, XML.",
             inputSchema={
@@ -360,6 +374,10 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("page"):
             params["page"] = args["page"]
         return _call("get", "/api/v1/dataset/status", params=params)
+
+    elif name == "kill_job":
+        payload = {"pipelineToken": args["pipeline_token"]}
+        return _call("post", "/api/v1/job/kill", json=payload)
 
     elif name == "generate_schema":
         file_path = args["file_path"]

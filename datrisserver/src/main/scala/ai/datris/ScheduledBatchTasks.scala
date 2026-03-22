@@ -150,6 +150,10 @@ class ScheduledBatchTasks {
                 logger.info(jobContext.pipelineToken + ": dataset: " + jobContext.config.name + ", COMPLETED")
                 GlobalJobContext.replaceJobContext(jobContext = jobContext.copy(state = COMPLETED))
             }
+            // Clean up cancelled jobs whose threads have stopped
+            if(jobContext.state == CANCELLED && (jobContext.thread == null || !jobContext.thread.isAlive)) {
+                logger.info(jobContext.pipelineToken + ": dataset: " + jobContext.config.name + ", CANCELLED (thread stopped)")
+            }
         })
     }
 
