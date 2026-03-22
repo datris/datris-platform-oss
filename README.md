@@ -123,6 +123,19 @@ Query Source
 | Unstructured | PDF, Word, PowerPoint, Excel, HTML, email, EPUB, text | Object store, Qdrant, Weaviate, pgvector |
 | Archives | .zip, .tar, .gz, .jar | Extracted and processed individually |
 
+## Getting Started
+
+```bash
+git clone https://github.com/datris/datris-platform-oss.git
+cd datris-platform-oss
+cp .env.example .env       # Add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY
+docker compose up -d
+```
+
+The platform is running at [http://localhost:4200](http://localhost:4200) (UI) and [http://localhost:8080](http://localhost:8080) (API).
+
+See [Installation](docs/installation.md) for details on API keys, vector databases, and building from source.
+
 ## Documentation
 
 - [Installation](docs/installation.md) - Get running with Docker Compose
