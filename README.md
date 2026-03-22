@@ -87,6 +87,29 @@ Destinations (executed in parallel)
 Notifications (published to ActiveMQ topic)
 ```
 
+## Retrieval Flow
+
+```
+AI Agent (Claude, Cursor, OpenClaw, any MCP-compatible agent)
+  |
+  v
+MCP Server (stdio or SSE)
+  |
+  v
+Query Source
+  ├── PostgreSQL (SQL SELECT queries)
+  ├── MongoDB (document queries with filters and projections)
+  ├── Qdrant (semantic search)
+  ├── Weaviate (semantic search)
+  ├── Milvus (semantic search)
+  ├── Chroma (semantic search)
+  ├── pgvector (semantic search via PostgreSQL)
+  ├── Dataset Configurations (list/get)
+  ├── Job Status (by pipeline token or dataset name)
+  ├── AI Schema Generation (from uploaded files)
+  └── AI Data Profiling (statistics, quality issues, suggested rules)
+```
+
 ## Supported Data Formats
 
 | Format | Input | Output |
