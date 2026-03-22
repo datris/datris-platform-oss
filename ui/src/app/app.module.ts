@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { AppComponent } from './app.component';
 import { DatasetsComponent } from './datasets/datasets.component';
 import { DatasetCreateComponent } from './dataset-create/dataset-create.component';
+import { DatasetEditComponent } from './dataset-edit/dataset-edit.component';
 import { DatasetViewComponent } from './dataset-view/dataset-view.component';
 import { DatasetStatusComponent } from './dataset-status/dataset-status.component';
 import { DatasetDetailComponent } from './dataset-detail/dataset-detail.component';
@@ -17,6 +18,7 @@ import { MaterialModule } from './material.module';
     AppComponent,
     DatasetsComponent,
     DatasetCreateComponent,
+    DatasetEditComponent,
     DatasetViewComponent,
     DatasetStatusComponent,
     DatasetDetailComponent,

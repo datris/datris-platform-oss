@@ -20,7 +20,8 @@
           <td>{{ getSourceType(ds) }}</td>
           <td>{{ getDestinations(ds) }}</td>
           <td class="actions-cell">
-            <button class="delete-btn" (click)="deleteDataset($event, ds.name)" title="Delete dataset"><span class="material-icons">delete</span></button>
+            <button class="action-btn edit-btn" (click)="editDataset($event, ds.name)" title="Edit dataset"><span class="material-icons">edit</span></button>
+            <button class="action-btn delete-btn" (click)="deleteDataset($event, ds.name)" title="Delete dataset"><span class="material-icons">delete</span></button>
           </td>
         </tr>
       </tbody>

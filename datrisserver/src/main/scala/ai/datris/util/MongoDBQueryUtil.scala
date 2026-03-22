@@ -24,7 +24,8 @@ object MongoDBQueryUtil {
     def query(collection: String,
               filter: java.util.Map[String, Any] = new java.util.HashMap[String, Any](),
               projection: java.util.Map[String, Any] = null,
-              limit: Int = DEFAULT_LIMIT): java.util.List[String] = {
+              limit: Int = DEFAULT_LIMIT,
+              database: String = null): java.util.List[String] = {
 
         if (collection == null || collection.trim.isEmpty)
             throw new DatrisException("MongoDB collection name cannot be empty")
@@ -47,8 +48,9 @@ object MongoDBQueryUtil {
         val client = com.mongodb.client.MongoClients.create(settings)
 
         try {
-            val database = client.getDatabase(DatrisEnvironment.values.mongoDbConfig.database)
-            val coll = database.getCollection(collection)
+            val dbName = if (database != null && database.nonEmpty) database else DatrisEnvironment.values.mongoDbConfig.database
+            val db = client.getDatabase(dbName)
+            val coll = db.getCollection(collection)
 
             val filterDoc = if (filter != null && !filter.isEmpty) Document.parse(new com.google.gson.Gson().toJson(filter))
                 else new Document()

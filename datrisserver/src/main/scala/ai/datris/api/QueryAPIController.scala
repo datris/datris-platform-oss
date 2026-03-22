@@ -73,7 +73,8 @@ class QueryAPIController {
                 case other => other.toString.toInt
             }.getOrElse(20)
 
-            val results = MongoDBQueryUtil.query(collection, filter, projection, limit)
+            val database = Option(body.get("database")).map(_.toString).orNull
+            val results = MongoDBQueryUtil.query(collection, filter, projection, limit, database)
 
             // Parse each JSON string back into an object for proper nesting
             val gson = new Gson

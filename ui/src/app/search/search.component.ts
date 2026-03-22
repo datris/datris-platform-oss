@@ -29,6 +29,8 @@ export class SearchComponent implements OnInit {
   pgSelectedTable = '';
 
   // MongoDB fields
+  mongoDatabase = '';
+  mongoDatabases: string[] = [];
   mongoCollection = '';
   mongoCollections: string[] = [];
   mongoFilter = '{}';
@@ -49,7 +51,7 @@ export class SearchComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadPgSchemas();
-    this.loadMongoCollections();
+    this.loadMongoDatabases();
   }
 
   loadPgSchemas(): void {
@@ -80,9 +82,10 @@ export class SearchComponent implements OnInit {
 
   onSearchSchemaChange(): void {
     this.searchTable = '';
-    // Temporarily set pgSelectedSchema to load tables for the search schema
-    this.pgSelectedSchema = this.searchSchema;
-    this.loadPgTables();
+    this.searchService.getPostgresTables(this.pgDatabase, this.searchSchema, true).subscribe({
+      next: (tables) => { this.pgTables = tables; },
+      error: () => { this.pgTables = []; }
+    });
   }
 
   onPgTableSelect(): void {
@@ -99,8 +102,27 @@ export class SearchComponent implements OnInit {
     }
   }
 
+  loadMongoDatabases(): void {
+    this.searchService.getMongoDatabases().subscribe({
+      next: (databases) => {
+        this.mongoDatabases = databases;
+        if (databases.length > 0 && !this.mongoDatabase) {
+          this.mongoDatabase = databases[0];
+          this.loadMongoCollections();
+        }
+      },
+      error: () => { this.mongoDatabases = []; }
+    });
+  }
+
+  onMongoDatabaseChange(): void {
+    this.mongoCollection = '';
+    this.loadMongoCollections();
+  }
+
   loadMongoCollections(): void {
-    this.searchService.getMongoCollections().subscribe({
+    if (!this.mongoDatabase) return;
+    this.searchService.getMongoCollections(this.mongoDatabase).subscribe({
       next: (collections) => {
         this.mongoCollections = collections;
         if (collections.length > 0 && !this.mongoCollection) {
@@ -145,6 +167,12 @@ export class SearchComponent implements OnInit {
     return ['qdrant', 'weaviate', 'milvus', 'chroma', 'pgvector'].includes(this.queryType);
   }
 
+  retrieveAllMongo(): void {
+    this.mongoFilter = '{}';
+    this.mongoProjection = '';
+    this.execute();
+  }
+
   execute(): void {
     this.loading = true;
     this.error = '';
@@ -160,7 +188,7 @@ export class SearchComponent implements OnInit {
       case 'mongodb':
         const filter = this.mongoFilter ? JSON.parse(this.mongoFilter) : {};
         const projection = this.mongoProjection ? JSON.parse(this.mongoProjection) : null;
-        request = this.searchService.queryMongodb(this.mongoCollection, filter, projection, this.mongoLimit);
+        request = this.searchService.queryMongodb(this.mongoCollection, filter, projection, this.mongoLimit, this.mongoDatabase);
         break;
       case 'qdrant':
         request = this.searchService.searchQdrant(this.searchQuery, this.searchCollection, this.embeddingSecretName, this.vectorSecretName, this.topK);

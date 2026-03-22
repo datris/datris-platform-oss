@@ -23,6 +23,26 @@ import scala.collection.JavaConverters._
 class MetadataAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[MetadataAPIController])
 
+    @GetMapping(path = Array("/metadata/postgres/databases"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getPostgresDatabases(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /metadata/postgres/databases called")
+            APIKeyValidator.validate(apiKey)
+
+            val results = queryPostgres("postgres",
+                "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres') ORDER BY datname"
+            )
+            val databases = results.map(_.get("datname").toString)
+            val gson = new Gson
+            new ResponseEntity[String](gson.toJson(databases.asJava), HttpStatus.OK)
+        }
+        catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @GetMapping(path = Array("/metadata/postgres/schemas"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getPostgresSchemas(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                            @RequestParam(defaultValue = "idata") database: String): ResponseEntity[String] = {
@@ -49,17 +69,28 @@ class MetadataAPIController {
     @GetMapping(path = Array("/metadata/postgres/tables"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getPostgresTables(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                           @RequestParam(defaultValue = "idata") database: String,
-                          @RequestParam(defaultValue = "public") schema: String): ResponseEntity[String] = {
+                          @RequestParam(defaultValue = "public") schema: String,
+                          @RequestParam(defaultValue = "false") vectorOnly: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /metadata/postgres/tables called, database: " + database + ", schema: " + schema)
+            logger.info("API endpoint GET /metadata/postgres/tables called, database: " + database + ", schema: " + schema + ", vectorOnly: " + vectorOnly)
             APIKeyValidator.validate(apiKey)
 
-            val results = queryPostgres(database,
+            val sql = if (vectorOnly.equalsIgnoreCase("true")) {
+                // Only return tables that have an 'embedding' column (pgvector tables)
+                "SELECT DISTINCT t.table_name FROM information_schema.tables t " +
+                "JOIN information_schema.columns c ON t.table_name = c.table_name AND t.table_schema = c.table_schema " +
+                "WHERE t.table_schema = '" + schema.replace("'", "''") + "' " +
+                "AND t.table_type = 'BASE TABLE' " +
+                "AND c.column_name = 'embedding' " +
+                "ORDER BY t.table_name"
+            } else {
                 "SELECT table_name FROM information_schema.tables " +
                 "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
                 "AND table_type = 'BASE TABLE' " +
                 "ORDER BY table_name"
-            )
+            }
+
+            val results = queryPostgres(database, sql)
             val tables = results.map(_.get("table_name").toString)
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(tables.asJava), HttpStatus.OK)
@@ -102,10 +133,10 @@ class MetadataAPIController {
         }
     }
 
-    @GetMapping(path = Array("/metadata/mongodb/collections"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getMongoCollections(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    @GetMapping(path = Array("/metadata/mongodb/databases"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getMongoDatabases(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /metadata/mongodb/collections called")
+            logger.info("API endpoint GET /metadata/mongodb/databases called")
             APIKeyValidator.validate(apiKey)
 
             val secrets = SecretsRetrieverUtil.mongoDbSecrets()
@@ -116,8 +147,56 @@ class MetadataAPIController {
             val client = com.mongodb.client.MongoClients.create(settings)
 
             try {
-                val database = client.getDatabase(DatrisEnvironment.values.mongoDbConfig.database)
-                val collections = database.listCollectionNames().asScala.toList.sorted
+                val env = DatrisEnvironment.values.environment
+                val databases = client.listDatabaseNames().asScala
+                    .filter(db => !Set("admin", "config", "local").contains(db))
+                    .filter(db => db != env)
+                    .toList.sorted
+                val gson = new Gson
+                new ResponseEntity[String](gson.toJson(databases.asJava), HttpStatus.OK)
+            } finally {
+                client.close()
+            }
+        }
+        catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @GetMapping(path = Array("/metadata/mongodb/collections"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getMongoCollections(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                            @RequestParam(required = false) database: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /metadata/mongodb/collections called, database: " + database)
+            APIKeyValidator.validate(apiKey)
+
+            val secrets = SecretsRetrieverUtil.mongoDbSecrets()
+            val connString = new com.mongodb.ConnectionString(secrets.connectionString)
+            val settings = com.mongodb.MongoClientSettings.builder()
+                .applyConnectionString(connString)
+                .build()
+            val client = com.mongodb.client.MongoClients.create(settings)
+
+            try {
+                // List collections from the specified database, or all non-system databases
+                val env = DatrisEnvironment.values.environment
+                val collections = if (database != null && database.nonEmpty) {
+                    client.getDatabase(database).listCollectionNames().asScala
+                        .filter(name => !name.startsWith(env + "-"))
+                        .toList.sorted
+                } else {
+                    // List from all databases
+                    val allDbs = client.listDatabaseNames().asScala
+                        .filter(db => !Set("admin", "config", "local").contains(db))
+                        .toList
+                    allDbs.flatMap { dbName =>
+                        client.getDatabase(dbName).listCollectionNames().asScala
+                            .filter(name => !name.startsWith(env + "-"))
+                            .map(col => dbName + "." + col)
+                    }.sorted
+                }
                 val gson = new Gson
                 new ResponseEntity[String](gson.toJson(collections.asJava), HttpStatus.OK)
             } finally {
