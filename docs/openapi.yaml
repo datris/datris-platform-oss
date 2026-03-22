@@ -1,0 +1,623 @@
+openapi: 3.0.3
+info:
+  title: Datris API
+  description: |
+    REST API for the Datris AI Data Platform. Ingest, validate, transform, store, and retrieve data.
+
+    For AI agent integration, use the [MCP Server](https://github.com/datris/datris-platform-oss/blob/main/docs/mcp.md) instead.
+  version: 1.0.0
+  contact:
+    name: Datris
+    url: https://datris.ai
+  license:
+    name: Apache 2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Optional API key for authentication (enabled via application.yaml)
+
+  schemas:
+    QueryResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+        count:
+          type: integer
+
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+              chunk_index:
+                type: integer
+              source_dataset:
+                type: string
+              filename:
+                type: string
+              _score:
+                type: number
+        count:
+          type: integer
+
+    VersionResponse:
+      type: object
+      properties:
+        version:
+          type: string
+
+    KillJobResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: cancelled
+        pipelineToken:
+          type: string
+
+paths:
+  # ── Dataset Management ──────────────────────────────────────
+
+  /api/v1/dataset:
+    get:
+      tags: [Datasets]
+      summary: Get a dataset configuration
+      parameters:
+        - name: dataset
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Dataset name
+      responses:
+        '200':
+          description: Dataset configuration
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Error
+
+    post:
+      tags: [Datasets]
+      summary: Create or update a dataset configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Dataset name
+                source:
+                  type: object
+                  description: Source configuration (fileAttributes, schemaProperties)
+                preprocessor:
+                  type: object
+                  description: Optional REST endpoint preprocessor
+                dataQuality:
+                  type: object
+                  description: Data quality rules (AI rules, column rules, row rules, schema validation)
+                transformation:
+                  type: object
+                  description: Transformation rules (deduplication, trimming, AI transforms, row functions)
+                destination:
+                  type: object
+                  description: Destination configuration (database, objectStore, kafka, activeMQ, restEndpoint, qdrant, weaviate, milvus, chroma, pgvector)
+      responses:
+        '200':
+          description: Dataset created/updated
+        '500':
+          description: Error
+
+    delete:
+      tags: [Datasets]
+      summary: Delete a dataset configuration
+      parameters:
+        - name: dataset
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Dataset name to delete
+      responses:
+        '200':
+          description: Dataset deleted
+        '500':
+          description: Error
+
+  /api/v1/datasets:
+    get:
+      tags: [Datasets]
+      summary: List all dataset configurations
+      responses:
+        '200':
+          description: Array of dataset configurations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        '500':
+          description: Error
+
+  # ── File Upload & AI ────────────────────────────────────────
+
+  /api/v1/dataset/upload:
+    post:
+      tags: [Ingestion]
+      summary: Upload a file for processing
+      description: Upload a data file to a registered dataset. Returns a pipeline token for tracking job status.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, dataset]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Data file to upload
+                dataset:
+                  type: string
+                  description: Name of the registered dataset
+                publishertoken:
+                  type: string
+                  description: Optional publisher identifier
+      responses:
+        '200':
+          description: Pipeline token (for uncompressed files) or empty (for compressed files)
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: Error
+
+  /api/v1/dataset/generate:
+    post:
+      tags: [AI]
+      summary: AI schema generation
+      description: Upload a file and receive an AI-generated dataset configuration with inferred field names and types.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Sample data file (CSV, JSON, or XML)
+                dataset:
+                  type: string
+                  description: Dataset name for the generated configuration
+                delimiter:
+                  type: string
+                  description: CSV delimiter (default comma)
+                header:
+                  type: boolean
+                  description: Whether CSV has a header row (default true)
+      responses:
+        '200':
+          description: AI-generated dataset configuration
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Error
+
+  /api/v1/dataset/profile:
+    post:
+      tags: [AI]
+      summary: AI data profiling
+      description: Upload a file and receive AI-generated summary statistics, quality issues, and suggested validation rules.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Data file to profile
+                delimiter:
+                  type: string
+                  description: CSV delimiter (default comma)
+                header:
+                  type: boolean
+                  description: Whether CSV has a header row (default true)
+                sampleSize:
+                  type: integer
+                  description: Number of rows to sample (default 200)
+      responses:
+        '200':
+          description: AI-generated data profile
+          content:
+            application/json:
+              schema:
+                type: object
+        '500':
+          description: Error
+
+  # ── Status ──────────────────────────────────────────────────
+
+  /api/v1/dataset/status:
+    get:
+      tags: [Status]
+      summary: Get job status
+      description: Query job status by pipeline token or dataset name. Returns detailed status when queried by token, or paginated summary when queried by dataset name.
+      parameters:
+        - name: pipelinetoken
+          in: query
+          schema:
+            type: string
+          description: Pipeline token from upload
+        - name: datasetname
+          in: query
+          schema:
+            type: string
+          description: Dataset name for summary view
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Page number for paginated results
+      responses:
+        '200':
+          description: Job status information
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        '500':
+          description: Error
+
+  # ── Query ───────────────────────────────────────────────────
+
+  /api/v1/query/postgres:
+    post:
+      tags: [Query]
+      summary: Query PostgreSQL
+      description: Execute a read-only SQL SELECT query against PostgreSQL. Enforces SELECT-only, blocks dangerous keywords, and auto-appends LIMIT.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sql]
+              properties:
+                sql:
+                  type: string
+                  description: SQL SELECT query to execute
+                  example: "SELECT * FROM test.stock_price WHERE volume > 1000000"
+                database:
+                  type: string
+                  default: idata
+                  description: PostgreSQL database name
+                limit:
+                  type: integer
+                  default: 100
+                  description: Maximum rows to return (max 1000)
+      responses:
+        '200':
+          description: Query results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '500':
+          description: Error
+
+  /api/v1/query/mongodb:
+    post:
+      tags: [Query]
+      summary: Query MongoDB
+      description: Query a MongoDB collection with optional filter and projection. Blocks $where and $function operators.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [collection]
+              properties:
+                collection:
+                  type: string
+                  description: MongoDB collection name
+                filter:
+                  type: object
+                  default: {}
+                  description: MongoDB query filter
+                projection:
+                  type: object
+                  description: Fields to include/exclude
+                limit:
+                  type: integer
+                  default: 20
+                  description: Maximum documents to return (max 1000)
+      responses:
+        '200':
+          description: Query results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '500':
+          description: Error
+
+  /api/v1/job/kill:
+    post:
+      tags: [Status]
+      summary: Kill a running job
+      description: Interrupt and cancel a running pipeline job by its pipeline token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipelineToken]
+              properties:
+                pipelineToken:
+                  type: string
+                  description: Pipeline token of the running job
+      responses:
+        '200':
+          description: Job cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KillJobResponse'
+        '500':
+          description: Error (job not found, not running, or thread not alive)
+
+  # ── Vector Search ───────────────────────────────────────────
+
+  /api/v1/search/qdrant:
+    post:
+      tags: [Search]
+      summary: Semantic search — Qdrant
+      description: Search a Qdrant vector database collection using natural language. Generates an embedding from the query and returns the most similar document chunks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query, embeddingSecretName, qdrantSecretName]
+              properties:
+                query:
+                  type: string
+                  description: Natural language search query
+                collection:
+                  type: string
+                  default: financial_documents
+                  description: Qdrant collection name
+                embeddingSecretName:
+                  type: string
+                  description: Vault secret name for embedding provider
+                qdrantSecretName:
+                  type: string
+                  description: Vault secret name for Qdrant connection
+                topK:
+                  type: integer
+                  default: 5
+                  description: Number of results to return
+      responses:
+        '200':
+          description: Search results with similarity scores
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '500':
+          description: Error
+
+  /api/v1/search/weaviate:
+    post:
+      tags: [Search]
+      summary: Semantic search — Weaviate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query, embeddingSecretName, weaviateSecretName]
+              properties:
+                query:
+                  type: string
+                  description: Natural language search query
+                className:
+                  type: string
+                  default: FinancialDocuments
+                  description: Weaviate class name (PascalCase)
+                embeddingSecretName:
+                  type: string
+                  description: Vault secret name for embedding provider
+                weaviateSecretName:
+                  type: string
+                  description: Vault secret name for Weaviate connection
+                topK:
+                  type: integer
+                  default: 5
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '500':
+          description: Error
+
+  /api/v1/search/milvus:
+    post:
+      tags: [Search]
+      summary: Semantic search — Milvus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query, embeddingSecretName, milvusSecretName]
+              properties:
+                query:
+                  type: string
+                  description: Natural language search query
+                collection:
+                  type: string
+                  default: financial_documents
+                  description: Milvus collection name
+                embeddingSecretName:
+                  type: string
+                  description: Vault secret name for embedding provider
+                milvusSecretName:
+                  type: string
+                  description: Vault secret name for Milvus connection
+                topK:
+                  type: integer
+                  default: 5
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '500':
+          description: Error
+
+  /api/v1/search/chroma:
+    post:
+      tags: [Search]
+      summary: Semantic search — Chroma
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query, embeddingSecretName, chromaSecretName]
+              properties:
+                query:
+                  type: string
+                  description: Natural language search query
+                collection:
+                  type: string
+                  default: financial_documents
+                  description: Chroma collection name
+                embeddingSecretName:
+                  type: string
+                  description: Vault secret name for embedding provider
+                chromaSecretName:
+                  type: string
+                  description: Vault secret name for Chroma connection
+                topK:
+                  type: integer
+                  default: 5
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '500':
+          description: Error
+
+  /api/v1/search/pgvector:
+    post:
+      tags: [Search]
+      summary: Semantic search — pgvector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query, embeddingSecretName, postgresSecretName]
+              properties:
+                query:
+                  type: string
+                  description: Natural language search query
+                table:
+                  type: string
+                  default: financial_documents
+                  description: PostgreSQL table name
+                schema:
+                  type: string
+                  default: public
+                  description: PostgreSQL schema
+                embeddingSecretName:
+                  type: string
+                  description: Vault secret name for embedding provider
+                postgresSecretName:
+                  type: string
+                  description: Vault secret name for PostgreSQL/pgvector connection
+                topK:
+                  type: integer
+                  default: 5
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '500':
+          description: Error
+
+  # ── Version ─────────────────────────────────────────────────
+
+  /api/v1/version:
+    get:
+      tags: [Status]
+      summary: Get server version
+      responses:
+        '200':
+          description: Server version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+        '500':
+          description: Error

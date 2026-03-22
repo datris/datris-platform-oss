@@ -185,6 +185,7 @@ See [Installation](docs/installation.md) for details on API keys, vector databas
 - [AI Error Explanation](docs/ai-error-explanation.md) - Automatic plain-English error analysis
 - [AI Configuration](docs/ai-configuration.md) - Configure AI providers (Anthropic, OpenAI, Ollama)
   - [Version API](docs/api-reference/version-api.md) - Version endpoint
+- [OpenAPI Spec](docs/openapi.yaml) - OpenAPI 3.0 spec for Postman, code generation, and non-MCP integrations
 - [Configuration Reference](docs/configuration-reference.md) - Full application.yaml reference
 - [MCP Server](docs/mcp.md) - AI agent integration via Model Context Protocol
 - [Helper Applications](docs/helpers.md) - Vector store chat, Kafka loader, preprocessor, and more

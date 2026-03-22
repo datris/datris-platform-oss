@@ -142,5 +142,6 @@ Query Source
 - [pgvector Destination](destinations/pgvector.md) - PostgreSQL vector database for RAG — no separate server required
 - [Query API](api-reference/query-api.md) - Query PostgreSQL and MongoDB via REST API
 - [Search API](api-reference/search-api.md) - Semantic search across vector databases via REST API
+- [OpenAPI Spec](openapi.yaml) - OpenAPI 3.0 spec for Postman, code generation, and non-MCP integrations
 - [MCP Server](mcp.md) - AI agent integration via Model Context Protocol
 - [Helper Applications](helpers.md) - Vector store chat, Kafka loader, preprocessor, and more
