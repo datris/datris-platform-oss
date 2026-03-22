@@ -13,6 +13,7 @@ on:
 
 env:
   DOCKERHUB_ORG: datrisai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-and-push:
@@ -22,13 +23,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Set up Java 17 and SBT
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'sbt'
 
-      - name: Build server JAR with SBT
+      - name: Install SBT via Coursier
+        run: |
+          curl -fL "https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz" | gzip -d > cs
+          chmod +x cs
+          ./cs setup --yes --apps sbt
+          echo "$HOME/.local/share/coursier/bin" >> $GITHUB_PATH
+
+      - name: Build server JAR
         run: sbt clean assembly
 
       - name: Set up Docker Buildx
