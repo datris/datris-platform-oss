@@ -39,3 +39,17 @@ mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .dataset.json --e
 mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .dataset.xml --event put
 
 echo "MinIO initialization complete."
+echo ""
+echo "============================================"
+echo "  Datris Platform is ready!"
+echo "============================================"
+echo ""
+echo "  Pipeline UI:     http://localhost:4200"
+echo "  Pipeline API:    http://localhost:8080"
+echo "  MCP Server:      http://localhost:3000/sse"
+echo "  MinIO Console:   http://localhost:9001"
+echo "  Kafka UI:        http://localhost:8085"
+echo "  ActiveMQ:        http://localhost:8161"
+echo "  Vault:           http://localhost:8200"
+echo ""
+echo "============================================"
