@@ -1,6 +1,6 @@
 # MCP Server (AI Agent Integration)
 
-The pipeline includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that lets AI agents interact with the pipeline natively. Any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, or custom agentic frameworks — can upload files, register datasets, monitor jobs, profile data, search vector databases, and query structured data without custom integration code.
+The pipeline includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that lets AI agents interact with the pipeline natively. Any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, or custom agentic frameworks — can upload files, register pipelines, monitor jobs, profile data, search vector databases, and query structured data without custom integration code.
 
 The MCP server is a lightweight Python service that calls the pipeline's existing REST API and connects directly to backend databases for query operations. It runs alongside the pipeline in Docker or locally for development.
 
@@ -10,14 +10,14 @@ The MCP server is a lightweight Python service that calls the pipeline's existin
 
 | Tool | Description |
 |------|-------------|
-| `list_datasets` | List all registered dataset configurations |
-| `get_dataset` | Get a specific dataset configuration by name |
-| `create_dataset` | Register or update a dataset configuration |
-| `delete_dataset` | Delete a dataset configuration |
+| `list_pipelines` | List all registered pipeline configurations |
+| `get_pipeline` | Get a specific pipeline configuration by name |
+| `create_pipeline` | Register or update a pipeline configuration |
+| `delete_pipeline` | Delete a pipeline configuration |
 | `upload_file` | Upload a file for processing (returns pipeline token) |
-| `get_job_status` | Get job status by pipeline token or dataset name |
+| `get_job_status` | Get job status by pipeline token or pipeline name |
 | `kill_job` | Kill a running job by pipeline token |
-| `generate_schema` | AI-generate a dataset config from a file (CSV, JSON, XML) |
+| `generate_schema` | AI-generate a pipeline config from a file (CSV, JSON, XML) |
 | `profile_data` | AI-profile data with summary stats and suggested DQ rules |
 | `get_version` | Get pipeline server version |
 
@@ -70,7 +70,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```json
 {
     "mcpServers": {
-        "idata-pipeline": {
+        "datris-pipeline": {
             "command": "python",
             "args": ["/path/to/mcp-server/server.py"],
             "env": {
@@ -88,7 +88,7 @@ Add to `.mcp.json` in your project root:
 ```json
 {
     "mcpServers": {
-        "idata-pipeline": {
+        "datris-pipeline": {
             "command": "python",
             "args": ["mcp-server/server.py"],
             "env": {
@@ -132,7 +132,7 @@ Add to `.mcp.json` in your project root:
 | `CHROMA_PORT` | `8000` | Chroma port |
 | `PG_HOST` | `localhost` | pgvector PostgreSQL host |
 | `PG_PORT` | `5432` | pgvector PostgreSQL port |
-| `PG_DATABASE` | `idata` | pgvector database name |
+| `PG_DATABASE` | `datris` | pgvector database name |
 | `PG_USER` | `postgres` | pgvector username |
 | `PG_PASSWORD` | `postgres` | pgvector password |
 
@@ -141,7 +141,7 @@ Add to `.mcp.json` in your project root:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection URI |
-| `MONGO_DATABASE` | `idata` | MongoDB database name |
+| `MONGO_DATABASE` | `datris` | MongoDB database name |
 
 PostgreSQL query tool reuses the `PG_*` variables above.
 
@@ -153,13 +153,13 @@ An AI agent could autonomously:
 
 1. **Profile the data** — `profile_data` with the CSV file
 2. **Review suggested rules** — agent reads the AI-suggested DQ rules
-3. **Create the dataset** — `create_dataset` with the profiled config
+3. **Create the pipeline** — `create_pipeline` with the profiled config
 4. **Upload the file** — `upload_file` to trigger processing
 5. **Monitor status** — `get_job_status` to track completion
 
 ### Build and query a RAG knowledge base
 
-1. **Create dataset** — `create_dataset` with Qdrant/Weaviate/Milvus/pgvector destination
+1. **Create pipeline** — `create_pipeline` with Qdrant/Weaviate/Milvus/pgvector destination
 2. **Upload documents** — `upload_file` for each PDF/document
 3. **Monitor** — `get_job_status` until all documents are processed
 4. **Search** — `search_qdrant` to find relevant chunks
@@ -173,13 +173,13 @@ An AI agent could autonomously:
 
 ### Data exploration
 
-1. **Browse configs** — `query_mongodb` to list dataset configurations
+1. **Browse configs** — `query_mongodb` to list pipeline configurations
 2. **Sample data** — `query_postgres` to preview ingested tables
 3. **Summarize** — agent describes what data is available
 
 ### Automated data quality monitoring
 
-1. **List datasets** — `list_datasets` to discover all registered datasets
+1. **List pipelines** — `list_pipelines` to discover all registered pipelines
 2. **Upload new data** — `upload_file` with latest data files
 3. **Check results** — `get_job_status` to see DQ failures
 4. **Diagnose** — AI reads error explanations and suggests fixes

@@ -167,12 +167,12 @@ class PGVectorLoader(jobContext: JobContext) {
         val attributes = Map(
             "database" -> "",
             "schema" -> schemaName,
-            "dataset" -> config.name,
+            "pipeline" -> config.name,
             "destination" -> "pgvector",
             "table" -> pgvectorConfig.tableName
         )
         val notification = Map(
-            "dataset" -> config.name,
+            "pipeline" -> config.name,
             "publisherToken" -> jobContext.pipelineToken,
             "pipelineToken" -> jobContext.pipelineToken,
             "destination" -> "pgvector",
@@ -180,6 +180,6 @@ class PGVectorLoader(jobContext: JobContext) {
             "table" -> pgvectorConfig.tableName
         )
         val gson = new Gson()
-        NotificationUtil.add(DatrisEnvironment.values.datasetTopic, gson.toJson(notification.asJava), attributes)
+        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, gson.toJson(notification.asJava), attributes)
     }
 }

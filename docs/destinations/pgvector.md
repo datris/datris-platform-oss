@@ -69,7 +69,7 @@ For structured data (CSV, JSON, XML), use the standard PostgreSQL database desti
 
 ```bash
 vault kv put secret/oss/pgvector \
-  jdbcUrl="jdbc:postgresql://postgres:5432/idata" \
+  jdbcUrl="jdbc:postgresql://postgres:5432/datris" \
   username="postgres" \
   password="postgres"
 ```
@@ -142,17 +142,17 @@ Every row automatically includes:
 - `text` — the chunk text
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline dataset name
+- `source_dataset` — pipeline pipeline name
 - `embedding` — vector column for similarity search
 
 ## How It Works
 
-1. **Upload** — an unstructured file is uploaded via `POST /api/v1/dataset/upload`
+1. **Upload** — an unstructured file is uploaded via `POST /api/v1/pipeline/upload`
 2. **Extract** — text is extracted from the document
 3. **Chunk** — text is split into chunks using the configured strategy
 4. **Embed** — each chunk is sent to the embedding API to generate a vector
 5. **Upsert** — chunks are upserted into PostgreSQL with `INSERT ... ON CONFLICT DO UPDATE`
-6. **Notify** — a dataset notification is published on completion
+6. **Notify** — a pipeline notification is published on completion
 
 The pgvector extension and table are auto-created on first upsert. Vector dimension is detected from the embedding model.
 
@@ -175,13 +175,13 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 ```bash
 # Check pgvector extension is installed
-psql -h localhost -p 5433 -U postgres -d idata -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
+psql -h localhost -p 5433 -U postgres -d datris -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
 
 # List chunks
-psql -h localhost -p 5433 -U postgres -d idata -c "SELECT id, chunk_index, filename, company FROM public.financial_documents LIMIT 5;"
+psql -h localhost -p 5433 -U postgres -d datris -c "SELECT id, chunk_index, filename, company FROM public.financial_documents LIMIT 5;"
 
 # Similarity search (replace [...] with your query vector)
-psql -h localhost -p 5433 -U postgres -d idata -c "
+psql -h localhost -p 5433 -U postgres -d datris -c "
   SELECT text, 1 - (embedding <=> '[...]') AS similarity
   FROM public.financial_documents
   ORDER BY embedding <=> '[...]'
@@ -189,7 +189,7 @@ psql -h localhost -p 5433 -U postgres -d idata -c "
 "
 
 # Combined filter + similarity search
-psql -h localhost -p 5433 -U postgres -d idata -c "
+psql -h localhost -p 5433 -U postgres -d datris -c "
   SELECT text, chunk_index
   FROM public.financial_documents
   WHERE company = 'Apple Inc'

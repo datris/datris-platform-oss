@@ -34,9 +34,9 @@ done
 
 echo "Setting up bucket event notifications on oss-raw..."
 mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .metadata.json --event put
-mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .dataset.csv --event put
-mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .dataset.json --event put
-mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .dataset.xml --event put
+mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.csv --event put
+mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.json --event put
+mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.xml --event put
 
 echo "MinIO initialization complete."
 echo ""

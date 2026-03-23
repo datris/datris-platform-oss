@@ -204,12 +204,12 @@ class MongoDBLoader(jobContext: JobContext) {
         val jsonNotification = gson.toJson(notification)
 
         val attributes = new java.util.HashMap[String, String]
-        attributes.put("dataset", config.name)
+        attributes.put("pipeline", config.name)
         attributes.put("destination", "mongodb")
         attributes.put("database", config.destination.database.dbName)
         attributes.put("table", config.destination.database.table)
 
-        NotificationUtil.add(DatrisEnvironment.values.datasetTopic, jsonNotification, attributes.asScala.toMap)
+        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
     }
 }

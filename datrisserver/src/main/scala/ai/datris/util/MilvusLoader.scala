@@ -155,18 +155,18 @@ class MilvusLoader(jobContext: JobContext) {
         val attributes = Map(
             "database" -> "",
             "schema" -> "",
-            "dataset" -> config.name,
+            "pipeline" -> config.name,
             "destination" -> "milvus",
             "table" -> milvusConfig.collectionName
         )
         val notification = Map(
-            "dataset" -> config.name,
+            "pipeline" -> config.name,
             "publisherToken" -> jobContext.pipelineToken,
             "pipelineToken" -> jobContext.pipelineToken,
             "destination" -> "milvus",
             "collection" -> milvusConfig.collectionName
         )
         val gson = new Gson()
-        NotificationUtil.add(DatrisEnvironment.values.datasetTopic, gson.toJson(notification.asJava), attributes)
+        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, gson.toJson(notification.asJava), attributes)
     }
 }

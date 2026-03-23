@@ -1,4 +1,4 @@
-curl --location --request POST 'http://localhost:8080/api/v1/dataset' \
+curl --location --request POST 'http://localhost:8080/api/v1/pipeline' \
 --header 'x-api-key: 1847626a-5b46-4d43-827c-25f323d9201b' \
 --header 'Content-Type: application/json' \
 --data-raw '{
@@ -40,6 +40,6 @@ curl --location --request POST 'http://localhost:8080/api/v1/dataset' \
    }
 }'
 
-curl -X POST http://localhost:8080/api/v1/dataset/upload \
+curl -X POST http://localhost:8080/api/v1/pipeline/upload \
   -F "file=@./files/stock_price_ai_failure.json" \
-  -F "dataset=stock_price_json_mongodb_ai_dq"
+  -F "pipeline=stock_price_json_mongodb_ai_dq"

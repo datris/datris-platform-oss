@@ -1,4 +1,4 @@
-curl -s -X POST http://localhost:8080/api/v1/dataset/profile \
+curl -s -X POST http://localhost:8080/api/v1/pipeline/profile \
   -F "file=@./files/stock_price.20170102.dataset.csv" \
   -F "delimiter=," \
   -F "header=true" \

@@ -24,7 +24,7 @@ Destinations
 
 ## Configuration
 
-Add a `preprocessor` section to the dataset configuration:
+Add a `preprocessor` section to the pipeline configuration:
 
 ```json
 {
@@ -58,7 +58,7 @@ In synchronous mode (`async: false`), the pipeline POSTs the data to the endpoin
 ```json
 {
   "pipelineToken": "pt-abc12345-...",
-  "datasetName": "stock_price",
+  "pipelineName": "stock_price",
   "data": {
     "size": 1024,
     "header": ["symbol", "price", "date"],
@@ -124,7 +124,7 @@ Callback payload:
 ```json
 {
   "pipelineToken": "pt-abc12345-...",
-  "datasetName": "stock_price",
+  "pipelineName": "stock_price",
   "data": {
     "size": 1024,
     "header": ["symbol", "price", "date"],
@@ -153,7 +153,7 @@ def preprocess_sync():
 
     return jsonify({
         'pipelineToken': payload.get('pipelineToken'),
-        'datasetName': payload.get('datasetName'),
+        'pipelineName': payload.get('pipelineName'),
         'data': data
     })
 
@@ -164,16 +164,16 @@ def preprocess_async():
     threading.Thread(
         target=send_callback,
         args=(payload.get('pipelineToken'),
-              payload.get('datasetName'),
+              payload.get('pipelineName'),
               payload.get('data'))
     ).start()
     return jsonify({'status': 'accepted'}), 200
 
-def send_callback(pipeline_token, dataset_name, data):
+def send_callback(pipeline_token, pipeline_name, data):
     callback_url = 'http://localhost:8080/api/v1/restendpoint/callback'
     requests.post(callback_url, json={
         'pipelineToken': pipeline_token,
-        'datasetName': dataset_name,
+        'pipelineName': pipeline_name,
         'data': data
     })
 ```
@@ -188,7 +188,7 @@ pip install flask requests
 python app.py  # Starts on port 5500
 ```
 
-Then configure the dataset:
+Then configure the pipeline:
 
 ```json
 "preprocessor": {

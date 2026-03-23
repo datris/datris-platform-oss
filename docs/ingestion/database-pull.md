@@ -12,7 +12,7 @@ The pipeline can pull data directly from relational databases on a schedule. Con
 
 ## Configuration
 
-Database sources are configured in the `databaseAttributes` section of a dataset configuration. Connection credentials (JDBC URL, username, password) are stored in Vault — not in the dataset config itself.
+Database sources are configured in the `databaseAttributes` section of a pipeline configuration. Connection credentials (JDBC URL, username, password) are stored in Vault — not in the pipeline config itself.
 
 ```json
 {
@@ -40,7 +40,7 @@ Database sources are configured in the `databaseAttributes` section of a dataset
   },
   "destination": {
     "database": {
-      "dbName": "idata",
+      "dbName": "datris",
       "schema": "public",
       "table": "customers",
       "usePostgres": true
@@ -68,7 +68,7 @@ Database sources are configured in the `databaseAttributes` section of a dataset
 
 ## Secrets in Vault
 
-Database credentials are never stored in the dataset configuration. Instead, the pipeline reads them from HashiCorp Vault using the secret name configured above.
+Database credentials are never stored in the pipeline configuration. Instead, the pipeline reads them from HashiCorp Vault using the secret name configured above.
 
 The Vault secret must contain `username`, `password`, and `jdbcUrl` keys:
 

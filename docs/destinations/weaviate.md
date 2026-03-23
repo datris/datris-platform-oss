@@ -129,16 +129,16 @@ In addition to static metadata, every chunk automatically includes:
 - `text` — the chunk text
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline dataset name
+- `source_dataset` — pipeline pipeline name
 
 ## How It Works
 
-1. **Upload** — an unstructured file (PDF, DOC, DOCX, HTML, text) is uploaded via `POST /api/v1/dataset/upload`
+1. **Upload** — an unstructured file (PDF, DOC, DOCX, HTML, text) is uploaded via `POST /api/v1/pipeline/upload`
 2. **Extract** — text is extracted from the document (PDFBox for PDFs, Apache POI for Word, JSoup for HTML)
 3. **Chunk** — text is split into chunks using the configured strategy
 4. **Embed** — each chunk is sent to the embedding API to generate a vector
 5. **Upsert** — vectors are upserted into the Weaviate class with metadata properties
-6. **Notify** — a dataset notification is published on completion
+6. **Notify** — a pipeline notification is published on completion
 
 The class is auto-created on first upsert using HNSW indexing with cosine distance.
 

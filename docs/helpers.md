@@ -61,7 +61,7 @@ CHROMA_COLLECTION=financial_documents
 # pgvector
 PG_HOST=localhost
 PG_PORT=5432
-PG_DATABASE=idata
+PG_DATABASE=datris
 PG_USER=postgres
 PG_PASSWORD=postgres
 PG_SCHEMA=public
@@ -91,7 +91,7 @@ pip install flask
 python app.py    # runs on port 5500
 ```
 
-**Usage:** Configure a dataset's `dataQuality.rowRules` with `function: "restEndpoint"` pointing to `http://host.docker.internal:5500/dataquality/rest/row`.
+**Usage:** Configure a pipeline's `dataQuality.rowRules` with `function: "restEndpoint"` pointing to `http://host.docker.internal:5500/dataquality/rest/row`.
 
 ---
 
@@ -137,7 +137,7 @@ pip install flask requests
 python app.py    # runs on port 5500
 ```
 
-**Usage:** Configure a dataset's `source.preprocessor` with the endpoint URL. The pipeline sends data to your preprocessor before ingestion, allowing custom transformations.
+**Usage:** Configure a pipeline's `source.preprocessor` with the endpoint URL. The pipeline sends data to your preprocessor before ingestion, allowing custom transformations.
 
 ---
 
@@ -145,7 +145,7 @@ python app.py    # runs on port 5500
 
 **Location:** `helpers/topic-subscriber/`
 
-An ActiveMQ/STOMP consumer that subscribes to pipeline dataset notification events. Use this to trigger downstream workflows when datasets are processed.
+An ActiveMQ/STOMP consumer that subscribes to pipeline pipeline notification events. Use this to trigger downstream workflows when pipelines are processed.
 
 **Features:**
 - Durable subscription with automatic reconnection
@@ -159,7 +159,7 @@ ACTIVEMQ_HOST=localhost
 ACTIVEMQ_PORT=61613
 ACTIVEMQ_USER=admin
 ACTIVEMQ_PASSWORD=admin
-TOPIC_NAME=oss-dataset-notification
+TOPIC_NAME=oss-pipeline-notification
 SUBSCRIPTION_STYLE=virtual_topic    # virtual_topic or durable_topic
 CLIENT_ID=my-subscriber
 ```
@@ -175,7 +175,7 @@ pip install stomp.py python-dotenv
 python app.py
 ```
 
-The subscriber will print dataset processing notifications as they arrive, including dataset name, destination, and pipeline token.
+The subscriber will print pipeline processing notifications as they arrive, including pipeline name, destination, and pipeline token.
 
 ---
 
@@ -186,11 +186,11 @@ The subscriber will print dataset processing notifications as they arrive, inclu
 An integration test script for the MCP server that exercises all 15 tools end-to-end. Tests the full round-trip: push data into the pipeline, wait for ingestion, then query it back.
 
 **Test flow:**
-1. **CSV → PostgreSQL** — create dataset, upload CSV, wait, query back with SQL
-2. **JSON → MongoDB** — create dataset, upload JSON, wait, query back with find()
-3. **AI profiling + schema generation** — profile the CSV, generate a dataset config
-4. **PDF → pgvector** — create dataset, upload Apple 10-Q PDF, wait for chunking/embedding, semantic search "What was Apple's revenue?"
-5. **Cleanup** — delete all test datasets
+1. **CSV → PostgreSQL** — create pipeline, upload CSV, wait, query back with SQL
+2. **JSON → MongoDB** — create pipeline, upload JSON, wait, query back with find()
+3. **AI profiling + schema generation** — profile the CSV, generate a pipeline config
+4. **PDF → pgvector** — create pipeline, upload Apple 10-Q PDF, wait for chunking/embedding, semantic search "What was Apple's revenue?"
+5. **Cleanup** — delete all test pipelines
 
 **Setup:**
 ```bash

@@ -114,7 +114,7 @@ class ScheduledBatchTasks {
         // Show running jobs
         GlobalJobContext.getAll.foreach(jobContext => {
             if(jobContext.state ==  PROCESSING)
-                logger.info(jobContext.pipelineToken + ": dataset: " + jobContext.config.name + ", " + jobContext.state.toString)
+                logger.info(jobContext.pipelineToken + ": pipeline: " + jobContext.config.name + ", " + jobContext.state.toString)
         })
     }
 
@@ -136,7 +136,7 @@ class ScheduledBatchTasks {
     }
 
     private def startJob(jobContext: JobContext): Unit = {
-        logger.info("Starting job for the dataset: " + jobContext.config.name)
+        logger.info("Starting job for the pipeline: " + jobContext.config.name)
 
         // Start the db loading process
         val thread = new Thread(new JobRunner(jobContext))
@@ -147,12 +147,12 @@ class ScheduledBatchTasks {
     private def checkExistingJobs(): Unit ={
         GlobalJobContext.getAll.foreach(jobContext => {
             if(jobContext.state == PROCESSING && jobContext.thread != null && !jobContext.thread.isAlive) {
-                logger.info(jobContext.pipelineToken + ": dataset: " + jobContext.config.name + ", COMPLETED")
+                logger.info(jobContext.pipelineToken + ": pipeline: " + jobContext.config.name + ", COMPLETED")
                 GlobalJobContext.replaceJobContext(jobContext = jobContext.copy(state = COMPLETED))
             }
             // Clean up cancelled jobs whose threads have stopped
             if(jobContext.state == CANCELLED && (jobContext.thread == null || !jobContext.thread.isAlive)) {
-                logger.info(jobContext.pipelineToken + ": dataset: " + jobContext.config.name + ", CANCELLED (thread stopped)")
+                logger.info(jobContext.pipelineToken + ": pipeline: " + jobContext.config.name + ", CANCELLED (thread stopped)")
             }
         })
     }

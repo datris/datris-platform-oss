@@ -17,12 +17,12 @@ class RestEndpointCallbackController {
         val gson = new com.google.gson.Gson()
         val map = gson.fromJson(body, classOf[java.util.Map[String, Any]])
         val pipelineToken = map.get("pipelineToken").asInstanceOf[String]
-        val datasetName = map.get("datasetName").asInstanceOf[String]
+        val pipelineName = map.get("pipelineName").asInstanceOf[String]
 
         if (pipelineToken == null)
             return new ResponseEntity[String]("Missing pipelineToken", HttpStatus.BAD_REQUEST)
-        if (datasetName == null)
-            return new ResponseEntity[String]("Missing datasetName", HttpStatus.BAD_REQUEST)
+        if (pipelineName == null)
+            return new ResponseEntity[String]("Missing pipelineName", HttpStatus.BAD_REQUEST)
 
         RestEndpointCallbackRegistry.complete(pipelineToken, body)
 

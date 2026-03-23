@@ -5,7 +5,7 @@ Upload data files directly to the pipeline through the REST API. The pipeline ac
 ## Endpoint
 
 ```
-POST /api/v1/dataset/upload
+POST /api/v1/pipeline/upload
 ```
 
 ## Request
@@ -15,15 +15,15 @@ The request uses `multipart/form-data` encoding with the following parts:
 | Part | Required | Description |
 |---|---|---|
 | `file` | Yes | The data file to upload |
-| `dataset` | Yes | Name of the target dataset configuration |
+| `pipeline` | Yes | Name of the target pipeline configuration |
 | `publishertoken` | No | Opaque token identifying the data publisher; used for lineage tracking |
 
 ### Example
 
 ```bash
-curl -X POST "http://localhost:9000/api/v1/dataset/upload" \
+curl -X POST "http://localhost:9000/api/v1/pipeline/upload" \
   -F "file=@transactions_2025.csv" \
-  -F "dataset=transactions" \
+  -F "pipeline=transactions" \
   -F "publishertoken=finance-team-a"
 ```
 
@@ -51,7 +51,7 @@ When the uploaded file has a compressed extension, the pipeline stages it to the
 | `.tar` | Staged to MinIO raw bucket, then extracted |
 | `.jar` | Staged to MinIO raw bucket, then extracted |
 
-Compressed archives may contain multiple data files. Each file inside the archive is processed as a separate unit against the same dataset configuration.
+Compressed archives may contain multiple data files. Each file inside the archive is processed as a separate unit against the same pipeline configuration.
 
 ## Uncompressed Files
 
@@ -61,7 +61,7 @@ Files without a recognized compressed extension (e.g., plain `.csv`, `.json`, `.
 
 1. The client sends the multipart request.
 2. The pipeline inspects the file extension.
-3. **Compressed path**: the file is written to the MinIO raw bucket under `raw/{dataset}/{filename}`. A background job picks it up, decompresses it, and feeds each inner file into the ingestion pipeline.
+3. **Compressed path**: the file is written to the MinIO raw bucket under `raw/{pipeline}/{filename}`. A background job picks it up, decompresses it, and feeds each inner file into the ingestion pipeline.
 4. **Uncompressed path**: the file contents are read into memory and passed directly to the ingestion pipeline.
 5. The pipeline returns the `pipelineToken` immediately. Processing continues asynchronously.
 
@@ -69,8 +69,8 @@ Files without a recognized compressed extension (e.g., plain `.csv`, `.json`, `.
 
 | HTTP Status | Cause |
 |---|---|
-| 400 | Missing `dataset` parameter or empty file |
-| 404 | Dataset configuration not found |
+| 400 | Missing `pipeline` parameter or empty file |
+| 404 | Pipeline configuration not found |
 | 413 | File exceeds the configured upload size limit |
 | 500 | Internal error during staging or processing |
 

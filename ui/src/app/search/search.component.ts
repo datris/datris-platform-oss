@@ -21,7 +21,7 @@ export class SearchComponent implements OnInit {
 
   // PostgreSQL fields
   pgSql = '';
-  pgDatabase = 'idata';
+  pgDatabase = 'datris';
   pgLimit = 100;
   pgSchemas: string[] = [];
   pgTables: string[] = [];
@@ -40,9 +40,9 @@ export class SearchComponent implements OnInit {
 
   // Vector search fields
   searchQuery = '';
-  searchCollection = 'financial_documents';
-  searchClassName = 'FinancialDocuments';
-  searchTable = 'financial_documents';
+  searchCollection = '';
+  searchClassName = '';
+  searchTable = '';
   searchSchema = 'public';
   embeddingSecretName = 'oss/embedding';
   vectorSecretName = 'oss/pgvector';
@@ -180,8 +180,24 @@ export class SearchComponent implements OnInit {
   }
 
   execute(): void {
-    this.loading = true;
     this.error = '';
+
+    if (this.isVectorSearch() && !this.searchQuery.trim()) {
+      this.error = 'Please enter a search query';
+      return;
+    }
+    if (this.isVectorSearch()) {
+      const noCollection =
+        (this.queryType === 'pgvector' && !this.searchTable.trim()) ||
+        (this.queryType === 'weaviate' && !this.searchClassName.trim()) ||
+        (this.queryType !== 'pgvector' && this.queryType !== 'weaviate' && !this.searchCollection.trim());
+      if (noCollection) {
+        this.error = 'Please select a collection';
+        return;
+      }
+    }
+
+    this.loading = true;
     this.results = [];
     this.columns = [];
 

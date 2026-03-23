@@ -1,11 +1,11 @@
-# Dataset Status API
+# Pipeline Status API
 
-Query job processing status by pipeline token or dataset name.
+Query job processing status by pipeline token or pipeline name.
 
 ## Get Status by Pipeline Token
 
 ```
-GET /api/v1/dataset/status?pipelinetoken={token}
+GET /api/v1/pipeline/status?pipelinetoken={token}
 ```
 
 **Parameters:**
@@ -15,7 +15,7 @@ GET /api/v1/dataset/status?pipelinetoken={token}
 
 **Example:**
 ```bash
-curl "http://localhost:8080/api/v1/dataset/status?pipelinetoken=pt-abc12345-..."
+curl "http://localhost:8080/api/v1/pipeline/status?pipelinetoken=pt-abc12345-..."
 ```
 
 **Response:** `200 OK` - an array of status entries, one per processing stage:
@@ -24,7 +24,7 @@ curl "http://localhost:8080/api/v1/dataset/status?pipelinetoken=pt-abc12345-..."
   {
     "id": 1,
     "dateTime": "2026-03-15T10:00:00Z",
-    "dataset": "sales_data",
+    "pipeline": "sales_data",
     "processName": "StreamNotifier",
     "publisherToken": null,
     "pipelineToken": "pt-abc12345-...",
@@ -37,7 +37,7 @@ curl "http://localhost:8080/api/v1/dataset/status?pipelinetoken=pt-abc12345-..."
   {
     "id": 2,
     "dateTime": "2026-03-15T10:00:03Z",
-    "dataset": "sales_data",
+    "pipeline": "sales_data",
     "processName": "PostgresLoader",
     "publisherToken": null,
     "pipelineToken": "pt-abc12345-...",
@@ -52,21 +52,21 @@ curl "http://localhost:8080/api/v1/dataset/status?pipelinetoken=pt-abc12345-..."
 
 ---
 
-## Get Status by Dataset Name
+## Get Status by Pipeline Name
 
 ```
-GET /api/v1/dataset/status?datasetname={name}&page={page}
+GET /api/v1/pipeline/status?pipelinename={name}&page={page}
 ```
 
 **Parameters:**
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `datasetname` | query | Yes* | Dataset name |
+| `pipelinename` | query | Yes* | Pipeline name |
 | `page` | query | No | Page number (default: 1) |
 
 **Example:**
 ```bash
-curl "http://localhost:8080/api/v1/dataset/status?datasetname=sales_data&page=1"
+curl "http://localhost:8080/api/v1/pipeline/status?pipelinename=sales_data&page=1"
 ```
 
 **Response:** `200 OK` - an array of job summaries:
@@ -76,7 +76,7 @@ curl "http://localhost:8080/api/v1/dataset/status?datasetname=sales_data&page=1"
     "createdAtTimestamp": "2026-03-15T10:00:00Z",
     "createdAt": 1710500400000,
     "updatedAt": 1710500403000,
-    "dataset": "sales_data",
+    "pipeline": "sales_data",
     "pipelineToken": "pt-abc12345-...",
     "process": "PostgresLoader",
     "startTime": "2026-03-15T10:00:00Z",
@@ -89,17 +89,17 @@ curl "http://localhost:8080/api/v1/dataset/status?datasetname=sales_data&page=1"
 
 ---
 
-*Use either `pipelinetoken` or `datasetname`, not both.
+*Use either `pipelinetoken` or `pipelinename`, not both.
 
 ## Status Fields
 
-Each status entry (`DatasetStatus`) contains:
+Each status entry (`PipelineStatus`) contains:
 
 | Field | Description |
 |-------|-------------|
 | `id` | Entry index (internal) |
 | `dateTime` | Human-readable timestamp |
-| `dataset` | Dataset name |
+| `pipeline` | Pipeline name |
 | `processName` | Processing stage name (see below) |
 | `publisherToken` | Publisher identifier (if provided on upload) |
 | `pipelineToken` | Pipeline job token |

@@ -1,10 +1,10 @@
 # Schema Definition & Auto-Generation
 
-Schemas define the structure of data flowing through the pipeline. Every dataset requires a source schema that describes the incoming fields and their types. Optionally, a destination schema can override types or rename fields when writing to a target.
+Schemas define the structure of data flowing through the pipeline. Every pipeline requires a source schema that describes the incoming fields and their types. Optionally, a destination schema can override types or rename fields when writing to a target.
 
 ## Defining Schemas
 
-Schemas are declared in the `source.schemaProperties.fields` array of a dataset configuration. Each field entry specifies a name and a data type.
+Schemas are declared in the `source.schemaProperties.fields` array of a pipeline configuration. Each field entry specifies a name and a data type.
 
 ```json
 {
@@ -45,10 +45,10 @@ Refer to [data-types](ingestion/data-types.md) for type mappings to PostgreSQL a
 
 ## Auto-Generating a Schema
 
-If you have a representative CSV file, the pipeline can infer a schema automatically. POST the file to the `/api/v1/dataset/generate` endpoint:
+If you have a representative CSV file, the pipeline can infer a schema automatically. POST the file to the `/api/v1/pipeline/generate` endpoint:
 
 ```bash
-curl -X POST "http://localhost:9000/api/v1/dataset/generate" \
+curl -X POST "http://localhost:9000/api/v1/pipeline/generate" \
   -F "file=@sample.csv"
 ```
 
@@ -66,7 +66,7 @@ The response contains the inferred field definitions:
 }
 ```
 
-The generator examines every value in each column and selects the narrowest type that accommodates all values. Empty columns default to `string`. You can edit the output before saving it to a dataset configuration.
+The generator examines every value in each column and selects the narrowest type that accommodates all values. Empty columns default to `string`. You can edit the output before saving it to a pipeline configuration.
 
 ## Source vs Destination Schemas
 

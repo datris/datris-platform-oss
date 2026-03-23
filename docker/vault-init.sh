@@ -27,7 +27,7 @@ vault kv put secret/oss/qdrant host="host.docker.internal" port="6334" apiKey=""
 vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
 
 # pgvector (PostgreSQL with vector extension)
-vault kv put secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/idata" username="postgres" password="postgres"
+vault kv put secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/datris" username="postgres" password="postgres"
 
 # Milvus vector database
 vault kv put secret/oss/milvus host="host.docker.internal" port="19530" apiKey=""

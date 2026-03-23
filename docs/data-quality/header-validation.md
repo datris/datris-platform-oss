@@ -1,19 +1,19 @@
 # CSV Header Validation
 
-Header validation checks that the first row of a CSV file matches the expected field names defined in the dataset schema. When enabled, the pipeline compares each header value against the corresponding schema field name, in order. If any mismatch is found, the file is rejected before processing begins.
+Header validation checks that the first row of a CSV file matches the expected field names defined in the pipeline schema. When enabled, the pipeline compares each header value against the corresponding schema field name, in order. If any mismatch is found, the file is rejected before processing begins.
 
 ## Requirements
 
 - The source file must be CSV format.
-- The dataset must be configured with `header: true` (i.e., the first row contains column names).
+- The pipeline must be configured with `header: true` (i.e., the first row contains column names).
 
 ## Configuration
 
-Enable header validation by setting `validateFileHeader` to `true` in the `dataQuality` block of the dataset configuration.
+Enable header validation by setting `validateFileHeader` to `true` in the `dataQuality` block of the pipeline configuration.
 
 ```json
 {
-  "datasetName": "customer_orders",
+  "pipelineName": "customer_orders",
   "sourceFileFormat": "CSV",
   "header": true,
   "schema": {

@@ -46,7 +46,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: idata
+      POSTGRES_DB: datris
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -191,7 +191,7 @@ services:
       MILVUS_PORT: "19530"
       PG_HOST: postgres
       PG_PORT: "5432"
-      PG_DATABASE: idata
+      PG_DATABASE: datris
       PG_USER: postgres
       PG_PASSWORD: postgres
       MONGO_URI: mongodb://mongodb:27017

@@ -84,11 +84,11 @@ docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 ## MongoDB — Clearing Status Data
 
 ```bash
-# Clear all dataset status records
-docker-compose exec mongodb mongosh oss --eval "db['oss-dataset-status'].deleteMany({})"
+# Clear all pipeline status records
+docker-compose exec mongodb mongosh oss --eval "db['oss-pipeline-status'].deleteMany({})"
 
-# Clear all dataset status summary records
-docker-compose exec mongodb mongosh oss --eval "db['oss-dataset-status-summary'].deleteMany({})"
+# Clear all pipeline status summary records
+docker-compose exec mongodb mongosh oss --eval "db['oss-pipeline-status-summary'].deleteMany({})"
 ```
 
 ## AI Configuration
@@ -227,7 +227,7 @@ pgvector is already included in the Docker Compose stack (uses `pgvector/pgvecto
 
 ```bash
 # Verify pgvector extension is available
-docker-compose exec postgres psql -U postgres -d idata -c "CREATE EXTENSION IF NOT EXISTS vector; SELECT extname FROM pg_extension WHERE extname = 'vector';"
+docker-compose exec postgres psql -U postgres -d datris -c "CREATE EXTENSION IF NOT EXISTS vector; SELECT extname FROM pg_extension WHERE extname = 'vector';"
 ```
 
 ## Service Ports

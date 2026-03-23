@@ -50,7 +50,7 @@ class StatusUtil {
             this.filename = Some(filename)
     }
 
-    def setFilename(metadata: DatasetMetadata): Unit = {
+    def setFilename(metadata: PipelineMetadata): Unit = {
         this.filename = Some(metadata.dataFileName)
     }
 
@@ -109,17 +109,17 @@ class StatusUtil {
         val nowInMillis = new Timestamp(new Date().getTime).getTime
 
         val dateFormat = "MM-dd-yyyy HH:mm:ss z"
-        val datasetName = getDatasetName(status.filename, status.pipelineToken)
+        val pipelineName = getDatasetName(status.filename, status.pipelineToken)
 
-        // Query for the pipeline token in the dataset status summary table
+        // Query for the pipeline token in the pipeline status summary table
         val statusSummaryList = NoSQLDbUtil.queryJSONItemsByKey(tableName + "-summary", "pipeline_token", status.pipelineToken)
 
         if(statusSummaryList != null && statusSummaryList.nonEmpty) {
             // If the summary record exists, update it
-            val datasetStatusSummaryTable = gson.fromJson(statusSummaryList.head, classOf[DatasetStatusSummaryTable])
-            val datasetStatusSummary = datasetStatusSummaryTable.json
+            val pipelineStatusSummaryTable = gson.fromJson(statusSummaryList.head, classOf[PipelineStatusSummaryTable])
+            val pipelineStatusSummary = pipelineStatusSummaryTable.json
 
-            val (elapsed, timedout) = ElapsedTimeUtil.getElapsedTime(nowInMillis - datasetStatusSummary.createdAt)
+            val (elapsed, timedout) = ElapsedTimeUtil.getElapsedTime(nowInMillis - pipelineStatusSummary.createdAt)
             val totalTime = {
                 if(timedout)
                     "timed out"
@@ -154,14 +154,14 @@ class StatusUtil {
                     "success"
             }
 
-            val statusSummary = DatasetStatusSummary(
-                datasetStatusSummary.createdAtTimestamp,
-                datasetStatusSummary.createdAt,
+            val statusSummary = PipelineStatusSummary(
+                pipelineStatusSummary.createdAtTimestamp,
+                pipelineStatusSummary.createdAt,
                 nowInMillis,
-                datasetName,
+                pipelineName,
                 pipelineToken.orNull,
                 processName.orNull,
-                new SimpleDateFormat(dateFormat).format(Timestamp.valueOf(datasetStatusSummary.createdAtTimestamp)),
+                new SimpleDateFormat(dateFormat).format(Timestamp.valueOf(pipelineStatusSummary.createdAtTimestamp)),
                 new SimpleDateFormat(dateFormat).format(nowTimestamp),
                 totalTime,
                 statusString
@@ -173,16 +173,16 @@ class StatusUtil {
                 "json",
                 gson.toJson(statusSummary),
                 "created_at",
-                datasetStatusSummaryTable.created_at
+                pipelineStatusSummaryTable.created_at
             )
         }
         else {
             // Summary record does not exist, create it
-            val statusSummary = DatasetStatusSummary(
+            val statusSummary = PipelineStatusSummary(
                 nowTimestamp.toString,
                 nowInMillis,
                 nowInMillis,
-                datasetName,
+                pipelineName,
                 pipelineToken.orNull,
                 processName.orNull,
                 new SimpleDateFormat(dateFormat).format(nowTimestamp),
@@ -200,11 +200,11 @@ class StatusUtil {
             )
         }
 
-        // Save the dataset status record
-        val datasetStatus = DatasetStatus(
+        // Save the pipeline status record
+        val pipelineStatus = PipelineStatus(
             0,
             new SimpleDateFormat(dateFormat).format(nowTimestamp),
-            datasetName,
+            pipelineName,
             status.processName,
             status.publisherToken,
             status.pipelineToken,
@@ -218,14 +218,14 @@ class StatusUtil {
         NoSQLDbUtil.putItemJSON(tableName,
             "pipeline_token", pipelineToken.orNull,
             "json",
-            gson.toJson(datasetStatus),
+            gson.toJson(pipelineStatus),
             "created_at",
             nowInMillis
         )
     }
 
     private def getDatasetName(filename: String, pipelineToken: String): String = {
-        if(filename != null && filename.contains(".dataset.")) {
+        if(filename != null && filename.contains(".pipeline.")) {
             val tokens = filename.split("\\.")
             tokens(0)
         }
@@ -236,8 +236,8 @@ class StatusUtil {
             )
             val jsonMetadata = rawValue
             val gson = new Gson
-            val metadata = gson.fromJson(jsonMetadata, classOf[DatasetMetadata])
-            metadata.dataset
+            val metadata = gson.fromJson(jsonMetadata, classOf[PipelineMetadata])
+            metadata.pipeline
         }
         else
             null
@@ -261,7 +261,7 @@ object StatusUtil {
     def setFilename(filename: String): Unit =
         _statusUtil.setFilename(filename)
 
-    def setFilename(metadata: DatasetMetadata): Unit =
+    def setFilename(metadata: PipelineMetadata): Unit =
         _statusUtil.setFilename(metadata)
 
     def info(state: String, description: String): Unit = {

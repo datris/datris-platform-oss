@@ -24,7 +24,7 @@ object PostgresQueryUtil {
         "TRUNCATE", "GRANT", "REVOKE", "COPY", "CALL", "EXECUTE", "EXEC"
     )
 
-    def query(sql: String, database: String = "idata", limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] = {
+    def query(sql: String, database: String = "datris", limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] = {
         validateQuery(sql)
 
         val effectiveLimit = math.min(if (limit > 0) limit else DEFAULT_LIMIT, MAX_LIMIT)

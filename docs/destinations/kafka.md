@@ -25,7 +25,7 @@ The destination authenticates to the Kafka cluster using SASL/PLAIN. Credentials
 
 ## Bootstrap Server Override
 
-To override the bootstrap servers from the Vault secret on a per-dataset basis, set `overrideBootstrapServers` in the destination configuration.
+To override the bootstrap servers from the Vault secret on a per-pipeline basis, set `overrideBootstrapServers` in the destination configuration.
 
 ## Configuration Example
 

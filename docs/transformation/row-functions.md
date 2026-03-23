@@ -1,6 +1,6 @@
 # JavaScript Row Transformations
 
-Row functions apply custom JavaScript logic to transform each row in the dataset. Use row functions to add, modify, or remove columns, or to drop rows entirely.
+Row functions apply custom JavaScript logic to transform each row in the pipeline. Use row functions to add, modify, or remove columns, or to drop rows entirely.
 
 ## Configuration
 
@@ -54,7 +54,7 @@ A JavaScript file stored in MinIO at `{environment}-config/javascript/normalize_
 var result = new java.util.HashMap();
 
 if (price == null || parseInt(price) < 0) {
-    // Returning null drops this row from the dataset.
+    // Returning null drops this row from the pipeline.
     result = null;
 } else {
     result.put("order_id", order_id);

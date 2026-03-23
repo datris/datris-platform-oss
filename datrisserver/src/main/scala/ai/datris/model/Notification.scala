@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 case class Notification(
-                           dataset: String,
+                           pipeline: String,
                            publisherToken: String,
                            pipelineToken: String,
                            destination: String,

@@ -7,7 +7,7 @@ When a pipeline job fails, the AI automatically analyzes the error and provides 
 When any pipeline stage (data quality, transformation, destination loading) throws an exception:
 
 1. The error is logged to status as usual
-2. If AI is enabled, the error message and dataset configuration are sent to the AI model
+2. If AI is enabled, the error message and pipeline configuration are sent to the AI model
 3. The AI returns a concise explanation of what went wrong and how to fix it
 4. The explanation is written as a separate status entry (`AI Explanation: ...`) and logged to the pipeline logs
 
@@ -17,7 +17,7 @@ If the AI call itself fails (rate limit, timeout, etc.), the explanation is sile
 
 **Error status:**
 ```
-Process completed, error: Aborting processing this dataset, 3 error(s) were found
+Process completed, error: Aborting processing this pipeline, 3 error(s) were found
 while performing data quality rules:
 Data quality AI failure, row: 2, reason: high (7.50) is less than low (8.01)
 Data quality AI failure, row: 3, reason: volume is negative (-500)

@@ -9,7 +9,7 @@ The pipeline sends an HTTP POST request with the following JSON payload:
 ```json
 {
   "pipelineToken": "abc-123",
-  "datasetName": "orders",
+  "pipelineName": "orders",
   "data": {
     "size": 100,
     "header": ["order_id", "amount", "region"],
@@ -25,7 +25,7 @@ The pipeline sends an HTTP POST request with the following JSON payload:
 | Payload Field  | Description                                                       |
 |----------------|-------------------------------------------------------------------|
 | `pipelineToken`| Token identifying the pipeline run                                |
-| `datasetName`  | Name of the dataset being sent                                    |
+| `pipelineName`  | Name of the pipeline being sent                                    |
 | `data.size`    | Number of rows in this batch                                      |
 | `data.header`  | Array of column names                                             |
 | `data.rows`    | Array of row arrays, each matching the header order               |

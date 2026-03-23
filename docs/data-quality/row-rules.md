@@ -77,7 +77,7 @@ Both **CSV/delimited** and **JSON** source formats are supported. For JSON sourc
 
 ### Performance and batch size
 
-Each AI API call has a fixed network round-trip cost regardless of payload size. Sending more rows per call means fewer total calls, which reduces overall validation time for large datasets. However, rows are full JSON objects — a wide table with many columns produces a much larger payload per row than a column value, so the safe default is lower than for column rules.
+Each AI API call has a fixed network round-trip cost regardless of payload size. Sending more rows per call means fewer total calls, which reduces overall validation time for large pipelines. However, rows are full JSON objects — a wide table with many columns produces a much larger payload per row than a column value, so the safe default is lower than for column rules.
 
 The default `batchSize` of `100` is conservative and safe across all supported providers. For narrow tables (few columns, short values) you can increase this significantly. For wide tables with many large string fields, reduce it to stay within token limits. As a rough guide: multiply your average row size in characters by the batch size — if the result exceeds ~300K characters, reduce the batch size.
 
@@ -111,7 +111,7 @@ In `"row"` mode, the endpoint is called once **per row** with this payload:
 
 ```json
 {
-  "datasetName": "stock_price",
+  "pipelineName": "stock_price",
   "pipelineToken": "pt-abc12345-...",
   "row": {
     "symbol": "AAPL",
@@ -142,7 +142,7 @@ In `"batch"` mode, the endpoint is called once with **all rows**:
 
 ```json
 {
-  "datasetName": "stock_price",
+  "pipelineName": "stock_price",
   "pipelineToken": "pt-abc12345-...",
   "rows": [
     {"symbol": "AAPL", "price": "150.25", "date": "2026-03-15"},
@@ -281,4 +281,4 @@ Then configure the row rule to point to it:
 - When `onFailureIsError` is `false`: failures are logged as warnings and processing continues
 - Processing aborts after more than **100 errors** regardless of `onFailureIsError` setting
 - If any errors exist (even fewer than 100), processing is aborted after all rules complete
-- If any warnings occurred during processing, the dataset status is set to `warning` instead of `success`
+- If any warnings occurred during processing, the pipeline status is set to `warning` instead of `success`

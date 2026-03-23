@@ -1,12 +1,12 @@
 # Column Validation
 
-Column rules validate individual column values for every row in the dataset using `"regex"` pattern matching.
+Column rules validate individual column values for every row in the pipeline using `"regex"` pattern matching.
 
 For AI-powered validation that can check multiple columns, cross-column logic, and natural language rules, see the `aiRule` section below.
 
 ## Configuration
 
-Define column rules in the `columnRules` array within the `dataQuality` block of the dataset configuration. Each rule has the following fields:
+Define column rules in the `columnRules` array within the `dataQuality` block of the pipeline configuration. Each rule has the following fields:
 
 | Field | Type | Description |
 |---|---|---|
@@ -109,7 +109,7 @@ For large files, enable sampling to validate a random subset of rows instead of 
 }
 ```
 
-Data quality issues like invalid formats, missing values, out-of-range numbers, and broken cross-column relationships tend to be consistent across a dataset. A random sample of 200 rows is typically sufficient to detect these patterns. If the data passes a 200-row sample, it is very likely clean.
+Data quality issues like invalid formats, missing values, out-of-range numbers, and broken cross-column relationships tend to be consistent across a pipeline. A random sample of 200 rows is typically sufficient to detect these patterns. If the data passes a 200-row sample, it is very likely clean.
 
 **Why sampling is recommended for large files:**
 
@@ -148,7 +148,7 @@ The pipeline provides three levels of data quality validation. Each has its stre
 
 AI rules incur API costs (for cloud providers), take longer to execute, and may occasionally miss violations depending on the model. They are powerful when the validation logic is too complex or subjective for code — but should not be used as a substitute for checks that regex or row rules can handle reliably.
 
-All three rule types can be used together on the same dataset. Column rules and row rules run first, then the AI rule.
+All three rule types can be used together on the same pipeline. Column rules and row rules run first, then the AI rule.
 
 ### Accuracy and model selection
 

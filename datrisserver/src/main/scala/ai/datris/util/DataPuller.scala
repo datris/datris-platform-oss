@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.{DatabaseAttributes, DatasetConfig, DatrisEnvironment, DatrisException}
+import ai.datris.model.{DatabaseAttributes, PipelineConfig, DatrisEnvironment, DatrisException}
 import ai.datris.model._
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -19,31 +19,31 @@ class DataPuller {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     def run(): Unit = {
-        DataPullTableUtil.getAll.foreach(datasetPull => {
-            val nextPullDate = DataPullTableUtil.getNextPullDate(datasetPull.dataset)
+        PipelinePullTableUtil.getAll.foreach(pipelinePull => {
+            val nextPullDate = PipelinePullTableUtil.getNextPullDate(pipelinePull.pipeline)
 
             // Attempt a pull?
             val now = new Date()
             if(now.compareTo(nextPullDate) > 0) {
-                val config = DatasetConfigIO.read(DatrisEnvironment.values.datasetTableName, datasetPull.dataset)
+                val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipelinePull.pipeline)
 
                 // Before we pull the data, save the actual pull data date and generate the next pull date from the cron expression
-                val generatedNextPullDate = DataPullTableUtil.generateNextPullDate(config.source.databaseAttributes.cronExpression)
+                val generatedNextPullDate = PipelinePullTableUtil.generateNextPullDate(config.source.databaseAttributes.cronExpression)
 
-                val (data, lastTimestamp) = pull(config, datasetPull)
+                val (data, lastTimestamp) = pull(config, pipelinePull)
                 if(data == null) {
                     // Re-initialize the data pull table to reset the next pull date request
-                    DataPullTableUtil.update(config.name, generatedNextPullDate, null)
+                    PipelinePullTableUtil.update(config.name, generatedNextPullDate, null)
                 }
                 else {
                     // Re-initialize the data pull table to reset the next pull date request and the last pull date
-                    DataPullTableUtil.update(config.name, generatedNextPullDate, lastTimestamp)
+                    PipelinePullTableUtil.update(config.name, generatedNextPullDate, lastTimestamp)
 
                     // Write the data to the raw bucket
                     val rawFilename = {
                         val dateFormat = new SimpleDateFormat("yyyy-MM-dd.HH-mm-ss-SSS")
                         val date = dateFormat.format(new Date())
-                        config.name + "." + date + "." + System.currentTimeMillis().toString + ".dataset.csv"
+                        config.name + "." + date + "." + System.currentTimeMillis().toString + ".pipeline.csv"
                     }
                     val path = "s3://" + DatrisEnvironment.values.environment + "-raw/temp/" + config.name + "/" + rawFilename
                     ObjectStoreUtil.writeBucketObject(ObjectStoreUtil.getBucket(path), ObjectStoreUtil.getKey(path), data)
@@ -52,8 +52,8 @@ class DataPuller {
         })
     }
 
-    private def pull(config: DatasetConfig, datasetPull: DatasetPull): (String, String) = {
-        logger.info("Attempting to pull data for dataset: " + config.name)
+    private def pull(config: PipelineConfig, pipelinePull: PipelinePull): (String, String) = {
+        logger.info("Attempting to pull data for pipeline: " + config.name)
         val databaseAttributes = config.source.databaseAttributes
 
         val connection = getDatabaseConnection(databaseAttributes)
@@ -84,15 +84,15 @@ class DataPuller {
                 if(databaseAttributes.schema != null)
                     sql.append(databaseAttributes.schema + ".")
                 sql.append(databaseAttributes.table)
-                if (datasetPull.lastPullTimestampUsed != null) {
+                if (pipelinePull.lastPullTimestampUsed != null) {
                     sql.append(" where ")
-                    sql.append(databaseAttributes.timestampFieldName + " > '" + datasetPull.lastPullTimestampUsed + "'")
+                    sql.append(databaseAttributes.timestampFieldName + " > '" + pipelinePull.lastPullTimestampUsed + "'")
                 }
                 sql.append(" order by " + fieldNames.last)
             }
 
             // Do the query
-            logger.info("For dataset: " + config.name + ", pull data query: " + sql.mkString)
+            logger.info("For pipeline: " + config.name + ", pull data query: " + sql.mkString)
             preparedStatement = connection.prepareStatement(sql.mkString)
             resultSet = preparedStatement.executeQuery()
 
@@ -188,7 +188,7 @@ class DataPuller {
                 (secrets, databaseAttributes.mssqlSecretsName)
             }
             else {
-                throw new DatrisException("The dataset configuration 'source.databaseAttributes' does not contain a database secrets name")
+                throw new DatrisException("The pipeline configuration 'source.databaseAttributes' does not contain a database secrets name")
             }
         }
 
@@ -205,7 +205,7 @@ class DataPuller {
         DriverManager.getConnection(jdbcUrl, username, password)
     }
 
-    private def getFieldNames(config: DatasetConfig): List[String] = {
+    private def getFieldNames(config: PipelineConfig): List[String] = {
         val databaseAttributes = config.source.databaseAttributes
 
         // For mssql, reserved columm names must be surrounded with brackets (e.g. '[column_name]').  But surrounding all columns also works

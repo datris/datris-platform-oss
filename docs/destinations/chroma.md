@@ -130,16 +130,16 @@ Every entry automatically includes:
 - `text` — the chunk text (stored as Chroma document)
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline dataset name
+- `source_dataset` — pipeline pipeline name
 
 ## How It Works
 
-1. **Upload** — an unstructured file is uploaded via `POST /api/v2/dataset/upload`
+1. **Upload** — an unstructured file is uploaded via `POST /api/v1/pipeline/upload`
 2. **Extract** — text is extracted from the document
 3. **Chunk** — text is split into chunks using the configured strategy
 4. **Embed** — each chunk is sent to the embedding API to generate a vector
 5. **Upsert** — vectors are upserted into the Chroma collection via REST API with metadata
-6. **Notify** — a dataset notification is published on completion
+6. **Notify** — a pipeline notification is published on completion
 
 The collection is auto-created on first upsert with cosine distance. No Java client library is needed — the loader communicates with Chroma's REST API directly via HTTP.
 
