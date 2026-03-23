@@ -132,14 +132,16 @@ class DataQuality(jobContext: JobContext) {
 
                 val endpointUrl = rule.parameters.get(0)
                 val mode = if (rule.parameters.size() > 1) rule.parameters.get(1).toLowerCase else "row"
-                val timeoutMs = if (rule.parameters.size() > 2) rule.parameters.get(2).toInt else 30000
+                val timeoutMs = if (rule.parameters.size() > 2) try { rule.parameters.get(2).toInt } catch { case _: NumberFormatException => 30000 } else 30000
+                val bearerToken = if (rule.parameters.size() > 3 && rule.parameters.get(3).nonEmpty) rule.parameters.get(3) else null
+                val apiKey = if (rule.parameters.size() > 4 && rule.parameters.get(4).nonEmpty) rule.parameters.get(4) else null
 
                 statusUtil.info("processing", "Running data quality row rule: restEndpoint, mode: " + mode + ", using URL: " + endpointUrl)
 
                 mode match {
                     case "batch" =>
                         val rowMaps = rows.map(row => RowUtil.getRowAsMap(row, config).asJava)
-                        callRestEndpointBatch(endpointUrl, pipelineName, pipelineToken, rowMaps, rawData, timeoutMs).map { case (rowNumber, description) =>
+                        callRestEndpointBatch(endpointUrl, pipelineName, pipelineToken, rowMaps, rawData, timeoutMs, bearerToken, apiKey).map { case (rowNumber, description) =>
                             (rule.onFailureIsError, "Data quality failure, row: " + rowNumber.toString + ", description: " + description)
                         }
 
@@ -148,7 +150,7 @@ class DataQuality(jobContext: JobContext) {
                             throw new DatrisException("REST endpoint row rule mode 'row' requires row data but none was provided for pipeline: " + pipelineName)
                         rows.zipWithIndex.flatMap { case (row, rowNumber) =>
                             val columnMap = RowUtil.getRowAsMap(row, config)
-                            val description = callRestEndpointRow(endpointUrl, pipelineName, pipelineToken, columnMap, timeoutMs)
+                            val description = callRestEndpointRow(endpointUrl, pipelineName, pipelineToken, columnMap, timeoutMs, bearerToken, apiKey)
                             if (description != null)
                                 Some(rule.onFailureIsError, "Data quality failure, description: " + description)
                             else
@@ -260,7 +262,7 @@ class DataQuality(jobContext: JobContext) {
         }
     }
 
-    private def callRestEndpointRow(endpointUrl: String, pipelineName: String, pipelineToken: String, columnDataMap: mutable.ListMap[String, Any], timeoutMs: Int): String = {
+    private def callRestEndpointRow(endpointUrl: String, pipelineName: String, pipelineToken: String, columnDataMap: mutable.ListMap[String, Any], timeoutMs: Int, bearerToken: String = null, apiKey: String = null): String = {
         val gson = new Gson()
         val payload = mutable.ListMap[String, Any](
             "pipelineName" -> pipelineName,
@@ -273,6 +275,8 @@ class DataQuality(jobContext: JobContext) {
             url = endpointUrl,
             contentType = "application/json",
             dataToPost = jsonPayload,
+            bearerToken = bearerToken,
+            apiKey = apiKey,
             timeoutMillis = timeoutMs
         )
 
@@ -288,7 +292,7 @@ class DataQuality(jobContext: JobContext) {
         message
     }
 
-    private def callRestEndpointBatch(endpointUrl: String, pipelineName: String, pipelineToken: String, rowMaps: List[java.util.Map[String, Any]], rawData: String, timeoutMs: Int): List[(Int, String)] = {
+    private def callRestEndpointBatch(endpointUrl: String, pipelineName: String, pipelineToken: String, rowMaps: List[java.util.Map[String, Any]], rawData: String, timeoutMs: Int, bearerToken: String = null, apiKey: String = null): List[(Int, String)] = {
         val gson = new Gson()
         val wrapper = mutable.ListMap[String, Any](
             "pipelineName" -> pipelineName,
@@ -303,6 +307,8 @@ class DataQuality(jobContext: JobContext) {
             url = endpointUrl,
             contentType = "application/json",
             dataToPost = jsonPayload,
+            bearerToken = bearerToken,
+            apiKey = apiKey,
             timeoutMillis = timeoutMs
         )
 

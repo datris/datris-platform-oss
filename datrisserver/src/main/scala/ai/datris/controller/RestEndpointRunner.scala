@@ -70,6 +70,7 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
             contentType = "application/json",
             dataToPost = requestBody,
             bearerToken = config.bearerToken,
+            apiKey = config.apiKey,
             timeoutMillis = timeoutSeconds * 1000
         )
 
@@ -84,6 +85,7 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
             contentType = "application/json",
             dataToPost = requestBody,
             bearerToken = config.bearerToken,
+            apiKey = config.apiKey,
             timeoutMillis = timeoutSeconds * 1000
         )
 

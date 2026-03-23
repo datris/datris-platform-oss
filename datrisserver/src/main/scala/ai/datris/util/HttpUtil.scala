@@ -18,26 +18,26 @@ import scala.util.control.Breaks.{break, breakable}
 object HttpUtil {
     def get(url: String, bearerToken: String = null, timeoutMillis: Int = 30000, retry: Boolean = false, retryWaitMillis: Long = 5000): String = {
         if(retry)
-            httpWithRetry("get", url, null, null, bearerToken, timeoutMillis, retryWaitMillis)
+            httpWithRetry("get", url, null, null, bearerToken, null, timeoutMillis, retryWaitMillis)
         else
-            http("get", url, null, null, bearerToken, timeoutMillis)
+            http("get", url, null, null, bearerToken, null, timeoutMillis)
     }
 
-    def post(url: String, contentType: String, dataToPost: String, bearerToken: String = null, timeoutMillis: Int = 30000, retry: Boolean = false, retryWaitMillis: Long = 5000): String = {
+    def post(url: String, contentType: String, dataToPost: String, bearerToken: String = null, apiKey: String = null, timeoutMillis: Int = 30000, retry: Boolean = false, retryWaitMillis: Long = 5000): String = {
         if(retry)
-            httpWithRetry("post", url, contentType, dataToPost, bearerToken, timeoutMillis, retryWaitMillis)
+            httpWithRetry("post", url, contentType, dataToPost, bearerToken, apiKey, timeoutMillis, retryWaitMillis)
         else
-            http("post", url, contentType, dataToPost, bearerToken, timeoutMillis)
+            http("post", url, contentType, dataToPost, bearerToken, apiKey, timeoutMillis)
     }
 
-    private def http(method: String, url: String, contentType: String, dataToPost: String, bearerToken:String, timeoutMillis: Int): String = {
+    private def http(method: String, url: String, contentType: String, dataToPost: String, bearerToken: String, apiKey: String = null, timeoutMillis: Int): String = {
         if(method.compareToIgnoreCase("post") == 0)
-            doPost(url, contentType, dataToPost, bearerToken, timeoutMillis)
+            doPost(url, contentType, dataToPost, bearerToken, apiKey, timeoutMillis)
         else
             doGet(url, bearerToken, timeoutMillis)
     }
 
-    private def httpWithRetry(method: String, url: String, contentType: String, dataToPost: String, bearerToken: String,  timeoutMillis: Int, retryWaitMillis: Long): String = {
+    private def httpWithRetry(method: String, url: String, contentType: String, dataToPost: String, bearerToken: String, apiKey: String = null, timeoutMillis: Int, retryWaitMillis: Long): String = {
         var response:String = null
         var exception:String = null
         breakable {
@@ -46,7 +46,7 @@ object HttpUtil {
                 try {
                     response = {
                         if(method.compareToIgnoreCase("post") == 0)
-                            doPost(url, contentType, dataToPost, bearerToken, timeoutMillis)
+                            doPost(url, contentType, dataToPost, bearerToken, apiKey, timeoutMillis)
                         else
                             doGet(url, bearerToken, timeoutMillis)
                     }
@@ -93,7 +93,7 @@ object HttpUtil {
         }
     }
 
-    private def doPost(url: String, contentType: String, dataToPost: String, bearerToken: String,  timeoutMillis: Int): String = {
+    private def doPost(url: String, contentType: String, dataToPost: String, bearerToken: String, apiKey: String = null, timeoutMillis: Int): String = {
         val client = getHttpClient(url)
 
         try {
@@ -101,6 +101,9 @@ object HttpUtil {
                 val http = new HttpPost(url)
                 if(bearerToken != null) {
                     http.addHeader(HttpHeaders.AUTHORIZATION,"Bearer " + bearerToken)
+                }
+                if(apiKey != null) {
+                    http.addHeader("x-api-key", apiKey)
                 }
                 http
             }

@@ -41,6 +41,7 @@ export class PipelineCreateComponent implements OnInit {
   ppEndpoint = '';
   ppAsync = false;
   ppBearerToken = '';
+  ppApiKey = '';
   ppTimeout = 300;
 
   // Step 3 — Schema
@@ -94,6 +95,7 @@ export class PipelineCreateComponent implements OnInit {
   restEndpointUrl = '';
   restEndpointBearerToken = '';
   restEndpointTimeout = 300;
+  restEndpointApiKey = '';
   restEndpointAsync = false;
   vectorCollection = '';
   vectorTable = '';
@@ -215,6 +217,7 @@ export class PipelineCreateComponent implements OnInit {
       this.ppEndpoint = config.preprocessor.endpoint || '';
       this.ppAsync = config.preprocessor.async || false;
       this.ppBearerToken = config.preprocessor.bearerToken || '';
+      this.ppApiKey = config.preprocessor.apiKey || '';
       this.ppTimeout = config.preprocessor.timeoutSeconds || 300;
     }
 
@@ -245,6 +248,7 @@ export class PipelineCreateComponent implements OnInit {
       this.restEndpointAsync = dest.restEndpoint.async || false;
       this.restEndpointBearerToken = dest.restEndpoint.bearerToken || '';
       this.restEndpointTimeout = dest.restEndpoint.timeoutSeconds || 300;
+      this.restEndpointApiKey = dest.restEndpoint.apiKey || '';
     } else if (dest?.qdrant) {
       this.destType = 'qdrant';
       this.vectorCollection = dest.qdrant.collectionName || '';
@@ -758,7 +762,7 @@ export class PipelineCreateComponent implements OnInit {
 
   onRowRuleFunctionChange(rule: any): void {
     if (rule.function === 'restEndpoint') {
-      rule.parameters = ['', 'row', '30000', ''];
+      rule.parameters = ['', 'row', '30000', '', ''];
     } else if (rule.function === 'javascript') {
       rule.parameters = [''];
     }
@@ -856,6 +860,7 @@ export class PipelineCreateComponent implements OnInit {
         async: this.ppAsync,
         timeoutSeconds: this.ppTimeout
       };
+      if (this.ppApiKey) { config.preprocessor.apiKey = this.ppApiKey; }
       if (this.ppBearerToken) {
         config.preprocessor.bearerToken = this.ppBearerToken;
       }
@@ -960,6 +965,7 @@ export class PipelineCreateComponent implements OnInit {
     } else if (this.destType === 'restendpoint') {
       const re: any = { endpoint: this.restEndpointUrl, async: this.restEndpointAsync, timeoutSeconds: this.restEndpointTimeout };
       if (this.restEndpointBearerToken) re.bearerToken = this.restEndpointBearerToken;
+      if (this.restEndpointApiKey) re.apiKey = this.restEndpointApiKey;
       config.destination.restEndpoint = re;
     } else if (this.destType === 'qdrant') {
       config.destination.qdrant = {

@@ -194,6 +194,7 @@ case class RestEndpoint(
                            endpoint: String,
                            async: Boolean = false,
                            bearerToken: String = null,
+                           apiKey: String = null,
                            timeoutSeconds: Int = 300
                        )
 case class ObjectStore(

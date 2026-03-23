@@ -148,6 +148,10 @@
             <input class="form-input" type="password" [(ngModel)]="ppBearerToken" placeholder="auth token">
           </div>
           <div class="form-field">
+            <label class="form-label">API Key (optional)</label>
+            <input class="form-input" type="password" [(ngModel)]="ppApiKey" placeholder="x-api-key">
+          </div>
+          <div class="form-field">
             <label class="form-label">Timeout (seconds)</label>
             <input class="form-input" type="number" [(ngModel)]="ppTimeout">
           </div>
@@ -331,6 +335,10 @@
               <div class="form-field">
                 <label class="form-label">Bearer Token (optional)</label>
                 <input class="form-input" type="password" [(ngModel)]="dqRowRules[0].parameters[3]" placeholder="auth token">
+              </div>
+              <div class="form-field">
+                <label class="form-label">API Key (optional)</label>
+                <input class="form-input" type="password" [(ngModel)]="dqRowRules[0].parameters[4]" placeholder="x-api-key">
               </div>
             </div>
           </ng-container>
@@ -618,6 +626,10 @@
           <div class="form-field">
             <label class="form-label">Bearer Token (optional)</label>
             <input class="form-input" type="password" [(ngModel)]="restEndpointBearerToken" placeholder="auth token">
+          </div>
+          <div class="form-field">
+            <label class="form-label">API Key (optional)</label>
+            <input class="form-input" type="password" [(ngModel)]="restEndpointApiKey" placeholder="x-api-key">
           </div>
           <div class="form-field">
             <label class="form-label">Timeout (seconds)</label>
