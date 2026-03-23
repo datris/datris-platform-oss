@@ -91,7 +91,10 @@ lazy val allDependencies = Seq(
     "org.jsoup" % "jsoup" % "1.17.2",
 
     // Email parsing
-    "com.sun.mail" % "jakarta.mail" % "2.0.1"
+    "com.sun.mail" % "jakarta.mail" % "2.0.1",
+
+    // JavaScript engine (Nashorn removed in Java 15+)
+    "org.openjdk.nashorn" % "nashorn-core" % "15.4"
 )
 
 lazy val assemblySettings = Seq(

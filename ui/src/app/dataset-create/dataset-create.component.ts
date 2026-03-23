@@ -68,7 +68,19 @@ export class DatasetCreateComponent implements OnInit {
   dqColumnRules: { columnName: string; function: string; parameter: string; onFailureIsError: boolean; description: string }[] = [];
   dqRowRules: { function: string; parameters: string[]; onFailureIsError: boolean }[] = [];
 
-  // Step 5 — Destination
+  // Step 6 — Transformation (optional, not for unstructured)
+  useTransformation = false;
+  txTrimWhitespace = false;
+  txDeduplicate = false;
+  txUseAi = false;
+  txAiInstruction = '';
+  txAiSample = false;
+  txAiSampleSize = 200;
+  txUseRowFunction = false;
+  txRowFunctionFile = '';
+  showTxSampleInfo = false;
+
+  // Step 7 — Destination
   destType = 'postgres';
   pgDbName = 'idata';
   pgSchema = 'public';
@@ -79,6 +91,10 @@ export class DatasetCreateComponent implements OnInit {
   osFormat = 'parquet';
   kafkaTopic = '';
   amqQueue = '';
+  restEndpointUrl = '';
+  restEndpointBearerToken = '';
+  restEndpointTimeout = 300;
+  restEndpointAsync = false;
   vectorCollection = '';
   vectorTable = '';
   vectorSchema = 'public';
@@ -175,6 +191,24 @@ export class DatasetCreateComponent implements OnInit {
       }
     }
 
+    // Transformation
+    if (config.transformation) {
+      this.useTransformation = true;
+      const tx = config.transformation;
+      this.txTrimWhitespace = tx.trimColumnWhitespace || false;
+      this.txDeduplicate = tx.deduplicate || false;
+      if (tx.rowFunctions && tx.rowFunctions.length > 0) {
+        this.txUseRowFunction = true;
+        this.txRowFunctionFile = tx.rowFunctions[0].parameters?.[0] || '';
+      }
+      if (tx.aiTransformation) {
+        this.txUseAi = true;
+        this.txAiInstruction = tx.aiTransformation.instruction || '';
+        this.txAiSample = tx.aiTransformation.sample || false;
+        this.txAiSampleSize = tx.aiTransformation.sampleSize || 200;
+      }
+    }
+
     // Preprocessor
     if (config.preprocessor) {
       this.usePreprocessor = true;
@@ -205,6 +239,12 @@ export class DatasetCreateComponent implements OnInit {
     } else if (dest?.activeMQ) {
       this.destType = 'activemq';
       this.amqQueue = dest.activeMQ.queueName || '';
+    } else if (dest?.restEndpoint) {
+      this.destType = 'restendpoint';
+      this.restEndpointUrl = dest.restEndpoint.endpoint || '';
+      this.restEndpointAsync = dest.restEndpoint.async || false;
+      this.restEndpointBearerToken = dest.restEndpoint.bearerToken || '';
+      this.restEndpointTimeout = dest.restEndpoint.timeoutSeconds || 300;
     } else if (dest?.qdrant) {
       this.destType = 'qdrant';
       this.vectorCollection = dest.qdrant.collectionName || '';
@@ -533,6 +573,10 @@ export class DatasetCreateComponent implements OnInit {
       this.error = 'Dataset name is required';
       return;
     }
+    if (this.step === 1 && this.generatingSchema) {
+      this.error = 'Please wait for the file analysis to complete';
+      return;
+    }
 
     // Validate step 2 — preprocessor
     if (this.step === 2 && this.usePreprocessor) {
@@ -589,11 +633,50 @@ export class DatasetCreateComponent implements OnInit {
       }
     }
 
+    // Validate step 6 — transformation
+    if (this.step === 6 && this.useTransformation) {
+      if (this.txUseAi && !this.txAiInstruction.trim()) {
+        this.error = 'An AI instruction is required when AI Transformation is enabled';
+        return;
+      }
+      if (this.txUseRowFunction && !this.txRowFunctionFile.trim()) {
+        this.error = 'A JavaScript file is required when row function is enabled';
+        return;
+      }
+    }
+
+    // Validate step 7 — destination
+    if (this.step === 7) {
+      if (this.destType === 'postgres') {
+        if (!this.pgDbName.trim()) { this.error = 'Database name is required'; return; }
+        if (!this.pgSchema.trim()) { this.error = 'Schema is required'; return; }
+        if (!this.pgTable.trim()) { this.error = 'Table name is required'; return; }
+      } else if (this.destType === 'mongodb') {
+        if (!this.mongoDbName.trim()) { this.error = 'Database name is required'; return; }
+        if (!this.mongoTable.trim()) { this.error = 'Collection name is required'; return; }
+      } else if (this.destType === 'objectstore') {
+        if (!this.osPrefix.trim()) { this.error = 'Prefix key is required'; return; }
+      } else if (this.destType === 'kafka') {
+        if (!this.kafkaTopic.trim()) { this.error = 'Topic is required'; return; }
+      } else if (this.destType === 'activemq') {
+        if (!this.amqQueue.trim()) { this.error = 'Queue name is required'; return; }
+      } else if (this.destType === 'restendpoint') {
+        if (!this.restEndpointUrl.trim()) { this.error = 'Endpoint URL is required'; return; }
+        if (!this.isValidUrl(this.restEndpointUrl)) { this.error = 'Endpoint must be a valid URL'; return; }
+      } else if (this.destType === 'pgvector') {
+        if (!this.vectorTable.trim()) { this.error = 'Collection name is required'; return; }
+      } else if (this.destType === 'weaviate') {
+        if (!this.vectorClassName.trim()) { this.error = 'Class name is required'; return; }
+      } else if (this.destType === 'qdrant' || this.destType === 'milvus' || this.destType === 'chroma') {
+        if (!this.vectorCollection.trim()) { this.error = 'Collection name is required'; return; }
+      }
+    }
+
     this.step++;
 
-    // Skip schema (3), dq (4), dq rules (5) for unstructured
-    if (this.isUnstructured() && this.step >= 3 && this.step <= 5) {
-      this.step = 6;
+    // Skip schema (3), dq (4), dq rules (5), transformation (6) for unstructured
+    if (this.isUnstructured() && this.step >= 3 && this.step <= 6) {
+      this.step = 7;
     }
 
     // Auto-profile when entering DQ step (4) if sample file exists
@@ -606,14 +689,17 @@ export class DatasetCreateComponent implements OnInit {
       this.step = 6;
     }
 
-    // Load metadata when entering destination step (6)
-    if (this.step === 6) {
+    // Skip transformation (6) for unstructured (already handled above)
+    // Transformation is optional — always shown for structured types
+
+    // Load metadata when entering destination step (7)
+    if (this.step === 7) {
       this.loadPgDatabases();
       this.loadMongoDatabases();
     }
 
-    // Generate config JSON when entering review step (7)
-    if (this.step === 7) {
+    // Generate config JSON when entering review step (8)
+    if (this.step === 8) {
       this.configJson = JSON.stringify(this.buildConfig(), null, 2);
     }
   }
@@ -621,14 +707,31 @@ export class DatasetCreateComponent implements OnInit {
   prevStep(): void {
     this.step--;
 
+    // Skip transformation (6) for unstructured going back
+    if (this.step === 6 && this.isUnstructured()) {
+      this.step = 2;
+    }
+
     // Skip dq rules (5) if data quality not enabled or not CSV
     if (this.step === 5 && (!this.useDq || this.sourceType !== 'csv')) {
       this.step = 4;
     }
 
     // Skip dq (4), schema (3) for unstructured going back
-    if (this.isUnstructured() && this.step >= 3 && this.step <= 5) {
+    if (this.isUnstructured() && this.step >= 3 && this.step <= 6) {
       this.step = 2;
+    }
+  }
+
+  onTxRowFunctionFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const file = input.files[0];
+      this.txRowFunctionFile = file.name;
+      this.datasetService.uploadConfigFile(file, 'javascript').subscribe({
+        next: (resp) => { this.txRowFunctionFile = resp.filename; },
+        error: (err) => { this.error = 'Failed to upload JavaScript file: ' + (err.error || err.message); }
+      });
     }
   }
 
@@ -814,6 +917,31 @@ export class DatasetCreateComponent implements OnInit {
       config.dataQuality = dq;
     }
 
+    // Transformation
+    if (this.useTransformation) {
+      const tx: any = {};
+      let hasTx = false;
+      if (this.txTrimWhitespace && this.sourceType === 'csv') {
+        tx.trimColumnWhitespace = true; hasTx = true;
+      }
+      if (this.txDeduplicate) {
+        tx.deduplicate = true; hasTx = true;
+      }
+      if (this.txUseRowFunction && this.txRowFunctionFile && this.sourceType === 'csv') {
+        tx.rowFunctions = [{ function: 'javascript', parameters: [this.txRowFunctionFile] }];
+        hasTx = true;
+      }
+      if (this.txUseAi && this.txAiInstruction) {
+        tx.aiTransformation = { instruction: this.txAiInstruction };
+        if (this.txAiSample && this.sourceType === 'csv') {
+          tx.aiTransformation.sample = true;
+          tx.aiTransformation.sampleSize = this.txAiSampleSize;
+        }
+        hasTx = true;
+      }
+      if (hasTx) config.transformation = tx;
+    }
+
     // Destination
     if (this.destType === 'postgres') {
       config.destination.database = { dbName: this.pgDbName, schema: this.pgSchema, table: this.pgTable, usePostgres: true };
@@ -825,6 +953,10 @@ export class DatasetCreateComponent implements OnInit {
       config.destination.kafka = { topic: this.kafkaTopic };
     } else if (this.destType === 'activemq') {
       config.destination.activeMQ = { queueName: this.amqQueue };
+    } else if (this.destType === 'restendpoint') {
+      const re: any = { endpoint: this.restEndpointUrl, async: this.restEndpointAsync, timeoutSeconds: this.restEndpointTimeout };
+      if (this.restEndpointBearerToken) re.bearerToken = this.restEndpointBearerToken;
+      config.destination.restEndpoint = re;
     } else if (this.destType === 'qdrant') {
       config.destination.qdrant = {
         collectionName: this.vectorCollection, embeddingSecretName: this.embeddingSecret,

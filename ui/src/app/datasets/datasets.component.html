@@ -1,7 +1,7 @@
 <div class="container">
   <div class="page-header">
-    <h1 class="page-title">Datasets</h1>
-    <button class="create-btn" routerLink="/datasets/create">+ Create Dataset</button>
+    <h1 class="page-title">Pipelines</h1>
+    <button class="create-btn" routerLink="/datasets/create">+ Create Pipeline</button>
   </div>
 
   <div class="table-container" *ngIf="datasets.length > 0">
@@ -29,6 +29,6 @@
   </div>
 
   <div class="empty-state" *ngIf="datasets.length === 0">
-    <p>No datasets registered. Use the API or MCP server to create one.</p>
+    <p>No pipelines registered. Use the API or MCP server to create one.</p>
   </div>
 </div>

@@ -1,6 +1,6 @@
 <div class="container">
-  <a class="back-link" routerLink="/datasets">&#8592; Back to Datasets</a>
-  <h1 class="page-title">{{ isEditMode ? 'Edit Dataset' : 'Create Dataset' }}</h1>
+  <a class="back-link" routerLink="/datasets">&#8592; Back to Pipelines</a>
+  <h1 class="page-title">{{ isEditMode ? 'Edit Pipeline' : 'Create Pipeline' }}</h1>
 
   <!-- Step indicators -->
   <div class="steps">
@@ -13,10 +13,12 @@
     <span class="step-dot" [class.active]="step >= 4" *ngIf="!isUnstructured()">4</span>
     <span class="step-line" [class.active]="step >= 5" *ngIf="!isUnstructured() && useDq && sourceType === 'csv'"></span>
     <span class="step-dot" [class.active]="step >= 5" *ngIf="!isUnstructured() && useDq && sourceType === 'csv'">5</span>
-    <span class="step-line" [class.active]="step >= 6"></span>
-    <span class="step-dot" [class.active]="step >= 6">6</span>
+    <span class="step-line" [class.active]="step >= 6" *ngIf="!isUnstructured()"></span>
+    <span class="step-dot" [class.active]="step >= 6" *ngIf="!isUnstructured()">6</span>
     <span class="step-line" [class.active]="step >= 7"></span>
     <span class="step-dot" [class.active]="step >= 7">7</span>
+    <span class="step-line" [class.active]="step >= 8"></span>
+    <span class="step-dot" [class.active]="step >= 8">8</span>
   </div>
 
   <div class="form-card">
@@ -436,8 +438,71 @@
       </ng-container>
     </div>
 
-    <!-- Step 6: Destination -->
-    <div *ngIf="step === 6">
+    <!-- Step 6: Transformation (optional, not for unstructured) -->
+    <div *ngIf="step === 6 && !isUnstructured()">
+      <h2 class="step-title">Transformation (optional)</h2>
+
+      <div class="form-row">
+        <label class="checkbox-label">
+          <input type="checkbox" [(ngModel)]="useTransformation"> Enable transformations for this dataset
+        </label>
+      </div>
+
+      <ng-container *ngIf="useTransformation">
+        <!-- Trim whitespace (CSV only) -->
+        <div class="form-row" *ngIf="sourceType === 'csv'">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="txTrimWhitespace"> Trim leading/trailing whitespace from all columns
+          </label>
+        </div>
+
+        <!-- Deduplication -->
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="txDeduplicate"> Remove duplicate rows
+          </label>
+        </div>
+
+        <!-- Row Function (CSV only) -->
+        <ng-container *ngIf="sourceType === 'csv'">
+          <hr class="divider">
+          <div class="form-row">
+            <label class="checkbox-label">
+              <input type="checkbox" [(ngModel)]="txUseRowFunction"> JavaScript row transformation
+            </label>
+          </div>
+          <div class="form-row" *ngIf="txUseRowFunction">
+            <label class="form-label">JavaScript File</label>
+            <div class="file-upload-row">
+              <input type="file" (change)="onTxRowFunctionFileSelected($event)" class="file-input" accept=".js">
+            </div>
+            <div class="form-hint" *ngIf="txRowFunctionFile" style="color: var(--accent-green)">Uploaded: {{ txRowFunctionFile }}</div>
+          </div>
+        </ng-container>
+
+        <!-- AI Transformation -->
+        <hr class="divider">
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="txUseAi"> AI Transformation
+          </label>
+        </div>
+        <ng-container *ngIf="txUseAi">
+          <div class="form-row">
+            <label class="form-label">Instruction</label>
+            <textarea class="form-input form-textarea" [(ngModel)]="txAiInstruction" rows="3"
+              placeholder="convert all date values from YYYY-MM-DD format to MM/DD/YYYY format"></textarea>
+          </div>
+          <div class="info-box">
+            <p>Describe how you want each row transformed using natural language. The AI model receives the full dataset and applies the transformation to every row — for example, converting date formats, categorizing values, standardizing phone numbers, or extracting entities.</p>
+            <p><strong>Note:</strong> The entire dataset is sent to the AI model in a single request, which then applies your instruction across every row. For large datasets, this can be slow and expensive depending on your AI provider. We recommend testing with a small file first to confirm the transformation produces the results you expect before processing your full dataset.</p>
+          </div>
+        </ng-container>
+      </ng-container>
+    </div>
+
+    <!-- Step 7: Destination -->
+    <div *ngIf="step === 7">
       <h2 class="step-title">Destination</h2>
 
       <div class="form-row">
@@ -451,6 +516,7 @@
             <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO)</option>
             <option value="kafka">Kafka</option>
             <option value="activemq">ActiveMQ</option>
+            <option value="restendpoint">REST Endpoint</option>
           </optgroup>
           <optgroup label="Vector Databases">
             <option value="qdrant">Qdrant</option>
@@ -542,6 +608,29 @@
         </div>
       </ng-container>
 
+      <!-- REST Endpoint -->
+      <ng-container *ngIf="destType === 'restendpoint'">
+        <div class="form-row">
+          <label class="form-label">Endpoint URL (required)</label>
+          <input class="form-input" [(ngModel)]="restEndpointUrl" placeholder="http://service:8080/data">
+        </div>
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Bearer Token (optional)</label>
+            <input class="form-input" type="password" [(ngModel)]="restEndpointBearerToken" placeholder="auth token">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Timeout (seconds)</label>
+            <input class="form-input" type="number" [(ngModel)]="restEndpointTimeout">
+          </div>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="restEndpointAsync"> Asynchronous mode
+          </label>
+        </div>
+      </ng-container>
+
       <!-- Vector Databases -->
       <ng-container *ngIf="isVectorDest()">
         <div class="form-row-inline" *ngIf="destType === 'pgvector'">
@@ -602,8 +691,8 @@
       </ng-container>
     </div>
 
-    <!-- Step 7: Review -->
-    <div *ngIf="step === 7">
+    <!-- Step 8: Review -->
+    <div *ngIf="step === 8">
       <h2 class="step-title">Review Configuration</h2>
       <div class="form-row">
         <label class="form-label">Dataset Configuration (editable)</label>
@@ -618,11 +707,11 @@
     <div class="btn-row">
       <button class="secondary-btn" (click)="prevStep()" *ngIf="step > 1">Back</button>
       <div class="spacer"></div>
-      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 7">
+      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 8">
         Next
       </button>
-      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 7">
-        {{ creating ? 'Saving...' : (isEditMode ? 'Save Dataset' : 'Create Dataset') }}
+      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 8">
+        {{ creating ? 'Saving...' : (isEditMode ? 'Save Pipeline' : 'Create Pipeline') }}
       </button>
     </div>
   </div>
