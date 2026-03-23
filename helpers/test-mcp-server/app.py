@@ -31,9 +31,9 @@ from server import _dispatch
 
 PASSED = 0
 FAILED = 0
-TEST_DATASET = "mcp_test_dataset"
-TEST_MONGO_DATASET = "mcp_test_mongodb"
-TEST_PGVECTOR_DATASET = "mcp_test_pgvector"
+TEST_PIPELINE = "mcp_test_pipeline"
+TEST_MONGO_PIPELINE = "mcp_test_mongodb"
+TEST_PGVECTOR_PIPELINE = "mcp_test_pgvector"
 PDF_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "test-scripts", "files", "apple-10-Q-jan-30-2026.pdf")
 
 
@@ -119,9 +119,40 @@ def main():
         print("\n  Pipeline not reachable. Is it running?")
         sys.exit(1)
 
-    # 2. List datasets
-    print("\n[2] List datasets")
-    test("list_datasets", "list_datasets")
+    # 2. Service health check
+    print("\n[2] Service health check")
+    result = test("check_service_health", "check_service_health")
+    if result:
+        try:
+            health = json.loads(result)
+            for svc, status in health.items():
+                s = status.get("status", "unknown") if isinstance(status, dict) else status
+                print(f"        {svc}: {s}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # 3. List pipelines
+    print("\n[3] List pipelines")
+    test("list_pipelines", "list_pipelines")
+
+    # ================================================================
+    # Metadata Discovery
+    # ================================================================
+    print("\n" + "=" * 60)
+    print("  Metadata Discovery")
+    print("=" * 60)
+
+    # 4. PostgreSQL metadata
+    print("\n[4] PostgreSQL metadata discovery")
+    test("list_postgres_databases", "list_postgres_databases")
+    test("list_postgres_schemas", "list_postgres_schemas", {"database": "datris"})
+    test("list_postgres_tables", "list_postgres_tables", {"database": "datris", "schema": "public"})
+    test("list_postgres_tables (vector only)", "list_postgres_tables", {"database": "datris", "schema": "public", "vector_only": True})
+
+    # 5. MongoDB metadata
+    print("\n[5] MongoDB metadata discovery")
+    test("list_mongodb_databases", "list_mongodb_databases")
+    test("list_mongodb_collections", "list_mongodb_collections")
 
     # ================================================================
     # Ingest stock_price CSV → PostgreSQL
@@ -130,10 +161,10 @@ def main():
     print("  Ingest Stock Prices: CSV → PostgreSQL")
     print("=" * 60)
 
-    # 3. Create PostgreSQL dataset
-    print("\n[3] Create PostgreSQL dataset")
+    # 6. Create PostgreSQL pipeline
+    print("\n[6] Create PostgreSQL pipeline")
     pg_config = {
-        "name": TEST_DATASET,
+        "name": TEST_PIPELINE,
         "source": {
             "schemaProperties": {
                 "fields": [
@@ -156,29 +187,37 @@ def main():
         },
         "destination": {
             "database": {
-                "dbName": "idata",
+                "dbName": "datris",
                 "schema": "public",
                 "table": "mcp_test_stock_price",
                 "usePostgres": True
             }
         }
     }
-    test("create_dataset (postgres)", "create_dataset", {"config": pg_config})
+    test("create_pipeline (postgres)", "create_pipeline", {"config": pg_config})
 
-    # 4. Upload CSV stock data
-    print("\n[4] Upload CSV → PostgreSQL")
+    # 7. Get pipeline config back
+    print("\n[7] Get pipeline config")
+    test("get_pipeline", "get_pipeline", {"pipeline": TEST_PIPELINE})
+
+    # 8. Upload CSV stock data
+    print("\n[8] Upload CSV → PostgreSQL")
     csv_path = create_test_csv()
-    result = test("upload_file (csv→postgres)", "upload_file", {"file_path": csv_path, "dataset": TEST_DATASET})
+    result = test("upload_file (csv→postgres)", "upload_file", {"file_path": csv_path, "pipeline": TEST_PIPELINE})
 
-    # 5. Wait for ingestion and check status
-    print("\n[5] Wait for PostgreSQL ingestion")
+    # 9. Wait for ingestion and check status
+    print("\n[9] Wait for PostgreSQL ingestion")
     if result:
         print("        Waiting 10 seconds for ingestion...")
         time.sleep(10)
-        test("get_job_status (postgres)", "get_job_status", {"dataset_name": TEST_DATASET})
+        test("get_job_status (postgres)", "get_job_status", {"pipeline_name": TEST_PIPELINE})
 
-    # 6. Query the ingested stock data from PostgreSQL
-    print("\n[6] Query stock prices from PostgreSQL")
+    # 10. Inspect table columns
+    print("\n[10] Inspect ingested table columns")
+    test("list_postgres_columns", "list_postgres_columns", {"database": "datris", "schema": "public", "table": "mcp_test_stock_price"})
+
+    # 11. Query the ingested stock data from PostgreSQL
+    print("\n[11] Query stock prices from PostgreSQL")
     pg_sql = "SELECT * FROM public.mcp_test_stock_price"
     print(f"        SQL: {pg_sql}")
     result = test("query_postgres", "query_postgres", {"sql": pg_sql})
@@ -191,10 +230,10 @@ def main():
     print("  Ingest Stock Prices: JSON → MongoDB")
     print("=" * 60)
 
-    # 7. Create MongoDB dataset
-    print("\n[7] Create MongoDB dataset")
+    # 12. Create MongoDB pipeline
+    print("\n[12] Create MongoDB pipeline")
     mongo_config = {
-        "name": TEST_MONGO_DATASET,
+        "name": TEST_MONGO_PIPELINE,
         "source": {
             "schemaProperties": {
                 "fields": [
@@ -210,29 +249,29 @@ def main():
         },
         "destination": {
             "database": {
-                "dbName": "idata",
+                "dbName": "datris",
                 "table": "mcp_test_stock_price",
                 "useMongoDB": True
             }
         }
     }
-    test("create_dataset (mongodb)", "create_dataset", {"config": mongo_config})
+    test("create_pipeline (mongodb)", "create_pipeline", {"config": mongo_config})
 
-    # 8. Upload JSON stock data
-    print("\n[8] Upload JSON → MongoDB")
+    # 13. Upload JSON stock data
+    print("\n[13] Upload JSON → MongoDB")
     json_path = create_test_json()
-    result = test("upload_file (json→mongodb)", "upload_file", {"file_path": json_path, "dataset": TEST_MONGO_DATASET})
+    result = test("upload_file (json→mongodb)", "upload_file", {"file_path": json_path, "pipeline": TEST_MONGO_PIPELINE})
 
-    # 9. Wait for ingestion and check status
-    print("\n[9] Wait for MongoDB ingestion")
+    # 14. Wait for ingestion and check status
+    print("\n[14] Wait for MongoDB ingestion")
     if result:
         print("        Waiting 10 seconds for ingestion...")
         time.sleep(10)
-        test("get_job_status (mongodb)", "get_job_status", {"dataset_name": TEST_MONGO_DATASET})
+        test("get_job_status (mongodb)", "get_job_status", {"pipeline_name": TEST_MONGO_PIPELINE})
 
-    # 10. Query the ingested stock data from MongoDB
-    print("\n[10] Query stock prices from MongoDB")
-    print("        Collection: mcp_test_stock_price, db: testdb")
+    # 15. Query the ingested stock data from MongoDB
+    print("\n[15] Query stock prices from MongoDB")
+    print("        Collection: mcp_test_stock_price")
     result = test("query_mongodb", "query_mongodb", {"collection": "mcp_test_stock_price", "limit": 10})
     dump_results(result)
 
@@ -243,20 +282,20 @@ def main():
     print("  Profile & Generate Schema")
     print("-" * 60)
 
-    # 11. Profile data
-    print("\n[11] Profile data")
+    # 16. Profile data
+    print("\n[16] Profile data")
     test("profile_data", "profile_data", {"file_path": csv_path})
 
-    # 12. Generate schema
-    print("\n[12] Generate schema")
-    test("generate_schema", "generate_schema", {"file_path": csv_path, "dataset": "mcp_generated_test"})
+    # 17. Generate schema
+    print("\n[17] Generate schema")
+    test("generate_schema", "generate_schema", {"file_path": csv_path, "pipeline": "mcp_generated_test"})
 
     # ================================================================
-    # Cleanup structured datasets
+    # Cleanup structured pipelines
     # ================================================================
-    print("\n[13] Cleanup structured datasets")
-    test("delete_dataset (postgres)", "delete_dataset", {"dataset": TEST_DATASET})
-    test("delete_dataset (mongodb)", "delete_dataset", {"dataset": TEST_MONGO_DATASET})
+    print("\n[18] Cleanup structured pipelines")
+    test("delete_pipeline (postgres)", "delete_pipeline", {"pipeline": TEST_PIPELINE})
+    test("delete_pipeline (mongodb)", "delete_pipeline", {"pipeline": TEST_MONGO_PIPELINE})
     os.unlink(csv_path)
     os.unlink(json_path)
 
@@ -267,10 +306,10 @@ def main():
     print("  Vector Database: PDF → pgvector")
     print("=" * 60)
 
-    # 14. Create pgvector dataset
-    print("\n[14] Create pgvector dataset")
+    # 19. Create pgvector pipeline
+    print("\n[19] Create pgvector pipeline")
     pgvector_config = {
-        "name": TEST_PGVECTOR_DATASET,
+        "name": TEST_PGVECTOR_PIPELINE,
         "source": {
             "fileAttributes": {
                 "unstructuredAttributes": {
@@ -297,31 +336,47 @@ def main():
             }
         }
     }
-    test("create_dataset (pgvector)", "create_dataset", {"config": pgvector_config})
+    test("create_pipeline (pgvector)", "create_pipeline", {"config": pgvector_config})
 
-    # 15. Upload PDF to pgvector
-    print("\n[15] Upload PDF to pgvector")
+    # 20. Upload PDF to pgvector
+    print("\n[20] Upload PDF to pgvector")
     if os.path.exists(PDF_PATH):
-        result = test("upload_file (pdf→pgvector)", "upload_file", {"file_path": PDF_PATH, "dataset": TEST_PGVECTOR_DATASET})
+        result = test("upload_file (pdf→pgvector)", "upload_file", {"file_path": PDF_PATH, "pipeline": TEST_PGVECTOR_PIPELINE})
 
-        # 16. Wait for processing then check status
-        print("\n[16] Wait for pgvector ingestion")
+        # 21. Wait for processing then check status
+        print("\n[21] Wait for pgvector ingestion")
         if result:
             print("        Waiting 15 seconds for ingestion...")
             time.sleep(15)
-            test("get_job_status (pgvector)", "get_job_status", {"dataset_name": TEST_PGVECTOR_DATASET})
+            test("get_job_status (pgvector)", "get_job_status", {"pipeline_name": TEST_PGVECTOR_PIPELINE})
 
-        # 17. Search pgvector
-        print("\n[17] Search pgvector")
+        # 22. Search pgvector
+        print("\n[22] Search pgvector")
         print("        Query: What was Apple's revenue?")
         result = test("search_pgvector", "search_pgvector", {"query": "What was Apple's revenue?", "table": "mcp_test_vectors", "top_k": 3})
         dump_results(result)
+
+        # 23. AI Answer (RAG)
+        print("\n[23] AI Answer (RAG)")
+        if result:
+            try:
+                parsed = json.loads(result)
+                results = parsed.get("results", [])
+                context = "\n".join(r.get("text", "") for r in results if r.get("text"))
+                if context:
+                    test("ai_answer", "ai_answer", {"query": "What was Apple's revenue?", "context": context})
+                else:
+                    print("  SKIP  No text in search results for ai_answer test")
+            except (json.JSONDecodeError, TypeError):
+                print("  SKIP  Could not parse search results for ai_answer test")
+        else:
+            print("  SKIP  No search results for ai_answer test")
     else:
         print(f"  SKIP  PDF not found at {PDF_PATH}")
 
-    # 18. Cleanup pgvector dataset
-    print("\n[18] Cleanup pgvector dataset")
-    test("delete_dataset (pgvector)", "delete_dataset", {"dataset": TEST_PGVECTOR_DATASET})
+    # 24. Cleanup pgvector pipeline
+    print("\n[24] Cleanup pgvector pipeline")
+    test("delete_pipeline (pgvector)", "delete_pipeline", {"pipeline": TEST_PGVECTOR_PIPELINE})
 
     # Summary
     print()

@@ -74,6 +74,39 @@ components:
         pipelineToken:
           type: string
 
+    ColumnInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+
+    AiAnswerRequest:
+      type: object
+      required: [query, context]
+      properties:
+        query:
+          type: string
+          description: The question to answer
+        context:
+          type: string
+          description: Context text to base the answer on (e.g., retrieved document chunks)
+
+    AiAnswerResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+
+    ConfigUploadResponse:
+      type: object
+      properties:
+        filename:
+          type: string
+        path:
+          type: string
+
 paths:
   # ── Pipeline Management ──────────────────────────────────────
 
@@ -421,7 +454,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [query, embeddingSecretName, qdrantSecretName]
+              required: [query]
               properties:
                 query:
                   type: string
@@ -432,7 +465,7 @@ paths:
                   description: Qdrant collection name
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider
+                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
                 qdrantSecretName:
                   type: string
                   description: Vault secret name for Qdrant connection
@@ -460,7 +493,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [query, embeddingSecretName, weaviateSecretName]
+              required: [query]
               properties:
                 query:
                   type: string
@@ -471,7 +504,7 @@ paths:
                   description: Weaviate class name (PascalCase)
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider
+                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
                 weaviateSecretName:
                   type: string
                   description: Vault secret name for Weaviate connection
@@ -498,7 +531,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [query, embeddingSecretName, milvusSecretName]
+              required: [query]
               properties:
                 query:
                   type: string
@@ -509,7 +542,7 @@ paths:
                   description: Milvus collection name
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider
+                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
                 milvusSecretName:
                   type: string
                   description: Vault secret name for Milvus connection
@@ -536,7 +569,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [query, embeddingSecretName, chromaSecretName]
+              required: [query]
               properties:
                 query:
                   type: string
@@ -547,7 +580,7 @@ paths:
                   description: Chroma collection name
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider
+                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
                 chromaSecretName:
                   type: string
                   description: Vault secret name for Chroma connection
@@ -574,7 +607,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [query, embeddingSecretName, postgresSecretName]
+              required: [query]
               properties:
                 query:
                   type: string
@@ -589,7 +622,7 @@ paths:
                   description: PostgreSQL schema
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider
+                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
                 postgresSecretName:
                   type: string
                   description: Vault secret name for PostgreSQL/pgvector connection
@@ -619,5 +652,250 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VersionResponse'
+        '500':
+          description: Error
+
+  # ── Metadata Discovery ────────────────────────────────────
+
+  /api/v1/metadata/postgres/databases:
+    get:
+      tags: [Metadata]
+      summary: List PostgreSQL databases
+      description: List all PostgreSQL databases available in the platform.
+      responses:
+        '200':
+          description: Array of database names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
+  /api/v1/metadata/postgres/schemas:
+    get:
+      tags: [Metadata]
+      summary: List PostgreSQL schemas
+      description: List all schemas in a PostgreSQL database.
+      parameters:
+        - name: database
+          in: query
+          schema:
+            type: string
+            default: datris
+          description: Database name
+      responses:
+        '200':
+          description: Array of schema names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
+  /api/v1/metadata/postgres/tables:
+    get:
+      tags: [Metadata]
+      summary: List PostgreSQL tables
+      description: List all tables in a PostgreSQL schema. Set vectorOnly to true to filter to tables with an embedding column (pgvector tables).
+      parameters:
+        - name: database
+          in: query
+          schema:
+            type: string
+            default: datris
+          description: Database name
+        - name: schema
+          in: query
+          schema:
+            type: string
+            default: public
+          description: Schema name
+        - name: vectorOnly
+          in: query
+          schema:
+            type: string
+            default: "false"
+          description: If "true", only return tables with an embedding column
+      responses:
+        '200':
+          description: Array of table names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
+  /api/v1/metadata/postgres/columns:
+    get:
+      tags: [Metadata]
+      summary: List table columns
+      description: List all columns and their data types for a specific PostgreSQL table.
+      parameters:
+        - name: database
+          in: query
+          schema:
+            type: string
+            default: datris
+          description: Database name
+        - name: schema
+          in: query
+          schema:
+            type: string
+            default: public
+          description: Schema name
+        - name: table
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Table name
+      responses:
+        '200':
+          description: Array of column definitions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ColumnInfo'
+        '500':
+          description: Error
+
+  /api/v1/metadata/mongodb/databases:
+    get:
+      tags: [Metadata]
+      summary: List MongoDB databases
+      description: List all MongoDB databases available in the platform. Excludes system databases (admin, config, local).
+      responses:
+        '200':
+          description: Array of database names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
+  /api/v1/metadata/mongodb/collections:
+    get:
+      tags: [Metadata]
+      summary: List MongoDB collections
+      description: List MongoDB collections. If database is specified, lists collections in that database. Otherwise lists all collections across all databases in "db.collection" format.
+      parameters:
+        - name: database
+          in: query
+          schema:
+            type: string
+          description: Database name (optional; omit to list from all databases)
+      responses:
+        '200':
+          description: Array of collection names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
+  # ── AI Answer ──────────────────────────────────────────────
+
+  /api/v1/ai/answer:
+    post:
+      tags: [AI]
+      summary: AI-powered question answering
+      description: Use AI to answer a question based on provided context. Ideal for RAG workflows — retrieve relevant chunks via vector search, then pass them as context along with the user's question.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnswerRequest'
+      responses:
+        '200':
+          description: AI-generated answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnswerResponse'
+        '500':
+          description: Error
+
+  # ── Configuration ──────────────────────────────────────────
+
+  /api/v1/config/upload:
+    post:
+      tags: [Configuration]
+      summary: Upload a configuration file
+      description: Upload a JSON Schema (for pipeline dataQuality schema validation) or JavaScript file (for pipeline transformation row functions) to storage. The uploaded file can then be referenced by pipeline configurations.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [type, file]
+              properties:
+                type:
+                  type: string
+                  enum: [validation-schema, javascript]
+                  description: "Config file type: 'validation-schema' for JSON Schema or 'javascript' for transformation scripts"
+                file:
+                  type: string
+                  format: binary
+                  description: Configuration file to upload
+      responses:
+        '200':
+          description: Upload confirmation with storage path
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigUploadResponse'
+        '500':
+          description: Error
+
+  # ── Health Check ───────────────────────────────────────────
+
+  /api/v1/health/services:
+    get:
+      tags: [Health]
+      summary: Check backend service health
+      description: Returns the health status of all configured backend services including PostgreSQL, MongoDB, MinIO, ActiveMQ, Kafka, and vector databases (Qdrant, Weaviate, Milvus, Chroma, pgvector). Each service reports "up", "down", or "not_configured".
+      responses:
+        '200':
+          description: Service health status map
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                      enum: [up, down, not_configured]
+                    message:
+                      type: string
+              example:
+                postgres:
+                  status: up
+                  message: Connected
+                mongodb:
+                  status: up
+                  message: Connected
+                qdrant:
+                  status: not_configured
         '500':
           description: Error

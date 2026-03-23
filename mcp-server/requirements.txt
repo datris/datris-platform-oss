@@ -3,10 +3,3 @@ requests
 python-dotenv
 uvicorn
 starlette
-openai
-qdrant-client
-weaviate-client
-pymilvus
-chromadb
-psycopg2-binary
-pymongo

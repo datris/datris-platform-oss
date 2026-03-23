@@ -2,7 +2,7 @@
 
 The Search API provides REST endpoints for semantic search across vector databases. Each endpoint converts a natural language query into an embedding vector, searches the specified vector database, and returns the most similar results with relevance scores.
 
-All search endpoints require embedding and vector database connection details stored in HashiCorp Vault.
+All search endpoints use embedding and vector database connection details stored in HashiCorp Vault. Secret names can be passed per-request or configured as server defaults in `application.yaml`.
 
 ## Common Parameters
 
@@ -11,7 +11,7 @@ All search endpoints share these parameters:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `query` | string | Yes | | Natural language search query |
-| `embeddingSecretName` | string | Yes | | Vault secret name for the embedding provider (must contain `endpoint`, `model`, and optionally `apiKey`) |
+| `embeddingSecretName` | string | No | Server default | Vault secret name for the embedding provider (must contain `endpoint`, `model`, and optionally `apiKey`). Uses server default from `application.yaml` if omitted. |
 | `topK` | integer | No | 5 | Number of results to return |
 
 ## Common Response Format
@@ -24,7 +24,7 @@ All search endpoints return:
     {
       "text": "document chunk content",
       "chunk_index": 0,
-      "source_dataset": "dataset_name",
+      "source_dataset": "pipeline_name",
       "filename": "document.pdf",
       "_score": 0.89
     }
@@ -46,7 +46,7 @@ POST /api/v1/search/qdrant
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `collection` | string | No | `financial_documents` | Qdrant collection name |
-| `qdrantSecretName` | string | Yes | | Vault secret (must contain `host`, optionally `port`, `apiKey`) |
+| `qdrantSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `apiKey`). Uses server default if omitted. |
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/qdrant \
@@ -71,7 +71,7 @@ POST /api/v1/search/weaviate
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `className` | string | No | `FinancialDocuments` | Weaviate class name (PascalCase) |
-| `weaviateSecretName` | string | Yes | | Vault secret (must contain `host`, optionally `port`, `scheme`, `apiKey`) |
+| `weaviateSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `scheme`, `apiKey`). Uses server default if omitted. |
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/weaviate \
@@ -96,7 +96,7 @@ POST /api/v1/search/milvus
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `collection` | string | No | `financial_documents` | Milvus collection name |
-| `milvusSecretName` | string | Yes | | Vault secret (must contain `host`, optionally `port`, `apiKey`) |
+| `milvusSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `apiKey`). Uses server default if omitted. |
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/milvus \
@@ -121,7 +121,7 @@ POST /api/v1/search/chroma
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `collection` | string | No | `financial_documents` | Chroma collection name |
-| `chromaSecretName` | string | Yes | | Vault secret (must contain `host`, optionally `port`) |
+| `chromaSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`). Uses server default if omitted. |
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/chroma \
@@ -147,7 +147,7 @@ POST /api/v1/search/pgvector
 |-------|------|----------|---------|-------------|
 | `table` | string | No | `financial_documents` | PostgreSQL table name |
 | `schema` | string | No | `public` | PostgreSQL schema |
-| `postgresSecretName` | string | Yes | | Vault secret (must contain `jdbcUrl`, optionally `username`, `password`) |
+| `postgresSecretName` | string | No | Server default | Vault secret (must contain `jdbcUrl`, optionally `username`, `password`). Uses server default if omitted. |
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/pgvector \

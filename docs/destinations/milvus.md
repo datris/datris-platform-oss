@@ -129,7 +129,7 @@ Every entity automatically includes:
 - `text` — the chunk text
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline pipeline name
+- `source_dataset` — pipeline name
 - `embedding` — float vector for similarity search
 
 ## How It Works

@@ -129,7 +129,7 @@ In addition to static metadata, every chunk automatically includes:
 - `text` — the chunk text
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline pipeline name
+- `source_dataset` — pipeline name
 
 ## How It Works
 

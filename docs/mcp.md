@@ -1,8 +1,16 @@
 # MCP Server (AI Agent Integration)
 
-The pipeline includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that lets AI agents interact with the pipeline natively. Any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, or custom agentic frameworks — can upload files, register pipelines, monitor jobs, profile data, search vector databases, and query structured data without custom integration code.
+The pipeline includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that lets AI agents interact with the platform natively. Any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, or custom agentic frameworks — can discover database metadata, create and manage pipelines, upload files, monitor jobs, profile data, search vector databases, query structured data, answer questions with AI-powered RAG, and upload configuration files — all without custom integration code.
 
-The MCP server is a lightweight Python service that calls the pipeline's existing REST API and connects directly to backend databases for query operations. It runs alongside the pipeline in Docker or locally for development.
+The MCP server is a lightweight Python service that routes all operations through the pipeline's REST API. It runs alongside the pipeline in Docker or locally for development.
+
+## Resources
+
+The MCP server exposes resources that agents can read on demand for detailed documentation.
+
+| Resource URI | Description |
+|------|-------------|
+| `datris://pipeline-config-reference` | Complete reference for building pipeline configurations — all source types, data quality rules, transformations, and destination types with JSON examples |
 
 ## Available Tools
 
@@ -20,10 +28,11 @@ The MCP server is a lightweight Python service that calls the pipeline's existin
 | `generate_schema` | AI-generate a pipeline config from a file (CSV, JSON, XML) |
 | `profile_data` | AI-profile data with summary stats and suggested DQ rules |
 | `get_version` | Get pipeline server version |
+| `check_service_health` | Check which backend services are up, down, or not configured |
 
 ### Vector Database Search
 
-Semantic search across any of the pipeline's supported vector databases. Each tool takes a natural language query, generates an embedding, and returns the most similar document chunks with scores and metadata.
+Semantic search across any of the pipeline's supported vector databases. Each tool takes a natural language query and returns the most similar document chunks with scores and metadata.
 
 | Tool | Description |
 |------|-------------|
@@ -35,12 +44,37 @@ Semantic search across any of the pipeline's supported vector databases. Each to
 
 ### Database Queries
 
-Read-only queries against the pipeline's backend databases. PostgreSQL queries run in a read-only transaction; MongoDB uses find() only.
+Read-only queries against the pipeline's backend databases.
 
 | Tool | Description |
 |------|-------------|
 | `query_postgres` | Execute a read-only SQL SELECT query against PostgreSQL |
 | `query_mongodb` | Query a MongoDB collection with filter and projection |
+
+### Metadata Discovery
+
+Explore the structure of PostgreSQL and MongoDB databases managed by the platform. Use these tools to understand what data is available before writing queries.
+
+| Tool | Description |
+|------|-------------|
+| `list_postgres_databases` | List all PostgreSQL databases |
+| `list_postgres_schemas` | List schemas in a PostgreSQL database |
+| `list_postgres_tables` | List tables in a schema (supports vector-only filter) |
+| `list_postgres_columns` | List columns and types for a specific table |
+| `list_mongodb_databases` | List all MongoDB databases |
+| `list_mongodb_collections` | List collections (optionally filtered by database) |
+
+### AI
+
+| Tool | Description |
+|------|-------------|
+| `ai_answer` | Answer a question using AI based on provided context (RAG) |
+
+### Configuration
+
+| Tool | Description |
+|------|-------------|
+| `upload_config` | Upload a JSON Schema (validation) or JavaScript (transformation) config file |
 
 ## Setup
 
@@ -101,49 +135,12 @@ Add to `.mcp.json` in your project root:
 
 ## Environment Variables
 
-### Pipeline
-
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PIPELINE_URL` | `http://localhost:8080` | Pipeline server URL |
 | `PIPELINE_API_KEY` | (empty) | API key if pipeline has key validation enabled |
 
-### Embedding (required for vector search tools)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | `openai` | `openai` or `ollama` |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
-| `EMBEDDING_ENDPOINT` | `http://localhost:11434` | Ollama endpoint (if using Ollama) |
-| `OPENAI_API_KEY` | (empty) | OpenAI API key (if using OpenAI) |
-
-### Vector Databases
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QDRANT_HOST` | `localhost` | Qdrant host |
-| `QDRANT_PORT` | `6333` | Qdrant port |
-| `WEAVIATE_HOST` | `localhost` | Weaviate host |
-| `WEAVIATE_PORT` | `8079` | Weaviate REST port |
-| `WEAVIATE_GRPC_PORT` | `50051` | Weaviate gRPC port |
-| `MILVUS_HOST` | `localhost` | Milvus host |
-| `MILVUS_PORT` | `19530` | Milvus port |
-| `CHROMA_HOST` | `localhost` | Chroma host |
-| `CHROMA_PORT` | `8000` | Chroma port |
-| `PG_HOST` | `localhost` | pgvector PostgreSQL host |
-| `PG_PORT` | `5432` | pgvector PostgreSQL port |
-| `PG_DATABASE` | `datris` | pgvector database name |
-| `PG_USER` | `postgres` | pgvector username |
-| `PG_PASSWORD` | `postgres` | pgvector password |
-
-### Databases
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection URI |
-| `MONGO_DATABASE` | `datris` | MongoDB database name |
-
-PostgreSQL query tool reuses the `PG_*` variables above.
+All database connections, vector search, and embedding are handled by the pipeline server. The MCP server only needs the pipeline URL.
 
 ## Example Agent Workflows
 
@@ -163,7 +160,15 @@ An AI agent could autonomously:
 2. **Upload documents** — `upload_file` for each PDF/document
 3. **Monitor** — `get_job_status` until all documents are processed
 4. **Search** — `search_qdrant` to find relevant chunks
-5. **Answer** — agent synthesizes answer from retrieved context
+5. **Answer** — `ai_answer` with the retrieved chunks as context and the user's question
+
+### Discover and query data
+
+1. **List databases** — `list_postgres_databases` to see available databases
+2. **List schemas** — `list_postgres_schemas` to explore a database
+3. **List tables** — `list_postgres_tables` to find relevant tables
+4. **Inspect columns** — `list_postgres_columns` to understand table structure
+5. **Query** — `query_postgres` with a well-formed SELECT query
 
 ### Cross-database analysis
 
@@ -171,11 +176,12 @@ An AI agent could autonomously:
 2. **Query structured data** — `query_postgres` to get related financial metrics
 3. **Combine** — agent merges unstructured + structured data in its response
 
-### Data exploration
+### Custom validation and transformation
 
-1. **Browse configs** — `query_mongodb` to list pipeline configurations
-2. **Sample data** — `query_postgres` to preview ingested tables
-3. **Summarize** — agent describes what data is available
+1. **Upload JSON Schema** — `upload_config` with type "validation-schema" and a JSON Schema file
+2. **Upload JavaScript** — `upload_config` with type "javascript" and a JS transformation file
+3. **Create pipeline** — `create_pipeline` referencing the uploaded schema and JS files
+4. **Upload data** — `upload_file` to process data with custom rules
 
 ### Automated data quality monitoring
 

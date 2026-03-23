@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.model.DatrisException
+import ai.datris.model.{DatrisEnvironment, DatrisException}
 import ai.datris.util._
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -30,8 +30,8 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "financial_documents")
-            val embeddingSecretName = requireString(body, "embeddingSecretName")
-            val qdrantSecretName = requireString(body, "qdrantSecretName")
+            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
+            val qdrantSecretName = optString(body, "qdrantSecretName", DatrisEnvironment.values.qdrantSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = QdrantSearchUtil.search(query, collection, embeddingSecretName, qdrantSecretName, topK)
@@ -53,8 +53,8 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val className = optString(body, "className", "FinancialDocuments")
-            val embeddingSecretName = requireString(body, "embeddingSecretName")
-            val weaviateSecretName = requireString(body, "weaviateSecretName")
+            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
+            val weaviateSecretName = optString(body, "weaviateSecretName", DatrisEnvironment.values.weaviateSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = WeaviateSearchUtil.search(query, className, embeddingSecretName, weaviateSecretName, topK)
@@ -76,8 +76,8 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "financial_documents")
-            val embeddingSecretName = requireString(body, "embeddingSecretName")
-            val milvusSecretName = requireString(body, "milvusSecretName")
+            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
+            val milvusSecretName = optString(body, "milvusSecretName", DatrisEnvironment.values.milvusSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = MilvusSearchUtil.search(query, collection, embeddingSecretName, milvusSecretName, topK)
@@ -99,8 +99,8 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "financial_documents")
-            val embeddingSecretName = requireString(body, "embeddingSecretName")
-            val chromaSecretName = requireString(body, "chromaSecretName")
+            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
+            val chromaSecretName = optString(body, "chromaSecretName", DatrisEnvironment.values.chromaSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = ChromaSearchUtil.search(query, collection, embeddingSecretName, chromaSecretName, topK)
@@ -123,8 +123,8 @@ class SearchAPIController {
             val query = requireString(body, "query")
             val table = optString(body, "table", "financial_documents")
             val schema = optString(body, "schema", "public")
-            val embeddingSecretName = requireString(body, "embeddingSecretName")
-            val postgresSecretName = requireString(body, "postgresSecretName")
+            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
+            val postgresSecretName = optString(body, "postgresSecretName", DatrisEnvironment.values.pgvectorSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = PGVectorSearchUtil.search(query, table, embeddingSecretName, postgresSecretName, schema, topK)

@@ -83,6 +83,24 @@ class StartupRunner extends ApplicationRunner {
     @Value("${ai.aiSecretName:}")
     var aiSecretName: String = _
 
+    @Value("${secrets.embeddingSecretName:}")
+    var embeddingSecretName: String = _
+
+    @Value("${secrets.qdrantSecretName:}")
+    var qdrantSecretName: String = _
+
+    @Value("${secrets.weaviateSecretName:}")
+    var weaviateSecretName: String = _
+
+    @Value("${secrets.milvusSecretName:}")
+    var milvusSecretName: String = _
+
+    @Value("${secrets.chromaSecretName:}")
+    var chromaSecretName: String = _
+
+    @Value("${secrets.pgvectorSecretName:}")
+    var pgvectorSecretName: String = _
+
     @Override
     def run(args: ApplicationArguments): Unit =  {
         initDatrisEnvironment()
@@ -139,7 +157,13 @@ class StartupRunner extends ApplicationRunner {
             minIOConfig = null,
             activeMQConfig = null,
             aiConfig = null,
-            aiEnabled = false
+            aiEnabled = false,
+            embeddingSecretName,
+            qdrantSecretName,
+            weaviateSecretName,
+            milvusSecretName,
+            chromaSecretName,
+            pgvectorSecretName
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

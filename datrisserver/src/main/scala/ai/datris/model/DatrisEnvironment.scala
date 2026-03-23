@@ -34,5 +34,11 @@ case class DatrisEnvironment(
                                   minIOConfig: MinIOConfig,
                                   activeMQConfig: ActiveMQConfig,
                                   aiConfig: AIConfig,
-                                  aiEnabled: Boolean
+                                  aiEnabled: Boolean,
+                                  embeddingSecretName: String,
+                                  qdrantSecretName: String,
+                                  weaviateSecretName: String,
+                                  milvusSecretName: String,
+                                  chromaSecretName: String,
+                                  pgvectorSecretName: String
                               )
