@@ -139,3 +139,30 @@ tbody tr:last-child td {
   background: rgba(100, 116, 139, 0.2);
   color: var(--text-secondary);
 }
+
+.description-text {
+  position: relative;
+}
+
+.copy-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  margin-left: 6px;
+  border-radius: 4px;
+  vertical-align: middle;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+}
+
+.copy-btn .material-icons {
+  font-size: 16px;
+}
+
+.copy-btn:hover {
+  color: var(--accent-cyan);
+  background: rgba(0, 180, 255, 0.1);
+}

@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { PipelineStatusService, PipelineStatusDetail } from '../pipeline-status.service';
 
@@ -7,9 +7,11 @@ import { PipelineStatusService, PipelineStatusDetail } from '../pipeline-status.
   templateUrl: './pipeline-detail.component.html',
   styleUrls: ['./pipeline-detail.component.css']
 })
-export class PipelineDetailComponent implements OnInit {
+export class PipelineDetailComponent implements OnInit, OnDestroy {
   pipeline: string | null = '';
   pipelineStatusDetails: PipelineStatusDetail[] = [];
+  private pipelineToken = '';
+  private refreshInterval: any;
 
   constructor(
     private route: ActivatedRoute,
@@ -18,9 +20,23 @@ export class PipelineDetailComponent implements OnInit {
 
   ngOnInit(): void {
     this.pipeline = this.route.snapshot.paramMap.get('pipeline');
-    let pipelineToken = this.route.snapshot.paramMap.get('pipelineToken')!;
+    this.pipelineToken = this.route.snapshot.paramMap.get('pipelineToken')!;
+    this.loadData();
+    this.refreshInterval = setInterval(() => this.loadData(), 5000);
+  }
 
-    this.pipelineStatusService.getPipelineStatusDetail(pipelineToken).subscribe(data => {
+  ngOnDestroy(): void {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+    }
+  }
+
+  copyToClipboard(text: string): void {
+    navigator.clipboard.writeText(text);
+  }
+
+  private loadData(): void {
+    this.pipelineStatusService.getPipelineStatusDetail(this.pipelineToken).subscribe(data => {
       this.pipelineStatusDetails = data;
     });
   }

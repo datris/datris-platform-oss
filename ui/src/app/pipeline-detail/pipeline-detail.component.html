@@ -29,7 +29,13 @@
             >{{ detail.state }}</span>
           </td>
           <td class="mono">{{ detail.code }}</td>
-          <td class="description-text">{{ detail.description }}</td>
+          <td class="description-text">
+            <span>{{ detail.description }}</span>
+            <button class="copy-btn" *ngIf="detail.code === 'error' || detail.code === 'warning' || detail.description.includes('AI Explanation')"
+              (click)="copyToClipboard(detail.description)" title="Copy to clipboard">
+              <span class="material-icons copy-icon">content_copy</span>
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>

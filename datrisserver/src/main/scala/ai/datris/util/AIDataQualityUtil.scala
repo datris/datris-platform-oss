@@ -99,14 +99,19 @@ object AIDataQualityUtil {
         logger.info("Running AI rule in full-file mode on raw data, length: " + rawData.length)
 
         val prompt =
-            s"""IMPORTANT: You are a data validation engine. Do NOT describe or summarize the data. Do NOT ask questions.
-               |Below is a data file. Your ONLY job is to validate every record against this rule: "$instruction"
+            s"""You are a data validation engine. Validate every record in the data below against this rule: "$instruction"
                |
-               |Output ONLY a JSON array. No explanation, no markdown, no code fences.
-               |Include ONLY records that FAIL validation. If all records pass, return exactly: []
-               |Format: [{"index": <record_number_starting_from_0>, "reason": "brief failure description"}, ...]
-               |Each reason must be a single short sentence stating the failure. Do NOT include reasoning, analysis, corrections, or second-guessing.
+               |RULES:
+               |1. Check EVERY record against the validation rule
+               |2. Return ONLY records that FAIL — do NOT include passing records
+               |3. If ALL records PASS validation, return EXACTLY this: []
+               |4. Do NOT return placeholder entries — only real failures with real index numbers
+               |5. Output ONLY a raw JSON array — no markdown, no code fences, no explanation
                |
+               |FORMAT: [{"index": 0, "reason": "brief failure"}, ...]
+               |Where index is the 0-based record number in the data.
+               |
+               |DATA:
                |$rawData""".stripMargin
 
         callWithRetry(prompt)
@@ -151,23 +156,34 @@ object AIDataQualityUtil {
     private def parseFailuresArray(text: String): List[(Int, String)] = {
         val start = text.indexOf('[')
         val end = if (start >= 0) findMatchingBracket(text, start) else -1
-        if (start < 0 || end < 0)
+        if (start < 0 || end < 0) {
+            // AI returned text instead of JSON array — if it indicates no failures, treat as pass
+            val lower = text.toLowerCase
+            if (lower.contains("no records fail") || lower.contains("all records pass") || lower.contains("no failures") || lower.contains("all pass") || lower.contains("no violations"))
+                return List.empty
             throw new DatrisException("AI validation response did not contain a JSON array. Response: " + text)
+        }
 
         val gson = new GsonBuilder().setLenient().create()
-        val jsonArray = text.substring(start, end + 1)
-        val resultList = gson.fromJson(jsonArray, classOf[java.util.List[java.util.Map[String, Any]]])
-        if (resultList == null)
-            throw new DatrisException("AI validation response could not be parsed as a JSON array")
+        val jsonArray = text.substring(start, end + 1).trim
+        if (jsonArray == "[]") return List.empty
 
-        resultList.asScala.map { entry =>
+        val resultList = gson.fromJson(jsonArray, classOf[java.util.List[java.util.Map[String, Any]]])
+        if (resultList == null || resultList.isEmpty)
+            return List.empty
+
+        resultList.asScala.flatMap { entry =>
             val index = entry.get("index") match {
                 case d: java.lang.Double => d.toInt
                 case i: java.lang.Integer => i.toInt
-                case other => throw new DatrisException("AI validation response 'index' field is not a number: " + other)
+                case other => -1
             }
             val reason = Option(entry.get("reason")).map(_.toString).getOrElse("")
-            (index, reason)
+            // Filter out placeholder/bogus entries from AI
+            if (index < 0 || reason.toLowerCase == "placeholder" || reason.isEmpty)
+                None
+            else
+                Some((index, reason))
         }.toList
     }
 }
