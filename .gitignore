@@ -85,3 +85,6 @@ mcp-server/my-env/
 
 # node
 node_modules/
+
+# UI build output
+ui/dist/
