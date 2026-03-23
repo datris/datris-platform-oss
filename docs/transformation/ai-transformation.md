@@ -4,7 +4,7 @@ AI transformations apply natural language instructions to transform data using a
 
 ## Configuration
 
-Add an `aiTransformation` block to the `transformation` section of the dataset configuration:
+Add an `aiTransformation` block to the `transformation` section of the pipeline configuration:
 
 ```json
 "transformation": {
@@ -68,7 +68,7 @@ For large files, enable sampling to transform only a subset of rows. Sampled row
 }
 ```
 
-This is useful for testing transformations on a subset before applying to the full dataset, or when only a sample needs enrichment.
+This is useful for testing transformations on a subset before applying to the full pipeline, or when only a sample needs enrichment.
 
 ## Choosing the right transformation type
 

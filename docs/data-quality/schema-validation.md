@@ -13,7 +13,7 @@ Set the `validationSchema` field in the `dataQuality` block to the filename of t
 
 ```json
 {
-  "datasetName": "product_catalog",
+  "pipelineName": "product_catalog",
   "sourceFileFormat": "JSON",
   "dataQuality": {
     "validationSchema": "product_catalog_schema.json"

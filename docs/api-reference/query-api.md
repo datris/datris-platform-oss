@@ -15,7 +15,7 @@ POST /api/v1/query/postgres
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `sql` | string | Yes | | SQL SELECT query to execute |
-| `database` | string | No | `idata` | PostgreSQL database name to connect to |
+| `database` | string | No | `datris` | PostgreSQL database name to connect to |
 | `limit` | integer | No | 100 | Maximum rows to return (max 1000) |
 
 ### Example
@@ -25,7 +25,7 @@ curl -X POST http://localhost:8080/api/v1/query/postgres \
   -H "Content-Type: application/json" \
   -d '{
     "sql": "SELECT symbol, date, close FROM test.stock_price WHERE volume > 1000000",
-    "database": "idata",
+    "database": "datris",
     "limit": 10
   }'
 ```

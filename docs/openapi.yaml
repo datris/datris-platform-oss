@@ -75,22 +75,22 @@ components:
           type: string
 
 paths:
-  # ── Dataset Management ──────────────────────────────────────
+  # ── Pipeline Management ──────────────────────────────────────
 
-  /api/v1/dataset:
+  /api/v1/pipeline:
     get:
-      tags: [Datasets]
-      summary: Get a dataset configuration
+      tags: [Pipelines]
+      summary: Get a pipeline configuration
       parameters:
-        - name: dataset
+        - name: pipeline
           in: query
           required: true
           schema:
             type: string
-          description: Dataset name
+          description: Pipeline name
       responses:
         '200':
-          description: Dataset configuration
+          description: Pipeline configuration
           content:
             application/json:
               schema:
@@ -99,8 +99,8 @@ paths:
           description: Error
 
     post:
-      tags: [Datasets]
-      summary: Create or update a dataset configuration
+      tags: [Pipelines]
+      summary: Create or update a pipeline configuration
       requestBody:
         required: true
         content:
@@ -111,7 +111,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: Dataset name
+                  description: Pipeline name
                 source:
                   type: object
                   description: Source configuration (fileAttributes, schemaProperties)
@@ -129,33 +129,33 @@ paths:
                   description: Destination configuration (database, objectStore, kafka, activeMQ, restEndpoint, qdrant, weaviate, milvus, chroma, pgvector)
       responses:
         '200':
-          description: Dataset created/updated
+          description: Pipeline created/updated
         '500':
           description: Error
 
     delete:
-      tags: [Datasets]
-      summary: Delete a dataset configuration
+      tags: [Pipelines]
+      summary: Delete a pipeline configuration
       parameters:
-        - name: dataset
+        - name: pipeline
           in: query
           required: true
           schema:
             type: string
-          description: Dataset name to delete
+          description: Pipeline name to delete
       responses:
         '200':
-          description: Dataset deleted
+          description: Pipeline deleted
         '500':
           description: Error
 
-  /api/v1/datasets:
+  /api/v1/pipelines:
     get:
-      tags: [Datasets]
-      summary: List all dataset configurations
+      tags: [Pipelines]
+      summary: List all pipeline configurations
       responses:
         '200':
-          description: Array of dataset configurations
+          description: Array of pipeline configurations
           content:
             application/json:
               schema:
@@ -167,26 +167,26 @@ paths:
 
   # ── File Upload & AI ────────────────────────────────────────
 
-  /api/v1/dataset/upload:
+  /api/v1/pipeline/upload:
     post:
       tags: [Ingestion]
       summary: Upload a file for processing
-      description: Upload a data file to a registered dataset. Returns a pipeline token for tracking job status.
+      description: Upload a data file to a registered pipeline. Returns a pipeline token for tracking job status.
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
-              required: [file, dataset]
+              required: [file, pipeline]
               properties:
                 file:
                   type: string
                   format: binary
                   description: Data file to upload
-                dataset:
+                pipeline:
                   type: string
-                  description: Name of the registered dataset
+                  description: Name of the registered pipeline
                 publishertoken:
                   type: string
                   description: Optional publisher identifier
@@ -200,11 +200,11 @@ paths:
         '500':
           description: Error
 
-  /api/v1/dataset/generate:
+  /api/v1/pipeline/generate:
     post:
       tags: [AI]
       summary: AI schema generation
-      description: Upload a file and receive an AI-generated dataset configuration with inferred field names and types.
+      description: Upload a file and receive an AI-generated pipeline configuration with inferred field names and types.
       requestBody:
         required: true
         content:
@@ -217,9 +217,9 @@ paths:
                   type: string
                   format: binary
                   description: Sample data file (CSV, JSON, or XML)
-                dataset:
+                pipeline:
                   type: string
-                  description: Dataset name for the generated configuration
+                  description: Pipeline name for the generated configuration
                 delimiter:
                   type: string
                   description: CSV delimiter (default comma)
@@ -228,7 +228,7 @@ paths:
                   description: Whether CSV has a header row (default true)
       responses:
         '200':
-          description: AI-generated dataset configuration
+          description: AI-generated pipeline configuration
           content:
             application/json:
               schema:
@@ -236,7 +236,7 @@ paths:
         '500':
           description: Error
 
-  /api/v1/dataset/profile:
+  /api/v1/pipeline/profile:
     post:
       tags: [AI]
       summary: AI data profiling
@@ -274,22 +274,22 @@ paths:
 
   # ── Status ──────────────────────────────────────────────────
 
-  /api/v1/dataset/status:
+  /api/v1/pipeline/status:
     get:
       tags: [Status]
       summary: Get job status
-      description: Query job status by pipeline token or dataset name. Returns detailed status when queried by token, or paginated summary when queried by dataset name.
+      description: Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
       parameters:
         - name: pipelinetoken
           in: query
           schema:
             type: string
           description: Pipeline token from upload
-        - name: datasetname
+        - name: pipelinename
           in: query
           schema:
             type: string
-          description: Dataset name for summary view
+          description: Pipeline name for summary view
         - name: page
           in: query
           schema:
@@ -329,7 +329,7 @@ paths:
                   example: "SELECT * FROM test.stock_price WHERE volume > 1000000"
                 database:
                   type: string
-                  default: idata
+                  default: datris
                   description: PostgreSQL database name
                 limit:
                   type: integer

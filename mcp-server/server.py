@@ -66,53 +66,53 @@ def _call(method, path, **kwargs):
 async def list_tools():
     return [
         Tool(
-            name="list_datasets",
-            description="List all registered dataset configurations in the pipeline",
+            name="list_pipelines",
+            description="List all registered pipeline configurations in the pipeline",
             inputSchema={
                 "type": "object",
                 "properties": {},
             }
         ),
         Tool(
-            name="get_dataset",
-            description="Get a specific dataset configuration by name",
+            name="get_pipeline",
+            description="Get a specific pipeline configuration by name",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "dataset": {
+                    "pipeline": {
                         "type": "string",
-                        "description": "Dataset name"
+                        "description": "Pipeline name"
                     }
                 },
-                "required": ["dataset"]
+                "required": ["pipeline"]
             }
         ),
         Tool(
-            name="create_dataset",
-            description="Register or update a dataset configuration. Pass the full dataset JSON config.",
+            name="create_pipeline",
+            description="Register or update a pipeline configuration. Pass the full pipeline JSON config.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "config": {
                         "type": "object",
-                        "description": "Full dataset configuration JSON including name, source, destination, dataQuality, transformation"
+                        "description": "Full pipeline configuration JSON including name, source, destination, dataQuality, transformation"
                     }
                 },
                 "required": ["config"]
             }
         ),
         Tool(
-            name="delete_dataset",
-            description="Delete a registered dataset configuration",
+            name="delete_pipeline",
+            description="Delete a registered pipeline configuration",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "dataset": {
+                    "pipeline": {
                         "type": "string",
-                        "description": "Dataset name to delete"
+                        "description": "Pipeline name to delete"
                     }
                 },
-                "required": ["dataset"]
+                "required": ["pipeline"]
             }
         ),
         Tool(
@@ -125,17 +125,17 @@ async def list_tools():
                         "type": "string",
                         "description": "Absolute path to the file to upload"
                     },
-                    "dataset": {
+                    "pipeline": {
                         "type": "string",
-                        "description": "Dataset name to process the file with"
+                        "description": "Pipeline name to process the file with"
                     }
                 },
-                "required": ["file_path", "dataset"]
+                "required": ["file_path", "pipeline"]
             }
         ),
         Tool(
             name="get_job_status",
-            description="Get the status of a pipeline job by pipeline token or dataset name",
+            description="Get the status of a pipeline job by pipeline token or pipeline name",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -143,9 +143,9 @@ async def list_tools():
                         "type": "string",
                         "description": "Pipeline token returned from upload_file"
                     },
-                    "dataset_name": {
+                    "pipeline_name": {
                         "type": "string",
-                        "description": "Dataset name to get latest status for"
+                        "description": "Pipeline name to get latest status for"
                     },
                     "page": {
                         "type": "integer",
@@ -170,7 +170,7 @@ async def list_tools():
         ),
         Tool(
             name="generate_schema",
-            description="Upload a file and use AI to automatically generate a dataset configuration (schema, field names, types). Supports CSV, JSON, XML.",
+            description="Upload a file and use AI to automatically generate a pipeline configuration (schema, field names, types). Supports CSV, JSON, XML.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -178,9 +178,9 @@ async def list_tools():
                         "type": "string",
                         "description": "Absolute path to the file to analyze"
                     },
-                    "dataset": {
+                    "pipeline": {
                         "type": "string",
-                        "description": "Dataset name for the generated configuration"
+                        "description": "Pipeline name for the generated configuration"
                     },
                     "delimiter": {
                         "type": "string",
@@ -191,7 +191,7 @@ async def list_tools():
                         "description": "Whether CSV has a header row (default: true)"
                     }
                 },
-                "required": ["file_path", "dataset"]
+                "required": ["file_path", "pipeline"]
             }
         ),
         Tool(
@@ -335,29 +335,29 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 
 def _dispatch(name: str, args: dict) -> str:
-    if name == "list_datasets":
-        return _call("get", "/api/v1/datasets")
+    if name == "list_pipelines":
+        return _call("get", "/api/v1/pipelines")
 
-    elif name == "get_dataset":
-        return _call("get", f"/api/v1/dataset", params={"dataset": args["dataset"]})
+    elif name == "get_pipeline":
+        return _call("get", f"/api/v1/pipeline", params={"pipeline": args["pipeline"]})
 
-    elif name == "create_dataset":
-        return _call("post", "/api/v1/dataset", json=args["config"])
+    elif name == "create_pipeline":
+        return _call("post", "/api/v1/pipeline", json=args["config"])
 
-    elif name == "delete_dataset":
-        return _call("delete", f"/api/v1/dataset", params={"dataset": args["dataset"]})
+    elif name == "delete_pipeline":
+        return _call("delete", f"/api/v1/pipeline", params={"pipeline": args["pipeline"]})
 
     elif name == "upload_file":
         file_path = args["file_path"]
-        dataset = args["dataset"]
+        dataset = args["pipeline"]
         with open(file_path, "rb") as f:
             files = {"file": (os.path.basename(file_path), f)}
-            data = {"dataset": dataset}
+            data = {"pipeline": dataset}
             h = {}
             if PIPELINE_API_KEY:
                 h["x-api-key"] = PIPELINE_API_KEY
             resp = requests.post(
-                f"{PIPELINE_URL}/api/v1/dataset/upload",
+                f"{PIPELINE_URL}/api/v1/pipeline/upload",
                 headers=h,
                 files=files,
                 data=data,
@@ -369,11 +369,11 @@ def _dispatch(name: str, args: dict) -> str:
         params = {}
         if args.get("pipeline_token"):
             params["pipelinetoken"] = args["pipeline_token"]
-        if args.get("dataset_name"):
-            params["datasetname"] = args["dataset_name"]
+        if args.get("pipeline_name"):
+            params["pipelinename"] = args["pipeline_name"]
         if args.get("page"):
             params["page"] = args["page"]
-        return _call("get", "/api/v1/dataset/status", params=params)
+        return _call("get", "/api/v1/pipeline/status", params=params)
 
     elif name == "kill_job":
         payload = {"pipelineToken": args["pipeline_token"]}
@@ -383,7 +383,7 @@ def _dispatch(name: str, args: dict) -> str:
         file_path = args["file_path"]
         with open(file_path, "rb") as f:
             files = {"file": (os.path.basename(file_path), f)}
-            data = {"dataset": args["dataset"]}
+            data = {"pipeline": args["pipeline"]}
             if args.get("delimiter"):
                 data["delimiter"] = args["delimiter"]
             if args.get("header") is not None:
@@ -392,7 +392,7 @@ def _dispatch(name: str, args: dict) -> str:
             if PIPELINE_API_KEY:
                 h["x-api-key"] = PIPELINE_API_KEY
             resp = requests.post(
-                f"{PIPELINE_URL}/api/v1/dataset/generate",
+                f"{PIPELINE_URL}/api/v1/pipeline/generate",
                 headers=h,
                 files=files,
                 data=data,
@@ -415,7 +415,7 @@ def _dispatch(name: str, args: dict) -> str:
             if PIPELINE_API_KEY:
                 h["x-api-key"] = PIPELINE_API_KEY
             resp = requests.post(
-                f"{PIPELINE_URL}/api/v1/dataset/profile",
+                f"{PIPELINE_URL}/api/v1/pipeline/profile",
                 headers=h,
                 files=files,
                 data=data,
@@ -592,7 +592,7 @@ def _search_pgvector(args):
 
     host = os.getenv("PG_HOST", "localhost")
     port = int(os.getenv("PG_PORT", "5432"))
-    database = os.getenv("PG_DATABASE", "idata")
+    database = os.getenv("PG_DATABASE", "datris")
     user = os.getenv("PG_USER", "postgres")
     password = os.getenv("PG_PASSWORD", "postgres")
     schema = args.get("schema", "public")
@@ -645,7 +645,7 @@ def _query_postgres(args):
 
     host = os.getenv("PG_HOST", "localhost")
     port = int(os.getenv("PG_PORT", "5432"))
-    database = os.getenv("PG_DATABASE", "idata")
+    database = os.getenv("PG_DATABASE", "datris")
     user = os.getenv("PG_USER", "postgres")
     password = os.getenv("PG_PASSWORD", "postgres")
 
@@ -671,7 +671,7 @@ def _query_mongodb(args):
     from pymongo import MongoClient
 
     uri = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-    database = os.getenv("MONGO_DATABASE", "idata")
+    database = os.getenv("MONGO_DATABASE", "datris")
 
     collection_name = args["collection"]
     query_filter = args.get("filter", {})

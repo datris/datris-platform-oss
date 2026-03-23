@@ -2,10 +2,10 @@
 
 ## Upload a File
 
-Upload a data file for processing by a configured dataset.
+Upload a data file for processing by a configured pipeline.
 
 ```
-POST /api/v1/dataset/upload
+POST /api/v1/pipeline/upload
 Content-Type: multipart/form-data
 ```
 
@@ -13,7 +13,7 @@ Content-Type: multipart/form-data
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file` | form-data | Yes | The file to upload |
-| `dataset` | form-data | Yes | Target dataset name |
+| `pipeline` | form-data | Yes | Target pipeline name |
 | `publishertoken` | form-data | No | Publisher identifier for tracking |
 
 **Behavior:**
@@ -22,9 +22,9 @@ Content-Type: multipart/form-data
 
 **Example:**
 ```bash
-curl -X POST http://localhost:8080/api/v1/dataset/upload \
+curl -X POST http://localhost:8080/api/v1/pipeline/upload \
   -F "file=@/path/to/data.csv" \
-  -F "dataset=sales_data" \
+  -F "pipeline=sales_data" \
   -F "publishertoken=batch-001"
 ```
 
@@ -37,12 +37,12 @@ For compressed files, the response is `200 OK` with no body. The file is process
 
 ---
 
-## Generate Dataset Schema
+## Generate Pipeline Schema
 
-Upload a CSV file to automatically infer the schema and generate a partial dataset configuration.
+Upload a CSV file to automatically infer the schema and generate a partial pipeline configuration.
 
 ```
-POST /api/v1/dataset/generate
+POST /api/v1/pipeline/generate
 Content-Type: multipart/form-data
 ```
 
@@ -50,22 +50,22 @@ Content-Type: multipart/form-data
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file` | form-data | Yes | CSV file to analyze |
-| `dataset` | form-data | Yes | Dataset name |
+| `pipeline` | form-data | Yes | Pipeline name |
 | `delimiter` | form-data | No | CSV delimiter (default: auto-detect) |
 | `header` | form-data | No | Whether file has header row (default: `true`) |
 
 **Example:**
 ```bash
-curl -X POST http://localhost:8080/api/v1/dataset/generate \
+curl -X POST http://localhost:8080/api/v1/pipeline/generate \
   -F "file=@/path/to/sample.csv" \
-  -F "dataset=my_dataset"
+  -F "pipeline=my_pipeline"
 ```
 
-**Response:** `200 OK` with a partial DatasetConfig JSON:
+**Response:** `200 OK` with a partial PipelineConfig JSON:
 
 ```json
 {
-  "name": "my_dataset",
+  "name": "my_pipeline",
   "source": {
     "fileAttributes": {
       "csvAttributes": {
@@ -98,4 +98,4 @@ curl -X POST http://localhost:8080/api/v1/dataset/generate \
 
 **Inferred types:** `int`, `bigint`, `float`, `double`, `char`, `string`
 
-**Note:** This endpoint only analyzes CSV files. JSON and XML files return null for the generated config. Edit the generated JSON to add your destination configuration before registering it with `POST /dataset`.
+**Note:** This endpoint only analyzes CSV files. JSON and XML files return null for the generated config. Edit the generated JSON to add your destination configuration before registering it with `POST /pipeline`.

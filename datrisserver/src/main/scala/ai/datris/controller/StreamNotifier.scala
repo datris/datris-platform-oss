@@ -19,27 +19,27 @@ import scala.collection.JavaConverters._
 
 class StreamNotifier {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
-    private val statusUtil = new StatusUtil().init(DatrisEnvironment.values.datasetStatusTableName, this.getClass.getSimpleName)
+    private val statusUtil = new StatusUtil().init(DatrisEnvironment.values.pipelineStatusTableName, this.getClass.getSimpleName)
 
-    def process(byteArray: Array[Byte], filename: String, dataset: String, publisherToken: String): JobContext = {
-        logger.info("StreamNotifier processing dataset: " + dataset + ", filename: " + filename)
-        statusUtil.setFilename("stream: " + dataset)
+    def process(byteArray: Array[Byte], filename: String, pipeline: String, publisherToken: String): JobContext = {
+        logger.info("StreamNotifier processing pipeline: " + pipeline + ", filename: " + filename)
+        statusUtil.setFilename("stream: " + pipeline)
 
         try {
             val pipelineToken = GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(Option(publisherToken).getOrElse(pipelineToken))
 
-            val config = DatasetConfigIO.read(DatrisEnvironment.values.datasetTableName, dataset)
+            val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
             if (config == null)
-                throw new DatrisException("Dataset: " + dataset + " is not configured in the NoSQL database")
+                throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
-            val metadata = DatasetMetadata(dataset, filename, null, Option(publisherToken).getOrElse(pipelineToken), bulkUpload = false)
+            val metadata = PipelineMetadata(pipeline, filename, null, Option(publisherToken).getOrElse(pipelineToken), bulkUpload = false)
             val gson = new Gson
             // Must persist metadata before any statusUtil calls so getDatasetName can resolve the pipeline token
             NoSQLDbUtil.setItemNameValue(DatrisEnvironment.values.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", gson.toJson(metadata))
 
-            statusUtil.info("begin", "Stream data received, dataset: " + dataset + ", filename: " + filename)
+            statusUtil.info("begin", "Stream data received, pipeline: " + pipeline + ", filename: " + filename)
             statusUtil.info("processing", "Total data size: " + byteArray.length.toString)
 
             val dataObj = parseData(byteArray, config)
@@ -54,7 +54,7 @@ class StreamNotifier {
         }
     }
 
-    private def parseData(byteArray: Array[Byte], config: DatasetConfig): Data = {
+    private def parseData(byteArray: Array[Byte], config: PipelineConfig): Data = {
         val size = byteArray.length.toLong
 
         if (config.source.fileAttributes.csvAttributes != null) {
@@ -94,24 +94,24 @@ class StreamNotifier {
             Data(size, null, null, null, null, byteArray)
         }
         else
-            throw new DatrisException("StreamNotifier: unsupported file type in dataset config for dataset: " + config.name)
+            throw new DatrisException("StreamNotifier: unsupported file type in pipeline config for pipeline: " + config.name)
     }
 
-    def process(config: DatasetConfig, data: String): JobContext = {
-        val dataset = config.name
-        logger.info("Processing stream message for dataset: " + dataset)
-        statusUtil.setFilename("stream: " + dataset)
+    def process(config: PipelineConfig, data: String): JobContext = {
+        val pipeline = config.name
+        logger.info("Processing stream message for pipeline: " + pipeline)
+        statusUtil.setFilename("stream: " + pipeline)
 
         try {
-            // Generate a UUID to track the dataset through the pipeline
+            // Generate a UUID to track the pipeline through the pipeline
             val pipelineToken = GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(pipelineToken)
-            statusUtil.info("begin", "Stream received for dataset: " + dataset)
+            statusUtil.info("begin", "Stream received for pipeline: " + pipeline)
             statusUtil.info("processing", "Total data size: " + data.length.toString)
 
             // Save the metadata in NoSQL
-            val metadata = DatasetMetadata(dataset, null, null, pipelineToken, bulkUpload = false)
+            val metadata = PipelineMetadata(pipeline, null, null, pipelineToken, bulkUpload = false)
             val gson = new Gson
             val jsonMetadata = gson.toJson(metadata)
             NoSQLDbUtil.setItemNameValue(DatrisEnvironment.values.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", jsonMetadata)

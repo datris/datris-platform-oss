@@ -100,10 +100,10 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
         jobContext.copy(data = parseResponseData(returnedData))
     }
 
-    private def buildRequestBody(pipelineToken: String, datasetName: String, data: Data): String = {
+    private def buildRequestBody(pipelineToken: String, pipelineName: String, data: Data): String = {
         val payload = new java.util.HashMap[String, AnyRef]()
         payload.put("pipelineToken", pipelineToken)
-        payload.put("datasetName", datasetName)
+        payload.put("pipelineName", pipelineName)
         payload.put("data", dataToMap(data))
         gson.toJson(payload)
     }

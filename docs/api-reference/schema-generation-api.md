@@ -1,6 +1,6 @@
 # AI Schema Generation API
 
-The pipeline can automatically generate a ready-to-use dataset configuration from an uploaded file using an AI model. The generated config can be pasted directly into `POST /api/v1/dataset` to register the dataset without writing any JSON by hand.
+The pipeline can automatically generate a ready-to-use pipeline configuration from an uploaded file using an AI model. The generated config can be pasted directly into `POST /api/v1/pipeline` to register the pipeline without writing any JSON by hand.
 
 ## How It Works
 
@@ -18,23 +18,23 @@ File type detection (CSV / JSON / XML)
                       Returns JSON array of field definitions
   |
   v
-Config builder assembles full DatasetConfig JSON
+Config builder assembles full PipelineConfig JSON
   - source.schemaProperties.fields  (AI-inferred or fixed)
   - source.fileAttributes            (csvAttributes / jsonAttributes / xmlAttributes)
   - destination                      (Postgres for CSV, MongoDB for JSON/XML)
   |
   v
-Response: complete DatasetConfig JSON ready to register
+Response: complete PipelineConfig JSON ready to register
 ```
 
-The response is **not** registered automatically — it is returned to the caller so you can review it, fill in the placeholder values, and then POST it to `/api/v1/dataset`.
+The response is **not** registered automatically — it is returned to the caller so you can review it, fill in the placeholder values, and then POST it to `/api/v1/pipeline`.
 
 ---
 
 ## Endpoint
 
 ```
-POST /api/v1/dataset/generate
+POST /api/v1/pipeline/generate
 Content-Type: multipart/form-data
 ```
 
@@ -43,7 +43,7 @@ Content-Type: multipart/form-data
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file` | form-data (file) | Yes | The file to analyze |
-| `dataset` | query | No | Dataset name. If omitted, derived from the filename (lowercased, non-alphanumeric characters replaced with `_`) |
+| `pipeline` | query | No | Pipeline name. If omitted, derived from the filename (lowercased, non-alphanumeric characters replaced with `_`) |
 | `delimiter` | query | No | Column delimiter for delimited files. Defaults to `,` |
 | `header` | query | No | Whether the file has a header row. Defaults to `false` |
 | `x-api-key` | header | No | API key (required if `useApiKeys: true`) |
@@ -67,10 +67,10 @@ JSON and XML files use a fixed schema because the pipeline stores them as raw do
 ## Example: CSV File
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/dataset/generate \
+curl -X POST http://localhost:8080/api/v1/pipeline/generate \
   -H "x-api-key: your-api-key" \
   -F "file=@./stock_price.csv" \
-  -F "dataset=stock_price"
+  -F "pipeline=stock_price"
 ```
 
 Response:
@@ -105,10 +105,10 @@ Response:
 }
 ```
 
-Replace `DATABASE_NAME`, `SCHEMA_NAME`, and `TABLE_NAME` with real values, then register the dataset:
+Replace `DATABASE_NAME`, `SCHEMA_NAME`, and `TABLE_NAME` with real values, then register the pipeline:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/dataset \
+curl -X POST http://localhost:8080/api/v1/pipeline \
   -H "Content-Type: application/json" \
   -d '<paste response here>'
 ```
@@ -118,7 +118,7 @@ curl -X POST http://localhost:8080/api/v1/dataset \
 ## Example: JSON File
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/dataset/generate \
+curl -X POST http://localhost:8080/api/v1/pipeline/generate \
   -H "x-api-key: your-api-key" \
   -F "file=@./events.json"
 ```

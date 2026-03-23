@@ -5,15 +5,15 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.{DatasetConfig, DatasetMetadata, DatrisException}
+import ai.datris.model.{PipelineConfig, PipelineMetadata, DatrisException}
 import ai.datris.model.Data
 
 import java.util.regex.Pattern
 import scala.collection.JavaConverters._
 
 object DataUtil {
-    def read(bucket: String, key: String, config: DatasetConfig, metadata: DatasetMetadata, statusUtil: StatusUtil): Data = {
-        val files = new DatasetMetadataUtil(statusUtil).getFiles(metadata)
+    def read(bucket: String, key: String, config: PipelineConfig, metadata: PipelineMetadata, statusUtil: StatusUtil): Data = {
+        val files = new PipelineMetadataUtil(statusUtil).getFiles(metadata)
         val size = getSize(bucket, key, metadata)
 
         if(config.source.fileAttributes.csvAttributes != null) {
@@ -92,7 +92,7 @@ object DataUtil {
             null
     }
 
-    private def getSize(bucket: String, key: String, metadata: DatasetMetadata): Long = {
+    private def getSize(bucket: String, key: String, metadata: PipelineMetadata): Long = {
         // Get the file size
         val objectMetadata = ObjectStoreUtil.getObjectMetadata(bucket, key)
         val objectSize = {

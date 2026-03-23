@@ -129,17 +129,17 @@ Every entity automatically includes:
 - `text` — the chunk text
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline dataset name
+- `source_dataset` — pipeline pipeline name
 - `embedding` — float vector for similarity search
 
 ## How It Works
 
-1. **Upload** — an unstructured file is uploaded via `POST /api/v1/dataset/upload`
+1. **Upload** — an unstructured file is uploaded via `POST /api/v1/pipeline/upload`
 2. **Extract** — text is extracted from the document
 3. **Chunk** — text is split into chunks using the configured strategy
 4. **Embed** — each chunk is sent to the embedding API to generate a vector
 5. **Upsert** — vectors are inserted into the Milvus collection with metadata
-6. **Notify** — a dataset notification is published on completion
+6. **Notify** — a pipeline notification is published on completion
 
 The collection is auto-created on first upsert with a cosine distance index on the embedding field. Dynamic fields are enabled for metadata.
 

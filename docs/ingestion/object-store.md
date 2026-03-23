@@ -9,33 +9,33 @@ The pipeline can ingest files dropped into MinIO buckets. There are three patter
 Place a file in the MinIO raw bucket following this naming pattern:
 
 ```
-{dataset}.{publishertoken}.{anything}.dataset.{ext}
+{pipeline}.{publishertoken}.{anything}.pipeline.{ext}
 ```
 
 | Segment | Description |
 |---------|-------------|
-| `dataset` | Name of the registered dataset configuration |
+| `pipeline` | Name of the registered pipeline configuration |
 | `publishertoken` | Optional identifier for the data publisher |
 | `anything` | Any additional text (timestamp, version, etc.) |
-| `dataset` (literal) | Fixed literal sentinel string |
+| `pipeline` (literal) | Fixed literal sentinel string |
 | `ext` | File extension: `csv`, `json`, `xml` |
 
 **Example:**
 ```
-stock_price.publisher-001.2026-03-15.1.dataset.csv
+stock_price.publisher-001.2026-03-15.1.pipeline.csv
 ```
 
 ### Metadata File + Data File
 
 For more control, upload the data file first, then upload a metadata file (`.metadata.json`):
 
-**Data file:** `stock_price.2026-03-15.dataset.csv`
+**Data file:** `stock_price.2026-03-15.pipeline.csv`
 
 **Metadata file:** `stock_price.2026-03-15.metadata.json`
 ```json
 {
-  "dataFileName": "stock_price.2026-03-15.dataset.csv",
-  "dataset": "stock_price",
+  "dataFileName": "stock_price.2026-03-15.pipeline.csv",
+  "pipeline": "stock_price",
   "publisherToken": "28c39a6f-de32-4625-9bee-6af9ee547798"
 }
 ```
@@ -49,7 +49,7 @@ Upload multiple files to a directory, then trigger processing with a metadata fi
 ```json
 {
   "dataFilePath": "s3://oss-raw/bulk/stock_price/batch-001/",
-  "dataset": "stock_price",
+  "pipeline": "stock_price",
   "bulkUpload": true,
   "publisherToken": "28c39a6f-de32-4625-9bee-6af9ee547798"
 }
@@ -59,10 +59,10 @@ Upload multiple files to a directory, then trigger processing with a metadata fi
 
 ### Compressed Files
 
-Compressed archives (`.zip`, `.gz`, `.tar`, `.jar`) are automatically decompressed. The dataset name and publisher token are parsed from the archive filename:
+Compressed archives (`.zip`, `.gz`, `.tar`, `.jar`) are automatically decompressed. The pipeline name and publisher token are parsed from the archive filename:
 
 ```
-stock_price.publisher-001.2026-03-15.dataset.zip
+stock_price.publisher-001.2026-03-15.pipeline.zip
 ```
 
 ## How It Works
@@ -70,7 +70,7 @@ stock_price.publisher-001.2026-03-15.dataset.zip
 1. A file is placed in a MinIO bucket (via `mc cp`, API, or another system)
 2. MinIO sends an S3-compatible event notification to the ActiveMQ file-notifier queue
 3. The pipeline polls the queue on a configurable schedule (default: every 5 seconds)
-4. The pipeline parses the event, resolves the dataset, and processes the file
+4. The pipeline parses the event, resolves the pipeline, and processes the file
 
 ## Configuration
 

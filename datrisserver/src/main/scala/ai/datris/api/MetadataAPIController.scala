@@ -45,7 +45,7 @@ class MetadataAPIController {
 
     @GetMapping(path = Array("/metadata/postgres/schemas"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getPostgresSchemas(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                           @RequestParam(defaultValue = "idata") database: String): ResponseEntity[String] = {
+                           @RequestParam(defaultValue = "datris") database: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /metadata/postgres/schemas called, database: " + database)
             APIKeyValidator.validate(apiKey)
@@ -68,7 +68,7 @@ class MetadataAPIController {
 
     @GetMapping(path = Array("/metadata/postgres/tables"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getPostgresTables(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                          @RequestParam(defaultValue = "idata") database: String,
+                          @RequestParam(defaultValue = "datris") database: String,
                           @RequestParam(defaultValue = "public") schema: String,
                           @RequestParam(defaultValue = "false") vectorOnly: String): ResponseEntity[String] = {
         try {
@@ -110,7 +110,7 @@ class MetadataAPIController {
 
     @GetMapping(path = Array("/metadata/postgres/columns"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getPostgresColumns(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                           @RequestParam(defaultValue = "idata") database: String,
+                           @RequestParam(defaultValue = "datris") database: String,
                            @RequestParam(defaultValue = "public") schema: String,
                            @RequestParam table: String): ResponseEntity[String] = {
         try {

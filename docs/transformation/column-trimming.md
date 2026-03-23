@@ -4,11 +4,11 @@ Column trimming removes leading and trailing whitespace from all column values i
 
 ## Configuration
 
-Enable whitespace trimming by setting `trimColumnWhitespace` to `true` in the `transformation` block of the dataset configuration.
+Enable whitespace trimming by setting `trimColumnWhitespace` to `true` in the `transformation` block of the pipeline configuration.
 
 ```json
 {
-  "datasetName": "contact_list",
+  "pipelineName": "contact_list",
   "transformation": {
     "trimColumnWhitespace": true
   }

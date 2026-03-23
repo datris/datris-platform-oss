@@ -86,4 +86,4 @@ When a value cannot be parsed as the declared type, the pipeline applies these r
 1. **Null or empty string** -- stored as `NULL` regardless of the target type.
 2. **Numeric overflow** -- if a value exceeds the range of the declared integer type, ingestion records a data quality error for that row.
 3. **Invalid format** -- a value like `"abc"` in an `int` column is rejected and recorded as a data quality error.
-4. **Timestamp parsing** -- the pipeline accepts ISO-8601 strings, epoch milliseconds, and common date formats (`yyyy-MM-dd`, `MM/dd/yyyy`). Ambiguous formats are resolved using the `dateFormat` property in the dataset configuration when present.
+4. **Timestamp parsing** -- the pipeline accepts ISO-8601 strings, epoch milliseconds, and common date formats (`yyyy-MM-dd`, `MM/dd/yyyy`). Ambiguous formats are resolved using the `dateFormat` property in the pipeline configuration when present.

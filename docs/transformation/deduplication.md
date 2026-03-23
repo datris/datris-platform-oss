@@ -1,14 +1,14 @@
 # Row Deduplication
 
-Deduplication removes exact duplicate rows from the dataset. Two rows are considered duplicates when every column value is identical. Only one copy of each unique row is retained.
+Deduplication removes exact duplicate rows from the pipeline. Two rows are considered duplicates when every column value is identical. Only one copy of each unique row is retained.
 
 ## Configuration
 
-Enable deduplication by setting `deduplicate` to `true` in the `transformation` block of the dataset configuration.
+Enable deduplication by setting `deduplicate` to `true` in the `transformation` block of the pipeline configuration.
 
 ```json
 {
-  "datasetName": "event_log",
+  "pipelineName": "event_log",
   "transformation": {
     "deduplicate": true
   }

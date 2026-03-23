@@ -1,0 +1,97 @@
+<div class="container">
+  <div class="page-header">
+    <h1 class="page-title">Data Ingestion</h1>
+    <button class="create-btn" (click)="openUploadModal()">+ Upload File</button>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Pipeline</th>
+          <th>Current Process</th>
+          <th>Start Time</th>
+          <th>End Time</th>
+          <th>Total Time</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let item of pipelines" (click)="onRowClick(item.pipelineToken, item.pipeline)">
+          <td>{{ item.pipeline }}</td>
+          <td>{{ item.process }}</td>
+          <td>{{ item.startTime }}</td>
+          <td>{{ item.endTime }}</td>
+          <td>{{ item.totalTime }}</td>
+          <td>
+            <span class="status-pill"
+              [class.status-completed]="item.status === 'completed' || item.status === 'success'"
+              [class.status-error]="item.status === 'error' || item.status === 'failed'"
+              [class.status-processing]="item.status === 'processing' || item.status === 'running'"
+              [class.status-pending]="item.status === 'pending' || item.status === 'queued'"
+            >{{ item.status }}</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination">
+    <button (click)="onPreviousPage()" [disabled]="page === 1">Previous</button>
+    <button (click)="onNextPage()">Next</button>
+  </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="modal-overlay" *ngIf="showUploadModal" (click)="closeUploadModal()">
+  <div class="modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Upload File</h2>
+      <button class="modal-close" (click)="closeUploadModal()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+
+    <div class="modal-body">
+      <!-- Pipeline selection -->
+      <div class="form-row">
+        <label class="form-label">Pipeline</label>
+        <select class="form-input" [(ngModel)]="selectedPipeline" (ngModelChange)="onPipelineSelected()">
+          <option value="">Select a item...</option>
+          <option *ngFor="let ds of allPipelines" [value]="ds.name">{{ ds.name }}</option>
+        </select>
+      </div>
+
+      <!-- Pipeline info card -->
+      <div class="pipeline-info" *ngIf="selectedPipelineConfig">
+        <div class="info-row">
+          <span class="info-label">Source Type</span>
+          <span class="info-value">{{ getSourceType(selectedPipelineConfig) }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Destinations</span>
+          <span class="info-value">{{ getDestinations(selectedPipelineConfig) }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Schema Fields</span>
+          <span class="info-value info-fields">{{ getSchemaFields(selectedPipelineConfig) }}</span>
+        </div>
+      </div>
+
+      <!-- File selection -->
+      <div class="form-row" *ngIf="selectedPipeline">
+        <label class="form-label">File</label>
+        <input type="file" (change)="onFileSelected($event)" class="file-input">
+      </div>
+
+      <!-- Result / Error -->
+      <div class="success-box" *ngIf="uploadResult">{{ uploadResult }}</div>
+      <div class="error-box" *ngIf="uploadError">{{ uploadError }}</div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="secondary-btn" (click)="closeUploadModal()">Cancel</button>
+      <button class="primary-btn" (click)="upload()" [disabled]="!selectedPipeline || !uploadFile || uploading">
+        {{ uploading ? 'Uploading...' : 'Upload & Process' }}
+      </button>
+    </div>
+  </div>
+</div>

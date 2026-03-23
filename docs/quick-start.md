@@ -11,12 +11,12 @@ docker-compose up --build
 
 Wait for the `pipeline` container to show `Started PipelineServiceApplication`.
 
-## 2. Register a dataset
+## 2. Register a pipeline
 
-Create a dataset configuration that defines the source schema and PostgreSQL destination:
+Create a pipeline configuration that defines the source schema and PostgreSQL destination:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/dataset \
+curl -X POST http://localhost:8080/api/v1/pipeline \
   -H "Content-Type: application/json" \
   -d '{
     "name": "employees",
@@ -65,9 +65,9 @@ EOF
 Upload it:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/dataset/upload \
+curl -X POST http://localhost:8080/api/v1/pipeline/upload \
   -F "file=@/tmp/employees.csv" \
-  -F "dataset=employees"
+  -F "pipeline=employees"
 ```
 
 The response contains a `pipelineToken` for tracking:
@@ -79,7 +79,7 @@ pt-abc12345-6789-...
 ## 4. Check status
 
 ```bash
-curl "http://localhost:8080/api/v1/dataset/status?pipelinetoken=pt-abc12345-6789-..."
+curl "http://localhost:8080/api/v1/pipeline/status?pipelinetoken=pt-abc12345-6789-..."
 ```
 
 The status shows processing stages: `begin`, `processing`, `end`.
@@ -94,7 +94,7 @@ SELECT * FROM public.employees;
 
 ## Next Steps
 
-- [Dataset Configuration](dataset-configuration.md) - Explore all configuration options
+- [Pipeline Configuration](pipeline-configuration.md) - Explore all configuration options
 - [Data Quality](data-quality/column-rules.md) - Add validation rules
 - [Destinations](destinations/object-store.md) - Write Parquet files to MinIO
 - [Transformations](transformation/row-functions.md) - Transform data with JavaScript

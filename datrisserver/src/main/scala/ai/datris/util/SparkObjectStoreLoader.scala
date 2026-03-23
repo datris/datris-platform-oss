@@ -44,7 +44,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
             }
         }
 
-        // Build schema from dataset config
+        // Build schema from pipeline config
         val schemaFields = config.destination.schemaProperties.fields.asScala.toList
         val sparkSchema = buildSchema(schemaFields)
 
@@ -165,11 +165,11 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         val jsonNotification = gson.toJson(notification)
 
         val attributes = new java.util.HashMap[String, String]
-        attributes.put("dataset", config.name)
+        attributes.put("pipeline", config.name)
         attributes.put("destination", "objectStore")
         attributes.put("prefixKey", config.destination.objectStore.prefixKey)
 
-        NotificationUtil.add(DatrisEnvironment.values.datasetTopic, jsonNotification, attributes.asScala.toMap)
+        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
     }
 }

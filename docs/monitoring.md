@@ -2,18 +2,18 @@
 
 ## Pipeline Tokens
 
-Every dataset processing job is assigned a unique **pipeline token** (e.g., `pt-abc12345-6789-...`). This token is used to track the job through its lifecycle.
+Every pipeline processing job is assigned a unique **pipeline token** (e.g., `pt-abc12345-6789-...`). This token is used to track the job through its lifecycle.
 
 Pipeline tokens are returned:
-- In the response body of `POST /api/v1/dataset/upload` (for uncompressed files)
-- In the job status when querying by dataset name
+- In the response body of `POST /api/v1/pipeline/upload` (for uncompressed files)
+- In the job status when querying by pipeline name
 
 ## Job Status
 
 ### Query by Pipeline Token
 
 ```bash
-curl "http://localhost:8080/api/v1/dataset/status?pipelinetoken=pt-abc12345-..."
+curl "http://localhost:8080/api/v1/pipeline/status?pipelinetoken=pt-abc12345-..."
 ```
 
 Returns an array of status entries for the job, one per processing stage:
@@ -23,7 +23,7 @@ Returns an array of status entries for the job, one per processing stage:
   {
     "id": 1,
     "dateTime": "2026-03-15T10:00:00Z",
-    "dataset": "sales_data",
+    "pipeline": "sales_data",
     "processName": "StreamNotifier",
     "publisherToken": null,
     "pipelineToken": "pt-abc12345-...",
@@ -36,7 +36,7 @@ Returns an array of status entries for the job, one per processing stage:
   {
     "id": 2,
     "dateTime": "2026-03-15T10:00:01Z",
-    "dataset": "sales_data",
+    "pipeline": "sales_data",
     "processName": "DataQuality",
     "publisherToken": null,
     "pipelineToken": "pt-abc12345-...",
@@ -49,7 +49,7 @@ Returns an array of status entries for the job, one per processing stage:
   {
     "id": 3,
     "dateTime": "2026-03-15T10:00:03Z",
-    "dataset": "sales_data",
+    "pipeline": "sales_data",
     "processName": "PostgresLoader",
     "publisherToken": null,
     "pipelineToken": "pt-abc12345-...",
@@ -62,13 +62,13 @@ Returns an array of status entries for the job, one per processing stage:
 ]
 ```
 
-### Query by Dataset Name
+### Query by Pipeline Name
 
 ```bash
-curl "http://localhost:8080/api/v1/dataset/status?datasetname=sales_data&page=1"
+curl "http://localhost:8080/api/v1/pipeline/status?pipelinename=sales_data&page=1"
 ```
 
-Returns an array of job summaries for the dataset (20 per page):
+Returns an array of job summaries for the pipeline (20 per page):
 
 ```json
 [
@@ -76,7 +76,7 @@ Returns an array of job summaries for the dataset (20 per page):
     "createdAtTimestamp": "2026-03-15T10:00:00Z",
     "createdAt": 1710500400000,
     "updatedAt": 1710500403000,
-    "dataset": "sales_data",
+    "pipeline": "sales_data",
     "pipelineToken": "pt-abc12345-...",
     "process": "PostgresLoader",
     "startTime": "2026-03-15T10:00:00Z",
@@ -111,10 +111,10 @@ Each stage logs `begin`, `processing` (with details), and `end` messages.
 
 ## Status Storage
 
-Job statuses are stored in MongoDB in the `{environment}-dataset-status` collection. Each entry contains the pipeline token, process name, status, message, and timestamp.
+Job statuses are stored in MongoDB in the `{environment}-pipeline-status` collection. Each entry contains the pipeline token, process name, status, message, and timestamp.
 
 ## Concurrent Job Handling
 
 - All destination loaders for a single job execute in parallel on a 20-thread pool
 - Jobs targeting the same database table are serialized (only one runs at a time)
-- Multiple jobs for different datasets run concurrently
+- Multiple jobs for different pipelines run concurrently

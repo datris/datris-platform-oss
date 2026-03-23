@@ -10,7 +10,7 @@ Files are written to:
 s3a://{bucket}/{prefixKey}
 ```
 
-The default bucket is `{environment}-data`. You can override this per dataset with the `destinationBucketOverride` field.
+The default bucket is `{environment}-data`. You can override this per pipeline with the `destinationBucketOverride` field.
 
 ## File Formats
 

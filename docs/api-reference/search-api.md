@@ -200,5 +200,5 @@ curl -X POST http://localhost:8080/api/v1/search/pgvector \
 
 **pgvector:**
 ```json
-{ "jdbcUrl": "jdbc:postgresql://localhost:5432/idata", "username": "postgres", "password": "postgres" }
+{ "jdbcUrl": "jdbc:postgresql://localhost:5432/datris", "username": "postgres", "password": "postgres" }
 ```

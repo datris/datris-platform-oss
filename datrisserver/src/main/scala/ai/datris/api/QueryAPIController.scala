@@ -30,7 +30,7 @@ class QueryAPIController {
 
             val sql = Option(body.get("sql")).map(_.toString)
                 .getOrElse(throw new ai.datris.model.DatrisException("'sql' parameter is required"))
-            val database = Option(body.get("database")).map(_.toString).getOrElse("idata")
+            val database = Option(body.get("database")).map(_.toString).getOrElse("datris")
             val limit = Option(body.get("limit")).map {
                 case d: java.lang.Double => d.intValue()
                 case i: java.lang.Integer => i.intValue()

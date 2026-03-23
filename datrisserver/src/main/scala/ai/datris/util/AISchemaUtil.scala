@@ -12,7 +12,7 @@ object AISchemaUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
     private val MAX_CONTENT_LINES = 100
 
-    def buildCsvConfig(dataset: String, fileContent: String, delimiter: String, header: Boolean): String = {
+    def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
         val aiConfig = DatrisEnvironment.values.aiConfig
         if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
             throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
@@ -21,13 +21,13 @@ object AISchemaUtil {
         val truncatedContent = fileContent.split("\n").take(MAX_CONTENT_LINES).mkString("\n")
         val prompt = buildCsvPrompt(truncatedContent, myDelimiter)
 
-        logger.info("Calling AI API for CSV schema generation, dataset: " + dataset + ", provider: " + aiConfig.provider)
+        logger.info("Calling AI API for CSV schema generation, pipeline: " + pipeline + ", provider: " + aiConfig.provider)
         val responseText = AIUtil.callAI(prompt)
         val text = AIUtil.extractText(responseText)
         val fieldsJson = extractJsonArray(text)
 
         buildConfig(
-            dataset = dataset,
+            pipeline = pipeline,
             fieldsJson = fieldsJson,
             sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": $header, "encoding": "UTF-8" }""",
             usePostgres = true,
@@ -35,9 +35,9 @@ object AISchemaUtil {
         )
     }
 
-    def buildJsonConfig(dataset: String): String = {
+    def buildJsonConfig(pipeline: String): String = {
         buildConfig(
-            dataset = dataset,
+            pipeline = pipeline,
             fieldsJson = """[{"name":"_json","type":"string"}]""",
             sourceAttributesJson = """"jsonAttributes": { "everyRowContainsObject": false, "encoding": "UTF-8" }""",
             usePostgres = false,
@@ -45,9 +45,9 @@ object AISchemaUtil {
         )
     }
 
-    def buildXmlConfig(dataset: String): String = {
+    def buildXmlConfig(pipeline: String): String = {
         buildConfig(
-            dataset = dataset,
+            pipeline = pipeline,
             fieldsJson = """[{"name":"_xml","type":"string"}]""",
             sourceAttributesJson = """"xmlAttributes": { "everyRowContainsObject": false, "encoding": "UTF-8" }""",
             usePostgres = false,
@@ -55,7 +55,7 @@ object AISchemaUtil {
         )
     }
 
-    private def buildConfig(dataset: String, fieldsJson: String, sourceAttributesJson: String, usePostgres: Boolean, useMongoDB: Boolean): String = {
+    private def buildConfig(pipeline: String, fieldsJson: String, sourceAttributesJson: String, usePostgres: Boolean, useMongoDB: Boolean): String = {
         val destination = {
             if (usePostgres)
                 s"""{ "database": { "dbName": "DATABASE_NAME", "schema": "SCHEMA_NAME", "table": "TABLE_NAME", "usePostgres": true } }"""
@@ -64,7 +64,7 @@ object AISchemaUtil {
         }
 
         s"""{
-           |  "name": "$dataset",
+           |  "name": "$pipeline",
            |  "source": {
            |    "schemaProperties": {
            |      "fields": $fieldsJson

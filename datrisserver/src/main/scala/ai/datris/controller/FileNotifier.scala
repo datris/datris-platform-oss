@@ -10,23 +10,23 @@ import com.google.gson.Gson
 import ai.datris.model._
 import ai.datris.util._
 import ai.datris.model.{INITIALIZED, JobContext}
-import ai.datris.util.{DataUtil, DatasetMetadataUtil}
+import ai.datris.util.{DataUtil, PipelineMetadataUtil}
 import org.slf4j.{Logger, LoggerFactory}
 
 class FileNotifier {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
-    private val statusUtil = new StatusUtil().init(DatrisEnvironment.values.datasetStatusTableName, this.getClass.getSimpleName)
+    private val statusUtil = new StatusUtil().init(DatrisEnvironment.values.pipelineStatusTableName, this.getClass.getSimpleName)
 
     def process(bucket: String, key: String): JobContext = {
         logger.info("Processing queue message, bucket: " + bucket + ", key: " + key)
         statusUtil.setFilename(bucket + "/" + key)
 
         try {
-            // Generate a UUID to track the dataset through the pipeline
+            // Generate a UUID to track the pipeline through the pipeline
             val pipelineToken = GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString
             statusUtil.setPipelineToken(pipelineToken)
 
-            val metadata = new DatasetMetadataUtil(statusUtil).read(bucket, key)
+            val metadata = new PipelineMetadataUtil(statusUtil).read(bucket, key)
             statusUtil.setFilename(metadata)
             statusUtil.setPublisherToken(metadata.publisherToken)
 
@@ -37,9 +37,9 @@ class FileNotifier {
 
             statusUtil.info("begin", "Data received, bucket: " + bucket + ", key: " + key)
 
-            val config = DatasetConfigIO.read(DatrisEnvironment.values.datasetTableName, metadata.dataset)
+            val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, metadata.pipeline)
             if(config == null)
-                throw new DatrisException("Dataset: " + metadata.dataset + " is not configured in the NoSQL database")
+                throw new DatrisException("Pipeline: " + metadata.pipeline + " is not configured in the NoSQL database")
 
             // Read the data into memory
             val data = DataUtil.read(bucket, key, config, metadata, statusUtil)

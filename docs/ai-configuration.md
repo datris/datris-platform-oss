@@ -2,7 +2,7 @@
 
 The pipeline integrates with AI providers for two features:
 
-- **Schema generation** — upload a file to `POST /api/v1/dataset/generate` and receive a complete dataset configuration with inferred field names and types
+- **Schema generation** — upload a file to `POST /api/v1/pipeline/generate` and receive a complete pipeline configuration with inferred field names and types
 - **Data quality rules** — describe validation logic in plain English using `aiRule` instead of writing code
 
 Both features use the same provider configuration.
@@ -19,7 +19,7 @@ The pipeline supports cloud providers (Anthropic, OpenAI) and local models via O
 | OpenAI (GPT-4o) | 128K tokens | Excellent | Required | Production, large files |
 | Ollama (local) | 32K–128K tokens | Good (varies by model) | No | Development, testing, no external dependencies |
 
-Ollama is a good choice for local development and testing — it requires no API key, no external account, and runs entirely on your machine. For production workloads with large datasets or rules requiring strong domain knowledge, use a cloud provider.
+Ollama is a good choice for local development and testing — it requires no API key, no external account, and runs entirely on your machine. For production workloads with large pipelines or rules requiring strong domain knowledge, use a cloud provider.
 
 ## Supported Providers
 
@@ -202,4 +202,4 @@ docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 
 ## Disabling AI
 
-Set `ai.enabled: "false"` in `application.yaml`. Schema generation will return an error and AI data quality rules will be rejected at dataset registration time.
+Set `ai.enabled: "false"` in `application.yaml`. Schema generation will return an error and AI data quality rules will be rejected at pipeline registration time.

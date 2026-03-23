@@ -5,8 +5,8 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.{DatasetConfig, DatrisEnvironment}
-import ai.datris.util.{DatasetConfigIO, GuidV5, ObjectStoreUtil}
+import ai.datris.model.{PipelineConfig, DatrisEnvironment}
+import ai.datris.util.{PipelineConfigIO, GuidV5, ObjectStoreUtil}
 import ai.datris.model.GlobalJobContext
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecords, KafkaConsumer}
 import org.apache.kafka.common.serialization.StringDeserializer
@@ -72,8 +72,8 @@ class KafkaConsumerRunner(
     private def handler(topic: String, key: String, value: String): Unit = {
         logger.info(s"[$topic] message received")
 
-        // Determine the dataset name and read the configuration
-        val dataset = {
+        // Determine the pipeline name and read the configuration
+        val pipeline = {
             val prefix = Option(DatrisEnvironment.values)
                 .map(_.kafkaConsumerConfig)
                 .map(_.topicPrefix)
@@ -83,15 +83,15 @@ class KafkaConsumerRunner(
                 case None => topic
             }
         }
-        val config = DatasetConfigIO.read(DatrisEnvironment.values.datasetTableName, dataset)
+        val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
 
         if(config == null)
-            logger.error("Dataset: " + dataset + " is not configured in the NoSQL database")
+            logger.error("Pipeline: " + pipeline + " is not configured in the NoSQL database")
         else
             processData(config, value)
     }
 
-    private def processData(config: DatasetConfig, data: String): Unit = {
+    private def processData(config: PipelineConfig, data: String): Unit = {
         // If the incoming data is JSON or XML, process directly
         if(config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
             // Start job

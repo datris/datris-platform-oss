@@ -9,10 +9,10 @@ import ai.datris.util.StatusUtil
 
 case class JobContext(
                          pipelineToken: String,
-                         metadata: DatasetMetadata,
+                         metadata: PipelineMetadata,
                          data: Data,
-                         config: DatasetConfig,
-                         datasetProperties: DatasetProperties,
+                         config: PipelineConfig,
+                         pipelineProperties: PipelineProperties,
                          state: JobState,
                          thread: Thread,
                          statusUtil: StatusUtil

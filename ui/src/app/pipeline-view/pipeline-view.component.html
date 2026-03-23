@@ -1,0 +1,12 @@
+<div class="container">
+  <a class="back-link" routerLink="/pipelines">&#8592; Back to Pipelines</a>
+  <h1 class="dataset-title">{{ name }}</h1>
+
+  <div class="error-box" *ngIf="error">
+    <pre>{{ error }}</pre>
+  </div>
+
+  <div class="config-container" *ngIf="configJson">
+    <pre class="config-json">{{ configJson }}</pre>
+  </div>
+</div>

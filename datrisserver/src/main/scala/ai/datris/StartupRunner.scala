@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import ai.datris.model._
-import ai.datris.util.{DatasetConfigIO, NotificationUtil, SecretsUtil}
+import ai.datris.util.{PipelineConfigIO, NotificationUtil, SecretsUtil}
 import ai.datris.controller.KafkaConsumerRunner
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.beans.factory.annotation.Value
@@ -93,11 +93,11 @@ class StartupRunner extends ApplicationRunner {
     private def initDatrisEnvironment(): Unit = {
         // Set default values based upon the environment name
         val fileNotifierQueue = environment + "-file-notifier"
-        val datasetTableName = environment + "-dataset"
+        val pipelineTableName = environment + "-pipeline"
         val archivedMetadataTableName = environment + "-archived-metadata"
-        val datasetStatusTableName = environment + "-dataset-status"
+        val pipelineStatusTableName = environment + "-pipeline-status"
         val fileNotifierMessageTableName = environment + "-file-notifier-message"
-        val datasetPullTableName = environment + "-data-pull"
+        val pipelinePullTableName = environment + "-data-pull"
 
         val kafkaConsumerConfig = {
             if(kafkaConsumerEnabled) {
@@ -123,12 +123,12 @@ class StartupRunner extends ApplicationRunner {
             environment,
             fileNotifierQueue,
             ttlFileNotifierQueueMessages,
-            datasetTopic = null,
-            datasetTableName,
+            pipelineTopic = null,
+            pipelineTableName,
             archivedMetadataTableName,
-            datasetStatusTableName,
+            pipelineStatusTableName,
             fileNotifierMessageTableName,
-            datasetPullTableName,
+            pipelinePullTableName,
             useApiKeys,
             apiKeysSecretName,
             postgresSecretName,
@@ -177,10 +177,10 @@ class StartupRunner extends ApplicationRunner {
         }
         DatrisEnvironment.init(DatrisEnvironment.values.copy(minIOConfig = minIOConfig, activeMQConfig = activeMQConfig))
 
-        // And Notifications, send dataset notifications?
-        val datasetTopic = {
+        // And Notifications, send pipeline notifications?
+        val pipelineTopic = {
             if(sendDatasetNotifications)
-                "VirtualTopic." + environment + "-dataset-notification"
+                "VirtualTopic." + environment + "-pipeline-notification"
             else
                 null
         }
@@ -202,7 +202,7 @@ class StartupRunner extends ApplicationRunner {
             else
                 null
         }
-        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, datasetTopic = datasetTopic, aiConfig = aiConfig, aiEnabled = aiEnabled))
+        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, aiEnabled = aiEnabled))
     }
 
     private def initKafkaConsumerRunner(): Unit = {
@@ -211,8 +211,8 @@ class StartupRunner extends ApplicationRunner {
             DatrisEnvironment.values.kafkaConsumerConfig.groupId
         )
 
-        // Find the dataset configurations with streaming sources
-        val configs = DatasetConfigIO.readAll(DatrisEnvironment.values.datasetTableName)
+        // Find the pipeline configurations with streaming sources
+        val configs = PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName)
         val streamingConfigs = configs.filter(c => {
             c.source.streamAttributes != null && c.source.streamAttributes.`type`.compareToIgnoreCase("kafka") ==0
         })

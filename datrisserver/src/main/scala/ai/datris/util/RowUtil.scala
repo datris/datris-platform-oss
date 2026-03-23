@@ -5,13 +5,13 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.{DatasetConfig, DatrisException}
+import ai.datris.model.{PipelineConfig, DatrisException}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 object RowUtil {
-    def getRowAsMap(row: String, config: DatasetConfig): mutable.ListMap[String, Any] = {
+    def getRowAsMap(row: String, config: PipelineConfig): mutable.ListMap[String, Any] = {
         val columnsWithIndex = config.source.schemaProperties.fields.asScala.zipWithIndex.toList
 
         // Map the row data by field type

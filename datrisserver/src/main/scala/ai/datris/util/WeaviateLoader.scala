@@ -150,18 +150,18 @@ class WeaviateLoader(jobContext: JobContext) {
         val attributes = Map(
             "database" -> "",
             "schema" -> "",
-            "dataset" -> config.name,
+            "pipeline" -> config.name,
             "destination" -> "weaviate",
             "table" -> weaviateConfig.className
         )
         val notification = Map(
-            "dataset" -> config.name,
+            "pipeline" -> config.name,
             "publisherToken" -> jobContext.pipelineToken,
             "pipelineToken" -> jobContext.pipelineToken,
             "destination" -> "weaviate",
             "collection" -> weaviateConfig.className
         )
         val gson = new Gson()
-        NotificationUtil.add(DatrisEnvironment.values.datasetTopic, gson.toJson(notification.asJava), attributes)
+        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, gson.toJson(notification.asJava), attributes)
     }
 }

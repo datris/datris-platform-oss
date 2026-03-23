@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.{ColumnRule, DatasetConfig, DatrisEnvironment, DatrisException}
+import ai.datris.model.{ColumnRule, PipelineConfig, DatrisEnvironment, DatrisException}
 import ai.datris.model._
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -41,7 +41,7 @@ class DataQuality(jobContext: JobContext) {
                     "s3://" + DatrisEnvironment.values.environment + "-config/validation-schema/" + config.dataQuality.validationSchema
             }
 
-            statusUtil.info("processing", "Validating the incoming data for dataset: " + config.name + ", against the validation schema: " + schemaFileUrl)
+            statusUtil.info("processing", "Validating the incoming data for pipeline: " + config.name + ", against the validation schema: " + schemaFileUrl)
             if(config.source.fileAttributes.jsonAttributes != null)
                 SchemaValidationUtil.validateJson(jobContext.data.rawData, schemaFileUrl)
             else if(config.source.fileAttributes.xmlAttributes != null)
@@ -63,12 +63,12 @@ class DataQuality(jobContext: JobContext) {
         statusUtil.info("end", "Process completed successfully")
     }
 
-    private def validateHeader(header: List[String], config: DatasetConfig): Unit = {
+    private def validateHeader(header: List[String], config: PipelineConfig): Unit = {
         // The header must be in the exact order of the source schema if the source schema exists
         (header, config.source.schemaProperties.fields.asScala).zipped.foreach { (column, schemaField) =>
             //logger.info("Comparing header column: " + column + ", to field: " + field.name)
             if(schemaField.name.compareToIgnoreCase(column) != 0)
-                throw new DatrisException("The incoming header on the data file does not match the destination schema for dataset: " + config.name + ", failed comparing column: " + column + " with source schema field: " + schemaField.name)
+                throw new DatrisException("The incoming header on the data file does not match the destination schema for pipeline: " + config.name + ", failed comparing column: " + column + " with source schema field: " + schemaField.name)
         }
     }
 
@@ -123,7 +123,7 @@ class DataQuality(jobContext: JobContext) {
                 None
         }).toList
 
-        val datasetName = config.name
+        val pipelineName = config.name
         val pipelineToken = jobContext.pipelineToken
         if (restRules != null && restRules.nonEmpty) {
             val results = restRules.flatMap(rule => {
@@ -139,16 +139,16 @@ class DataQuality(jobContext: JobContext) {
                 mode match {
                     case "batch" =>
                         val rowMaps = rows.map(row => RowUtil.getRowAsMap(row, config).asJava)
-                        callRestEndpointBatch(endpointUrl, datasetName, pipelineToken, rowMaps, rawData, timeoutMs).map { case (rowNumber, description) =>
+                        callRestEndpointBatch(endpointUrl, pipelineName, pipelineToken, rowMaps, rawData, timeoutMs).map { case (rowNumber, description) =>
                             (rule.onFailureIsError, "Data quality failure, row: " + rowNumber.toString + ", description: " + description)
                         }
 
                     case "row" =>
                         if (rows.isEmpty)
-                            throw new DatrisException("REST endpoint row rule mode 'row' requires row data but none was provided for dataset: " + datasetName)
+                            throw new DatrisException("REST endpoint row rule mode 'row' requires row data but none was provided for pipeline: " + pipelineName)
                         rows.zipWithIndex.flatMap { case (row, rowNumber) =>
                             val columnMap = RowUtil.getRowAsMap(row, config)
-                            val description = callRestEndpointRow(endpointUrl, datasetName, pipelineToken, columnMap, timeoutMs)
+                            val description = callRestEndpointRow(endpointUrl, pipelineName, pipelineToken, columnMap, timeoutMs)
                             if (description != null)
                                 Some(rule.onFailureIsError, "Data quality failure, description: " + description)
                             else
@@ -229,7 +229,7 @@ class DataQuality(jobContext: JobContext) {
             config.dataQuality.columnRules.asScala.flatMap(rule => {
                 val (schemaField, columnNumber) = config.source.schemaProperties.fields.asScala.zipWithIndex.find { case (field, fieldNumber) =>
                     field.name.compareToIgnoreCase(rule.columnName) == 0
-                }.getOrElse(throw new DatrisException("Column rule field: " + rule.columnName + " was not found in the source 'schemaProperties' for this dataset"))
+                }.getOrElse(throw new DatrisException("Column rule field: " + rule.columnName + " was not found in the source 'schemaProperties' for this pipeline"))
 
                 val columns = row.split(config.source.fileAttributes.csvAttributes.delimiter).toList
                 if(columnNumber >= columns.size)
@@ -260,10 +260,10 @@ class DataQuality(jobContext: JobContext) {
         }
     }
 
-    private def callRestEndpointRow(endpointUrl: String, datasetName: String, pipelineToken: String, columnDataMap: mutable.ListMap[String, Any], timeoutMs: Int): String = {
+    private def callRestEndpointRow(endpointUrl: String, pipelineName: String, pipelineToken: String, columnDataMap: mutable.ListMap[String, Any], timeoutMs: Int): String = {
         val gson = new Gson()
         val payload = mutable.ListMap[String, Any](
-            "datasetName" -> datasetName,
+            "pipelineName" -> pipelineName,
             "pipelineToken" -> pipelineToken,
             "row" -> columnDataMap.asJava
         )
@@ -277,7 +277,7 @@ class DataQuality(jobContext: JobContext) {
         )
 
         if (response == null || response.trim.isEmpty || response.trim == "null")
-            throw new DatrisException(s"REST endpoint returned null for dataset: $datasetName")
+            throw new DatrisException(s"REST endpoint returned null for pipeline: $pipelineName")
 
         val responseMap = gson.fromJson(response.trim, classOf[java.util.Map[String, Any]])
         val status = Option(responseMap.get("status")).map(_.toString).getOrElse("failure")
@@ -288,10 +288,10 @@ class DataQuality(jobContext: JobContext) {
         message
     }
 
-    private def callRestEndpointBatch(endpointUrl: String, datasetName: String, pipelineToken: String, rowMaps: List[java.util.Map[String, Any]], rawData: String, timeoutMs: Int): List[(Int, String)] = {
+    private def callRestEndpointBatch(endpointUrl: String, pipelineName: String, pipelineToken: String, rowMaps: List[java.util.Map[String, Any]], rawData: String, timeoutMs: Int): List[(Int, String)] = {
         val gson = new Gson()
         val wrapper = mutable.ListMap[String, Any](
-            "datasetName" -> datasetName,
+            "pipelineName" -> pipelineName,
             "pipelineToken" -> pipelineToken,
             "rows" -> rowMaps.asJava
         )
@@ -307,13 +307,13 @@ class DataQuality(jobContext: JobContext) {
         )
 
         if (response == null || response.trim.isEmpty || response.trim == "null")
-            throw new DatrisException(s"REST batch endpoint returned null for dataset: $datasetName")
+            throw new DatrisException(s"REST batch endpoint returned null for pipeline: $pipelineName")
 
         val responseMap = gson.fromJson(response.trim, classOf[java.util.Map[String, Any]])
         val status = Option(responseMap.get("status")).map(_.toString).getOrElse("failure")
         if (status != "success") {
             val message = Option(responseMap.get("message")).map(_.toString).getOrElse("Unknown error")
-            throw new DatrisException(s"REST batch endpoint failed for dataset $datasetName: $message")
+            throw new DatrisException(s"REST batch endpoint failed for pipeline $pipelineName: $message")
         }
 
         val failures = Option(responseMap.get("failures"))
@@ -338,7 +338,7 @@ class DataQuality(jobContext: JobContext) {
         if (errorCount > 0) {
             val errorDetails = errors.take(100).mkString("\n")
             val suffix = if (errorCount > 100) "\n... and " + (errorCount - 100) + " more error(s)" else ""
-            throw new DatrisException("Aborting processing this dataset, " + errorCount.toString + " error(s) were found while performing data quality rules:\n" + errorDetails + suffix)
+            throw new DatrisException("Aborting processing this pipeline, " + errorCount.toString + " error(s) were found while performing data quality rules:\n" + errorDetails + suffix)
         }
         if (warningCount > 0)
             statusUtil.warn("processing", warnings.mkString("\n"))

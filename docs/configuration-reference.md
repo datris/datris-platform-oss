@@ -18,7 +18,7 @@ The pipeline server is configured via `application.yaml` (or `application.proper
 |----------|---------|-------------|
 | `logging.level.root` | `INFO` | Root log level |
 | `logging.level.org.springframework.web` | `INFO` | Spring web log level |
-| `logging.level.net.idata.pipeline` | `INFO` | Pipeline log level |
+| `logging.level.net.datris.pipeline` | `INFO` | Pipeline log level |
 
 ### Scheduling
 
@@ -34,7 +34,7 @@ The pipeline server is configured via `application.yaml` (or `application.proper
 |----------|---------|-------------|
 | `environment` | `oss` | Environment name. Used as prefix for bucket names (`oss-raw`, `oss-data`, etc.) and table names |
 | `useApiKeys` | `false` | Enable API key authentication |
-| `sendDatasetNotifications` | `true` | Enable dataset event notifications |
+| `sendPipelineNotifications` | `true` | Enable pipeline event notifications |
 | `ttlFileNotifierQueueMessages` | `60` | Days to retain processed message IDs for deduplication |
 
 ### MinIO (Object Store)
@@ -159,8 +159,8 @@ The following buckets are created automatically by the `minio-init` container:
 
 | Collection | Purpose |
 |------------|---------|
-| `{environment}-dataset` | Dataset configurations |
-| `{environment}-dataset-status` | Job processing status |
+| `{environment}-pipeline` | Pipeline configurations |
+| `{environment}-pipeline-status` | Job processing status |
 | `{environment}-archived-metadata` | File ingestion metadata |
 | `{environment}-file-notifier-message` | Processed message deduplication |
 | `{environment}-data-pull` | Database pull scheduling state |

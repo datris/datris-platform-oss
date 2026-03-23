@@ -14,7 +14,7 @@ Connection credentials are retrieved from Vault using the secret name specified 
 
 ## Table Management
 
-When `manageTableManually` is set to `false` (the default), the pipeline auto-creates the target table if it does not exist. The table schema is derived from the dataset's source schema using the type mapping below.
+When `manageTableManually` is set to `false` (the default), the pipeline auto-creates the target table if it does not exist. The table schema is derived from the pipeline's source schema using the type mapping below.
 
 Set `manageTableManually` to `true` if you want to create and manage the table yourself. In this case the table must already exist and its column types must be compatible with the incoming data.
 
@@ -76,7 +76,7 @@ Use the `options` array to pass additional PostgreSQL `COPY` options. Each entry
 }
 ```
 
-Connection credentials are configured globally in `application.yaml` via `secrets.postgresSecretName`, not per dataset. See [Configuration Reference](../configuration-reference.md) for Vault secret format.
+Connection credentials are configured globally in `application.yaml` via `secrets.postgresSecretName`, not per pipeline. See [Configuration Reference](../configuration-reference.md) for Vault secret format.
 
 ### Field Reference
 

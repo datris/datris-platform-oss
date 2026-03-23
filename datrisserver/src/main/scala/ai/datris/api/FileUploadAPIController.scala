@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import ai.datris.model.{GlobalJobContext, DatrisEnvironment, DatrisException}
-import ai.datris.util.{AIProfileUtil, AISchemaUtil, DatasetConfigIO, ObjectStoreUtil, StatusUtil}
+import ai.datris.util.{AIProfileUtil, AISchemaUtil, PipelineConfigIO, ObjectStoreUtil, StatusUtil}
 import ai.datris.controller.StreamNotifier
 import ai.datris.util.APIKeyValidator
 import org.slf4j.{Logger, LoggerFactory}
@@ -25,19 +25,19 @@ import java.util.Date
 class FileUploadAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileUploadAPIController])
 
-    @PostMapping(path = Array("/dataset/upload"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    @PostMapping(path = Array("/pipeline/upload"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def uploadRawFile(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                       @RequestPart("file") multipartFile: MultipartFile,
-                      @RequestParam("dataset") dataset: String,
+                      @RequestParam("pipeline") pipeline: String,
                       @RequestParam(required = false) publishertoken: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint POST /dataset/upload called for dataset: " + dataset + ", filename: " + multipartFile.getOriginalFilename + ", publishertoken: " + publishertoken)
+            logger.info("API endpoint POST /pipeline/upload called for pipeline: " + pipeline + ", filename: " + multipartFile.getOriginalFilename + ", publishertoken: " + publishertoken)
             APIKeyValidator.validate(apiKey)
 
-            // Validate dataset is registered before processing
-            val config = DatasetConfigIO.read(DatrisEnvironment.values.datasetTableName, dataset)
+            // Validate pipeline is registered before processing
+            val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
             if (config == null)
-                throw new IllegalArgumentException("Dataset '" + dataset + "' is not registered. Use POST /api/v1/dataset to register it first.")
+                throw new IllegalArgumentException("Pipeline '" + pipeline + "' is not registered. Use POST /api/v1/pipeline to register it first.")
 
             val byteArray = multipartFile.getBytes
             val filename = multipartFile.getOriginalFilename
@@ -48,16 +48,16 @@ class FileUploadAPIController {
                 val rawFilename = {
                     val ext = filename.substring(filename.lastIndexOf('.') + 1)
                     if (publishertoken != null)
-                        config.name + "." + publishertoken + "." + dateFormat.format(new Date()) + "." + System.currentTimeMillis().toString + ".dataset." + ext
+                        config.name + "." + publishertoken + "." + dateFormat.format(new Date()) + "." + System.currentTimeMillis().toString + ".pipeline." + ext
                     else
-                        config.name + "." + dateFormat.format(new Date()) + "." + System.currentTimeMillis().toString + ".dataset." + ext
+                        config.name + "." + dateFormat.format(new Date()) + "." + System.currentTimeMillis().toString + ".pipeline." + ext
                 }
                 val path = "s3://" + DatrisEnvironment.values.environment + "-raw/temp/" + config.name + "/" + rawFilename
                 ObjectStoreUtil.writeBucketObjectFromStream(ObjectStoreUtil.getBucket(path), ObjectStoreUtil.getKey(path), new ByteArrayInputStream(byteArray), byteArray.length.toLong)
                 new ResponseEntity[String](HttpStatus.OK)
             } else {
                 // Uncompressed files: pass bytes directly into the pipeline in memory, bypassing S3
-                val jobContext = new StreamNotifier().process(byteArray, filename, dataset, publishertoken)
+                val jobContext = new StreamNotifier().process(byteArray, filename, pipeline, publishertoken)
                 GlobalJobContext.addJobContext(jobContext)
                 new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)
             }
@@ -66,8 +66,8 @@ class FileUploadAPIController {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 try {
-                    val statusUtil = new StatusUtil().init(DatrisEnvironment.values.datasetStatusTableName, this.getClass.getSimpleName)
-                    statusUtil.setFilename(dataset)
+                    val statusUtil = new StatusUtil().init(DatrisEnvironment.values.pipelineStatusTableName, this.getClass.getSimpleName)
+                    statusUtil.setFilename(pipeline)
                     statusUtil.error("end", e.getMessage)
                 }
                 catch {
@@ -77,17 +77,17 @@ class FileUploadAPIController {
         }
     }
 
-    @PostMapping(path = Array("/dataset/generate"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    @PostMapping(path = Array("/pipeline/generate"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateAiDataset(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                           @RequestPart("file") multipartFile: MultipartFile,
-                          @RequestParam(required = false) dataset: String,
+                          @RequestParam(required = false) pipeline: String,
                           @RequestParam(required = false) delimiter: String,
                           @RequestParam(required = false) header: Boolean): ResponseEntity[String] = {
         try {
             val filename = multipartFile.getOriginalFilename
-            val datasetName = {
-                if (dataset != null && dataset.nonEmpty)
-                    dataset
+            val pipelineName = {
+                if (pipeline != null && pipeline.nonEmpty)
+                    pipeline
                 else {
                     val name = filename.lastIndexOf('.') match {
                         case -1 => filename
@@ -96,7 +96,7 @@ class FileUploadAPIController {
                     name.toLowerCase.replaceAll("[^a-z0-9_]", "_")
                 }
             }
-            logger.info("API endpoint POST /dataset/generate called for dataset: " + datasetName + ", filename: " + filename)
+            logger.info("API endpoint POST /pipeline/generate called for pipeline: " + pipelineName + ", filename: " + filename)
             APIKeyValidator.validate(apiKey)
 
             if (!DatrisEnvironment.values.aiEnabled)
@@ -104,12 +104,12 @@ class FileUploadAPIController {
 
             val json = {
                 if (filename.toLowerCase.endsWith(".json"))
-                    AISchemaUtil.buildJsonConfig(datasetName)
+                    AISchemaUtil.buildJsonConfig(pipelineName)
                 else if (filename.toLowerCase.endsWith(".xml"))
-                    AISchemaUtil.buildXmlConfig(datasetName)
+                    AISchemaUtil.buildXmlConfig(pipelineName)
                 else {
                     val fileContent = new String(multipartFile.getBytes, "UTF-8")
-                    AISchemaUtil.buildCsvConfig(datasetName, fileContent, delimiter, header)
+                    AISchemaUtil.buildCsvConfig(pipelineName, fileContent, delimiter, header)
                 }
             }
             new ResponseEntity[String](json, HttpStatus.OK)
@@ -121,7 +121,7 @@ class FileUploadAPIController {
         }
     }
 
-    @PostMapping(path = Array("/dataset/profile"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    @PostMapping(path = Array("/pipeline/profile"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def profileDataset(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                        @RequestPart("file") multipartFile: MultipartFile,
                        @RequestParam(required = false, defaultValue = ",") delimiter: String,
@@ -129,7 +129,7 @@ class FileUploadAPIController {
                        @RequestParam(required = false, defaultValue = "200") sampleSize: Int): ResponseEntity[String] = {
         try {
             val filename = multipartFile.getOriginalFilename
-            logger.info("API endpoint POST /dataset/profile called, filename: " + filename)
+            logger.info("API endpoint POST /pipeline/profile called, filename: " + filename)
             APIKeyValidator.validate(apiKey)
 
             if (!DatrisEnvironment.values.aiEnabled)
