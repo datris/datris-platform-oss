@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.model.DatrisException
 import org.everit.json.schema.loader.SchemaLoader
-import org.json.{JSONObject, JSONTokener}
+import org.json.{JSONArray, JSONObject, JSONTokener}
 import org.xml.sax.SAXException
 
 import java.io.{ByteArrayInputStream, StringReader}
@@ -21,10 +21,14 @@ object SchemaValidationUtil {
             .getOrElse(throw new DatrisException("Could not read the validation schema file: " + schemaFileUrl))
 
         val schemaObject = new JSONObject(new JSONTokener(jsonSchema))
-        val dataObject = new JSONObject(new JSONTokener(data))
-
         val schema = SchemaLoader.load(schemaObject)
-        schema.validate(dataObject)
+
+        val trimmed = data.trim
+        if (trimmed.startsWith("[")) {
+            schema.validate(new JSONArray(new JSONTokener(trimmed)))
+        } else {
+            schema.validate(new JSONObject(new JSONTokener(trimmed)))
+        }
     }
 
     def validateXml(data: String, schemaFileUrl: String): Unit = {

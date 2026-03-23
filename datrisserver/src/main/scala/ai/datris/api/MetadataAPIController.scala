@@ -84,9 +84,15 @@ class MetadataAPIController {
                 "AND c.column_name = 'embedding' " +
                 "ORDER BY t.table_name"
             } else {
+                // Exclude tables that have an 'embedding' column (pgvector tables)
                 "SELECT table_name FROM information_schema.tables " +
                 "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
                 "AND table_type = 'BASE TABLE' " +
+                "AND table_name NOT IN (" +
+                    "SELECT DISTINCT table_name FROM information_schema.columns " +
+                    "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
+                    "AND column_name = 'embedding'" +
+                ") " +
                 "ORDER BY table_name"
             }
 

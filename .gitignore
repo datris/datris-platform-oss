@@ -17,6 +17,9 @@ project/metals.sbt
 .vscode/
 datrisserver/.vscode/
 
+# Angular cache
+ui/.angular
+
 # Claude
 .claude/
 

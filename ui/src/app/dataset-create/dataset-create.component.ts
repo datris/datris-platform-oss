@@ -35,12 +35,40 @@ export class DatasetCreateComponent implements OnInit {
   xmlEveryRow = true;
   unstructuredExtension = 'pdf';
 
+  // Preprocessor (optional, shown in Step 2)
+  showPreprocessorInfo = false;
+  usePreprocessor = false;
+  ppEndpoint = '';
+  ppAsync = false;
+  ppBearerToken = '';
+  ppTimeout = 300;
+
   // Step 3 — Schema
   schemaDbName = 'idata';
   schemaFields: SchemaField[] = [{ name: '', type: 'string' }];
   schemaFile: File | null = null;
 
-  // Step 4 — Destination
+  // Step 4 — Data Quality
+  useDq = false;
+  dqValidateHeader = false;
+  dqValidationSchema = '';
+  dqUseAiRule = false;
+  dqAiInstruction = '';
+  dqAiOnFailureIsError = false;
+  dqAiSample = false;
+  dqAiSampleSize = 200;
+  showSampleInfo = false;
+  showRowModeInfo = false;
+  dqProfileSummary = '';
+  dqSelectedColumn = '';
+  regexPrompt = '';
+  regexResult = '';
+  regexExplanation = '';
+  regexGenerating = false;
+  dqColumnRules: { columnName: string; function: string; parameter: string; onFailureIsError: boolean; description: string }[] = [];
+  dqRowRules: { function: string; parameters: string[]; onFailureIsError: boolean }[] = [];
+
+  // Step 5 — Destination
   destType = 'postgres';
   pgDbName = 'idata';
   pgSchema = 'public';
@@ -116,6 +144,44 @@ export class DatasetCreateComponent implements OnInit {
           name: f.name, type: f.type
         }));
       }
+    }
+
+    // Data Quality
+    if (config.dataQuality) {
+      this.useDq = true;
+      const dq = config.dataQuality;
+      this.dqValidateHeader = dq.validateFileHeader || false;
+      this.dqValidationSchema = dq.validationSchema || '';
+      if (dq.aiRule) {
+        this.dqUseAiRule = true;
+        this.dqAiInstruction = dq.aiRule.instruction || '';
+        this.dqAiOnFailureIsError = dq.aiRule.onFailureIsError || false;
+        this.dqAiSample = dq.aiRule.sample || false;
+        this.dqAiSampleSize = dq.aiRule.sampleSize || 200;
+      }
+      if (dq.columnRules && dq.columnRules.length > 0) {
+        this.dqColumnRules = dq.columnRules.map((r: any) => ({
+          columnName: r.columnName || '', function: r.function || 'regex',
+          parameter: r.parameter || '', onFailureIsError: r.onFailureIsError || false,
+          description: r.description || ''
+        }));
+      }
+      if (dq.rowRules && dq.rowRules.length > 0) {
+        this.dqRowRules = dq.rowRules.map((r: any) => ({
+          function: r.function || 'ai',
+          parameters: r.parameters || [''],
+          onFailureIsError: r.onFailureIsError || false
+        }));
+      }
+    }
+
+    // Preprocessor
+    if (config.preprocessor) {
+      this.usePreprocessor = true;
+      this.ppEndpoint = config.preprocessor.endpoint || '';
+      this.ppAsync = config.preprocessor.async || false;
+      this.ppBearerToken = config.preprocessor.bearerToken || '';
+      this.ppTimeout = config.preprocessor.timeoutSeconds || 300;
     }
 
     // Destination
@@ -337,6 +403,40 @@ export class DatasetCreateComponent implements OnInit {
     }
   }
 
+  onSchemaFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      const file = input.files[0];
+      this.dqValidationSchema = file.name;
+      // Upload to MinIO
+      this.datasetService.uploadConfigFile(file, 'validation-schema').subscribe({
+        next: (resp) => {
+          this.dqValidationSchema = resp.filename;
+        },
+        error: (err) => {
+          this.error = 'Failed to upload validation schema: ' + (err.error || err.message);
+        }
+      });
+    }
+  }
+
+  onJsFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0 && this.dqRowRules.length > 0) {
+      const file = input.files[0];
+      this.dqRowRules[0].parameters[0] = file.name;
+      // Upload to MinIO
+      this.datasetService.uploadConfigFile(file, 'javascript').subscribe({
+        next: (resp) => {
+          this.dqRowRules[0].parameters[0] = resp.filename;
+        },
+        error: (err) => {
+          this.error = 'Failed to upload JavaScript file: ' + (err.error || err.message);
+        }
+      });
+    }
+  }
+
   detectSourceType(filename: string): string {
     const ext = filename.split('.').pop()?.toLowerCase() || '';
     const unstructuredExts = ['pdf', 'doc', 'docx', 'pptx', 'ppt', 'xlsx', 'html', 'htm', 'txt', 'md', 'epub', 'eml', 'msg', 'rtf'];
@@ -434,35 +534,225 @@ export class DatasetCreateComponent implements OnInit {
       return;
     }
 
-    this.step++;
-
-    // Skip schema step (3) for unstructured
-    if (this.step === 3 && this.isUnstructured()) {
-      this.step = 4;
+    // Validate step 2 — preprocessor
+    if (this.step === 2 && this.usePreprocessor) {
+      if (!this.ppEndpoint.trim()) {
+        this.error = 'An endpoint URL is required when preprocessor is enabled';
+        return;
+      }
+      if (!this.isValidUrl(this.ppEndpoint)) {
+        this.error = 'Preprocessor endpoint must be a valid URL (e.g., http://service:8080/preprocess)';
+        return;
+      }
     }
 
-    // Load metadata when entering destination step (4)
-    if (this.step === 4) {
+    // Validate step 4 — data quality
+    if (this.step === 4 && this.useDq) {
+      if (this.dqValidateHeader && (this.sourceType === 'json' || this.sourceType === 'xml') && !this.dqValidationSchema.trim()) {
+        this.error = 'A validation schema file is required when header validation is enabled for ' + this.sourceType.toUpperCase();
+        return;
+      }
+      if (this.dqUseAiRule && !this.dqAiInstruction.trim()) {
+        this.error = 'An AI instruction is required when AI Rule is enabled';
+        return;
+      }
+    }
+
+    // Validate step 5 — row rules and column rules
+    if (this.step === 5) {
+      // Row rule validation
+      if (this.dqRowRules.length > 0) {
+        const rule = this.dqRowRules[0];
+        if (rule.function === 'restEndpoint' && !rule.parameters[0]?.trim()) {
+          this.error = 'An endpoint URL is required for REST Endpoint row rules';
+          return;
+        }
+        if (rule.function === 'restEndpoint' && rule.parameters[0] && !this.isValidUrl(rule.parameters[0])) {
+          this.error = 'Row rule endpoint must be a valid URL (e.g., http://service:8080/validate)';
+          return;
+        }
+        if (rule.function === 'javascript' && !rule.parameters[0]?.trim()) {
+          this.error = 'A JavaScript file is required';
+          return;
+        }
+      }
+      // Column rule validation
+      for (const rule of this.dqColumnRules) {
+        if (!rule.parameter?.trim()) {
+          this.error = 'A regex pattern is required for column "' + rule.columnName + '"';
+          return;
+        }
+        if (!this.isValidRegex(rule.parameter)) {
+          this.error = 'Invalid regex pattern for column "' + rule.columnName + '": ' + rule.parameter;
+          return;
+        }
+      }
+    }
+
+    this.step++;
+
+    // Skip schema (3), dq (4), dq rules (5) for unstructured
+    if (this.isUnstructured() && this.step >= 3 && this.step <= 5) {
+      this.step = 6;
+    }
+
+    // Auto-profile when entering DQ step (4) if sample file exists
+    if (this.step === 4 && this.sampleFileDetected && !this.dqProfileSummary) {
+      this.autoProfileSampleFile();
+    }
+
+    // Skip dq rules (5) if data quality not enabled or not CSV
+    if (this.step === 5 && (!this.useDq || this.sourceType !== 'csv')) {
+      this.step = 6;
+    }
+
+    // Load metadata when entering destination step (6)
+    if (this.step === 6) {
       this.loadPgDatabases();
       this.loadMongoDatabases();
     }
 
-    // Generate config JSON when entering review step (5)
-    if (this.step === 5) {
+    // Generate config JSON when entering review step (7)
+    if (this.step === 7) {
       this.configJson = JSON.stringify(this.buildConfig(), null, 2);
     }
   }
 
   prevStep(): void {
     this.step--;
-    // Skip schema step (3) for unstructured going back
-    if (this.step === 3 && this.isUnstructured()) {
+
+    // Skip dq rules (5) if data quality not enabled or not CSV
+    if (this.step === 5 && (!this.useDq || this.sourceType !== 'csv')) {
+      this.step = 4;
+    }
+
+    // Skip dq (4), schema (3) for unstructured going back
+    if (this.isUnstructured() && this.step >= 3 && this.step <= 5) {
       this.step = 2;
     }
   }
 
+  // Data quality helpers
+  addColumnRule(): void {
+    this.dqColumnRules.push({ columnName: '', function: 'regex', parameter: '', onFailureIsError: false, description: '' });
+  }
+
+  removeColumnRule(index: number): void {
+    this.dqColumnRules.splice(index, 1);
+  }
+
+  addRowRule(): void {
+    this.dqRowRules.push({ function: 'restEndpoint', parameters: ['', 'row', '30000', ''], onFailureIsError: false });
+  }
+
+  removeRowRule(index: number): void {
+    this.dqRowRules.splice(index, 1);
+  }
+
+  onRowRuleFunctionChange(rule: any): void {
+    if (rule.function === 'restEndpoint') {
+      rule.parameters = ['', 'row', '30000', ''];
+    } else if (rule.function === 'javascript') {
+      rule.parameters = [''];
+    }
+  }
+
+  isValidUrl(url: string): boolean {
+    try {
+      const u = new URL(url);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  autoProfileSampleFile(): void {
+    if (!this.sampleFile || !this.datasetName || this.sourceType === 'unstructured') return;
+    this.datasetService.generateSchema(
+      this.sampleFile, this.datasetName,
+      this.sourceType === 'csv' ? this.csvDelimiter : undefined,
+      this.sourceType === 'csv' ? this.csvHeader : undefined
+    ).subscribe({
+      next: (response: any) => {
+        if (response.source?.schemaProperties?.fields) {
+          const fields = response.source.schemaProperties.fields;
+          this.dqProfileSummary = 'Detected ' + fields.length + ' fields: ' +
+            fields.map((f: any) => f.name + ' (' + f.type + ')').join(', ');
+        }
+      },
+      error: () => { /* ignore profiling errors */ }
+    });
+  }
+
+  addColumnRuleForColumn(): void {
+    if (!this.dqSelectedColumn) return;
+    const exists = this.dqColumnRules.some(r => r.columnName === this.dqSelectedColumn);
+    if (exists) return;
+    this.dqColumnRules.push({
+      columnName: this.dqSelectedColumn, function: 'regex',
+      parameter: '', onFailureIsError: false, description: ''
+    });
+    this.dqSelectedColumn = '';
+  }
+
+  getAvailableColumns(): string[] {
+    return this.schemaFields
+      .filter(f => f.name.trim())
+      .filter(f => !this.dqColumnRules.some(r => r.columnName === f.name))
+      .map(f => f.name);
+  }
+
+  isValidRegex(pattern: string): boolean {
+    try {
+      new RegExp(pattern);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  generateRegex(): void {
+    if (!this.regexPrompt) return;
+    this.regexGenerating = true;
+    this.regexResult = '';
+    this.regexExplanation = '';
+
+    const query = 'Generate a regex pattern that: ' + this.regexPrompt +
+      '. Return ONLY the regex pattern on the first line, then a brief explanation on the second line. No markdown, no code fences.';
+
+    this.searchService.aiAnswer(query, 'Generate a regex expression for data validation.').subscribe({
+      next: (response: any) => {
+        const answer = response.answer || '';
+        const lines = answer.trim().split('\n').filter((l: string) => l.trim());
+        if (lines.length > 0) {
+          // Extract regex - remove any wrapping like /pattern/ or `pattern`
+          let pattern = lines[0].trim().replace(/^[`\/]|[`\/]$/g, '');
+          this.regexResult = pattern;
+          this.regexExplanation = lines.slice(1).join(' ').trim();
+        }
+        this.regexGenerating = false;
+      },
+      error: (err: any) => {
+        this.regexResult = 'Error: ' + (err.error || err.message);
+        this.regexGenerating = false;
+      }
+    });
+  }
+
   buildConfig(): any {
     const config: any = { name: this.datasetName, source: {}, destination: {} };
+
+    // Preprocessor
+    if (this.usePreprocessor && this.ppEndpoint) {
+      config.preprocessor = {
+        endpoint: this.ppEndpoint,
+        async: this.ppAsync,
+        timeoutSeconds: this.ppTimeout
+      };
+      if (this.ppBearerToken) {
+        config.preprocessor.bearerToken = this.ppBearerToken;
+      }
+    }
 
     // Source
     if (this.sourceType === 'csv') {
@@ -489,6 +779,39 @@ export class DatasetCreateComponent implements OnInit {
         dbName: this.schemaDbName,
         fields: this.schemaFields.filter(f => f.name.trim())
       };
+    }
+
+    // Data Quality
+    const dq: any = {};
+    let hasDq = false;
+
+    if (this.dqValidateHeader && this.sourceType === 'csv') {
+      dq.validateFileHeader = true;
+      hasDq = true;
+    }
+    if (this.dqValidationSchema && (this.sourceType === 'json' || this.sourceType === 'xml')) {
+      dq.validationSchema = this.dqValidationSchema;
+      hasDq = true;
+    }
+    if (this.dqUseAiRule && this.dqAiInstruction) {
+      dq.aiRule = {
+        instruction: this.dqAiInstruction,
+        onFailureIsError: this.dqAiOnFailureIsError,
+        sample: this.dqAiSample,
+        sampleSize: this.dqAiSampleSize
+      };
+      hasDq = true;
+    }
+    if (this.dqColumnRules.length > 0) {
+      const rules = this.dqColumnRules.filter(r => r.columnName && r.parameter);
+      if (rules.length > 0) { dq.columnRules = rules; hasDq = true; }
+    }
+    if (this.dqRowRules.length > 0) {
+      const rules = this.dqRowRules.filter(r => r.parameters[0]);
+      if (rules.length > 0) { dq.rowRules = rules; hasDq = true; }
+    }
+    if (hasDq) {
+      config.dataQuality = dq;
     }
 
     // Destination

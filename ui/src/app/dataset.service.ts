@@ -24,6 +24,12 @@ export class DatasetService {
     return this.http.post<any>('/api/v1/dataset', config);
   }
 
+  uploadConfigFile(file: File, type: string): Observable<any> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.http.post<any>('/api/v1/config/upload?type=' + encodeURIComponent(type), formData);
+  }
+
   generateSchema(file: File, dataset: string, delimiter?: string, header?: boolean): Observable<any> {
     const formData = new FormData();
     formData.append('file', file);

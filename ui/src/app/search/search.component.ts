@@ -25,6 +25,7 @@ export class SearchComponent implements OnInit {
   pgLimit = 100;
   pgSchemas: string[] = [];
   pgTables: string[] = [];
+  vectorTables: string[] = [];
   pgSelectedSchema = '';
   pgSelectedTable = '';
 
@@ -73,6 +74,11 @@ export class SearchComponent implements OnInit {
       next: (tables) => { this.pgTables = tables; },
       error: () => { this.pgTables = []; }
     });
+    // Also load vector tables for pgvector dropdown
+    this.searchService.getPostgresTables(this.pgDatabase, this.pgSelectedSchema, true).subscribe({
+      next: (tables) => { this.vectorTables = tables; },
+      error: () => { this.vectorTables = []; }
+    });
   }
 
   onPgSchemaChange(): void {
@@ -83,8 +89,8 @@ export class SearchComponent implements OnInit {
   onSearchSchemaChange(): void {
     this.searchTable = '';
     this.searchService.getPostgresTables(this.pgDatabase, this.searchSchema, true).subscribe({
-      next: (tables) => { this.pgTables = tables; },
-      error: () => { this.pgTables = []; }
+      next: (tables) => { this.vectorTables = tables; },
+      error: () => { this.vectorTables = []; }
     });
   }
 

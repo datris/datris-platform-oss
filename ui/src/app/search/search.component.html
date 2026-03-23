@@ -109,7 +109,7 @@
           <label class="form-label">Collection</label>
           <select class="form-input" [(ngModel)]="searchTable">
             <option value="">Select collection...</option>
-            <option *ngFor="let t of pgTables" [value]="t">{{ t }}</option>
+            <option *ngFor="let t of vectorTables" [value]="t">{{ t }}</option>
           </select>
         </div>
         <div class="form-field" *ngIf="queryType !== 'weaviate' && queryType !== 'pgvector'">
