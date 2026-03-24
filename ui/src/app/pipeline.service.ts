@@ -30,6 +30,10 @@ export class PipelineService {
     return this.http.post<any>('/api/v1/config/upload?type=' + encodeURIComponent(type), formData);
   }
 
+  generateValidationSchema(type: string, name: string, sampleData: string): Observable<any> {
+    return this.http.post<any>('/api/v1/config/generate-schema', { type, name, sampleData });
+  }
+
   generateSchema(file: File, dataset: string, delimiter?: string, header?: boolean): Observable<any> {
     const formData = new FormData();
     formData.append('file', file);

@@ -63,7 +63,10 @@ object PostgresQueryUtil {
                 val row = new java.util.LinkedHashMap[String, Any]()
                 for (i <- 1 to columnCount) {
                     val columnName = metaData.getColumnLabel(i)
-                    val value = rs.getObject(i)
+                    val value = rs.getObject(i) match {
+                        case xml: java.sql.SQLXML => xml.getString
+                        case other => other
+                    }
                     row.put(columnName, value)
                 }
                 results.add(row)

@@ -32,7 +32,8 @@ export class PipelineCreateComponent implements OnInit {
   csvHeader = true;
   jsonEveryRow = false;
   showJsonInfo = false;
-  xmlEveryRow = true;
+  showXmlInfo = false;
+  xmlEveryRow = false;
   unstructuredExtension = 'pdf';
 
   // Preprocessor (optional, shown in Step 2)
@@ -53,6 +54,11 @@ export class PipelineCreateComponent implements OnInit {
   useDq = false;
   dqValidateHeader = false;
   dqValidationSchema = '';
+  dqSchemaMode = 'upload';
+  dqSchemaName = '';
+  dqSampleData = '';
+  dqGenerating = false;
+  dqGenerateError = '';
   dqUseAiRule = false;
   dqAiInstruction = '';
   dqAiOnFailureIsError = false;
@@ -174,7 +180,7 @@ export class PipelineCreateComponent implements OnInit {
     if (config.dataQuality) {
       this.useDq = true;
       const dq = config.dataQuality;
-      this.dqValidateHeader = dq.validateFileHeader || false;
+      this.dqValidateHeader = dq.validateFileHeader || (dq.validationSchema ? true : false);
       this.dqValidationSchema = dq.validationSchema || '';
       if (dq.aiRule) {
         this.dqUseAiRule = true;
@@ -427,8 +433,9 @@ export class PipelineCreateComponent implements OnInit {
       }
     } else if (this.sourceType === 'xml') {
       this.schemaFields = [{ name: '_xml', type: 'string' }];
-      if (this.destType === 'postgres' || this.destType === 'objectstore') {
-        this.destType = 'mongodb';
+      // XML can go to PostgreSQL or vector stores
+      if (this.destType === 'objectstore' || this.destType === 'kafka' || this.destType === 'activemq' || this.destType === 'restendpoint' || this.destType === 'mongodb') {
+        this.destType = 'postgres';
       }
     } else if (this.sourceType === 'csv') {
       this.schemaFields = [{ name: '', type: 'string' }];
@@ -479,6 +486,39 @@ export class PipelineCreateComponent implements OnInit {
         }
       });
     }
+  }
+
+  loadSampleFileForSchema(): void {
+    if (!this.sampleFile) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      this.dqSampleData = reader.result as string;
+    };
+    reader.readAsText(this.sampleFile);
+  }
+
+  generateValidationSchema(): void {
+    if (!this.dqSchemaName.trim()) {
+      this.dqGenerateError = 'Schema name is required';
+      return;
+    }
+    if (!this.dqSampleData.trim()) {
+      this.dqGenerateError = 'Sample data is required';
+      return;
+    }
+    const schemaType = this.sourceType === 'xml' ? 'xsd' : 'json-schema';
+    this.dqGenerating = true;
+    this.dqGenerateError = '';
+    this.pipelineService.generateValidationSchema(schemaType, this.dqSchemaName.trim(), this.dqSampleData).subscribe({
+      next: (resp) => {
+        this.dqValidationSchema = resp.filename;
+        this.dqGenerating = false;
+      },
+      error: (err) => {
+        this.dqGenerateError = 'Failed to generate schema: ' + (err.error || err.message);
+        this.dqGenerating = false;
+      }
+    });
   }
 
   onJsFileSelected(event: Event): void {

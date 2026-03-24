@@ -29,7 +29,7 @@ Pipelines are configured entirely through JSON. Each pipeline defines a source, 
     "endpoint": "http://my-service:8080/preprocess",
     "async": false,
     "bearerToken": "my-token",
-    "timeoutSeconds": 300
+    "timeoutMs": 300000
   },
   "dataQuality": {
     "validateFileHeader": true,
@@ -187,7 +187,7 @@ Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `do
 | `endpoint` | string | Required | URL of the preprocessing service |
 | `async` | boolean | `false` | If true, returns immediately |
 | `bearerToken` | string | null | Authorization bearer token |
-| `timeoutSeconds` | int | 300 | Request timeout |
+| `timeoutMs` | int | 300000 | Request timeout (milliseconds) |
 
 ### Data Quality
 
@@ -259,7 +259,7 @@ See [JavaScript Row Functions](transformation/row-functions.md) and [REST Endpoi
 | `endpoint` | string | Required | URL to POST data to |
 | `async` | boolean | false | If true, doesn't wait for response |
 | `bearerToken` | string | null | Authorization token |
-| `timeoutSeconds` | int | 300 | Request timeout |
+| `timeoutMs` | int | 300000 | Request timeout (milliseconds) |
 
 ### Destination > Schema Properties (Optional)
 

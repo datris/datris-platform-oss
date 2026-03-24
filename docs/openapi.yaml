@@ -969,3 +969,134 @@ paths:
                   status: not_configured
         '500':
           description: Error
+
+  # ── Secrets ──────────────────────────────────────────────
+
+  /api/v1/secrets:
+    get:
+      tags: [Secrets]
+      summary: List all secrets
+      description: Lists all secret names under the current environment path in Vault.
+      responses:
+        '200':
+          description: Array of secret names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+              example: ["postgres", "mongodb", "embedding", "qdrant"]
+        '500':
+          description: Error
+
+  /api/v1/secrets/{name}:
+    get:
+      tags: [Secrets]
+      summary: Get secret details
+      description: Returns the key-value fields of a secret. Sensitive fields (password, apiKey, secretKey, token) are masked unless reveal=true.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: reveal
+          in: query
+          schema:
+            type: string
+            default: "false"
+      responses:
+        '200':
+          description: Secret details with fields
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  fields:
+                    type: object
+                    additionalProperties:
+                      type: string
+        '404':
+          description: Secret not found
+        '500':
+          description: Error
+    put:
+      tags: [Secrets]
+      summary: Create or update a secret
+      description: Creates or updates a secret with the provided key-value fields.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties:
+                type: string
+      responses:
+        '200':
+          description: Success
+        '500':
+          description: Error
+    delete:
+      tags: [Secrets]
+      summary: Delete a secret
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success
+        '500':
+          description: Error
+
+  # ── Schema Generation ────────────────────────────────────
+
+  /api/v1/config/generate-schema:
+    post:
+      tags: [Configuration]
+      summary: AI-generate a validation schema
+      description: Uses AI to generate a JSON Schema (Draft 4) or W3C XSD from sample data. The schema is stored in MinIO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, name, sampleData]
+              properties:
+                type:
+                  type: string
+                  enum: [json-schema, xsd]
+                name:
+                  type: string
+                sampleData:
+                  type: string
+      responses:
+        '200':
+          description: Generated schema with filename and content
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  filename:
+                    type: string
+                  path:
+                    type: string
+                  schema:
+                    type: string
+        '500':
+          description: Error

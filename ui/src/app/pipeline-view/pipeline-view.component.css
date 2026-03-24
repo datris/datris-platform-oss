@@ -159,3 +159,23 @@
   color: var(--accent-red);
   white-space: pre-wrap;
 }
+
+.copy-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 10px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #0a0e1a;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 180, 255, 0.3);
+  z-index: 1000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}

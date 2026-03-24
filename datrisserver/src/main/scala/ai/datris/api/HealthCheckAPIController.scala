@@ -241,16 +241,20 @@ class HealthCheckAPIController {
 
             name match {
                 case "qdrant" =>
-                    val port = Option(secretMap.get("port")).map(_.toInt).getOrElse(6334)
+                    val grpcPort = Option(secretMap.get("port")).map(_.toInt).getOrElse(6334)
+                    val restPort = grpcPort - 1 // Qdrant REST port is typically gRPC port - 1 (6333)
+                    val url = "http://" + host + ":" + restPort + "/collections"
+                    val connection = new java.net.URL(url)
+                        .openConnection().asInstanceOf[java.net.HttpURLConnection]
+                    connection.setConnectTimeout(5000)
+                    connection.setReadTimeout(5000)
                     val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
-                    val builder = io.qdrant.client.QdrantGrpcClient.newBuilder(host, port, false)
-                    apiKey.foreach(k => builder.withApiKey(k))
-                    val client = new io.qdrant.client.QdrantClient(builder.build())
+                    apiKey.foreach(k => connection.setRequestProperty("api-key", k))
                     try {
-                        client.listCollectionsAsync().get(5, java.util.concurrent.TimeUnit.SECONDS)
-                        statusUp()
+                        if (connection.getResponseCode == 200) statusUp()
+                        else statusDown("HTTP " + connection.getResponseCode)
                     } finally {
-                        client.close()
+                        connection.disconnect()
                     }
 
                 case "weaviate" =>
@@ -270,16 +274,24 @@ class HealthCheckAPIController {
 
                 case "milvus" =>
                     val port = Option(secretMap.get("port")).getOrElse("19530")
+                    val url = "http://" + host + ":" + port + "/v2/vectordb/collections/list"
+                    val connection = new java.net.URL(url)
+                        .openConnection().asInstanceOf[java.net.HttpURLConnection]
+                    connection.setConnectTimeout(5000)
+                    connection.setReadTimeout(5000)
+                    connection.setRequestMethod("POST")
+                    connection.setDoOutput(true)
+                    connection.setRequestProperty("Content-Type", "application/json")
                     val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
-                    val connectBuilder = io.milvus.v2.client.ConnectConfig.builder()
-                        .uri("http://" + host + ":" + port)
-                    apiKey.foreach(k => connectBuilder.token(k))
-                    val client = new io.milvus.v2.client.MilvusClientV2(connectBuilder.build())
+                    apiKey.foreach(k => connection.setRequestProperty("Authorization", "Bearer " + k))
                     try {
-                        client.listCollections()
-                        statusUp()
+                        val os = connection.getOutputStream
+                        os.write("{}".getBytes)
+                        os.close()
+                        if (connection.getResponseCode == 200) statusUp()
+                        else statusDown("HTTP " + connection.getResponseCode)
                     } finally {
-                        client.close()
+                        connection.disconnect()
                     }
 
                 case "chroma" =>

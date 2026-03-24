@@ -74,6 +74,12 @@ result;
 - If a script returns `null`, the row is dropped and the event is logged at info level.
 - If a script throws an exception, the pipeline stops processing with an error.
 
+## Other Row Function Types
+
+The `rowFunctions` array also supports `"restEndpoint"` functions, which call an external HTTP endpoint to transform rows. See [REST Endpoint Transformation](rest-endpoint.md) for full documentation.
+
+Multiple row functions can be combined in the same pipeline — they execute in order, each receiving the output of the previous function.
+
 ## When to Use
 
-Use row functions for transformations that cannot be expressed through simple configuration, such as conditional logic, value lookups, format conversions, or computed columns.
+Use JavaScript row functions for transformations that cannot be expressed through simple configuration, such as conditional logic, value lookups, format conversions, or computed columns. For transformations written in other languages or requiring external service calls, use [REST Endpoint Transformations](rest-endpoint.md) instead.
