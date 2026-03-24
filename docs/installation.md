@@ -42,6 +42,19 @@ curl http://localhost:8080/api/v1/version
 
 That's it. The platform is running.
 
+## Upgrading
+
+If you already have Datris installed and want to upgrade to the latest version:
+
+```bash
+cd datris-platform-oss
+git pull origin main
+docker compose pull
+docker compose up -d
+```
+
+This pulls the latest pre-built images from Docker Hub and restarts the services. No build tools required.
+
 ## Services
 
 | Service | Port | Purpose |

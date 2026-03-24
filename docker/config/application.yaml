@@ -41,6 +41,12 @@ secrets:
   activeMQSecretName: oss/activemq
   mongoDbSecretName: oss/mongodb
   kafkaProducerSecretName: oss/kafka-producer
+  embeddingSecretName: oss/embedding
+  qdrantSecretName: oss/qdrant
+  weaviateSecretName: oss/weaviate
+  milvusSecretName: oss/milvus
+  chromaSecretName: oss/chroma
+  pgvectorSecretName: oss/pgvector
 
 # Queue + notifications: ActiveMQ (Docker service)
 activemq:
