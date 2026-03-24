@@ -54,7 +54,7 @@ __pycache__/
 
 # local secrets
 .env
-docs/config/ec2-ollama.md
+docs/config/
 
 # terraform
 .terraform
@@ -82,6 +82,9 @@ helpers/chat-vector-store/.env
 # mcp-server
 mcp-server/.env
 mcp-server/my-env/
+mcp-server/.mcpregistry_github_token
+mcp-server/dist/
+mcp-server/.venv/
 
 # node
 node_modules/

@@ -1193,7 +1193,7 @@ async def run_sse(port: int):
     await srv.serve()
 
 
-if __name__ == "__main__":
+def main():
     import asyncio
 
     parser = argparse.ArgumentParser(description="Datris MCP Server")
@@ -1205,3 +1205,7 @@ if __name__ == "__main__":
         asyncio.run(run_sse(args.port))
     else:
         asyncio.run(run_stdio())
+
+
+if __name__ == "__main__":
+    main()
