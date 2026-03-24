@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "datris-mcp-server"
+version = "1.2.0"
+description = "MCP server for the Datris AI Agent-Native Data Platform"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Datris", email = "info@datris.ai"}
+]
+keywords = ["mcp", "datris", "data-platform", "ai-agent", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mcp[cli]",
+    "requests",
+    "python-dotenv",
+    "uvicorn",
+    "starlette",
+]
+
+[project.urls]
+Homepage = "https://datris.ai"
+Repository = "https://github.com/datris/datris-platform-oss"
+Documentation = "https://github.com/datris/datris-platform-oss/blob/main/docs/mcp.md"
+Issues = "https://github.com/datris/datris-platform-oss/issues"
+
+[project.scripts]
+datris-mcp-server = "server:main"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["server.py"]
+sources = ["."]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["server.py", "pyproject.toml", "README.md"]
