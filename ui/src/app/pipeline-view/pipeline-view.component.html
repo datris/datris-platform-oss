@@ -1,6 +1,31 @@
 <div class="container">
   <a class="back-link" routerLink="/pipelines">&#8592; Back to Pipelines</a>
-  <h1 class="dataset-title">{{ name }}</h1>
+
+  <div class="title-row">
+    <h1 class="dataset-title">{{ name }}</h1>
+    <div class="title-actions">
+      <button class="action-btn" (click)="copyConfig()" title="Copy JSON to clipboard">
+        <span class="material-icons">{{ copySuccess ? 'check' : 'content_copy' }}</span>
+        {{ copySuccess ? 'Copied!' : 'Copy' }}
+      </button>
+      <button class="action-btn" (click)="editPipeline()" title="Edit pipeline">
+        <span class="material-icons">edit</span>
+        Edit
+      </button>
+      <button class="action-btn danger" (click)="promptDelete()" *ngIf="!confirmDelete" title="Delete pipeline">
+        <span class="material-icons">delete</span>
+        Delete
+      </button>
+    </div>
+  </div>
+
+  <div class="confirm-delete" *ngIf="confirmDelete">
+    <span class="confirm-text">Delete pipeline "{{ name }}"?</span>
+    <button class="confirm-btn" (click)="deletePipeline()" [disabled]="deleteLoading">
+      {{ deleteLoading ? 'Deleting...' : 'Yes, Delete' }}
+    </button>
+    <button class="cancel-btn" (click)="cancelDelete()">Cancel</button>
+  </div>
 
   <div class="error-box" *ngIf="error">
     <pre>{{ error }}</pre>

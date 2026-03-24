@@ -40,7 +40,12 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
     private val logger = LoggerFactory.getLogger(classOf[RestEndpointRunner])
     private val config = restEndpointConfig
     private val gson = new Gson()
-    private val timeoutSeconds = if (config.timeoutSeconds > 0) config.timeoutSeconds else 300
+    // Support both timeoutMs (preferred) and legacy timeoutSeconds
+    private val timeoutMs: Int = {
+        if (config.timeoutMs > 0) config.timeoutMs
+        else if (config.timeoutSeconds > 0) config.timeoutSeconds * 1000
+        else 300000
+    }
 
     def process(): JobContext = {
         val pipelineToken = jobContext.pipelineToken
@@ -71,7 +76,7 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
             dataToPost = requestBody,
             bearerToken = config.bearerToken,
             apiKey = config.apiKey,
-            timeoutMillis = timeoutSeconds * 1000
+            timeoutMillis = timeoutMs
         )
 
         jobContext.copy(data = parseResponseData(response))
@@ -86,14 +91,14 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
             dataToPost = requestBody,
             bearerToken = config.bearerToken,
             apiKey = config.apiKey,
-            timeoutMillis = timeoutSeconds * 1000
+            timeoutMillis = timeoutMs
         )
 
         logger.info(s"Preprocessor async: waiting for callback for token $pipelineToken")
 
-        if (!latch.await(config.timeoutSeconds, TimeUnit.SECONDS)) {
+        if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
             RestEndpointCallbackRegistry.getResult(pipelineToken)
-            throw new DatrisException(s"Preprocessor async: timed out waiting for callback after ${config.timeoutSeconds}s")
+            throw new DatrisException(s"Preprocessor async: timed out waiting for callback after ${timeoutMs}ms")
         }
 
         val returnedData = RestEndpointCallbackRegistry.getResult(pipelineToken)

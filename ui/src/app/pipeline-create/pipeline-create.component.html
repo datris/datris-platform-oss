@@ -152,7 +152,7 @@
             <input class="form-input" type="password" [(ngModel)]="ppApiKey" placeholder="x-api-key">
           </div>
           <div class="form-field">
-            <label class="form-label">Timeout (seconds)</label>
+            <label class="form-label">Timeout (ms)</label>
             <input class="form-input" type="number" [(ngModel)]="ppTimeout">
           </div>
         </div>
@@ -488,6 +488,47 @@
           </div>
         </ng-container>
 
+        <!-- REST Endpoint Transformation -->
+        <hr class="divider">
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="txUseRestEndpoint"> REST Endpoint Transformation
+          </label>
+        </div>
+        <ng-container *ngIf="txUseRestEndpoint">
+          <div class="form-row">
+            <label class="form-label">Endpoint URL</label>
+            <input class="form-input" [(ngModel)]="txRestEndpoint" placeholder="https://my-service.example.com/transform">
+          </div>
+          <div class="form-row-inline">
+            <div class="form-field">
+              <label class="form-label">Mode</label>
+              <select class="form-input" [(ngModel)]="txRestMode">
+                <option value="row">Row</option>
+                <option value="batch">Batch</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label class="form-label">Timeout (ms)</label>
+              <input class="form-input" type="number" [(ngModel)]="txRestTimeout" placeholder="30000">
+            </div>
+          </div>
+          <div class="form-row-inline">
+            <div class="form-field">
+              <label class="form-label">Bearer Token (optional)</label>
+              <input class="form-input" type="password" [(ngModel)]="txRestBearerToken" placeholder="Optional">
+            </div>
+            <div class="form-field">
+              <label class="form-label">API Key (optional)</label>
+              <input class="form-input" type="password" [(ngModel)]="txRestApiKey" placeholder="Optional">
+            </div>
+          </div>
+          <div class="info-box">
+            <p>In <strong>row</strong> mode, the endpoint is called once per row with a JSON object of key-value pairs. It must return the transformed row as a JSON object.</p>
+            <p>In <strong>batch</strong> mode, the endpoint is called once with the entire dataset as a JSON array. It must return the transformed dataset as a JSON array.</p>
+          </div>
+        </ng-container>
+
         <!-- AI Transformation -->
         <hr class="divider">
         <div class="form-row">
@@ -632,7 +673,7 @@
             <input class="form-input" type="password" [(ngModel)]="restEndpointApiKey" placeholder="x-api-key">
           </div>
           <div class="form-field">
-            <label class="form-label">Timeout (seconds)</label>
+            <label class="form-label">Timeout (ms)</label>
             <input class="form-input" type="number" [(ngModel)]="restEndpointTimeout">
           </div>
         </div>

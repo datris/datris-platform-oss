@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
+import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, DatrisException}
 import ai.datris.model.JobContext
 
@@ -63,67 +64,194 @@ class Transformation(jobContext: JobContext) {
     }
 
     private def runRowFunctions(jobContextRF: JobContext): JobContext = {
-        // Find the javaScript" function for the data
-        val scriptFunction = config.transformation.rowFunctions.asScala.flatMap(rowFunction => {
-            if(rowFunction.function.compareToIgnoreCase("javascript") == 0) {
-                Some(rowFunction)
-            } else
-                None
-        }).toList
-            .head
+        var currentContext = jobContextRF
 
-        if(scriptFunction != null) {
-            if(scriptFunction.parameters == null || scriptFunction.parameters.isEmpty)
-                throw new DatrisException("Javascript row function '" + scriptFunction.function + "' does not contain any parameters")
-
-            // Read the javascript from the path in parameter 0
-            val filePath = scriptFunction.parameters.get(0)
-            val javascript = {
-                val url = {
-                    if(filePath.startsWith("s3"))
-                        filePath
-                    else {
-                        // Build the path assuming the filePath is just the filename
-                        "s3://" + DatrisEnvironment.values.environment + "-config/javascript/" + filePath
-                    }
-                }
-                statusUtil.info("processing", "Running row function: javascript, using script: " + url)
-
-                ObjectStoreUtil.readBucketObject(ObjectStoreUtil.getBucket(url), ObjectStoreUtil.getKey(url)).getOrElse(
-                    throw new DatrisException("Javascript file not found using the first parameter of the row function: " + filePath))
+        config.transformation.rowFunctions.asScala.foreach { rowFunction =>
+            rowFunction.function.toLowerCase match {
+                case "javascript" =>
+                    currentContext = runJavaScriptFunction(currentContext, rowFunction)
+                case "restendpoint" =>
+                    currentContext = runRestEndpointFunction(currentContext, rowFunction)
+                case other =>
+                    statusUtil.info("processing", "Unknown row function type: " + other + ", skipping")
             }
-
-            // Cycle through the rows and run the javascript function
-            var removed: Long = 0
-            val transformed = jobContextRF.data.rows.flatMap(row => {
-                val columnMap = RowUtil.getRowAsMap(row, config)
-                val changedValues = runScript(columnMap, javascript)
-                if(changedValues != null) {
-                    val row = config.destination.schemaProperties.fields.asScala.map(field => {
-                        val value = changedValues.get(field.name)
-                        if(value == null)
-                            columnMap.getOrElse(field.name, "")
-                        else
-                            value.toString
-                    }).toList
-                        .mkString(config.source.fileAttributes.csvAttributes.delimiter)
-                    Some(row)
-                }
-                else {
-                    removed = removed + 1
-                    None
-                }
-            })
-
-            if(removed > 0)
-                statusUtil.info("processing", removed.toString + " rows were removed during the javascript transformation")
-
-            val headerWithSchema = config.destination.schemaProperties.fields.asScala.toList
-            val newData = jobContextRF.data.copy(headerWithSchema = headerWithSchema, rows = transformed)
-            jobContextRF.copy(data = newData)
         }
-        else
-            null
+
+        currentContext
+    }
+
+    private def runJavaScriptFunction(ctx: JobContext, rowFunction: ai.datris.model.RowFunction): JobContext = {
+        if (rowFunction.parameters == null || rowFunction.parameters.isEmpty)
+            throw new DatrisException("Javascript row function does not contain any parameters")
+
+        val filePath = rowFunction.parameters.get(0)
+        val javascript = {
+            val url = {
+                if (filePath.startsWith("s3"))
+                    filePath
+                else
+                    "s3://" + DatrisEnvironment.values.environment + "-config/javascript/" + filePath
+            }
+            statusUtil.info("processing", "Running row function: javascript, using script: " + url)
+            ObjectStoreUtil.readBucketObject(ObjectStoreUtil.getBucket(url), ObjectStoreUtil.getKey(url)).getOrElse(
+                throw new DatrisException("Javascript file not found using the first parameter of the row function: " + filePath))
+        }
+
+        var removed: Long = 0
+        val transformed = ctx.data.rows.flatMap(row => {
+            val columnMap = RowUtil.getRowAsMap(row, config)
+            val changedValues = runScript(columnMap, javascript)
+            if (changedValues != null) {
+                val newRow = config.destination.schemaProperties.fields.asScala.map(field => {
+                    val value = changedValues.get(field.name)
+                    if (value == null) columnMap.getOrElse(field.name, "")
+                    else value.toString
+                }).toList.mkString(config.source.fileAttributes.csvAttributes.delimiter)
+                Some(newRow)
+            } else {
+                removed = removed + 1
+                None
+            }
+        })
+
+        if (removed > 0)
+            statusUtil.info("processing", removed.toString + " rows were removed during the javascript transformation")
+
+        val headerWithSchema = config.destination.schemaProperties.fields.asScala.toList
+        val newData = ctx.data.copy(headerWithSchema = headerWithSchema, rows = transformed)
+        ctx.copy(data = newData)
+    }
+
+    private def runRestEndpointFunction(ctx: JobContext, rowFunction: ai.datris.model.RowFunction): JobContext = {
+        if (rowFunction.parameters == null || rowFunction.parameters.isEmpty)
+            throw new DatrisException("REST endpoint row function does not contain any parameters")
+
+        val endpointUrl = rowFunction.parameters.get(0)
+        val mode = if (rowFunction.parameters.size() > 1) rowFunction.parameters.get(1).toLowerCase else "row"
+        val timeoutMs = if (rowFunction.parameters.size() > 2) try { rowFunction.parameters.get(2).toInt } catch { case _: NumberFormatException => 30000 } else 30000
+        val bearerToken = if (rowFunction.parameters.size() > 3 && rowFunction.parameters.get(3).nonEmpty) rowFunction.parameters.get(3) else null
+        val apiKey = if (rowFunction.parameters.size() > 4 && rowFunction.parameters.get(4).nonEmpty) rowFunction.parameters.get(4) else null
+        val delimiter = config.source.fileAttributes.csvAttributes.delimiter
+        val pipelineName = config.name
+        val pipelineToken = jobContext.pipelineToken
+
+        statusUtil.info("processing", "Running transformation row function: restEndpoint, mode: " + mode + ", URL: " + endpointUrl)
+
+        mode match {
+            case "batch" =>
+                val rowMaps = ctx.data.rows.map(row => RowUtil.getRowAsMap(row, config).asJava)
+                val transformedRows = callRestTransformBatch(endpointUrl, pipelineName, pipelineToken, rowMaps, timeoutMs, bearerToken, apiKey, delimiter)
+                statusUtil.info("processing", "REST batch transformation returned " + transformedRows.size + " rows (from " + ctx.data.rows.size + ")")
+                val newData = ctx.data.copy(rows = transformedRows)
+                ctx.copy(data = newData)
+
+            case _ => // "row" mode
+                var removed: Long = 0
+                val transformed = ctx.data.rows.flatMap(row => {
+                    val columnMap = RowUtil.getRowAsMap(row, config)
+                    val result = callRestTransformRow(endpointUrl, pipelineName, pipelineToken, columnMap, timeoutMs, bearerToken, apiKey, delimiter)
+                    if (result != null) {
+                        Some(result)
+                    } else {
+                        removed = removed + 1
+                        None
+                    }
+                })
+
+                if (removed > 0)
+                    statusUtil.info("processing", removed.toString + " rows were removed during the REST endpoint transformation")
+
+                val newData = ctx.data.copy(rows = transformed)
+                ctx.copy(data = newData)
+        }
+    }
+
+    private def callRestTransformRow(endpointUrl: String, pipelineName: String, pipelineToken: String,
+                                     columnMap: mutable.ListMap[String, Any], timeoutMs: Int,
+                                     bearerToken: String, apiKey: String, delimiter: String): String = {
+        val gson = new Gson()
+        val payload = mutable.ListMap[String, Any](
+            "pipelineName" -> pipelineName,
+            "pipelineToken" -> pipelineToken,
+            "row" -> columnMap.asJava
+        )
+        val jsonPayload = gson.toJson(payload.asJava)
+
+        val response = HttpUtil.post(
+            url = endpointUrl,
+            contentType = "application/json",
+            dataToPost = jsonPayload,
+            bearerToken = bearerToken,
+            apiKey = apiKey,
+            timeoutMillis = timeoutMs
+        )
+
+        if (response == null || response.trim.isEmpty || response.trim == "null")
+            throw new DatrisException("REST transform endpoint returned null for pipeline: " + pipelineName)
+
+        val responseMap = gson.fromJson(response.trim, classOf[java.util.Map[String, Any]])
+        val status = Option(responseMap.get("status")).map(_.toString).getOrElse("failure")
+        if (status != "success") {
+            val message = Option(responseMap.get("message")).map(_.toString).getOrElse("Unknown error")
+            throw new DatrisException("REST transform endpoint failed: " + message)
+        }
+
+        val rowData = responseMap.get("row")
+        if (rowData == null) return null // null row = remove
+
+        val rowMap = rowData.asInstanceOf[java.util.Map[String, Any]]
+        config.destination.schemaProperties.fields.asScala.map(field => {
+            val value = rowMap.get(field.name)
+            if (value == null) columnMap.getOrElse(field.name, "")
+            else valueToString(value)
+        }).toList.mkString(delimiter)
+    }
+
+    private def callRestTransformBatch(endpointUrl: String, pipelineName: String, pipelineToken: String,
+                                       rowMaps: List[java.util.Map[String, Any]], timeoutMs: Int,
+                                       bearerToken: String, apiKey: String, delimiter: String): List[String] = {
+        val gson = new Gson()
+        val wrapper = mutable.ListMap[String, Any](
+            "pipelineName" -> pipelineName,
+            "pipelineToken" -> pipelineToken,
+            "rows" -> rowMaps.asJava
+        )
+        val jsonPayload = gson.toJson(wrapper.asJava)
+
+        val response = HttpUtil.post(
+            url = endpointUrl,
+            contentType = "application/json",
+            dataToPost = jsonPayload,
+            bearerToken = bearerToken,
+            apiKey = apiKey,
+            timeoutMillis = timeoutMs
+        )
+
+        if (response == null || response.trim.isEmpty || response.trim == "null")
+            throw new DatrisException("REST batch transform endpoint returned null for pipeline: " + pipelineName)
+
+        val responseMap = gson.fromJson(response.trim, classOf[java.util.Map[String, Any]])
+        val status = Option(responseMap.get("status")).map(_.toString).getOrElse("failure")
+        if (status != "success") {
+            val message = Option(responseMap.get("message")).map(_.toString).getOrElse("Unknown error")
+            throw new DatrisException("REST batch transform endpoint failed: " + message)
+        }
+
+        val rows = responseMap.get("rows")
+        if (rows == null) throw new DatrisException("REST batch transform endpoint did not return 'rows'")
+
+        val rowsList = rows.asInstanceOf[java.util.List[Any]]
+        rowsList.asScala.flatMap { entry =>
+            if (entry == null) None // null entry = remove row
+            else {
+                val rowMap = entry.asInstanceOf[java.util.Map[String, Any]]
+                val csvRow = config.destination.schemaProperties.fields.asScala.map(field => {
+                    val value = rowMap.get(field.name)
+                    if (value == null) "" else valueToString(value)
+                }).toList.mkString(delimiter)
+                Some(csvRow)
+            }
+        }.toList
     }
 
     private def runAITransformation(jobContext: JobContext): JobContext = {
@@ -164,6 +292,13 @@ class Transformation(jobContext: JobContext) {
             jobContext.copy(data = newData)
         } else {
             jobContext
+        }
+    }
+
+    private def valueToString(value: Any): String = {
+        value match {
+            case d: java.lang.Double if d == d.longValue().toDouble => d.longValue().toString
+            case _ => value.toString
         }
     }
 

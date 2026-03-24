@@ -143,10 +143,10 @@ object PipelineValidatorUtil {
                 throw new DatrisException("A 'transformation' section is only supported for CSV, JSON, and XML files")
             if(config.transformation.rowFunctions != null) {
                 config.transformation.rowFunctions.forEach(function => {
-                    if(function.function.compareTo("javascript") != 0)
-                        throw new DatrisException("For the 'transformation.rowFunctions' section, only 'javascript' functions are currently supported")
-                    if(function.parameters == null)
-                        throw new DatrisException("For the 'transformation.rowFunctions' section, the first 'parameter' must be the name of the javascript file to be processed during transformation")
+                    if(function.function.compareToIgnoreCase("javascript") != 0 && function.function.compareToIgnoreCase("restEndpoint") != 0)
+                        throw new DatrisException("For the 'transformation.rowFunctions' section, only 'javascript' and 'restEndpoint' functions are supported")
+                    if(function.parameters == null || function.parameters.isEmpty)
+                        throw new DatrisException("For the 'transformation.rowFunctions' section, parameters are required")
                 })
             }
         }
