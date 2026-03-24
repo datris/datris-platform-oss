@@ -1,0 +1,286 @@
+<div class="container">
+  <h1 class="page-title">MCP Server</h1>
+  <p class="page-subtitle">
+    Datris includes a built-in
+    <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">Model Context Protocol (MCP)</a>
+    server that lets AI agents interact with the platform natively. Any MCP-compatible agent &mdash;
+    Claude Desktop, Claude Code, Cursor, or custom agentic frameworks &mdash; can discover data,
+    create pipelines, upload files, monitor jobs, search vector databases, query structured data,
+    and answer questions with AI.
+  </p>
+
+  <!-- ================================================================== -->
+  <!-- SECTION 0: What AI Agents See -->
+  <!-- ================================================================== -->
+  <div class="section-card discovery-card">
+    <div class="section-header">
+      <span class="material-icons section-icon">smart_toy</span>
+      <h2 class="section-title">What AI Agents See</h2>
+    </div>
+
+    <p class="discovery-intro">When an AI agent connects to Datris via MCP, it receives these instructions:</p>
+
+    <div class="discovery-description">
+      <p>Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, and vector stores &mdash; all driven by pipeline configurations that AI agents can create and manage programmatically.</p>
+      <p>A pipeline defines a complete data processing flow:</p>
+      <ul>
+        <li><strong>Source</strong> &mdash; file format (CSV, JSON, XML), schema with field names and types</li>
+        <li><strong>Data Quality</strong> &mdash; validation rules including regex patterns, AI-powered rules, and JSON Schema validation</li>
+        <li><strong>Transformation</strong> &mdash; deduplication, trimming, AI transforms, and JavaScript row functions</li>
+        <li><strong>Preprocessor</strong> &mdash; optional REST endpoint called before processing</li>
+        <li><strong>Destination</strong> &mdash; PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoint, or vector databases (Qdrant, Weaviate, Milvus, Chroma, pgvector) with embedding configuration</li>
+      </ul>
+    </div>
+
+    <div class="discovery-workflow">
+      <h3 class="discovery-subtitle">Recommended Agent Workflow</h3>
+      <div class="workflow-steps">
+        <div class="workflow-step">
+          <span class="step-number">1</span>
+          <div class="step-content">
+            <span class="step-title">Discover existing data</span>
+            <span class="step-detail">use metadata tools to explore what's available</span>
+          </div>
+        </div>
+        <div class="workflow-step">
+          <span class="step-number">2</span>
+          <div class="step-content">
+            <span class="step-title">Create a pipeline</span>
+            <span class="step-detail">use generate_schema to auto-create from a sample file, or create_pipeline manually</span>
+          </div>
+        </div>
+        <div class="workflow-step">
+          <span class="step-number">3</span>
+          <div class="step-content">
+            <span class="step-title">Profile data</span>
+            <span class="step-detail">use profile_data to get AI-suggested data quality rules</span>
+          </div>
+        </div>
+        <div class="workflow-step">
+          <span class="step-number">4</span>
+          <div class="step-content">
+            <span class="step-title">Ingest data</span>
+            <span class="step-detail">use upload_file to process files through the pipeline</span>
+          </div>
+        </div>
+        <div class="workflow-step">
+          <span class="step-number">5</span>
+          <div class="step-content">
+            <span class="step-title">Monitor</span>
+            <span class="step-detail">use get_job_status to track processing</span>
+          </div>
+        </div>
+        <div class="workflow-step">
+          <span class="step-number">6</span>
+          <div class="step-content">
+            <span class="step-title">Query &amp; search</span>
+            <span class="step-detail">use query tools for structured data, search tools for semantic/vector search</span>
+          </div>
+        </div>
+        <div class="workflow-step">
+          <span class="step-number">7</span>
+          <div class="step-content">
+            <span class="step-title">RAG</span>
+            <span class="step-detail">combine search results with ai_answer for AI-powered question answering</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="discovery-footer">
+      <div class="discovery-resources">
+        <h3 class="discovery-subtitle">Resources</h3>
+        <div class="resource-item">
+          <span class="material-icons resource-icon">description</span>
+          <div class="resource-info">
+            <span class="resource-name">Pipeline Configuration Reference</span>
+            <span class="resource-uri">datris://pipeline-config-reference</span>
+          </div>
+        </div>
+      </div>
+      <div class="discovery-transports">
+        <h3 class="discovery-subtitle">Transports</h3>
+        <div class="transport-badges">
+          <span class="transport-badge">stdio</span>
+          <span class="transport-badge">SSE</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- SECTION 1: Server Overview & Health -->
+  <!-- ================================================================== -->
+  <div class="section-card">
+    <div class="section-header">
+      <span class="material-icons section-icon">monitor_heart</span>
+      <h2 class="section-title">Service Health</h2>
+      <span class="version-badge" *ngIf="serverVersion">{{ serverVersion }}</span>
+      <button class="refresh-btn" (click)="loadHealth()" [disabled]="healthLoading" title="Refresh">
+        <span class="material-icons" [class.spin]="healthLoading">refresh</span>
+      </button>
+    </div>
+
+    <div class="health-grid" *ngIf="healthServices.length > 0">
+      <div class="health-item" *ngFor="let svc of healthServices" [class]="'health-item status-' + svc.status">
+        <span class="material-icons health-icon">{{ getHealthIcon(svc.status) }}</span>
+        <div class="health-info">
+          <span class="health-name">{{ getServiceDisplayName(svc.name) }}</span>
+          <span class="health-status">{{ svc.status === 'not_configured' ? 'Not Configured' : svc.status }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="health-loading" *ngIf="healthLoading && healthServices.length === 0">
+      Checking services...
+    </div>
+
+    <div class="error-box" *ngIf="healthError">
+      <pre>{{ healthError }}</pre>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- SECTION 2: Tool Catalog -->
+  <!-- ================================================================== -->
+  <div class="section-card">
+    <div class="section-header">
+      <span class="material-icons section-icon">extension</span>
+      <h2 class="section-title">MCP Tools</h2>
+      <span class="tool-count-badge">{{ toolCatalog.length }} tools</span>
+    </div>
+
+    <div *ngFor="let category of categories" class="category-group">
+      <div class="category-header">
+        <span class="material-icons category-icon">{{ getCategoryIcon(category) }}</span>
+        <span class="category-name">{{ category }}</span>
+        <span class="category-count">{{ toolsByCategory[category].length }}</span>
+      </div>
+      <div class="tool-grid">
+        <div class="tool-card" *ngFor="let tool of toolsByCategory[category]" [class.agent-only]="!tool.playgroundEnabled">
+          <div class="tool-card-header">
+            <span class="tool-name">{{ tool.name }}</span>
+            <span class="agent-only-badge" *ngIf="!tool.playgroundEnabled" title="Requires local file access">Agent Only</span>
+          </div>
+          <p class="tool-description">{{ tool.description }}</p>
+          <div class="tool-card-footer">
+            <span class="param-count" *ngIf="tool.parameters.length > 0">{{ tool.parameters.length }} param{{ tool.parameters.length !== 1 ? 's' : '' }}</span>
+            <span class="param-count" *ngIf="tool.parameters.length === 0">No params</span>
+            <button class="try-btn" *ngIf="tool.playgroundEnabled" (click)="tryTool(tool)">Try it</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- SECTION 3: Config Generator -->
+  <!-- ================================================================== -->
+  <div class="section-card">
+    <div class="section-header">
+      <span class="material-icons section-icon">integration_instructions</span>
+      <h2 class="section-title">Connect Your Agent</h2>
+    </div>
+
+    <div class="form-row-inline">
+      <div class="form-field">
+        <label class="form-label">AI Agent</label>
+        <select class="form-input" [(ngModel)]="selectedAgent">
+          <option value="claude-desktop">Claude Desktop</option>
+          <option value="claude-code">Claude Code</option>
+          <option value="cursor">Cursor</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label class="form-label">Pipeline URL</label>
+        <input class="form-input" [(ngModel)]="pipelineUrl" placeholder="http://localhost:8080">
+      </div>
+      <div class="form-field">
+        <label class="form-label">API Key (optional)</label>
+        <input class="form-input" [(ngModel)]="pipelineApiKey" placeholder="Leave empty if not configured">
+      </div>
+    </div>
+
+    <div class="config-hint">
+      Add to: <code>{{ configFileHint }}</code>
+    </div>
+
+    <div class="config-output-wrapper">
+      <button class="copy-btn" (click)="copyConfig()">
+        <span class="material-icons">{{ copySuccess ? 'check' : 'content_copy' }}</span>
+        {{ copySuccess ? 'Copied!' : 'Copy' }}
+      </button>
+      <pre class="config-output">{{ configSnippet }}</pre>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- SECTION 4: Tool Playground -->
+  <!-- ================================================================== -->
+  <div class="section-card" #playgroundSection>
+    <div class="section-header">
+      <span class="material-icons section-icon">science</span>
+      <h2 class="section-title">Tool Playground</h2>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label">Select Tool</label>
+      <select class="form-input" [(ngModel)]="selectedToolName" (ngModelChange)="onToolSelect()">
+        <option value="">Choose a tool...</option>
+        <optgroup *ngFor="let category of categories" [label]="category">
+          <ng-container *ngFor="let tool of toolsByCategory[category]">
+            <option *ngIf="tool.playgroundEnabled" [value]="tool.name">{{ tool.name }}</option>
+          </ng-container>
+        </optgroup>
+      </select>
+    </div>
+
+    <ng-container *ngIf="selectedTool">
+      <p class="playground-tool-desc">{{ selectedTool.description }}</p>
+
+      <div *ngFor="let param of selectedTool.parameters" class="form-row">
+        <label class="form-label">
+          {{ param.name }}
+          <span class="required-star" *ngIf="param.required">*</span>
+          <span class="param-hint">{{ param.description }}</span>
+        </label>
+        <input *ngIf="param.inputType === 'text'" class="form-input"
+               [(ngModel)]="playgroundParams[param.name]"
+               [placeholder]="param.description">
+        <input *ngIf="param.inputType === 'number'" class="form-input" type="number"
+               [(ngModel)]="playgroundParams[param.name]"
+               [placeholder]="param.description">
+        <textarea *ngIf="param.inputType === 'textarea'" class="form-input form-textarea"
+                  [(ngModel)]="playgroundParams[param.name]"
+                  [placeholder]="param.description" rows="4"></textarea>
+        <select *ngIf="param.inputType === 'select'" class="form-input"
+                [(ngModel)]="playgroundParams[param.name]">
+          <option value="">Select {{ param.name }}...</option>
+          <option *ngFor="let opt of paramOptions[param.name]" [value]="opt">{{ opt }}</option>
+        </select>
+        <label *ngIf="param.inputType === 'checkbox'" class="checkbox-label">
+          <input type="checkbox" [(ngModel)]="playgroundParams[param.name]">
+          {{ param.description }}
+        </label>
+      </div>
+
+      <div class="form-row">
+        <button class="execute-btn" (click)="executeTool()" [disabled]="playgroundLoading">
+          {{ playgroundLoading ? 'Executing...' : 'Execute' }}
+        </button>
+      </div>
+    </ng-container>
+
+    <div class="error-box" *ngIf="playgroundError">
+      <pre>{{ playgroundError }}</pre>
+    </div>
+
+    <div class="result-section" *ngIf="playgroundResult">
+      <div class="result-header">
+        <span class="material-icons result-icon">terminal</span>
+        <span class="result-title">Response</span>
+      </div>
+      <pre class="result-output">{{ playgroundResult }}</pre>
+    </div>
+  </div>
+</div>

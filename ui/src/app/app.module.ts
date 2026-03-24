@@ -9,6 +9,7 @@ import { PipelineViewComponent } from './pipeline-view/pipeline-view.component';
 import { PipelineStatusComponent } from './pipeline-status/pipeline-status.component';
 import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.component';
 import { SearchComponent } from './search/search.component';
+import { McpComponent } from './mcp/mcp.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient } from '@angular/common/http';
 import { MaterialModule } from './material.module';
@@ -22,7 +23,8 @@ import { MaterialModule } from './material.module';
     PipelineViewComponent,
     PipelineStatusComponent,
     PipelineDetailComponent,
-    SearchComponent
+    SearchComponent,
+    McpComponent
   ],
   imports: [
     BrowserModule,
