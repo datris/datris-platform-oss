@@ -10,6 +10,7 @@ import { PipelineStatusComponent } from './pipeline-status/pipeline-status.compo
 import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.component';
 import { SearchComponent } from './search/search.component';
 import { McpComponent } from './mcp/mcp.component';
+import { SecretsComponent } from './secrets/secrets.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient } from '@angular/common/http';
 import { MaterialModule } from './material.module';
@@ -24,7 +25,8 @@ import { MaterialModule } from './material.module';
     PipelineStatusComponent,
     PipelineDetailComponent,
     SearchComponent,
-    McpComponent
+    McpComponent,
+    SecretsComponent
   ],
   imports: [
     BrowserModule,
