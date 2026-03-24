@@ -57,6 +57,10 @@ Pipelines are configured entirely through JSON. Each pipeline defines a source, 
       {
         "function": "javascript",
         "parameters": ["transform_sales.js"]
+      },
+      {
+        "function": "restEndpoint",
+        "parameters": ["http://my-service:5600/transform/rest/row", "row", "30000"]
       }
     ]
   },
@@ -198,13 +202,13 @@ See [Data Quality](data-quality/column-rules.md) for detailed documentation.
 
 ### Transformation
 
-See [Transformations](transformation/row-functions.md) for detailed documentation.
+See [JavaScript Row Functions](transformation/row-functions.md) and [REST Endpoint Transformation](transformation/rest-endpoint.md) for detailed documentation.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `trimColumnWhitespace` | boolean | Trim whitespace from all column values |
 | `deduplicate` | boolean | Remove duplicate rows |
-| `rowFunctions` | array | List of JavaScript transformation functions |
+| `rowFunctions` | array | List of transformation functions (`"javascript"` or `"restEndpoint"`) |
 
 ### Destination > Object Store
 

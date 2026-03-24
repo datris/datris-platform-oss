@@ -42,7 +42,7 @@ export class PipelineCreateComponent implements OnInit {
   ppAsync = false;
   ppBearerToken = '';
   ppApiKey = '';
-  ppTimeout = 300;
+  ppTimeout = 300000;
 
   // Step 3 — Schema
   schemaDbName = 'datris';
@@ -79,6 +79,12 @@ export class PipelineCreateComponent implements OnInit {
   txAiSampleSize = 200;
   txUseRowFunction = false;
   txRowFunctionFile = '';
+  txUseRestEndpoint = false;
+  txRestEndpoint = '';
+  txRestMode = 'row';
+  txRestTimeout = '30000';
+  txRestBearerToken = '';
+  txRestApiKey = '';
   showTxSampleInfo = false;
 
   // Step 7 — Destination
@@ -94,7 +100,7 @@ export class PipelineCreateComponent implements OnInit {
   amqQueue = '';
   restEndpointUrl = '';
   restEndpointBearerToken = '';
-  restEndpointTimeout = 300;
+  restEndpointTimeout = 300000;
   restEndpointApiKey = '';
   restEndpointAsync = false;
   vectorCollection = '';
@@ -200,8 +206,19 @@ export class PipelineCreateComponent implements OnInit {
       this.txTrimWhitespace = tx.trimColumnWhitespace || false;
       this.txDeduplicate = tx.deduplicate || false;
       if (tx.rowFunctions && tx.rowFunctions.length > 0) {
-        this.txUseRowFunction = true;
-        this.txRowFunctionFile = tx.rowFunctions[0].parameters?.[0] || '';
+        for (const rf of tx.rowFunctions) {
+          if (rf.function === 'javascript') {
+            this.txUseRowFunction = true;
+            this.txRowFunctionFile = rf.parameters?.[0] || '';
+          } else if (rf.function === 'restEndpoint') {
+            this.txUseRestEndpoint = true;
+            this.txRestEndpoint = rf.parameters?.[0] || '';
+            this.txRestMode = rf.parameters?.[1] || 'row';
+            this.txRestTimeout = rf.parameters?.[2] || '30000';
+            this.txRestBearerToken = rf.parameters?.[3] || '';
+            this.txRestApiKey = rf.parameters?.[4] || '';
+          }
+        }
       }
       if (tx.aiTransformation) {
         this.txUseAi = true;
@@ -218,7 +235,7 @@ export class PipelineCreateComponent implements OnInit {
       this.ppAsync = config.preprocessor.async || false;
       this.ppBearerToken = config.preprocessor.bearerToken || '';
       this.ppApiKey = config.preprocessor.apiKey || '';
-      this.ppTimeout = config.preprocessor.timeoutSeconds || 300;
+      this.ppTimeout = config.preprocessor.timeoutMs || (config.preprocessor.timeoutSeconds ? config.preprocessor.timeoutSeconds * 1000 : 300000);
     }
 
     // Destination
@@ -247,7 +264,7 @@ export class PipelineCreateComponent implements OnInit {
       this.restEndpointUrl = dest.restEndpoint.endpoint || '';
       this.restEndpointAsync = dest.restEndpoint.async || false;
       this.restEndpointBearerToken = dest.restEndpoint.bearerToken || '';
-      this.restEndpointTimeout = dest.restEndpoint.timeoutSeconds || 300;
+      this.restEndpointTimeout = dest.restEndpoint.timeoutMs || (dest.restEndpoint.timeoutSeconds ? dest.restEndpoint.timeoutSeconds * 1000 : 300000);
       this.restEndpointApiKey = dest.restEndpoint.apiKey || '';
     } else if (dest?.qdrant) {
       this.destType = 'qdrant';
@@ -651,6 +668,10 @@ export class PipelineCreateComponent implements OnInit {
         this.error = 'A JavaScript file is required when row function is enabled';
         return;
       }
+      if (this.txUseRestEndpoint && !this.txRestEndpoint.trim()) {
+        this.error = 'Endpoint URL is required when REST endpoint transformation is enabled';
+        return;
+      }
     }
 
     // Validate step 7 — destination
@@ -858,7 +879,7 @@ export class PipelineCreateComponent implements OnInit {
       config.preprocessor = {
         endpoint: this.ppEndpoint,
         async: this.ppAsync,
-        timeoutSeconds: this.ppTimeout
+        timeoutMs: this.ppTimeout
       };
       if (this.ppApiKey) { config.preprocessor.apiKey = this.ppApiKey; }
       if (this.ppBearerToken) {
@@ -940,6 +961,14 @@ export class PipelineCreateComponent implements OnInit {
         tx.rowFunctions = [{ function: 'javascript', parameters: [this.txRowFunctionFile] }];
         hasTx = true;
       }
+      if (this.txUseRestEndpoint && this.txRestEndpoint.trim()) {
+        if (!tx.rowFunctions) tx.rowFunctions = [];
+        tx.rowFunctions.push({
+          function: 'restEndpoint',
+          parameters: [this.txRestEndpoint, this.txRestMode, this.txRestTimeout, this.txRestBearerToken, this.txRestApiKey]
+        });
+        hasTx = true;
+      }
       if (this.txUseAi && this.txAiInstruction) {
         tx.aiTransformation = { instruction: this.txAiInstruction };
         if (this.txAiSample && this.sourceType === 'csv') {
@@ -963,7 +992,7 @@ export class PipelineCreateComponent implements OnInit {
     } else if (this.destType === 'activemq') {
       config.destination.activeMQ = { queueName: this.amqQueue };
     } else if (this.destType === 'restendpoint') {
-      const re: any = { endpoint: this.restEndpointUrl, async: this.restEndpointAsync, timeoutSeconds: this.restEndpointTimeout };
+      const re: any = { endpoint: this.restEndpointUrl, async: this.restEndpointAsync, timeoutMs: this.restEndpointTimeout };
       if (this.restEndpointBearerToken) re.bearerToken = this.restEndpointBearerToken;
       if (this.restEndpointApiKey) re.apiKey = this.restEndpointApiKey;
       config.destination.restEndpoint = re;

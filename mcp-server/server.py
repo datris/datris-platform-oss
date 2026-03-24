@@ -283,6 +283,21 @@ Transform data after validation, before writing to destination.
 
 Upload the JS file first using the `upload_config` tool with type "javascript".
 
+### rowFunctions — REST endpoint transformations
+
+```json
+"rowFunctions": [
+  {
+    "function": "restEndpoint",
+    "parameters": ["http://my-service:5600/transform", "row", "30000", "", ""]
+  }
+]
+```
+
+Parameters: [endpoint URL, mode ("row" or "batch"), timeout ms, bearer token, API key].
+In row mode, the endpoint receives `{"pipelineName": "...", "pipelineToken": "...", "row": {...}}` and returns `{"status": "success", "row": {...}}` (or `"row": null` to remove the row).
+In batch mode, it receives `{"rows": [...]}` and returns `{"status": "success", "rows": [...]}` (null entries are removed).
+
 ### aiTransformation — AI-powered data transformation
 
 ```json
