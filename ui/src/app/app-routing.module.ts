@@ -8,6 +8,7 @@ import { PipelineStatusComponent } from './pipeline-status/pipeline-status.compo
 import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.component';
 import { SearchComponent } from './search/search.component';
 import { McpComponent } from './mcp/mcp.component';
+import { SecretsComponent } from './secrets/secrets.component';
 
 const routes: Routes = [
   { path: '', redirectTo: 'pipelines', pathMatch: 'full' },
@@ -18,7 +19,8 @@ const routes: Routes = [
   { path: 'ingestion', component: PipelineStatusComponent },
   { path: 'pipeline/:pipelineToken/:pipeline', component: PipelineDetailComponent },
   { path: 'search', component: SearchComponent },
-  { path: 'mcp', component: McpComponent }
+  { path: 'mcp', component: McpComponent },
+  { path: 'secrets', component: SecretsComponent }
 ];
 
 @NgModule({
