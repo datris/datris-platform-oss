@@ -881,6 +881,47 @@ async def list_tools():
                 },
             }
         ),
+        # --- Vector Store Metadata ---
+        Tool(
+            name="list_qdrant_collections",
+            description="List all collections in the Qdrant vector database. Use this to discover available collections before running search_qdrant.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            }
+        ),
+        Tool(
+            name="list_weaviate_classes",
+            description="List all classes in the Weaviate vector database. Use this to discover available classes before running search_weaviate.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            }
+        ),
+        Tool(
+            name="list_milvus_collections",
+            description="List all collections in the Milvus vector database. Use this to discover available collections before running search_milvus.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            }
+        ),
+        Tool(
+            name="list_chroma_collections",
+            description="List all collections in the Chroma vector database. Use this to discover available collections before running search_chroma.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            }
+        ),
+        Tool(
+            name="list_pgvector_collections",
+            description="List all pgvector tables (tables with an embedding column) in PostgreSQL. Use this to discover available collections before running search_pgvector.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            }
+        ),
         # --- AI Tools ---
         Tool(
             name="ai_answer",
@@ -1071,6 +1112,22 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("database"):
             params["database"] = args["database"]
         return _call("get", "/api/v1/metadata/mongodb/collections", params=params)
+
+    # --- Vector Store Metadata ---
+    elif name == "list_qdrant_collections":
+        return _call("get", "/api/v1/metadata/qdrant/collections")
+
+    elif name == "list_weaviate_classes":
+        return _call("get", "/api/v1/metadata/weaviate/classes")
+
+    elif name == "list_milvus_collections":
+        return _call("get", "/api/v1/metadata/milvus/collections")
+
+    elif name == "list_chroma_collections":
+        return _call("get", "/api/v1/metadata/chroma/collections")
+
+    elif name == "list_pgvector_collections":
+        return _call("get", "/api/v1/metadata/postgres/tables", params={"vectorOnly": "true"})
 
     # --- AI ---
     elif name == "ai_answer":

@@ -810,6 +810,76 @@ paths:
         '500':
           description: Error
 
+  # ── Vector Store Metadata ──────────────────────────────────
+
+  /api/v1/metadata/qdrant/collections:
+    get:
+      tags: [Metadata]
+      summary: List Qdrant collections
+      description: List all collections in the Qdrant vector database. Returns an empty array if Qdrant is not configured.
+      responses:
+        '200':
+          description: Array of collection names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
+  /api/v1/metadata/weaviate/classes:
+    get:
+      tags: [Metadata]
+      summary: List Weaviate classes
+      description: List all classes in the Weaviate vector database. Returns an empty array if Weaviate is not configured.
+      responses:
+        '200':
+          description: Array of class names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
+  /api/v1/metadata/milvus/collections:
+    get:
+      tags: [Metadata]
+      summary: List Milvus collections
+      description: List all collections in the Milvus vector database. Returns an empty array if Milvus is not configured.
+      responses:
+        '200':
+          description: Array of collection names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
+  /api/v1/metadata/chroma/collections:
+    get:
+      tags: [Metadata]
+      summary: List Chroma collections
+      description: List all collections in the Chroma vector database. Returns an empty array if Chroma is not configured.
+      responses:
+        '200':
+          description: Array of collection names
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '500':
+          description: Error
+
   # ── AI Answer ──────────────────────────────────────────────
 
   /api/v1/ai/answer:

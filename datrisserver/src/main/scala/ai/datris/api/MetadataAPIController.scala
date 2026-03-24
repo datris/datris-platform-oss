@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import ai.datris.util.{APIKeyValidator, SecretsRetrieverUtil}
+import ai.datris.util.{APIKeyValidator, SecretsRetrieverUtil, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -207,6 +207,201 @@ class MetadataAPIController {
                 new ResponseEntity[String](gson.toJson(collections.asJava), HttpStatus.OK)
             } finally {
                 client.close()
+            }
+        }
+        catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    // --- Vector Store Metadata ---
+
+    @GetMapping(path = Array("/metadata/qdrant/collections"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getQdrantCollections(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /metadata/qdrant/collections called")
+            APIKeyValidator.validate(apiKey)
+
+            val secretName = DatrisEnvironment.values.qdrantSecretName
+            if (secretName == null || secretName.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val secret = SecretsUtil.getSecretMap(secretName)
+            if (secret.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val secretMap = secret.get
+            val host = Option(secretMap.get("host")).getOrElse("")
+            if (host.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val port = Option(secretMap.get("port")).map(_.toInt).getOrElse(6334)
+            val qdrantApiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
+            val builder = io.qdrant.client.QdrantGrpcClient.newBuilder(host, port, false)
+            qdrantApiKey.foreach(k => builder.withApiKey(k))
+            val client = new io.qdrant.client.QdrantClient(builder.build())
+
+            try {
+                val collections = client.listCollectionsAsync().get(5, java.util.concurrent.TimeUnit.SECONDS)
+                val names = collections.asScala.map(_.toString).toList.sorted
+                val gson = new Gson
+                new ResponseEntity[String](gson.toJson(names.asJava), HttpStatus.OK)
+            } finally {
+                client.close()
+            }
+        }
+        catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @GetMapping(path = Array("/metadata/weaviate/classes"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getWeaviateClasses(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /metadata/weaviate/classes called")
+            APIKeyValidator.validate(apiKey)
+
+            val secretName = DatrisEnvironment.values.weaviateSecretName
+            if (secretName == null || secretName.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val secret = SecretsUtil.getSecretMap(secretName)
+            if (secret.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val secretMap = secret.get
+            val host = Option(secretMap.get("host")).getOrElse("")
+            if (host.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val port = Option(secretMap.get("port")).getOrElse("8079")
+            val scheme = Option(secretMap.get("scheme")).getOrElse("http")
+            val url = scheme + "://" + host + ":" + port + "/v1/schema"
+
+            val httpClient = org.apache.http.impl.client.HttpClients.createDefault()
+            try {
+                val get = new org.apache.http.client.methods.HttpGet(url)
+                val weaviateApiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
+                weaviateApiKey.foreach(k => get.setHeader("Authorization", "Bearer " + k))
+                val response = httpClient.execute(get)
+                try {
+                    val statusCode = response.getStatusLine.getStatusCode
+                    val body = org.apache.http.util.EntityUtils.toString(response.getEntity)
+                    if (statusCode != 200)
+                        throw new DatrisException("Weaviate schema request failed (HTTP " + statusCode + ")")
+
+                    val json = com.google.gson.JsonParser.parseString(body).getAsJsonObject
+                    val classesArray = json.getAsJsonArray("classes")
+                    val names = if (classesArray != null)
+                        classesArray.asScala.map(_.getAsJsonObject.get("class").getAsString).toList.sorted
+                    else
+                        List.empty[String]
+                    val gson = new Gson
+                    new ResponseEntity[String](gson.toJson(names.asJava), HttpStatus.OK)
+                } finally {
+                    response.close()
+                }
+            } finally {
+                httpClient.close()
+            }
+        }
+        catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @GetMapping(path = Array("/metadata/milvus/collections"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getMilvusCollections(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /metadata/milvus/collections called")
+            APIKeyValidator.validate(apiKey)
+
+            val secretName = DatrisEnvironment.values.milvusSecretName
+            if (secretName == null || secretName.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val secret = SecretsUtil.getSecretMap(secretName)
+            if (secret.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val secretMap = secret.get
+            val host = Option(secretMap.get("host")).getOrElse("")
+            if (host.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val port = Option(secretMap.get("port")).getOrElse("19530")
+            val milvusApiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
+            val connectBuilder = io.milvus.v2.client.ConnectConfig.builder()
+                .uri("http://" + host + ":" + port)
+            milvusApiKey.foreach(k => connectBuilder.token(k))
+            val client = new io.milvus.v2.client.MilvusClientV2(connectBuilder.build())
+
+            try {
+                val resp = client.listCollections()
+                val names = resp.getCollectionNames.asScala.toList.sorted
+                val gson = new Gson
+                new ResponseEntity[String](gson.toJson(names.asJava), HttpStatus.OK)
+            } finally {
+                client.close()
+            }
+        }
+        catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @GetMapping(path = Array("/metadata/chroma/collections"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getChromaCollections(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /metadata/chroma/collections called")
+            APIKeyValidator.validate(apiKey)
+
+            val secretName = DatrisEnvironment.values.chromaSecretName
+            if (secretName == null || secretName.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val secret = SecretsUtil.getSecretMap(secretName)
+            if (secret.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val secretMap = secret.get
+            val host = Option(secretMap.get("host")).getOrElse("")
+            if (host.isEmpty)
+                return new ResponseEntity[String]("[]", HttpStatus.OK)
+
+            val port = Option(secretMap.get("port")).getOrElse("8000")
+            val baseUrl = "http://" + host + ":" + port
+            val collectionsUrl = baseUrl + "/api/v2/tenants/default_tenant/databases/default_database/collections"
+
+            val httpClient = org.apache.http.impl.client.HttpClients.createDefault()
+            try {
+                val get = new org.apache.http.client.methods.HttpGet(collectionsUrl)
+                val response = httpClient.execute(get)
+                try {
+                    val statusCode = response.getStatusLine.getStatusCode
+                    val body = org.apache.http.util.EntityUtils.toString(response.getEntity)
+                    if (statusCode != 200)
+                        throw new DatrisException("Chroma list collections failed (HTTP " + statusCode + ")")
+
+                    val json = com.google.gson.JsonParser.parseString(body).getAsJsonArray
+                    val names = json.asScala
+                        .map(_.getAsJsonObject.get("name").getAsString)
+                        .toList.sorted
+                    val gson = new Gson
+                    new ResponseEntity[String](gson.toJson(names.asJava), HttpStatus.OK)
+                } finally {
+                    response.close()
+                }
+            } finally {
+                httpClient.close()
             }
         }
         catch {

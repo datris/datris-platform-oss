@@ -87,9 +87,12 @@ class HealthCheckAPIController {
             properties.setProperty("password", secrets.password)
             properties.setProperty("loginTimeout", "5")
 
+            val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
+            val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/datris"
+
             var conn: Connection = null
             try {
-                conn = DriverManager.getConnection(secrets.jdbcUrl, properties)
+                conn = DriverManager.getConnection(jdbcUrl, properties)
                 conn.setReadOnly(true)
                 val stmt = conn.createStatement()
                 stmt.setQueryTimeout(5)
@@ -204,6 +207,35 @@ class HealthCheckAPIController {
             val secret = SecretsUtil.getSecretMap(secretName)
             if (secret.isEmpty) return statusNotConfigured()
             val secretMap = secret.get
+
+            // pgvector uses jdbcUrl instead of host
+            if (name == "pgvector") {
+                val jdbcUrl = Option(secretMap.get("jdbcUrl")).getOrElse("")
+                val username = Option(secretMap.get("username")).getOrElse("")
+                val password = Option(secretMap.get("password")).getOrElse("")
+                if (jdbcUrl.isEmpty) return statusNotConfigured()
+
+                Class.forName("org.postgresql.Driver")
+                val properties = new Properties()
+                properties.setProperty("user", username)
+                properties.setProperty("password", password)
+                properties.setProperty("loginTimeout", "5")
+
+                var conn: Connection = null
+                try {
+                    conn = DriverManager.getConnection(jdbcUrl, properties)
+                    conn.setReadOnly(true)
+                    val stmt = conn.createStatement()
+                    stmt.setQueryTimeout(5)
+                    val rs = stmt.executeQuery("SELECT 1")
+                    rs.close()
+                    stmt.close()
+                    return statusUp()
+                } finally {
+                    if (conn != null) conn.close()
+                }
+            }
+
             val host = Option(secretMap.get("host")).getOrElse("")
             if (host.isEmpty) return statusNotConfigured()
 
@@ -262,33 +294,6 @@ class HealthCheckAPIController {
                         else statusDown("HTTP " + connection.getResponseCode)
                     } finally {
                         connection.disconnect()
-                    }
-
-                case "pgvector" =>
-                    // pgvector uses a PostgreSQL connection
-                    val jdbcUrl = Option(secretMap.get("jdbcUrl")).getOrElse("")
-                    val username = Option(secretMap.get("username")).getOrElse("")
-                    val password = Option(secretMap.get("password")).getOrElse("")
-                    if (jdbcUrl.isEmpty) return statusNotConfigured()
-
-                    Class.forName("org.postgresql.Driver")
-                    val properties = new Properties()
-                    properties.setProperty("user", username)
-                    properties.setProperty("password", password)
-                    properties.setProperty("loginTimeout", "5")
-
-                    var conn: Connection = null
-                    try {
-                        conn = DriverManager.getConnection(jdbcUrl, properties)
-                        conn.setReadOnly(true)
-                        val stmt = conn.createStatement()
-                        stmt.setQueryTimeout(5)
-                        val rs = stmt.executeQuery("SELECT 1")
-                        rs.close()
-                        stmt.close()
-                        statusUp()
-                    } finally {
-                        if (conn != null) conn.close()
                     }
 
                 case _ => statusNotConfigured()

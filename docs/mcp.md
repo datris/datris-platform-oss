@@ -53,7 +53,7 @@ Read-only queries against the pipeline's backend databases.
 
 ### Metadata Discovery
 
-Explore the structure of PostgreSQL and MongoDB databases managed by the platform. Use these tools to understand what data is available before writing queries.
+Explore the structure of PostgreSQL, MongoDB, and vector databases managed by the platform. Use these tools to understand what data is available before writing queries or running searches.
 
 | Tool | Description |
 |------|-------------|
@@ -63,6 +63,11 @@ Explore the structure of PostgreSQL and MongoDB databases managed by the platfor
 | `list_postgres_columns` | List columns and types for a specific table |
 | `list_mongodb_databases` | List all MongoDB databases |
 | `list_mongodb_collections` | List collections (optionally filtered by database) |
+| `list_qdrant_collections` | List all collections in Qdrant |
+| `list_weaviate_classes` | List all classes in Weaviate |
+| `list_milvus_collections` | List all collections in Milvus |
+| `list_chroma_collections` | List all collections in Chroma |
+| `list_pgvector_collections` | List all pgvector tables in PostgreSQL |
 
 ### AI
 
