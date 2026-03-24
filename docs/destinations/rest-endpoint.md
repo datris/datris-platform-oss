@@ -66,7 +66,7 @@ Set `bearerToken` to include an `Authorization: Bearer {token}` header on every 
 
 ## Timeout
 
-The `timeoutSeconds` field controls the maximum time in seconds the pipeline will wait for a response when `async` is `false`. The default is `300` seconds.
+The `timeoutMs` field controls the maximum time in milliseconds the pipeline will wait for a response when `async` is `false`. The default is `300000` ms (5 minutes).
 
 ## Configuration Example
 
@@ -79,7 +79,7 @@ The `timeoutSeconds` field controls the maximum time in seconds the pipeline wil
       "endpoint": "https://api.example.com/ingest",
       "async": false,
       "bearerToken": "eyJhbGciOiJIUzI1NiIs...",
-      "timeoutSeconds": 300
+      "timeoutMs": 300000
     }
   }
 }
@@ -92,4 +92,4 @@ The `timeoutSeconds` field controls the maximum time in seconds the pipeline wil
 | `endpoint`       | yes      |         | Target endpoint URL                                   |
 | `async`          | no       | `false` | If `true`, send the request and continue without waiting for a response |
 | `bearerToken`    | no       |         | Bearer token added as `Authorization: Bearer` header  |
-| `timeoutSeconds` | no       | `300`   | Response timeout in seconds (sync mode only)          |
+| `timeoutMs` | no       | `300000`   | Response timeout in milliseconds (sync mode only)          |

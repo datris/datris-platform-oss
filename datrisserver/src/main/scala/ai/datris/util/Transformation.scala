@@ -63,6 +63,7 @@ class Transformation(jobContext: JobContext) {
             jobContext
     }
 
+
     private def runRowFunctions(jobContextRF: JobContext): JobContext = {
         var currentContext = jobContextRF
 

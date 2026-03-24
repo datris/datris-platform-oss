@@ -11,7 +11,7 @@ import { McpComponent } from './mcp/mcp.component';
 import { SecretsComponent } from './secrets/secrets.component';
 
 const routes: Routes = [
-  { path: '', redirectTo: 'pipelines', pathMatch: 'full' },
+  { path: '', redirectTo: 'mcp', pathMatch: 'full' },
   { path: 'pipelines', component: PipelinesComponent },
   { path: 'pipelines/create', component: PipelineCreateComponent },
   { path: 'pipelines/:name/edit', component: PipelineCreateComponent },

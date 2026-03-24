@@ -202,7 +202,7 @@ A REST endpoint called before processing each file. Use for custom validation or
   "endpoint": "https://my-service.example.com/preprocess",
   "bearerToken": "token123",
   "apiKey": "key123",
-  "timeoutSeconds": 300,
+  "timeoutMs": 300000,
   "async": false
 }
 ```
@@ -382,7 +382,7 @@ Write modes: `overwrite`, `append`, `ignore`, `error`
   "restEndpoint": {
     "endpoint": "https://my-service.example.com/ingest",
     "bearerToken": "token123",
-    "timeoutSeconds": 300
+    "timeoutMs": 300000
   }
 }
 ```

@@ -102,7 +102,24 @@
         <div class="form-row">
           <label class="checkbox-label">
             <input type="checkbox" [(ngModel)]="xmlEveryRow"> Each line contains a complete XML element
+            <span class="info-icon material-icons" (click)="showXmlInfo = !showXmlInfo" title="What is this?">info</span>
           </label>
+        </div>
+        <div class="info-box example-box" *ngIf="showXmlInfo">
+          <p><strong>Per-line XML (enabled):</strong> Each line is a separate, complete XML element</p>
+          <pre class="example-code">&lt;record&gt;&lt;name&gt;Alice&lt;/name&gt;&lt;age&gt;30&lt;/age&gt;&lt;/record&gt;
+&lt;record&gt;&lt;name&gt;Bob&lt;/name&gt;&lt;age&gt;25&lt;/age&gt;&lt;/record&gt;</pre>
+          <p><strong>Full XML document (disabled):</strong> A single XML document with a root element containing child elements</p>
+          <pre class="example-code">&lt;records&gt;
+  &lt;record&gt;
+    &lt;name&gt;Alice&lt;/name&gt;
+    &lt;age&gt;30&lt;/age&gt;
+  &lt;/record&gt;
+  &lt;record&gt;
+    &lt;name&gt;Bob&lt;/name&gt;
+    &lt;age&gt;25&lt;/age&gt;
+  &lt;/record&gt;
+&lt;/records&gt;</pre>
         </div>
       </ng-container>
 
@@ -229,13 +246,50 @@
               Validate {{ sourceType.toUpperCase() }} against schema
             </label>
           </div>
-          <div class="form-row" *ngIf="dqValidateHeader">
-            <label class="form-label">Validation Schema File (required)</label>
-            <div class="file-upload-row">
-              <input type="file" (change)="onSchemaFileSelected($event)" class="file-input" accept=".json,.xsd,.xml">
+          <ng-container *ngIf="dqValidateHeader">
+            <div class="form-row">
+              <label class="radio-label">
+                <input type="radio" name="dqSchemaMode" value="upload" [(ngModel)]="dqSchemaMode"> Upload schema file
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="dqSchemaMode" value="generate" [(ngModel)]="dqSchemaMode"> Generate schema with AI
+              </label>
             </div>
-            <div class="form-hint" *ngIf="dqValidationSchema" style="color: var(--accent-green)">Uploaded: {{ dqValidationSchema }}</div>
-          </div>
+
+            <!-- Upload mode -->
+            <div class="form-row" *ngIf="dqSchemaMode === 'upload'">
+              <label class="form-label">Validation Schema File</label>
+              <div class="file-upload-row">
+                <input type="file" (change)="onSchemaFileSelected($event)" class="file-input" accept=".json,.xsd,.xml">
+              </div>
+              <div class="form-hint" *ngIf="dqValidationSchema" style="color: var(--accent-green)">Uploaded: {{ dqValidationSchema }}</div>
+            </div>
+
+            <!-- Generate mode -->
+            <ng-container *ngIf="dqSchemaMode === 'generate'">
+              <div class="form-row">
+                <label class="form-label">Schema Name</label>
+                <input class="form-input" [(ngModel)]="dqSchemaName" placeholder="e.g. stock_prices_schema">
+              </div>
+              <div class="form-row">
+                <label class="form-label">Sample {{ sourceType.toUpperCase() }} Data</label>
+                <div class="form-hint" *ngIf="sampleFile && !dqSampleData" style="margin-bottom: 8px">
+                  <button class="link-btn" (click)="loadSampleFileForSchema()">Load from uploaded file: {{ sampleFile.name }}</button>
+                </div>
+                <textarea class="form-input form-textarea" [(ngModel)]="dqSampleData" rows="6"
+                  placeholder="Paste sample {{ sourceType.toUpperCase() }} data or load from your uploaded file..."></textarea>
+              </div>
+              <div class="form-row">
+                <button class="execute-btn" (click)="generateValidationSchema()" [disabled]="dqGenerating">
+                  {{ dqGenerating ? 'Generating...' : 'Generate ' + (sourceType === 'xml' ? 'XSD' : 'JSON Schema') }}
+                </button>
+              </div>
+              <div class="error-box" *ngIf="dqGenerateError">
+                <pre>{{ dqGenerateError }}</pre>
+              </div>
+              <div class="form-hint" *ngIf="dqValidationSchema" style="color: var(--accent-green)">Generated: {{ dqValidationSchema }}</div>
+            </ng-container>
+          </ng-container>
         </ng-container>
 
         <!-- AI Rule -->
@@ -558,10 +612,10 @@
         <label class="form-label">Destination Type</label>
         <select class="form-input" [(ngModel)]="destType" (ngModelChange)="onDestTypeChange()">
           <optgroup label="Databases" *ngIf="sourceType !== 'unstructured'">
-            <option value="postgres" *ngIf="sourceType === 'csv'">PostgreSQL</option>
-            <option value="mongodb" *ngIf="sourceType !== 'csv' || sourceType === 'csv'">MongoDB</option>
+            <option value="postgres" *ngIf="sourceType === 'csv' || sourceType === 'xml'">PostgreSQL</option>
+            <option value="mongodb" *ngIf="sourceType !== 'xml'">MongoDB</option>
           </optgroup>
-          <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured'">
+          <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured' && sourceType !== 'xml'">
             <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO)</option>
             <option value="kafka">Kafka</option>
             <option value="activemq">ActiveMQ</option>

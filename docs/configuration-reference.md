@@ -61,6 +61,12 @@ MinIO credentials are stored in Vault under the secret specified by `secrets.min
 | `secrets.activeMQSecretName` | Vault path for ActiveMQ credentials |
 | `secrets.mongoDbSecretName` | Vault path for MongoDB credentials |
 | `secrets.kafkaProducerSecretName` | Vault path for Kafka producer credentials |
+| `secrets.embeddingSecretName` | Vault path for embedding model credentials |
+| `secrets.qdrantSecretName` | Vault path for Qdrant connection |
+| `secrets.weaviateSecretName` | Vault path for Weaviate connection |
+| `secrets.milvusSecretName` | Vault path for Milvus connection |
+| `secrets.chromaSecretName` | Vault path for Chroma connection |
+| `secrets.pgvectorSecretName` | Vault path for pgvector PostgreSQL connection |
 
 Vault connection is configured via environment variables:
 - `VAULT_ADDR` - Vault server URL (e.g., `http://vault:8200`)

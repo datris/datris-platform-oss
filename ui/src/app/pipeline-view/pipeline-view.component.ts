@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 
@@ -7,7 +7,7 @@ import { PipelineService } from '../pipeline.service';
   templateUrl: './pipeline-view.component.html',
   styleUrls: ['./pipeline-view.component.css']
 })
-export class PipelineViewComponent implements OnInit {
+export class PipelineViewComponent implements OnInit, OnDestroy {
   name = '';
   config: any = null;
   configJson = '';
@@ -15,15 +15,30 @@ export class PipelineViewComponent implements OnInit {
   copySuccess = false;
   confirmDelete = false;
   deleteLoading = false;
+  private refreshInterval: any = null;
 
   constructor(private route: ActivatedRoute, private router: Router, private pipelineService: PipelineService) { }
 
   ngOnInit(): void {
     this.name = this.route.snapshot.paramMap.get('name') || '';
+    this.loadPipeline();
+    this.refreshInterval = setInterval(() => this.loadPipeline(), 3000);
+  }
+
+  ngOnDestroy(): void {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+    }
+  }
+
+  private loadPipeline(): void {
     this.pipelineService.getPipeline(this.name).subscribe({
       next: (data) => {
-        this.config = data;
-        this.configJson = JSON.stringify(data, null, 2);
+        const newJson = JSON.stringify(data, null, 2);
+        if (newJson !== this.configJson) {
+          this.config = data;
+          this.configJson = newJson;
+        }
       },
       error: (err) => {
         this.error = err.error || err.message || 'Failed to load pipeline';

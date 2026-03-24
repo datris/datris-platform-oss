@@ -32,6 +32,7 @@
   </div>
 
   <div class="config-container" *ngIf="configJson">
-    <pre class="config-json">{{ configJson }}</pre>
+    <pre class="config-json" [innerText]="configJson"></pre>
   </div>
+  <div class="copy-toast" *ngIf="copySuccess">Copied to clipboard</div>
 </div>

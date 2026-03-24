@@ -45,28 +45,40 @@ Refer to [data-types](ingestion/data-types.md) for type mappings to PostgreSQL a
 
 ## Auto-Generating a Schema
 
-If you have a representative CSV file, the pipeline can infer a schema automatically. POST the file to the `/api/v1/pipeline/generate` endpoint:
+If you have a representative CSV file, the pipeline can infer a schema automatically using AI. POST the file to the `/api/v1/pipeline/generate` endpoint:
 
 ```bash
-curl -X POST "http://localhost:9000/api/v1/pipeline/generate" \
-  -F "file=@sample.csv"
+curl -X POST "http://localhost:8080/api/v1/pipeline/generate" \
+  -F "file=@sample.csv" \
+  -F "pipeline=my_pipeline"
 ```
 
-The response contains the inferred field definitions:
+The AI analyzes the file content (up to 100 lines) and returns a complete pipeline configuration with inferred field names and data types. You can edit the output before saving it to a pipeline configuration.
 
-```json
-{
-  "fields": [
-    { "name": "id", "type": "bigint" },
-    { "name": "email", "type": "varchar(255)" },
-    { "name": "signup_date", "type": "date" },
-    { "name": "balance", "type": "decimal(12,2)" },
-    { "name": "is_active", "type": "boolean" }
-  ]
-}
+In the UI, this happens automatically in Step 1 of the pipeline creation wizard when you upload a sample file and click "Analyze File".
+
+## AI-Generated Validation Schemas
+
+For JSON and XML pipelines, you can also generate validation schemas using AI:
+
+- **JSON Schema (Draft 4)** — for validating JSON data against an Everit-compatible schema
+- **W3C XSD** — for validating XML data against an XML Schema
+
+In the UI (Step 4 — Data Quality), choose "Generate schema with AI", enter a schema name, and provide sample data (or load it from your uploaded file). The AI generates a compliant schema that is stored in MinIO and referenced automatically in the pipeline config.
+
+Via API:
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/config/generate-schema" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "json-schema",
+    "name": "stock_prices_schema",
+    "sampleData": "{\"symbol\": \"AAPL\", \"price\": 150.25}"
+  }'
 ```
 
-The generator examines every value in each column and selects the narrowest type that accommodates all values. Empty columns default to `string`. You can edit the output before saving it to a pipeline configuration.
+Valid types: `json-schema` (generates Draft 4 JSON Schema) and `xsd` (generates W3C XSD). The generated schema is stored at `{environment}-config/validation-schema/{name}.json` or `{name}.xsd`.
 
 ## Source vs Destination Schemas
 

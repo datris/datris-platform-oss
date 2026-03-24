@@ -76,7 +76,13 @@ class PostgresLoader(jobContext: JobContext) {
     private def createStagingFile(): String = {
         // Write the data to a temp location
         val tempUrl = "s3://" + DatrisEnvironment.values.environment + "-temp/data/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + ".csv"
-        val data = jobContext.data.rows.mkString("\n")
+        val data = if (jobContext.data.rows != null && jobContext.data.rows.nonEmpty)
+            jobContext.data.rows.mkString("\n")
+        else if (jobContext.data.rawData != null)
+            // Wrap rawData in CSV quoting — escape internal quotes by doubling them
+            "\"" + jobContext.data.rawData.replace("\"", "\"\"") + "\""
+        else
+            throw new DatrisException("No data to load — both rows and rawData are empty")
         ObjectStoreUtil.writeBucketObject(ObjectStoreUtil.getBucket(tempUrl), ObjectStoreUtil.getKey(tempUrl), data)
         tempUrl
     }

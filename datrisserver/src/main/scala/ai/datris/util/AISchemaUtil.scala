@@ -88,6 +88,66 @@ object AISchemaUtil {
            |$content""".stripMargin
     }
 
+    def generateJsonSchema(sampleData: String): String = {
+        val aiConfig = DatrisEnvironment.values.aiConfig
+        if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
+            throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
+
+        val truncated = sampleData.take(10000)
+        val prompt =
+            s"""You are a JSON Schema expert. Generate a JSON Schema (Draft 4) for validating the following JSON data.
+               |The schema MUST use "$$schema": "http://json-schema.org/draft-04/schema#".
+               |Include type constraints, required fields, and format validations where appropriate.
+               |Return ONLY the JSON Schema, no explanation, no markdown, no code fences.
+               |
+               |Sample data:
+               |$truncated""".stripMargin
+
+        logger.info("Calling AI for JSON Schema generation")
+        val responseText = AIUtil.callAI(prompt)
+        val text = AIUtil.extractText(responseText)
+        extractJsonObject(text)
+    }
+
+    def generateXsdSchema(sampleData: String): String = {
+        val aiConfig = DatrisEnvironment.values.aiConfig
+        if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
+            throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
+
+        val truncated = sampleData.take(10000)
+        val prompt =
+            s"""You are an XML Schema expert. Generate a W3C XML Schema (XSD) for validating the following XML data.
+               |Include element definitions, type constraints, and required attributes.
+               |Return ONLY the XSD, no explanation, no markdown, no code fences.
+               |
+               |Sample data:
+               |$truncated""".stripMargin
+
+        logger.info("Calling AI for XSD generation")
+        val responseText = AIUtil.callAI(prompt)
+        val text = AIUtil.extractText(responseText)
+        extractXml(text)
+    }
+
+    private def extractJsonObject(text: String): String = {
+        val start = text.indexOf('{')
+        val end = text.lastIndexOf('}')
+        if (start < 0 || end < 0)
+            throw new DatrisException("AI response did not contain a JSON object. Response: " + text)
+        text.substring(start, end + 1)
+    }
+
+    private def extractXml(text: String): String = {
+        val start = text.indexOf("<?xml")
+        if (start >= 0) return text.substring(start).trim
+        val xsStart = text.indexOf("<xs:")
+        if (xsStart >= 0) return text.substring(xsStart).trim
+        val xsdStart = text.indexOf("<xsd:")
+        if (xsdStart >= 0) return text.substring(xsdStart).trim
+        // Fallback: return as-is
+        text.trim
+    }
+
     private def extractJsonArray(text: String): String = {
         val start = text.indexOf('[')
         val end = text.lastIndexOf(']')

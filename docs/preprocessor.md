@@ -34,7 +34,7 @@ Add a `preprocessor` section to the pipeline configuration:
     "endpoint": "http://my-service:5500/preprocess/sync",
     "async": false,
     "bearerToken": null,
-    "timeoutSeconds": 300
+    "timeoutMs": 300000
   },
   "destination": { ... }
 }
@@ -47,7 +47,7 @@ Add a `preprocessor` section to the pipeline configuration:
 | `endpoint` | string | Required | URL of the preprocessing service |
 | `async` | boolean | `false` | Synchronous or asynchronous mode |
 | `bearerToken` | string | `null` | Optional `Authorization: Bearer` token |
-| `timeoutSeconds` | int | `300` | Request timeout in seconds |
+| `timeoutMs` | int | `300000` | Request timeout in milliseconds |
 
 ## Synchronous Mode
 
@@ -136,7 +136,7 @@ Callback payload:
 
 The `pipelineToken` must match the token from the original request so the pipeline can correlate the callback with the waiting job.
 
-If the callback is not received within `timeoutSeconds`, the pipeline aborts with a timeout error.
+If the callback is not received within `timeoutMs` milliseconds, the pipeline aborts with a timeout error.
 
 ## Example: Preprocessor Service
 
@@ -194,6 +194,6 @@ Then configure the pipeline:
 "preprocessor": {
   "endpoint": "http://localhost:5500/preprocess/sync",
   "async": false,
-  "timeoutSeconds": 300
+  "timeoutMs": 300000
 }
 ```
