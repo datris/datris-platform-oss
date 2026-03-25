@@ -80,6 +80,7 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | Tool | Description |
 |------|-------------|
 | `upload_config` | Upload a JSON Schema (validation) or JavaScript (transformation) config file |
+| `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
 
 ## Setup
 
