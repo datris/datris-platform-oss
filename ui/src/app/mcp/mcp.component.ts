@@ -345,6 +345,17 @@ export class McpComponent implements OnInit {
         { name: 'type', type: 'string', description: 'Config type: validation-schema or javascript', required: true, inputType: 'text' }
       ],
       playgroundEnabled: false
+    },
+    // --- Secrets ---
+    {
+      name: 'update_secret',
+      description: 'Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys for AI features.',
+      category: 'Configuration',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Secret name: anthropic, openai, ollama, or embedding', required: true, inputType: 'text' },
+        { name: 'fields', type: 'object', description: 'JSON with endpoint, model, apiKey fields', required: true, inputType: 'textarea' }
+      ],
+      playgroundEnabled: true
     }
   ];
 

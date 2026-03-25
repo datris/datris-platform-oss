@@ -43,6 +43,7 @@ A pipeline defines a complete data processing flow:
   - Destination: PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoint, or vector databases (Qdrant, Weaviate, Milvus, Chroma, pgvector) with embedding configuration
 
 Recommended workflow for agents:
+  0. Configure AI: use update_secret to set your AI provider API keys (anthropic, openai, ollama, embedding) if not already configured
   1. Discover existing data: use metadata tools (list_postgres_databases, list_postgres_tables, etc.) to explore what's available
   2. Create a pipeline: use generate_schema to auto-create from a sample file, or create_pipeline manually
   3. Profile data: use profile_data to get AI-suggested data quality rules before ingestion
@@ -963,6 +964,26 @@ async def list_tools():
                 "required": ["file_path", "type"]
             }
         ),
+        # --- Secrets ---
+        Tool(
+            name="update_secret",
+            description="Update an AI provider secret in the Datris platform. Use this to configure your AI API keys so Datris can use AI features (data profiling, schema generation, AI transformations, RAG). Only AI-related secrets can be updated: anthropic, openai, ollama, embedding.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": ["anthropic", "openai", "ollama", "embedding"],
+                        "description": "Secret name: anthropic, openai, ollama, or embedding"
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Key-value fields to set. Typical fields: endpoint (API URL), model (model name), apiKey (API key)"
+                    },
+                },
+                "required": ["name", "fields"]
+            }
+        ),
     ]
 
 
@@ -1153,6 +1174,14 @@ def _dispatch(name: str, args: dict) -> str:
     elif name == "upload_config":
         data = {"type": args["type"]}
         return _upload("/api/v1/config/upload", args["file_path"], data)
+
+    # --- Secrets ---
+    elif name == "update_secret":
+        allowed = {"anthropic", "openai", "ollama", "embedding"}
+        secret_name = args["name"]
+        if secret_name not in allowed:
+            return json.dumps({"error": f"Only these secrets can be updated: {', '.join(sorted(allowed))}"})
+        return _call("put", f"/api/v1/secrets/{secret_name}", json=args["fields"])
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

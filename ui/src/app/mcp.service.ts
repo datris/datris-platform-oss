@@ -137,6 +137,10 @@ export class McpService {
       case 'check_service_health':
         return this.http.get<any>('/api/v1/health/services');
 
+      // Secrets
+      case 'update_secret':
+        return this.http.put<any>('/api/v1/secrets/' + encodeURIComponent(params['name']), JSON.parse(params['fields']));
+
       default:
         throw new Error('Unknown tool: ' + toolName);
     }
