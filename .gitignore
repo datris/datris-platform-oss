@@ -86,6 +86,10 @@ mcp-server/.mcpregistry_github_token
 mcp-server/dist/
 mcp-server/.venv/
 
+# mcp-publisher tokens
+.mcpregistry_github_token
+.mcpregistry_registry_token
+
 # node
 node_modules/
 
