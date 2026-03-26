@@ -24,7 +24,7 @@ All search endpoints return:
     {
       "text": "document chunk content",
       "chunk_index": 0,
-      "source_dataset": "pipeline_name",
+      "source_pipeline": "pipeline_name",
       "filename": "document.pdf",
       "_score": 0.89
     }

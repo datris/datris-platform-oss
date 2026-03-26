@@ -82,7 +82,7 @@ class WeaviateLoader(jobContext: JobContext) {
                 val properties = new java.util.HashMap[String, AnyRef]()
                 properties.put("text", chunkText)
                 properties.put("chunk_index", Integer.valueOf(chunkIdx))
-                properties.put("source_dataset", config.name)
+                properties.put("source_pipeline", config.name)
                 properties.put("filename", filename)
 
                 // Static metadata from config
@@ -125,7 +125,7 @@ class WeaviateLoader(jobContext: JobContext) {
         val properties = new java.util.ArrayList[Property]()
         properties.add(Property.builder().name("text").dataType(java.util.Arrays.asList(DataType.TEXT)).build())
         properties.add(Property.builder().name("chunk_index").dataType(java.util.Arrays.asList(DataType.INT)).build())
-        properties.add(Property.builder().name("source_dataset").dataType(java.util.Arrays.asList(DataType.TEXT)).build())
+        properties.add(Property.builder().name("source_pipeline").dataType(java.util.Arrays.asList(DataType.TEXT)).build())
         properties.add(Property.builder().name("filename").dataType(java.util.Arrays.asList(DataType.TEXT)).build())
 
         // Add metadata field properties dynamically

@@ -22,7 +22,13 @@ class CSVReader {
         val parser = new CSVParser(reader, CSVFormat.RFC4180.builder().setDelimiter(delimiter).setIgnoreEmptyLines(true).setTrim(trimColumns).build())
 
         val rows = parser.getRecords.asScala.map(record => {
-            columnNumbers.map(colNumber => record.get(colNumber)).mkString(delimiter)
+            columnNumbers.map(colNumber => {
+                val value = record.get(colNumber)
+                if (value != null && (value.contains(delimiter) || value.contains("\"") || value.contains("\n")))
+                    "\"" + value.replace("\"", "\"\"") + "\""
+                else
+                    value
+            }).mkString(delimiter)
         }).toList
 
         if (header && removeHeader)
@@ -49,7 +55,11 @@ class CSVReader {
         // Get only the columns in the column filter
         val rows = parser.getRecords.asScala.map(record => {
             columnNumbers.map(colNumber => {
-                record.get(colNumber)
+                val value = record.get(colNumber)
+                if (value != null && (value.contains(delimiter) || value.contains("\"") || value.contains("\n")))
+                    "\"" + value.replace("\"", "\"\"") + "\""
+                else
+                    value
             }).mkString(delimiter)
         }).toList
 

@@ -82,7 +82,7 @@ class MilvusLoader(jobContext: JobContext) {
                     row.addProperty("id", objectId)
                     row.addProperty("text", chunkText)
                     row.addProperty("chunk_index", chunkIdx)
-                    row.addProperty("source_dataset", config.name)
+                    row.addProperty("source_pipeline", config.name)
                     row.addProperty("filename", filename)
 
                     // Static metadata from config
@@ -127,7 +127,7 @@ class MilvusLoader(jobContext: JobContext) {
         schema.addField(AddFieldReq.builder().fieldName("id").dataType(DataType.VarChar).isPrimaryKey(true).maxLength(36).build())
         schema.addField(AddFieldReq.builder().fieldName("text").dataType(DataType.VarChar).maxLength(65535).build())
         schema.addField(AddFieldReq.builder().fieldName("chunk_index").dataType(DataType.Int32).build())
-        schema.addField(AddFieldReq.builder().fieldName("source_dataset").dataType(DataType.VarChar).maxLength(256).build())
+        schema.addField(AddFieldReq.builder().fieldName("source_pipeline").dataType(DataType.VarChar).maxLength(256).build())
         schema.addField(AddFieldReq.builder().fieldName("filename").dataType(DataType.VarChar).maxLength(256).build())
         schema.addField(AddFieldReq.builder().fieldName("embedding").dataType(DataType.FloatVector).dimension(dimension).build())
         // Dynamic fields enabled for metadata

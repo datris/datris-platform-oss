@@ -13,13 +13,13 @@ import scala.collection.JavaConverters._
 object PipelineValidatorUtil {
     def validate(config: PipelineConfig): Unit = {
         if (config.name == null)
-            throw new DatrisException("dataset 'name' is not defined in the JSON")
+            throw new DatrisException("pipeline 'name' is not defined in the JSON")
         if (config.name.length > 80)
-            throw new DatrisException("dataset 'name' cannot be greater than 80 characters")
+            throw new DatrisException("pipeline 'name' cannot be greater than 80 characters")
 
         // Source config
         if (config.source == null)
-            throw new DatrisException("dataset 'source' is not defined in the JSON")
+            throw new DatrisException("pipeline 'source' is not defined in the JSON")
         if (config.source.fileAttributes == null && config.source.databaseAttributes == null)
             throw new DatrisException("Either 'source.fileAttributes' or 'source.databaseAttributes must be defined")
 
@@ -276,7 +276,7 @@ object PipelineValidatorUtil {
     }
 
     private def validateSemiStructured(config: PipelineConfig): Unit = {
-        val message = "For JSON and XML datasets, the source schema must have only one field named '_json' or '_xml' according to the source file type, with a field type of 'string'"
+        val message = "For JSON and XML pipelines, the source schema must have only one field named '_json' or '_xml' according to the source file type, with a field type of 'string'"
         if(config.source.schemaProperties.fields.size != 1)
             throw new DatrisException(message)
         if(config.source.schemaProperties.fields.get(0).`type`.compareToIgnoreCase("string") != 0)
@@ -291,7 +291,7 @@ object PipelineValidatorUtil {
         }
 
         if(config.destination.schemaProperties != null) {
-            val message = "For JSON and XML datasets, the destination schema must have only one field named '_json' or '_xml' according to the source file type, with a field type of 'string'"
+            val message = "For JSON and XML pipelines, the destination schema must have only one field named '_json' or '_xml' according to the source file type, with a field type of 'string'"
             if(config.destination.schemaProperties.fields.size != 1)
                 throw new DatrisException(message)
             if(config.destination.schemaProperties.fields.get(0).`type`.compareToIgnoreCase("string") != 0)

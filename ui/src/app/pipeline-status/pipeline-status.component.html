@@ -1,8 +1,20 @@
 <div class="container">
   <div class="page-header">
     <h1 class="page-title">Data Ingestion</h1>
-    <button class="create-btn" (click)="openUploadModal()">+ Upload File</button>
+    <div class="header-actions">
+      <button class="clear-btn" (click)="promptClear()" *ngIf="!confirmClear && pipelines.length > 0">Clear All</button>
+      <button class="create-btn" (click)="openUploadModal()">+ Upload File</button>
+    </div>
   </div>
+
+  <div class="confirm-clear" *ngIf="confirmClear">
+    <span class="confirm-text">Clear all ingestion history?</span>
+    <button class="confirm-yes" (click)="clearAll()" [disabled]="clearing">
+      {{ clearing ? 'Clearing...' : 'Yes, Clear All' }}
+    </button>
+    <button class="confirm-no" (click)="cancelClear()">Cancel</button>
+  </div>
+
   <div class="table-container">
     <table>
       <thead>

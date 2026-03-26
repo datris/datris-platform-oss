@@ -77,7 +77,7 @@ class PGVectorLoader(jobContext: JobContext) {
                 val texts = batch.map(_._1)
                 val embeddings = EmbeddingUtil.generateEmbeddings(texts, embeddingConfig)
 
-                val allColumns = List("id", "text", "chunk_index", "source_dataset", "filename") ++ metadataKeys ++ List("embedding")
+                val allColumns = List("id", "text", "chunk_index", "source_pipeline", "filename") ++ metadataKeys ++ List("embedding")
                 val placeholders = allColumns.map(_ => "?").mkString(", ")
                 val updateSet = allColumns.filter(_ != "id").map(c => "\"" + c + "\" = EXCLUDED.\"" + c + "\"").mkString(", ")
 
@@ -149,7 +149,7 @@ class PGVectorLoader(jobContext: JobContext) {
                    |    id UUID PRIMARY KEY,
                    |    text TEXT,
                    |    chunk_index INTEGER,
-                   |    source_dataset TEXT,
+                   |    source_pipeline TEXT,
                    |    filename TEXT$metadataColumns,
                    |    embedding vector($dimension)
                    |)""".stripMargin

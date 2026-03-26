@@ -109,7 +109,7 @@ class StatusUtil {
         val nowInMillis = new Timestamp(new Date().getTime).getTime
 
         val dateFormat = "MM-dd-yyyy HH:mm:ss z"
-        val pipelineName = getDatasetName(status.filename, status.pipelineToken)
+        val pipelineName = getPipelineName(status.filename, status.pipelineToken)
 
         // Query for the pipeline token in the pipeline status summary table
         val statusSummaryList = NoSQLDbUtil.queryJSONItemsByKey(tableName + "-summary", "pipeline_token", status.pipelineToken)
@@ -224,7 +224,7 @@ class StatusUtil {
         )
     }
 
-    private def getDatasetName(filename: String, pipelineToken: String): String = {
+    private def getPipelineName(filename: String, pipelineToken: String): String = {
         if(filename != null && filename.contains(".pipeline.")) {
             val tokens = filename.split("\\.")
             tokens(0)

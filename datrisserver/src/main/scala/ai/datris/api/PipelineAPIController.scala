@@ -25,10 +25,10 @@ class PipelineAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[PipelineAPIController])
 
     @GetMapping(path = Array("/pipeline"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getDataset(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+    def getPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                          @RequestParam pipeline: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /dataset called with pipeline: " + pipeline)
+            logger.info("API endpoint GET /pipeline called with pipeline: " + pipeline)
             APIKeyValidator.validate(apiKey)
 
             val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
@@ -46,9 +46,9 @@ class PipelineAPIController {
     }
 
     @GetMapping(path = Array("/pipelines"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getDatasets(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    def getPipelines(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /datasets called")
+            logger.info("API endpoint GET /pipelines called")
             APIKeyValidator.validate(apiKey)
 
             val pipelineNames = NoSQLDbUtil.getItemsKeysByKeyName(DatrisEnvironment.values.pipelineTableName, "name")
@@ -68,10 +68,10 @@ class PipelineAPIController {
     }
 
     @PostMapping(path = Array("/pipeline"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def putDataset(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+    def putPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                          @RequestBody config: PipelineConfig): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint POST /dataset with pipeline name: " + config.name)
+            logger.info("API endpoint POST /pipeline with pipeline name: " + config.name)
             APIKeyValidator.validate(apiKey)
 
             PipelineValidatorUtil.validate(config)
@@ -94,11 +94,11 @@ class PipelineAPIController {
     }
 
     @DeleteMapping(path = Array("/pipeline"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def deleteDataset(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+    def deletePipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                             @RequestParam pipeline: String,
                             @RequestParam(defaultValue = "true") deleteData: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint DELETE /dataset with pipeline name: " + pipeline + ", deleteData: " + deleteData)
+            logger.info("API endpoint DELETE /pipeline with pipeline name: " + pipeline + ", deleteData: " + deleteData)
             APIKeyValidator.validate(apiKey)
 
             val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)

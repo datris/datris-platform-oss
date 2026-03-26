@@ -43,7 +43,7 @@ object MilvusSearchUtil {
             val floatVec: io.milvus.v2.service.vector.request.data.BaseVector = new FloatVec(floatList)
             val vectorData: java.util.List[io.milvus.v2.service.vector.request.data.BaseVector] =
                 java.util.Collections.singletonList(floatVec)
-            val outputFields = java.util.Arrays.asList("text", "chunk_index", "source_dataset", "filename")
+            val outputFields = java.util.Arrays.asList("text", "chunk_index", "source_pipeline", "filename")
 
             val searchReq = SearchReq.builder()
                 .collectionName(collection)

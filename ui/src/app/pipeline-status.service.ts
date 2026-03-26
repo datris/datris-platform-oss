@@ -40,6 +40,10 @@ export class PipelineStatusService {
     return this.http.get<PipelineStatusDetail[]>(this.apiUrl + "?pipelinetoken=" + pipelineToken);
   }
 
+  clearAllStatus(): Observable<any> {
+    return this.http.delete<any>(this.apiUrl);
+  }
+
   uploadFile(file: File, pipeline: string): Observable<string> {
     const formData = new FormData();
     formData.append('file', file);

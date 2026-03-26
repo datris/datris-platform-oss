@@ -140,7 +140,7 @@ If the callback is not received within `timeoutMs` milliseconds, the pipeline ab
 
 ## Example: Preprocessor Service
 
-A complete working example is provided in [`helpers/preprocessor/app.py`](../helpers/preprocessor/app.py). This Python Flask application implements both synchronous and asynchronous preprocessing:
+A complete working example is provided in [`examples/preprocessor/app.py`](../examples/preprocessor/app.py). This Python Flask application implements both synchronous and asynchronous preprocessing:
 
 ```python
 # Synchronous - process and return immediately
@@ -181,7 +181,7 @@ def send_callback(pipeline_token, pipeline_name, data):
 To run:
 
 ```bash
-cd helpers/preprocessor
+cd examples/preprocessor
 python3 -m venv my-env
 source my-env/bin/activate
 pip install flask requests

@@ -49,7 +49,7 @@ conn.subscribe(
 )
 ```
 
-> **Note:** This is a minimal snippet. For a production-ready consumer with automatic reconnect, heartbeats, graceful shutdown, and configurable virtual topic support, see [`helpers/topic-subscriber/`](../helpers/topic-subscriber/).
+> **Note:** This is a minimal snippet. For a production-ready consumer with automatic reconnect, heartbeats, graceful shutdown, and configurable virtual topic support, see [`examples/topic-subscriber/`](../examples/topic-subscriber/).
 
 ### Example: Java/JMS Consumer
 

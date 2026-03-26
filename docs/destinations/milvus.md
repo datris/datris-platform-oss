@@ -89,7 +89,7 @@ vault kv put secret/oss/embedding \
 
 ## Chunking Strategies
 
-Documents are split into chunks before embedding. Each chunk becomes a separate entity in the Milvus collection with the document's metadata plus `chunk_index`, `filename`, and `source_dataset` fields.
+Documents are split into chunks before embedding. Each chunk becomes a separate entity in the Milvus collection with the document's metadata plus `chunk_index`, `filename`, and `source_pipeline` fields.
 
 ```json
 "chunking": {
@@ -129,7 +129,7 @@ Every entity automatically includes:
 - `text` — the chunk text
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline name
+- `source_pipeline` — pipeline name
 - `embedding` — float vector for similarity search
 
 ## How It Works

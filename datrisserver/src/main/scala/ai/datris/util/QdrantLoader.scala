@@ -81,7 +81,7 @@ class QdrantLoader(jobContext: JobContext) {
                     val payload = new java.util.HashMap[String, io.qdrant.client.grpc.JsonWithInt.Value]()
                     payload.put("text", value(chunkText))
                     payload.put("chunk_index", value(chunkIdx.toLong))
-                    payload.put("source_dataset", value(config.name))
+                    payload.put("source_pipeline", value(config.name))
                     payload.put("filename", value(filename))
 
                     // Static metadata from config

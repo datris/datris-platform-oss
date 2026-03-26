@@ -57,7 +57,7 @@ mongodb:
   connectionString: mongodb://mongodb:27017
   database: oss
 
-sendDatasetNotifications: "true"
+sendPipelineNotifications: "true"
 ttlFileNotifierQueueMessages: "60"
 
 # AI schema generation

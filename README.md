@@ -188,4 +188,4 @@ See [Installation](docs/installation.md) for details on API keys, vector databas
 - [OpenAPI Spec](docs/openapi.yaml) - OpenAPI 3.0 spec for Postman, code generation, and non-MCP integrations
 - [Configuration Reference](docs/configuration-reference.md) - Full application.yaml reference
 - [MCP Server](docs/mcp.md) - AI agent integration via Model Context Protocol
-- [Helper Applications](docs/helpers.md) - Vector store chat, Kafka loader, preprocessor, and more
+- [Example Applications](docs/examples.md) - Vector store chat, Kafka loader, preprocessor, and more

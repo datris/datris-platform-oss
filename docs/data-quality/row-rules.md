@@ -224,7 +224,7 @@ result;
 
 ## Example: REST Endpoint Service
 
-A complete working example of a data quality REST endpoint is provided in [`helpers/data-quality-rest/app.py`](../../helpers/data-quality-rest/app.py). This is a Python Flask application that implements both `row` and `batch` mode endpoints:
+A complete working example of a data quality REST endpoint is provided in [`examples/data-quality-rest/app.py`](../../examples/data-quality-rest/app.py). This is a Python Flask application that implements both `row` and `batch` mode endpoints:
 
 ```python
 # Row mode endpoint - validates one row at a time
@@ -256,7 +256,7 @@ def dataquality_rest_batch():
 To run the example:
 
 ```bash
-cd helpers/data-quality-rest
+cd examples/data-quality-rest
 python3 -m venv my-env
 source my-env/bin/activate
 pip install flask

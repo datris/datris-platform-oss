@@ -68,16 +68,16 @@ minio/
 vault/
 
 # helpers
-helpers/kafka-csv-loader/myenv/
+examples/kafka-csv-loader/myenv/
 
-helpers/preprocessor/my-env/
+examples/preprocessor/my-env/
 
-helpers/data-quality-rest/my-env/
+examples/data-quality-rest/my-env/
 
-helpers/topic-subscriber/my-env/
+examples/topic-subscriber/my-env/
 
-helpers/chat-vector-store/my-env/
-helpers/chat-vector-store/.env
+examples/chat-vector-store/my-env/
+examples/chat-vector-store/.env
 
 # mcp-server
 mcp-server/.env

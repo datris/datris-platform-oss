@@ -38,11 +38,11 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
             uncompress(bucket, key)
         }
         else {
-            // Pull the metadata from the data filename.  [dataset-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]
+            // Pull the metadata from the data filename.  [pipeline-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]
             try {
                 val filename = key.substring(key.lastIndexOf('/') + 1)
                 val filepath = "s3://" + bucket + "/" + key.substring(0, key.lastIndexOf('/')) + "/"
-                val (pipeline, publisherToken) = parseDatasetPublisherTokenFromKey(key)
+                val (pipeline, publisherToken) = parsePipelinePublisherTokenFromKey(key)
                 PipelineMetadata(pipeline,
                     filename,
                     filepath,
@@ -50,7 +50,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
                     bulkUpload = false)
             } catch {
                 case e: Exception =>
-                    throw new DatrisException("Could not parse the pipeline and/or filename from the bucket key name.  The format required: [dataset-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]")
+                    throw new DatrisException("Could not parse the pipeline and/or filename from the bucket key name.  The format required: [pipeline-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]")
             }
         }
     }
@@ -70,7 +70,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
     private def uncompress(bucket: String, key: String): PipelineMetadata = {
         statusUtil.info("processing","Uncompressing bucket: " + bucket + ", key: " + key)
 
-        val (pipeline, publisherToken) = parseDatasetPublisherTokenFromKey(key)
+        val (pipeline, publisherToken) = parsePipelinePublisherTokenFromKey(key)
         statusUtil.info("processing","Pipeline name: " + pipeline)
 
         val inputStream = ObjectStoreUtil.getInputStream(bucket, key)
@@ -144,8 +144,8 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
         byteArrayInputStream.close()
     }
 
-    private def parseDatasetPublisherTokenFromKey(key: String): (String, String) = {
-        // Pull the metadata from the data filename.  [dataset-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]
+    private def parsePipelinePublisherTokenFromKey(key: String): (String, String) = {
+        // Pull the metadata from the data filename.  [pipeline-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]
         val filename = key.substring(key.lastIndexOf('/') + 1)
         val tokens = filename.split("\\.")
         val pipeline = tokens(0)

@@ -1076,13 +1076,16 @@ def _dispatch(name: str, args: dict) -> str:
 
         # Step 3: Register the pipeline
         create_result = _call("post", "/api/v1/pipeline", json=config)
-        try:
-            err = json.loads(create_result)
-            if isinstance(err, dict) and err.get("error"):
-                return json.dumps({"error": "Failed to create pipeline: " + str(err["error"])})
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # Return the name from the config (authoritative) rather than args
+
+        # Check if registration failed
+        if create_result and ("Exception" in create_result or "error" in create_result.lower()):
+            return json.dumps({"error": "Failed to register pipeline: " + create_result[:500]})
+
+        # Verify the pipeline was actually created by reading it back
+        verify = _call("get", "/api/v1/pipeline", params={"pipeline": pipeline_name})
+        if verify and "not configured" in verify.lower():
+            return json.dumps({"error": "Pipeline registration failed silently. Generated config may be invalid.", "config": str(config)[:500]})
+
         actual_name = config.get("name", pipeline_name)
         return json.dumps({"status": "Pipeline created", "pipeline": actual_name, "destination": dest_type, "table": table_name})
 
