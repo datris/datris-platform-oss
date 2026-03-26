@@ -628,6 +628,20 @@ async def list_tools():
                     "header": {
                         "type": "boolean",
                         "description": "Whether CSV has a header row (default: true)"
+                    },
+                    "column_rules": {
+                        "type": "array",
+                        "description": "Optional data quality column validation rules. Only add when the user explicitly requests validation. Each rule: {columnName, function: 'regex', parameter: 'regex_pattern', onFailureIsError: true/false, description: 'rule description'}",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "columnName": {"type": "string"},
+                                "function": {"type": "string", "enum": ["regex"]},
+                                "parameter": {"type": "string"},
+                                "onFailureIsError": {"type": "boolean"},
+                                "description": {"type": "string"}
+                            }
+                        }
                     }
                 },
                 "required": ["content", "filename", "pipeline"]
@@ -1073,6 +1087,10 @@ def _dispatch(name: str, args: dict) -> str:
             dest["database"] = {"dbName": db_name, "schema": "public", "table": table_name, "usePostgres": True}
 
         config["destination"] = dest
+
+        # Step 2b: Add optional data quality rules
+        if args.get("column_rules"):
+            config["dataQuality"] = {"columnRules": args["column_rules"]}
 
         # Step 3: Register the pipeline
         create_result = _call("post", "/api/v1/pipeline", json=config)
