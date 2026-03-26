@@ -20,15 +20,14 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 |------|-------------|
 | `list_pipelines` | List all registered pipeline configurations |
 | `get_pipeline` | Get a specific pipeline configuration by name |
-| `create_pipeline` | Register or update a pipeline configuration |
-| `delete_pipeline` | Delete a pipeline configuration |
+| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Specify destination type. |
+| `delete_pipeline` | Delete a pipeline and its destination data |
 | `upload_data` | Upload data (base64-encoded) to a pipeline for processing (returns pipeline token) |
 | `get_job_status` | Get job status by pipeline token or pipeline name |
 | `kill_job` | Kill a running job by pipeline token |
-| `generate_schema` | AI-generate a pipeline config from a file (CSV, JSON, XML) |
-| `profile_data` | AI-profile data with summary stats and suggested DQ rules |
+| `profile_data` | AI-profile data (base64-encoded) with summary stats and suggested DQ rules |
 | `get_version` | Get pipeline server version |
-| `check_service_health` | Check which backend services are up, down, or not configured |
+| `check_service_health` | Check which backend services are up, down, or not configured (slow — use for diagnostics only) |
 
 ### Vector Database Search
 
@@ -79,7 +78,7 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 
 | Tool | Description |
 |------|-------------|
-| `upload_config` | Upload a JSON Schema (validation) or JavaScript (transformation) config file |
+| `upload_config` | Upload a JSON Schema or JavaScript config file (base64-encoded content) |
 | `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
 
 ## Setup
