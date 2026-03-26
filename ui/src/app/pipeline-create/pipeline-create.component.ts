@@ -50,8 +50,10 @@ export class PipelineCreateComponent implements OnInit {
   schemaFields: SchemaField[] = [{ name: '', type: 'string' }];
   schemaFile: File | null = null;
 
-  // Step 4 — Data Quality
-  useDq = false;
+  // Step 7 — Destination Schema (CSV only)
+  destSchemaFields: SchemaField[] = [];
+
+  // Step 5 — Data Quality
   dqValidateHeader = false;
   dqValidationSchema = '';
   dqSchemaMode = 'upload';
@@ -62,36 +64,12 @@ export class PipelineCreateComponent implements OnInit {
   dqUseAiRule = false;
   dqAiInstruction = '';
   dqAiOnFailureIsError = false;
-  dqAiSample = false;
-  dqAiSampleSize = 200;
-  showSampleInfo = false;
-  showRowModeInfo = false;
   dqProfileSummary = '';
-  dqSelectedColumn = '';
-  regexPrompt = '';
-  regexResult = '';
-  regexExplanation = '';
-  regexGenerating = false;
-  dqColumnRules: { columnName: string; function: string; parameter: string; onFailureIsError: boolean; description: string }[] = [];
-  dqRowRules: { function: string; parameters: string[]; onFailureIsError: boolean }[] = [];
 
-  // Step 6 — Transformation (optional, not for unstructured)
-  useTransformation = false;
+  // Step 6 — Transformation
   txTrimWhitespace = false;
   txDeduplicate = false;
-  txUseAi = false;
   txAiInstruction = '';
-  txAiSample = false;
-  txAiSampleSize = 200;
-  txUseRowFunction = false;
-  txRowFunctionFile = '';
-  txUseRestEndpoint = false;
-  txRestEndpoint = '';
-  txRestMode = 'row';
-  txRestTimeout = '30000';
-  txRestBearerToken = '';
-  txRestApiKey = '';
-  showTxSampleInfo = false;
 
   // Step 7 — Destination
   destType = 'postgres';
@@ -178,7 +156,6 @@ export class PipelineCreateComponent implements OnInit {
 
     // Data Quality
     if (config.dataQuality) {
-      this.useDq = true;
       const dq = config.dataQuality;
       this.dqValidateHeader = dq.validateFileHeader || (dq.validationSchema ? true : false);
       this.dqValidationSchema = dq.validationSchema || '';
@@ -186,52 +163,15 @@ export class PipelineCreateComponent implements OnInit {
         this.dqUseAiRule = true;
         this.dqAiInstruction = dq.aiRule.instruction || '';
         this.dqAiOnFailureIsError = dq.aiRule.onFailureIsError || false;
-        this.dqAiSample = dq.aiRule.sample || false;
-        this.dqAiSampleSize = dq.aiRule.sampleSize || 200;
-      }
-      if (dq.columnRules && dq.columnRules.length > 0) {
-        this.dqColumnRules = dq.columnRules.map((r: any) => ({
-          columnName: r.columnName || '', function: r.function || 'regex',
-          parameter: r.parameter || '', onFailureIsError: r.onFailureIsError || false,
-          description: r.description || ''
-        }));
-      }
-      if (dq.rowRules && dq.rowRules.length > 0) {
-        this.dqRowRules = dq.rowRules.map((r: any) => ({
-          function: r.function || 'ai',
-          parameters: r.parameters || [''],
-          onFailureIsError: r.onFailureIsError || false
-        }));
       }
     }
 
     // Transformation
-    if (config.transformation) {
-      this.useTransformation = true;
-      const tx = config.transformation;
-      this.txTrimWhitespace = tx.trimColumnWhitespace || false;
-      this.txDeduplicate = tx.deduplicate || false;
-      if (tx.rowFunctions && tx.rowFunctions.length > 0) {
-        for (const rf of tx.rowFunctions) {
-          if (rf.function === 'javascript') {
-            this.txUseRowFunction = true;
-            this.txRowFunctionFile = rf.parameters?.[0] || '';
-          } else if (rf.function === 'restEndpoint') {
-            this.txUseRestEndpoint = true;
-            this.txRestEndpoint = rf.parameters?.[0] || '';
-            this.txRestMode = rf.parameters?.[1] || 'row';
-            this.txRestTimeout = rf.parameters?.[2] || '30000';
-            this.txRestBearerToken = rf.parameters?.[3] || '';
-            this.txRestApiKey = rf.parameters?.[4] || '';
-          }
-        }
-      }
-      if (tx.aiTransformation) {
-        this.txUseAi = true;
-        this.txAiInstruction = tx.aiTransformation.instruction || '';
-        this.txAiSample = tx.aiTransformation.sample || false;
-        this.txAiSampleSize = tx.aiTransformation.sampleSize || 200;
-      }
+    if (config.transformation?.aiTransformation) {
+      this.txAiInstruction = config.transformation.aiTransformation.instruction || '';
+      // Set checkboxes based on instruction text
+      this.txTrimWhitespace = this.txAiInstruction.includes('Trim leading/trailing whitespace');
+      this.txDeduplicate = this.txAiInstruction.includes('Remove duplicate rows');
     }
 
     // Preprocessor
@@ -242,6 +182,13 @@ export class PipelineCreateComponent implements OnInit {
       this.ppBearerToken = config.preprocessor.bearerToken || '';
       this.ppApiKey = config.preprocessor.apiKey || '';
       this.ppTimeout = config.preprocessor.timeoutMs || (config.preprocessor.timeoutSeconds ? config.preprocessor.timeoutSeconds * 1000 : 300000);
+    }
+
+    // Destination schema
+    if (config.destination?.schemaProperties?.fields) {
+      this.destSchemaFields = config.destination.schemaProperties.fields.map((f: any) => ({
+        name: f.name, type: f.type
+      }));
     }
 
     // Destination
@@ -457,6 +404,10 @@ export class PipelineCreateComponent implements OnInit {
     this.schemaFields.splice(index, 1);
   }
 
+  removeDestField(index: number): void {
+    this.destSchemaFields.splice(index, 1);
+  }
+
   onSampleFileSelected(event: Event): void {
     const input = event.target as HTMLInputElement;
     if (input.files && input.files.length > 0) {
@@ -519,23 +470,6 @@ export class PipelineCreateComponent implements OnInit {
         this.dqGenerating = false;
       }
     });
-  }
-
-  onJsFileSelected(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    if (input.files && input.files.length > 0 && this.dqRowRules.length > 0) {
-      const file = input.files[0];
-      this.dqRowRules[0].parameters[0] = file.name;
-      // Upload to MinIO
-      this.pipelineService.uploadConfigFile(file, 'javascript').subscribe({
-        next: (resp) => {
-          this.dqRowRules[0].parameters[0] = resp.filename;
-        },
-        error: (err) => {
-          this.error = 'Failed to upload JavaScript file: ' + (err.error || err.message);
-        }
-      });
-    }
   }
 
   detectSourceType(filename: string): string {
@@ -643,10 +577,31 @@ export class PipelineCreateComponent implements OnInit {
       return;
     }
 
-    // Validate step 2 — preprocessor
-    if (this.step === 2 && this.usePreprocessor) {
+    // Validate step 2 — source configuration
+    if (this.step === 2) {
+      if (this.sourceType === 'csv' && !this.csvDelimiter.trim()) {
+        this.error = 'CSV delimiter is required';
+        return;
+      }
+    }
+
+    // Validate step 3 — source schema
+    if (this.step === 3 && this.sourceType === 'csv') {
+      if (this.schemaFields.length === 0 || this.schemaFields.every(f => !f.name.trim())) {
+        this.error = 'At least one field with a name is required';
+        return;
+      }
+      const blank = this.schemaFields.find(f => !f.name.trim());
+      if (blank) {
+        this.error = 'All schema fields must have a name — remove empty fields or fill in their names';
+        return;
+      }
+    }
+
+    // Validate step 4 — preprocessor
+    if (this.step === 4 && this.usePreprocessor) {
       if (!this.ppEndpoint.trim()) {
-        this.error = 'An endpoint URL is required when preprocessor is enabled';
+        this.error = 'Endpoint URL is required when preprocessor is enabled';
         return;
       }
       if (!this.isValidUrl(this.ppEndpoint)) {
@@ -655,8 +610,8 @@ export class PipelineCreateComponent implements OnInit {
       }
     }
 
-    // Validate step 4 — data quality
-    if (this.step === 4 && this.useDq) {
+    // Validate step 5 — data quality
+    if (this.step === 5) {
       if (this.dqValidateHeader && (this.sourceType === 'json' || this.sourceType === 'xml') && !this.dqValidationSchema.trim()) {
         this.error = 'A validation schema file is required when header validation is enabled for ' + this.sourceType.toUpperCase();
         return;
@@ -667,55 +622,23 @@ export class PipelineCreateComponent implements OnInit {
       }
     }
 
-    // Validate step 5 — row rules and column rules
-    if (this.step === 5) {
-      // Row rule validation
-      if (this.dqRowRules.length > 0) {
-        const rule = this.dqRowRules[0];
-        if (rule.function === 'restEndpoint' && !rule.parameters[0]?.trim()) {
-          this.error = 'An endpoint URL is required for REST Endpoint row rules';
-          return;
-        }
-        if (rule.function === 'restEndpoint' && rule.parameters[0] && !this.isValidUrl(rule.parameters[0])) {
-          this.error = 'Row rule endpoint must be a valid URL (e.g., http://service:8080/validate)';
-          return;
-        }
-        if (rule.function === 'javascript' && !rule.parameters[0]?.trim()) {
-          this.error = 'A JavaScript file is required';
-          return;
-        }
-      }
-      // Column rule validation
-      for (const rule of this.dqColumnRules) {
-        if (!rule.parameter?.trim()) {
-          this.error = 'A regex pattern is required for column "' + rule.columnName + '"';
-          return;
-        }
-        if (!this.isValidRegex(rule.parameter)) {
-          this.error = 'Invalid regex pattern for column "' + rule.columnName + '": ' + rule.parameter;
-          return;
-        }
-      }
-    }
+    // Step 6 — transformation (no required fields, instruction is optional)
 
-    // Validate step 6 — transformation
-    if (this.step === 6 && this.useTransformation) {
-      if (this.txUseAi && !this.txAiInstruction.trim()) {
-        this.error = 'An AI instruction is required when AI Transformation is enabled';
+    // Validate step 7 — destination schema
+    if (this.step === 7 && this.sourceType === 'csv') {
+      if (this.destSchemaFields.length === 0 || this.destSchemaFields.every(f => !f.name.trim())) {
+        this.error = 'At least one field with a name is required in the destination schema';
         return;
       }
-      if (this.txUseRowFunction && !this.txRowFunctionFile.trim()) {
-        this.error = 'A JavaScript file is required when row function is enabled';
-        return;
-      }
-      if (this.txUseRestEndpoint && !this.txRestEndpoint.trim()) {
-        this.error = 'Endpoint URL is required when REST endpoint transformation is enabled';
+      const blank = this.destSchemaFields.find(f => !f.name.trim());
+      if (blank) {
+        this.error = 'All destination schema fields must have a name — remove empty fields or fill in their names';
         return;
       }
     }
 
-    // Validate step 7 — destination
-    if (this.step === 7) {
+    // Validate step 8 — destination
+    if (this.step === 8) {
       if (this.destType === 'postgres') {
         if (!this.pgDbName.trim()) { this.error = 'Database name is required'; return; }
         if (!this.pgSchema.trim()) { this.error = 'Schema is required'; return; }
@@ -743,32 +666,38 @@ export class PipelineCreateComponent implements OnInit {
 
     this.step++;
 
-    // Skip schema (3), dq (4), dq rules (5), transformation (6) for unstructured
-    if (this.isUnstructured() && this.step >= 3 && this.step <= 6) {
-      this.step = 7;
+    // Skip schema (3), preprocessor (4), dq (5), transformation (6) for unstructured
+    if (this.isUnstructured() && this.step >= 3 && this.step <= 7) {
+      this.step = 8;
     }
 
-    // Auto-profile when entering DQ step (4) if sample file exists
-    if (this.step === 4 && this.sampleFileDetected && !this.dqProfileSummary) {
+    // Auto-profile when entering DQ step (5) if sample file exists
+    if (this.step === 5 && this.sampleFileDetected && !this.dqProfileSummary) {
       this.autoProfileSampleFile();
     }
 
-    // Skip dq rules (5) if data quality not enabled or not CSV
-    if (this.step === 5 && (!this.useDq || this.sourceType !== 'csv')) {
-      this.step = 6;
+    // Initialize destination schema from source schema when entering step 7 (CSV only)
+    if (this.step === 7 && this.sourceType === 'csv') {
+      if (this.destSchemaFields.length === 0) {
+        this.destSchemaFields = this.schemaFields
+          .filter(f => f.name.trim())
+          .map(f => ({ name: f.name, type: f.type }));
+      }
     }
 
-    // Skip transformation (6) for unstructured (already handled above)
-    // Transformation is optional — always shown for structured types
+    // Skip destination schema (7) for non-CSV
+    if (this.step === 7 && this.sourceType !== 'csv') {
+      this.step = 8;
+    }
 
-    // Load metadata when entering destination step (7)
-    if (this.step === 7) {
+    // Load metadata when entering destination step (8)
+    if (this.step === 8) {
       this.loadPgDatabases();
       this.loadMongoDatabases();
     }
 
-    // Generate config JSON when entering review step (8)
-    if (this.step === 8) {
+    // Generate config JSON when entering review step (9)
+    if (this.step === 9) {
       this.configJson = JSON.stringify(this.buildConfig(), null, 2);
     }
   }
@@ -776,58 +705,39 @@ export class PipelineCreateComponent implements OnInit {
   prevStep(): void {
     this.step--;
 
-    // Skip transformation (6) for unstructured going back
-    if (this.step === 6 && this.isUnstructured()) {
-      this.step = 2;
+    // Skip destination schema (7) for non-CSV going back
+    if (this.step === 7 && this.sourceType !== 'csv') {
+      this.step = 6;
     }
 
-    // Skip dq rules (5) if data quality not enabled or not CSV
-    if (this.step === 5 && (!this.useDq || this.sourceType !== 'csv')) {
-      this.step = 4;
-    }
-
-    // Skip dq (4), schema (3) for unstructured going back
-    if (this.isUnstructured() && this.step >= 3 && this.step <= 6) {
+    // Skip transformation (6), dq (5), preprocessor (4), schema (3) for unstructured going back
+    if (this.isUnstructured() && this.step >= 3 && this.step <= 7) {
       this.step = 2;
     }
   }
 
-  onTxRowFunctionFileSelected(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    if (input.files && input.files.length > 0) {
-      const file = input.files[0];
-      this.txRowFunctionFile = file.name;
-      this.pipelineService.uploadConfigFile(file, 'javascript').subscribe({
-        next: (resp) => { this.txRowFunctionFile = resp.filename; },
-        error: (err) => { this.error = 'Failed to upload JavaScript file: ' + (err.error || err.message); }
-      });
+  private readonly TX_TRIM_TEXT = 'Trim leading/trailing whitespace from all columns.';
+  private readonly TX_DEDUP_TEXT = 'Remove duplicate rows.';
+
+  onTxCheckboxChange(): void {
+    // Add or remove the checkbox text from the instruction
+    let instruction = this.txAiInstruction;
+
+    // Remove existing checkbox text first
+    instruction = instruction.replace(this.TX_TRIM_TEXT, '').replace(this.TX_DEDUP_TEXT, '').trim();
+
+    // Append checked items
+    const additions: string[] = [];
+    if (this.txTrimWhitespace) additions.push(this.TX_TRIM_TEXT);
+    if (this.txDeduplicate) additions.push(this.TX_DEDUP_TEXT);
+
+    if (additions.length > 0) {
+      instruction = instruction ? instruction + ' ' + additions.join(' ') : additions.join(' ');
     }
+
+    this.txAiInstruction = instruction;
   }
 
-  // Data quality helpers
-  addColumnRule(): void {
-    this.dqColumnRules.push({ columnName: '', function: 'regex', parameter: '', onFailureIsError: false, description: '' });
-  }
-
-  removeColumnRule(index: number): void {
-    this.dqColumnRules.splice(index, 1);
-  }
-
-  addRowRule(): void {
-    this.dqRowRules.push({ function: 'restEndpoint', parameters: ['', 'row', '30000', ''], onFailureIsError: false });
-  }
-
-  removeRowRule(index: number): void {
-    this.dqRowRules.splice(index, 1);
-  }
-
-  onRowRuleFunctionChange(rule: any): void {
-    if (rule.function === 'restEndpoint') {
-      rule.parameters = ['', 'row', '30000', '', ''];
-    } else if (rule.function === 'javascript') {
-      rule.parameters = [''];
-    }
-  }
 
   isValidUrl(url: string): boolean {
     try {
@@ -856,24 +766,6 @@ export class PipelineCreateComponent implements OnInit {
     });
   }
 
-  addColumnRuleForColumn(): void {
-    if (!this.dqSelectedColumn) return;
-    const exists = this.dqColumnRules.some(r => r.columnName === this.dqSelectedColumn);
-    if (exists) return;
-    this.dqColumnRules.push({
-      columnName: this.dqSelectedColumn, function: 'regex',
-      parameter: '', onFailureIsError: false, description: ''
-    });
-    this.dqSelectedColumn = '';
-  }
-
-  getAvailableColumns(): string[] {
-    return this.schemaFields
-      .filter(f => f.name.trim())
-      .filter(f => !this.dqColumnRules.some(r => r.columnName === f.name))
-      .map(f => f.name);
-  }
-
   isValidRegex(pattern: string): boolean {
     try {
       new RegExp(pattern);
@@ -881,34 +773,6 @@ export class PipelineCreateComponent implements OnInit {
     } catch {
       return false;
     }
-  }
-
-  generateRegex(): void {
-    if (!this.regexPrompt) return;
-    this.regexGenerating = true;
-    this.regexResult = '';
-    this.regexExplanation = '';
-
-    const query = 'Generate a regex pattern that: ' + this.regexPrompt +
-      '. Return ONLY the regex pattern on the first line, then a brief explanation on the second line. No markdown, no code fences.';
-
-    this.searchService.aiAnswer(query, 'Generate a regex expression for data validation.').subscribe({
-      next: (response: any) => {
-        const answer = response.answer || '';
-        const lines = answer.trim().split('\n').filter((l: string) => l.trim());
-        if (lines.length > 0) {
-          // Extract regex - remove any wrapping like /pattern/ or `pattern`
-          let pattern = lines[0].trim().replace(/^[`\/]|[`\/]$/g, '');
-          this.regexResult = pattern;
-          this.regexExplanation = lines.slice(1).join(' ').trim();
-        }
-        this.regexGenerating = false;
-      },
-      error: (err: any) => {
-        this.regexResult = 'Error: ' + (err.error || err.message);
-        this.regexGenerating = false;
-      }
-    });
   }
 
   buildConfig(): any {
@@ -969,55 +833,28 @@ export class PipelineCreateComponent implements OnInit {
     if (this.dqUseAiRule && this.dqAiInstruction) {
       dq.aiRule = {
         instruction: this.dqAiInstruction,
-        onFailureIsError: this.dqAiOnFailureIsError,
-        sample: this.dqAiSample,
-        sampleSize: this.dqAiSampleSize
+        onFailureIsError: this.dqAiOnFailureIsError
       };
       hasDq = true;
-    }
-    if (this.dqColumnRules.length > 0) {
-      const rules = this.dqColumnRules.filter(r => r.columnName && r.parameter);
-      if (rules.length > 0) { dq.columnRules = rules; hasDq = true; }
-    }
-    if (this.dqRowRules.length > 0) {
-      const rules = this.dqRowRules.filter(r => r.parameters[0]);
-      if (rules.length > 0) { dq.rowRules = rules; hasDq = true; }
     }
     if (hasDq) {
       config.dataQuality = dq;
     }
 
     // Transformation
-    if (this.useTransformation) {
-      const tx: any = {};
-      let hasTx = false;
-      if (this.txTrimWhitespace && this.sourceType === 'csv') {
-        tx.trimColumnWhitespace = true; hasTx = true;
+    if (this.txAiInstruction.trim()) {
+      config.transformation = { aiTransformation: { instruction: this.txAiInstruction } };
+    }
+
+    // Destination Schema (CSV only — if fields were modified from source)
+    if (this.sourceType === 'csv' && this.destSchemaFields.length > 0) {
+      const destFields = this.destSchemaFields.filter(f => f.name.trim());
+      if (destFields.length > 0) {
+        config.destination.schemaProperties = {
+          dbName: this.schemaDbName,
+          fields: destFields
+        };
       }
-      if (this.txDeduplicate) {
-        tx.deduplicate = true; hasTx = true;
-      }
-      if (this.txUseRowFunction && this.txRowFunctionFile && this.sourceType === 'csv') {
-        tx.rowFunctions = [{ function: 'javascript', parameters: [this.txRowFunctionFile] }];
-        hasTx = true;
-      }
-      if (this.txUseRestEndpoint && this.txRestEndpoint.trim()) {
-        if (!tx.rowFunctions) tx.rowFunctions = [];
-        tx.rowFunctions.push({
-          function: 'restEndpoint',
-          parameters: [this.txRestEndpoint, this.txRestMode, this.txRestTimeout, this.txRestBearerToken, this.txRestApiKey]
-        });
-        hasTx = true;
-      }
-      if (this.txUseAi && this.txAiInstruction) {
-        tx.aiTransformation = { instruction: this.txAiInstruction };
-        if (this.txAiSample && this.sourceType === 'csv') {
-          tx.aiTransformation.sample = true;
-          tx.aiTransformation.sampleSize = this.txAiSampleSize;
-        }
-        hasTx = true;
-      }
-      if (hasTx) config.transformation = tx;
     }
 
     // Destination
@@ -1089,7 +926,18 @@ export class PipelineCreateComponent implements OnInit {
         this.router.navigate(['/pipelines']);
       },
       error: (err: any) => {
-        this.error = 'Failed to create dataset: ' + (err.error || err.message);
+        let detail: string;
+        if (typeof err.error === 'string' && err.error.trim()) {
+          detail = err.error;
+        } else if (err.error?.message) {
+          detail = err.error.message;
+        } else if (err.status) {
+          detail = 'HTTP ' + err.status + ': ' + (err.statusText || 'Unknown error');
+          if (err.error) detail += ' — ' + JSON.stringify(err.error);
+        } else {
+          detail = err.message || 'Unknown error';
+        }
+        this.error = 'Failed to create dataset: ' + detail;
         this.creating = false;
       }
     });

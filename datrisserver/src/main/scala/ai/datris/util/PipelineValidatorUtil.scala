@@ -106,32 +106,6 @@ object PipelineValidatorUtil {
                 if(config.source.fileAttributes != null && config.source.fileAttributes.jsonAttributes == null && config.source.fileAttributes.xmlAttributes == null)
                     throw new DatrisException("In the 'dataQuality' section, 'validationSchema' is only valid for JSON or XML files")
             }
-            if(config.dataQuality.rowRules != null) {
-                config.dataQuality.rowRules.asScala.foreach(rule => {
-                    if (rule.function == null || !Set("javascript", "restendpoint", "ai").contains(rule.function.toLowerCase))
-                        throw new DatrisException("In the 'dataQuality.rowRules' section, 'function' must be defined as 'javascript', 'restendpoint', or 'ai'")
-                    if(rule.parameters == null || rule.parameters.asScala.head == null)
-                        throw new DatrisException("In the 'dataQuality.rowRules' section, if a javascript rule, the first parameter must be either the full path " +
-                            "to the javascript file or the name of the javascript file (which will need to be placed in the s3://[environment-name]-config/javascript location)" +
-                            ", if a 'restendpoint' rule the first parameter must be a valid url" +
-                            ", or if an 'ai' rule the first parameter must be the natural language validation instruction")
-                })
-
-            }
-            if(config.dataQuality.columnRules != null) {
-                if(config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null)
-                    throw new DatrisException("'dataQuality.columnRules' are not supported for JSON or XML sources — use 'dataQuality.rowRules' instead")
-                config.dataQuality.columnRules.asScala.foreach(rule => {
-                    if(rule.columnName == null)
-                        throw new DatrisException("In the 'dataQuality.columnRules' section, 'columnName' must be defined")
-                    if(!schemaFieldNames.map(_.toLowerCase).contains(rule.columnName.toLowerCase))
-                        throw new DatrisException("In the 'dataQuality.columnRules' section, columnName '" + rule.columnName + "' is not in the schema properties for this pipeline")
-                    if(rule.function == null || !Set("regex", "ai").contains(rule.function.toLowerCase))
-                        throw new DatrisException("In the 'dataQuality.columnRules' section, 'function' must be defined as 'regex' or 'ai'")
-                    if(rule.parameter == null)
-                        throw new DatrisException("In the 'dataQuality.columnRules' section, the 'parameter' must be defined as the regular expression (for 'regex') or the natural language validation instruction (for 'ai')")
-                })
-            }
         }
 
         // Transformation

@@ -11,14 +11,16 @@
     <span class="step-dot" [class.active]="step >= 3" *ngIf="!isUnstructured()">3</span>
     <span class="step-line" [class.active]="step >= 4" *ngIf="!isUnstructured()"></span>
     <span class="step-dot" [class.active]="step >= 4" *ngIf="!isUnstructured()">4</span>
-    <span class="step-line" [class.active]="step >= 5" *ngIf="!isUnstructured() && useDq && sourceType === 'csv'"></span>
-    <span class="step-dot" [class.active]="step >= 5" *ngIf="!isUnstructured() && useDq && sourceType === 'csv'">5</span>
+    <span class="step-line" [class.active]="step >= 5" *ngIf="!isUnstructured()"></span>
+    <span class="step-dot" [class.active]="step >= 5" *ngIf="!isUnstructured()">5</span>
     <span class="step-line" [class.active]="step >= 6" *ngIf="!isUnstructured()"></span>
     <span class="step-dot" [class.active]="step >= 6" *ngIf="!isUnstructured()">6</span>
-    <span class="step-line" [class.active]="step >= 7"></span>
-    <span class="step-dot" [class.active]="step >= 7">7</span>
+    <span class="step-line" [class.active]="step >= 7" *ngIf="sourceType === 'csv'"></span>
+    <span class="step-dot" [class.active]="step >= 7" *ngIf="sourceType === 'csv'">7</span>
     <span class="step-line" [class.active]="step >= 8"></span>
     <span class="step-dot" [class.active]="step >= 8">8</span>
+    <span class="step-line" [class.active]="step >= 9"></span>
+    <span class="step-dot" [class.active]="step >= 9">9</span>
   </div>
 
   <div class="form-card">
@@ -143,47 +145,11 @@
         </div>
       </ng-container>
 
-      <!-- Preprocessor (all source types) -->
-      <hr class="divider">
-      <div class="form-row">
-        <label class="checkbox-label">
-          <input type="checkbox" [(ngModel)]="usePreprocessor"> Enable Preprocessor
-          <span class="info-icon material-icons" (click)="showPreprocessorInfo = !showPreprocessorInfo" title="What is a preprocessor?">info</span>
-        </label>
-      </div>
-      <div class="info-box" *ngIf="showPreprocessorInfo">
-        <p>A preprocessor calls an external REST endpoint to transform or enrich your data <strong>before</strong> data quality checks and transformations run. The endpoint receives all rows and returns modified data. Use this for custom parsing, external enrichment, or format conversion that can't be done with built-in transformations.</p>
-      </div>
-      <ng-container *ngIf="usePreprocessor">
-        <div class="form-row">
-          <label class="form-label">Endpoint URL</label>
-          <input class="form-input" [(ngModel)]="ppEndpoint" placeholder="http://my-service:8080/preprocess">
-        </div>
-        <div class="form-row-inline">
-          <div class="form-field">
-            <label class="form-label">Bearer Token (optional)</label>
-            <input class="form-input" type="password" [(ngModel)]="ppBearerToken" placeholder="auth token">
-          </div>
-          <div class="form-field">
-            <label class="form-label">API Key (optional)</label>
-            <input class="form-input" type="password" [(ngModel)]="ppApiKey" placeholder="x-api-key">
-          </div>
-          <div class="form-field">
-            <label class="form-label">Timeout (ms)</label>
-            <input class="form-input" type="number" [(ngModel)]="ppTimeout">
-          </div>
-        </div>
-        <div class="form-row">
-          <label class="checkbox-label">
-            <input type="checkbox" [(ngModel)]="ppAsync"> Asynchronous mode (preprocessor will callback when done)
-          </label>
-        </div>
-      </ng-container>
     </div>
 
-    <!-- Step 3: Schema (structured only) -->
+    <!-- Step 3: Source Schema (structured only) -->
     <div *ngIf="step === 3 && !isUnstructured()">
-      <h2 class="step-title">Schema</h2>
+      <h2 class="step-title">Source Schema</h2>
 
       <ng-container *ngIf="sourceType === 'csv'">
         <div class="form-row">
@@ -220,392 +186,190 @@
       </div>
     </div>
 
-    <!-- Step 4: Data Quality toggle + header/schema + AI rule -->
+    <!-- Step 4: Preprocessor -->
     <div *ngIf="step === 4 && !isUnstructured()">
+      <h2 class="step-title">Preprocessor</h2>
+
+      <div class="form-row">
+        <label class="checkbox-label">
+          <input type="checkbox" [(ngModel)]="usePreprocessor"> Enable Preprocessor
+          <span class="info-icon material-icons" (click)="showPreprocessorInfo = !showPreprocessorInfo" title="What is a preprocessor?">info</span>
+        </label>
+      </div>
+      <div class="info-box" *ngIf="showPreprocessorInfo">
+        <p>A preprocessor calls an external REST endpoint to transform or enrich your data <strong>before</strong> data quality checks and transformations run. The endpoint receives all rows and returns modified data. Use this for custom parsing, external enrichment, or format conversion that can't be done with built-in transformations.</p>
+      </div>
+      <ng-container *ngIf="usePreprocessor">
+        <div class="form-row">
+          <label class="form-label">Endpoint URL</label>
+          <input class="form-input" [(ngModel)]="ppEndpoint" placeholder="http://my-service:8080/preprocess">
+        </div>
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Bearer Token (optional)</label>
+            <input class="form-input" type="password" [(ngModel)]="ppBearerToken" placeholder="auth token">
+          </div>
+          <div class="form-field">
+            <label class="form-label">API Key (optional)</label>
+            <input class="form-input" type="password" [(ngModel)]="ppApiKey" placeholder="x-api-key">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Timeout (ms)</label>
+            <input class="form-input" type="number" [(ngModel)]="ppTimeout">
+          </div>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="ppAsync"> Asynchronous mode (preprocessor will callback when done)
+          </label>
+        </div>
+      </ng-container>
+    </div>
+
+    <!-- Step 5: Data Quality -->
+    <div *ngIf="step === 5 && !isUnstructured()">
       <h2 class="step-title">Data Quality</h2>
 
-      <div class="form-row">
-        <label class="checkbox-label">
-          <input type="checkbox" [(ngModel)]="useDq"> Enable data quality checks for this dataset
-        </label>
+      <!-- Auto-analyzed info -->
+      <div class="info-box" *ngIf="sampleFileDetected && dqProfileSummary">
+        <p><strong>AI Analysis of your sample file:</strong></p>
+        <p>{{ dqProfileSummary }}</p>
       </div>
 
-      <ng-container *ngIf="useDq">
-        <!-- Auto-analyzed info -->
-        <div class="info-box" *ngIf="sampleFileDetected && dqProfileSummary">
-          <p><strong>AI Analysis of your sample file:</strong></p>
-          <p>{{ dqProfileSummary }}</p>
-        </div>
-
-        <!-- Header/Schema Validation (JSON/XML only) -->
-        <ng-container *ngIf="sourceType === 'json' || sourceType === 'xml'">
-          <hr class="divider">
-          <div class="form-row">
-            <label class="checkbox-label">
-              <input type="checkbox" [(ngModel)]="dqValidateHeader">
-              Validate {{ sourceType.toUpperCase() }} against schema
-            </label>
-          </div>
-          <ng-container *ngIf="dqValidateHeader">
-            <div class="form-row">
-              <label class="radio-label">
-                <input type="radio" name="dqSchemaMode" value="upload" [(ngModel)]="dqSchemaMode"> Upload schema file
-              </label>
-              <label class="radio-label">
-                <input type="radio" name="dqSchemaMode" value="generate" [(ngModel)]="dqSchemaMode"> Generate schema with AI
-              </label>
-            </div>
-
-            <!-- Upload mode -->
-            <div class="form-row" *ngIf="dqSchemaMode === 'upload'">
-              <label class="form-label">Validation Schema File</label>
-              <div class="file-upload-row">
-                <input type="file" (change)="onSchemaFileSelected($event)" class="file-input" accept=".json,.xsd,.xml">
-              </div>
-              <div class="form-hint" *ngIf="dqValidationSchema" style="color: var(--accent-green)">Uploaded: {{ dqValidationSchema }}</div>
-            </div>
-
-            <!-- Generate mode -->
-            <ng-container *ngIf="dqSchemaMode === 'generate'">
-              <div class="form-row">
-                <label class="form-label">Schema Name</label>
-                <input class="form-input" [(ngModel)]="dqSchemaName" placeholder="e.g. stock_prices_schema">
-              </div>
-              <div class="form-row">
-                <label class="form-label">Sample {{ sourceType.toUpperCase() }} Data</label>
-                <div class="form-hint" *ngIf="sampleFile && !dqSampleData" style="margin-bottom: 8px">
-                  <button class="link-btn" (click)="loadSampleFileForSchema()">Load from uploaded file: {{ sampleFile.name }}</button>
-                </div>
-                <textarea class="form-input form-textarea" [(ngModel)]="dqSampleData" rows="6"
-                  placeholder="Paste sample {{ sourceType.toUpperCase() }} data or load from your uploaded file..."></textarea>
-              </div>
-              <div class="form-row">
-                <button class="execute-btn" (click)="generateValidationSchema()" [disabled]="dqGenerating">
-                  {{ dqGenerating ? 'Generating...' : 'Generate ' + (sourceType === 'xml' ? 'XSD' : 'JSON Schema') }}
-                </button>
-              </div>
-              <div class="error-box" *ngIf="dqGenerateError">
-                <pre>{{ dqGenerateError }}</pre>
-              </div>
-              <div class="form-hint" *ngIf="dqValidationSchema" style="color: var(--accent-green)">Generated: {{ dqValidationSchema }}</div>
-            </ng-container>
-          </ng-container>
-        </ng-container>
-
-        <!-- AI Rule -->
-        <hr class="divider">
+      <!-- Header/Schema Validation (JSON/XML only) -->
+      <ng-container *ngIf="sourceType === 'json' || sourceType === 'xml'">
         <div class="form-row">
           <label class="checkbox-label">
-            <input type="checkbox" [(ngModel)]="dqUseAiRule"> Enable AI Rule (file-level validation)
+            <input type="checkbox" [(ngModel)]="dqValidateHeader">
+            Validate {{ sourceType.toUpperCase() }} against schema
           </label>
         </div>
-        <ng-container *ngIf="dqUseAiRule">
+        <ng-container *ngIf="dqValidateHeader">
           <div class="form-row">
-            <label class="form-label">AI Instruction (required)</label>
-            <textarea class="form-input form-textarea" [(ngModel)]="dqAiInstruction" rows="3"
-              placeholder="all price columns must be positive and not exceed $1,000,000, volume must be positive"></textarea>
-          </div>
-          <div class="form-row">
-            <label class="checkbox-label">
-              <input type="checkbox" [(ngModel)]="dqAiOnFailureIsError"> Failure is error (abort processing)
+            <label class="radio-label">
+              <input type="radio" name="dqSchemaMode" value="upload" [(ngModel)]="dqSchemaMode"> Upload schema file
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="dqSchemaMode" value="generate" [(ngModel)]="dqSchemaMode"> Generate schema with AI
             </label>
           </div>
-          <!-- Sampling (CSV only — JSON/XML sends full document) -->
-          <ng-container *ngIf="sourceType === 'csv'">
-            <div class="form-row-inline">
-              <div class="form-field">
-                <label class="checkbox-label">
-                  <input type="checkbox" [(ngModel)]="dqAiSample"> Sample rows
-                  <span class="info-icon material-icons" (click)="showSampleInfo = !showSampleInfo" title="Why sample?">info</span>
-                </label>
-              </div>
-              <div class="form-field" *ngIf="dqAiSample">
-                <label class="form-label">Sample Size</label>
-                <input class="form-input" type="number" [(ngModel)]="dqAiSampleSize">
-              </div>
-            </div>
-            <div class="info-box" *ngIf="showSampleInfo">
-              <p><strong>Why enable sampling?</strong></p>
-              <p>The AI rule sends the entire file to the AI model for validation. For files with more than 1,000 rows,
-              this can be slow and expensive. Sampling randomly selects a subset of rows (default 200) which is typically
-              sufficient to detect systematic data quality issues like format errors, range violations, and cross-column
-              inconsistencies — while keeping AI costs low and processing fast.</p>
-            </div>
-          </ng-container>
-        </ng-container>
-      </ng-container>
-    </div>
 
-    <!-- Step 5: Row Rule + Column Rules (only if DQ enabled, CSV/JSON/XML) -->
-    <div *ngIf="step === 5 && useDq && !isUnstructured()">
-      <h2 class="step-title">Validation Rules</h2>
-
-      <!-- Row Rule (CSV only) -->
-      <div class="form-row" *ngIf="sourceType === 'csv'">
-        <label class="form-label">Row Rule</label>
-        <div class="rule-card" *ngIf="dqRowRules.length > 0">
-          <div class="form-row">
-            <label class="form-label">Function</label>
-            <div class="form-row-inline">
-              <div class="form-field">
-                <select class="form-input" [(ngModel)]="dqRowRules[0].function" (ngModelChange)="onRowRuleFunctionChange(dqRowRules[0])">
-                  <option value="restEndpoint">REST Endpoint</option>
-                  <option value="javascript">JavaScript</option>
-                </select>
-              </div>
-              <button class="remove-field-btn" (click)="dqRowRules = []" style="align-self: center">
-                <span class="material-icons">close</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- REST Endpoint -->
-          <ng-container *ngIf="dqRowRules[0].function === 'restEndpoint'">
-            <div class="form-row">
-              <label class="form-label">Endpoint URL (required)</label>
-              <input class="form-input" [(ngModel)]="dqRowRules[0].parameters[0]" placeholder="http://service:8080/validate">
-            </div>
-            <div class="form-row-inline">
-              <div class="form-field">
-                <label class="form-label">
-                  Mode
-                  <span class="info-icon material-icons" (click)="showRowModeInfo = !showRowModeInfo" title="What is mode?">info</span>
-                </label>
-                <select class="form-input" [(ngModel)]="dqRowRules[0].parameters[1]">
-                  <option value="row">Row</option>
-                  <option value="batch">Batch</option>
-                </select>
-              </div>
-              <div class="form-field">
-                <label class="form-label">Timeout (ms)</label>
-                <input class="form-input" type="number" [(ngModel)]="dqRowRules[0].parameters[2]" placeholder="30000">
-              </div>
-            </div>
-            <div class="info-box" *ngIf="showRowModeInfo">
-              <p><strong>Row mode:</strong> The endpoint is called once per row. Each call receives a single row as a key-value object. Best for real-time validation against external services.</p>
-              <p><strong>Batch mode:</strong> The endpoint is called once with all rows in a single request. More efficient for bulk validation, but the endpoint must handle the full dataset.</p>
-            </div>
-            <div class="form-row-inline">
-              <div class="form-field">
-                <label class="form-label">Bearer Token (optional)</label>
-                <input class="form-input" type="password" [(ngModel)]="dqRowRules[0].parameters[3]" placeholder="auth token">
-              </div>
-              <div class="form-field">
-                <label class="form-label">API Key (optional)</label>
-                <input class="form-input" type="password" [(ngModel)]="dqRowRules[0].parameters[4]" placeholder="x-api-key">
-              </div>
-            </div>
-          </ng-container>
-
-          <!-- JavaScript -->
-          <ng-container *ngIf="dqRowRules[0].function === 'javascript'">
-            <div class="form-row">
-              <label class="form-label">JavaScript File</label>
-              <div class="file-upload-row">
-                <input type="file" (change)="onJsFileSelected($event)" class="file-input" accept=".js">
-              </div>
-              <div class="form-hint" *ngIf="dqRowRules[0].parameters[0]" style="color: var(--accent-green)">Uploaded: {{ dqRowRules[0].parameters[0] }}</div>
-            </div>
-          </ng-container>
-
-          <div class="form-row">
-            <label class="checkbox-label">
-              <input type="checkbox" [(ngModel)]="dqRowRules[0].onFailureIsError"> Failure is error (abort processing)
-            </label>
-          </div>
-        </div>
-        <button class="secondary-btn" (click)="addRowRule()" *ngIf="dqRowRules.length === 0">+ Add Row Rule</button>
-      </div>
-
-      <!-- Column Rules (CSV only) -->
-      <ng-container *ngIf="sourceType === 'csv'">
-        <hr class="divider">
-        <div class="form-row">
-          <label class="form-label">Column Rules</label>
-          <p class="form-hint">Add regex validation rules per column.</p>
-
-          <!-- Add column rule by dropdown -->
-          <div class="form-row-inline" *ngIf="getAvailableColumns().length > 0">
-            <div class="form-field">
-              <select class="form-input" [(ngModel)]="dqSelectedColumn">
-                <option value="">Select a column...</option>
-                <option *ngFor="let col of getAvailableColumns()" [value]="col">{{ col }}</option>
-              </select>
-            </div>
-            <div class="form-field" style="flex: 0">
-              <button class="secondary-btn" (click)="addColumnRuleForColumn()" [disabled]="!dqSelectedColumn">+ Add Rule</button>
-            </div>
-          </div>
-
-          <!-- Existing column rules -->
-          <div class="rule-card" *ngFor="let rule of dqColumnRules; let i = index">
-            <div class="form-row-inline">
-              <div class="form-field">
-                <label class="form-label">{{ rule.columnName }}</label>
-              </div>
-              <div class="form-field">
-                <label class="form-label">Function</label>
-                <select class="form-input" [(ngModel)]="rule.function">
-                  <option value="regex">Regex</option>
-                </select>
-              </div>
-              <div class="form-field" style="flex: 2">
-                <label class="form-label">Regex Pattern (required)</label>
-                <input class="form-input" [(ngModel)]="rule.parameter" placeholder="^[A-Z]{1,5}$"
-                  [class.input-error]="rule.parameter && !isValidRegex(rule.parameter)">
-                <div class="form-hint error-hint" *ngIf="rule.parameter && !isValidRegex(rule.parameter)">Invalid regex pattern</div>
-              </div>
-              <button class="remove-field-btn" (click)="removeColumnRule(i)">
-                <span class="material-icons">close</span>
-              </button>
-            </div>
-            <div class="form-row-inline">
-              <div class="form-field" style="flex: 2">
-                <input class="form-input" [(ngModel)]="rule.description" placeholder="Description">
-              </div>
-              <div class="form-field">
-                <label class="checkbox-label">
-                  <input type="checkbox" [(ngModel)]="rule.onFailureIsError"> Failure is error
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <!-- AI Regex Assistant -->
-          <div class="regex-chat" *ngIf="dqColumnRules.length > 0">
-            <hr class="divider">
-            <label class="form-label">
-              <span class="material-icons ai-icon" style="vertical-align: middle">auto_awesome</span>
-              AI Regex Assistant
-            </label>
-            <p class="form-hint">Describe the pattern you need and the AI will generate a regex expression for you.</p>
-            <div class="form-row-inline">
-              <div class="form-field" style="flex: 3">
-                <input class="form-input" [(ngModel)]="regexPrompt"
-                  placeholder="e.g., must be a positive number with up to 2 decimal places"
-                  (keyup.enter)="generateRegex()">
-              </div>
-              <div class="form-field" style="flex: 0">
-                <button class="secondary-btn" (click)="generateRegex()" [disabled]="!regexPrompt || regexGenerating">
-                  {{ regexGenerating ? 'Generating...' : 'Generate' }}
-                </button>
-              </div>
-            </div>
-            <div class="regex-result" *ngIf="regexResult">
-              <code>{{ regexResult }}</code>
-              <p class="form-hint" *ngIf="regexExplanation">{{ regexExplanation }}</p>
-            </div>
-          </div>
-        </div>
-      </ng-container>
-    </div>
-
-    <!-- Step 6: Transformation (optional, not for unstructured) -->
-    <div *ngIf="step === 6 && !isUnstructured()">
-      <h2 class="step-title">Transformation (optional)</h2>
-
-      <div class="form-row">
-        <label class="checkbox-label">
-          <input type="checkbox" [(ngModel)]="useTransformation"> Enable transformations for this dataset
-        </label>
-      </div>
-
-      <ng-container *ngIf="useTransformation">
-        <!-- Trim whitespace (CSV only) -->
-        <div class="form-row" *ngIf="sourceType === 'csv'">
-          <label class="checkbox-label">
-            <input type="checkbox" [(ngModel)]="txTrimWhitespace"> Trim leading/trailing whitespace from all columns
-          </label>
-        </div>
-
-        <!-- Deduplication (CSV only) -->
-        <div class="form-row" *ngIf="sourceType === 'csv'">
-          <label class="checkbox-label">
-            <input type="checkbox" [(ngModel)]="txDeduplicate"> Remove duplicate rows
-          </label>
-        </div>
-
-        <!-- Row Function (CSV only) -->
-        <ng-container *ngIf="sourceType === 'csv'">
-          <hr class="divider">
-          <div class="form-row">
-            <label class="checkbox-label">
-              <input type="checkbox" [(ngModel)]="txUseRowFunction"> JavaScript row transformation
-            </label>
-          </div>
-          <div class="form-row" *ngIf="txUseRowFunction">
-            <label class="form-label">JavaScript File</label>
+          <!-- Upload mode -->
+          <div class="form-row" *ngIf="dqSchemaMode === 'upload'">
+            <label class="form-label">Validation Schema File</label>
             <div class="file-upload-row">
-              <input type="file" (change)="onTxRowFunctionFileSelected($event)" class="file-input" accept=".js">
+              <input type="file" (change)="onSchemaFileSelected($event)" class="file-input" accept=".json,.xsd,.xml">
             </div>
-            <div class="form-hint" *ngIf="txRowFunctionFile" style="color: var(--accent-green)">Uploaded: {{ txRowFunctionFile }}</div>
+            <div class="form-hint" *ngIf="dqValidationSchema" style="color: var(--accent-green)">Uploaded: {{ dqValidationSchema }}</div>
           </div>
-        </ng-container>
 
-        <!-- REST Endpoint Transformation -->
+          <!-- Generate mode -->
+          <ng-container *ngIf="dqSchemaMode === 'generate'">
+            <div class="form-row">
+              <label class="form-label">Schema Name</label>
+              <input class="form-input" [(ngModel)]="dqSchemaName" placeholder="e.g. stock_prices_schema">
+            </div>
+            <div class="form-row">
+              <label class="form-label">Sample {{ sourceType.toUpperCase() }} Data</label>
+              <div class="form-hint" *ngIf="sampleFile && !dqSampleData" style="margin-bottom: 8px">
+                <button class="link-btn" (click)="loadSampleFileForSchema()">Load from uploaded file: {{ sampleFile.name }}</button>
+              </div>
+              <textarea class="form-input form-textarea" [(ngModel)]="dqSampleData" rows="6"
+                placeholder="Paste sample {{ sourceType.toUpperCase() }} data or load from your uploaded file..."></textarea>
+            </div>
+            <div class="form-row">
+              <button class="execute-btn" (click)="generateValidationSchema()" [disabled]="dqGenerating">
+                {{ dqGenerating ? 'Generating...' : 'Generate ' + (sourceType === 'xml' ? 'XSD' : 'JSON Schema') }}
+              </button>
+            </div>
+            <div class="error-box" *ngIf="dqGenerateError">
+              <pre>{{ dqGenerateError }}</pre>
+            </div>
+            <div class="form-hint" *ngIf="dqValidationSchema" style="color: var(--accent-green)">Generated: {{ dqValidationSchema }}</div>
+          </ng-container>
+        </ng-container>
         <hr class="divider">
+      </ng-container>
+
+      <!-- CSV Header Validation -->
+      <ng-container *ngIf="sourceType === 'csv'">
         <div class="form-row">
           <label class="checkbox-label">
-            <input type="checkbox" [(ngModel)]="txUseRestEndpoint"> REST Endpoint Transformation
+            <input type="checkbox" [(ngModel)]="dqValidateHeader"> Validate file header against schema
           </label>
         </div>
-        <ng-container *ngIf="txUseRestEndpoint">
-          <div class="form-row">
-            <label class="form-label">Endpoint URL</label>
-            <input class="form-input" [(ngModel)]="txRestEndpoint" placeholder="https://my-service.example.com/transform">
-          </div>
-          <div class="form-row-inline">
-            <div class="form-field">
-              <label class="form-label">Mode</label>
-              <select class="form-input" [(ngModel)]="txRestMode">
-                <option value="row">Row</option>
-                <option value="batch">Batch</option>
-              </select>
-            </div>
-            <div class="form-field">
-              <label class="form-label">Timeout (ms)</label>
-              <input class="form-input" type="number" [(ngModel)]="txRestTimeout" placeholder="30000">
-            </div>
-          </div>
-          <div class="form-row-inline">
-            <div class="form-field">
-              <label class="form-label">Bearer Token (optional)</label>
-              <input class="form-input" type="password" [(ngModel)]="txRestBearerToken" placeholder="Optional">
-            </div>
-            <div class="form-field">
-              <label class="form-label">API Key (optional)</label>
-              <input class="form-input" type="password" [(ngModel)]="txRestApiKey" placeholder="Optional">
-            </div>
-          </div>
-          <div class="info-box">
-            <p>In <strong>row</strong> mode, the endpoint is called once per row with a JSON object of key-value pairs. It must return the transformed row as a JSON object.</p>
-            <p>In <strong>batch</strong> mode, the endpoint is called once with the entire dataset as a JSON array. It must return the transformed dataset as a JSON array.</p>
-          </div>
-        </ng-container>
+      </ng-container>
 
-        <!-- AI Transformation -->
-        <hr class="divider">
+      <!-- AI Rule -->
+      <div class="form-row">
+        <label class="checkbox-label">
+          <input type="checkbox" [(ngModel)]="dqUseAiRule"> Enable AI Rule (file-level validation)
+        </label>
+      </div>
+      <ng-container *ngIf="dqUseAiRule">
+        <div class="form-row">
+          <label class="form-label">AI Instruction (required)</label>
+          <textarea class="form-input form-textarea" [(ngModel)]="dqAiInstruction" rows="3"
+            placeholder="all price columns must be positive and not exceed $1,000,000, volume must be positive"></textarea>
+        </div>
         <div class="form-row">
           <label class="checkbox-label">
-            <input type="checkbox" [(ngModel)]="txUseAi"> AI Transformation
+            <input type="checkbox" [(ngModel)]="dqAiOnFailureIsError"> Failure is error (abort processing)
           </label>
         </div>
-        <ng-container *ngIf="txUseAi">
-          <div class="form-row">
-            <label class="form-label">Instruction</label>
-            <textarea class="form-input form-textarea" [(ngModel)]="txAiInstruction" rows="3"
-              placeholder="convert all date values from YYYY-MM-DD format to MM/DD/YYYY format"></textarea>
-          </div>
-          <div class="info-box">
-            <p>Describe how you want each row transformed using natural language. The AI model receives the full dataset and applies the transformation to every row — for example, converting date formats, categorizing values, standardizing phone numbers, or extracting entities.</p>
-            <p><strong>Note:</strong> The entire data is sent to the AI model in a single request, which then applies your instruction across every row. For large files, this can be slow and expensive depending on your AI provider. We recommend testing with a small file first to confirm the transformation produces the results you expect before processing your full data.</p>
-          </div>
-        </ng-container>
       </ng-container>
     </div>
 
-    <!-- Step 7: Destination -->
-    <div *ngIf="step === 7">
+    <!-- Step 6: Transformation (not for unstructured) -->
+    <div *ngIf="step === 6 && !isUnstructured()">
+      <h2 class="step-title">Transformation</h2>
+
+      <div class="form-row">
+        <label class="form-label">Instruction</label>
+        <textarea class="form-input form-textarea" [(ngModel)]="txAiInstruction" rows="3"
+          placeholder="convert all date values from YYYY-MM-DD format to MM/DD/YYYY format"></textarea>
+      </div>
+
+      <!-- Quick-add checkboxes (CSV only) -->
+      <div *ngIf="sourceType === 'csv'" style="margin-top: 8px">
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="txTrimWhitespace" (ngModelChange)="onTxCheckboxChange()"> Trim leading/trailing whitespace from all columns
+          </label>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-label">
+            <input type="checkbox" [(ngModel)]="txDeduplicate" (ngModelChange)="onTxCheckboxChange()"> Remove duplicate rows
+          </label>
+        </div>
+      </div>
+
+      <div class="info-box">
+        <p>Describe how you want each row transformed using natural language. Datris generates a Python script from your instruction and runs it locally against all data — for example, converting date formats, categorizing values, standardizing phone numbers, or extracting entities.</p>
+      </div>
+    </div>
+
+    <!-- Step 7: Destination Schema (CSV only) -->
+    <div *ngIf="step === 7 && sourceType === 'csv'">
+      <h2 class="step-title">Destination Schema</h2>
+      <p class="form-hint">Customize how your data lands in the destination. You can rename columns, change types, or remove columns you don't need.</p>
+
+      <div class="form-row">
+        <label class="form-label">Fields</label>
+        <div class="field-row" *ngFor="let field of destSchemaFields; let i = index">
+          <input class="form-input field-name" [(ngModel)]="field.name" placeholder="field_name">
+          <select class="form-input field-type" [(ngModel)]="field.type">
+            <option *ngFor="let t of fieldTypes" [value]="t">{{ t }}</option>
+          </select>
+          <button class="remove-field-btn" (click)="removeDestField(i)" *ngIf="destSchemaFields.length > 1">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 8: Destination -->
+    <div *ngIf="step === 8">
       <h2 class="step-title">Destination</h2>
 
       <div class="form-row">
@@ -798,8 +562,8 @@
       </ng-container>
     </div>
 
-    <!-- Step 8: Review -->
-    <div *ngIf="step === 8">
+    <!-- Step 9: Review -->
+    <div *ngIf="step === 9">
       <h2 class="step-title">Review Configuration</h2>
       <div class="form-row">
         <label class="form-label">Dataset Configuration (editable)</label>
@@ -814,10 +578,10 @@
     <div class="btn-row">
       <button class="secondary-btn" (click)="prevStep()" *ngIf="step > 1">Back</button>
       <div class="spacer"></div>
-      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 8">
+      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 9">
         Next
       </button>
-      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 8">
+      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 9">
         {{ creating ? 'Saving...' : (isEditMode ? 'Save Pipeline' : 'Create Pipeline') }}
       </button>
     </div>

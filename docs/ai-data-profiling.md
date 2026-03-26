@@ -64,24 +64,14 @@ The endpoint returns a JSON object with three sections:
     "Column 'close' has a value exceeding $1,000,000"
   ],
   "recommendations": [
-    "Add a regex column rule for 'symbol': ^[A-Z]{1,5}$",
-    "Consider an aiRule to validate that prices are realistic for US equities",
-    "Add a column rule to ensure 'volume' is non-negative"
+    "Add an aiRule to validate symbol format, price ranges, and cross-column relationships",
+    "Consider sampling for large files to keep processing fast"
   ],
   "suggestedDataQuality": {
     "aiRule": {
-      "instruction": "all price columns (open, high, low, close, adj_close) must be positive and not exceed $1,000,000, volume must be positive, and high must be greater than or equal to low",
+      "instruction": "symbol must be 1-5 uppercase letters, all price columns (open, high, low, close, adj_close) must be positive and not exceed $1,000,000, volume must be positive, and high must be greater than or equal to low",
       "onFailureIsError": false
-    },
-    "columnRules": [
-      {
-        "columnName": "symbol",
-        "function": "regex",
-        "parameter": "^[A-Z]{1,5}$",
-        "onFailureIsError": true,
-        "description": "Stock ticker must be 1-5 uppercase letters"
-      }
-    ]
+    }
   }
 }
 ```
@@ -93,16 +83,15 @@ The endpoint returns a JSON object with three sections:
 | `summary` | Row count, column count, and per-column statistics (inferred type, null count, unique count, sample values) |
 | `qualityIssues` | Data quality problems detected in the sample — missing values, outliers, inconsistent formats, suspicious patterns |
 | `recommendations` | Human-readable suggestions for validation rules and transformations |
-| `suggestedDataQuality` | Ready-to-use `dataQuality` JSON block that can be copied directly into a pipeline configuration. Includes regex `columnRules` for structural patterns and an `aiRule` for domain-specific checks that require reasoning |
+| `suggestedDataQuality` | Ready-to-use `dataQuality` JSON block that can be copied directly into a pipeline configuration. Contains an `aiRule` with a comprehensive plain-English instruction covering all validation checks |
 
 ### Suggested data quality rules
 
 The `suggestedDataQuality` section provides a complete, copy-paste-ready `dataQuality` configuration based on what the AI observed in the data:
 
-- **`columnRules`** — regex rules for columns with clear structural patterns (email formats, zip codes, ticker symbols, ID codes). The AI only suggests regex for columns where a pattern is detectable — not for free-text or numeric columns.
-- **`aiRule`** — a single natural language instruction covering domain-specific checks that cannot be expressed as regex: value ranges, cross-column relationships (e.g., high >= low), and business logic. If no AI rule is appropriate, this field is omitted.
+- **`aiRule`** — a single comprehensive plain-English instruction covering all validation checks: format patterns (emails, phone numbers, dates), value ranges, cross-column relationships (e.g., high >= low), and business logic. Datris generates a Python validation script from this instruction and runs it locally. If no validation rule is appropriate, this field is omitted.
 
-This follows the [choosing the right rule type](data-quality/column-rules.md) guidance: regex for format checks, AI for reasoning.
+See [CodeGen AI Rule](data-quality/column-rules.md) for full documentation.
 
 ## How it works
 
@@ -117,7 +106,7 @@ Profiling is a standalone operation — it does not require a registered pipelin
 
 - **Explore new data** — understand the structure, types, and quality of an unfamiliar file before writing a pipeline configuration
 - **Discover quality issues** — find missing values, outliers, format inconsistencies, and suspicious patterns
-- **Generate rule ideas** — the AI suggests specific regex patterns, aiRule instructions, and transformations based on what it observes
+- **Generate rule ideas** — the AI suggests aiRule instructions and transformations based on what it observes
 - **Validate assumptions** — confirm that a file matches expected schema and data quality before loading
 
 ## Sampling

@@ -14,7 +14,6 @@ import java.util.Date
 import javax.script.ScriptEngineManager
 import scala.collection.JavaConverters._
 import scala.collection.mutable
-import scala.util.Random
 
 class Transformation(jobContext: JobContext) {
     private val config = jobContext.config
@@ -100,7 +99,7 @@ class Transformation(jobContext: JobContext) {
 
         var removed: Long = 0
         val transformed = ctx.data.rows.flatMap(row => {
-            val columnMap = RowUtil.getRowAsMap(row, config)
+            val columnMap = RowUtil.getRowAsMap(row, config, ctx.data.header)
             val changedValues = runScript(columnMap, javascript)
             if (changedValues != null) {
                 val newRow = config.destination.schemaProperties.fields.asScala.map(field => {
@@ -140,7 +139,7 @@ class Transformation(jobContext: JobContext) {
 
         mode match {
             case "batch" =>
-                val rowMaps = ctx.data.rows.map(row => RowUtil.getRowAsMap(row, config).asJava)
+                val rowMaps = ctx.data.rows.map(row => RowUtil.getRowAsMap(row, config, ctx.data.header).asJava)
                 val transformedRows = callRestTransformBatch(endpointUrl, pipelineName, pipelineToken, rowMaps, timeoutMs, bearerToken, apiKey, delimiter)
                 statusUtil.info("processing", "REST batch transformation returned " + transformedRows.size + " rows (from " + ctx.data.rows.size + ")")
                 val newData = ctx.data.copy(rows = transformedRows)
@@ -149,7 +148,7 @@ class Transformation(jobContext: JobContext) {
             case _ => // "row" mode
                 var removed: Long = 0
                 val transformed = ctx.data.rows.flatMap(row => {
-                    val columnMap = RowUtil.getRowAsMap(row, config)
+                    val columnMap = RowUtil.getRowAsMap(row, config, ctx.data.header)
                     val result = callRestTransformRow(endpointUrl, pipelineName, pipelineToken, columnMap, timeoutMs, bearerToken, apiKey, delimiter)
                     if (result != null) {
                         Some(result)
@@ -261,34 +260,18 @@ class Transformation(jobContext: JobContext) {
         val rows = if (jobContext.data.rows != null) jobContext.data.rows else List.empty[String]
         val rawData = jobContext.data.rawData
 
-        statusUtil.info("processing", "Running AI transformation")
+        statusUtil.info("processing", "AI Transformation instruction: " + instruction)
 
         if (rows.nonEmpty && jobContext.data.header != null) {
             val delimiter = config.source.fileAttributes.csvAttributes.delimiter
-
-            val transformedRows = if (aiTransformation.sample && rows.size > aiTransformation.sampleSize) {
-                // Sampling mode — transform only a sample, keep the rest unchanged
-                val sampleSize = Math.min(aiTransformation.sampleSize, rows.size)
-                val indices = Random.shuffle(rows.indices.toList).take(sampleSize).sorted
-                val sampledRows = indices.map(rows(_))
-                statusUtil.info("processing", "AI transformation using sample mode (" + sampleSize + " of " + rows.size + " rows)")
-                val transformed = AITransformationUtil.transformWithFileContent(instruction, jobContext.data.header, sampledRows, delimiter)
-
-                // Merge transformed rows back into original
-                val indexMap = indices.zip(transformed).toMap
-                rows.zipWithIndex.map { case (row, idx) =>
-                    indexMap.getOrElse(idx, row)
-                }
-            } else {
-                statusUtil.info("processing", "AI transformation using full-file mode (" + rows.size + " rows)")
-                AITransformationUtil.transformWithFileContent(instruction, jobContext.data.header, rows, delimiter)
-            }
-
+            statusUtil.info("processing", "CodeGen transformation on " + rows.size + " rows")
+            val transformedRows = CodeGenTransformationEvaluator.transformCsv(instruction, jobContext.data.header, rows, delimiter)
             val newData = jobContext.data.copy(rows = transformedRows)
             jobContext.copy(data = newData)
         } else if (rawData != null) {
-            statusUtil.info("processing", "AI transformation on raw data")
-            val transformedRaw = AITransformationUtil.transformRawContent(instruction, rawData)
+            val isJson = config.source.fileAttributes.jsonAttributes != null
+            statusUtil.info("processing", "CodeGen transformation on " + (if (isJson) "JSON" else "XML") + " data")
+            val transformedRaw = CodeGenTransformationEvaluator.transformRaw(instruction, rawData, isJson)
             val newData = jobContext.data.copy(rawData = transformedRaw)
             jobContext.copy(data = newData)
         } else {

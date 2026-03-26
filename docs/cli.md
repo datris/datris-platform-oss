@@ -1,0 +1,222 @@
+# Datris CLI
+
+The Datris CLI (`datris`) is a command-line interface for the Datris Data Platform. It communicates with the platform via the MCP server, providing a simple way to ingest data, run queries, search vector stores, and manage pipelines — all from the terminal.
+
+## Installation
+
+```bash
+pip install datris-mcp-server
+```
+
+This installs both the MCP server (`datris-mcp-server`) and the CLI (`datris`).
+
+## Configuration
+
+The CLI connects to the MCP server via SSE. Set the server URL with an environment variable:
+
+```bash
+export MCP_SERVER_URL=http://localhost:3000/sse    # default
+```
+
+## Commands
+
+### `datris pipelines`
+
+List all registered pipelines.
+
+```bash
+datris pipelines
+```
+
+---
+
+### `datris ingest`
+
+Create a pipeline and ingest a data file in one step. The schema is auto-detected from the file.
+
+```bash
+datris ingest <FILE> [OPTIONS]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--pipeline, -p` | Pipeline name (default: derived from filename) |
+| `--dest, -d` | Destination: `postgres`, `mongodb`, `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector` (default: `postgres`) |
+| `--table, -t` | Table/collection name (default: pipeline name) |
+| `--database` | Database name (default: `datris`) |
+| `--ai-validate` | AI data quality rule — plain-English instruction |
+| `--ai-transform` | AI transformation instruction — plain-English instruction |
+
+**Examples:**
+
+```bash
+# Basic ingestion — auto-derives pipeline name from filename
+datris ingest sales-data.csv --dest postgres
+
+# With explicit pipeline name
+datris ingest sales-data.csv --pipeline sales --dest postgres
+
+# With AI validation
+datris ingest trades.csv --dest postgres --ai-validate "all prices must be positive and dates must be YYYY-MM-DD"
+
+# With AI transformation
+datris ingest trades.csv --dest postgres --ai-transform "convert all date columns to YYYY/MM/DD format"
+
+# Both validation and transformation
+datris ingest trades.csv --dest postgres \
+  --ai-validate "all prices must be positive" \
+  --ai-transform "convert dates to YYYY/MM/DD and uppercase all ticker symbols"
+
+# Ingest into MongoDB
+datris ingest events.json --dest mongodb --database analytics
+
+# Ingest into a vector store for RAG
+datris ingest manual.pdf --dest pgvector
+```
+
+**AI Validation** (`--ai-validate`): Datris generates a Python validation script from your instruction and runs it locally against all data. The script checks every row and reports failures. Cost is ~$0.003 per rule regardless of file size.
+
+**AI Transformation** (`--ai-transform`): Datris generates a Python transformation script from your instruction and runs it locally against all data. The script transforms every row according to your instruction.
+
+---
+
+### `datris query`
+
+Execute a read-only SQL SELECT query against PostgreSQL.
+
+```bash
+datris query "SELECT * FROM public.sales LIMIT 10"
+datris query "SELECT symbol, close FROM public.trades WHERE close > 100" --limit 50
+```
+
+| Option | Description |
+|--------|-------------|
+| `--limit` | Max rows returned (default: 100, max: 1000) |
+
+---
+
+### `datris search`
+
+Semantic search across a vector database.
+
+```bash
+datris search "What is the return policy?" --store pgvector --collection support_docs
+```
+
+| Option | Description |
+|--------|-------------|
+| `--store` | Vector store: `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector` (default: `pgvector`) |
+| `--collection` | Collection/table name (required) |
+| `--top-k` | Number of results (default: 5) |
+
+---
+
+### `datris ask`
+
+RAG — search a vector store and generate an AI answer from the results.
+
+```bash
+datris ask "What is the return policy?" --store pgvector --collection support_docs
+```
+
+Same options as `datris search`.
+
+---
+
+### `datris ask-sql`
+
+Natural language SQL — describe what you want in plain English, and Datris generates and executes the SQL query.
+
+```bash
+datris ask-sql "what are the top 5 stocks by volume?" --table trades
+datris ask-sql "show monthly revenue trends" --table sales --schema public --database analytics
+```
+
+| Option | Description |
+|--------|-------------|
+| `--table` | Table name (required) |
+| `--schema` | Schema name (default: `public`) |
+| `--database` | Database name (default: `datris`) |
+| `--limit` | Max rows (default: 100) |
+
+---
+
+### `datris query-mongo`
+
+Query a MongoDB collection with optional filter and projection.
+
+```bash
+datris query-mongo events
+datris query-mongo events --filter '{"status": "active"}' --limit 20
+datris query-mongo events --projection '{"name": 1, "status": 1}'
+```
+
+| Option | Description |
+|--------|-------------|
+| `--filter` | MongoDB filter JSON (default: `{}`) |
+| `--projection` | Fields to include/exclude |
+| `--limit` | Max documents (default: 100) |
+
+---
+
+### `datris status`
+
+Get the latest job status for a pipeline.
+
+```bash
+datris status my_pipeline
+```
+
+---
+
+### `datris delete`
+
+Delete a pipeline configuration and optionally its destination data.
+
+```bash
+datris delete my_pipeline
+datris delete my_pipeline --keep-data
+```
+
+| Option | Description |
+|--------|-------------|
+| `--keep-data` | Keep destination data (only delete the pipeline config) |
+
+---
+
+### `datris health`
+
+Check the health of all backend services.
+
+```bash
+datris health
+```
+
+---
+
+### `datris secrets`
+
+List all configured secrets.
+
+```bash
+datris secrets
+```
+
+---
+
+### `datris version`
+
+Get the server version.
+
+```bash
+datris version
+```
+
+## Pipeline Name Auto-Detection
+
+When `--pipeline` is not specified, the CLI derives the pipeline name from the filename:
+- `sales-data.csv` → `sales_data`
+- `Q1 Revenue Report.csv` → `q1_revenue_report`
+- `trades.json` → `trades`
+
+The extension is stripped, hyphens and spaces are replaced with underscores, and the name is lowercased.

@@ -2,7 +2,7 @@
 
 A preprocessor is an optional REST endpoint that is called **before** data quality and transformation. It receives the ingested data and can modify, enrich, filter, or replace it before the pipeline continues processing.
 
-Use a preprocessor when you need to call out to an external system for data enrichment, format conversion, or custom logic that goes beyond what JavaScript row functions provide.
+Use a preprocessor when you need to call out to an external system for data enrichment, format conversion, or custom logic that runs before AI-powered data quality and transformation.
 
 ## Processing Flow
 

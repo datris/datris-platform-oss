@@ -77,7 +77,7 @@ class PostgresLoader(jobContext: JobContext) {
         // Write the data to a temp location
         val tempUrl = "s3://" + DatrisEnvironment.values.environment + "-temp/data/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + ".csv"
         val data = if (jobContext.data.rows != null && jobContext.data.rows.nonEmpty)
-            jobContext.data.rows.mkString("\n")
+            projectRowsToDestSchema(jobContext.data.rows).mkString("\n")
         else if (jobContext.data.rawData != null)
             // Wrap rawData in CSV quoting — escape internal quotes by doubling them
             "\"" + jobContext.data.rawData.replace("\"", "\"\"") + "\""
@@ -87,6 +87,47 @@ class PostgresLoader(jobContext: JobContext) {
         tempUrl
     }
 
+    private def projectRowsToDestSchema(rows: List[String]): List[String] = {
+        val sourceFields = config.source.schemaProperties.fields.asScala.toList
+        val destFields = config.destination.schemaProperties.fields.asScala.toList
+
+        // Determine delimiter — CSV uses configured delimiter, fallback to comma
+        val delimiter = if (config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null)
+            config.source.fileAttributes.csvAttributes.delimiter
+        else
+            ","
+
+        logger.info("projectRowsToDestSchema: source fields=" + sourceFields.map(_.name).mkString(",") +
+            " dest fields=" + destFields.map(_.name).mkString(","))
+
+        // If source and destination schemas have the same fields in the same order, no projection needed
+        if (sourceFields.size == destFields.size && sourceFields.map(_.name.toLowerCase) == destFields.map(_.name.toLowerCase)) {
+            logger.info("projectRowsToDestSchema: schemas match, no projection needed")
+            return rows
+        }
+
+        // Build a map from source field name (lowercase) to its position index
+        val sourceIndex: Map[String, Int] = {
+            if (jobContext.data.header != null && jobContext.data.header.nonEmpty)
+                jobContext.data.header.zipWithIndex.map { case (name, idx) => name.toLowerCase -> idx }.toMap
+            else
+                sourceFields.zipWithIndex.map { case (f, idx) => f.name.toLowerCase -> idx }.toMap
+        }
+
+        // For each destination field, find its index in the source row
+        val destColumnIndices = destFields.map { destField =>
+            sourceIndex.getOrElse(destField.name.toLowerCase,
+                throw new DatrisException("Destination schema field '" + destField.name + "' not found in source schema or file header"))
+        }
+
+        statusUtil.info("processing", "Projecting " + sourceFields.size + " source columns to " + destFields.size + " destination columns: " + destFields.map(_.name).mkString(", "))
+
+        rows.map { row =>
+            val columns = row.split(delimiter, -1).toList
+            destColumnIndices.map(idx => if (idx < columns.size) columns(idx) else "").mkString(delimiter)
+        }
+    }
+
     private def copyInto(conn: Connection, statement: Statement, fileUrl: String): Unit = {
         statusUtil.info("processing", "Copying data into " + config.destination.database.table)
 
@@ -94,7 +135,15 @@ class PostgresLoader(jobContext: JobContext) {
             createTableIfUndefined(statement, config.destination.database.table)
 
         val sql = new StringBuilder()
-        sql.append("COPY " + "\"" + config.destination.database.schema + "\"" + "." + "\"" + config.destination.database.table + "\"" + " FROM STDIN (")
+        sql.append("COPY " + "\"" + config.destination.database.schema + "\"" + "." + "\"" + config.destination.database.table + "\"")
+
+        // Specify destination column names explicitly to match the projected data
+        val destFields = config.destination.schemaProperties.fields.asScala
+        sql.append(" (")
+        sql.append(destFields.map(f => "\"" + f.name + "\"").mkString(", "))
+        sql.append(")")
+
+        sql.append(" FROM STDIN (")
 
         // Append the options (i.e. DELIMITER ',', FORMAT csv, etc)
         if(config.destination.database.options != null) {

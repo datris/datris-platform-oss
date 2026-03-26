@@ -11,21 +11,23 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 object RowUtil {
-    def getRowAsMap(row: String, config: PipelineConfig): mutable.ListMap[String, Any] = {
-        val columnsWithIndex = config.source.schemaProperties.fields.asScala.zipWithIndex.toList
+    def getRowAsMap(row: String, config: PipelineConfig, header: List[String]): mutable.ListMap[String, Any] = {
+        // Build a header name -> column position map (case-insensitive)
+        val headerIndex: Map[String, Int] = header.zipWithIndex.map { case (name, idx) => name.toLowerCase -> idx }.toMap
+        val columns = row.split(config.source.fileAttributes.csvAttributes.delimiter).toList
 
-        // Map the row data by field type
         val columnMap = mutable.ListMap[String, Any]()
-        config.source.schemaProperties.fields.asScala.map(column => {
+        config.source.schemaProperties.fields.asScala.foreach(column => {
+            // Find the column position from the header
+            val columnNumber = headerIndex.getOrElse(column.name.toLowerCase,
+                throw new DatrisException("Column '" + column.name + "' from schema not found in file header. Header columns: " + header.mkString(", ")))
 
-            // Find the column value
-            val (schemaField, columnNumber) = columnsWithIndex.find { case (columnWithIndex, columnNumber) =>
-                columnWithIndex.name.compareToIgnoreCase(column.name) == 0
-            }.getOrElse(throw new DatrisException("Internal error, could not find the field name: " + column.name))
-            val columns = row.split(config.source.fileAttributes.csvAttributes.delimiter).toList
+            if (columnNumber >= columns.size)
+                throw new DatrisException("Column '" + column.name + "' refers to position " + columnNumber + " but row only has " + columns.size + " column(s)")
+
             val columnValue = columns(columnNumber)
 
-            // Add to the map
+            // Add to the map with type conversion
             if(columnValue == null || columnValue.isEmpty)
                 columnMap.put(column.name, columnValue)
             else {

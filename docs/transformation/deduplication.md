@@ -17,10 +17,10 @@ Enable deduplication by setting `deduplicate` to `true` in the `transformation` 
 
 ## Execution Order
 
-Deduplication runs **before** row functions. This means:
+Deduplication runs **before** AI transformations. This means:
 
 1. Duplicate rows are removed first.
-2. Row functions (JavaScript transformations) are then applied to the deduplicated set.
+2. AI transformations are then applied to the deduplicated set.
 
 This ordering avoids running transformation logic on rows that would have been discarded anyway.
 

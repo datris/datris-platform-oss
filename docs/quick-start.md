@@ -97,4 +97,4 @@ SELECT * FROM public.employees;
 - [Pipeline Configuration](pipeline-configuration.md) - Explore all configuration options
 - [Data Quality](data-quality/column-rules.md) - Add validation rules
 - [Destinations](destinations/object-store.md) - Write Parquet files to MinIO
-- [Transformations](transformation/row-functions.md) - Transform data with JavaScript
+- [Transformations](transformation/ai-transformation.md) - Transform data with AI (CodeGen)
