@@ -858,6 +858,21 @@ async def list_tools():
                 "required": ["collection"]
             }
         ),
+        Tool(
+            name="query_natural",
+            description="Ask a question in natural language about data in a PostgreSQL table. The AI generates a SQL query from the question and table schema, executes it, and returns the results. Use this instead of writing SQL manually.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "Natural language question about the data"},
+                    "table": {"type": "string", "description": "PostgreSQL table name to query"},
+                    "schema": {"type": "string", "description": "PostgreSQL schema (default: public)"},
+                    "database": {"type": "string", "description": "Database name (default: datris)"},
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100)"},
+                },
+                "required": ["question", "table"]
+            }
+        ),
         # --- Metadata Discovery Tools ---
         Tool(
             name="list_postgres_databases",
@@ -1228,6 +1243,16 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("limit"):
             payload["limit"] = args["limit"]
         return _call("post", "/api/v1/query/mongodb", json=payload)
+
+    elif name == "query_natural":
+        payload = {"question": args["question"], "table": args["table"]}
+        if args.get("schema"):
+            payload["schema"] = args["schema"]
+        if args.get("database"):
+            payload["database"] = args["database"]
+        if args.get("limit"):
+            payload["limit"] = args["limit"]
+        return _call("post", "/api/v1/query/natural", json=payload)
 
     # --- Metadata Discovery (via REST API) ---
     elif name == "list_postgres_databases":

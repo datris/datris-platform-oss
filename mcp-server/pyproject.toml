@@ -28,6 +28,9 @@ classifiers = [
 dependencies = [
     "mcp[cli]",
     "requests",
+    "click",
+    "httpx",
+    "httpx-sse",
     "python-dotenv",
     "uvicorn",
     "starlette",
@@ -41,9 +44,10 @@ Issues = "https://github.com/datris/datris-platform-oss/issues"
 
 [project.scripts]
 datris-mcp-server = "server:main"
+datris = "cli:main"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["server.py"]
+only-include = ["server.py", "cli.py"]
 sources = ["."]
 
 [tool.hatch.build.targets.sdist]
