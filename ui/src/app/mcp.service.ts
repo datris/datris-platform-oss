@@ -23,8 +23,37 @@ export class McpService {
         return this.http.get<any>('/api/v1/pipelines');
       case 'get_pipeline':
         return this.http.get<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(params['pipeline']));
-      case 'create_pipeline':
-        return this.http.post<any>('/api/v1/pipeline', JSON.parse(params['config']));
+      case 'create_pipeline': {
+        // Replicate MCP server flow: generate schema then create pipeline
+        const genFormData = new FormData();
+        const byteStr = atob(params['content']);
+        const bytes = new Uint8Array(byteStr.length);
+        for (let i = 0; i < byteStr.length; i++) bytes[i] = byteStr.charCodeAt(i);
+        genFormData.append('file', new Blob([bytes]), params['filename']);
+        genFormData.append('pipeline', params['pipeline']);
+        genFormData.append('allStrings', 'true');
+        if (params['header'] !== undefined) genFormData.append('header', String(params['header']));
+        if (params['delimiter']) genFormData.append('delimiter', params['delimiter']);
+        return new Observable(observer => {
+          this.http.post<any>('/api/v1/pipeline/generate', genFormData).subscribe({
+            next: (config) => {
+              const dest: any = {};
+              const table = params['table'] || params['pipeline'];
+              const db = params['database'] || 'datris';
+              const destType = params['destination'] || 'postgres';
+              if (destType === 'postgres') dest.database = { dbName: db, schema: 'public', table, usePostgres: true };
+              else if (destType === 'mongodb') dest.database = { dbName: db, table, useMongoDB: true };
+              else dest.database = { dbName: db, schema: 'public', table, usePostgres: true };
+              config.destination = dest;
+              this.http.post<any>('/api/v1/pipeline', config).subscribe({
+                next: () => { observer.next({ status: 'Pipeline created', pipeline: params['pipeline'], destination: destType, table }); observer.complete(); },
+                error: (err) => observer.error(err)
+              });
+            },
+            error: (err) => observer.error(err)
+          });
+        });
+      }
       case 'delete_pipeline':
         return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(params['pipeline']));
       case 'get_job_status': {
@@ -37,6 +66,16 @@ export class McpService {
       }
       case 'kill_job':
         return this.http.post<any>('/api/v1/job/kill', { pipelineToken: params['pipeline_token'] });
+      case 'upload_data':
+        return this.uploadBase64('/api/v1/pipeline/upload', params['content'], params['filename'], { pipeline: params['pipeline'] });
+      case 'profile_data':
+        return this.uploadBase64('/api/v1/pipeline/profile', params['content'], params['filename'], {
+          ...(params['delimiter'] && { delimiter: params['delimiter'] }),
+          ...(params['header'] !== undefined && { header: params['header'] }),
+          ...(params['sample_size'] && { sampleSize: params['sample_size'] })
+        });
+      case 'upload_config':
+        return this.uploadBase64('/api/v1/config/upload?type=' + encodeURIComponent(params['type']), params['content'], params['filename']);
 
       // Vector Search
       case 'search_qdrant':
@@ -144,5 +183,24 @@ export class McpService {
       default:
         throw new Error('Unknown tool: ' + toolName);
     }
+  }
+
+  private uploadBase64(url: string, contentB64: string, filename: string, extraData?: Record<string, any>): Observable<any> {
+    const byteString = atob(contentB64);
+    const bytes = new Uint8Array(byteString.length);
+    for (let i = 0; i < byteString.length; i++) {
+      bytes[i] = byteString.charCodeAt(i);
+    }
+    const blob = new Blob([bytes]);
+    const formData = new FormData();
+    formData.append('file', blob, filename);
+    if (extraData) {
+      Object.entries(extraData).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) {
+          formData.append(key, String(value));
+        }
+      });
+    }
+    return this.http.post<any>(url, formData);
   }
 }

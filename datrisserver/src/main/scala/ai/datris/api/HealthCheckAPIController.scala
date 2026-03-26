@@ -85,7 +85,7 @@ class HealthCheckAPIController {
             val properties = new Properties()
             properties.setProperty("user", secrets.username)
             properties.setProperty("password", secrets.password)
-            properties.setProperty("loginTimeout", "5")
+            properties.setProperty("loginTimeout", "2")
 
             val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
             val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/datris"
@@ -114,7 +114,7 @@ class HealthCheckAPIController {
             val connString = new com.mongodb.ConnectionString(secrets.connectionString)
             val settings = com.mongodb.MongoClientSettings.builder()
                 .applyConnectionString(connString)
-                .applyToClusterSettings(b => b.serverSelectionTimeout(5, java.util.concurrent.TimeUnit.SECONDS))
+                .applyToClusterSettings(b => b.serverSelectionTimeout(2, java.util.concurrent.TimeUnit.SECONDS))
                 .build()
             val client = com.mongodb.client.MongoClients.create(settings)
             try {
@@ -151,7 +151,7 @@ class HealthCheckAPIController {
             factory.setBrokerURL(config.server)
             factory.setUserName(config.username)
             factory.setPassword(config.password)
-            factory.setSendTimeout(5000)
+            factory.setSendTimeout(2000)
             val connection = factory.createConnection()
             try {
                 connection.start()
@@ -175,8 +175,8 @@ class HealthCheckAPIController {
 
             val props = new Properties()
             props.put("bootstrap.servers", bootstrapServers)
-            props.put("request.timeout.ms", "5000")
-            props.put("default.api.timeout.ms", "5000")
+            props.put("request.timeout.ms", "2000")
+            props.put("default.api.timeout.ms", "2000")
             props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer")
             props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer")
 
@@ -219,7 +219,7 @@ class HealthCheckAPIController {
                 val properties = new Properties()
                 properties.setProperty("user", username)
                 properties.setProperty("password", password)
-                properties.setProperty("loginTimeout", "5")
+                properties.setProperty("loginTimeout", "2")
 
                 var conn: Connection = null
                 try {
@@ -246,8 +246,8 @@ class HealthCheckAPIController {
                     val url = "http://" + host + ":" + restPort + "/collections"
                     val connection = new java.net.URL(url)
                         .openConnection().asInstanceOf[java.net.HttpURLConnection]
-                    connection.setConnectTimeout(5000)
-                    connection.setReadTimeout(5000)
+                    connection.setConnectTimeout(2000)
+                    connection.setReadTimeout(2000)
                     val apiKey = Option(secretMap.get("apiKey")).filter(_.nonEmpty)
                     apiKey.foreach(k => connection.setRequestProperty("api-key", k))
                     try {
@@ -263,8 +263,8 @@ class HealthCheckAPIController {
                     val url = scheme + "://" + host + ":" + port
                     val connection = new java.net.URL(url + "/v1/.well-known/ready")
                         .openConnection().asInstanceOf[java.net.HttpURLConnection]
-                    connection.setConnectTimeout(5000)
-                    connection.setReadTimeout(5000)
+                    connection.setConnectTimeout(2000)
+                    connection.setReadTimeout(2000)
                     try {
                         if (connection.getResponseCode == 200) statusUp()
                         else statusDown("HTTP " + connection.getResponseCode)
@@ -277,8 +277,8 @@ class HealthCheckAPIController {
                     val url = "http://" + host + ":" + port + "/v2/vectordb/collections/list"
                     val connection = new java.net.URL(url)
                         .openConnection().asInstanceOf[java.net.HttpURLConnection]
-                    connection.setConnectTimeout(5000)
-                    connection.setReadTimeout(5000)
+                    connection.setConnectTimeout(2000)
+                    connection.setReadTimeout(2000)
                     connection.setRequestMethod("POST")
                     connection.setDoOutput(true)
                     connection.setRequestProperty("Content-Type", "application/json")
@@ -299,8 +299,8 @@ class HealthCheckAPIController {
                     val url = "http://" + host + ":" + port + "/api/v1/heartbeat"
                     val connection = new java.net.URL(url)
                         .openConnection().asInstanceOf[java.net.HttpURLConnection]
-                    connection.setConnectTimeout(5000)
-                    connection.setReadTimeout(5000)
+                    connection.setConnectTimeout(2000)
+                    connection.setReadTimeout(2000)
                     try {
                         if (connection.getResponseCode == 200) statusUp()
                         else statusDown("HTTP " + connection.getResponseCode)

@@ -80,10 +80,13 @@ class StreamNotifier {
 
             val (header, rows) = {
                 if (config.source.fileAttributes.csvAttributes.header)
-                    (schemaColumns, csvData.tail)
+                    (schemaColumns, if (csvData.nonEmpty) csvData.tail else List.empty[String])
                 else
                     (null, csvData)
             }
+
+            if (rows.isEmpty)
+                throw new DatrisException("No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row.")
 
             Data(size, header, config.source.schemaProperties.fields.asScala.toList, rows, null)
         }

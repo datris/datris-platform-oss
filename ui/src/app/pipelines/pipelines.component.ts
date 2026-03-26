@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 
@@ -7,13 +7,21 @@ import { PipelineService } from '../pipeline.service';
   templateUrl: './pipelines.component.html',
   styleUrls: ['./pipelines.component.css']
 })
-export class PipelinesComponent implements OnInit {
+export class PipelinesComponent implements OnInit, OnDestroy {
   pipelines: any[] = [];
+  private refreshInterval: any;
 
   constructor(private pipelineService: PipelineService, private router: Router) { }
 
   ngOnInit(): void {
     this.loadPipelines();
+    this.refreshInterval = setInterval(() => this.loadPipelines(), 5000);
+  }
+
+  ngOnDestroy(): void {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+    }
   }
 
   loadPipelines(): void {

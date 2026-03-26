@@ -12,6 +12,25 @@ object AISchemaUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
     private val MAX_CONTENT_LINES = 100
 
+    def buildCsvConfigAllStrings(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
+        val myDelimiter = if (delimiter == null) "," else delimiter
+        val firstLine = fileContent.split("\n").head
+        val delimChar = if (myDelimiter == "\\t") "\t" else myDelimiter
+        val fields = firstLine.split(java.util.regex.Pattern.quote(delimChar), -1)
+            .map(_.trim.replaceAll("\"", "").replaceAll("'", ""))
+        val fieldsJson = fields.map(f => s"""{"name":"$f","type":"string"}""").mkString("[", ",", "]")
+
+        logger.info("Building all-string CSV config for pipeline: " + pipeline + ", fields: " + fields.length)
+
+        buildConfig(
+            pipeline = pipeline,
+            fieldsJson = fieldsJson,
+            sourceAttributesJson = s""""csvAttributes": { "delimiter": "$myDelimiter", "header": $header, "encoding": "UTF-8" }""",
+            usePostgres = true,
+            useMongoDB = false
+        )
+    }
+
     def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
         val aiConfig = DatrisEnvironment.values.aiConfig
         if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)

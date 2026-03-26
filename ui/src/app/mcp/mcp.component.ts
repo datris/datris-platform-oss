@@ -88,10 +88,15 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'create_pipeline',
-      description: 'Create or update a pipeline configuration.',
+      description: 'Create a pipeline from sample data. Schema is auto-detected.',
       category: 'Pipeline Management',
       parameters: [
-        { name: 'config', type: 'object', description: 'Full pipeline configuration JSON', required: true, inputType: 'textarea' }
+        { name: 'content', type: 'string', description: 'Base64-encoded sample data', required: true, inputType: 'textarea' },
+        { name: 'filename', type: 'string', description: 'Filename (e.g., data.csv)', required: true, inputType: 'text' },
+        { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' },
+        { name: 'destination', type: 'string', description: 'Destination: postgres, mongodb, qdrant, weaviate, milvus, chroma, pgvector', required: false, inputType: 'text' },
+        { name: 'table', type: 'string', description: 'Table/collection name (default: pipeline name)', required: false, inputType: 'text' },
+        { name: 'database', type: 'string', description: 'Database name (default: datris)', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -105,21 +110,22 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
-      name: 'upload_file',
-      description: 'Upload a data file for processing through a pipeline.',
+      name: 'upload_data',
+      description: 'Upload data to a pipeline for processing. Send file content as base64.',
       category: 'Pipeline Management',
       parameters: [
-        { name: 'file_path', type: 'string', description: 'Absolute path to the file', required: true, inputType: 'text' },
+        { name: 'content', type: 'string', description: 'Base64-encoded file content', required: true, inputType: 'textarea' },
+        { name: 'filename', type: 'string', description: 'Filename (e.g., data.csv)', required: true, inputType: 'text' },
         { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' }
       ],
-      playgroundEnabled: false
+      playgroundEnabled: true
     },
     {
       name: 'get_job_status',
       description: 'Get job status by pipeline token or pipeline name.',
       category: 'Pipeline Management',
       parameters: [
-        { name: 'pipeline_token', type: 'string', description: 'Pipeline token from upload_file', required: false, inputType: 'text' },
+        { name: 'pipeline_token', type: 'string', description: 'Pipeline token from upload_data', required: false, inputType: 'text' },
         { name: 'pipeline_name', type: 'string', description: 'Pipeline name for latest status', required: false, inputType: 'text' },
         { name: 'page', type: 'integer', description: 'Page number (default: 1)', required: false, inputType: 'number' }
       ],
@@ -135,23 +141,14 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
-      name: 'generate_schema',
-      description: 'AI-generate a pipeline config from a sample data file.',
-      category: 'Pipeline Management',
-      parameters: [
-        { name: 'file_path', type: 'string', description: 'Absolute path to the file', required: true, inputType: 'text' },
-        { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' }
-      ],
-      playgroundEnabled: false
-    },
-    {
       name: 'profile_data',
       description: 'AI-profile data with summary stats and suggested DQ rules.',
       category: 'Pipeline Management',
       parameters: [
-        { name: 'file_path', type: 'string', description: 'Absolute path to the file', required: true, inputType: 'text' }
+        { name: 'content', type: 'string', description: 'Base64-encoded file content', required: true, inputType: 'textarea' },
+        { name: 'filename', type: 'string', description: 'Filename (e.g., sample.csv)', required: true, inputType: 'text' }
       ],
-      playgroundEnabled: false
+      playgroundEnabled: true
     },
     // --- Vector Search ---
     {
@@ -338,13 +335,14 @@ export class McpComponent implements OnInit {
     // --- Configuration ---
     {
       name: 'upload_config',
-      description: 'Upload a JSON Schema or JavaScript config file to the platform.',
+      description: 'Upload a JSON Schema or JavaScript config file to the platform. Send content as base64.',
       category: 'Configuration',
       parameters: [
-        { name: 'file_path', type: 'string', description: 'Path to the config file', required: true, inputType: 'text' },
+        { name: 'content', type: 'string', description: 'Base64-encoded file content', required: true, inputType: 'textarea' },
+        { name: 'filename', type: 'string', description: 'Filename (e.g., schema.json, transform.js)', required: true, inputType: 'text' },
         { name: 'type', type: 'string', description: 'Config type: validation-schema or javascript', required: true, inputType: 'text' }
       ],
-      playgroundEnabled: false
+      playgroundEnabled: true
     },
     // --- Secrets ---
     {
