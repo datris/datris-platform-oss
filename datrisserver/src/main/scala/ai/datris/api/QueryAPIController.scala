@@ -7,8 +7,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.model.GlobalJobContext
-import ai.datris.util.{AIUtil, APIKeyValidator, PostgresQueryUtil, MongoDBQueryUtil}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
+import ai.datris.util.{AIUtil, APIKeyValidator, PostgresQueryUtil, MongoDBQueryUtil, SecretsRetrieverUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -85,6 +85,68 @@ class QueryAPIController {
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("results", parsedResults)
             response.put("count", parsedResults.size())
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        }
+        catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @PostMapping(path = Array("/query/natural"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def queryNatural(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                     @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /query/natural called")
+            APIKeyValidator.validate(apiKey)
+
+            val question = Option(body.get("question")).map(_.toString)
+                .getOrElse(throw new DatrisException("'question' parameter is required"))
+            val table = Option(body.get("table")).map(_.toString)
+                .getOrElse(throw new DatrisException("'table' parameter is required"))
+            val database = Option(body.get("database")).map(_.toString).getOrElse("datris")
+            val schema = Option(body.get("schema")).map(_.toString).getOrElse("public")
+            val limit = Option(body.get("limit")).map {
+                case d: java.lang.Double => d.intValue()
+                case i: java.lang.Integer => i.intValue()
+                case other => other.toString.toInt
+            }.getOrElse(100)
+
+            // Step 1: Get table columns
+            val columnsSql = "SELECT column_name, data_type FROM information_schema.columns " +
+                "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
+                "AND table_name = '" + table.replace("'", "''") + "' ORDER BY ordinal_position"
+            val columnsResult = PostgresQueryUtil.query(columnsSql, database, 200)
+            val columnDefs = columnsResult.asScala.map(row =>
+                row.get("column_name").toString + " (" + row.get("data_type").toString + ")"
+            ).mkString(", ")
+
+            if (columnDefs.isEmpty)
+                throw new DatrisException("Table not found: " + schema + "." + table)
+
+            // Step 2: Ask AI to generate SQL
+            val systemPrompt = "You are a SQL expert. Generate a PostgreSQL SELECT query to answer the user's question. " +
+                "Return ONLY the SQL query, no explanation, no markdown, no code fences. " +
+                "Do not use semicolons. Use LIMIT " + limit + " unless the question implies a specific count."
+
+            val userPrompt = "Table: " + schema + "." + table + "\nColumns: " + columnDefs + "\n\nQuestion: " + question
+
+            logger.info("Generating SQL for question: " + question + ", table: " + schema + "." + table)
+            val aiResponse = AIUtil.callAIWithSystem(systemPrompt, userPrompt)
+            val sql = AIUtil.extractText(aiResponse).trim.stripPrefix("```sql").stripPrefix("```").stripSuffix("```").trim.stripSuffix(";")
+
+            logger.info("Generated SQL: " + sql)
+
+            // Step 3: Execute the generated SQL
+            val results = PostgresQueryUtil.query(sql, database, limit)
+
+            val gson = new Gson
+            val response = new java.util.LinkedHashMap[String, Any]()
+            response.put("question", question)
+            response.put("sql", sql)
+            response.put("results", results)
+            response.put("count", results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         }
         catch {
