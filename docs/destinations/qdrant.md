@@ -103,7 +103,7 @@ vault kv put secret/oss/embedding \
 
 ## Chunking Strategies
 
-Documents are split into chunks before embedding. Each chunk becomes a separate Qdrant point with the document's metadata plus `chunk_index`, `filename`, and `source_dataset` fields.
+Documents are split into chunks before embedding. Each chunk becomes a separate Qdrant point with the document's metadata plus `chunk_index`, `filename`, and `source_pipeline` fields.
 
 ```json
 "chunking": {
@@ -142,7 +142,7 @@ In addition to static metadata, every chunk automatically includes:
 - `text` — the chunk text
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline name
+- `source_pipeline` — pipeline name
 
 ## How It Works
 

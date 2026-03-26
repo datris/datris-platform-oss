@@ -26,7 +26,7 @@ PipelineStatusAPIController {
                          @RequestParam(required=false) pipelinename: String,
                          @RequestParam(required = false) page: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /dataset/status called with pipelinetoken: " + pipelinetoken + ", pipelinename: " + pipelinename + ", page: " + page)
+            logger.info("API endpoint GET /pipeline/status called with pipelinetoken: " + pipelinetoken + ", pipelinename: " + pipelinename + ", page: " + page)
             APIKeyValidator.validate(apiKey)
 
             val data = {

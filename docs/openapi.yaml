@@ -50,7 +50,7 @@ components:
                 type: string
               chunk_index:
                 type: integer
-              source_dataset:
+              source_pipeline:
                 type: string
               filename:
                 type: string

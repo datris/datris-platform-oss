@@ -78,7 +78,7 @@ class FileUploadAPIController {
     }
 
     @PostMapping(path = Array("/pipeline/generate"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def generateAiDataset(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+    def generateAiPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                           @RequestPart("file") multipartFile: MultipartFile,
                           @RequestParam(required = false) pipeline: String,
                           @RequestParam(required = false) delimiter: String,
@@ -126,7 +126,7 @@ class FileUploadAPIController {
     }
 
     @PostMapping(path = Array("/pipeline/profile"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def profileDataset(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+    def profilePipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                        @RequestPart("file") multipartFile: MultipartFile,
                        @RequestParam(required = false, defaultValue = ",") delimiter: String,
                        @RequestParam(required = false, defaultValue = "true") header: Boolean,

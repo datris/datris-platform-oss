@@ -145,7 +145,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                    |Explain in 2-3 concise sentences what went wrong and how to fix it.
                    |Do NOT repeat the error message. Focus on the root cause and actionable fix.
                    |
-                   |Dataset configuration:
+                   |Pipeline configuration:
                    |$truncatedConfig
                    |
                    |Error:

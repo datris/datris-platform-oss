@@ -95,7 +95,7 @@ vault kv put secret/oss/embedding \
 
 ## Chunking Strategies
 
-Documents are split into chunks before embedding. Each chunk becomes a row in the PostgreSQL table with the document's metadata columns plus `chunk_index`, `filename`, and `source_dataset`.
+Documents are split into chunks before embedding. Each chunk becomes a row in the PostgreSQL table with the document's metadata columns plus `chunk_index`, `filename`, and `source_pipeline`.
 
 ```json
 "chunking": {
@@ -142,7 +142,7 @@ Every row automatically includes:
 - `text` — the chunk text
 - `chunk_index` — position of the chunk in the document
 - `filename` — original uploaded filename
-- `source_dataset` — pipeline name
+- `source_pipeline` — pipeline name
 - `embedding` — vector column for similarity search
 
 ## How It Works

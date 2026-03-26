@@ -89,7 +89,7 @@ class ChromaLoader(jobContext: JobContext) {
                     // Metadata
                     val meta = new JsonObject()
                     meta.addProperty("chunk_index", chunkIdx)
-                    meta.addProperty("source_dataset", config.name)
+                    meta.addProperty("source_pipeline", config.name)
                     meta.addProperty("filename", filename)
                     if (chromaConfig.metadata != null) {
                         chromaConfig.metadata.asScala.foreach { case (key, v) =>

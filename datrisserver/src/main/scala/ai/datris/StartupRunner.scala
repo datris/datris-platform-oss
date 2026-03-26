@@ -41,8 +41,8 @@ class StartupRunner extends ApplicationRunner {
     @Value("${secrets.kafkaProducerSecretName}")
     var kafkaProducerSecretName: String = _
 
-    @Value("${sendDatasetNotifications}")
-    var sendDatasetNotifications: Boolean = _
+    @Value("${sendPipelineNotifications}")
+    var sendPipelineNotifications: Boolean = _
 
     @Value("${ttlFileNotifierQueueMessages:60}")
     var ttlFileNotifierQueueMessages: Int = _
@@ -203,7 +203,7 @@ class StartupRunner extends ApplicationRunner {
 
         // And Notifications, send pipeline notifications?
         val pipelineTopic = {
-            if(sendDatasetNotifications)
+            if(sendPipelineNotifications)
                 "VirtualTopic." + environment + "-pipeline-notification"
             else
                 null

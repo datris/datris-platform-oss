@@ -106,7 +106,7 @@ class ScheduledBatchTasks {
     private def startJobs(): Unit = {
         GlobalJobContext.getAll.foreach(jobContext => {
             if(jobContext.state == INITIALIZED) {
-                if(!isDatabaseJobForDatasetAlreadyRunning(jobContext))
+                if(!isDatabaseJobForPipelineAlreadyRunning(jobContext))
                     startJob(jobContext)
             }
         })
@@ -118,7 +118,7 @@ class ScheduledBatchTasks {
         })
     }
 
-    private def isDatabaseJobForDatasetAlreadyRunning(jobContext: JobContext): Boolean = {
+    private def isDatabaseJobForPipelineAlreadyRunning(jobContext: JobContext): Boolean = {
         if(jobContext.config.destination.database != null) {
             // Find the jobs with the same database table name
             val jobContextsWithDbTableName = GlobalJobContext.getAll.flatMap(jc => {

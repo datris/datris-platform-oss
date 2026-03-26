@@ -85,7 +85,7 @@ Return a failure status to stop the pipeline with an error.
 
 ## Batch Mode
 
-In batch mode, the pipeline calls the endpoint once with all rows. The endpoint receives the full dataset and returns the transformed dataset.
+In batch mode, the pipeline calls the endpoint once with all rows. The endpoint receives all the data and returns the transformed rows.
 
 ### Request
 
@@ -164,7 +164,7 @@ if isinstance(value, float) and value == int(value):
 
 **Row mode** makes one HTTP call per row. For large files this can be slow due to network overhead and may hit the timeout. Use row mode for small files or when per-row isolation is important.
 
-**Batch mode** makes a single HTTP call with all rows. This is significantly faster for large files and is the recommended mode for production use. The tradeoff is that your endpoint must handle the entire dataset in memory.
+**Batch mode** makes a single HTTP call with all rows. This is significantly faster for large files and is the recommended mode for production use. The tradeoff is that your endpoint must handle all the data in memory.
 
 ## When to Use
 
@@ -177,10 +177,10 @@ Use REST endpoint transformations when:
 
 ## Sample Helper Application
 
-A sample Flask application is provided at `helpers/transformation-rest/`:
+A sample Flask application is provided at `examples/transformation-rest/`:
 
 ```bash
-cd helpers/transformation-rest
+cd examples/transformation-rest
 pip install -r requirements.txt
 python app.py    # runs on port 5600
 ```
@@ -189,7 +189,7 @@ python app.py    # runs on port 5600
 - `POST /transform/rest/row` — Row mode (one row per call)
 - `POST /transform/rest/batch` — Batch mode (all rows in one call)
 
-The sample lowercases all string values in each row. See `helpers/transformation-rest/app.py` for the full implementation with commented examples for row removal and computed fields.
+The sample lowercases all string values in each row. See `examples/transformation-rest/app.py` for the full implementation with commented examples for row removal and computed fields.
 
 **Configure the pipeline to use it (Docker):**
 ```json

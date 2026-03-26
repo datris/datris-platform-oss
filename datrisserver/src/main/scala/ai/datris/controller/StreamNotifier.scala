@@ -36,7 +36,7 @@ class StreamNotifier {
 
             val metadata = PipelineMetadata(pipeline, filename, null, Option(publisherToken).getOrElse(pipelineToken), bulkUpload = false)
             val gson = new Gson
-            // Must persist metadata before any statusUtil calls so getDatasetName can resolve the pipeline token
+            // Must persist metadata before any statusUtil calls so getPipelineName can resolve the pipeline token
             NoSQLDbUtil.setItemNameValue(DatrisEnvironment.values.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", gson.toJson(metadata))
 
             statusUtil.info("begin", "Stream data received, pipeline: " + pipeline + ", filename: " + filename)
