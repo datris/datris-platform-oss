@@ -208,23 +208,26 @@ class StartupRunner extends ApplicationRunner {
             else
                 null
         }
+        // AI configuration is required — CodeGen data quality and transformation depend on it
+        if (!aiEnabled)
+            throw new DatrisException("AI is required but not enabled. Set 'ai.enabled: true' in application.yaml")
+        if (aiSecretName == null || aiSecretName.isEmpty)
+            throw new DatrisException("AI is enabled but no secret is configured. Set 'ai.aiSecretName' in application.yaml (e.g., 'oss/ai')")
+        if (!Seq("anthropic", "openai", "ollama").contains(aiProvider.toLowerCase))
+            throw new DatrisException("Unsupported AI provider: '" + aiProvider + "'. Valid values are: anthropic, openai, ollama")
+
         val aiConfig = {
-            if(aiEnabled && aiSecretName != null && aiSecretName.nonEmpty) {
-                val secret = SecretsUtil.getSecretMap(aiSecretName)
-                    .getOrElse(throw new DatrisException("AI secret not found, secret name: " + aiSecretName))
-                val endpoint = secret.get("endpoint")
-                if(endpoint == null)
-                    throw new DatrisException("'endpoint' not found in AI secret: " + aiSecretName)
-                val model = secret.get("model")
-                if(model == null)
-                    throw new DatrisException("'model' not found in AI secret: " + aiSecretName)
-                val apiKey = Option(secret.get("apiKey")).getOrElse("")
-                if(!Seq("anthropic", "openai", "ollama").contains(aiProvider.toLowerCase))
-                    throw new DatrisException("Unsupported AI provider: '" + aiProvider + "'. Valid values are: anthropic, openai, ollama")
-                AIConfig(aiProvider, endpoint, model, apiKey)
-            }
-            else
-                null
+            val secret = SecretsUtil.getSecretMap(aiSecretName)
+                .getOrElse(throw new DatrisException("AI secret not found in Vault, secret name: " + aiSecretName + ". Create it with: vault kv put secret/" + aiSecretName + " endpoint=<url> model=<model> apiKey=<key>"))
+            val endpoint = secret.get("endpoint")
+            if (endpoint == null)
+                throw new DatrisException("'endpoint' not found in AI secret: " + aiSecretName)
+            val model = secret.get("model")
+            if (model == null)
+                throw new DatrisException("'model' not found in AI secret: " + aiSecretName)
+            val apiKey = Option(secret.get("apiKey")).getOrElse("")
+            logger.info("AI provider configured: " + aiProvider + ", model: " + model + ", endpoint: " + endpoint)
+            AIConfig(aiProvider, endpoint, model, apiKey)
         }
         DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, aiEnabled = aiEnabled))
     }

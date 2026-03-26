@@ -1,7 +1,7 @@
 name := "datris-server"
 ThisBuild / organization := "ai.datris"
 ThisBuild / scalaVersion := "2.12.21"
-ThisBuild / version := "1.4.0"
+ThisBuild / version := "1.4.1"
 
 lazy val global = project
     .in(file("."))

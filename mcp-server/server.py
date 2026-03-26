@@ -40,10 +40,8 @@ A pipeline config has two required sections: source and destination. Keep config
 NEVER rules:
   - NEVER use profile_data to determine how to generate a pipeline configuration
   - NEVER add dataQuality or transformation sections unless explicitly requested
-  - NEVER use AI transformations (aiTransformation)
-  - NEVER use JavaScript or REST endpoint row functions for transformation
-  - If data quality is needed, use aiRule (CodeGen) when the user explicitly requests validation, or validationSchema for JSON/XML
-  - If transformation is needed, use ONLY trimColumnWhitespace or deduplicate
+  - If data quality is needed, use codegen_rule on create_pipeline (plain-English validation instruction)
+  - If transformation is needed, use codegen_transform on create_pipeline (plain-English transformation instruction)
 
 Required workflow:
   1. Check existing pipelines: call list_pipelines. If no pipelines exist, you MUST create one before querying — do NOT skip to querying database tables. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. Only re-ingest if data is stale.
@@ -258,48 +256,25 @@ Set this to call an external REST endpoint before processing. Use for custom val
 }
 ```
 
-## Data Quality (optional — only for unreliable data sources, only if explicitly requested)
+## Data Quality (optional — only if explicitly requested)
 
-NEVER add this section by default. NEVER use aiRule, JavaScript row rules, or REST endpoint row rules. Only use columnRules with regex or validationSchema.
+Use `codegen_rule` on `create_pipeline` for AI-powered validation. Datris generates a Python script from the instruction and runs it locally.
 
-### columnRules — validate individual columns with regex (the ONLY allowed DQ method)
+For JSON/XML schema validation, use `validationSchema` (upload schema file first with `upload_config`).
 
-```json
-"columnRules": [
-  {
-    "columnName": "email",
-    "function": "regex",
-    "parameter": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\\\.[a-zA-Z]{2,}$",
-    "onFailureIsError": true,
-    "description": "Must be a valid email"
-  }
-]
-```
-
-### validationSchema — reference a JSON Schema or XSD file
-
-```json
-"validationSchema": "my-schema.json"
-```
-
-Call `upload_config` with type "validation-schema" first to store the schema file.
-
-### validateFileHeader — check CSV headers match schema
-
-```json
-"validateFileHeader": true
-```
+For CSV header validation, use `validateFileHeader: true`.
 
 ## Transformation (optional — only if explicitly requested)
 
-NEVER add this section by default. NEVER use aiTransformation, JavaScript row functions, or REST endpoint row functions. Only use trimColumnWhitespace or deduplicate.
+Use `codegen_transform` on `create_pipeline` for AI-powered transformation. Datris generates a Python script from the instruction and runs it locally.
 
-### Basic transformations (the ONLY allowed transformation methods)
+Example config (for reference only — agents should use create_pipeline params, not construct configs):
 
 ```json
 "transformation": {
-  "trimColumnWhitespace": true,
-  "deduplicate": true
+  "aiTransformation": {
+    "instruction": "convert all dates to YYYY-MM-DD format"
+  }
 }
 ```
 
@@ -545,7 +520,7 @@ async def list_resources():
         Resource(
             uri="datris://pipeline-config-reference",
             name="Pipeline Configuration Reference",
-            description="Complete reference for building Datris pipeline configurations. Covers all source types (CSV, JSON, XML, PDF), data quality rules (regex, AI), transformations, and all destination types (PostgreSQL, MongoDB, Kafka, vector databases). Read this before using create_pipeline.",
+            description="Complete reference for building Datris pipeline configurations. Covers all source types (CSV, JSON, XML, PDF), AI-powered data quality (CodeGen), AI transformations (CodeGen), and all destination types (PostgreSQL, MongoDB, Kafka, vector databases). Read this before using create_pipeline.",
             mimeType="text/plain",
         )
     ]
@@ -568,7 +543,7 @@ async def list_tools():
         # --- Pipeline Management ---
         Tool(
             name="list_pipelines",
-            description="List all registered pipeline configurations. Each pipeline defines a complete data processing flow: source format and schema, data quality rules (regex + AI), transformations, and destination (database, message queue, or vector store).",
+            description="List all registered pipeline configurations. Each pipeline defines a complete data processing flow: source format and schema, AI-powered data quality and transformations, and destination (database, message queue, or vector store).",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -712,7 +687,7 @@ async def list_tools():
         ),
         Tool(
             name="profile_data",
-            description="Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules (regex patterns and AI-powered rules). Use the suggested rules when building a pipeline's dataQuality section.",
+            description="Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline's dataQuality section.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -984,13 +959,13 @@ async def list_tools():
         # --- Configuration Tools ---
         Tool(
             name="upload_config",
-            description="Upload a configuration file to the Datris platform. Supports two types: 'validation-schema' (JSON Schema files used in pipeline dataQuality schema validation) and 'javascript' (JS files used in pipeline transformation row functions). Send the file content as base64.",
+            description="Upload a configuration file to the Datris platform. Supports 'validation-schema' (JSON Schema files used in pipeline dataQuality schema validation). Send the file content as base64.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "content": {"type": "string", "description": "Base64-encoded file content"},
                     "filename": {"type": "string", "description": "Filename (e.g., schema.json, transform.js)"},
-                    "type": {"type": "string", "enum": ["validation-schema", "javascript"], "description": "Config file type: 'validation-schema' for JSON Schema or 'javascript' for transformation scripts"},
+                    "type": {"type": "string", "enum": ["validation-schema"], "description": "Config file type: 'validation-schema' for JSON Schema"},
                 },
                 "required": ["content", "filename", "type"]
             }
