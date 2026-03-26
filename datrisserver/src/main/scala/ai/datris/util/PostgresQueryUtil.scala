@@ -28,7 +28,7 @@ object PostgresQueryUtil {
         validateQuery(sql)
 
         val effectiveLimit = math.min(if (limit > 0) limit else DEFAULT_LIMIT, MAX_LIMIT)
-        val finalSql = appendLimitIfNeeded(sql.trim, effectiveLimit)
+        val finalSql = appendLimitIfNeeded(sql.trim.stripSuffix(";"), effectiveLimit)
 
         logger.info("Executing read-only query: " + finalSql)
 
@@ -85,13 +85,14 @@ object PostgresQueryUtil {
         if (sql == null || sql.trim.isEmpty)
             throw new DatrisException("SQL query cannot be empty")
 
-        val normalized = sql.trim
+        val normalized = sql.trim.stripSuffix(";")
 
-        // Must start with SELECT
-        if (!normalized.toUpperCase.startsWith("SELECT"))
-            throw new DatrisException("Only SELECT queries are allowed")
+        // Must start with SELECT or WITH (CTE)
+        val upper = normalized.toUpperCase
+        if (!upper.startsWith("SELECT") && !upper.startsWith("WITH"))
+            throw new DatrisException("Only SELECT queries are allowed (WITH/CTE is also permitted)")
 
-        // Reject stacked queries (semicolons)
+        // Reject stacked queries (semicolons remaining after stripping trailing one)
         if (normalized.contains(";"))
             throw new DatrisException("Semicolons are not allowed in queries")
 

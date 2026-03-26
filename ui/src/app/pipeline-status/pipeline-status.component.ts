@@ -13,6 +13,10 @@ export class PipelineStatusComponent implements OnInit, OnDestroy {
   page: number = 1;
   private refreshInterval: any;
 
+  // Clear all
+  confirmClear = false;
+  clearing = false;
+
   // Upload modal
   showUploadModal = false;
   allPipelines: any[] = [];
@@ -38,6 +42,31 @@ export class PipelineStatusComponent implements OnInit, OnDestroy {
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
     }
+  }
+
+  promptClear(): void {
+    this.confirmClear = true;
+  }
+
+  cancelClear(): void {
+    this.confirmClear = false;
+  }
+
+  clearAll(): void {
+    this.clearing = true;
+    this.pipelineStatusService.clearAllStatus().subscribe({
+      next: () => {
+        this.clearing = false;
+        this.confirmClear = false;
+        this.pipelines = [];
+        this.page = 1;
+        this.loadData();
+      },
+      error: () => {
+        this.clearing = false;
+        this.confirmClear = false;
+      }
+    });
   }
 
   onRowClick(pipelineToken: string, pipeline: string): void {
