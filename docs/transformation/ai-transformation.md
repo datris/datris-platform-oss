@@ -1,10 +1,10 @@
-# AI Transformation
+# AI Transformation (CodeGen)
 
-AI transformations apply natural language instructions to transform data using an AI model. Instead of writing JavaScript, describe the transformation in plain English and the AI model applies it to every row.
+AI transformations apply natural language instructions to transform data. Describe the transformation in plain English — Datris generates a Python script from your instruction and runs it locally against all data. This costs ~$0.003 per transformation regardless of file size.
 
 ## Configuration
 
-Add an `aiTransformation` block to the `transformation` section of the pipeline configuration:
+Add an `aiTransformation` block to the `transformation` section:
 
 ```json
 "transformation": {
@@ -14,11 +14,9 @@ Add an `aiTransformation` block to the `transformation` section of the pipeline 
 }
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `instruction` | string | | A natural language description of the transformation to apply to every row. |
-| `sample` | boolean | `false` | If `true`, only transforms a random sample of rows. The rest are passed through unchanged. |
-| `sampleSize` | int | `200` | Number of rows to transform when `sample` is `true`. |
+| Field | Type | Description |
+|---|---|---|
+| `instruction` | string | A natural language description of the transformation to apply to every row. |
 
 ## Examples
 
@@ -43,46 +41,36 @@ Add an `aiTransformation` block to the `transformation` section of the pipeline 
 }
 ```
 
-**Unit conversion:**
+**Combined operations:**
 ```json
 "aiTransformation": {
-    "instruction": "convert the temperature column from Fahrenheit to Celsius, rounded to 1 decimal place"
+    "instruction": "convert dates to YYYY/MM/DD. Trim leading/trailing whitespace from all columns. Remove duplicate rows."
 }
 ```
 
 ## How it works
 
-The pipeline sends the file content (header and all rows) to the AI model in a single call with the transformation instruction. The model returns the transformed rows in the same CSV format with the same delimiter. The transformed rows replace the original data and continue through the pipeline to the configured destinations.
+1. Datris extracts column names and sample rows from the data, combines them with your instruction, and sends a single prompt to the AI model.
+2. The AI generates a self-contained Python 3 script (stdlib only) that reads the input file, applies the transformation, and writes the output.
+3. The script is executed locally via `python3`. Processing cost is zero after the initial API call.
+4. The transformed data replaces the original and continues through the pipeline to destinations.
 
-AI transformations run after deduplication and JavaScript row functions, and before data is written to destinations.
+AI transformations run after deduplication and column trimming, and before data is written to destinations.
 
-## Sampling mode
+## Works with all file types
 
-For large files, enable sampling to transform only a subset of rows. Sampled rows are transformed by the AI; the remaining rows are passed through unchanged.
+- **CSV/delimited files** — The script reads and writes CSV with the appropriate delimiter.
+- **JSON files** — The script parses JSON, transforms records, and writes JSON.
+- **XML files** — The script uses `xml.etree.ElementTree` to parse, transform, and write XML.
 
-```json
-"aiTransformation": {
-    "instruction": "categorize each product into one of: Electronics, Clothing, Food, Other",
-    "sample": true,
-    "sampleSize": 500
-}
+## CLI
+
+```bash
+datris ingest data.csv --dest postgres --ai-transform "convert dates to YYYY/MM/DD and uppercase all names"
 ```
-
-This is useful for testing transformations on a subset before applying to the full pipeline, or when only a sample needs enrichment.
-
-## Choosing the right transformation type
-
-| Type | Best For | Speed | Cost |
-|------|----------|-------|------|
-| **Column trimming** | Removing whitespace | Instant | Free |
-| **Deduplication** | Removing duplicate rows | Instant | Free |
-| **JavaScript row functions** | Deterministic logic: math, string ops, conditionals | Instant | Free |
-| **AI transformation** | Fuzzy/subjective tasks: categorization, format standardization, entity extraction, enrichment | Seconds | API cost |
-
-Use AI transformations for tasks that are difficult to express in code — categorization, natural language processing, entity extraction, or format conversions across many possible input formats. For simple, deterministic transformations (math, string concatenation, conditionals), JavaScript row functions are faster, free, and more reliable.
 
 ## Requirements
 
 - `ai.enabled: true` must be set in `application.yaml`
 - The Vault secret for the AI provider must be configured (see [AI Configuration](../ai-configuration.md))
-- Cloud providers (Anthropic, OpenAI) are recommended for accuracy. Local models via Ollama work for simple transformations.
+- `python3` must be available on the pipeline server runtime

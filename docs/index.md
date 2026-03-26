@@ -4,7 +4,7 @@
 
 Ingest, validate, transform, store, and retrieve your data — whether you're an AI agent talking through MCP or a developer writing config. One platform for both.
 
-Deploy on any cloud provider, on-premise, or locally — with no vendor lock-in. Define your entire data pipeline through simple JSON configuration, or extend it with AI instructions, JavaScript functions, and REST endpoints at every stage of the flow. Built entirely on open-source infrastructure, it runs anywhere Docker does.
+Deploy on any cloud provider, on-premise, or locally — with no vendor lock-in. Define your entire data pipeline through simple JSON configuration, or extend it with AI instructions and preprocessors at every stage of the flow. Built entirely on open-source infrastructure, it runs anywhere Docker does.
 
 ### Agent-Ready: Built-In MCP Server
 
@@ -15,8 +15,9 @@ Your AI agents are first-class pipeline operators. Datris ships with a native MC
 Intelligence at every stage — from ingestion to delivery, Datris makes data engineering accessible through natural language.
 
 - **MCP server (AI agent integration)** - Built-in [MCP](https://modelcontextprotocol.io) server lets AI agents (Claude, Cursor, OpenClaw, custom frameworks) natively interact with the pipeline — register pipelines, upload files, trigger jobs, profile data, run semantic searches, and query databases. Supports stdio and SSE transports
-- **AI-powered data quality** - Validate with plain English rules via `aiRule`. The AI model evaluates every row using reasoning and domain knowledge — no regex required. Supports sampling for large files
-- **AI transformations** - Describe row transformations in natural language — date format conversion, data categorization, phone number standardization, entity extraction — no code needed
+- **AI-powered data quality (CodeGen)** - Validate with plain English rules via `aiRule`. Datris generates a Python validation script from your instruction and runs it locally (~$0.003/rule). Works for CSV, JSON, and XML
+- **AI transformations (CodeGen)** - Describe transformations in natural language — date format conversion, data categorization, phone number standardization, entity extraction. Datris generates a Python script and runs it locally
+- **Datris CLI** - Command-line interface for ingesting data, running queries, and managing pipelines. `datris ingest data.csv --ai-validate "prices > 0" --ai-transform "convert dates to YYYY/MM/DD"`
 - **AI schema generation** - Upload any CSV, JSON, or XML file and receive a complete, ready-to-register pipeline configuration — field names and types inferred automatically
 - **AI data profiling** - Upload a file and get summary statistics, quality issues, and suggested validation rules — all powered by AI analysis
 - **AI error explanation** - When jobs fail, AI analyzes the error chain and explains the root cause in plain English. No more digging through stack traces
@@ -33,10 +34,10 @@ Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any
 
 ## Key Features
 
-- **Configuration-driven** - Define pipelines entirely through JSON, or extend the pipeline with AI instructions, JavaScript functions, REST endpoints, and preprocessors at every stage of the data flow
+- **Configuration-driven** - Define pipelines entirely through JSON, or extend with AI instructions and preprocessors at every stage of the data flow
 - **Multiple ingestion methods** - File upload API, MinIO bucket events, database polling, Kafka streaming
-- **Data quality** - AI rules, regex column checks, JavaScript row rules, REST endpoint row rules, JSON/XML schema validation
-- **Transformations** - AI transformations, deduplication, whitespace trimming, JavaScript row functions
+- **Data quality** - CodeGen AI rules (LLM-generated Python validation), JSON/XML schema validation
+- **Transformations** - CodeGen AI transformations, deduplication, whitespace trimming
 - **Multiple destinations** - Write to MinIO (Parquet/ORC), PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, or pgvector in parallel
 - **Event notifications** - Subscribe to pipeline processing events via ActiveMQ topics
 
@@ -64,10 +65,10 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 Preprocessor (optional REST endpoint)
   |
   v
-Data Quality (AI rules, header validation, column rules, row rules, schema validation)
+Data Quality (CodeGen AI rules, header validation, schema validation)
   |
   v
-Transformation (deduplication, trimming, JavaScript row functions)
+Transformation (CodeGen AI, deduplication, trimming)
   |
   v
 Destinations (executed in parallel)
@@ -127,12 +128,14 @@ Query Source
 
 - [Installation](installation.md) - Get running with Docker Compose
 - [Quick Start](quick-start.md) - End-to-end walkthrough
+- [Datris CLI](cli.md) - Command-line interface for ingesting, querying, and managing pipelines
 - [Pipeline Configuration](pipeline-configuration.md) - Full JSON configuration reference
 - [Preprocessor](preprocessor.md) - External preprocessing via REST endpoints
 - [API Reference](api-reference/pipeline-api.md) - REST API documentation
 - [AI Schema Generation](api-reference/schema-generation-api.md) - Generate pipeline configs from files using AI
 - [AI Configuration](ai-configuration.md) - Configure AI providers (Anthropic, OpenAI, Ollama)
-- [AI Data Quality Rules](data-quality/column-rules.md) - Natural language validation with `aiRule`
+- [AI Data Quality (CodeGen)](data-quality/column-rules.md) - Natural language validation — generates Python scripts
+- [AI Transformation (CodeGen)](transformation/ai-transformation.md) - Natural language transformation — generates Python scripts
 - [AI Data Profiling](ai-data-profiling.md) - Profile data files and get recommended rules
 - [AI Error Explanation](ai-error-explanation.md) - Automatic plain-English error analysis
 - [Qdrant Destination](destinations/qdrant.md) - Vector database for RAG with chunking, embeddings, and metadata

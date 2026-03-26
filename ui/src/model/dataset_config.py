@@ -124,40 +124,14 @@ class Destination:
 
 
 @dataclass
-class RowRule:
-    function: Optional[str] = None
-    parameters: list[str] = field(default_factory=list)
-    on_failure_is_error: Optional[bool] = None
-
-
-@dataclass
-class ColumnRule:
-    column_name: Optional[str] = None
-    function: Optional[str] = None
-    parameter: Optional[str] = None
-    on_failure_is_error: Optional[bool] = None
-    description: Optional[str] = None
-
-
-@dataclass
 class DataQuality:
     validate_file_header: Optional[bool] = None
     validation_schema: Optional[str] = None
-    row_rules: list[RowRule] = field(default_factory=list)
-    column_rules: list[ColumnRule] = field(default_factory=list)
-
-
-@dataclass
-class RowFunction:
-    function: Optional[str] = None
-    parameters: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Transformation:
-    trim_column_whitespace: Optional[bool] = None
-    deduplicate: Optional[bool] = None
-    row_functions: list[RowFunction] = field(default_factory=list)
+    ai_transformation_instruction: Optional[str] = None
 
 
 @dataclass

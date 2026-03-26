@@ -69,26 +69,16 @@ object AIProfileUtil {
                |  ],
                |  "suggestedDataQuality": {
                |    "aiRule": {
-               |      "instruction": "<a single natural language instruction combining all domain-specific validation checks that require reasoning, e.g. cross-column logic, realistic value ranges, business rules>",
+               |      "instruction": "<a single natural language instruction combining ALL validation checks — structural patterns (emails, phone numbers, zip codes, dates), value ranges, cross-column relationships, and business logic>",
                |      "onFailureIsError": false
-               |    },
-               |    "columnRules": [
-               |      {
-               |        "columnName": "<column name>",
-               |        "function": "regex",
-               |        "parameter": "<regex pattern>",
-               |        "onFailureIsError": true,
-               |        "description": "<what the rule checks>"
-               |      }
-               |    ]
+               |    }
                |  }
                |}
                |
                |For suggestedDataQuality:
-               |- Only suggest regex columnRules for columns with clear structural patterns (emails, phone numbers, zip codes, codes, IDs). Do NOT suggest regex for free-text or numeric columns.
-               |- The aiRule instruction should cover domain-specific checks that cannot be expressed as regex — value ranges, cross-column relationships, business logic.
-               |- If no regex rules are appropriate, return an empty columnRules array.
-               |- If no AI rule is appropriate, omit the aiRule field.
+               |- The aiRule instruction should be a comprehensive plain-English rule covering all validations: format checks, value ranges, cross-column relationships, and business logic.
+               |- Combine all checks into one instruction. Datris will generate a Python validation script from this instruction.
+               |- If no validation rule is appropriate, omit the aiRule field.
                |
                |$content""".stripMargin
 

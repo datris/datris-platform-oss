@@ -65,6 +65,8 @@ object PostgresQueryUtil {
                     val columnName = metaData.getColumnLabel(i)
                     val value = rs.getObject(i) match {
                         case xml: java.sql.SQLXML => xml.getString
+                        case d: java.sql.Date => d.toString
+                        case t: java.sql.Timestamp => t.toString
                         case other => other
                     }
                     row.put(columnName, value)

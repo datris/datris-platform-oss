@@ -43,7 +43,7 @@ Returns an array of status entries for the job, one per processing stage:
     "filename": "sales_data",
     "state": "processing",
     "code": "processing",
-    "description": "Validating column rules",
+    "description": "Running CodeGen data quality rule",
     "epoch": 1710500401000
   },
   {

@@ -33,36 +33,15 @@ Pipelines are configured entirely through JSON. Each pipeline defines a source, 
   },
   "dataQuality": {
     "validateFileHeader": true,
-    "columnRules": [
-      {
-        "columnName": "amount",
-        "function": "regex",
-        "parameter": "^[0-9]+(\\.[0-9]+)?$",
-        "onFailureIsError": true,
-        "description": "Amount must be a positive number"
-      }
-    ],
-    "rowRules": [
-      {
-        "function": "javascript",
-        "parameters": ["validate_sales.js"],
-        "onFailureIsError": false
-      }
-    ]
+    "aiRule": {
+      "instruction": "Amount must be a positive number, all dates must be in YYYY-MM-DD format",
+      "onFailureIsError": true
+    },
   },
   "transformation": {
-    "trimColumnWhitespace": true,
-    "deduplicate": true,
-    "rowFunctions": [
-      {
-        "function": "javascript",
-        "parameters": ["transform_sales.js"]
-      },
-      {
-        "function": "restEndpoint",
-        "parameters": ["http://my-service:5600/transform/rest/row", "row", "30000"]
-      }
-    ]
+    "aiTransformation": {
+      "instruction": "convert all date values to YYYY-MM-DD format. Trim whitespace from all columns. Remove duplicate rows."
+    }
   },
   "destination": {
     "objectStore": {
@@ -197,18 +176,17 @@ See [Data Quality](data-quality/column-rules.md) for detailed documentation.
 |-------|------|-------------|
 | `validateFileHeader` | boolean | Validate CSV header matches schema field order |
 | `validationSchema` | string | Path to JSON Schema file for JSON/XML validation |
-| `columnRules` | array | List of regex column validation rules |
-| `rowRules` | array | List of JavaScript or REST endpoint row rules |
+| `aiRule` | object | CodeGen AI rule — plain-English instruction that generates a Python validation script |
 
 ### Transformation
 
-See [JavaScript Row Functions](transformation/row-functions.md) and [REST Endpoint Transformation](transformation/rest-endpoint.md) for detailed documentation.
+See [AI Transformation (CodeGen)](transformation/ai-transformation.md) for detailed documentation.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `trimColumnWhitespace` | boolean | Trim whitespace from all column values |
 | `deduplicate` | boolean | Remove duplicate rows |
-| `rowFunctions` | array | List of transformation functions (`"javascript"` or `"restEndpoint"`) |
+| `aiTransformation` | object | AI transformation — plain-English instruction that generates a Python transformation script |
 
 ### Destination > Object Store
 

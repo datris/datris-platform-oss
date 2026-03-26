@@ -20,8 +20,8 @@ export class PipelineService {
     return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name));
   }
 
-  createPipeline(config: any): Observable<any> {
-    return this.http.post<any>('/api/v1/pipeline', config);
+  createPipeline(config: any): Observable<string> {
+    return this.http.post('/api/v1/pipeline', config, { responseType: 'text' });
   }
 
   uploadConfigFile(file: File, type: string): Observable<any> {

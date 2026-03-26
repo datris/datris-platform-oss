@@ -78,7 +78,7 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 
 | Tool | Description |
 |------|-------------|
-| `upload_config` | Upload a JSON Schema or JavaScript config file (base64-encoded content) |
+| `upload_config` | Upload a JSON Schema config file (base64-encoded content) |
 | `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
 
 ## Setup
@@ -181,12 +181,11 @@ An AI agent could autonomously:
 2. **Query structured data** — `query_postgres` to get related financial metrics
 3. **Combine** — agent merges unstructured + structured data in its response
 
-### Custom validation and transformation
+### AI validation and transformation
 
-1. **Upload JSON Schema** — `upload_config` with type "validation-schema" and a JSON Schema file
-2. **Upload JavaScript** — `upload_config` with type "javascript" and a JS transformation file
-3. **Create pipeline** — `create_pipeline` referencing the uploaded schema and JS files
-4. **Upload data** — `upload_data` to process data with custom rules
+1. **Create pipeline with AI rules** — `create_pipeline` with `codegen_rule` for validation and/or `codegen_transform` for transformation
+2. **Upload data** — `upload_data` to process data through the AI-powered pipeline
+3. Datris generates Python scripts from your instructions and runs them locally
 
 ### Automated data quality monitoring
 

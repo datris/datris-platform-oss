@@ -76,7 +76,7 @@ async def _connect():
     await _post_client.post(_endpoint, json={
         "jsonrpc": "2.0", "id": init_id,
         "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": "1.3.0"}},
+        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": "1.4.0"}},
     })
     await asyncio.wait_for(_responses.get(), 10)
     await _post_client.post(_endpoint, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -139,7 +139,7 @@ def b64_file(path):
 # ── CLI Commands ──────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option(version="1.3.0")
+@click.version_option(version="1.4.0")
 def cli():
     """Datris CLI — The Agent-Native Data Platform"""
     pass
@@ -171,16 +171,20 @@ def pipelines():
 
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
-@click.option("--pipeline", "-p", required=True, help="Pipeline name")
+@click.option("--pipeline", "-p", default=None, help="Pipeline name (default: derived from filename)")
 @click.option("--dest", "-d", default="postgres", type=click.Choice(["postgres", "mongodb", "qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Destination type")
 @click.option("--table", "-t", default=None, help="Table/collection name (default: pipeline name)")
 @click.option("--database", default="datris", help="Database name")
-@click.option("--validate-column", multiple=True, help="Column to validate (pair with --regex)")
-@click.option("--regex", multiple=True, help="Regex pattern (pair with --validate-column)")
-def ingest(file, pipeline, dest, table, database, validate_column, regex):
+@click.option("--ai-validate", default=None, help="AI data quality rule (plain English, e.g. 'all prices must be positive')")
+@click.option("--ai-transform", default=None, help="AI transformation instruction (plain English, e.g. 'convert dates to YYYY/MM/DD')")
+def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform):
     """Create a pipeline and ingest a data file."""
     content = b64_file(file)
     filename = os.path.basename(file)
+
+    # Auto-derive pipeline name from filename if not specified
+    if not pipeline:
+        pipeline = os.path.splitext(filename)[0].lower().replace("-", "_").replace(" ", "_")
 
     # Build args
     args = {
@@ -193,13 +197,10 @@ def ingest(file, pipeline, dest, table, database, validate_column, regex):
         args["table"] = table
     if database != "datris":
         args["database"] = database
-
-    # Add validation rules
-    if validate_column and regex:
-        rules = []
-        for col, pat in zip(validate_column, regex):
-            rules.append({"columnName": col, "function": "regex", "parameter": pat, "onFailureIsError": True, "description": f"{col} must match {pat}"})
-        args["column_rules"] = rules
+    if ai_validate:
+        args["codegen_rule"] = ai_validate
+    if ai_transform:
+        args["codegen_transform"] = ai_transform
 
     # Create pipeline
     click.echo(f"  Creating pipeline '{pipeline}' → {dest}...")
@@ -209,8 +210,10 @@ def ingest(file, pipeline, dest, table, database, validate_column, regex):
         sys.exit(1)
     click.echo(f"  ✓ Pipeline created")
 
-    if validate_column:
-        click.echo(f"  ✓ {len(list(validate_column))} validation rule(s)")
+    if ai_validate:
+        click.echo(f"  ✓ AI validation: {ai_validate}")
+    if ai_transform:
+        click.echo(f"  ✓ AI transformation: {ai_transform}")
 
     # Upload data
     click.echo(f"  Uploading {filename}...")
@@ -474,7 +477,7 @@ def version():
     """Get server version."""
     result = mcp("get_version")
     click.echo(f"  Server: {result.get('text', result) if isinstance(result, dict) else result}")
-    click.echo(f"  CLI: 1.3.0")
+    click.echo(f"  CLI: 1.4.0")
 
 
 def main():

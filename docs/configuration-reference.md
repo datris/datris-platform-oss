@@ -159,7 +159,7 @@ The following buckets are created automatically by the `minio-init` container:
 | `{environment}-raw-plus` | Processed file staging |
 | `{environment}-temp` | Temporary processing files |
 | `{environment}-data` | Object store destination output |
-| `{environment}-config` | Configuration files (JavaScript, validation schemas) |
+| `{environment}-config` | Configuration files (validation schemas) |
 
 ## MongoDB Collections
 

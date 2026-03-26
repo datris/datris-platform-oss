@@ -1,13 +1,15 @@
-# Transformation REST
+# Transformation REST (Legacy Example)
 
 **Location:** `examples/transformation-rest/`
 
-A Flask REST API for external data transformation. The pipeline calls this endpoint as part of its transformation row functions, enabling custom transformation logic in any language. The sample implementation lowercases all string values.
+A Flask REST API for external data transformation. This example demonstrates calling an external endpoint for transformation.
+
+> **Note:** REST endpoint transformations (`transformation.rowFunctions` with `function: "restEndpoint"`) are deprecated in v1.4.0. For transformations, use [AI Transformation (CodeGen)](../transformation/ai-transformation.md) which generates a Python script from a plain-English instruction. For external service calls, use a [preprocessor](../preprocessor.md).
 
 ## Endpoints
 
-- `POST /transform/rest/row` — Transform a single row (returns transformed row or `null` to remove)
-- `POST /transform/rest/batch` — Transform a batch of rows (returns transformed rows, `null` entries removed)
+- `POST /transform/rest/row` — Transform a single row
+- `POST /transform/rest/batch` — Transform a batch of rows
 
 ## Setup
 
@@ -21,9 +23,3 @@ pip install flask
 ```bash
 python app.py    # runs on port 5600
 ```
-
-## Usage
-
-Configure a pipeline's `transformation.rowFunctions` with `function: "restEndpoint"` pointing to `http://host.docker.internal:5600/transform/rest/row` (row mode) or `/transform/rest/batch` (batch mode).
-
-See [REST Endpoint Transformation](../transformation/rest-endpoint.md) for the full protocol reference.

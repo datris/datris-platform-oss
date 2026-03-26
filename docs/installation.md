@@ -105,7 +105,7 @@ The `minio-init` container automatically creates the required buckets:
 - `oss-raw-plus` - Processed file staging
 - `oss-temp` - Temporary processing files
 - `oss-data` - Pipeline output (object store destination)
-- `oss-config` - Configuration files (JavaScript scripts, validation schemas)
+- `oss-config` - Configuration files (validation schemas)
 
 ### Vault
 

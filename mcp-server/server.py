@@ -40,11 +40,9 @@ A pipeline config has two required sections: source and destination. Keep config
 NEVER rules:
   - NEVER use profile_data to determine how to generate a pipeline configuration
   - NEVER add dataQuality or transformation sections unless explicitly requested
-  - NEVER use AI rules (aiRule) for data quality
-  - NEVER use JavaScript or REST endpoint row rules for data quality
   - NEVER use AI transformations (aiTransformation)
   - NEVER use JavaScript or REST endpoint row functions for transformation
-  - If data quality is needed, use ONLY columnRules with regex or validationSchema
+  - If data quality is needed, use aiRule (CodeGen) when the user explicitly requests validation, or validationSchema for JSON/XML
   - If transformation is needed, use ONLY trimColumnWhitespace or deduplicate
 
 Required workflow:
@@ -629,19 +627,13 @@ async def list_tools():
                         "type": "boolean",
                         "description": "Whether CSV has a header row (default: true)"
                     },
-                    "column_rules": {
-                        "type": "array",
-                        "description": "Optional data quality column validation rules. Only add when the user explicitly requests validation. Each rule: {columnName, function: 'regex', parameter: 'regex_pattern', onFailureIsError: true/false, description: 'rule description'}",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "columnName": {"type": "string"},
-                                "function": {"type": "string", "enum": ["regex"]},
-                                "parameter": {"type": "string"},
-                                "onFailureIsError": {"type": "boolean"},
-                                "description": {"type": "string"}
-                            }
-                        }
+                    "codegen_rule": {
+                        "type": "string",
+                        "description": "Optional data quality validation rule as a plain-English instruction. Only add when the user explicitly requests validation. Datris will generate a Python validation script from this instruction and run it locally against all data. Example: 'Validate that all dates are YYYY-MM-DD format and all email addresses are valid'"
+                    },
+                    "codegen_transform": {
+                        "type": "string",
+                        "description": "Optional transformation instruction as a plain-English description. Only add when the user explicitly requests transformation. Datris will generate a Python script from this instruction and run it locally to transform all data. Example: 'Convert all date columns to YYYY/MM/DD format and uppercase all name fields'"
                     }
                 },
                 "required": ["content", "filename", "pipeline"]
@@ -1103,9 +1095,13 @@ def _dispatch(name: str, args: dict) -> str:
 
         config["destination"] = dest
 
-        # Step 2b: Add optional data quality rules
-        if args.get("column_rules"):
-            config["dataQuality"] = {"columnRules": args["column_rules"]}
+        # Step 2b: Add optional CodeGen data quality rule
+        if args.get("codegen_rule"):
+            config["dataQuality"] = {"aiRule": {"instruction": args["codegen_rule"], "onFailureIsError": True}}
+
+        # Step 2c: Add optional CodeGen transformation
+        if args.get("codegen_transform"):
+            config["transformation"] = {"aiTransformation": {"instruction": args["codegen_transform"]}}
 
         # Step 3: Register the pipeline
         create_result = _call("post", "/api/v1/pipeline", json=config)

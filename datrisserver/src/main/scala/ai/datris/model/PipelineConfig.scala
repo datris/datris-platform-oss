@@ -9,32 +9,32 @@ import com.fasterxml.jackson.annotation.{JsonCreator, JsonProperty}
 
 case class PipelineConfig(
                             name: String,
-                            source: Source,
-                            preprocessor: RestEndpoint,
-                            dataQuality: DataQuality,
-                            transformation: Transformation,
-                            destination: Destination
+                            source: Source = null,
+                            preprocessor: RestEndpoint = null,
+                            dataQuality: DataQuality = null,
+                            transformation: Transformation = null,
+                            destination: Destination = null
                         )
 
 case class Source(
-                     schemaProperties: SchemaProperties,
-                     fileAttributes: FileAttributes,
-                     streamAttributes: StreamAttributes,
-                     databaseAttributes: DatabaseAttributes
+                     schemaProperties: SchemaProperties = null,
+                     fileAttributes: FileAttributes = null,
+                     streamAttributes: StreamAttributes = null,
+                     databaseAttributes: DatabaseAttributes = null
                  )
 
 case class Destination(
-                          schemaProperties: SchemaProperties,
-                          database: Database,
-                          objectStore: ObjectStore,
-                          restEndpoint: RestEndpoint,
-                          kafka: Kafka,
-                          activeMQ: ActiveMQ,
-                          qdrant: QdrantConfig,
-                          weaviate: WeaviateConfig,
-                          pgvector: PGVectorConfig,
-                          milvus: MilvusConfig,
-                          chroma: ChromaConfig
+                          schemaProperties: SchemaProperties = null,
+                          database: Database = null,
+                          objectStore: ObjectStore = null,
+                          restEndpoint: RestEndpoint = null,
+                          kafka: Kafka = null,
+                          activeMQ: ActiveMQ = null,
+                          qdrant: QdrantConfig = null,
+                          weaviate: WeaviateConfig = null,
+                          pgvector: PGVectorConfig = null,
+                          milvus: MilvusConfig = null,
+                          chroma: ChromaConfig = null
                       )
 
 case class QdrantConfig(
@@ -90,46 +90,26 @@ case class SchemaProperties(
                            )
 
 case class DataQuality(
-                          validateFileHeader: Boolean,
-                          validationSchema: String,
-                          aiRule: AIRule,
-                          rowRules: java.util.ArrayList[RowRule],
-                          columnRules: java.util.List[ColumnRule]
+                          validateFileHeader: Boolean = false,
+                          validationSchema: String = null,
+                          aiRule: AIRule = null
                       )
 
-case class AIRule(
-                     instruction: String,
-                     onFailureIsError: Boolean,
-                     sample: Boolean = false,
-                     sampleSize: Int = 200
+case class AIRule @JsonCreator() (
+                     @JsonProperty("instruction") instruction: String,
+                     @JsonProperty("onFailureIsError") onFailureIsError: Boolean = false
                  )
 
-case class RowRule(
-                      function: String,
-                      parameters: java.util.List[String],
-                      onFailureIsError: Boolean
-                  )
-
-case class ColumnRule(
-                         columnName: String,
-                         function: String,
-                         parameter: String,
-                         batchSize: Int = 100,
-                         onFailureIsError: Boolean,
-                         description: String
-                     )
 
 case class Transformation(
-                             trimColumnWhitespace: Boolean,
-                             deduplicate: Boolean,
-                             rowFunctions: java.util.List[RowFunction],
-                             aiTransformation: AITransformation
+                             trimColumnWhitespace: Boolean = false,
+                             deduplicate: Boolean = false,
+                             rowFunctions: java.util.List[RowFunction] = null,
+                             aiTransformation: AITransformation = null
                          )
 
-case class AITransformation(
-                               instruction: String,
-                               sample: Boolean = false,
-                               sampleSize: Int = 200
+case class AITransformation @JsonCreator() (
+                               @JsonProperty("instruction") instruction: String
                            )
 
 case class RowFunction(
@@ -138,28 +118,28 @@ case class RowFunction(
                       )
 
 case class FileAttributes(
-                             csvAttributes: CsvAttributes,
-                             jsonAttributes: JsonAttributes,
-                             xmlAttributes: XmlAttributes,
-                             xlsAttributes: XlsAttributes,
-                             unstructuredAttributes: UnstructuredAttributes,
-                             readOptions: java.util.Map[String, String]
+                             csvAttributes: CsvAttributes = null,
+                             jsonAttributes: JsonAttributes = null,
+                             xmlAttributes: XmlAttributes = null,
+                             xlsAttributes: XlsAttributes = null,
+                             unstructuredAttributes: UnstructuredAttributes = null,
+                             readOptions: java.util.Map[String, String] = null
                          )
 
 case class CsvAttributes(
-                            delimiter: String,
-                            header: Boolean,
-                            encoding: String,     // UTF-8, ISO-8859-1, etc]
+                            delimiter: String = ",",
+                            header: Boolean = true,
+                            encoding: String = "UTF-8"
                         )
 
 case class JsonAttributes(
-                             everyRowContainsObject: Boolean,   // If true, each row of the file contains a JSON object
-                             encoding: String,     // UTF-8, ISO-8859-1, etc]
+                             everyRowContainsObject: Boolean = false,
+                             encoding: String = "UTF-8"
                          )
 
 case class XmlAttributes(
-                            everyRowContainsObject: Boolean,    // If true, each row of the file contains an XML object
-                            encoding: String,     // UTF-8, ISO-8859-1, etc
+                            everyRowContainsObject: Boolean = false,
+                            encoding: String = "UTF-8"
                         )
 
 case class XlsAttributes(
@@ -168,8 +148,8 @@ case class XlsAttributes(
                         )
 
 case class UnstructuredAttributes(
-                                     fileExtension: String,
-                                     preserveFilename: Boolean
+                                     fileExtension: String = null,
+                                     preserveFilename: Boolean = false
                                  )
 
 case class StreamAttributes(
@@ -199,26 +179,26 @@ case class RestEndpoint(
                            timeoutMs: Int = 300000
                        )
 case class ObjectStore(
-                          prefixKey: String,
-                          partitionBy: java.util.List[String],
-                          destinationBucketOverride: String,
-                          fileFormat: String,
-                          writeToTemporaryLocation: Boolean,
-                          deleteBeforeWrite: Boolean,
-                          writeMode: String
+                          prefixKey: String = null,
+                          partitionBy: java.util.List[String] = null,
+                          destinationBucketOverride: String = null,
+                          fileFormat: String = null,
+                          writeToTemporaryLocation: Boolean = false,
+                          deleteBeforeWrite: Boolean = false,
+                          writeMode: String = null
                       )
 
 case class Database(
-                       dbName: String, // Database name
-                       schema: String,
-                       table: String, // Table name
-                       keyFields: java.util.List[String],
-                       manageTableManually: Boolean,
-                       truncateBeforeWrite: Boolean,
-                       useTransaction: Boolean,
-                       usePostgres: Boolean,
-                       useMongoDB: Boolean,
-                       options: java.util.List[String]
+                       dbName: String = null,
+                       schema: String = null,
+                       table: String = null,
+                       keyFields: java.util.List[String] = null,
+                       manageTableManually: Boolean = false,
+                       truncateBeforeWrite: Boolean = false,
+                       useTransaction: Boolean = false,
+                       usePostgres: Boolean = false,
+                       useMongoDB: Boolean = false,
+                       options: java.util.List[String] = null
                    )
 
 case class Kafka(
