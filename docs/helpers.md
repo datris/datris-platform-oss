@@ -208,14 +208,13 @@ The subscriber will print pipeline processing notifications as they arrive, incl
 
 **Location:** `helpers/test-mcp-server/`
 
-An integration test script for the MCP server that exercises all 15 tools end-to-end. Tests the full round-trip: push data into the pipeline, wait for ingestion, then query it back.
+An integration test script for the MCP server that exercises the tools end-to-end. Tests the full round-trip: create pipeline from sample data, upload data, wait for ingestion, then query it back.
 
 **Test flow:**
-1. **CSV → PostgreSQL** — create pipeline, upload CSV, wait, query back with SQL
+1. **CSV → PostgreSQL** — create pipeline (auto-detects schema from sample data), upload CSV, wait, query back with SQL
 2. **JSON → MongoDB** — create pipeline, upload JSON, wait, query back with find()
-3. **AI profiling + schema generation** — profile the CSV, generate a pipeline config
-4. **PDF → pgvector** — create pipeline, upload Apple 10-Q PDF, wait for chunking/embedding, semantic search "What was Apple's revenue?"
-5. **Cleanup** — delete all test pipelines
+3. **PDF → pgvector** — create pipeline, upload Apple 10-Q PDF, wait for chunking/embedding, semantic search "What was Apple's revenue?"
+4. **Cleanup** — delete all test pipelines (destination data is cleaned up automatically)
 
 **Setup:**
 ```bash

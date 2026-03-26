@@ -20,15 +20,14 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 |------|-------------|
 | `list_pipelines` | List all registered pipeline configurations |
 | `get_pipeline` | Get a specific pipeline configuration by name |
-| `create_pipeline` | Register or update a pipeline configuration |
-| `delete_pipeline` | Delete a pipeline configuration |
-| `upload_file` | Upload a file for processing (returns pipeline token) |
+| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Specify destination type. |
+| `delete_pipeline` | Delete a pipeline and its destination data |
+| `upload_data` | Upload data (base64-encoded) to a pipeline for processing (returns pipeline token) |
 | `get_job_status` | Get job status by pipeline token or pipeline name |
 | `kill_job` | Kill a running job by pipeline token |
-| `generate_schema` | AI-generate a pipeline config from a file (CSV, JSON, XML) |
-| `profile_data` | AI-profile data with summary stats and suggested DQ rules |
+| `profile_data` | AI-profile data (base64-encoded) with summary stats and suggested DQ rules |
 | `get_version` | Get pipeline server version |
-| `check_service_health` | Check which backend services are up, down, or not configured |
+| `check_service_health` | Check which backend services are up, down, or not configured (slow — use for diagnostics only) |
 
 ### Vector Database Search
 
@@ -79,7 +78,7 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 
 | Tool | Description |
 |------|-------------|
-| `upload_config` | Upload a JSON Schema (validation) or JavaScript (transformation) config file |
+| `upload_config` | Upload a JSON Schema or JavaScript config file (base64-encoded content) |
 | `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
 
 ## Setup
@@ -157,13 +156,13 @@ An AI agent could autonomously:
 1. **Profile the data** — `profile_data` with the CSV file
 2. **Review suggested rules** — agent reads the AI-suggested DQ rules
 3. **Create the pipeline** — `create_pipeline` with the profiled config
-4. **Upload the file** — `upload_file` to trigger processing
+4. **Upload the file** — `upload_data` to trigger processing
 5. **Monitor status** — `get_job_status` to track completion
 
 ### Build and query a RAG knowledge base
 
 1. **Create pipeline** — `create_pipeline` with Qdrant/Weaviate/Milvus/pgvector destination
-2. **Upload documents** — `upload_file` for each PDF/document
+2. **Upload documents** — `upload_data` for each PDF/document
 3. **Monitor** — `get_job_status` until all documents are processed
 4. **Search** — `search_qdrant` to find relevant chunks
 5. **Answer** — `ai_answer` with the retrieved chunks as context and the user's question
@@ -187,11 +186,11 @@ An AI agent could autonomously:
 1. **Upload JSON Schema** — `upload_config` with type "validation-schema" and a JSON Schema file
 2. **Upload JavaScript** — `upload_config` with type "javascript" and a JS transformation file
 3. **Create pipeline** — `create_pipeline` referencing the uploaded schema and JS files
-4. **Upload data** — `upload_file` to process data with custom rules
+4. **Upload data** — `upload_data` to process data with custom rules
 
 ### Automated data quality monitoring
 
 1. **List pipelines** — `list_pipelines` to discover all registered pipelines
-2. **Upload new data** — `upload_file` with latest data files
+2. **Upload new data** — `upload_data` with latest data files
 3. **Check results** — `get_job_status` to see DQ failures
 4. **Diagnose** — AI reads error explanations and suggests fixes

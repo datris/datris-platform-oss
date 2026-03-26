@@ -82,7 +82,8 @@ class FileUploadAPIController {
                           @RequestPart("file") multipartFile: MultipartFile,
                           @RequestParam(required = false) pipeline: String,
                           @RequestParam(required = false) delimiter: String,
-                          @RequestParam(required = false) header: Boolean): ResponseEntity[String] = {
+                          @RequestParam(required = false) header: Boolean,
+                          @RequestParam(required = false, defaultValue = "false") allStrings: String): ResponseEntity[String] = {
         try {
             val filename = multipartFile.getOriginalFilename
             val pipelineName = {
@@ -109,7 +110,10 @@ class FileUploadAPIController {
                     AISchemaUtil.buildXmlConfig(pipelineName)
                 else {
                     val fileContent = new String(multipartFile.getBytes, "UTF-8")
-                    AISchemaUtil.buildCsvConfig(pipelineName, fileContent, delimiter, header)
+                    if (allStrings.equalsIgnoreCase("true"))
+                        AISchemaUtil.buildCsvConfigAllStrings(pipelineName, fileContent, delimiter, header)
+                    else
+                        AISchemaUtil.buildCsvConfig(pipelineName, fileContent, delimiter, header)
                 }
             }
             new ResponseEntity[String](json, HttpStatus.OK)

@@ -103,7 +103,8 @@ class PostgresLoader(jobContext: JobContext) {
         }
         else {
             // Default to CSV if no options are declared
-            sql.append("FORMAT csv")
+            // NULL '.' handles common placeholder values (e.g., FRED uses "." for missing data)
+            sql.append("FORMAT csv, NULL '.'")
         }
 
         sql.append(")")

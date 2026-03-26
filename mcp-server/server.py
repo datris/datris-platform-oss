@@ -35,22 +35,29 @@ PIPELINE_API_KEY = os.getenv("PIPELINE_API_KEY", "")
 server = Server("datris", instructions="""\
 Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, and vector stores — all driven by pipeline configurations that AI agents can create and manage programmatically.
 
-A pipeline defines a complete data processing flow:
-  - Source: file format (CSV, JSON, XML), schema with field names and types
-  - Data Quality: validation rules including regex patterns, AI-powered rules, and JSON Schema validation
-  - Transformation: deduplication, trimming, AI transforms, and JavaScript row functions
-  - Preprocessor: optional REST endpoint called before processing
-  - Destination: PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoint, or vector databases (Qdrant, Weaviate, Milvus, Chroma, pgvector) with embedding configuration
+A pipeline config has two required sections: source and destination. Keep configs simple: source + destination only.
 
-Recommended workflow for agents:
-  0. Configure AI: use update_secret to set your AI provider API keys (anthropic, openai, ollama, embedding) if not already configured
-  1. Discover existing data: use metadata tools (list_postgres_databases, list_postgres_tables, etc.) to explore what's available
-  2. Create a pipeline: use generate_schema to auto-create from a sample file, or create_pipeline manually
-  3. Profile data: use profile_data to get AI-suggested data quality rules before ingestion
-  4. Ingest data: use upload_file to process files through the pipeline
-  5. Monitor: use get_job_status to track processing (status: RUNNING, COMPLETED, FAILED, CANCELLED)
-  6. Query & search: use query tools for structured data, search tools for semantic/vector search
-  7. RAG: combine search results with ai_answer for AI-powered question answering
+NEVER rules:
+  - NEVER use profile_data to determine how to generate a pipeline configuration
+  - NEVER add dataQuality or transformation sections unless explicitly requested
+  - NEVER use AI rules (aiRule) for data quality
+  - NEVER use JavaScript or REST endpoint row rules for data quality
+  - NEVER use AI transformations (aiTransformation)
+  - NEVER use JavaScript or REST endpoint row functions for transformation
+  - If data quality is needed, use ONLY columnRules with regex or validationSchema
+  - If transformation is needed, use ONLY trimColumnWhitespace or deduplicate
+
+Required workflow:
+  1. Check existing pipelines: call list_pipelines. If no pipelines exist, you MUST create one before querying — do NOT skip to querying database tables. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. Only re-ingest if data is stale.
+  2. Create a pipeline: call create_pipeline with your sample data (base64-encoded), pipeline name, and destination type. The schema is auto-detected from the data — you do not construct pipeline configs manually.
+  3. Ingest data: call upload_data with base64-encoded content and the pipeline name
+  4. Monitor: call get_job_status and poll until status is COMPLETED or FAILED. You MUST wait for COMPLETED before querying.
+  5. If FAILED: read the error message from get_job_status. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
+  6. Query & search: use query_postgres, query_mongodb for structured data; search_qdrant, search_pgvector, etc. for vector search
+  7. RAG: pass search results as context to ai_answer with the user's question
+
+Do NOT call check_service_health as part of the normal workflow — it is slow. Only use it for diagnostics if something fails.
+Do NOT call update_secret unless you need to configure AI provider keys and they are not already set.
 """)
 
 
@@ -73,7 +80,7 @@ def _call(method, path, **kwargs):
 
 
 def _upload(path, file_path, data=None):
-    """Upload a file via multipart POST to the pipeline API."""
+    """Upload a file via multipart POST to the pipeline API (local file path)."""
     with open(file_path, "rb") as f:
         files = {"file": (os.path.basename(file_path), f)}
         h = {}
@@ -89,6 +96,35 @@ def _upload(path, file_path, data=None):
         return resp.text
 
 
+def _upload_content(path, content_b64, filename, data=None):
+    """Upload base64-encoded content via multipart POST to the pipeline API."""
+    import base64
+    import tempfile
+
+    # Fix missing base64 padding
+    padded = content_b64 + "=" * (-len(content_b64) % 4)
+    file_bytes = base64.b64decode(padded)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        with open(tmp_path, "rb") as f:
+            files = {"file": (filename, f)}
+            h = {}
+            if PIPELINE_API_KEY:
+                h["x-api-key"] = PIPELINE_API_KEY
+            resp = requests.post(
+                f"{PIPELINE_URL}{path}",
+                headers=h,
+                files=files,
+                data=data or {},
+                timeout=300
+            )
+            return resp.text
+    finally:
+        os.unlink(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # MCP Resources
 # ---------------------------------------------------------------------------
@@ -96,7 +132,23 @@ def _upload(path, file_path, data=None):
 PIPELINE_CONFIG_REFERENCE = """\
 # Datris Pipeline Configuration Reference
 
-A pipeline defines a complete data processing flow. The config JSON has these top-level sections:
+## Required Workflow — Follow These Steps
+
+1. Call `list_pipelines` to check if the pipeline already exists.
+2. If it exists, data may already be in the destination. Use metadata tools (`list_postgres_tables`, `list_mongodb_collections`, `list_qdrant_collections`, etc.) to discover it and query/search directly. Only re-ingest if the data is stale or needs updating.
+3. If the pipeline does not exist, call `create_pipeline` with your sample data (base64-encoded), pipeline name, and destination type. The schema is auto-detected from the data.
+5. Call `check_service_health` to verify the target destination service is available.
+6. Call `create_pipeline` with the config.
+7. Call `upload_data` with your data (base64-encoded) and the pipeline name.
+8. Call `get_job_status` to monitor processing. Poll until status is COMPLETED or FAILED.
+9. Query or search the data: `query_postgres`, `query_mongodb`, `search_qdrant`, `search_pgvector`, etc.
+10. For RAG: pass search results as context to `ai_answer` with the user's question.
+
+---
+
+## Config Structure
+
+Pass this JSON to `create_pipeline`. Only `name`, `source`, and `destination` are required. For reliable data sources, do NOT add dataQuality, transformation, or preprocessor sections — keep it simple. Only add those sections if the data source is unreliable or you have a specific processing requirement.
 
 ```json
 {
@@ -111,11 +163,11 @@ A pipeline defines a complete data processing flow. The config JSON has these to
 
 ## Source
 
-Defines the input file format and schema.
+Set `source.fileAttributes` to one of these (create_pipeline does this automatically):
 
-### fileAttributes (choose one)
+### fileAttributes — choose one
 
-**csvAttributes** — for CSV files:
+**csvAttributes** — use for CSV/TSV files:
 ```json
 "csvAttributes": {
   "delimiter": ",",
@@ -148,7 +200,7 @@ Defines the input file format and schema.
 }
 ```
 
-**unstructuredAttributes** — for PDFs, DOCX, TXT (used with vector DB destinations):
+**unstructuredAttributes** — use for PDFs, DOCX, TXT. Must use a vector DB destination:
 ```json
 "unstructuredAttributes": {
   "fileExtension": "pdf",
@@ -156,7 +208,7 @@ Defines the input file format and schema.
 }
 ```
 
-### schemaProperties (required for structured data, omit for unstructured)
+### schemaProperties — set field names and types (create_pipeline does this automatically, omit for unstructured)
 
 ```json
 "schemaProperties": {
@@ -196,7 +248,7 @@ Supported field types: `string`, `int`, `bigint`, `float`, `double`, `boolean`, 
 
 ## Preprocessor (optional)
 
-A REST endpoint called before processing each file. Use for custom validation or enrichment.
+Set this to call an external REST endpoint before processing. Use for custom validation or enrichment.
 
 ```json
 "preprocessor": {
@@ -208,11 +260,11 @@ A REST endpoint called before processing each file. Use for custom validation or
 }
 ```
 
-## Data Quality (optional)
+## Data Quality (optional — only for unreliable data sources, only if explicitly requested)
 
-Validation rules applied to data before transformation and destination.
+NEVER add this section by default. NEVER use aiRule, JavaScript row rules, or REST endpoint row rules. Only use columnRules with regex or validationSchema.
 
-### columnRules — regex or function-based validation per column
+### columnRules — validate individual columns with regex (the ONLY allowed DQ method)
 
 ```json
 "columnRules": [
@@ -222,35 +274,17 @@ Validation rules applied to data before transformation and destination.
     "parameter": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\\\.[a-zA-Z]{2,}$",
     "onFailureIsError": true,
     "description": "Must be a valid email"
-  },
-  {
-    "columnName": "price",
-    "function": "regex",
-    "parameter": "^[0-9]+(\\\\.[0-9]+)?$",
-    "onFailureIsError": false,
-    "description": "Must be a positive number"
   }
 ]
 ```
 
-### aiRule — AI-powered validation using natural language
-
-```json
-"aiRule": {
-  "instruction": "All price columns must be positive and not exceed $1,000,000. Volume must be a positive integer.",
-  "onFailureIsError": false,
-  "sample": true,
-  "sampleSize": 200
-}
-```
-
-### validationSchema — JSON Schema file reference
+### validationSchema — reference a JSON Schema or XSD file
 
 ```json
 "validationSchema": "my-schema.json"
 ```
 
-Upload the schema file first using the `upload_config` tool with type "validation-schema".
+Call `upload_config` with type "validation-schema" first to store the schema file.
 
 ### validateFileHeader — check CSV headers match schema
 
@@ -258,11 +292,11 @@ Upload the schema file first using the `upload_config` tool with type "validatio
 "validateFileHeader": true
 ```
 
-## Transformation (optional)
+## Transformation (optional — only if explicitly requested)
 
-Transform data after validation, before writing to destination.
+NEVER add this section by default. NEVER use aiTransformation, JavaScript row functions, or REST endpoint row functions. Only use trimColumnWhitespace or deduplicate.
 
-### Basic transformations
+### Basic transformations (the ONLY allowed transformation methods)
 
 ```json
 "transformation": {
@@ -271,47 +305,11 @@ Transform data after validation, before writing to destination.
 }
 ```
 
-### rowFunctions — JavaScript-based row transformations
+## Destination (required — set one)
 
-```json
-"rowFunctions": [
-  {
-    "function": "javascript",
-    "parameters": ["transform.js"]
-  }
-]
-```
+Call `check_service_health` first to verify the target service is available.
 
-Upload the JS file first using the `upload_config` tool with type "javascript".
-
-### rowFunctions — REST endpoint transformations
-
-```json
-"rowFunctions": [
-  {
-    "function": "restEndpoint",
-    "parameters": ["http://my-service:5600/transform", "row", "30000", "", ""]
-  }
-]
-```
-
-Parameters: [endpoint URL, mode ("row" or "batch"), timeout ms, bearer token, API key].
-In row mode, the endpoint receives `{"pipelineName": "...", "pipelineToken": "...", "row": {...}}` and returns `{"status": "success", "row": {...}}` (or `"row": null` to remove the row).
-In batch mode, it receives `{"rows": [...]}` and returns `{"status": "success", "rows": [...]}` (null entries are removed).
-
-### aiTransformation — AI-powered data transformation
-
-```json
-"aiTransformation": {
-  "instruction": "Convert all date values from MM/DD/YYYY to YYYY-MM-DD format",
-  "sample": true,
-  "sampleSize": 200
-}
-```
-
-## Destination (required — choose one)
-
-### database — PostgreSQL
+### database — PostgreSQL (use for structured CSV data)
 
 ```json
 "destination": {
@@ -327,7 +325,7 @@ In batch mode, it receives `{"rows": [...]}` and returns `{"status": "success", 
 }
 ```
 
-### database — MongoDB
+### database — MongoDB (use for JSON data)
 
 ```json
 "destination": {
@@ -388,9 +386,9 @@ Write modes: `overwrite`, `append`, `ignore`, `error`
 }
 ```
 
-### Vector databases (for RAG / semantic search)
+### Vector databases — use for RAG / semantic search with unstructured files (PDF, DOCX, TXT)
 
-All vector DB destinations share a common structure with chunking and embedding config. Use with unstructured source files (PDF, DOCX, TXT).
+All vector DB destinations require chunking and embedding config. Call `check_service_health` to see which vector DBs are available.
 
 **qdrant:**
 ```json
@@ -458,7 +456,7 @@ All vector DB destinations share a common structure with chunking and embedding 
 }
 ```
 
-## Complete Examples
+## Example Configs — for reference only (create_pipeline generates these automatically)
 
 ### CSV → PostgreSQL with AI data quality
 
@@ -594,16 +592,45 @@ async def list_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create or update a pipeline configuration. The config JSON must include 'name' and typically includes: source (fileAttributes, schemaProperties with field definitions), dataQuality (column rules with regex, AI rules, schema validation), transformation (deduplication, trimming, AI transforms, row functions), and destination (database, objectStore, kafka, activeMQ, restEndpoint, or vector DB like qdrant/weaviate/milvus/chroma/pgvector). Read the 'Pipeline Configuration Reference' resource for full field details and examples. Use generate_schema to auto-create a config from a sample file.",
+            description="Create a pipeline by sending sample data. The schema is auto-detected from the data — you do not need to specify field names or types. Just provide the data, pipeline name, and destination type.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "config": {
-                        "type": "object",
-                        "description": "Full pipeline configuration JSON including name, source, destination, dataQuality, transformation"
+                    "content": {
+                        "type": "string",
+                        "description": "Base64-encoded sample data file content"
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename (e.g., data.csv, report.json, orders.xml)"
+                    },
+                    "pipeline": {
+                        "type": "string",
+                        "description": "Pipeline name"
+                    },
+                    "destination": {
+                        "type": "string",
+                        "enum": ["postgres", "mongodb", "qdrant", "weaviate", "milvus", "chroma", "pgvector"],
+                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML)"
+                    },
+                    "table": {
+                        "type": "string",
+                        "description": "Destination table or collection name (default: pipeline name)"
+                    },
+                    "database": {
+                        "type": "string",
+                        "description": "Destination database name (default: datris)"
+                    },
+                    "delimiter": {
+                        "type": "string",
+                        "description": "CSV delimiter (default: comma)"
+                    },
+                    "header": {
+                        "type": "boolean",
+                        "description": "Whether CSV has a header row (default: true)"
                     }
                 },
-                "required": ["config"]
+                "required": ["content", "filename", "pipeline"]
             }
         ),
         Tool(
@@ -621,26 +648,30 @@ async def list_tools():
             }
         ),
         Tool(
-            name="upload_file",
-            description="Upload a data file (CSV, JSON, XML, or compressed archive) to a registered pipeline for processing. The pipeline's rules are applied: schema validation, data quality checks, transformations, then routing to the configured destination. Returns a pipeline token for tracking job status via get_job_status.",
+            name="upload_data",
+            description="Upload data to a registered pipeline for processing. Send the file content as a base64-encoded string. The pipeline's rules are applied: schema validation, data quality checks, transformations, then routing to the configured destination. Returns a pipeline token for tracking job status via get_job_status.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "file_path": {
+                    "content": {
                         "type": "string",
-                        "description": "Absolute path to the file to upload"
+                        "description": "Base64-encoded file content"
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename (e.g., data.csv, report.json, orders.xml)"
                     },
                     "pipeline": {
                         "type": "string",
-                        "description": "Pipeline name to process the file with"
+                        "description": "Pipeline name to process the data with"
                     }
                 },
-                "required": ["file_path", "pipeline"]
+                "required": ["content", "filename", "pipeline"]
             }
         ),
         Tool(
             name="get_job_status",
-            description="Get job status. Query by pipeline_token (from upload_file) for detailed status of a specific job, or by pipeline_name for a paginated summary of all jobs for that pipeline. Status values: RUNNING, COMPLETED, FAILED, CANCELLED.",
+            description="Get job status. Query by pipeline_token (from upload_data) for detailed status of a specific job, or by pipeline_name for a paginated summary of all jobs for that pipeline. Status values: RUNNING, COMPLETED, FAILED, CANCELLED. IMPORTANT: If status is RUNNING, you MUST keep polling (wait a few seconds and call again) until status changes to COMPLETED or FAILED. Do NOT proceed to query/search until the job is COMPLETED. If FAILED, read the error message and fix the issue.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -674,40 +705,18 @@ async def list_tools():
             }
         ),
         Tool(
-            name="generate_schema",
-            description="Upload a sample data file and use AI to automatically generate a complete pipeline configuration with inferred field names, data types, and schema. Supports CSV, JSON, and XML. This is the fastest way to create a new pipeline — generate the config, review/modify it, then register it with create_pipeline.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Absolute path to the file to analyze"
-                    },
-                    "pipeline": {
-                        "type": "string",
-                        "description": "Pipeline name for the generated configuration"
-                    },
-                    "delimiter": {
-                        "type": "string",
-                        "description": "CSV delimiter (default: comma)"
-                    },
-                    "header": {
-                        "type": "boolean",
-                        "description": "Whether CSV has a header row (default: true)"
-                    }
-                },
-                "required": ["file_path", "pipeline"]
-            }
-        ),
-        Tool(
             name="profile_data",
-            description="Upload a data file and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules (regex patterns and AI-powered rules). Use the suggested rules when building a pipeline's dataQuality section.",
+            description="Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules (regex patterns and AI-powered rules). Use the suggested rules when building a pipeline's dataQuality section.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "file_path": {
+                    "content": {
                         "type": "string",
-                        "description": "Absolute path to the file to profile"
+                        "description": "Base64-encoded file content"
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Filename (e.g., sample.csv)"
                     },
                     "delimiter": {
                         "type": "string",
@@ -722,7 +731,7 @@ async def list_tools():
                         "description": "Number of rows to sample for profiling (default: 200)"
                     }
                 },
-                "required": ["file_path"]
+                "required": ["content", "filename"]
             }
         ),
         Tool(
@@ -954,14 +963,15 @@ async def list_tools():
         # --- Configuration Tools ---
         Tool(
             name="upload_config",
-            description="Upload a configuration file to the Datris platform. Supports two types: 'validation-schema' (JSON Schema files used in pipeline dataQuality schema validation) and 'javascript' (JS files used in pipeline transformation row functions). The file is stored and can be referenced by pipeline configurations.",
+            description="Upload a configuration file to the Datris platform. Supports two types: 'validation-schema' (JSON Schema files used in pipeline dataQuality schema validation) and 'javascript' (JS files used in pipeline transformation row functions). Send the file content as base64.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "file_path": {"type": "string", "description": "Absolute path to the configuration file to upload"},
+                    "content": {"type": "string", "description": "Base64-encoded file content"},
+                    "filename": {"type": "string", "description": "Filename (e.g., schema.json, transform.js)"},
                     "type": {"type": "string", "enum": ["validation-schema", "javascript"], "description": "Config file type: 'validation-schema' for JSON Schema or 'javascript' for transformation scripts"},
                 },
-                "required": ["file_path", "type"]
+                "required": ["content", "filename", "type"]
             }
         ),
         # --- Secrets ---
@@ -999,20 +1009,93 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 def _dispatch(name: str, args: dict) -> str:
     # --- Pipeline Management ---
     if name == "list_pipelines":
-        return _call("get", "/api/v1/pipelines")
+        result = _call("get", "/api/v1/pipelines")
+        try:
+            pipelines = json.loads(result)
+            if not pipelines or (isinstance(pipelines, list) and len(pipelines) == 0):
+                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline with your sample data (base64-encoded), pipeline name, and destination type."})
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return result
 
     elif name == "get_pipeline":
         return _call("get", "/api/v1/pipeline", params={"pipeline": args["pipeline"]})
 
     elif name == "create_pipeline":
-        return _call("post", "/api/v1/pipeline", json=args["config"])
+        # Step 1: Generate schema from sample data
+        pipeline_name = args["pipeline"]
+        gen_data = {"pipeline": pipeline_name, "allStrings": "true"}
+        if args.get("delimiter"):
+            gen_data["delimiter"] = args["delimiter"]
+        header = args.get("header", True)
+        gen_data["header"] = str(header).lower()
+        gen_result = _upload_content("/api/v1/pipeline/generate", args["content"], args["filename"], gen_data)
+
+        # Step 2: Parse the generated config and set destination
+        try:
+            config = json.loads(gen_result)
+        except json.JSONDecodeError:
+            return json.dumps({"error": "Failed to generate schema: " + gen_result})
+
+        table_name = args.get("table", pipeline_name)
+        db_name = args.get("database", "datris")
+        dest_type = args.get("destination", "")
+
+        # Auto-detect destination if not specified
+        if not dest_type:
+            filename = args.get("filename", "").lower()
+            if filename.endswith(".json"):
+                dest_type = "mongodb"
+            elif filename.endswith(".xml"):
+                dest_type = "postgres"
+            elif filename.endswith(".pdf") or filename.endswith(".docx") or filename.endswith(".txt"):
+                dest_type = "pgvector"
+            else:
+                dest_type = "postgres"
+
+        # Build destination
+        dest = {}
+        if dest_type == "postgres":
+            dest["database"] = {"dbName": db_name, "schema": "public", "table": table_name, "usePostgres": True}
+        elif dest_type == "mongodb":
+            dest["database"] = {"dbName": db_name, "table": table_name, "useMongoDB": True}
+        elif dest_type == "qdrant":
+            dest["qdrant"] = {"collectionName": table_name, "embeddingSecretName": "oss/embedding", "qdrantSecretName": "oss/qdrant", "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50}}
+        elif dest_type == "weaviate":
+            dest["weaviate"] = {"className": table_name, "embeddingSecretName": "oss/embedding", "weaviateSecretName": "oss/weaviate", "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50}}
+        elif dest_type == "milvus":
+            dest["milvus"] = {"collectionName": table_name, "embeddingSecretName": "oss/embedding", "milvusSecretName": "oss/milvus", "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50}}
+        elif dest_type == "chroma":
+            dest["chroma"] = {"collectionName": table_name, "embeddingSecretName": "oss/embedding", "chromaSecretName": "oss/chroma", "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50}}
+        elif dest_type == "pgvector":
+            dest["pgvector"] = {"tableName": table_name, "schemaName": "public", "embeddingSecretName": "oss/embedding", "postgresSecretName": "oss/pgvector", "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50}}
+        else:
+            dest["database"] = {"dbName": db_name, "schema": "public", "table": table_name, "usePostgres": True}
+
+        config["destination"] = dest
+
+        # Step 3: Register the pipeline
+        create_result = _call("post", "/api/v1/pipeline", json=config)
+        try:
+            err = json.loads(create_result)
+            if isinstance(err, dict) and err.get("error"):
+                return json.dumps({"error": "Failed to create pipeline: " + str(err["error"])})
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Return the name from the config (authoritative) rather than args
+        actual_name = config.get("name", pipeline_name)
+        return json.dumps({"status": "Pipeline created", "pipeline": actual_name, "destination": dest_type, "table": table_name})
 
     elif name == "delete_pipeline":
         return _call("delete", "/api/v1/pipeline", params={"pipeline": args["pipeline"]})
 
-    elif name == "upload_file":
+    elif name == "upload_data":
         data = {"pipeline": args["pipeline"]}
-        return _upload("/api/v1/pipeline/upload", args["file_path"], data)
+        result = _upload_content("/api/v1/pipeline/upload", args["content"], args["filename"], data)
+        token = result.strip() if result else ""
+        if token and not token.startswith("{"):
+            return json.dumps({"pipelineToken": token, "message": "Upload successful. Use this pipelineToken with get_job_status to monitor processing."})
+        return result
 
     elif name == "get_job_status":
         params = {}
@@ -1022,19 +1105,32 @@ def _dispatch(name: str, args: dict) -> str:
             params["pipelinename"] = args["pipeline_name"]
         if args.get("page"):
             params["page"] = args["page"]
-        return _call("get", "/api/v1/pipeline/status", params=params)
+        result = _call("get", "/api/v1/pipeline/status", params=params)
+        try:
+            data = json.loads(result)
+            # Detect status from either detail (state field) or summary (status field)
+            status = None
+            if isinstance(data, list) and len(data) > 0:
+                last = data[-1] if isinstance(data[-1], dict) else data[0]
+                # Detail view uses "state" (begin/processing/end/error)
+                # Summary view uses "status" (processing/success/completed/error)
+                status = last.get("status") or last.get("state")
+            elif isinstance(data, dict):
+                status = data.get("status") or data.get("state")
+
+            if status:
+                s = status.lower()
+                if s in ("processing", "begin"):
+                    return "STILL RUNNING — you MUST call get_job_status again in a few seconds. Do NOT proceed to query/search until job is complete.\n\n" + result
+                elif s == "error":
+                    return "JOB FAILED — read the error details below. Delete the pipeline and recreate if needed.\n\n" + result
+        except (json.JSONDecodeError, TypeError, KeyError):
+            pass
+        return result
 
     elif name == "kill_job":
         payload = {"pipelineToken": args["pipeline_token"]}
         return _call("post", "/api/v1/job/kill", json=payload)
-
-    elif name == "generate_schema":
-        data = {"pipeline": args["pipeline"]}
-        if args.get("delimiter"):
-            data["delimiter"] = args["delimiter"]
-        if args.get("header") is not None:
-            data["header"] = str(args["header"]).lower()
-        return _upload("/api/v1/pipeline/generate", args["file_path"], data)
 
     elif name == "profile_data":
         data = {}
@@ -1044,7 +1140,7 @@ def _dispatch(name: str, args: dict) -> str:
             data["header"] = str(args["header"]).lower()
         if args.get("sample_size"):
             data["sampleSize"] = str(args["sample_size"])
-        return _upload("/api/v1/pipeline/profile", args["file_path"], data)
+        return _upload_content("/api/v1/pipeline/profile", args["content"], args["filename"], data)
 
     elif name == "get_version":
         return _call("get", "/api/v1/version")
@@ -1173,7 +1269,7 @@ def _dispatch(name: str, args: dict) -> str:
     # --- Config ---
     elif name == "upload_config":
         data = {"type": args["type"]}
-        return _upload("/api/v1/config/upload", args["file_path"], data)
+        return _upload_content("/api/v1/config/upload", args["content"], args["filename"], data)
 
     # --- Secrets ---
     elif name == "update_secret":
@@ -1199,23 +1295,23 @@ async def run_stdio():
 
 async def run_sse(port: int):
     from mcp.server.sse import SseServerTransport
-    from starlette.applications import Starlette
-    from starlette.routing import Route
     import uvicorn
 
     sse = SseServerTransport("/messages")
 
-    async def handle_sse(request):
-        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
-            await server.run(streams[0], streams[1], server.create_initialization_options())
-
-    async def handle_messages(request):
-        await sse.handle_post_message(request.scope, request.receive, request._send)
-
-    app = Starlette(routes=[
-        Route("/sse", endpoint=handle_sse),
-        Route("/messages", endpoint=handle_messages, methods=["POST"]),
-    ])
+    async def app(scope, receive, send):
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path == "/sse":
+                async with sse.connect_sse(scope, receive, send) as streams:
+                    await server.run(streams[0], streams[1], server.create_initialization_options())
+                return
+            elif path == "/messages":
+                await sse.handle_post_message(scope, receive, send)
+                return
+        # 404 for anything else
+        await send({"type": "http.response.start", "status": 404, "headers": []})
+        await send({"type": "http.response.body", "body": b"Not Found"})
 
     config = uvicorn.Config(app, host="0.0.0.0", port=port)
     srv = uvicorn.Server(config)
