@@ -1,0 +1,71 @@
+---
+title: "Source Code"
+description: "Open-source repository and project structure"
+---
+
+Datris is fully open source. The complete platform — server, MCP server, CLI, UI, Docker configuration, and examples — is available on GitHub.
+
+**[github.com/datris/datris-platform-oss](https://github.com/datris/datris-platform-oss)**
+
+## Repository Structure
+
+| Directory | Description |
+|-----------|-------------|
+| `datrisserver/` | Scala/Spring Boot pipeline server — ingestion, data quality, transformation, destinations |
+| `mcp-server/` | Python MCP server and CLI (`server.py`, `cli.py`) |
+| `ui/` | Angular web dashboard — pipeline management, ingestion monitoring, search, secrets |
+| `docker/` | Docker Compose configuration, Vault init scripts, Dockerfiles |
+| `docs/` | Mintlify documentation (what you're reading now) |
+| `examples/` | Example applications — RAG chat, Kafka loader, preprocessor, topic subscriber, MCP test |
+| `test-scripts/` | Test data files and scripts |
+
+## Key Files
+
+| File | Description |
+|------|-------------|
+| `docker-compose.yml` | Full platform stack — all services in one command |
+| `build.sbt` | Scala build configuration for the pipeline server |
+| `mcp-server/pyproject.toml` | Python package config for the MCP server and CLI |
+| `server.json` | MCP Registry server definition |
+| `.env.example` | Template for environment variables (API keys, model config) |
+
+## Getting the Code
+
+```bash
+git clone https://github.com/datris/datris-platform-oss.git
+cd datris-platform-oss
+```
+
+## Building from Source
+
+### Pipeline Server (Scala)
+
+```bash
+sbt clean assembly
+```
+
+Produces a fat JAR in `datrisserver/target/scala-2.13/`.
+
+### Docker Images
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+### MCP Server and CLI
+
+The MCP server and CLI are published on [PyPI](https://pypi.org/project/datris-mcp-server/) and installable via Homebrew:
+
+```bash
+brew tap datris/tap
+brew install datris
+```
+
+## Contributing
+
+Fork the repository, make your changes, and submit a pull request. All contributions are welcome.
+
+## License
+
+Datris is licensed under [AGPL-3.0](https://github.com/datris/datris-platform-oss/blob/main/LICENSE).
