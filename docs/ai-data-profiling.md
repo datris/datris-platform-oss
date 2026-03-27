@@ -91,7 +91,7 @@ The `suggestedDataQuality` section provides a complete, copy-paste-ready `dataQu
 
 - **`aiRule`** — a single comprehensive plain-English instruction covering all validation checks: format patterns (emails, phone numbers, dates), value ranges, cross-column relationships (e.g., high >= low), and business logic. Datris generates a Python validation script from this instruction and runs it locally. If no validation rule is appropriate, this field is omitted.
 
-See [CodeGen AI Rule](data-quality/column-rules.md) for full documentation.
+See [CodeGen AI Rule](data-quality/ai-rules.md) for full documentation.
 
 ## How it works
 

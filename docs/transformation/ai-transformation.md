@@ -55,7 +55,7 @@ Add an `aiTransformation` block to the `transformation` section:
 3. The script is executed locally via `python3`. Processing cost is zero after the initial API call.
 4. The transformed data replaces the original and continues through the pipeline to destinations.
 
-AI transformations run after deduplication and column trimming, and before data is written to destinations.
+AI transformations run after data quality checks and before data is written to destinations.
 
 ## Works with all file types
 

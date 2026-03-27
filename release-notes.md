@@ -136,10 +136,10 @@ Added default values to all Scala case classes in `PipelineConfig.scala` so Jack
 ### Documentation
 
 - New: [Datris CLI](docs/cli.md) — full CLI command reference
-- Updated: [AI Data Quality (CodeGen)](docs/data-quality/column-rules.md)
+- Updated: [AI Data Quality (CodeGen)](docs/data-quality/ai-rules.md)
 - Updated: [AI Transformation (CodeGen)](docs/transformation/ai-transformation.md)
 - Updated: [Header Validation](docs/data-quality/header-validation.md) — now AI-powered
 - Updated: [Pipeline Configuration](docs/pipeline-configuration.md)
 - Updated: [AI Data Profiling](docs/ai-data-profiling.md)
 - Updated: [Index](docs/index.md) — added CLI, CodeGen descriptions
-- Deprecated: [Row Rules](docs/data-quality/row-rules.md), [JavaScript Row Functions](docs/transformation/row-functions.md), [REST Endpoint Transformation](docs/transformation/rest-endpoint.md)
+- Removed: Row Rules, JavaScript Row Functions, REST Endpoint Transformation docs (deprecated features)

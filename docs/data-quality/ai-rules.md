@@ -34,7 +34,7 @@ Define the AI rule in the `aiRule` field within the `dataQuality` block of the p
 }
 ```
 
-This single instruction replaces what previously required separate regex column rules for each column. The generated Python script handles all checks in one pass.
+The generated Python script handles all checks in one pass.
 
 ---
 

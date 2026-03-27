@@ -37,7 +37,7 @@ Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any
 - **Configuration-driven** - Define pipelines entirely through JSON, or extend with AI instructions and preprocessors at every stage of the data flow
 - **Multiple ingestion methods** - File upload API, MinIO bucket events, database polling, Kafka streaming
 - **Data quality** - CodeGen AI rules (LLM-generated Python validation), JSON/XML schema validation
-- **Transformations** - CodeGen AI transformations, deduplication, whitespace trimming
+- **Transformations** - CodeGen AI transformations, destination schema (drop/rename/retype columns)
 - **Multiple destinations** - Write to MinIO (Parquet/ORC), PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, or pgvector in parallel
 - **Event notifications** - Subscribe to pipeline processing events via ActiveMQ topics
 
@@ -68,7 +68,7 @@ Preprocessor (optional REST endpoint)
 Data Quality (CodeGen AI rules, header validation, schema validation)
   |
   v
-Transformation (CodeGen AI, deduplication, trimming)
+Transformation (CodeGen AI, destination schema)
   |
   v
 Destinations (executed in parallel)
@@ -134,7 +134,7 @@ Query Source
 - [API Reference](api-reference/pipeline-api.md) - REST API documentation
 - [AI Schema Generation](api-reference/schema-generation-api.md) - Generate pipeline configs from files using AI
 - [AI Configuration](ai-configuration.md) - Configure AI providers (Anthropic, OpenAI, Ollama)
-- [AI Data Quality (CodeGen)](data-quality/column-rules.md) - Natural language validation — generates Python scripts
+- [AI Data Quality (CodeGen)](data-quality/ai-rules.md) - Natural language validation — generates Python scripts
 - [AI Transformation (CodeGen)](transformation/ai-transformation.md) - Natural language transformation — generates Python scripts
 - [AI Data Profiling](ai-data-profiling.md) - Profile data files and get recommended rules
 - [AI Error Explanation](ai-error-explanation.md) - Automatic plain-English error analysis

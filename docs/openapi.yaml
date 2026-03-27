@@ -153,10 +153,10 @@ paths:
                   description: Optional REST endpoint preprocessor
                 dataQuality:
                   type: object
-                  description: Data quality rules (AI rules, column rules, row rules, schema validation)
+                  description: Data quality rules (AI rules, header validation, schema validation)
                 transformation:
                   type: object
-                  description: Transformation rules (deduplication, trimming, AI transforms, row functions)
+                  description: Transformation rules (AI transformation, deduplication, trimming)
                 destination:
                   type: object
                   description: Destination configuration (database, objectStore, kafka, activeMQ, restEndpoint, qdrant, weaviate, milvus, chroma, pgvector)
@@ -909,7 +909,7 @@ paths:
     post:
       tags: [Configuration]
       summary: Upload a configuration file
-      description: Upload a JSON Schema (for pipeline dataQuality schema validation) or JavaScript file (for pipeline transformation row functions) to storage. The uploaded file can then be referenced by pipeline configurations.
+      description: Upload a JSON Schema for pipeline dataQuality schema validation to storage. The uploaded file can then be referenced by pipeline configurations.
       requestBody:
         required: true
         content:
@@ -920,8 +920,8 @@ paths:
               properties:
                 type:
                   type: string
-                  enum: [validation-schema, javascript]
-                  description: "Config file type: 'validation-schema' for JSON Schema or 'javascript' for transformation scripts"
+                  enum: [validation-schema]
+                  description: "Config file type: 'validation-schema' for JSON Schema"
                 file:
                   type: string
                   format: binary

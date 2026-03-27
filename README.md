@@ -33,10 +33,10 @@ Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any
 
 ## Key Features
 
-- **Configuration-driven** - Define pipelines entirely through JSON, or extend the pipeline with AI instructions, JavaScript functions, REST endpoints, and preprocessors at every stage of the data flow
+- **Configuration-driven** - Define pipelines entirely through JSON, or extend with AI instructions and preprocessors at every stage of the data flow
 - **Multiple ingestion methods** - File upload API, MinIO bucket events, database polling, Kafka streaming
-- **Data quality** - AI rules, regex column checks, JavaScript row rules, REST endpoint row rules, JSON/XML schema validation
-- **Transformations** - AI transformations, deduplication, whitespace trimming, JavaScript row functions
+- **Data quality** - AI rules (CodeGen), header validation, JSON/XML schema validation
+- **Transformations** - AI transformations (CodeGen), destination schema (drop/rename/retype columns)
 - **Multiple destinations** - Write to MinIO (Parquet/ORC), PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, or pgvector in parallel
 - **Event notifications** - Subscribe to pipeline processing events via ActiveMQ topics
 
@@ -64,10 +64,10 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 Preprocessor (optional REST endpoint)
   |
   v
-Data Quality (AI rules, header validation, column rules, row rules, schema validation)
+Data Quality (AI rules, header validation, schema validation)
   |
   v
-Transformation (deduplication, trimming, JavaScript row functions)
+Transformation (AI transformation, destination schema)
   |
   v
 Destinations (executed in parallel)
@@ -151,15 +151,11 @@ See [Installation](docs/installation.md) for details on API keys, vector databas
 - [Preprocessor](docs/preprocessor.md) - External preprocessing via REST endpoints
 - **Data Quality**
   - [Header Validation](docs/data-quality/header-validation.md) - CSV header matching
-  - [Column Rules & AI Rules](docs/data-quality/column-rules.md) - Regex column validation and AI-powered natural language rules
-  - [Row Rules](docs/data-quality/row-rules.md) - JavaScript and REST endpoint rules
+  - [AI Rules (CodeGen)](docs/data-quality/ai-rules.md) - Natural language validation — generates Python scripts
   - [Schema Validation](docs/data-quality/schema-validation.md) - JSON/XML schema validation
 - **Transformations**
-  - [Deduplication](docs/transformation/deduplication.md) - Row deduplication
-  - [Column Trimming](docs/transformation/column-trimming.md) - Whitespace trimming
-  - [Dropping Columns](docs/transformation/dropping-columns.md) - Column filtering via destination schema
-  - [AI Transformation](docs/transformation/ai-transformation.md) - Natural language row transformations
-  - [Row Functions](docs/transformation/row-functions.md) - JavaScript row transformations
+  - [AI Transformation (CodeGen)](docs/transformation/ai-transformation.md) - Natural language transformations — generates Python scripts
+  - [Destination Schema](docs/transformation/dropping-columns.md) - Drop, rename, and retype columns
 - **Destinations**
   - [Object Store](docs/destinations/object-store.md) - Spark writes to MinIO (Parquet, ORC)
   - [PostgreSQL](docs/destinations/postgres.md) - COPY bulk insert

@@ -170,7 +170,7 @@ Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `do
 
 ### Data Quality
 
-See [Data Quality](data-quality/column-rules.md) for detailed documentation.
+See [Data Quality](data-quality/ai-rules.md) for detailed documentation.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -184,8 +184,6 @@ See [AI Transformation (CodeGen)](transformation/ai-transformation.md) for detai
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `trimColumnWhitespace` | boolean | Trim whitespace from all column values |
-| `deduplicate` | boolean | Remove duplicate rows |
 | `aiTransformation` | object | AI transformation — plain-English instruction that generates a Python transformation script |
 
 ### Destination > Object Store
