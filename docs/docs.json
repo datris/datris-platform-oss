@@ -106,7 +106,7 @@
           {
             "group": "MCP",
             "pages": [
-              "mcp",
+              "mcp-server",
               "cli"
             ]
           }
