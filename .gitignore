@@ -83,6 +83,7 @@ examples/chat-vector-store/.env
 mcp-server/.env
 mcp-server/my-env/
 mcp-server/.mcpregistry_github_token
+mcp-server/.mcpregistry_registry_token
 mcp-server/dist/
 mcp-server/.venv/
 

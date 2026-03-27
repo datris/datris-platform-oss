@@ -240,6 +240,14 @@ def main():
     result = test("query_postgres", "query_postgres", {"sql": "SELECT * FROM mcp_test_stock_prices"})
     dump_results(result)
 
+    # 12b. Natural language query
+    print("\n[12b] Natural language query")
+    result = test("query_natural", "query_natural", {
+        "question": "What is the highest closing price?",
+        "table": "mcp_test_stock_prices"
+    })
+    dump_results(result)
+
     # ================================================================
     # 13. Create Pipeline: JSON → MongoDB (atomic)
     # ================================================================

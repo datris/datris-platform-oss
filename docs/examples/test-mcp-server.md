@@ -6,7 +6,7 @@ An integration test script that exercises the MCP server tools end-to-end. Tests
 
 ## Test Flow
 
-1. **CSV → PostgreSQL** — create pipeline (auto-detects schema from sample data), upload CSV, wait, query back with SQL
+1. **CSV → PostgreSQL** — create pipeline (auto-detects schema from sample data), upload CSV, wait, query back with SQL and natural language
 2. **JSON → MongoDB** — create pipeline, upload JSON, wait, query back with find()
 3. **PDF → pgvector** — create pipeline, upload PDF, wait for chunking/embedding, semantic search
 4. **Cleanup** — delete all test pipelines (destination data is cleaned up automatically)
@@ -24,4 +24,4 @@ pip install requests python-dotenv psycopg2-binary pymongo openai
 python app.py
 ```
 
-Requires Datris running via `docker compose up`. Vector search requires an OpenAI API key for embedding generation.
+Requires Datris running via `docker compose up`. Natural language queries and vector search require an AI provider to be configured.

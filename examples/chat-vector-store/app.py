@@ -38,7 +38,7 @@ Environment variables (Weaviate):
 Environment variables (pgvector):
     PG_HOST               - PostgreSQL host (default: localhost)
     PG_PORT               - PostgreSQL port (default: 5432)
-    PG_DATABASE           - Database name (default: idata)
+    PG_DATABASE           - Database name (default: datris)
     PG_USER               - Username (default: postgres)
     PG_PASSWORD           - Password (default: postgres)
     PG_SCHEMA             - Schema name (default: public)
@@ -184,7 +184,7 @@ def search_pgvector(query_embedding, top_k=TOP_K):
 
     host = os.getenv("PG_HOST", "localhost")
     port = int(os.getenv("PG_PORT", "5432"))
-    database = os.getenv("PG_DATABASE", "idata")
+    database = os.getenv("PG_DATABASE", "datris")
     user = os.getenv("PG_USER", "postgres")
     password = os.getenv("PG_PASSWORD", "postgres")
     schema = os.getenv("PG_SCHEMA", "public")
@@ -230,7 +230,7 @@ def pgvector_info():
     """Return display info for pgvector."""
     host = os.getenv("PG_HOST", "localhost")
     port = os.getenv("PG_PORT", "5432")
-    database = os.getenv("PG_DATABASE", "idata")
+    database = os.getenv("PG_DATABASE", "datris")
     schema = os.getenv("PG_SCHEMA", "public")
     table = os.getenv("PG_TABLE", "financial_documents")
     return f"pgvector @ {host}:{port}/{database}, table: {schema}.{table}"
@@ -253,7 +253,7 @@ def search_milvus(query_embedding, top_k=TOP_K):
         collection_name=collection,
         data=[query_embedding],
         limit=top_k,
-        output_fields=["text", "chunk_index", "source_dataset", "filename"],
+        output_fields=["text", "chunk_index", "source_pipeline", "filename"],
     )
 
     formatted = []

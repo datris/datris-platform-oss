@@ -1,13 +1,13 @@
 """
-idata-dataset-notification ActiveMQ Consumer
-Subscribes to the idata-dataset-notification topic via a durable queue
+Datris Pipeline Notification Consumer
+Subscribes to the pipeline notification topic via a durable queue
 using the STOMP protocol.
 
 Install dependencies:
     pip install stomp.py python-dotenv
 
 Usage:
-    python idata_notification_consumer.py
+    python app.py
 
 Environment variables (or .env file):
     ACTIVEMQ_HOST       - ActiveMQ broker host (default: localhost)
@@ -15,7 +15,7 @@ Environment variables (or .env file):
     ACTIVEMQ_USER       - Broker username (default: admin)
     ACTIVEMQ_PASSWORD   - Broker password (default: admin)
     ACTIVEMQ_CLIENT_ID  - Durable subscriber client ID
-    ACTIVEMQ_TOPIC      - Topic name (default: idata-dataset-notification)
+    ACTIVEMQ_TOPIC      - Topic name (default: oss-pipeline-notification)
 """
 
 import json
@@ -43,7 +43,7 @@ logging.basicConfig(
         logging.FileHandler("notification_consumer.log"),
     ],
 )
-logger = logging.getLogger("idata.notification.consumer")
+logger = logging.getLogger("datris.notification.consumer")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -52,13 +52,13 @@ ACTIVEMQ_HOST       = os.getenv("ACTIVEMQ_HOST", "localhost")
 ACTIVEMQ_PORT       = int(os.getenv("ACTIVEMQ_PORT", "61613"))
 ACTIVEMQ_USER       = os.getenv("ACTIVEMQ_USER", "admin")
 ACTIVEMQ_PASSWORD   = os.getenv("ACTIVEMQ_PASSWORD", "admin")
-ACTIVEMQ_CLIENT_ID  = os.getenv("ACTIVEMQ_CLIENT_ID", "idata-python-notification-consumer")
-TOPIC_NAME          = os.getenv("ACTIVEMQ_TOPIC", "oss-dataset-notification")
+ACTIVEMQ_CLIENT_ID  = os.getenv("ACTIVEMQ_CLIENT_ID", "datris-python-notification-consumer")
+TOPIC_NAME          = os.getenv("ACTIVEMQ_TOPIC", "oss-pipeline-notification")
 
 # For Virtual Topic queue semantics (each consumer gets its own copy):
-#   SUBSCRIPTION_DEST = "/queue/Consumer.python-app.VirtualTopic.idata-dataset-notification"
+#   SUBSCRIPTION_DEST = "/queue/Consumer.python-app.VirtualTopic.oss-pipeline-notification"
 # For direct durable topic subscription:
-#   SUBSCRIPTION_DEST = "/topic/idata-dataset-notification"
+#   SUBSCRIPTION_DEST = "/topic/oss-pipeline-notification"
 USE_VIRTUAL_TOPIC   = os.getenv("USE_VIRTUAL_TOPIC", "true").lower() == "true"
 
 if USE_VIRTUAL_TOPIC:
@@ -75,7 +75,7 @@ MAX_RECONNECT_ATTEMPTS  = 10
 # ---------------------------------------------------------------------------
 def handle_notification(message_id: str, headers: dict, body: str) -> None:
     """
-    Process a single dataset notification message.
+    Process a single pipeline notification message.
     Customize this function with your pipeline logic.
     """
     logger.info(f"Received message | id={message_id}")
@@ -86,18 +86,18 @@ def handle_notification(message_id: str, headers: dict, body: str) -> None:
         logger.info(f"Dataset notification: {json.dumps(payload, indent=2)}")
 
         # --- Your pipeline logic here ---
-        dataset_name    = payload.get("datasetName")
+        pipeline_name   = payload.get("pipelineName")
         pipeline_token  = payload.get("pipelineToken")
         event_type      = payload.get("eventType")
         timestamp       = payload.get("timestamp", datetime.utcnow().isoformat())
 
         logger.info(
-            f"Processing | dataset={dataset_name} | "
+            f"Processing | pipeline={pipeline_name} | "
             f"event={event_type} | token={pipeline_token} | ts={timestamp}"
         )
 
-        # Example: trigger downstream pipeline action
-        # pipeline_client.trigger(dataset_name, pipeline_token)
+        # Example: trigger downstream action
+        # pipeline_client.trigger(pipeline_name, pipeline_token)
 
     except json.JSONDecodeError:
         # Non-JSON payload — log raw body
@@ -215,7 +215,7 @@ def run_consumer():
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("idata-dataset-notification Consumer Starting")
+    logger.info("Datris Pipeline Notification Consumer Starting")
     logger.info(f"  Broker   : {ACTIVEMQ_HOST}:{ACTIVEMQ_PORT}")
     logger.info(f"  Topic    : {TOPIC_NAME}")
     logger.info(f"  Dest     : {SUBSCRIPTION_DEST}")
