@@ -5,14 +5,14 @@
 [![Docker Hub](https://img.shields.io/docker/v/datrisai/datris-server?label=Docker%20Hub)](https://hub.docker.com/u/datrisai)
 [![License](https://img.shields.io/github/license/datris/datris-platform-oss)](LICENSE)
 
-[datris.ai](https://datris.ai) · [Documentation](https://datris.ai/docs) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
+[datris.ai](https://datris.ai) · [Documentation](https://docs.datris.ai) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
 
 Ingest, validate, transform, store, and retrieve your data — whether you're an AI agent talking through MCP or a developer writing config. One platform for both.
 
 ## Why Datris?
 
 - **Agent-native** — Built-in MCP server with 30+ tools. Claude, Cursor, OpenClaw, and any MCP-compatible agent can operate pipelines through natural conversation
-- **AI at every stage** — CodeGen data quality, CodeGen transformations, AI schema generation, AI profiling, AI error explanation, natural language queries, RAG
+- **AI at every stage** — AI data quality, AI transformations, AI schema generation, AI profiling, AI error explanation, natural language queries, RAG
 - **No vendor lock-in** — 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault). Runs anywhere Docker does
 - **Configuration-driven** — Define pipelines through JSON. No code required
 
@@ -48,7 +48,8 @@ Add to your MCP client config (Claude Desktop, Cursor, etc.):
 ### CLI
 
 ```bash
-pip install datris-mcp-server
+brew tap datris/tap
+brew install datris
 datris ingest data.csv --dest postgres
 datris ingest sales.csv --ai-validate "prices > 0" --ai-transform "convert dates to YYYY/MM/DD"
 datris query "SELECT * FROM sales"
@@ -73,8 +74,8 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 | Feature | Description |
 |---------|-------------|
 | **MCP Server** | 30+ tools for AI agents — pipeline CRUD, upload, query, search, profiling |
-| **CodeGen Data Quality** | Plain English validation rules → Python script, runs locally (~$0.003/rule) |
-| **CodeGen Transformation** | Plain English transformations → Python script, runs locally |
+| **AI Data Quality** | Plain English validation rules — AI generates and runs a validation script |
+| **AI Transformation** | Plain English transformations — AI generates and runs a transformation script |
 | **AI Schema Generation** | Upload a file, get a complete pipeline config |
 | **AI Data Profiling** | Upload a file, get statistics + suggested validation rules |
 | **AI Error Explanation** | Job failures explained in plain English |
@@ -102,7 +103,7 @@ Anthropic Claude (Opus 4.6, Sonnet 4.6, Haiku) · OpenAI (GPT-5, GPT-4.1, o3) ·
 
 ## Documentation
 
-Full documentation at [datris.ai/docs](https://datris.ai/docs) or locally at `docs/`.
+Full documentation at [docs.datris.ai](https://docs.datris.ai) or locally at `docs/`.
 
 ## License
 
