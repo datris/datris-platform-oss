@@ -1,0 +1,166 @@
+---
+title: "AI Configuration"
+description: "Configure AI features"
+---
+
+The pipeline integrates with AI providers for these features:
+
+- **Schema generation** — upload a file to `POST /api/v1/pipeline/generate` and receive a complete pipeline configuration with inferred field names and types
+- **Data quality rules** — describe validation logic in plain English using `aiRule` instead of writing code
+- **Transformations** — describe data transformations in plain English using `aiTransformation`
+- **Data profiling** — upload a file and get summary statistics, quality issues, and suggested validation rules
+- **Header validation** — AI-powered fuzzy matching for CSV/delimited file headers against the pipeline schema
+- **Error explanation** — AI analyzes job failures and explains the root cause in plain English
+
+All features use the same provider configuration.
+
+## Choosing a Provider
+
+The pipeline supports cloud providers (Anthropic, OpenAI) and local models via Ollama.
+
+**Cloud providers are recommended for production use.** They offer higher accuracy and stronger domain knowledge. The AI generates scripts from a sample of the data (not the full file), so there are no file size limitations tied to the model's context window.
+
+| Provider | Accuracy | API Key | Best For |
+|----------|----------|---------|----------|
+| Anthropic (Claude) | Excellent | Required | Production |
+| OpenAI (GPT) | Excellent | Required | Production |
+| Ollama (local) | Good (varies by model) | No | Development, testing, no external dependencies |
+
+Ollama is a good choice for local development and testing — it requires no API key, no external account, and runs entirely on your machine. For production workloads requiring strong domain knowledge in generated scripts, use a cloud provider.
+
+## Supported Providers
+
+| Provider | Value | API Key Required |
+|----------|-------|-----------------|
+| Anthropic (Claude) | `anthropic` | Yes |
+| OpenAI (GPT) | `openai` | Yes |
+| Ollama (local) | `ollama` | No |
+
+## application.yaml
+
+Enable AI and set the provider in `application.yaml`:
+
+```yaml
+ai:
+  enabled: "true"
+  provider: "anthropic"   # anthropic, openai, or ollama
+  aiSecretName: "oss/anthropic"
+```
+
+Change `aiSecretName` to match the Vault secret name for your chosen provider.
+
+## Vault Secret
+
+The endpoint and model are stored in Vault. The secret must contain three fields:
+
+| Field | Description |
+|-------|-------------|
+| `endpoint` | API endpoint URL |
+| `model` | Model identifier |
+| `apiKey` | API key (empty string `""` for Ollama) |
+
+### Anthropic (recommended)
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv put secret/oss/anthropic \
+  endpoint="https://api.anthropic.com/v1/messages" \
+  model="claude-sonnet-4-6" \
+  apiKey="your-anthropic-key"
+```
+
+Then update `application.yaml`:
+
+```yaml
+ai:
+  enabled: "true"
+  provider: "anthropic"
+  aiSecretName: "oss/anthropic"
+```
+
+### OpenAI
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv put secret/oss/openai \
+  endpoint="https://api.openai.com/v1/chat/completions" \
+  model="gpt-4o" \
+  apiKey="your-openai-key"
+```
+
+Then update `application.yaml`:
+
+```yaml
+ai:
+  enabled: "true"
+  provider: "openai"
+  aiSecretName: "oss/openai"
+```
+
+### Ollama (local model)
+
+[Ollama](https://ollama.com) runs models locally on the host machine and exposes an OpenAI-compatible API. No API key is required.
+
+**Install Ollama** on your machine from [ollama.com/download](https://ollama.com/download), then pull a model:
+
+```bash
+ollama pull qwen2.5:14b-instruct
+```
+
+The pipeline running in Docker reaches Ollama on the host via `host.docker.internal`. The Vault secret is seeded automatically by `docker/vault-init.sh`. To set it manually:
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv put secret/oss/ollama \
+  endpoint="http://host.docker.internal:11434/v1/chat/completions" \
+  model="qwen2.5:14b-instruct" \
+  apiKey=""
+```
+
+The default model is `qwen2.5:14b-instruct`. To use a different model, set `OLLAMA_MODEL` in your `.env` file and pull it locally:
+
+```bash
+OLLAMA_MODEL=llama3.1:8b
+ollama pull llama3.1:8b
+```
+
+Then `docker-compose up --build` to update the Vault secret.
+
+#### Recommended local models
+
+Choose a model based on your available RAM. Larger models are significantly more accurate — 70B+ models approach cloud-level quality for data validation and transformation tasks.
+
+| Model | Size | RAM Needed | Accuracy | Best For |
+|-------|------|------------|----------|----------|
+| `llama3.1:8b` | 8B | ~6 GB | Good | Lightweight dev/testing |
+| `qwen2.5:14b-instruct` | 14B | ~10 GB | Good | Default for 16-24 GB machines |
+| `qwen2.5:32b-instruct` | 32B | ~20 GB | Very good | 32 GB machines |
+| `llama3.3:70b` | 70B | ~42 GB | Excellent | 64+ GB machines, near cloud quality |
+| `qwen2.5:72b-instruct` | 72B | ~45 GB | Excellent | 64+ GB machines, near cloud quality |
+
+#### Local model accuracy
+
+Local models work well for straightforward rules but may produce less accurate results for complex validation logic. For production workloads where accuracy matters, use a cloud provider or a 70B+ local model. For development and testing, 14B models provide fast iteration at acceptable accuracy.
+
+## Automating with .env
+
+To avoid setting Vault secrets manually after every `docker-compose up --build`, create a `.env` file at the project root (this file is gitignored):
+
+```bash
+OLLAMA_MODEL=qwen2.5:14b-instruct
+ANTHROPIC_API_KEY=your-key-here
+OPENAI_API_KEY=your-key-here
+```
+
+Docker Compose reads `.env` automatically and passes these values to `vault-init`, which seeds the secrets on every startup.
+
+## Verifying the Secret
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv get secret/oss/anthropic
+```
+
+## AI Provider Required
+
+An AI provider must be configured for the platform to start. Set `ai.enabled: "true"` and configure at least one provider (Anthropic, OpenAI, or Ollama) in `application.yaml` and Vault.

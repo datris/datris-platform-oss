@@ -1,0 +1,88 @@
+---
+title: "API File Upload"
+description: "Ingest data via API file upload"
+---
+
+Upload data files directly to the pipeline through the REST API. The pipeline accepts any file type (CSV, JSON, XML, Excel, PDF, Word, PowerPoint, HTML, email, EPUB, plain text, and archives), handles decompression automatically, and returns a tracking token.
+
+## Endpoint
+
+```
+POST /api/v1/pipeline/upload
+```
+
+## Request
+
+The request uses `multipart/form-data` encoding with the following parts:
+
+| Part | Required | Description |
+|---|---|---|
+| `file` | Yes | The data file to upload |
+| `pipeline` | Yes | Name of the target pipeline configuration |
+| `publishertoken` | No | Opaque token identifying the data publisher; used for lineage tracking |
+
+### Example
+
+```bash
+curl -X POST "http://localhost:9000/api/v1/pipeline/upload" \
+  -F "file=@transactions_2025.csv" \
+  -F "pipeline=transactions" \
+  -F "publishertoken=finance-team-a"
+```
+
+## Response
+
+A successful upload returns HTTP 200 with a JSON body containing a `pipelineToken`:
+
+```json
+{
+  "pipelineToken": "d4f8e1a2-7b3c-4e9f-a5d6-1c2b3e4f5a6b",
+  "status": "ACCEPTED"
+}
+```
+
+The `pipelineToken` is a unique UUID generated for each upload. Use it to track the job's processing status, view errors, or cancel the job.
+
+## Compressed Files
+
+When the uploaded file has a compressed extension, the pipeline stages it to the MinIO raw bucket before processing:
+
+| Extension | Handling |
+|---|---|
+| `.zip` | Staged to MinIO raw bucket, then extracted |
+| `.gz` | Staged to MinIO raw bucket, then decompressed |
+| `.tar` | Staged to MinIO raw bucket, then extracted |
+| `.jar` | Staged to MinIO raw bucket, then extracted |
+
+Compressed archives may contain multiple data files. Each file inside the archive is processed as a separate unit against the same pipeline configuration.
+
+## Uncompressed Files
+
+Files without a recognized compressed extension (e.g., `.csv`, `.json`, `.xml`, `.xls`, `.pdf`, `.docx`, `.txt`, `etc`) are processed in-memory directly. They are not staged to MinIO.
+
+## Processing Flow
+
+1. The client sends the multipart request.
+2. The pipeline inspects the file extension.
+3. **Compressed path**: the file is written to the MinIO raw bucket under `{env}-raw/temp/{pipeline}/{filename}`. A background job picks it up, decompresses it, and feeds each inner file into the ingestion pipeline.
+4. **Uncompressed path**: the file contents are read into memory and passed directly to the ingestion pipeline.
+5. The pipeline returns the `pipelineToken` immediately. Processing continues asynchronously.
+
+## Error Responses
+
+| HTTP Status | Cause |
+|---|---|
+| 400 | Missing `pipeline` parameter or empty file |
+| 413 | File exceeds the configured upload size limit |
+| 500 | Pipeline not found, internal error, or processing failure |
+
+## Size Limits
+
+The maximum upload size is controlled by `spring.servlet.multipart.max-file-size` in `application.yaml`. The default is 1 GB. Adjust this value if your files exceed the limit:
+
+```yaml
+spring:
+  servlet:
+    multipart:
+      max-file-size: 1GB
+```

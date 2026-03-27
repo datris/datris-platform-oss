@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "datris-mcp-server"
-version = "1.4.1"
+version = "1.4.2"
 description = "MCP server for the Datris AI Agent-Native Data Platform"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -51,4 +51,4 @@ only-include = ["server.py", "cli.py"]
 sources = ["."]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["server.py", "pyproject.toml", "README.md"]
+only-include = ["server.py", "cli.py", "pyproject.toml", "README.md"]

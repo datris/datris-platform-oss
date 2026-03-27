@@ -1,0 +1,8 @@
+.git
+.github
+.claude
+node_modules
+README.md
+LICENSE.md
+CHANGELOG.md
+CONTRIBUTING.md

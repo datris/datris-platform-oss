@@ -23,5 +23,5 @@ def publish_csv_file(filepath: str, topic: str, bootstrap_servers: str = "localh
 
 if __name__ == "__main__":
     publish_csv_file("../../test-scripts/files/stock_price.20170102.csv",
-                "datris.stock_price_stream",
+                "oss.stock_price_stream",
                 "localhost:9092")
