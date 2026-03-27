@@ -9,8 +9,8 @@
   },
   "favicon": "/favicon.svg",
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "light": "/logo/datris-full-logo.png",
+    "dark": "/logo/datris-full-logo.png"
   },
   "navigation": {
     "tabs": [
@@ -84,11 +84,7 @@
             "pages": [
               "configuration-reference",
               "monitoring",
-              "notifications",
-              "DockerNoPipeline",
-              "config/commands",
-              "config/ec2-ollama",
-              "config/mcp-registry"
+              "notifications"
             ]
           },
           {

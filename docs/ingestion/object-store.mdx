@@ -3,7 +3,7 @@ title: "MinIO Bucket Ingestion"
 description: "Ingest from MinIO object store"
 ---
 
-The pipeline can ingest files dropped into MinIO buckets. There are three patterns: single data file, metadata file with data file, and bulk upload.
+The data platform monitors the `{env}-raw` MinIO bucket for new files. When a file is dropped into this bucket, the data platform picks it up and processes it automatically. There are three patterns: single data file, metadata file with data file, and bulk upload.
 
 ## File Naming Convention
 
@@ -18,7 +18,7 @@ Place a file in the MinIO raw bucket following this naming pattern:
 | Segment | Description |
 |---------|-------------|
 | `pipeline` | Name of the registered pipeline configuration |
-| `publishertoken` | Optional identifier for the data publisher |
+| `publishertoken` | Optional identifier for the data publisher — must be a unique value, UUID recommended |
 | `anything` | Any additional text (timestamp, version, etc.) |
 | `pipeline` (literal) | Fixed literal sentinel string |
 | `ext` | File extension: `csv`, `json`, `xml` |

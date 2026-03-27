@@ -1,11 +1,11 @@
 ---
 title: "Installation"
-description: "How to install and set up Datris"
+description: "How to install and set up the Datris Data Platform"
 ---
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
+- [Docker](https://docs.docker.com/get-docker/)
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ OPENAI_API_KEY=sk-proj-...
 docker compose up -d
 ```
 
-Docker Compose pulls the pre-built images from Docker Hub and starts the full stack. On first run, `vault-init` automatically seeds your API keys into Vault.
+Docker pulls the pre-built images from Docker Hub and starts the full stack. On first run, `vault-init` automatically seeds your API keys into Vault.
 
 ### 4. Verify
 
@@ -78,8 +78,8 @@ This pulls the latest pre-built images from Docker Hub and restarts the services
 
 | UI | URL | Credentials |
 |----|-----|-------------|
-| **Pipeline UI** | [http://localhost:4200](http://localhost:4200) | none |
-| **Pipeline API** | [http://localhost:8080](http://localhost:8080) | none |
+| **Datris Platform UI** | [http://localhost:4200](http://localhost:4200) | none |
+| **Datris Platform API** | [http://localhost:8080](http://localhost:8080) | none |
 | **MCP Server (SSE)** | [http://localhost:3000/sse](http://localhost:3000/sse) | none |
 | **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin` |
 | **ActiveMQ Console** | [http://localhost:8161](http://localhost:8161) | `admin` / `admin` |
@@ -96,7 +96,7 @@ Datris supports three AI providers. Set your keys in `.env`:
 | **OpenAI** | `OPENAI_API_KEY` | Same as above, plus embeddings for vector database / RAG |
 | **Ollama** (local) | `OLLAMA_MODEL` | Same as above — no API key needed, runs locally |
 
-At least one AI provider key is required for AI features. The embedding provider for RAG defaults to OpenAI but can be changed via `EMBEDDING_PROVIDER` in `.env`.
+At least one AI provider key is required for AI features. The embedding provider for RAG is configured via Vault secrets — see [AI Configuration](/ai-configuration) for details.
 
 ## Infrastructure Details
 
@@ -104,11 +104,13 @@ At least one AI provider key is required for AI features. The embedding provider
 
 The `minio-init` container automatically creates the required buckets:
 
-- `oss-raw` - File upload staging
-- `oss-raw-plus` - Processed file staging
-- `oss-temp` - Temporary processing files
-- `oss-data` - Pipeline output (object store destination)
-- `oss-config` - Configuration files (validation schemas)
+- `{env}-raw` - File upload staging
+- `{env}-raw-plus` - Processed file staging
+- `{env}-temp` - Temporary processing files
+- `{env}-data` - Pipeline output (object store destination)
+- `{env}-config` - Configuration files (validation schemas)
+
+Where `{env}` is the environment name (default: `oss`). See [Configuration Reference](/configuration-reference) for the `environment` setting.
 
 ### Vault
 
@@ -127,7 +129,7 @@ pgvector is included by default via the PostgreSQL service. To add other vector 
 
 The pipeline server reads configuration from `application.yaml`, mounted from `docker/config/application.yaml`.
 
-See [Configuration Reference](configuration-reference.md) for the full list of properties.
+See [Configuration Reference](/configuration-reference) for the full list of properties.
 
 ## Building from Source
 

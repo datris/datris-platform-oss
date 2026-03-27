@@ -21,7 +21,7 @@ The pipeline server is configured via `application.yaml` (or `application.proper
 |----------|---------|-------------|
 | `logging.level.root` | `INFO` | Root log level |
 | `logging.level.org.springframework.web` | `INFO` | Spring web log level |
-| `logging.level.net.datris.pipeline` | `INFO` | Pipeline log level |
+| `logging.level.ai.datris` | `INFO` | Pipeline log level |
 
 ### Scheduling
 
@@ -106,15 +106,15 @@ ActiveMQ credentials are stored in Vault under `secrets.activeMQSecretName`:
 | `kafkaConsumer.topicPollingInterval` | `500` | Topic polling interval (ms) |
 | `kafkaConsumer.topicPrefix` | | Prefix for topic names |
 
-### AI Schema Generation (Optional)
+### AI (Required)
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `ai.enabled` | `false` | Enable the AI schema generation endpoint |
-| `ai.provider` | `anthropic` | AI provider — `anthropic` or `openai` |
-| `ai.aiSecretName` | | Vault secret name containing `endpoint`, `model`, and `apiKey` |
+| `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
+| `ai.provider` | `ollama` | AI provider — `anthropic`, `openai`, or `ollama` |
+| `ai.aiSecretName` | `oss/ollama` | Vault secret name containing `endpoint`, `model`, and `apiKey` |
 
-See [AI Schema Generation](api-reference/schema-generation-api.md) for full setup details.
+See [AI Configuration](/ai-configuration) for full setup details.
 
 ## Vault Secret Formats
 

@@ -1,5 +1,5 @@
 ---
-title: "Datris — The First AI Agent-Native Data Platform"
+title: "Datris"
 description: "The first AI Agent-native data platform"
 ---
 
@@ -18,13 +18,23 @@ Your AI agents are first-class pipeline operators. Datris ships with a native MC
 Intelligence at every stage — from ingestion to delivery, Datris makes data engineering accessible through natural language.
 
 - **MCP server (AI agent integration)** - Built-in [MCP](https://modelcontextprotocol.io) server lets AI agents (Claude, Cursor, OpenClaw, custom frameworks) natively interact with the pipeline — register pipelines, upload files, trigger jobs, profile data, run semantic searches, and query databases. Supports stdio and SSE transports
-- **AI-powered data quality (CodeGen)** - Validate with plain English rules via `aiRule`. Datris generates a Python validation script from your instruction and runs it locally (~$0.003/rule). Works for CSV, JSON, and XML
-- **AI transformations (CodeGen)** - Describe transformations in natural language — date format conversion, data categorization, phone number standardization, entity extraction. Datris generates a Python script and runs it locally
+- **AI-powered data quality** - Validate with plain English rules via `aiRule`. Examples:
+  - *"Validate that all email addresses are properly formatted and all phone numbers contain 7–15 digits"*
+  - *"Ensure price is positive, quantity is a whole number, and discount never exceeds price"*
+  - *"Check that start_date is before end_date and both are in YYYY-MM-DD format"*
+  - *"Verify that country codes are valid ISO 3166-1 alpha-2 codes"*
+  - *"Flag any row where revenue minus cost does not equal profit within a 0.01 tolerance"*
+- **AI transformations** - Describe transformations in natural language. Examples:
+  - *"Convert all dates to YYYY-MM-DD format and normalize phone numbers to E.164"*
+  - *"Categorize transactions as 'small' under $100, 'medium' $100–$1000, or 'large' over $1000"*
+  - *"Extract city and state from the address column into separate columns"*
+  - *"Standardize company names — remove Inc, LLC, Corp suffixes and trim whitespace"*
+  - *"Convert all currency amounts from EUR to USD using a rate of 1.08"*
 - **Datris CLI** - Command-line interface for ingesting data, running queries, and managing pipelines. `datris ingest data.csv --ai-validate "prices > 0" --ai-transform "convert dates to YYYY/MM/DD"`
-- **AI schema generation** - Upload any CSV, JSON, or XML file and receive a complete, ready-to-register pipeline configuration — field names and types inferred automatically
-- **AI data profiling** - Upload a file and get summary statistics, quality issues, and suggested validation rules — all powered by AI analysis
+- **AI schema generation** - Upload any data and receive a complete, ready-to-register pipeline configuration — field names and types inferred automatically
+- **AI data profiling** - Upload a data and get summary statistics, quality issues, and suggested validation rules — all powered by AI analysis
 - **AI error explanation** - When jobs fail, AI analyzes the error chain and explains the root cause in plain English. No more digging through stack traces
-- **AI providers** - Anthropic Claude (Opus 4.6, Sonnet 4.6, Haiku), OpenAI (GPT-5, GPT-4.1, o3, embedding models), or local models via Ollama (Llama, Mistral, Phi). No vendor lock-in — switch providers without changing your pipeline config
+- **AI providers** - Anthropic Claude (choose any model), OpenAI (chose any model, plus embeddings models), or local models via Ollama (Llama, Mistral, Phi). No vendor lock-in — switch providers without changing your pipeline config
 
 ## RAG Pipeline
 
@@ -37,16 +47,16 @@ Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any
 
 ## Key Features
 
-- **Configuration-driven** - Define pipelines entirely through JSON, or extend with AI instructions and preprocessors at every stage of the data flow
-- **Multiple ingestion methods** - File upload API, MinIO bucket events, database polling, Kafka streaming
-- **Data quality** - CodeGen AI rules (LLM-generated Python validation), JSON/XML schema validation
-- **Transformations** - CodeGen AI transformations, destination schema (drop/rename/retype columns)
-- **Multiple destinations** - Write to MinIO (Parquet/ORC), PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, or pgvector in parallel
+- **Configuration-driven** - Define pipelines entirely via MCP, the Datris UI, or directly with JSON. Extend it with AI instructions for data quality and transformations. You even have the option of defining your own preprocessor via a REST endpoint
+- **Multiple ingestion methods** - MCP, data upload API, MinIO bucket events, database polling, Kafka streaming
+- **Data quality** - AI rules (LLM-generated), and/or JSON/XML schema validation
+- **Transformations** - AI transformations (LLM-generated), destination schema (drop/rename/retype columns) for structure data
+- **Multiple destinations** - Write to PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, pgvector, or  MinIO (Parquet/ORC) in parallel
 - **Event notifications** - Subscribe to pipeline processing events via ActiveMQ topics
 
 ## Architecture
 
-Push and pull — one platform, two interfaces. AI agents and humans ingest data through the pipeline, store it across databases and vector stores, and retrieve it back — via API or MCP.
+Push and pull — one platform, two interfaces. AI agents and humans ingest data through the pipeline, store it across databases and vector stores, and retrieve it back — via MCP or API.
 
 Self-hosted on proven open-source infrastructure — no proprietary services, no vendor lock-in, no surprise bills:
 
@@ -62,16 +72,16 @@ Self-hosted on proven open-source infrastructure — no proprietary services, no
 ## Processing Flow
 
 ```
-Source (File Upload / MinIO Event / Database Pull / Kafka)
+Source (Data Upload / MinIO Event / Database Pull / Kafka)
   |
   v
 Preprocessor (optional REST endpoint)
   |
   v
-Data Quality (CodeGen AI rules, header validation, schema validation)
+Data Quality (AI rules, header validation, schema validation)
   |
   v
-Transformation (CodeGen AI, destination schema)
+Transformation (AI transformations)
   |
   v
 Destinations (executed in parallel)
@@ -129,25 +139,24 @@ Query Source
 
 ## Quick Links
 
-- [Installation](installation.md) - Get running with Docker Compose
-- [Quick Start](quick-start.md) - End-to-end walkthrough
-- [Datris CLI](cli.md) - Command-line interface for ingesting, querying, and managing pipelines
-- [Pipeline Configuration](pipeline-configuration.md) - Full JSON configuration reference
-- [Preprocessor](preprocessor.md) - External preprocessing via REST endpoints
-- [API Reference](api-reference/pipeline-api.md) - REST API documentation
-- [AI Schema Generation](api-reference/schema-generation-api.md) - Generate pipeline configs from files using AI
-- [AI Configuration](ai-configuration.md) - Configure AI providers (Anthropic, OpenAI, Ollama)
-- [AI Data Quality (CodeGen)](data-quality/ai-rules.md) - Natural language validation — generates Python scripts
-- [AI Transformation (CodeGen)](transformation/ai-transformation.md) - Natural language transformation — generates Python scripts
-- [AI Data Profiling](ai-data-profiling.md) - Profile data files and get recommended rules
-- [AI Error Explanation](ai-error-explanation.md) - Automatic plain-English error analysis
-- [Qdrant Destination](destinations/qdrant.md) - Vector database for RAG with chunking, embeddings, and metadata
-- [Weaviate Destination](destinations/weaviate.md) - Vector database for RAG with chunking, embeddings, and metadata
-- [Milvus Destination](destinations/milvus.md) - Scalable vector database for RAG
-- [Chroma Destination](destinations/chroma.md) - Lightweight vector database for RAG — single container
-- [pgvector Destination](destinations/pgvector.md) - PostgreSQL vector database for RAG — no separate server required
-- [Query API](api-reference/query-api.md) - Query PostgreSQL and MongoDB via REST API
-- [Search API](api-reference/search-api.md) - Semantic search across vector databases via REST API
-- [OpenAPI Spec](openapi.yaml) - OpenAPI 3.0 spec for Postman, code generation, and non-MCP integrations
-- [MCP Server](mcp.md) - AI agent integration via Model Context Protocol
-- [Example Applications](examples.md) - Vector store chat, Kafka loader, preprocessor, and more
+- [Installation](/installation) - Get running with Docker Compose
+- [Quick Start](/quick-start) - End-to-end walkthrough
+- [Datris CLI](/cli) - Command-line interface for ingesting, querying, and managing pipelines
+- [Pipeline Configuration](/pipeline-configuration) - Full JSON configuration reference
+- [Preprocessor](/preprocessor) - External preprocessing via REST endpoints
+- [API Reference](/api-reference/pipeline-api) - REST API documentation
+- [AI Schema Generation](/api-reference/schema-generation-api) - Generate pipeline configs from files using AI
+- [AI Configuration](/ai-configuration) - Configure AI providers (Anthropic, OpenAI, Ollama)
+- [AI Data Quality](/data-quality/ai-rules) - Natural language validation
+- [AI Transformation](/transformation/ai-transformation) - Natural language transformation
+- [AI Data Profiling](/ai-data-profiling) - Profile data files and get recommended rules
+- [AI Error Explanation](/ai-error-explanation) - Automatic plain-English error analysis
+- [Qdrant Destination](/destinations/qdrant) - Vector database for RAG with chunking, embeddings, and metadata
+- [Weaviate Destination](/destinations/weaviate) - Vector database for RAG with chunking, embeddings, and metadata
+- [Milvus Destination](/destinations/milvus) - Scalable vector database for RAG
+- [Chroma Destination](/destinations/chroma) - Lightweight vector database for RAG — single container
+- [pgvector Destination](/destinations/pgvector) - PostgreSQL vector database for RAG — no separate server required
+- [Query API](/api-reference/query-api) - Query PostgreSQL and MongoDB via REST API
+- [Search API](/api-reference/search-api) - Semantic search across vector databases via REST API
+- [MCP Server](/mcp) - AI agent integration via Model Context Protocol
+- [Example Applications](/examples) - Vector store chat, Kafka loader, preprocessor, and more

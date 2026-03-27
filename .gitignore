@@ -87,6 +87,11 @@ mcp-server/.mcpregistry_registry_token
 mcp-server/dist/
 mcp-server/.venv/
 
+# docs
+docs/config/commands.mdx
+docs/config/ec2-ollama.mdx
+docs/config/mcp-registry.mdx
+
 # mcp-publisher tokens
 .mcpregistry_github_token
 .mcpregistry_registry_token

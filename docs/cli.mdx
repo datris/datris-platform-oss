@@ -8,10 +8,9 @@ The Datris CLI (`datris`) is a command-line interface for the Datris Data Platfo
 ## Installation
 
 ```bash
-pip install datris-mcp-server
+brew tap datris/tap
+brew install datris
 ```
-
-This installs both the MCP server (`datris-mcp-server`) and the CLI (`datris`).
 
 ## Configuration
 
@@ -22,6 +21,16 @@ export MCP_SERVER_URL=http://localhost:3000/sse    # default
 ```
 
 ## Commands
+
+### `datris help`
+
+Show all available commands and options.
+
+```bash
+datris --help
+```
+
+---
 
 ### `datris pipelines`
 

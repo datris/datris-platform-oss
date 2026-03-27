@@ -52,6 +52,7 @@ Read-only queries against the pipeline's backend databases.
 |------|-------------|
 | `query_postgres` | Execute a read-only SQL SELECT query against PostgreSQL |
 | `query_mongodb` | Query a MongoDB collection with filter and projection |
+| `query_natural` | Ask a question in natural language — AI generates and executes SQL |
 
 ### Metadata Discovery
 
@@ -92,10 +93,10 @@ The MCP server starts automatically with `docker-compose up` in SSE mode on port
 
 ### Local (for Claude Desktop / Claude Code)
 
+The MCP server is published on PyPI. Use `uvx` to run it directly:
+
 ```bash
-cd mcp-server
-pip install -r requirements.txt
-python server.py          # stdio mode (default)
+uvx datris-mcp-server
 ```
 
 ## Transport Modes
@@ -112,9 +113,9 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```json
 {
     "mcpServers": {
-        "datris-pipeline": {
-            "command": "python",
-            "args": ["/path/to/mcp-server/server.py"],
+        "datris": {
+            "command": "uvx",
+            "args": ["datris-mcp-server"],
             "env": {
                 "PIPELINE_URL": "http://localhost:8080"
             }
@@ -130,9 +131,9 @@ Add to `.mcp.json` in your project root:
 ```json
 {
     "mcpServers": {
-        "datris-pipeline": {
-            "command": "python",
-            "args": ["mcp-server/server.py"],
+        "datris": {
+            "command": "uvx",
+            "args": ["datris-mcp-server"],
             "env": {
                 "PIPELINE_URL": "http://localhost:8080"
             }
@@ -188,7 +189,7 @@ An AI agent could autonomously:
 
 1. **Create pipeline with AI rules** — `create_pipeline` with `codegen_rule` for validation and/or `codegen_transform` for transformation
 2. **Upload data** — `upload_data` to process data through the AI-powered pipeline
-3. Datris generates Python scripts from your instructions and runs them locally
+3. Datris generates Python scripts from your instructions and runs them in the container
 
 ### Automated data quality monitoring
 
@@ -196,3 +197,41 @@ An AI agent could autonomously:
 2. **Upload new data** — `upload_data` with latest data files
 3. **Check results** — `get_job_status` to see DQ failures
 4. **Diagnose** — AI reads error explanations and suggests fixes
+
+## CLI Examples
+
+The Datris CLI connects to the MCP server and provides the same capabilities from the terminal. See [CLI](/cli) for the full reference.
+
+```bash
+# Install
+brew tap datris/tap
+brew install datris
+
+# Ingest a CSV into PostgreSQL
+datris ingest sales-data.csv --dest postgres
+
+# Ingest with AI validation and transformation
+datris ingest trades.csv --dest postgres \
+  --ai-validate "all prices must be positive and dates must be YYYY-MM-DD" \
+  --ai-transform "convert dates to YYYY/MM/DD and uppercase all ticker symbols"
+
+# Ingest into a vector store for RAG
+datris ingest manual.pdf --dest pgvector
+
+# Query PostgreSQL
+datris query "SELECT * FROM public.sales LIMIT 10"
+
+# Natural language query
+datris ask-sql "what are the top 5 stocks by volume?" --table trades
+
+# Semantic search
+datris search "quarterly revenue" --store pgvector --collection financial_docs
+
+# RAG — search + AI answer
+datris ask "What is the return policy?" --store pgvector --collection support_docs
+
+# List pipelines, check health, get status
+datris pipelines
+datris health
+datris status my_pipeline
+```

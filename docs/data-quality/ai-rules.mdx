@@ -1,10 +1,9 @@
 ---
-title: "Data Quality — CodeGen AI Rule"
+title: "Data Quality — AI Rule"
 description: "AI-powered data quality rules"
 ---
 
-The `aiRule` validates data using a plain-English instruction. Datris generates a Python validation script from your instruction via an LLM (single API call), then runs the script locally against all data. This approach costs ~$0.003 per rule regardless of file size, compared to the previous approach of sending all data to the LLM.
-
+The `aiRule` validates data using a plain-English instruction. Datris generates a Python validation script from your instruction via an LLM (single API call), then runs the script in the container against all data.
 ## Configuration
 
 Define the AI rule in the `aiRule` field within the `dataQuality` block of the pipeline configuration.
@@ -43,7 +42,7 @@ The generated Python script handles all checks in one pass.
 
 ## Works with all file types
 
-The CodeGen approach works for:
+This approach works for:
 
 - **CSV/delimited files** — The script reads the CSV with the appropriate delimiter and validates each row.
 - **JSON files** — The script parses the JSON array and validates each record.
@@ -55,8 +54,7 @@ For all formats, the instruction is the same plain-English description. The LLM 
 
 ## Behavior
 
-- The CodeGen AI rule generates the Python script once per rule evaluation (single LLM API call ~$0.003)
-- The generated script runs locally via `python3` with a 5-minute timeout
+- The AI rule generates the Python script once per rule evaluation- The generated script runs in the container via `python3` with a 5-minute timeout
 - Scripts are constrained to Python standard library only (no external packages)
 - Rules with `onFailureIsError: true` are counted as errors; `onFailureIsError: false` are warnings
 - Processing aborts immediately if the error count exceeds **100**
@@ -66,5 +64,4 @@ For all formats, the instruction is the same plain-English description. The LLM 
 ## Requirements
 
 - `ai.enabled: true` must be set in `application.yaml`
-- The Vault secret for the AI provider must be configured (see [AI Configuration](../ai-configuration.md))
-- `python3` must be available on the pipeline server runtime
+- The Vault secret for the AI provider must be configured (see [AI Configuration](/ai-configuration))

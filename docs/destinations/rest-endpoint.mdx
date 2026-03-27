@@ -95,4 +95,9 @@ The `timeoutMs` field controls the maximum time in milliseconds the pipeline wil
 | `endpoint`       | yes      |         | Target endpoint URL                                   |
 | `async`          | no       | `false` | If `true`, send the request and continue without waiting for a response |
 | `bearerToken`    | no       |         | Bearer token added as `Authorization: Bearer` header  |
-| `timeoutMs` | no       | `300000`   | Response timeout in milliseconds (sync mode only)          |
+| `apiKey`         | no       |         | API key for endpoint authentication                   |
+| `timeoutMs`      | no       | `300000`| Response timeout in milliseconds (sync mode only)     |
+
+## Completion Notification
+
+A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.

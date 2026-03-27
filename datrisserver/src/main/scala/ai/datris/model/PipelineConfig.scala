@@ -195,7 +195,7 @@ case class Database(
                        keyFields: java.util.List[String] = null,
                        manageTableManually: Boolean = false,
                        truncateBeforeWrite: Boolean = false,
-                       useTransaction: Boolean = false,
+                       useTransaction: Boolean = true,
                        usePostgres: Boolean = false,
                        useMongoDB: Boolean = false,
                        options: java.util.List[String] = null

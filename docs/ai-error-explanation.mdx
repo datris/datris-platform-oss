@@ -10,7 +10,7 @@ When a pipeline job fails, the AI automatically analyzes the error and provides 
 When any pipeline stage (data quality, transformation, destination loading) throws an exception:
 
 1. The error is logged to status as usual
-2. If AI is enabled, the error message and pipeline configuration are sent to the AI model
+2. The error message and pipeline configuration are sent to the AI model
 3. The AI returns a concise explanation of what went wrong and how to fix it
 4. The explanation is written as a separate status entry (`AI Explanation: ...`) and logged to the pipeline logs
 
@@ -38,11 +38,8 @@ transformation step to sanitize these issues before the data quality check runs.
 
 ## Configuration
 
-No additional configuration is needed. AI error explanation is automatically enabled when `ai.enabled: true` is set in `application.yaml` and an AI provider is configured.
-
-To disable AI error explanations, set `ai.enabled: false` — this also disables all other AI features (aiRule, AI transformations, schema generation).
+No additional configuration is needed. AI error explanation is automatically enabled since an AI provider is required to run the platform.
 
 ## Requirements
 
-- `ai.enabled: true` in `application.yaml`
-- A configured AI provider (see [AI Configuration](ai-configuration.md))
+- A configured AI provider (see [AI Configuration](/ai-configuration))

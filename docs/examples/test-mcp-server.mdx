@@ -5,20 +5,28 @@ description: "Test MCP server example"
 
 **Location:** `examples/test-mcp-server/`
 
-An integration test script that exercises the MCP server tools end-to-end. Tests the full round-trip: create pipeline from sample data, upload data, wait for ingestion, then query it back.
+An integration test script that exercises the MCP server tools end-to-end. It imports the `_dispatch` function from `server.py` and calls each tool directly, testing the full round-trip through the REST API.
 
 ## Test Flow
 
-1. **CSV → PostgreSQL** — create pipeline (auto-detects schema from sample data), upload CSV, wait, query back with SQL and natural language
-2. **JSON → MongoDB** — create pipeline, upload JSON, wait, query back with find()
-3. **PDF → pgvector** — create pipeline, upload PDF, wait for chunking/embedding, semantic search
-4. **Cleanup** — delete all test pipelines (destination data is cleaned up automatically)
+1. **Connectivity** — verify server is reachable (`get_version`)
+2. **Service health** — check all backend services (`check_service_health`)
+3. **Metadata discovery** — list PostgreSQL databases/schemas/tables, MongoDB databases/collections, and all vector store collections
+4. **CSV → PostgreSQL** — create pipeline, upload CSV, wait for ingestion, inspect columns, query with SQL and natural language
+5. **JSON → MongoDB** — create pipeline, upload JSON, wait, query with find()
+6. **Data profiling** — profile a CSV file with AI
+7. **Config upload** — upload a validation schema
+8. **Secrets** — update an AI provider secret
+9. **Kill job** — test kill with a dummy token (graceful handling)
+10. **Cleanup** — delete structured pipelines
+11. **PDF → pgvector** — create pipeline, search, AI answer (RAG), cleanup (requires PDF test file)
+12. **Summary** — report pass/fail counts
 
 ## Setup
 
 ```bash
 cd examples/test-mcp-server
-pip install requests python-dotenv psycopg2-binary pymongo openai
+pip install requests python-dotenv
 ```
 
 ## Run

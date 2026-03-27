@@ -5,7 +5,7 @@ description: "Monitor your pipelines"
 
 ## Pipeline Tokens
 
-Every pipeline processing job is assigned a unique **pipeline token** (e.g., `pt-abc12345-6789-...`). This token is used to track the job through its lifecycle.
+Every pipeline processing job is assigned a unique **pipeline token** — a UUID that identifies the job throughout its lifecycle. You can monitor jobs via the REST API, the MCP server, the CLI, or the [Datris UI](http://localhost:4200).
 
 Pipeline tokens are returned:
 - In the response body of `POST /api/v1/pipeline/upload` (for uncompressed files)
@@ -92,13 +92,14 @@ Returns an array of job summaries for the pipeline (20 per page):
 
 ## Job Lifecycle
 
-Jobs progress through three states:
+Jobs progress through these states:
 
 | State | Description |
 |-------|-------------|
 | `INITIALIZED` | Job created, queued for processing |
 | `PROCESSING` | Running in a dedicated thread |
 | `COMPLETED` | Finished (check status messages for success or error) |
+| `CANCELLED` | Job was killed via the `kill_job` API or MCP tool |
 
 ## Processing Stages
 
@@ -121,3 +122,16 @@ Job statuses are stored in MongoDB in the `{environment}-pipeline-status` collec
 - All destination loaders for a single job execute in parallel on a 20-thread pool
 - Jobs targeting the same database table are serialized (only one runs at a time)
 - Multiple jobs for different pipelines run concurrently
+
+## Datris UI
+
+The [Datris UI](http://localhost:4200) provides a visual interface for managing your entire Datris platform. It includes tabs for MCP server status and tools, pipeline management, ingestion monitoring with job history and error details, semantic search across vector databases, and secrets management — all without needing to use the API directly.
+
+## CLI
+
+Check job status from the terminal:
+
+```bash
+datris status my_pipeline
+datris health
+```

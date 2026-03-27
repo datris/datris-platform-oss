@@ -47,7 +47,7 @@ POST /api/v1/pipeline
 Content-Type: application/json
 ```
 
-**Body:** Full PipelineConfig JSON (see [Pipeline Configuration](../pipeline-configuration.md)).
+**Body:** Full PipelineConfig JSON (see [Pipeline Configuration](/pipeline-configuration)).
 
 **Example:**
 ```bash
@@ -79,7 +79,7 @@ curl -X POST http://localhost:8080/api/v1/pipeline \
 
 **Response:** `200 OK`
 
-**Validation:** The configuration is validated before saving. Invalid configurations return `500` with error details. See [Pipeline Configuration](../pipeline-configuration.md) for all constraints.
+**Validation:** The configuration is validated before saving. Invalid configurations return `500` with error details. See [Pipeline Configuration](/pipeline-configuration) for all constraints.
 
 ---
 
@@ -105,7 +105,7 @@ curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data"
 
 ## AI Schema Generation
 
-To generate a pipeline configuration automatically from an uploaded file, see the [AI Schema Generation API](schema-generation-api.md).
+To generate a pipeline configuration automatically from an uploaded file, see the [AI Schema Generation API](/api-reference/schema-generation-api).
 
 ---
 

@@ -65,8 +65,8 @@ Fields whose names end with `_json` or `_xml` receive special handling during in
 
 | Suffix | Behavior |
 |---|---|
-| `_json` | The field value is treated as a nested JSON document. It is stored as-is in a `text` column in PostgreSQL and as a `StringType` in Spark. No schema validation is applied to the nested content. |
-| `_xml` | The field value is treated as an XML fragment. It is stored as-is in a `text` column in PostgreSQL and as a `StringType` in Spark. |
+| `_json` | The field value is treated as a nested JSON document. Stored as a document in MongoDB (default destination for JSON), or as a `text` column in PostgreSQL. No schema validation is applied to the nested content. |
+| `_xml` | The field value is treated as an XML fragment. Stored as a `text` column in PostgreSQL or as a string in MongoDB. |
 
 Declare these fields with type `string` in the schema:
 
@@ -84,9 +84,9 @@ During ingestion, the pipeline detects the `_json` and `_xml` suffixes and prese
 
 ## Type Coercion
 
-When a value cannot be parsed as the declared type, the pipeline applies these rules:
+During ingestion, the pipeline converts field values from strings to the declared type:
 
-1. **Null or empty string** -- stored as `NULL` regardless of the target type.
-2. **Numeric overflow** -- if a value exceeds the range of the declared integer type, ingestion records a data quality error for that row.
-3. **Invalid format** -- a value like `"abc"` in an `int` column is rejected and recorded as a data quality error.
-4. **Timestamp parsing** -- the pipeline accepts ISO-8601 strings, epoch milliseconds, and common date formats (`yyyy-MM-dd`, `MM/dd/yyyy`). Ambiguous formats are resolved using the `dateFormat` property in the pipeline configuration when present.
+1. **Null or empty string** — stored as an empty string. The destination database handles null conversion.
+2. **Numeric types** (`int`, `bigint`, `float`, `double`, `decimal`, etc.) — the value is parsed using Scala's built-in conversion. If parsing fails (e.g., `"abc"` in an `int` column), the job fails with an error.
+3. **String types** (`string`, `varchar`, `char`) — stored as-is with no conversion.
+4. **Date and timestamp** — stored as the raw string value. The destination (PostgreSQL, Spark) handles date/timestamp parsing according to its own rules.

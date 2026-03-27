@@ -9,29 +9,29 @@ The `examples/` directory contains standalone applications that integrate with a
 
 | Example | Description |
 |---------|-------------|
-| [Market Macro Agent](examples/market-macro-agent.md) | MacroAgent — a real-time financial data pipeline agent. Connects to Datris via MCP, fetches live market data (FRED, yfinance, CoinGecko, SEC EDGAR), creates pipelines, ingests data, and answers market questions — all visible in a browser UI. Full agentic loop with background refresh. |
+| [Market Macro Agent](/examples/market-macro-agent) | MacroAgent — a real-time financial data pipeline agent. Connects to Datris via MCP, fetches live market data (FRED, yfinance, CoinGecko, SEC EDGAR), creates pipelines, ingests data, and answers market questions — all visible in a browser UI. Full agentic loop with background refresh. |
 
 ## Data Processing
 
 | Example | Description |
 |---------|-------------|
-| [Preprocessor](examples/preprocessor.md) | Flask REST API for preprocessing data before pipeline ingestion. Synchronous and asynchronous modes. |
+| [Preprocessor](/examples/preprocessor) | Flask REST API for preprocessing data before pipeline ingestion. Synchronous and asynchronous modes. |
 
 ## Data Ingestion
 
 | Example | Description |
 |---------|-------------|
-| [Kafka CSV Loader](examples/kafka-csv-loader.md) | Kafka producer that publishes CSV data to topics for streaming ingestion. |
-| [Topic Subscriber](examples/topic-subscriber.md) | ActiveMQ consumer that listens for pipeline completion notifications to trigger downstream workflows. |
+| [Kafka CSV Loader](/examples/kafka-csv-loader) | Kafka producer that publishes CSV data to topics for streaming ingestion. |
+| [Topic Subscriber](/examples/topic-subscriber) | ActiveMQ consumer that listens for pipeline completion notifications to trigger downstream workflows. |
 
 ## Search & RAG
 
 | Example | Description |
 |---------|-------------|
-| [Chat Vector Store](examples/chat-vector-store.md) | Unified RAG chat app supporting all 5 vector stores (Qdrant, Weaviate, Milvus, Chroma, pgvector). |
+| [Chat Vector Store](/examples/chat-vector-store) | Unified RAG chat app supporting all 5 vector stores (Qdrant, Weaviate, Milvus, Chroma, pgvector). |
 
 ## Testing
 
 | Example | Description |
 |---------|-------------|
-| [MCP Server Test](examples/test-mcp-server.md) | Integration test exercising MCP tools end-to-end: create pipeline, upload, query, cleanup. |
+| [MCP Server Test](/examples/test-mcp-server) | Integration test exercising MCP tools end-to-end: create pipeline, upload, query, cleanup. |

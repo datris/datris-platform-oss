@@ -28,23 +28,36 @@ Schemas are declared in the `source.schemaProperties.fields` array of a pipeline
 
 ## Supported Data Types
 
+When the UI or AI schema generation infers types, it uses these common types:
+
 | Type | Description |
 |---|---|
 | `boolean` | True/false value |
 | `int` | 32-bit signed integer |
-| `tinyint` | 8-bit signed integer |
-| `smallint` | 16-bit signed integer |
 | `bigint` | 64-bit signed integer |
 | `float` | 32-bit floating point |
 | `double` | 64-bit floating point |
-| `decimal(p,s)` | Fixed-precision decimal with `p` total digits and `s` scale digits |
-| `string` | Variable-length text, no upper bound |
-| `varchar(n)` | Variable-length text with maximum length `n` |
-| `char(n)` | Fixed-length text of exactly `n` characters |
+| `string` | Variable-length text |
 | `date` | Calendar date (no time component) |
 | `timestamp` | Date and time with microsecond precision |
 
-Refer to [data-types](ingestion/data-types.md) for type mappings to PostgreSQL and Spark.
+### MCP Server (AI Agents)
+
+When an AI agent creates a pipeline via the MCP server, all fields are set to `string`. This is intentional — it ensures data is always ingested successfully regardless of format inconsistencies. Type enforcement happens at the destination (e.g., PostgreSQL column types) rather than at ingestion time, avoiding failed jobs from unexpected values.
+
+### Advanced Types
+
+These types are supported by the server but are never auto-generated. Use them when writing pipeline JSON configuration manually:
+
+| Type | Description |
+|---|---|
+| `tinyint` | 8-bit signed integer |
+| `smallint` | 16-bit signed integer |
+| `decimal(p,s)` | Fixed-precision decimal with `p` total digits and `s` scale digits |
+| `varchar(n)` | Variable-length text with maximum length `n` |
+| `char(n)` | Fixed-length text of exactly `n` characters |
+
+Refer to [data-types](/ingestion/data-types) for type mappings to PostgreSQL and Spark.
 
 ## Auto-Generating a Schema
 
@@ -56,7 +69,7 @@ curl -X POST "http://localhost:8080/api/v1/pipeline/generate" \
   -F "pipeline=my_pipeline"
 ```
 
-The AI analyzes the file content (up to 100 lines) and returns a complete pipeline configuration with inferred field names and data types. You can edit the output before saving it to a pipeline configuration.
+The AI analyzes the file content (up to 100 lines for CSV, or 10,000 characters for JSON/XML) and returns a complete pipeline configuration with inferred field names and data types. You can edit the output before saving it to a pipeline configuration.
 
 In the UI, this happens automatically in Step 1 of the pipeline creation wizard when you upload a sample file and click "Analyze File".
 
@@ -85,7 +98,7 @@ Valid types: `json-schema` (generates Draft 4 JSON Schema) and `xsd` (generates 
 
 ## Source vs Destination Schemas
 
-A **source schema** describes the data as it arrives (CSV columns, JSON keys, database columns). It is always required.
+A **source schema** describes the data as it arrives (columns, JSON keys, database columns). It is always required.
 
 A **destination schema** describes the data as it should be written to the target system. It is optional. When omitted, the destination inherits the source schema unchanged.
 

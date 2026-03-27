@@ -1,10 +1,9 @@
 ---
-title: "AI Transformation (CodeGen)"
+title: "AI Transformation"
 description: "AI-powered data transformation"
 ---
 
-AI transformations apply natural language instructions to transform data. Describe the transformation in plain English — Datris generates a Python script from your instruction and runs it locally against all data. This costs ~$0.003 per transformation regardless of file size.
-
+AI transformations apply natural language instructions to transform data. Describe the transformation in plain English — Datris generates a Python script from your instruction and runs it in the container against all data.
 ## Configuration
 
 Add an `aiTransformation` block to the `transformation` section:
@@ -75,5 +74,5 @@ datris ingest data.csv --dest postgres --ai-transform "convert dates to YYYY/MM/
 ## Requirements
 
 - `ai.enabled: true` must be set in `application.yaml`
-- The Vault secret for the AI provider must be configured (see [AI Configuration](../ai-configuration.md))
+- The Vault secret for the AI provider must be configured (see [AI Configuration](/ai-configuration))
 - `python3` must be available on the pipeline server runtime

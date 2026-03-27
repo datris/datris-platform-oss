@@ -3,7 +3,7 @@ title: "Kafka Topic Consumption"
 description: "Consume data from Kafka topics"
 ---
 
-The pipeline can consume data from Kafka topics in real time. Configure the Kafka consumer in `application.yaml`, and the pipeline subscribes to topics matching a prefix, parsing incoming records as CSV, JSON, or XML.
+The pipeline can consume data from Kafka topics in real time. Configure the Kafka consumer in `application.yaml`, and the pipeline subscribes to topics based on registered pipeline configurations with `streamAttributes.type: "kafka"`.
 
 ## Enabling the Kafka Consumer
 
@@ -12,10 +12,10 @@ Set the `kafkaConsumer` block in `application.yaml`:
 ```yaml
 kafkaConsumer:
   enabled: true
-  bootstrapServers: "kafka-broker-1:9092,kafka-broker-2:9092"
-  groupId: "pipeline-ingest"
-  topicPollingInterval: 10000
-  topicPrefix: "pipeline."
+  bootstrapServers: "kafka:9092"
+  groupId: "oss-group"
+  topicPollingInterval: 500
+  topicPrefix: "oss"
 ```
 
 ## Configuration Reference
@@ -25,56 +25,26 @@ kafkaConsumer:
 | `enabled` | No | Enable or disable the Kafka consumer | `false` |
 | `bootstrapServers` | Yes | Comma-separated list of Kafka broker addresses | -- |
 | `groupId` | Yes | Consumer group ID; controls offset tracking and partition assignment | -- |
-| `topicPollingInterval` | No | Milliseconds between metadata refreshes to discover new topics | `10000` |
-| `topicPrefix` | No | Only topics whose names start with this prefix are consumed | `""` (all topics) |
+| `topicPollingInterval` | No | Milliseconds between poll cycles | `500` |
+| `topicPrefix` | No | Prefix prepended to pipeline names to form topic names | `oss` |
 
-## Topic Prefix Matching
+## How Topics Are Resolved
 
-When `topicPrefix` is set, the consumer periodically queries Kafka metadata and subscribes to every topic whose name begins with the prefix. This allows new pipelines to appear as topics without restarting the pipeline.
+At startup, the consumer reads all pipeline configurations from the database and subscribes to topics for pipelines that have `streamAttributes.type: "kafka"`. The topic name is constructed as `{topicPrefix}.{pipelineName}`.
 
-For example, with `topicPrefix: "pipeline."`, the consumer will pick up:
+For example, with `topicPrefix: "oss"` (defined in `kafkaConsumer.topicPrefix` in `application.yaml`) and a pipeline named `orders`, the consumer subscribes to topic `oss.orders`.
 
-- `pipeline.orders`
-- `pipeline.customers`
-- `pipeline.events.clickstream`
-
-It will ignore topics that do not match, such as `internal.logs` or `audit.trail`.
-
-The topic name minus the prefix is used as the pipeline name. `pipeline.orders` maps to the pipeline named `orders`.
+When a Kafka message arrives on `oss.orders`, the consumer strips the prefix and looks up the pipeline named `orders` to determine how to process the data.
 
 ## Data Formats
 
-The pipeline inspects each record to determine its format.
+The format of incoming records is determined by the pipeline configuration — not auto-detected. Configure the pipeline's `source.fileAttributes` to match the data format:
 
-### CSV
+- **CSV** — use `csvAttributes` with the appropriate delimiter. Records are parsed by position against the pipeline schema.
+- **JSON** — use `jsonAttributes`. Field names in the payload are matched against the pipeline schema by name.
+- **XML** — use `xmlAttributes`. Element names are matched against the pipeline schema by name.
 
-Records containing plain comma-separated text are parsed as CSV. The first record on a topic may optionally be a header row; the pipeline matches columns by position against the pipeline schema.
-
-```
-1001,jane@example.com,2025-06-15,249.99
-1002,bob@example.com,2025-06-14,89.50
-```
-
-### JSON and XML
-
-Records that begin with `{` or `[` are parsed as JSON. Records that begin with `<` are parsed as XML. Field names in the payload are matched against the pipeline schema by name.
-
-JSON example:
-
-```json
-{"id": 1001, "email": "jane@example.com", "order_date": "2025-06-15", "total": 249.99}
-```
-
-XML example:
-
-```xml
-<record>
-  <id>1001</id>
-  <email>jane@example.com</email>
-  <order_date>2025-06-15</order_date>
-  <total>249.99</total>
-</record>
-```
+Any plain text data can be consumed as long as the pipeline schema and file attributes match the format.
 
 ## Full Example
 
@@ -86,9 +56,9 @@ A complete setup with a pipeline configuration and the Kafka consumer enabled:
 kafkaConsumer:
   enabled: true
   bootstrapServers: "kafka:9092"
-  groupId: "pipeline-ingest"
-  topicPollingInterval: 5000
-  topicPrefix: "pipeline."
+  groupId: "oss-group"
+  topicPollingInterval: 500
+  topicPrefix: "oss"
 ```
 
 **Pipeline configuration (orders)**
@@ -100,13 +70,26 @@ kafkaConsumer:
     "streamAttributes": {
       "type": "kafka"
     },
+    "fileAttributes": {
+      "jsonAttributes": {
+        "encoding": "UTF-8"
+      }
+    },
     "schemaProperties": {
       "fields": [
         { "name": "id", "type": "bigint" },
-        { "name": "email", "type": "varchar(255)" },
+        { "name": "email", "type": "string" },
         { "name": "order_date", "type": "date" },
-        { "name": "total", "type": "decimal(10,2)" }
+        { "name": "total", "type": "double" }
       ]
+    }
+  },
+  "destination": {
+    "database": {
+      "dbName": "datris",
+      "schema": "public",
+      "table": "orders",
+      "usePostgres": true
     }
   }
 }
@@ -117,7 +100,7 @@ Produce a test message and verify ingestion:
 ```bash
 # Produce a JSON record to the topic
 echo '{"id":1001,"email":"jane@example.com","order_date":"2025-06-15","total":249.99}' | \
-  kafka-console-producer.sh --broker-list kafka:9092 --topic pipeline.orders
+  docker exec -i kafka kafka-console-producer.sh --bootstrap-server kafka:9092 --topic oss.orders
 
 # Check pipeline status
 curl -s "http://localhost:8080/api/v1/pipeline/status?pipelinename=orders" | jq .
@@ -125,12 +108,14 @@ curl -s "http://localhost:8080/api/v1/pipeline/status?pipelinename=orders" | jq 
 
 ## Offset Management
 
-The pipeline commits offsets to Kafka using the configured `groupId`. If the consumer restarts, it resumes from the last committed offset. To reprocess a topic from the beginning, reset the consumer group offsets:
+The pipeline uses Kafka's auto-commit to track offsets using the configured `groupId`. If the consumer restarts, it resumes from the last committed offset. New consumer groups start from the earliest offset.
+
+To reprocess a topic from the beginning, reset the consumer group offsets:
 
 ```bash
 kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
-  --group pipeline-ingest \
-  --topic pipeline.orders \
+  --group oss-group \
+  --topic oss.orders \
   --reset-offsets --to-earliest --execute
 ```
 
@@ -138,7 +123,7 @@ kafka-consumer-groups.sh --bootstrap-server kafka:9092 \
 
 | Symptom | Check |
 |---|---|
-| Consumer not subscribing to a topic | Verify the topic name starts with the configured `topicPrefix`. Wait at least one `topicPollingInterval` cycle after topic creation. |
-| Records not parsing | Confirm the record format (CSV/JSON/XML) matches the pipeline schema field names or positions. |
+| Consumer not subscribing to a topic | Verify the pipeline has `streamAttributes.type: "kafka"` and was registered before the server started. |
+| Records not parsing | Confirm the pipeline's `fileAttributes` (csvAttributes, jsonAttributes, or xmlAttributes) matches the format of your Kafka records. |
 | Lag increasing | Check consumer group lag with `kafka-consumer-groups.sh --describe`. Consider scaling partitions or adding consumer instances with the same `groupId`. |
 | Connection failures | Verify `bootstrapServers` addresses are reachable from the pipeline host. Check Kafka broker logs for authentication or authorization errors. |

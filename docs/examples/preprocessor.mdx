@@ -9,8 +9,8 @@ A Flask REST API that demonstrates the pipeline's preprocessor capability. The p
 
 ## Endpoints
 
-- `POST /preprocess/sync` — Process data synchronously and return the result
-- `POST /preprocess/async` — Process data asynchronously and POST results back via callback
+- `POST http://localhost:5500/preprocess/sync` — Process data synchronously and return the result
+- `POST http://localhost:5500/preprocess/async` — Process data asynchronously and POST results back via callback
 
 ## Setup
 
@@ -29,4 +29,4 @@ python app.py    # runs on port 5500
 
 Configure a pipeline's `source.preprocessor` with the endpoint URL. The pipeline sends data to your preprocessor before ingestion, allowing custom transformations.
 
-See [Preprocessor](../preprocessor.md) for the full preprocessor protocol and configuration reference.
+See [Preprocessor](/preprocessor) for the full preprocessor protocol and configuration reference.

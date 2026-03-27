@@ -8,8 +8,7 @@ This guide walks through ingesting a CSV file into PostgreSQL using the pipeline
 ## 1. Start the stack
 
 ```bash
-sbt clean assembly
-docker-compose up --build
+docker compose up -d
 ```
 
 Wait for the `pipeline` container to show `Started PipelineServiceApplication`.
@@ -43,7 +42,7 @@ curl -X POST http://localhost:8080/api/v1/pipeline \
     },
     "destination": {
       "database": {
-        "dbName": "mydb",
+        "dbName": "datris",
         "schema": "public",
         "table": "employees",
         "usePostgres": true
@@ -89,15 +88,19 @@ The status shows processing stages: `begin`, `processing`, `end`.
 
 ## 5. Verify the data
 
-Connect to PostgreSQL (database: `mydb`) and query the table:
+Query the data via the REST API:
 
-```sql
-SELECT * FROM public.employees;
+```bash
+curl -X POST http://localhost:8080/api/v1/query/postgres \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM public.employees"}'
 ```
+
+The default database is `datris` — this is where all PostgreSQL pipelines write unless you specify a different `dbName` in the pipeline's destination config.
 
 ## Next Steps
 
-- [Pipeline Configuration](pipeline-configuration.md) - Explore all configuration options
-- [Data Quality](data-quality/ai-rules.md) - Add validation rules
-- [Destinations](destinations/object-store.md) - Write Parquet files to MinIO
-- [Transformations](transformation/ai-transformation.md) - Transform data with AI (CodeGen)
+- [Pipeline Configuration](/pipeline-configuration) - Explore all configuration options
+- [Data Quality](/data-quality/ai-rules) - Add validation rules
+- [Destinations](/destinations/object-store) - Write Parquet files to MinIO
+- [Transformations](/transformation/ai-transformation) - Transform data with AI

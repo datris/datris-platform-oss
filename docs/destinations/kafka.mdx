@@ -47,7 +47,7 @@ To override the bootstrap servers from the Vault secret on a per-pipeline basis,
 }
 ```
 
-Kafka credentials (`bootstrapServers`, `username`, `password`) are configured globally in `application.yaml` via `secrets.kafkaProducerSecretName`. See [Configuration Reference](../configuration-reference.md) for Vault secret format.
+Kafka credentials (`bootstrapServers`, `username`, `password`) are configured globally in `application.yaml` via `secrets.kafkaProducerSecretName`. See [Configuration Reference](/configuration-reference) for Vault secret format.
 
 ### Field Reference
 
@@ -57,3 +57,7 @@ Kafka credentials (`bootstrapServers`, `username`, `password`) are configured gl
 | `keyField`                 | no       |         | Column name to use as the message key            |
 | `overrideBootstrapServers` | no       |         | Override bootstrap servers from the Vault secret |
 | `timeoutMs`                | no       | `10000` | Producer send timeout in milliseconds            |
+
+## Completion Notification
+
+A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.

@@ -58,10 +58,6 @@ Column types from the source schema are mapped to Spark types before writing:
 | `date`      | `DateType`    |
 | `timestamp` | `TimestampType` |
 
-## Completion Notification
-
-A notification is sent when the write completes, indicating success or failure along with the number of records written and the output path.
-
 ## Configuration Example
 
 ```json
@@ -91,4 +87,7 @@ A notification is sent when the write completes, indicating success or failure a
 | `destinationBucketOverride`  | no       | `{environment}-data` | Override the default bucket name                 |
 | `partitionBy`                | no       |                      | Array of column names to partition by            |
 | `deleteBeforeWrite`          | no       | `false`              | Delete existing objects before writing           |
-| `writeToTemporaryLocation`   | no       | `false`              | Write to a temp path first, then move            |
+
+## Completion Notification
+
+A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.

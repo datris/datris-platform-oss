@@ -26,10 +26,14 @@ The payload format depends on the source schema:
 }
 ```
 
-ActiveMQ connection credentials are configured globally in `application.yaml` via `secrets.activeMQSecretName`. See [Configuration Reference](../configuration-reference.md) for Vault secret format.
+ActiveMQ connection credentials are configured globally in `application.yaml` via `secrets.activeMQSecretName`. See [Configuration Reference](/configuration-reference) for Vault secret format.
 
 ### Field Reference
 
 | Field       | Required | Default | Description       |
 |-------------|----------|---------|-------------------|
 | `queueName` | yes      |         | Target queue name |
+
+## Completion Notification
+
+A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.

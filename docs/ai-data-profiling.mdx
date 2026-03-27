@@ -92,9 +92,9 @@ The endpoint returns a JSON object with three sections:
 
 The `suggestedDataQuality` section provides a complete, copy-paste-ready `dataQuality` configuration based on what the AI observed in the data:
 
-- **`aiRule`** — a single comprehensive plain-English instruction covering all validation checks: format patterns (emails, phone numbers, dates), value ranges, cross-column relationships (e.g., high >= low), and business logic. Datris generates a Python validation script from this instruction and runs it locally. If no validation rule is appropriate, this field is omitted.
+- **`aiRule`** — a single comprehensive plain-English instruction covering all validation checks: format patterns (emails, phone numbers, dates), value ranges, cross-column relationships (e.g., high >= low), and business logic. If no validation rule is appropriate, this field is omitted.
 
-See [CodeGen AI Rule](data-quality/ai-rules.md) for full documentation.
+See [AI Rule](/data-quality/ai-rules) for full documentation.
 
 ## How it works
 
@@ -114,12 +114,12 @@ Profiling is a standalone operation — it does not require a registered pipelin
 
 ## Sampling
 
-For files larger than `sampleSize` rows, the profiling endpoint automatically samples a random subset. The header row is always included. This keeps profiling fast and within AI context window limits regardless of file size.
+For CSV files larger than `sampleSize` rows, the profiling endpoint automatically samples a random subset. The header row is always included. For JSON and XML files, the content is truncated if it exceeds the AI model's context window.
 
 The default sample of 200 rows is typically sufficient to detect patterns, types, and quality issues. Increase `sampleSize` for more thorough profiling at the cost of slower response times.
 
 ## Requirements
 
 - `ai.enabled: true` must be set in `application.yaml`
-- A configured AI provider (see [AI Configuration](ai-configuration.md))
+- A configured AI provider (see [AI Configuration](/ai-configuration))
 - Cloud providers (Anthropic, OpenAI) recommended for best results

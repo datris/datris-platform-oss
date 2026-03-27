@@ -49,7 +49,7 @@ All write operations execute inside a MongoDB transaction. If any error occurs d
 }
 ```
 
-MongoDB connection credentials are configured globally in `application.yaml` via `secrets.mongoDbSecretName`. See [Configuration Reference](../configuration-reference.md) for Vault secret format.
+MongoDB connection credentials are configured globally in `application.yaml` via `secrets.mongoDbSecretName`. See [Configuration Reference](/configuration-reference) for Vault secret format.
 
 ### Field Reference
 
@@ -60,4 +60,8 @@ MongoDB connection credentials are configured globally in `application.yaml` via
 | `useMongoDB`          | yes      | `false` | Must be `true` to enable MongoDB destination         |
 | `keyFields`           | no       |         | Array of field names forming the compound upsert key |
 | `truncateBeforeWrite` | no       | `false` | Delete all documents before writing                  |
-| `useTransaction`      | no       | `false` | Wrap all writes in a MongoDB transaction             |
+| `useTransaction`      | no       | `true`  | Wrap all writes in a MongoDB transaction             |
+
+## Completion Notification
+
+A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.

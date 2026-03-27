@@ -3,7 +3,7 @@ title: "API File Upload"
 description: "Ingest data via API file upload"
 ---
 
-Upload data files directly to the pipeline through the REST API. The pipeline accepts CSV, JSON, and XML files, handles decompression automatically, and returns a tracking token.
+Upload data files directly to the pipeline through the REST API. The pipeline accepts any file type (CSV, JSON, XML, Excel, PDF, Word, PowerPoint, HTML, email, EPUB, plain text, and archives), handles decompression automatically, and returns a tracking token.
 
 ## Endpoint
 
@@ -41,7 +41,7 @@ A successful upload returns HTTP 200 with a JSON body containing a `pipelineToke
 }
 ```
 
-Use the `pipelineToken` to query processing status downstream.
+The `pipelineToken` is a unique UUID generated for each upload. Use it to track the job's processing status, view errors, or cancel the job.
 
 ## Compressed Files
 
@@ -58,13 +58,13 @@ Compressed archives may contain multiple data files. Each file inside the archiv
 
 ## Uncompressed Files
 
-Files without a recognized compressed extension (e.g., plain `.csv`, `.json`, `.xml`) are processed in-memory directly. They are not staged to MinIO.
+Files without a recognized compressed extension (e.g., `.csv`, `.json`, `.xml`, `.xls`, `.pdf`, `.docx`, `.txt`, `etc`) are processed in-memory directly. They are not staged to MinIO.
 
 ## Processing Flow
 
 1. The client sends the multipart request.
 2. The pipeline inspects the file extension.
-3. **Compressed path**: the file is written to the MinIO raw bucket under `raw/{pipeline}/{filename}`. A background job picks it up, decompresses it, and feeds each inner file into the ingestion pipeline.
+3. **Compressed path**: the file is written to the MinIO raw bucket under `{env}-raw/temp/{pipeline}/{filename}`. A background job picks it up, decompresses it, and feeds each inner file into the ingestion pipeline.
 4. **Uncompressed path**: the file contents are read into memory and passed directly to the ingestion pipeline.
 5. The pipeline returns the `pipelineToken` immediately. Processing continues asynchronously.
 
@@ -73,16 +73,16 @@ Files without a recognized compressed extension (e.g., plain `.csv`, `.json`, `.
 | HTTP Status | Cause |
 |---|---|
 | 400 | Missing `pipeline` parameter or empty file |
-| 404 | Pipeline configuration not found |
 | 413 | File exceeds the configured upload size limit |
-| 500 | Internal error during staging or processing |
+| 500 | Pipeline not found, internal error, or processing failure |
 
 ## Size Limits
 
-The maximum upload size is controlled by the `pipeline.upload.maxFileSize` property in `application.yaml`. The default is 500 MB. Adjust this value if your files regularly exceed the limit:
+The maximum upload size is controlled by `spring.servlet.multipart.max-file-size` in `application.yaml`. The default is 1 GB. Adjust this value if your files exceed the limit:
 
 ```yaml
-pipeline:
-  upload:
-    maxFileSize: 1073741824  # 1 GB
+spring:
+  servlet:
+    multipart:
+      max-file-size: 1GB
 ```

@@ -5,6 +5,8 @@ description: "Configure data pipelines"
 
 Pipelines are configured entirely through JSON. Each pipeline defines a source, optional processing steps (preprocessing, data quality, transformation), and one or more destinations.
 
+You don't need to write JSON by hand — once you have the Datris Data Platform up and running, the [Datris UI](http://localhost:4200) provides a step-by-step pipeline wizard that builds the full configuration for you. Just pick your source, destination, and any processing options, and the platform generates the JSON behind the scenes.
+
 ## Full Configuration Example
 
 ```json
@@ -173,27 +175,27 @@ Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `do
 
 ### Data Quality
 
-See [Data Quality](data-quality/ai-rules.md) for detailed documentation.
+See [Data Quality](/data-quality/ai-rules) for detailed documentation.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `aiRule` | object | AI rule — plain-English validation instruction |
 | `validateFileHeader` | boolean | Validate CSV header matches schema field order |
 | `validationSchema` | string | Path to JSON Schema file for JSON/XML validation |
-| `aiRule` | object | CodeGen AI rule — plain-English instruction that generates a Python validation script |
 
 ### Transformation
 
-See [AI Transformation (CodeGen)](transformation/ai-transformation.md) for detailed documentation.
+See [AI Transformation](/transformation/ai-transformation) for detailed documentation.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `aiTransformation` | object | AI transformation — plain-English instruction that generates a Python transformation script |
+| `aiTransformation` | object | AI transformation — plain-English transformation instruction |
 
 ### Destination > Object Store
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `prefixKey` | string | Required | S3 path prefix for output files |
+| `prefixKey` | string | Required | MinIO (S3) path prefix for output files |
 | `fileFormat` | string | `parquet` | Output format: `parquet` or `orc` |
 | `partitionBy` | array | null | Column names for partitioning |
 | `destinationBucketOverride` | string | null | Custom bucket (default: `{environment}-data`) |
@@ -239,6 +241,67 @@ See [AI Transformation (CodeGen)](transformation/ai-transformation.md) for detai
 | `async` | boolean | false | If true, doesn't wait for response |
 | `bearerToken` | string | null | Authorization token |
 | `timeoutMs` | int | 300000 | Request timeout (milliseconds) |
+
+### Destination > Qdrant
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `collectionName` | string | Qdrant collection name |
+| `chunking` | object | Chunking config (see below) |
+| `metadata` | object | Key-value metadata to attach to each chunk |
+| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `qdrantSecretName` | string | Vault secret for Qdrant connection |
+
+### Destination > Weaviate
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `className` | string | Weaviate class name |
+| `chunking` | object | Chunking config (see below) |
+| `metadata` | object | Key-value metadata to attach to each chunk |
+| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `weaviateSecretName` | string | Vault secret for Weaviate connection |
+
+### Destination > pgvector
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tableName` | string | PostgreSQL table name |
+| `schemaName` | string | PostgreSQL schema name |
+| `chunking` | object | Chunking config (see below) |
+| `metadata` | object | Key-value metadata to attach to each chunk |
+| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `postgresSecretName` | string | Vault secret for PostgreSQL connection |
+
+### Destination > Milvus
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `collectionName` | string | Milvus collection name |
+| `chunking` | object | Chunking config (see below) |
+| `metadata` | object | Key-value metadata to attach to each chunk |
+| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `milvusSecretName` | string | Vault secret for Milvus connection |
+
+### Destination > Chroma
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `collectionName` | string | Chroma collection name |
+| `chunking` | object | Chunking config (see below) |
+| `metadata` | object | Key-value metadata to attach to each chunk |
+| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `chromaSecretName` | string | Vault secret for Chroma connection |
+
+### Chunking Config
+
+Used by all vector store destinations.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `strategy` | string | `recursive` | Chunking strategy: `fixed`, `sentence`, `paragraph`, `recursive` |
+| `chunkSize` | int | 500 | Maximum characters per chunk |
+| `chunkOverlap` | int | 50 | Overlap between consecutive chunks |
 
 ### Destination > Schema Properties (Optional)
 

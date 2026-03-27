@@ -7,7 +7,7 @@ The PostgreSQL destination performs bulk inserts using the PostgreSQL `COPY` com
 
 ## Connection
 
-Connection credentials are retrieved from Vault using the secret name specified in `postgresSecretName`. The secret must contain the following keys:
+Connection credentials are retrieved from Vault using the secret name specified in `secrets.postgresSecretName` in `application.yaml`. The secret must contain the following keys:
 
 | Key        | Description                              |
 |------------|------------------------------------------|
@@ -17,30 +17,25 @@ Connection credentials are retrieved from Vault using the secret name specified 
 
 ## Table Management
 
-When `manageTableManually` is set to `false` (the default), the pipeline auto-creates the target table if it does not exist. The table schema is derived from the pipeline's source schema using the type mapping below.
+When `manageTableManually` is set to `false` (the default), the pipeline auto-creates the target table if it does not exist. The table schema is derived from the pipeline's destination schema if one is defined, otherwise it falls back to the source schema. Types are mapped using the table below.
 
 Set `manageTableManually` to `true` if you want to create and manage the table yourself. In this case the table must already exist and its column types must be compatible with the incoming data.
 
 ## Type Mapping
 
-Source schema types are mapped to PostgreSQL types as follows:
+When auto-creating tables, source schema types are mapped to PostgreSQL types as follows:
 
 | Source Type | PostgreSQL Type |
 |-------------|-----------------|
 | `tinyint`   | `int2`          |
 | `smallint`  | `int2`          |
-| `int`       | `int4`          |
-| `bigint`    | `int8`          |
 | `float`     | `float4`        |
 | `double`    | `float8`        |
 | `string`    | `text`          |
-| `boolean`   | `boolean`       |
-| `date`      | `date`          |
-| `timestamp` | `timestamp`     |
-| `*_json`    | `json`          |
-| `*_xml`     | `xml`           |
+| `_json`     | `json`          |
+| `_xml`      | `xml`           |
 
-Column names ending in `_json` are stored as the PostgreSQL `json` type. Column names ending in `_xml` are stored as the PostgreSQL `xml` type.
+All other types (`int`, `bigint`, `boolean`, `date`, `timestamp`, `decimal(p,s)`, `varchar(n)`, `char(n)`) are passed through to PostgreSQL as-is.
 
 ## Truncate Before Write
 
@@ -48,15 +43,19 @@ Set `truncateBeforeWrite` to `true` to issue a `TRUNCATE` statement on the targe
 
 ## Transaction Support
 
-All writes execute inside a database transaction. If any error occurs during the `COPY` operation, the transaction is rolled back and no partial data is committed.
+All writes are wrapped in a database transaction by default (`useTransaction: true`). If any error occurs during the `COPY` operation, the transaction is rolled back and no partial data is committed. Set `useTransaction` to `false` to disable transactional writes.
 
 ## Primary Key
 
 Specify one or more columns in `keyFields` to define the primary key constraint on the target table. When `manageTableManually` is `false`, the auto-created table includes a `PRIMARY KEY` constraint on these columns.
 
+## Schema Auto-Creation
+
+When `manageTableManually` is `false`, the pipeline also creates the target schema if it doesn't exist (`CREATE SCHEMA IF NOT EXISTS`).
+
 ## Custom COPY Options
 
-Use the `options` array to pass additional PostgreSQL `COPY` options. Each entry is appended to the `COPY` command.
+Use the `options` array to pass additional PostgreSQL `COPY` options. Each entry is appended to the `COPY` command. When no options are specified, the default is `FORMAT csv, NULL '.'`.
 
 ## Configuration Example
 
@@ -79,7 +78,7 @@ Use the `options` array to pass additional PostgreSQL `COPY` options. Each entry
 }
 ```
 
-Connection credentials are configured globally in `application.yaml` via `secrets.postgresSecretName`, not per pipeline. See [Configuration Reference](../configuration-reference.md) for Vault secret format.
+Connection credentials are configured globally in `application.yaml` via `secrets.postgresSecretName`, not per pipeline. See [Configuration Reference](/configuration-reference) for Vault secret format.
 
 ### Field Reference
 
@@ -92,5 +91,9 @@ Connection credentials are configured globally in `application.yaml` via `secret
 | `manageTableManually` | no       | `false`  | If `true`, skip auto-creation of the table       |
 | `truncateBeforeWrite` | no       | `false`  | Truncate the table before loading                |
 | `keyFields`           | no       |          | Array of column names for the primary key        |
-| `useTransaction`      | no       | `false`  | Wrap the COPY in a database transaction          |
+| `useTransaction`      | no       | `true`   | Wrap the COPY in a database transaction          |
 | `options`             | no       |          | Array of additional COPY option strings          |
+
+## Completion Notification
+
+A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.
