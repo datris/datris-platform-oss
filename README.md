@@ -1,50 +1,95 @@
 # Datris — The First AI Agent-Native Data Platform
 
-[datris.ai](https://datris.ai)
+[![PyPI](https://img.shields.io/pypi/v/datris-mcp-server)](https://pypi.org/project/datris-mcp-server/)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.datris%2Fdatris-blue)](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris)
+[![Docker Hub](https://img.shields.io/docker/v/datrisai/datris-server?label=Docker%20Hub)](https://hub.docker.com/u/datrisai)
+[![License](https://img.shields.io/github/license/datris/datris-platform-oss)](LICENSE)
+
+[datris.ai](https://datris.ai) · [Documentation](https://datris.ai/docs) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
 
 Ingest, validate, transform, store, and retrieve your data — whether you're an AI agent talking through MCP or a developer writing config. One platform for both.
 
-Deploy on any cloud provider, on-premise, or locally — with no vendor lock-in. Define your entire data pipeline through simple JSON configuration, or extend it with AI instructions, JavaScript functions, and REST endpoints at every stage of the flow. Built entirely on open-source infrastructure, it runs anywhere Docker does.
+## Why Datris?
 
-### Agent-Ready: Built-In MCP Server
+- **Agent-native** — Built-in MCP server with 30+ tools. Claude, Cursor, OpenClaw, and any MCP-compatible agent can operate pipelines through natural conversation
+- **AI at every stage** — CodeGen data quality, CodeGen transformations, AI schema generation, AI profiling, AI error explanation, natural language queries, RAG
+- **No vendor lock-in** — 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault). Runs anywhere Docker does
+- **Configuration-driven** — Define pipelines through JSON. No code required
 
-Your AI agents are first-class pipeline operators. Datris ships with a native MCP (Model Context Protocol) server — the first open-source data platform natively accessible to AI agents. Claude, Cursor, OpenClaw, and any MCP-compatible agent can register pipelines, upload files, trigger processing, monitor job status, profile data, run semantic searches across vector databases, and query PostgreSQL and MongoDB — all through natural conversation. Supports stdio and SSE transports.
+## Quick Start
 
-## AI-Powered Features
+```bash
+git clone https://github.com/datris/datris-platform-oss.git
+cd datris-platform-oss
+cp .env.example .env       # Add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY
+docker compose up -d
+```
 
-Intelligence at every stage — from ingestion to delivery, Datris makes data engineering accessible through natural language.
+**UI**: [http://localhost:4200](http://localhost:4200) · **API**: [http://localhost:8080](http://localhost:8080)
 
-- **MCP server (AI agent integration)** - Built-in [MCP](https://modelcontextprotocol.io) server lets AI agents (Claude, Cursor, OpenClaw, custom frameworks) natively interact with the pipeline — register pipelines, upload files, trigger jobs, profile data, run semantic searches, and query databases. Supports stdio and SSE transports
-- **AI-powered data quality** - Validate with plain English rules via `aiRule`. The AI model evaluates every row using reasoning and domain knowledge — no regex required. Supports sampling for large files
-- **AI transformations** - Describe row transformations in natural language — date format conversion, data categorization, phone number standardization, entity extraction — no code needed
-- **AI schema generation** - Upload any CSV, JSON, or XML file and receive a complete, ready-to-register pipeline configuration — field names and types inferred automatically
-- **AI data profiling** - Upload a file and get summary statistics, quality issues, and suggested validation rules — all powered by AI analysis
-- **AI error explanation** - When jobs fail, AI analyzes the error chain and explains the root cause in plain English. No more digging through stack traces
-- **AI providers** - Anthropic Claude (Opus 4.6, Sonnet 4.6, Haiku), OpenAI (GPT-5, GPT-4.1, o3, embedding models), or local models via Ollama (Llama, Mistral, Phi). No vendor lock-in — switch providers without changing your pipeline config
+### Connect an AI Agent
 
-## RAG Pipeline
+Add to your MCP client config (Claude Desktop, Cursor, etc.):
 
-Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any major vector database — build retrieval-augmented generation workflows without leaving your pipeline.
+```json
+{
+  "mcpServers": {
+    "datris": {
+      "command": "uvx",
+      "args": ["datris-mcp-server"],
+      "env": {
+        "PIPELINE_URL": "http://localhost:8080"
+      }
+    }
+  }
+}
+```
 
-- **5 vector databases** - Qdrant, Weaviate, Milvus, Chroma, pgvector (PostgreSQL)
-- **Chunking strategies** - Fixed-size, sentence, paragraph, recursive
-- **Embedding providers** - OpenAI or Ollama (local models)
-- **Document extraction** - PDF, Word, PowerPoint, Excel, HTML, email, EPUB, plain text
+### CLI
 
-## Key Features
+```bash
+pip install datris-mcp-server
+datris ingest data.csv --dest postgres
+datris ingest sales.csv --ai-validate "prices > 0" --ai-transform "convert dates to YYYY/MM/DD"
+datris query "SELECT * FROM sales"
+datris search "quarterly revenue" --store pgvector
+```
 
-- **Configuration-driven** - Define pipelines entirely through JSON, or extend with AI instructions and preprocessors at every stage of the data flow
-- **Multiple ingestion methods** - File upload API, MinIO bucket events, database polling, Kafka streaming
-- **Data quality** - AI rules (CodeGen), header validation, JSON/XML schema validation
-- **Transformations** - AI transformations (CodeGen), destination schema (drop/rename/retype columns)
-- **Multiple destinations** - Write to MinIO (Parquet/ORC), PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, or pgvector in parallel
-- **Event notifications** - Subscribe to pipeline processing events via ActiveMQ topics
+## What It Does
+
+```
+Source (File Upload / MinIO Event / Database Pull / Kafka)
+  → Preprocessor (optional REST endpoint)
+  → Data Quality (AI rules, header validation, schema validation)
+  → Transformation (AI transformation, destination schema)
+  → Destinations (in parallel):
+      PostgreSQL, MongoDB, MinIO (Parquet/ORC), Kafka, ActiveMQ,
+      REST Endpoint, Qdrant, Weaviate, Milvus, Chroma, pgvector
+  → Notifications (ActiveMQ topic)
+```
+
+### AI-Powered Features
+
+| Feature | Description |
+|---------|-------------|
+| **MCP Server** | 30+ tools for AI agents — pipeline CRUD, upload, query, search, profiling |
+| **CodeGen Data Quality** | Plain English validation rules → Python script, runs locally (~$0.003/rule) |
+| **CodeGen Transformation** | Plain English transformations → Python script, runs locally |
+| **AI Schema Generation** | Upload a file, get a complete pipeline config |
+| **AI Data Profiling** | Upload a file, get statistics + suggested validation rules |
+| **AI Error Explanation** | Job failures explained in plain English |
+| **Natural Language Query** | Ask questions in English, get SQL results |
+| **RAG Pipeline** | Chunk, embed, and search across 5 vector databases |
+
+### Supported Formats
+
+CSV, JSON, XML, Excel, PDF, Word, PowerPoint, HTML, email, EPUB, plain text, .zip/.tar/.gz archives
+
+### AI Providers
+
+Anthropic Claude (Opus 4.6, Sonnet 4.6, Haiku) · OpenAI (GPT-5, GPT-4.1, o3) · Ollama (local models)
 
 ## Architecture
-
-Push and pull — one platform, two interfaces. AI agents and humans ingest data through the pipeline, store it across databases and vector stores, and retrieve it back — via API or MCP.
-
-Self-hosted on proven open-source infrastructure — no proprietary services, no vendor lock-in, no surprise bills:
 
 | Service | Purpose |
 |---------|---------|
@@ -55,133 +100,10 @@ Self-hosted on proven open-source infrastructure — no proprietary services, no
 | **Apache Kafka** | Optional streaming source and destination |
 | **Apache Spark** | Local Spark for writing Parquet/ORC to MinIO |
 
-## Processing Flow
-
-```
-Source (File Upload / MinIO Event / Database Pull / Kafka)
-  |
-  v
-Preprocessor (optional REST endpoint)
-  |
-  v
-Data Quality (AI rules, header validation, schema validation)
-  |
-  v
-Transformation (AI transformation, destination schema)
-  |
-  v
-Destinations (executed in parallel)
-  ├── Object Store (MinIO - Parquet, ORC, CSV)
-  ├── PostgreSQL (COPY bulk insert)
-  ├── MongoDB (document upsert)
-  ├── Kafka (topic producer)
-  ├── ActiveMQ (queue)
-  ├── REST Endpoint (HTTP POST)
-  ├── Qdrant (vector database - chunking, embeddings, RAG)
-  ├── Weaviate (vector database - chunking, embeddings, RAG)
-  ├── Milvus (vector database - chunking, embeddings, RAG)
-  ├── Chroma (vector database - chunking, embeddings, RAG)
-  └── pgvector (PostgreSQL vector database - chunking, embeddings, RAG)
-  |
-  v
-Notifications (published to ActiveMQ topic)
-```
-
-## Retrieval Flow
-
-```
-Client (AI Agent via MCP / Developer via REST API)
-  |
-  v
-Interface
-  ├── MCP Server (stdio or SSE)
-  └── REST API (POST /api/v1/query/* and /api/v1/search/*)
-  |
-  v
-Query Source
-  ├── PostgreSQL (read-only SQL SELECT queries)
-  ├── MongoDB (document queries with filters and projections)
-  ├── Qdrant (semantic search)
-  ├── Weaviate (semantic search)
-  ├── Milvus (semantic search)
-  ├── Chroma (semantic search)
-  ├── pgvector (semantic search via PostgreSQL)
-  ├── Pipeline Configurations (list/get)
-  ├── Job Status (by pipeline token or pipeline name)
-  ├── AI Schema Generation (from uploaded files)
-  └── AI Data Profiling (statistics, quality issues, suggested rules)
-```
-
-## Supported Data Formats
-
-| Format | Input | Output |
-|--------|-------|--------|
-| CSV | Configurable delimiter, header, encoding | Parquet, ORC, database, Kafka, ActiveMQ |
-| JSON | Single object or NDJSON (one per line) | MongoDB, Kafka, REST |
-| XML | Single document or one per line | Database, Kafka, REST |
-| Excel (XLS) | Worksheet selection, auto-CSV conversion | Same as CSV |
-| Unstructured | PDF, Word, PowerPoint, Excel, HTML, email, EPUB, text | Object store, Qdrant, Weaviate, pgvector |
-| Archives | .zip, .tar, .gz, .jar | Extracted and processed individually |
-
-## Getting Started
-
-```bash
-git clone https://github.com/datris/datris-platform-oss.git
-cd datris-platform-oss
-cp .env.example .env       # Add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY
-docker compose up -d
-```
-
-The platform is running at [http://localhost:4200](http://localhost:4200) (UI) and [http://localhost:8080](http://localhost:8080) (API).
-
-See [Installation](docs/installation.md) for details on API keys, vector databases, and building from source.
-
 ## Documentation
 
-- [Installation](docs/installation.md) - Get running with Docker Compose
-- [Quick Start](docs/quick-start.md) - End-to-end walkthrough
-- [Pipeline Configuration](docs/pipeline-configuration.md) - Full JSON configuration reference
-- [Schemas](docs/schemas.md) - Schema definition and auto-generation
-- **Ingestion**
-  - [File Upload](docs/ingestion/file-upload.md) - API file upload
-  - [Object Store](docs/ingestion/object-store.md) - MinIO bucket notifications
-  - [Database Pull](docs/ingestion/database-pull.md) - PostgreSQL, MySQL, MSSQL scheduled pulls
-  - [Kafka](docs/ingestion/kafka.md) - Kafka topic consumption
-  - [Data Types](docs/ingestion/data-types.md) - Supported data types
-- [Preprocessor](docs/preprocessor.md) - External preprocessing via REST endpoints
-- **Data Quality**
-  - [Header Validation](docs/data-quality/header-validation.md) - CSV header matching
-  - [AI Rules (CodeGen)](docs/data-quality/ai-rules.md) - Natural language validation — generates Python scripts
-  - [Schema Validation](docs/data-quality/schema-validation.md) - JSON/XML schema validation
-- **Transformations**
-  - [AI Transformation (CodeGen)](docs/transformation/ai-transformation.md) - Natural language transformations — generates Python scripts
-  - [Destination Schema](docs/transformation/dropping-columns.md) - Drop, rename, and retype columns
-- **Destinations**
-  - [Object Store](docs/destinations/object-store.md) - Spark writes to MinIO (Parquet, ORC)
-  - [PostgreSQL](docs/destinations/postgres.md) - COPY bulk insert
-  - [MongoDB](docs/destinations/mongodb.md) - Document upserts
-  - [Kafka](docs/destinations/kafka.md) - Topic producer
-  - [ActiveMQ](docs/destinations/activemq.md) - Queue destination
-  - [REST Endpoint](docs/destinations/rest-endpoint.md) - HTTP POST destination
-  - [Qdrant](docs/destinations/qdrant.md) - Vector database for RAG — ingest PDFs, text docs with chunking and embeddings
-  - [Weaviate](docs/destinations/weaviate.md) - Vector database for RAG — ingest PDFs, Word docs, text with chunking and embeddings
-  - [Milvus](docs/destinations/milvus.md) - Vector database for RAG — scalable similarity search
-  - [Chroma](docs/destinations/chroma.md) - Vector database for RAG — lightweight, single container
-  - [pgvector](docs/destinations/pgvector.md) - PostgreSQL vector database for RAG — no separate server required
-- [Notifications](docs/notifications.md) - Pipeline event notifications and subscriptions
-- [Monitoring](docs/monitoring.md) - Job status and pipeline tokens
-- **API Reference**
-  - [Pipeline API](docs/api-reference/pipeline-api.md) - CRUD for pipeline configurations
-  - [Ingestion API](docs/api-reference/ingestion-api.md) - File upload and generation
-  - [AI Schema Generation](docs/api-reference/schema-generation-api.md) - Generate pipeline configs from files using AI
-  - [Status API](docs/api-reference/status-api.md) - Job status and monitoring
-  - [Query API](docs/api-reference/query-api.md) - Query PostgreSQL and MongoDB
-  - [Search API](docs/api-reference/search-api.md) - Semantic search across vector databases
-- [AI Data Profiling](docs/ai-data-profiling.md) - Profile data files and get recommended rules
-- [AI Error Explanation](docs/ai-error-explanation.md) - Automatic plain-English error analysis
-- [AI Configuration](docs/ai-configuration.md) - Configure AI providers (Anthropic, OpenAI, Ollama)
-  - [Version API](docs/api-reference/version-api.md) - Version endpoint
-- [OpenAPI Spec](docs/openapi.yaml) - OpenAPI 3.0 spec for Postman, code generation, and non-MCP integrations
-- [Configuration Reference](docs/configuration-reference.md) - Full application.yaml reference
-- [MCP Server](docs/mcp.md) - AI agent integration via Model Context Protocol
-- [Example Applications](docs/examples.md) - Vector store chat, Kafka loader, preprocessor, and more
+Full documentation at [datris.ai/docs](https://datris.ai/docs) or locally at `docs/`.
+
+## License
+
+[AGPL-3.0](LICENSE)

@@ -1,0 +1,119 @@
+---
+title: "Schema Definition & Auto-Generation"
+description: "Define and auto-generate schemas"
+---
+
+Schemas define the structure of data flowing through the pipeline. Every pipeline requires a source schema that describes the incoming fields and their types. Optionally, a destination schema can override types or rename fields when writing to a target.
+
+## Defining Schemas
+
+Schemas are declared in the `source.schemaProperties.fields` array of a pipeline configuration. Each field entry specifies a name and a data type.
+
+```json
+{
+  "source": {
+    "schemaProperties": {
+      "fields": [
+        { "name": "id", "type": "bigint" },
+        { "name": "email", "type": "varchar(255)" },
+        { "name": "signup_date", "type": "date" },
+        { "name": "balance", "type": "decimal(12,2)" },
+        { "name": "is_active", "type": "boolean" },
+        { "name": "notes", "type": "string" }
+      ]
+    }
+  }
+}
+```
+
+## Supported Data Types
+
+| Type | Description |
+|---|---|
+| `boolean` | True/false value |
+| `int` | 32-bit signed integer |
+| `tinyint` | 8-bit signed integer |
+| `smallint` | 16-bit signed integer |
+| `bigint` | 64-bit signed integer |
+| `float` | 32-bit floating point |
+| `double` | 64-bit floating point |
+| `decimal(p,s)` | Fixed-precision decimal with `p` total digits and `s` scale digits |
+| `string` | Variable-length text, no upper bound |
+| `varchar(n)` | Variable-length text with maximum length `n` |
+| `char(n)` | Fixed-length text of exactly `n` characters |
+| `date` | Calendar date (no time component) |
+| `timestamp` | Date and time with microsecond precision |
+
+Refer to [data-types](ingestion/data-types.md) for type mappings to PostgreSQL and Spark.
+
+## Auto-Generating a Schema
+
+If you have a representative CSV file, the pipeline can infer a schema automatically using AI. POST the file to the `/api/v1/pipeline/generate` endpoint:
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/pipeline/generate" \
+  -F "file=@sample.csv" \
+  -F "pipeline=my_pipeline"
+```
+
+The AI analyzes the file content (up to 100 lines) and returns a complete pipeline configuration with inferred field names and data types. You can edit the output before saving it to a pipeline configuration.
+
+In the UI, this happens automatically in Step 1 of the pipeline creation wizard when you upload a sample file and click "Analyze File".
+
+## AI-Generated Validation Schemas
+
+For JSON and XML pipelines, you can also generate validation schemas using AI:
+
+- **JSON Schema (Draft 4)** — for validating JSON data against an Everit-compatible schema
+- **W3C XSD** — for validating XML data against an XML Schema
+
+In the UI (Step 4 — Data Quality), choose "Generate schema with AI", enter a schema name, and provide sample data (or load it from your uploaded file). The AI generates a compliant schema that is stored in MinIO and referenced automatically in the pipeline config.
+
+Via API:
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/config/generate-schema" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "json-schema",
+    "name": "stock_prices_schema",
+    "sampleData": "{\"symbol\": \"AAPL\", \"price\": 150.25}"
+  }'
+```
+
+Valid types: `json-schema` (generates Draft 4 JSON Schema) and `xsd` (generates W3C XSD). The generated schema is stored at `{environment}-config/validation-schema/{name}.json` or `{name}.xsd`.
+
+## Source vs Destination Schemas
+
+A **source schema** describes the data as it arrives (CSV columns, JSON keys, database columns). It is always required.
+
+A **destination schema** describes the data as it should be written to the target system. It is optional. When omitted, the destination inherits the source schema unchanged.
+
+Use a destination schema when you need to:
+
+- Widen a type (e.g., `int` to `bigint`) for the target table.
+- Rename a field between ingestion and storage.
+- Drop fields that should not reach the destination.
+
+```json
+{
+  "source": {
+    "schemaProperties": {
+      "fields": [
+        { "name": "user_id", "type": "int" },
+        { "name": "full_name", "type": "varchar(100)" }
+      ]
+    }
+  },
+  "destination": {
+    "schemaProperties": {
+      "fields": [
+        { "name": "user_id", "type": "bigint" },
+        { "name": "full_name", "type": "varchar(200)" }
+      ]
+    }
+  }
+}
+```
+
+When both schemas are present, the pipeline maps source fields to destination fields by position. Ensure the field count matches or use a transformation step to reconcile differences.

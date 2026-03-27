@@ -1,0 +1,63 @@
+---
+title: "MongoDB Destination"
+description: "Send data to MongoDB"
+---
+
+The MongoDB destination writes JSON documents to a MongoDB collection. It supports upserts, transactions, and two JSON input modes.
+
+## Schema Requirement
+
+The source schema must contain a single field named `_json` of type `string`. Each value in this field is a JSON document that will be written to the target collection.
+
+## JSON Modes
+
+The JSON input mode is controlled by `everyRowContainsObject` in the source `fileAttributes.jsonAttributes`:
+
+| Value   | Description                                                                          |
+|---------|--------------------------------------------------------------------------------------|
+| `true`  | Each line of the file is a separate JSON document (newline-delimited JSON). Default. |
+| `false` | The file contains a single JSON array; each element becomes a separate document.     |
+
+## Upsert with Compound Keys
+
+Specify one or more fields in `keyFields` to perform an upsert instead of a plain insert. The pipeline matches existing documents by the compound key formed from these fields. If a matching document exists it is replaced; otherwise a new document is inserted.
+
+## Truncate Before Write
+
+Set `truncateBeforeWrite` to `true` to delete all documents from the target collection before writing. This effectively replaces the entire collection on each run.
+
+## Transaction Support
+
+All write operations execute inside a MongoDB transaction. If any error occurs during the write, the transaction is aborted and no partial data is persisted.
+
+## Configuration Example
+
+```json
+{
+  "name": "events_mongodb",
+  "source": { "..." : "..." },
+  "destination": {
+    "database": {
+      "dbName": "analytics",
+      "table": "events",
+      "useMongoDB": true,
+      "keyFields": ["event_id", "source"],
+      "truncateBeforeWrite": false,
+      "useTransaction": true
+    }
+  }
+}
+```
+
+MongoDB connection credentials are configured globally in `application.yaml` via `secrets.mongoDbSecretName`. See [Configuration Reference](../configuration-reference.md) for Vault secret format.
+
+### Field Reference
+
+| Field                 | Required | Default | Description                                          |
+|-----------------------|----------|---------|------------------------------------------------------|
+| `dbName`              | yes      |         | Target database name                                 |
+| `table`               | yes      |         | Target collection name                               |
+| `useMongoDB`          | yes      | `false` | Must be `true` to enable MongoDB destination         |
+| `keyFields`           | no       |         | Array of field names forming the compound upsert key |
+| `truncateBeforeWrite` | no       | `false` | Delete all documents before writing                  |
+| `useTransaction`      | no       | `false` | Wrap all writes in a MongoDB transaction             |

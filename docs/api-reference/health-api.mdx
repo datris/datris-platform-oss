@@ -1,0 +1,61 @@
+---
+title: "Health Check API"
+description: "Health check endpoints"
+---
+
+The Health Check API provides a single endpoint to check the connectivity status of all backend services.
+
+## Check Service Health
+
+```
+GET /api/v1/health/services
+```
+
+Returns the health status of all configured backend services.
+
+### Response
+
+```json
+{
+  "postgres": {"status": "up", "message": "Connected"},
+  "mongodb": {"status": "up", "message": "Connected"},
+  "minio": {"status": "up", "message": "Connected"},
+  "activemq": {"status": "up", "message": "Connected"},
+  "kafka": {"status": "up", "message": "Connected"},
+  "qdrant": {"status": "not_configured"},
+  "weaviate": {"status": "not_configured"},
+  "milvus": {"status": "not_configured"},
+  "chroma": {"status": "not_configured"},
+  "pgvector": {"status": "not_configured"}
+}
+```
+
+### Status Values
+
+| Status | Description |
+|--------|-------------|
+| `up` | Service is reachable and responding |
+| `down` | Service is configured but not reachable (includes error message) |
+| `not_configured` | No Vault secret configured for this service |
+
+### Services Checked
+
+**Core infrastructure** (always checked):
+- `postgres` — PostgreSQL database
+- `mongodb` — MongoDB database
+- `minio` — MinIO object store
+- `activemq` — ActiveMQ message queue
+- `kafka` — Apache Kafka
+
+**Vector databases** (checked only if configured via Vault secrets):
+- `qdrant` — Qdrant vector database
+- `weaviate` — Weaviate vector database
+- `milvus` — Milvus vector database
+- `chroma` — Chroma vector database
+- `pgvector` — PostgreSQL with pgvector extension
+
+### Example
+
+```bash
+curl http://localhost:8080/api/v1/health/services
+```

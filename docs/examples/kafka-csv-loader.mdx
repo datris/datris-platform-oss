@@ -1,0 +1,30 @@
+---
+title: "Kafka CSV Loader"
+description: "Load CSVs into Kafka example"
+---
+
+**Location:** `examples/kafka-csv-loader/`
+
+A Kafka producer utility that publishes CSV file contents to Kafka topics. Use this to ingest data into the pipeline via Kafka streaming instead of the file upload API.
+
+## Setup
+
+```bash
+cd examples/kafka-csv-loader
+pip install kafka-python
+```
+
+## Run
+
+```bash
+python app.py
+```
+
+## Configuration
+
+Edit `app.py` to configure:
+- Kafka broker address
+- Topic name
+- CSV file path
+
+See [Kafka Ingestion](../ingestion/kafka.md) for how to configure pipelines with Kafka sources.

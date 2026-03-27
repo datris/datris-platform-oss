@@ -1,0 +1,120 @@
+---
+title: "Pipeline Configuration API"
+description: "Pipeline configuration endpoints"
+---
+
+Manage pipeline configurations through CRUD operations.
+
+## Get a Pipeline
+
+```
+GET /api/v1/pipeline?pipeline={name}
+```
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pipeline` | query | Yes | Pipeline name |
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/pipeline?pipeline=sales_data"
+```
+
+**Response:** `200 OK` with the full PipelineConfig JSON.
+
+---
+
+## List All Pipelines
+
+```
+GET /api/v1/pipelines
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/pipelines
+```
+
+**Response:** `200 OK` with an array of all PipelineConfig objects.
+
+---
+
+## Create or Update a Pipeline
+
+```
+POST /api/v1/pipeline
+Content-Type: application/json
+```
+
+**Body:** Full PipelineConfig JSON (see [Pipeline Configuration](../pipeline-configuration.md)).
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "sales_data",
+    "source": {
+      "schemaProperties": {
+        "fields": [
+          {"name": "id", "type": "int"},
+          {"name": "amount", "type": "double"}
+        ]
+      },
+      "fileAttributes": {
+        "csvAttributes": {"delimiter": ",", "header": true, "encoding": "UTF-8"}
+      }
+    },
+    "destination": {
+      "database": {
+        "dbName": "mydb",
+        "schema": "public",
+        "table": "sales",
+        "usePostgres": true
+      }
+    }
+  }'
+```
+
+**Response:** `200 OK`
+
+**Validation:** The configuration is validated before saving. Invalid configurations return `500` with error details. See [Pipeline Configuration](../pipeline-configuration.md) for all constraints.
+
+---
+
+## Delete a Pipeline
+
+```
+DELETE /api/v1/pipeline?pipeline={name}
+```
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pipeline` | query | Yes | Pipeline name |
+
+**Example:**
+```bash
+curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data"
+```
+
+**Response:** `200 OK`
+
+---
+
+## AI Schema Generation
+
+To generate a pipeline configuration automatically from an uploaded file, see the [AI Schema Generation API](schema-generation-api.md).
+
+---
+
+## Authentication
+
+If `useApiKeys` is enabled, all requests must include the `x-api-key` header:
+
+```bash
+curl -H "x-api-key: your-api-key" http://localhost:8080/api/v1/pipelines
+```
+
+API keys are stored in Vault under the secret specified by `secrets.apiKeysSecretName`.

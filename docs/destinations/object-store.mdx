@@ -1,0 +1,94 @@
+---
+title: "Object Store Destination (MinIO)"
+description: "Send data to MinIO object store"
+---
+
+The object store destination uses an embedded Apache Spark engine to write columnar files to MinIO-compatible object storage. Output is written in Parquet or ORC format to an S3A path.
+
+## Output Path
+
+Files are written to:
+
+```
+s3a://{bucket}/{prefixKey}
+```
+
+The default bucket is `{environment}-data`. You can override this per pipeline with the `destinationBucketOverride` field.
+
+## File Formats
+
+| Format    | Description                          |
+|-----------|--------------------------------------|
+| `parquet` | Apache Parquet columnar format (default) |
+| `orc`     | Apache ORC columnar format           |
+
+Set the format with the `fileFormat` field.
+
+## Write Modes
+
+| Mode             | Behavior                                                  |
+|------------------|-----------------------------------------------------------|
+| `append`         | Append new files to the output path (default)             |
+| `overwrite`      | Replace all existing files at the output path             |
+| `ignore`         | Do nothing if data already exists at the output path      |
+| `errorifexists`  | Fail the job if data already exists at the output path    |
+
+## Partitioning
+
+Partition output files by one or more columns using the `partitionBy` array. Spark creates a directory structure based on the distinct values of the specified columns.
+
+## Delete Before Write
+
+Set `deleteBeforeWrite` to `true` to remove all existing objects under the output prefix before writing new data. This is useful when you need a clean target path but want finer control than the `overwrite` write mode provides.
+
+## Type Casting
+
+Column types from the source schema are mapped to Spark types before writing:
+
+| Schema Type | Spark Type    |
+|-------------|---------------|
+| `tinyint`   | `ByteType`    |
+| `smallint`  | `ShortType`   |
+| `int`       | `IntegerType` |
+| `bigint`    | `LongType`    |
+| `float`     | `FloatType`   |
+| `double`    | `DoubleType`  |
+| `string`    | `StringType`  |
+| `boolean`   | `BooleanType` |
+| `date`      | `DateType`    |
+| `timestamp` | `TimestampType` |
+
+## Completion Notification
+
+A notification is sent when the write completes, indicating success or failure along with the number of records written and the output path.
+
+## Configuration Example
+
+```json
+{
+  "name": "sales_pipeline",
+  "source": { "..." : "..." },
+  "destination": {
+    "objectStore": {
+      "fileFormat": "parquet",
+      "writeMode": "append",
+      "prefixKey": "sales/daily",
+      "destinationBucketOverride": "analytics-data",
+      "partitionBy": ["region", "year"],
+      "deleteBeforeWrite": false
+    }
+  }
+}
+```
+
+### Field Reference
+
+| Field                        | Required | Default              | Description                                      |
+|------------------------------|----------|----------------------|--------------------------------------------------|
+| `prefixKey`                  | yes      |                      | Key prefix under the bucket                      |
+| `fileFormat`                 | no       | `parquet`            | Output file format: `parquet` or `orc`           |
+| `writeMode`                  | no       | `append`             | Spark write mode                                 |
+| `destinationBucketOverride`  | no       | `{environment}-data` | Override the default bucket name                 |
+| `partitionBy`                | no       |                      | Array of column names to partition by            |
+| `deleteBeforeWrite`          | no       | `false`              | Delete existing objects before writing           |
+| `writeToTemporaryLocation`   | no       | `false`              | Write to a temp path first, then move            |

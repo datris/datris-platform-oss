@@ -1,0 +1,198 @@
+---
+title: "MCP Server (AI Agent Integration)"
+description: "MCP server for AI agent integration"
+---
+
+The pipeline includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that lets AI agents interact with the platform natively. Any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, or custom agentic frameworks — can discover database metadata, create and manage pipelines, upload files, monitor jobs, profile data, search vector databases, query structured data, answer questions with AI-powered RAG, and upload configuration files — all without custom integration code.
+
+The MCP server is a lightweight Python service that routes all operations through the pipeline's REST API. It runs alongside the pipeline in Docker or locally for development.
+
+## Resources
+
+The MCP server exposes resources that agents can read on demand for detailed documentation.
+
+| Resource URI | Description |
+|------|-------------|
+| `datris://pipeline-config-reference` | Complete reference for building pipeline configurations — all source types, data quality rules, transformations, and destination types with JSON examples |
+
+## Available Tools
+
+### Pipeline Management
+
+| Tool | Description |
+|------|-------------|
+| `list_pipelines` | List all registered pipeline configurations |
+| `get_pipeline` | Get a specific pipeline configuration by name |
+| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Specify destination type. |
+| `delete_pipeline` | Delete a pipeline and its destination data |
+| `upload_data` | Upload data (base64-encoded) to a pipeline for processing (returns pipeline token) |
+| `get_job_status` | Get job status by pipeline token or pipeline name |
+| `kill_job` | Kill a running job by pipeline token |
+| `profile_data` | AI-profile data (base64-encoded) with summary stats and suggested DQ rules |
+| `get_version` | Get pipeline server version |
+| `check_service_health` | Check which backend services are up, down, or not configured (slow — use for diagnostics only) |
+
+### Vector Database Search
+
+Semantic search across any of the pipeline's supported vector databases. Each tool takes a natural language query and returns the most similar document chunks with scores and metadata.
+
+| Tool | Description |
+|------|-------------|
+| `search_qdrant` | Search a Qdrant collection |
+| `search_weaviate` | Search a Weaviate class |
+| `search_milvus` | Search a Milvus collection |
+| `search_chroma` | Search a Chroma collection |
+| `search_pgvector` | Search a pgvector PostgreSQL table |
+
+### Database Queries
+
+Read-only queries against the pipeline's backend databases.
+
+| Tool | Description |
+|------|-------------|
+| `query_postgres` | Execute a read-only SQL SELECT query against PostgreSQL |
+| `query_mongodb` | Query a MongoDB collection with filter and projection |
+
+### Metadata Discovery
+
+Explore the structure of PostgreSQL, MongoDB, and vector databases managed by the platform. Use these tools to understand what data is available before writing queries or running searches.
+
+| Tool | Description |
+|------|-------------|
+| `list_postgres_databases` | List all PostgreSQL databases |
+| `list_postgres_schemas` | List schemas in a PostgreSQL database |
+| `list_postgres_tables` | List tables in a schema (supports vector-only filter) |
+| `list_postgres_columns` | List columns and types for a specific table |
+| `list_mongodb_databases` | List all MongoDB databases |
+| `list_mongodb_collections` | List collections (optionally filtered by database) |
+| `list_qdrant_collections` | List all collections in Qdrant |
+| `list_weaviate_classes` | List all classes in Weaviate |
+| `list_milvus_collections` | List all collections in Milvus |
+| `list_chroma_collections` | List all collections in Chroma |
+| `list_pgvector_collections` | List all pgvector tables in PostgreSQL |
+
+### AI
+
+| Tool | Description |
+|------|-------------|
+| `ai_answer` | Answer a question using AI based on provided context (RAG) |
+
+### Configuration
+
+| Tool | Description |
+|------|-------------|
+| `upload_config` | Upload a JSON Schema config file (base64-encoded content) |
+| `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
+
+## Setup
+
+### Docker (automatic)
+
+The MCP server starts automatically with `docker-compose up` in SSE mode on port 3000. No additional setup required.
+
+### Local (for Claude Desktop / Claude Code)
+
+```bash
+cd mcp-server
+pip install -r requirements.txt
+python server.py          # stdio mode (default)
+```
+
+## Transport Modes
+
+| Mode | Use Case | Command |
+|------|----------|---------|
+| **stdio** | Claude Desktop, Claude Code, local agents | `python server.py` |
+| **SSE** | Docker, remote agents, web clients | `python server.py --sse --port 3000` |
+
+## Configuring Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+    "mcpServers": {
+        "datris-pipeline": {
+            "command": "python",
+            "args": ["/path/to/mcp-server/server.py"],
+            "env": {
+                "PIPELINE_URL": "http://localhost:8080"
+            }
+        }
+    }
+}
+```
+
+## Configuring Claude Code
+
+Add to `.mcp.json` in your project root:
+
+```json
+{
+    "mcpServers": {
+        "datris-pipeline": {
+            "command": "python",
+            "args": ["mcp-server/server.py"],
+            "env": {
+                "PIPELINE_URL": "http://localhost:8080"
+            }
+        }
+    }
+}
+```
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PIPELINE_URL` | `http://localhost:8080` | Pipeline server URL |
+| `PIPELINE_API_KEY` | (empty) | API key if pipeline has key validation enabled |
+
+All database connections, vector search, and embedding are handled by the pipeline server. The MCP server only needs the pipeline URL.
+
+## Example Agent Workflows
+
+### Profile and ingest a CSV file
+
+An AI agent could autonomously:
+
+1. **Profile the data** — `profile_data` with the CSV file
+2. **Review suggested rules** — agent reads the AI-suggested DQ rules
+3. **Create the pipeline** — `create_pipeline` with the profiled config
+4. **Upload the file** — `upload_data` to trigger processing
+5. **Monitor status** — `get_job_status` to track completion
+
+### Build and query a RAG knowledge base
+
+1. **Create pipeline** — `create_pipeline` with Qdrant/Weaviate/Milvus/pgvector destination
+2. **Upload documents** — `upload_data` for each PDF/document
+3. **Monitor** — `get_job_status` until all documents are processed
+4. **Search** — `search_qdrant` to find relevant chunks
+5. **Answer** — `ai_answer` with the retrieved chunks as context and the user's question
+
+### Discover and query data
+
+1. **List databases** — `list_postgres_databases` to see available databases
+2. **List schemas** — `list_postgres_schemas` to explore a database
+3. **List tables** — `list_postgres_tables` to find relevant tables
+4. **Inspect columns** — `list_postgres_columns` to understand table structure
+5. **Query** — `query_postgres` with a well-formed SELECT query
+
+### Cross-database analysis
+
+1. **Search documents** — `search_pgvector` for relevant financial document chunks
+2. **Query structured data** — `query_postgres` to get related financial metrics
+3. **Combine** — agent merges unstructured + structured data in its response
+
+### AI validation and transformation
+
+1. **Create pipeline with AI rules** — `create_pipeline` with `codegen_rule` for validation and/or `codegen_transform` for transformation
+2. **Upload data** — `upload_data` to process data through the AI-powered pipeline
+3. Datris generates Python scripts from your instructions and runs them locally
+
+### Automated data quality monitoring
+
+1. **List pipelines** — `list_pipelines` to discover all registered pipelines
+2. **Upload new data** — `upload_data` with latest data files
+3. **Check results** — `get_job_status` to see DQ failures
+4. **Diagnose** — AI reads error explanations and suggests fixes

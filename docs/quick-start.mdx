@@ -1,0 +1,103 @@
+---
+title: "Quick Start"
+description: "Get up and running with Datris in minutes"
+---
+
+This guide walks through ingesting a CSV file into PostgreSQL using the pipeline.
+
+## 1. Start the stack
+
+```bash
+sbt clean assembly
+docker-compose up --build
+```
+
+Wait for the `pipeline` container to show `Started PipelineServiceApplication`.
+
+## 2. Register a pipeline
+
+Create a pipeline configuration that defines the source schema and PostgreSQL destination:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "employees",
+    "source": {
+      "schemaProperties": {
+        "fields": [
+          {"name": "id", "type": "int"},
+          {"name": "first_name", "type": "string"},
+          {"name": "last_name", "type": "string"},
+          {"name": "email", "type": "string"},
+          {"name": "salary", "type": "double"}
+        ]
+      },
+      "fileAttributes": {
+        "csvAttributes": {
+          "delimiter": ",",
+          "header": true,
+          "encoding": "UTF-8"
+        }
+      }
+    },
+    "destination": {
+      "database": {
+        "dbName": "mydb",
+        "schema": "public",
+        "table": "employees",
+        "usePostgres": true
+      }
+    }
+  }'
+```
+
+## 3. Upload a CSV file
+
+Create a sample CSV file:
+
+```bash
+cat > /tmp/employees.csv << 'EOF'
+id,first_name,last_name,email,salary
+1,John,Doe,john@example.com,75000.00
+2,Jane,Smith,jane@example.com,82000.00
+3,Bob,Johnson,bob@example.com,68000.00
+EOF
+```
+
+Upload it:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline/upload \
+  -F "file=@/tmp/employees.csv" \
+  -F "pipeline=employees"
+```
+
+The response contains a `pipelineToken` for tracking:
+
+```
+pt-abc12345-6789-...
+```
+
+## 4. Check status
+
+```bash
+curl "http://localhost:8080/api/v1/pipeline/status?pipelinetoken=pt-abc12345-6789-..."
+```
+
+The status shows processing stages: `begin`, `processing`, `end`.
+
+## 5. Verify the data
+
+Connect to PostgreSQL (database: `mydb`) and query the table:
+
+```sql
+SELECT * FROM public.employees;
+```
+
+## Next Steps
+
+- [Pipeline Configuration](pipeline-configuration.md) - Explore all configuration options
+- [Data Quality](data-quality/ai-rules.md) - Add validation rules
+- [Destinations](destinations/object-store.md) - Write Parquet files to MinIO
+- [Transformations](transformation/ai-transformation.md) - Transform data with AI (CodeGen)

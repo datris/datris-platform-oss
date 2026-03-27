@@ -1,0 +1,125 @@
+---
+title: "AI Data Profiling"
+description: "AI-powered data profiling"
+---
+
+Upload any data file and receive an AI-generated profile — summary statistics, data quality issues, and recommendations for validation rules and transformations. Use profiling to understand your data before setting up a pipeline configuration.
+
+## Endpoint
+
+`POST /api/v1/pipeline/profile`
+
+## Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `file` | multipart file | (required) | The data file to profile (CSV, JSON, or XML) |
+| `delimiter` | string | `,` | CSV delimiter character |
+| `header` | boolean | `true` | Whether the CSV file has a header row |
+| `sampleSize` | int | `200` | Number of rows to sample for large files |
+
+## Example
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/pipeline/profile \
+  -F "file=@stock_prices.csv" \
+  -F "delimiter=," \
+  -F "header=true" \
+  -F "sampleSize=200" | python3 -m json.tool
+```
+
+## Response
+
+The endpoint returns a JSON object with three sections:
+
+```json
+{
+  "summary": {
+    "rowCount": 200,
+    "columnCount": 8,
+    "columns": [
+      {
+        "name": "symbol",
+        "inferredType": "string",
+        "nullCount": 0,
+        "uniqueCount": 195,
+        "sampleValues": ["FAX", "IAF", "FCO"]
+      },
+      {
+        "name": "date",
+        "inferredType": "date",
+        "nullCount": 0,
+        "uniqueCount": 1,
+        "sampleValues": ["2016-12-30"]
+      },
+      {
+        "name": "open",
+        "inferredType": "float",
+        "nullCount": 1,
+        "uniqueCount": 198,
+        "sampleValues": ["4.65", "5.44", "7.91"]
+      }
+    ]
+  },
+  "qualityIssues": [
+    "Column 'open' has 1 null/empty value",
+    "Column 'volume' contains a negative value (-500)",
+    "Column 'close' has a value exceeding $1,000,000"
+  ],
+  "recommendations": [
+    "Add an aiRule to validate symbol format, price ranges, and cross-column relationships",
+    "Consider sampling for large files to keep processing fast"
+  ],
+  "suggestedDataQuality": {
+    "aiRule": {
+      "instruction": "symbol must be 1-5 uppercase letters, all price columns (open, high, low, close, adj_close) must be positive and not exceed $1,000,000, volume must be positive, and high must be greater than or equal to low",
+      "onFailureIsError": false
+    }
+  }
+}
+```
+
+### Response fields
+
+| Section | Description |
+|---------|-------------|
+| `summary` | Row count, column count, and per-column statistics (inferred type, null count, unique count, sample values) |
+| `qualityIssues` | Data quality problems detected in the sample — missing values, outliers, inconsistent formats, suspicious patterns |
+| `recommendations` | Human-readable suggestions for validation rules and transformations |
+| `suggestedDataQuality` | Ready-to-use `dataQuality` JSON block that can be copied directly into a pipeline configuration. Contains an `aiRule` with a comprehensive plain-English instruction covering all validation checks |
+
+### Suggested data quality rules
+
+The `suggestedDataQuality` section provides a complete, copy-paste-ready `dataQuality` configuration based on what the AI observed in the data:
+
+- **`aiRule`** — a single comprehensive plain-English instruction covering all validation checks: format patterns (emails, phone numbers, dates), value ranges, cross-column relationships (e.g., high >= low), and business logic. Datris generates a Python validation script from this instruction and runs it locally. If no validation rule is appropriate, this field is omitted.
+
+See [CodeGen AI Rule](data-quality/ai-rules.md) for full documentation.
+
+## How it works
+
+1. You upload a file — no pipeline registration needed
+2. For large CSV files, the pipeline randomly samples `sampleSize` rows (keeping the header)
+3. The sampled content is sent to the AI model with a profiling prompt
+4. The AI analyzes the data and returns a structured JSON profile
+
+Profiling is a standalone operation — it does not require a registered pipeline, data quality rules, or any pipeline configuration. It is designed to be the first step when working with a new data source, before setting up validation or ingestion.
+
+## Use cases
+
+- **Explore new data** — understand the structure, types, and quality of an unfamiliar file before writing a pipeline configuration
+- **Discover quality issues** — find missing values, outliers, format inconsistencies, and suspicious patterns
+- **Generate rule ideas** — the AI suggests aiRule instructions and transformations based on what it observes
+- **Validate assumptions** — confirm that a file matches expected schema and data quality before loading
+
+## Sampling
+
+For files larger than `sampleSize` rows, the profiling endpoint automatically samples a random subset. The header row is always included. This keeps profiling fast and within AI context window limits regardless of file size.
+
+The default sample of 200 rows is typically sufficient to detect patterns, types, and quality issues. Increase `sampleSize` for more thorough profiling at the cost of slower response times.
+
+## Requirements
+
+- `ai.enabled: true` must be set in `application.yaml`
+- A configured AI provider (see [AI Configuration](ai-configuration.md))
+- Cloud providers (Anthropic, OpenAI) recommended for best results

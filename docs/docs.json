@@ -1,0 +1,129 @@
+{
+  "$schema": "https://mintlify.com/schema.json",
+  "theme": "mint",
+  "name": "Datris",
+  "colors": {
+    "primary": "#16A34A",
+    "light": "#07C983",
+    "dark": "#15803D"
+  },
+  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "index",
+              "installation",
+              "quick-start",
+              "cli",
+              "pipeline-configuration",
+              "schemas"
+            ]
+          },
+          {
+            "group": "Ingestion",
+            "pages": [
+              "ingestion/file-upload",
+              "ingestion/kafka",
+              "ingestion/object-store",
+              "ingestion/database-pull",
+              "ingestion/data-types"
+            ]
+          },
+          {
+            "group": "Destinations",
+            "pages": [
+              "destinations/postgres",
+              "destinations/mongodb",
+              "destinations/kafka",
+              "destinations/object-store",
+              "destinations/pgvector",
+              "destinations/qdrant",
+              "destinations/milvus",
+              "destinations/chroma",
+              "destinations/weaviate",
+              "destinations/activemq",
+              "destinations/rest-endpoint"
+            ]
+          },
+          {
+            "group": "Data Quality",
+            "pages": [
+              "data-quality/schema-validation",
+              "data-quality/header-validation",
+              "data-quality/ai-rules"
+            ]
+          },
+          {
+            "group": "Transformation",
+            "pages": [
+              "transformation/ai-transformation",
+              "transformation/dropping-columns",
+              "preprocessor"
+            ]
+          },
+          {
+            "group": "AI Features",
+            "pages": [
+              "ai-configuration",
+              "ai-data-profiling",
+              "ai-error-explanation",
+              "mcp"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration-reference",
+              "monitoring",
+              "notifications",
+              "DockerNoPipeline",
+              "config/commands",
+              "config/ec2-ollama",
+              "config/mcp-registry"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples",
+              "examples/chat-vector-store",
+              "examples/kafka-csv-loader",
+              "examples/market-macro-agent",
+              "examples/preprocessor",
+              "examples/test-mcp-server",
+              "examples/topic-subscriber"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "openapi": "openapi.yaml",
+        "groups": [
+          {
+            "group": "API Documentation",
+            "pages": [
+              "api-reference/ingestion-api",
+              "api-reference/query-api",
+              "api-reference/pipeline-api",
+              "api-reference/search-api",
+              "api-reference/schema-generation-api",
+              "api-reference/status-api",
+              "api-reference/health-api",
+              "api-reference/version-api"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
