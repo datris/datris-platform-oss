@@ -12,9 +12,8 @@ export class SecretsService {
     return this.http.get<string[]>('/api/v1/secrets');
   }
 
-  getSecret(name: string, reveal: boolean = false): Observable<any> {
-    const params = reveal ? '?reveal=true' : '';
-    return this.http.get<any>('/api/v1/secrets/' + encodeURIComponent(name) + params);
+  getSecret(name: string): Observable<any> {
+    return this.http.get<any>('/api/v1/secrets/' + encodeURIComponent(name));
   }
 
   putSecret(name: string, fields: Record<string, string>): Observable<any> {

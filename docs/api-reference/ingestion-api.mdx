@@ -52,10 +52,11 @@ Content-Type: multipart/form-data
 **Parameters:**
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `file` | form-data | Yes | CSV file to analyze |
-| `pipeline` | form-data | Yes | Pipeline name |
-| `delimiter` | form-data | No | CSV delimiter (default: auto-detect) |
-| `header` | form-data | No | Whether file has header row (default: `true`) |
+| `file` | form-data | Yes | Data file to analyze (CSV, JSON, or XML) |
+| `pipeline` | form-data | No | Pipeline name (auto-derived from filename if omitted) |
+| `delimiter` | form-data | No | CSV delimiter (default: `,`) |
+| `header` | form-data | No | Whether file has header row |
+| `allStrings` | form-data | No | If `true`, all fields are typed as `string` (default: `false`) |
 
 **Example:**
 ```bash
@@ -87,18 +88,43 @@ curl -X POST http://localhost:8080/api/v1/pipeline/generate \
   },
   "destination": {
     "database": {
-      "dbName": "DATABASE_NAME",
-      "schema": "SCHEMA_NAME",
-      "table": "TABLE_NAME",
-      "redshift": {
-        "_comment": "remove redshift section if not used",
-        "keyFields": ["KEY_FIELD1", "KEY_FIELD2"]
-      }
+      "dbName": "datris",
+      "schema": "public",
+      "table": "my_pipeline",
+      "usePostgres": true
     }
   }
 }
 ```
 
-**Inferred types:** `int`, `bigint`, `float`, `double`, `char`, `string`
+**Inferred types:** `boolean`, `int`, `bigint`, `float`, `double`, `string`, `date`, `timestamp`
 
-**Note:** This endpoint only analyzes CSV files. JSON and XML files return null for the generated config. Edit the generated JSON to add your destination configuration before registering it with `POST /pipeline`.
+**Note:** For CSV files, the AI analyzes the content and infers types. For JSON and XML files, a default config is generated with a single `_json` or `_xml` string field. When `allStrings` is `true`, all fields are set to `string` (used by the MCP server for reliable ingestion). Edit the generated JSON to add your destination configuration before registering it with `POST /pipeline`.
+
+---
+
+## Profile Data
+
+Upload a data file for AI-powered profiling — get summary statistics, quality issues, and suggested validation rules.
+
+```
+POST /api/v1/pipeline/profile
+Content-Type: multipart/form-data
+```
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file` | form-data | Yes | Data file to profile |
+| `delimiter` | form-data | No | CSV delimiter (default: `,`) |
+| `header` | form-data | No | Whether file has header row (default: `true`) |
+| `sampleSize` | form-data | No | Number of rows to sample (default: `200`) |
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline/profile \
+  -F "file=@/path/to/data.csv" \
+  -F "sampleSize=200"
+```
+
+**Response:** `200 OK` with a JSON profile including summary statistics, quality issues, recommendations, and suggested data quality rules. See [AI Data Profiling](/ai-data-profiling) for the full response format.

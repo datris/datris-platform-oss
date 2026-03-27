@@ -48,7 +48,8 @@ Content-Type: multipart/form-data
 | `file` | form-data (file) | Yes | The file to analyze |
 | `pipeline` | query | No | Pipeline name. If omitted, derived from the filename (lowercased, non-alphanumeric characters replaced with `_`) |
 | `delimiter` | query | No | Column delimiter for delimited files. Defaults to `,` |
-| `header` | query | No | Whether the file has a header row. Defaults to `false` |
+| `header` | query | No | Whether the file has a header row |
+| `allStrings` | query | No | If `true`, all fields are typed as `string` (default: `false`) |
 | `x-api-key` | header | No | API key (required if `useApiKeys: true`) |
 
 ---

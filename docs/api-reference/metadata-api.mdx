@@ -1,0 +1,156 @@
+---
+title: "Metadata API"
+description: "Database and vector store metadata discovery"
+---
+
+The Metadata API lets you explore the structure of PostgreSQL, MongoDB, and vector databases managed by the platform. Use these endpoints to discover what data is available before writing queries or running searches.
+
+## PostgreSQL
+
+### List Databases
+
+```
+GET /api/v1/metadata/postgres/databases
+```
+
+Returns a JSON array of PostgreSQL database names.
+
+---
+
+### List Schemas
+
+```
+GET /api/v1/metadata/postgres/schemas
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `database` | query | `datris` | Database name |
+
+Returns a JSON array of schema names. System schemas (`information_schema`, `pg_catalog`, `pg_toast`) are excluded.
+
+---
+
+### List Tables
+
+```
+GET /api/v1/metadata/postgres/tables
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `database` | query | `datris` | Database name |
+| `schema` | query | `public` | Schema name |
+| `vectorOnly` | query | `false` | If `true`, return only pgvector tables (tables with an `embedding` column) |
+
+Returns a JSON array of table names. When `vectorOnly` is `false`, pgvector tables are excluded from the results.
+
+---
+
+### List Columns
+
+```
+GET /api/v1/metadata/postgres/columns
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `database` | query | `datris` | Database name |
+| `schema` | query | `public` | Schema name |
+| `table` | query | (required) | Table name |
+
+Returns a JSON array of column definitions:
+
+```json
+[
+  {"name": "id", "type": "bigint"},
+  {"name": "email", "type": "text"},
+  {"name": "created_at", "type": "timestamp"}
+]
+```
+
+---
+
+## MongoDB
+
+### List Databases
+
+```
+GET /api/v1/metadata/mongodb/databases
+```
+
+Returns a JSON array of MongoDB database names. System databases (`admin`, `config`, `local`) and the platform's internal database are excluded.
+
+---
+
+### List Collections
+
+```
+GET /api/v1/metadata/mongodb/collections
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `database` | query | (all databases) | Filter to a specific database |
+
+When `database` is provided, returns collection names from that database. When omitted, returns collections from all databases with a `database.collection` namespace prefix.
+
+---
+
+## Vector Stores
+
+### List Qdrant Collections
+
+```
+GET /api/v1/metadata/qdrant/collections
+```
+
+Returns a JSON array of Qdrant collection names. Returns `[]` if Qdrant is not configured.
+
+---
+
+### List Weaviate Classes
+
+```
+GET /api/v1/metadata/weaviate/classes
+```
+
+Returns a JSON array of Weaviate class names. Returns `[]` if Weaviate is not configured.
+
+---
+
+### List Milvus Collections
+
+```
+GET /api/v1/metadata/milvus/collections
+```
+
+Returns a JSON array of Milvus collection names. Returns `[]` if Milvus is not configured.
+
+---
+
+### List Chroma Collections
+
+```
+GET /api/v1/metadata/chroma/collections
+```
+
+Returns a JSON array of Chroma collection names. Returns `[]` if Chroma is not configured.
+
+---
+
+## Example
+
+```bash
+# Discover databases
+curl -s http://localhost:8080/api/v1/metadata/postgres/databases | jq .
+
+# Explore a schema
+curl -s "http://localhost:8080/api/v1/metadata/postgres/tables?database=datris&schema=public" | jq .
+
+# Inspect a table
+curl -s "http://localhost:8080/api/v1/metadata/postgres/columns?table=stock_prices" | jq .
+
+# List vector collections
+curl -s http://localhost:8080/api/v1/metadata/qdrant/collections | jq .
+```

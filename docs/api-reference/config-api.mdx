@@ -1,0 +1,80 @@
+---
+title: "Configuration API"
+description: "Upload configuration files and generate schemas"
+---
+
+The Configuration API lets you upload validation schemas and generate JSON Schema or XSD from sample data using AI.
+
+## Upload Config File
+
+Upload a validation schema to the platform's configuration store (MinIO).
+
+```
+POST /api/v1/config/upload
+Content-Type: multipart/form-data
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `file` | form-data | Yes | The configuration file to upload |
+| `type` | form-data | Yes | File type: `validation-schema` |
+
+The uploaded file is stored at `{env}-config/{type}/{filename}` in MinIO and can be referenced in pipeline configurations.
+
+### Example
+
+```bash
+curl -X POST http://localhost:8080/api/v1/config/upload \
+  -F "file=@my-schema.json" \
+  -F "type=validation-schema"
+```
+
+### Response
+
+```json
+{
+  "filename": "my-schema.json",
+  "path": "s3://oss-config/validation-schema/my-schema.json"
+}
+```
+
+---
+
+## Generate Schema from Sample Data
+
+Use AI to generate a JSON Schema or XSD from sample data. The generated schema is stored in MinIO and can be referenced in pipeline configurations for data quality validation.
+
+```
+POST /api/v1/config/generate-schema
+Content-Type: application/json
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Schema type: `json-schema` or `xsd` |
+| `name` | string | Yes | Name for the generated schema file |
+| `sampleData` | string | Yes | Sample data content for the AI to analyze |
+
+### Example
+
+```bash
+curl -X POST http://localhost:8080/api/v1/config/generate-schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "json-schema",
+    "name": "orders",
+    "sampleData": "[{\"id\": 1, \"email\": \"jane@example.com\", \"total\": 249.99}]"
+  }'
+```
+
+### Response
+
+```json
+{
+  "filename": "orders.json",
+  "path": "s3://oss-config/validation-schema/orders.json",
+  "schema": "{ ... generated JSON Schema ... }"
+}
+```
+
+For `xsd` type, the filename uses `.xsd` extension and the response contains a generated W3C XML Schema.

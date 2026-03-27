@@ -24,7 +24,6 @@
               "installation",
               "quick-start",
               "source-code",
-              "cli",
               "pipeline-configuration",
               "schemas"
             ]
@@ -76,8 +75,7 @@
             "pages": [
               "ai-configuration",
               "ai-data-profiling",
-              "ai-error-explanation",
-              "mcp"
+              "ai-error-explanation"
             ]
           },
           {
@@ -103,6 +101,18 @@
         ]
       },
       {
+        "tab": "MCP Reference",
+        "groups": [
+          {
+            "group": "MCP",
+            "pages": [
+              "mcp",
+              "cli"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "API Reference",
         "openapi": "openapi.yaml",
         "groups": [
@@ -113,7 +123,10 @@
               "api-reference/query-api",
               "api-reference/pipeline-api",
               "api-reference/search-api",
+              "api-reference/metadata-api",
               "api-reference/schema-generation-api",
+              "api-reference/config-api",
+              "api-reference/secrets-api",
               "api-reference/status-api",
               "api-reference/health-api",
               "api-reference/version-api"

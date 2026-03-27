@@ -22,8 +22,6 @@ export class SecretsComponent implements OnInit {
   secretFields: SecretField[] = [];
   detailLoading = false;
   detailError = '';
-  revealed = false;
-
   // Edit mode
   editing = false;
   editFields: SecretField[] = [];
@@ -69,18 +67,16 @@ export class SecretsComponent implements OnInit {
     }
     this.selectedSecret = name;
     this.editing = false;
-    this.revealed = false;
     this.confirmDelete = false;
     this.saveError = '';
     this.saveSuccess = false;
-    this.loadSecretDetail(false);
+    this.loadSecretDetail();
   }
 
-  loadSecretDetail(reveal: boolean): void {
+  loadSecretDetail(): void {
     this.detailLoading = true;
     this.detailError = '';
-    this.revealed = reveal;
-    this.secretsService.getSecret(this.selectedSecret, reveal).subscribe({
+    this.secretsService.getSecret(this.selectedSecret).subscribe({
       next: (res) => {
         this.secretFields = Object.entries(res.fields || {}).map(([key, value]) => ({
           key,
@@ -95,33 +91,22 @@ export class SecretsComponent implements OnInit {
     });
   }
 
-  toggleReveal(): void {
-    this.loadSecretDetail(!this.revealed);
-  }
-
   // Edit
   startEdit(): void {
     this.editing = true;
     this.saveError = '';
     this.saveSuccess = false;
-    // Load revealed values for editing
-    this.secretsService.getSecret(this.selectedSecret, true).subscribe({
-      next: (res) => {
-        this.editFields = Object.entries(res.fields || {}).map(([key, value]) => ({
-          key,
-          value: value as string
-        }));
-      },
-      error: () => {
-        this.editFields = this.secretFields.map(f => ({ ...f }));
-      }
-    });
+    // Copy current fields — sensitive values show as masked, user re-enters them
+    this.editFields = this.secretFields.map(f => ({
+      key: f.key,
+      value: f.value === '••••••••' ? '' : f.value
+    }));
   }
 
   cancelEdit(): void {
     this.editing = false;
     this.saveError = '';
-    this.loadSecretDetail(this.revealed);
+    this.loadSecretDetail();
   }
 
   addEditField(): void {
@@ -151,7 +136,7 @@ export class SecretsComponent implements OnInit {
         this.saveLoading = false;
         this.saveSuccess = true;
         this.editing = false;
-        this.loadSecretDetail(this.revealed);
+        this.loadSecretDetail();
         setTimeout(() => this.saveSuccess = false, 3000);
       },
       error: (err) => {

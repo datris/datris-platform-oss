@@ -167,6 +167,61 @@ curl -X POST http://localhost:8080/api/v1/search/pgvector \
 
 ---
 
+## Natural Language Query
+
+Ask a question in plain English — the AI generates and executes a SQL query against PostgreSQL.
+
+```
+POST /api/v1/query/natural
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `question` | string | Yes | | Natural language question |
+| `table` | string | Yes | | Target table name |
+| `schema` | string | No | `public` | PostgreSQL schema |
+| `database` | string | No | `datris` | PostgreSQL database |
+| `limit` | integer | No | 100 | Maximum rows to return |
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/natural \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What are the top 5 stocks by volume?",
+    "table": "stock_prices"
+  }'
+```
+
+Returns the AI-generated SQL query and its results.
+
+---
+
+## AI Answer (RAG)
+
+Answer a question using AI based on provided context — typically used after a vector search to generate a natural language answer from retrieved chunks.
+
+```
+POST /api/v1/ai/answer
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | string | Yes | The question to answer |
+| `context` | string | Yes | Context text (e.g., concatenated search results) |
+
+```bash
+curl -X POST http://localhost:8080/api/v1/ai/answer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What was Apple'\''s revenue last quarter?",
+    "context": "Apple reported revenue of $94.9 billion for Q1 2026..."
+  }'
+```
+
+Returns the AI-generated answer based on the provided context.
+
+---
+
 ## Vault Secret Structure
 
 ### Embedding Secret

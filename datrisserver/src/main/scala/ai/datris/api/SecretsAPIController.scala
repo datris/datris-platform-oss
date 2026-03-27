@@ -42,8 +42,7 @@ class SecretsAPIController {
 
     @GetMapping(path = Array("/secrets/{name}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getSecret(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                  @PathVariable name: String,
-                  @RequestParam(defaultValue = "false") reveal: String): ResponseEntity[String] = {
+                  @PathVariable name: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
@@ -59,10 +58,10 @@ class SecretsAPIController {
 
                     val fields = new java.util.LinkedHashMap[String, String]()
                     data.asScala.foreach { case (key, value) =>
-                        if (reveal.equalsIgnoreCase("true") || !isSensitive(key)) {
-                            fields.put(key, value)
-                        } else {
+                        if (isSensitive(key)) {
                             fields.put(key, "••••••••")
+                        } else {
+                            fields.put(key, value)
                         }
                     }
                     result.put("fields", fields)
