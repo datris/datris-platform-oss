@@ -69,20 +69,67 @@ class StreamNotifier {
                     schemaColumns
             }
 
+            // Detect missing schema columns in the CSV header
+            val missingColumns = schemaColumns.filterNot(col =>
+                sourceColumns.exists(_.equalsIgnoreCase(col)))
+
+            if (missingColumns.nonEmpty) {
+                // Fail if any missing column is a key field
+                val keyFields = Option(config.destination)
+                    .flatMap(d => Option(d.database))
+                    .flatMap(db => Option(db.keyFields))
+                    .map(_.asScala.map(_.toLowerCase).toSet)
+                    .getOrElse(Set.empty)
+
+                val missingKeyFields = missingColumns.filter(col => keyFields.contains(col.toLowerCase))
+                if (missingKeyFields.nonEmpty) {
+                    throw new DatrisException(
+                        "CSV is missing required key field(s): " + missingKeyFields.mkString(", ") +
+                        ". CSV columns: " + sourceColumns.mkString(", ") +
+                        ". Expected columns: " + schemaColumns.mkString(", "))
+                }
+
+                statusUtil.info("processing", "CSV is missing columns (will be filled as empty): " + missingColumns.mkString(", "))
+            }
+
+            // Only request columns that exist in the CSV header
+            val presentColumns = schemaColumns.filter(col =>
+                sourceColumns.exists(_.equalsIgnoreCase(col)))
+
             val csvData = new CSVReader().readFromStream(
                 new ByteArrayInputStream(byteArray),
                 config.source.fileAttributes.csvAttributes.header,
                 config.source.fileAttributes.csvAttributes.delimiter,
                 sourceColumns,
-                schemaColumns,
+                presentColumns,
                 trimColumns = trimColumns
             ).split("\n").toList
 
+            val delimiter = config.source.fileAttributes.csvAttributes.delimiter
             val (header, rows) = {
-                if (config.source.fileAttributes.csvAttributes.header)
-                    (schemaColumns, if (csvData.nonEmpty) csvData.tail else List.empty[String])
+                val dataRows = if (config.source.fileAttributes.csvAttributes.header)
+                    if (csvData.nonEmpty) csvData.tail else List.empty[String]
                 else
-                    (null, csvData)
+                    csvData
+
+                if (missingColumns.isEmpty) {
+                    (schemaColumns, dataRows)
+                } else {
+                    // Insert empty values for missing columns
+                    val presentSet = presentColumns.map(_.toLowerCase).toSet
+                    val presentIndices = schemaColumns.map(col =>
+                        if (presentSet.contains(col.toLowerCase))
+                            presentColumns.indexWhere(_.equalsIgnoreCase(col))
+                        else -1
+                    )
+                    val rebuiltRows = dataRows.map { row =>
+                        val cols = row.split(delimiter, -1).toList
+                        presentIndices.map(idx =>
+                            if (idx >= 0 && idx < cols.size) cols(idx) else ""
+                        ).mkString(delimiter)
+                    }
+                    (schemaColumns, rebuiltRows)
+                }
             }
 
             if (rows.isEmpty)
