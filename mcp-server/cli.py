@@ -146,9 +146,13 @@ def cli():
 
 
 @cli.command()
-def pipelines():
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def pipelines(json_output):
     """List all registered pipelines."""
     result = mcp("list_pipelines")
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
     if isinstance(result, dict) and result.get("pipelines") == []:
         click.echo("No pipelines registered.")
         return
@@ -177,7 +181,9 @@ def pipelines():
 @click.option("--database", default="datris", help="Database name")
 @click.option("--ai-validate", default=None, help="AI data quality rule (plain English, e.g. 'all prices must be positive')")
 @click.option("--ai-transform", default=None, help="AI transformation instruction (plain English, e.g. 'convert dates to YYYY/MM/DD')")
-def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform):
+@click.option("--ai-analyze", default=None, help="Ask a question about the data after ingestion (plain English)")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform, ai_analyze, json_output):
     """Create a pipeline and ingest a data file."""
     content = b64_file(file)
     filename = os.path.basename(file)
@@ -226,6 +232,7 @@ def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform):
 
     # Wait for completion
     click.echo(f"  Waiting...")
+    completed = False
     for _ in range(30):
         time.sleep(2)
         status = mcp("get_job_status", {"pipeline_name": pipeline})
@@ -233,26 +240,112 @@ def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform):
             s = status[0].get("status", "")
             if s in ("success", "completed"):
                 click.echo(f"  ✓ Done ({status[0].get('totalTime', '')})")
-                return
+                completed = True
+                break
             elif s == "error":
                 click.echo(f"  ✗ Failed")
                 sys.exit(1)
         elif isinstance(status, dict) and "text" in status:
-            # Check for STILL RUNNING prefix
             if "STILL RUNNING" in status.get("text", ""):
                 continue
             elif "FAILED" in status.get("text", ""):
                 click.echo(f"  ✗ Failed")
                 sys.exit(1)
-    click.echo(f"  ⚠ Timeout")
+
+    if not completed:
+        click.echo(f"  ⚠ Timeout")
+        return
+
+    # Run AI analysis if requested
+    if ai_analyze:
+        table_name = table or pipeline
+        _run_analyze(ai_analyze, table_name, dest, json_output)
+
+
+def _run_analyze(question, table, dest, json_output, top_k=5):
+    """Shared analyze logic for ingest --ai-analyze and datris analyze."""
+    click.echo(f"  Analyzing: {question}")
+
+    if dest == "postgres":
+        query_result = mcp("query_natural", {"question": question, "table": table})
+        if json_output:
+            click.echo(json.dumps(query_result, indent=2))
+            return
+        results = query_result.get("results", [])
+        sql = query_result.get("sql", "")
+        if sql:
+            click.echo(f"  SQL: {sql}")
+        if not results:
+            click.echo("  No results found.")
+            return
+        context = json.dumps(results, indent=2)
+        click.echo(f"  Generating AI answer...")
+        answer_result = mcp("ai_answer", {"query": question, "context": context})
+        answer = answer_result.get("answer", answer_result.get("text", str(answer_result)))
+        click.echo(f"\n  {answer}")
+
+    elif dest == "mongodb":
+        query_result = mcp("query_mongodb", {"collection": table, "limit": 100})
+        if json_output:
+            click.echo(json.dumps(query_result, indent=2))
+            return
+        results = query_result.get("results", [])
+        if not results:
+            click.echo("  No results found.")
+            return
+        context = json.dumps(results, indent=2)
+        click.echo(f"  Generating AI answer...")
+        answer_result = mcp("ai_answer", {"query": question, "context": context})
+        answer = answer_result.get("answer", answer_result.get("text", str(answer_result)))
+        click.echo(f"\n  {answer}")
+
+    else:
+        # Vector store — search → ai_answer
+        tool_map = {
+            "qdrant": ("search_qdrant", "collection"),
+            "weaviate": ("search_weaviate", "class_name"),
+            "milvus": ("search_milvus", "collection"),
+            "chroma": ("search_chroma", "collection"),
+            "pgvector": ("search_pgvector", "table"),
+        }
+        tool, key = tool_map[dest]
+        search_result = mcp(tool, {"query": question, key: table, "top_k": top_k})
+        if json_output:
+            click.echo(json.dumps(search_result, indent=2))
+            return
+        results = search_result.get("results", [])
+        if not results:
+            click.echo("  No results found.")
+            return
+        click.echo(f"  ✓ Found {len(results)} relevant chunk(s)")
+        context = "\n\n".join(r.get("text", str(r)) for r in results)
+        click.echo(f"  Generating AI answer...")
+        answer_result = mcp("ai_answer", {"query": question, "context": context})
+        answer = answer_result.get("answer", answer_result.get("text", str(answer_result)))
+        click.echo(f"\n  {answer}")
+
+
+@cli.command()
+@click.argument("question")
+@click.option("--table", "-t", required=True, help="Table/collection name")
+@click.option("--dest", "-d", default="postgres", type=click.Choice(["postgres", "mongodb", "qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Data source type")
+@click.option("--top-k", "-k", default=5, help="Number of search results (vector stores only)")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON instead of AI narrative")
+def analyze(question, table, dest, top_k, json_output):
+    """Ask a question about your data using AI."""
+    _run_analyze(question, table, dest, json_output, top_k)
 
 
 @cli.command()
 @click.argument("sql")
 @click.option("--limit", default=100, help="Max rows")
-def query(sql, limit):
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def query(sql, limit, json_output):
     """Execute a read-only SQL query."""
     result = mcp("query_postgres", {"sql": sql, "limit": limit})
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
     results = result.get("results", [])
     count = result.get("count", 0)
     if not results:
@@ -272,7 +365,8 @@ def query(sql, limit):
 @click.option("--store", "-s", default="pgvector", type=click.Choice(["qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Vector store to search")
 @click.option("--collection", "-c", required=True, help="Collection/table name")
 @click.option("--top-k", "-k", default=5, help="Number of results")
-def search(question, store, collection, top_k):
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def search(question, store, collection, top_k, json_output):
     """Semantic search across a vector database."""
     tool_map = {
         "qdrant": ("search_qdrant", "collection"),
@@ -286,6 +380,9 @@ def search(question, store, collection, top_k):
 
     click.echo(f"  Searching {store}/{collection}...")
     result = mcp(tool, args)
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
     results = result.get("results", [])
     count = result.get("count", 0)
 
@@ -303,98 +400,13 @@ def search(question, store, collection, top_k):
     click.echo(f"\n  {count} result(s)")
 
 
-@cli.command()
-@click.argument("question")
-@click.option("--store", "-s", default="pgvector", type=click.Choice(["qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Vector store to search")
-@click.option("--collection", "-c", required=True, help="Collection/table name")
-@click.option("--top-k", "-k", default=5, help="Number of results for context")
-def ask(question, store, collection, top_k):
-    """Ask a question using RAG (search + AI answer)."""
-    tool_map = {
-        "qdrant": ("search_qdrant", "collection"),
-        "weaviate": ("search_weaviate", "class_name"),
-        "milvus": ("search_milvus", "collection"),
-        "chroma": ("search_chroma", "collection"),
-        "pgvector": ("search_pgvector", "table"),
-    }
-    tool, key = tool_map[store]
-    args = {"query": question, key: collection, "top_k": top_k}
-
-    # Step 1: Search
-    click.echo(f"  Searching {store}/{collection}...")
-    result = mcp(tool, args)
-    results = result.get("results", [])
-
-    if not results:
-        click.echo("  No results found — cannot generate answer.")
-        return
-
-    click.echo(f"  ✓ Found {len(results)} relevant chunk(s)")
-
-    # Step 2: Build context from search results
-    context_parts = []
-    for i, r in enumerate(results):
-        text = r.get("text", "")
-        score = r.get("_score", "")
-        score_str = f" (score: {score:.3f})" if isinstance(score, (int, float)) else ""
-        if text:
-            context_parts.append(f"[{i+1}]{score_str} {text}")
-    context = "\n\n".join(context_parts)
-
-    # Step 3: AI Answer
-    click.echo(f"  Generating AI answer...")
-    answer_result = mcp("ai_answer", {"query": question, "context": context})
-    answer = answer_result.get("answer", answer_result.get("text", str(answer_result)))
-
-    click.echo(f"\n  {answer}")
-
-
-@cli.command("ask-sql")
-@click.argument("question")
-@click.option("--table", "-t", required=True, help="PostgreSQL table to query")
-@click.option("--schema", default="public", help="PostgreSQL schema")
-@click.option("--database", default="datris", help="Database name")
-@click.option("--limit", default=100, help="Max rows")
-def ask_sql(question, table, schema, database, limit):
-    """Ask a question in natural language — AI generates and executes SQL."""
-    args = {"question": question, "table": table, "limit": limit}
-    if schema != "public":
-        args["schema"] = schema
-    if database != "datris":
-        args["database"] = database
-
-    click.echo(f"  Querying {table}...")
-    result = mcp("query_natural", args)
-
-    if result.get("error") or result.get("text", "").startswith("ai.datris"):
-        click.echo(f"  Error: {str(result.get('error', result.get('text', '')))[:300]}")
-        sys.exit(1)
-
-    sql = result.get("sql", "")
-    results = result.get("results", [])
-    count = result.get("count", 0)
-
-    click.echo(f"  SQL: {sql}")
-
-    if not results:
-        click.echo("  No results.")
-        return
-
-    cols = list(results[0].keys())
-    click.echo("  " + " | ".join(cols))
-    click.echo("  " + "-+-".join("-" * max(len(c), 10) for c in cols))
-    for row in results:
-        vals = [str(row.get(c, ""))[:30] for c in cols]
-        click.echo("  " + " | ".join(vals))
-    click.echo(f"\n  {count} row(s)")
-
-
 @cli.command("query-mongo")
 @click.argument("collection")
 @click.option("--filter", "-f", "mongo_filter", default="{}", help="MongoDB filter JSON")
 @click.option("--projection", default=None, help="MongoDB projection JSON")
 @click.option("--limit", default=20, help="Max documents")
-def query_mongo(collection, mongo_filter, projection, limit):
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def query_mongo(collection, mongo_filter, projection, limit, json_output):
     """Query a MongoDB collection."""
     args = {"collection": collection, "limit": limit}
     try:
@@ -410,6 +422,9 @@ def query_mongo(collection, mongo_filter, projection, limit):
             sys.exit(1)
 
     result = mcp("query_mongodb", args)
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
     results = result.get("results", [])
     count = result.get("count", 0)
 
@@ -424,9 +439,13 @@ def query_mongo(collection, mongo_filter, projection, limit):
 
 @cli.command()
 @click.argument("pipeline_name")
-def status(pipeline_name):
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def status(pipeline_name, json_output):
     """Get job status for a pipeline."""
     result = mcp("get_job_status", {"pipeline_name": pipeline_name})
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
     if isinstance(result, list):
         for job in result[:5]:
             s = job.get("status", "unknown")
@@ -441,16 +460,24 @@ def status(pipeline_name):
 @cli.command()
 @click.argument("pipeline_name")
 @click.option("--keep-data", is_flag=True, help="Keep destination data")
-def delete(pipeline_name, keep_data):
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def delete(pipeline_name, keep_data, json_output):
     """Delete a pipeline and its data."""
     result = mcp("delete_pipeline", {"pipeline": pipeline_name})
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
     click.echo(f"  ✓ Pipeline '{pipeline_name}' deleted" + (" (data kept)" if keep_data else ""))
 
 
 @cli.command()
-def health():
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def health(json_output):
     """Check backend service health."""
     result = mcp("check_service_health")
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
     if isinstance(result, dict):
         for svc, info in result.items():
             s = info.get("status", "unknown") if isinstance(info, dict) else info
@@ -459,13 +486,17 @@ def health():
 
 
 @cli.command()
-def secrets():
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def secrets(json_output):
     """List all secrets (requires Datris REST API)."""
     import requests
     datris_url = os.getenv("DATRIS_URL", "http://localhost:8080")
     try:
         resp = requests.get(f"{datris_url}/api/v1/secrets", timeout=10)
         data = resp.json()
+        if json_output:
+            click.echo(json.dumps(data, indent=2))
+            return
         for name in data:
             click.echo(f"  {name}")
     except Exception as e:
@@ -473,9 +504,13 @@ def secrets():
 
 
 @cli.command()
-def version():
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def version(json_output):
     """Get server version."""
     result = mcp("get_version")
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
     click.echo(f"  Server: {result.get('text', result) if isinstance(result, dict) else result}")
     click.echo(f"  CLI: 1.4.2")
 
