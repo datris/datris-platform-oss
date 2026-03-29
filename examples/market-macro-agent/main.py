@@ -119,6 +119,7 @@ async def chat(request: Request):
     body = await request.json()
     session_id: str = body.get("session_id", "default")
     user_text:  str = body.get("message", "").strip()
+    auto_mode:  bool = body.get("auto_mode", False)
 
     if not user_text:
         return JSONResponse({"error": "message required"}, status_code=400)
@@ -127,7 +128,7 @@ async def chat(request: Request):
 
     async def generator():
         nonlocal history
-        async for event in agent_run(user_text, history):
+        async for event in agent_run(user_text, history, auto_mode=auto_mode):
             if event["event"] == "history":
                 # Persist updated history server-side; don't send to browser
                 history = event["data"]["history"]
@@ -269,6 +270,14 @@ def _build_ui(suggestions_json: str, status_colors_json: str, activity_colors_js
     background: var(--amber); color: var(--bg);
   }}
   #send-btn:disabled {{ background: #1a1e26; color: var(--dim); cursor: not-allowed; }}
+  #auto-btn {{
+    border: none; border-radius: 4px; padding: 7px 14px;
+    font-family: var(--font); font-size: 10.5px; font-weight: 700;
+    letter-spacing: .1em; transition: background .15s, color .15s; cursor: pointer;
+    background: #1a1e26; color: var(--dim);
+  }}
+  #auto-btn.active {{ background: var(--amber); color: var(--bg); }}
+  #auto-btn:hover {{ opacity: 0.85; }}
 
   /* ── Status panel ── */
   #status-panel {{ flex: 1; display: flex; flex-direction: column; overflow: hidden; }}
@@ -354,6 +363,7 @@ Ask me anything about current conditions — I'll check pipeline health, ingest 
     <div id="input-row">
       <input id="msg-input" type="text" placeholder="Ask about market conditions..." autocomplete="off"/>
       <button id="send-btn">SEND</button>
+      <button id="auto-btn">AUTO</button>
     </div>
   </div>
 
@@ -387,6 +397,9 @@ let totalRows  = 0;
 let apiCalls   = 0;
 let actCount   = 0;
 let loading    = false;
+let autoLoop   = false;
+let lastSuggIdx = -1;
+const AUTO_DELAY_MS = 3000;
 let activeTools = {{}};   // id → chip element
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -583,7 +596,7 @@ async function sendMessage() {{
   const res = await fetch('/chat', {{
     method: 'POST',
     headers: {{ 'Content-Type': 'application/json' }},
-    body: JSON.stringify({{ message: text, session_id: sessionId }}),
+    body: JSON.stringify({{ message: text, session_id: sessionId, auto_mode: autoLoop }}),
   }});
 
   const reader = res.body.getReader();
@@ -603,10 +616,11 @@ async function sendMessage() {{
         removeToolChip(d.id);
       }} else if (evtType === 'partial_text') {{
         if (!answerBubble) answerBubble = addBubble('agent', d.text, 'partial');
-        else answerBubble.textContent = d.text;
+        else {{ answerBubble.textContent = d.text; chatScroll.scrollTop = chatScroll.scrollHeight; }}
       }} else if (evtType === 'answer') {{
         if (answerBubble) {{ answerBubble.classList.remove('partial'); answerBubble.textContent = d.text; }}
         else addBubble('agent', d.text);
+        chatScroll.scrollTop = chatScroll.scrollHeight;
       }} else if (evtType === 'error') {{
         addBubble('agent', 'Error: ' + d.message, 'error');
       }}
@@ -659,6 +673,22 @@ async function sendMessage() {{
   console.log('[sse] stream ended, buf remaining:', buf.length);
 
   setLoading(false);
+
+  // Auto-loop: send next random question after delay
+  if (autoLoop) {{
+    setTimeout(pickRandomAndSend, AUTO_DELAY_MS);
+  }}
+}}
+
+function pickRandomAndSend() {{
+  if (!autoLoop || loading) return;
+  let idx;
+  do {{
+    idx = Math.floor(Math.random() * SUGGESTIONS.length);
+  }} while (idx === lastSuggIdx && SUGGESTIONS.length > 1);
+  lastSuggIdx = idx;
+  inputEl.value = SUGGESTIONS[idx];
+  sendMessage();
 }}
 
 function setLoading(val) {{
@@ -669,6 +699,16 @@ function setLoading(val) {{
 
 sendBtn.addEventListener('click', sendMessage);
 inputEl.addEventListener('keydown', e => {{ if (e.key === 'Enter' && !e.shiftKey) sendMessage(); }});
+
+const autoBtn = document.getElementById('auto-btn');
+autoBtn.addEventListener('click', () => {{
+  autoLoop = !autoLoop;
+  autoBtn.classList.toggle('active', autoLoop);
+  autoBtn.textContent = autoLoop ? '● AUTO' : 'AUTO';
+  if (autoLoop && !loading) {{
+    pickRandomAndSend();
+  }}
+}});
 </script>
 </body>
 </html>"""

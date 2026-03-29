@@ -40,8 +40,10 @@ def _resolve_content(input_: dict) -> dict:
         resolved["content"] = cached["content"]
         if "filename" not in resolved:
             resolved["filename"] = cached["filename"]
+        if "source" in cached:
+            resolved["_resolved_source"] = cached["source"]
         resolved.pop("data_id", None)
-        print(f"[executor] Resolved {data_id} → {len(cached['content'])} chars of base64")
+        print(f"[executor] Resolved {data_id} → {len(cached['content'])} chars of base64 (source={cached.get('source')})")
 
     return resolved
 
@@ -77,7 +79,7 @@ async def _ingest_data(input_: dict) -> dict:
     # Cache server-side, return only a reference
     _data_counter += 1
     data_id = f"data_{source_key}_{_data_counter}"
-    _data_cache[data_id] = {"content": base64_content, "filename": filename}
+    _data_cache[data_id] = {"content": base64_content, "filename": filename, "source": source_key}
 
     await store.add_activity("success", f"Fetched {filename} from {source_key.upper()}")
 
@@ -98,6 +100,23 @@ async def _ingest_data(input_: dict) -> dict:
 async def _mcp_passthrough(name: str, input_: dict) -> dict:
     """Forward a tool call directly to the MCP server, resolving data_id references."""
     resolved = _resolve_content(input_)
+
+    # Validate data source matches pipeline before uploading
+    if name == "upload_data":
+        resolved_source = resolved.get("_resolved_source")
+        pipeline = input_.get("pipeline", "")
+        if resolved_source and pipeline:
+            key = pipeline.lower().replace(" ", "_")
+            snap = await store.snapshot()
+            expected = snap["pipelines"].get(key, {}).get("data_source")
+            if expected and resolved_source != expected:
+                msg = f"Data source mismatch: pipeline '{pipeline}' expects '{expected}' data but received '{resolved_source}' data. Use the correct data_id."
+                print(f"[executor] BLOCKED: {msg}")
+                return {"error": msg}
+
+    # Save resolved source before stripping internal metadata
+    resolved_source = resolved.pop("_resolved_source", None)
+
     result = await mcp_call(name, resolved)
 
     # Update pipeline store for state-changing operations
@@ -114,6 +133,7 @@ async def _mcp_passthrough(name: str, input_: dict) -> dict:
             "id": pname,
             "name": pname,
             "source": result.get("destination", "postgres"),
+            "data_source": resolved_source,
             "status": "created",
         })
         await store.add_activity("create", f"Pipeline created: {pname}")

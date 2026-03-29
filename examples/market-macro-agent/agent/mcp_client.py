@@ -28,7 +28,7 @@ _sse_client: httpx.AsyncClient | None = None
 _post_client: httpx.AsyncClient | None = None
 _endpoint: str | None = None
 _reader_task: asyncio.Task | None = None
-_responses: asyncio.Queue | None = None
+_pending: dict[int, asyncio.Future] = {}
 _tools_cache: list[dict] | None = None
 _resources_cache: dict[str, str] = {}
 _msg_id: int = 0
@@ -41,16 +41,36 @@ def _next_id() -> int:
     return _msg_id
 
 
+async def _send_and_wait(method: str, params: dict, timeout: float = 10.0) -> dict:
+    """Send a JSON-RPC request and wait for the matching response."""
+    call_id = _next_id()
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    _pending[call_id] = fut
+
+    await _post_client.post(_endpoint, json={
+        "jsonrpc": "2.0",
+        "id": call_id,
+        "method": method,
+        "params": params,
+    })
+
+    try:
+        return await asyncio.wait_for(fut, timeout)
+    finally:
+        _pending.pop(call_id, None)
+
+
 async def connect(url: str, timeout: float = 15.0) -> None:
     """Open an SSE connection to the Datris MCP server and discover tools."""
-    global _sse_client, _post_client, _endpoint, _reader_task, _responses, _tools_cache, _sse_cm
+    global _sse_client, _post_client, _endpoint, _reader_task, _pending, _tools_cache, _sse_cm
 
     _sse_client = httpx.AsyncClient(timeout=httpx.Timeout(5, read=300))
     _post_client = httpx.AsyncClient(
         timeout=30,
         limits=httpx.Limits(max_keepalive_connections=0),
     )
-    _responses = asyncio.Queue()
+    _pending = {}
 
     try:
         async with asyncio.timeout(timeout):
@@ -70,7 +90,12 @@ async def connect(url: str, timeout: float = 15.0) -> None:
                             log.debug("MCP endpoint: %s", _endpoint)
                         elif event.event == "message":
                             data = json.loads(event.data)
-                            await _responses.put(data)
+                            rid = data.get("id")
+                            fut = _pending.get(rid)
+                            if fut and not fut.done():
+                                fut.set_result(data)
+                            else:
+                                log.debug("Unmatched response id=%s (no pending future)", rid)
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
@@ -87,35 +112,21 @@ async def connect(url: str, timeout: float = 15.0) -> None:
                 raise ConnectionError("No endpoint received from MCP SSE stream")
 
             # Initialize
-            init_id = _next_id()
-            await _post_client.post(_endpoint, json={
-                "jsonrpc": "2.0",
-                "id": init_id,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "datris-agent", "version": "1.0"},
-                },
-            })
-            resp = await asyncio.wait_for(_responses.get(), 10)
+            resp = await _send_and_wait("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "datris-agent", "version": "1.0"},
+            }, timeout=10)
             log.debug("MCP initialized: %s", list(resp.get("result", {}).get("capabilities", {}).keys()))
 
-            # Send initialized notification
+            # Send initialized notification (no response expected)
             await _post_client.post(_endpoint, json={
                 "jsonrpc": "2.0",
                 "method": "notifications/initialized",
             })
 
             # List tools
-            tools_id = _next_id()
-            await _post_client.post(_endpoint, json={
-                "jsonrpc": "2.0",
-                "id": tools_id,
-                "method": "tools/list",
-                "params": {},
-            })
-            resp = await asyncio.wait_for(_responses.get(), 10)
+            resp = await _send_and_wait("tools/list", {}, timeout=10)
             tools = resp.get("result", {}).get("tools", [])
 
             _tools_cache = [
@@ -138,14 +149,8 @@ async def connect(url: str, timeout: float = 15.0) -> None:
 
 async def _read_resources() -> None:
     """Read all MCP resources and cache their content."""
-    # List resources
-    rid = _next_id()
-    await _post_client.post(_endpoint, json={
-        "jsonrpc": "2.0", "id": rid,
-        "method": "resources/list", "params": {},
-    })
     try:
-        resp = await asyncio.wait_for(_responses.get(), 10)
+        resp = await _send_and_wait("resources/list", {}, timeout=10)
     except asyncio.TimeoutError:
         print("[mcp] resources/list timed out — skipping")
         return
@@ -153,13 +158,8 @@ async def _read_resources() -> None:
     resources = resp.get("result", {}).get("resources", [])
 
     for r in resources:
-        rid2 = _next_id()
-        await _post_client.post(_endpoint, json={
-            "jsonrpc": "2.0", "id": rid2,
-            "method": "resources/read", "params": {"uri": r["uri"]},
-        })
         try:
-            resp2 = await asyncio.wait_for(_responses.get(), 10)
+            resp2 = await _send_and_wait("resources/read", {"uri": r["uri"]}, timeout=10)
         except asyncio.TimeoutError:
             continue
         contents = resp2.get("result", {}).get("contents", [])
@@ -183,7 +183,13 @@ async def get_resources_text() -> str:
 
 async def disconnect() -> None:
     """Cleanly shut down the MCP connection."""
-    global _sse_client, _post_client, _endpoint, _reader_task, _responses, _tools_cache, _sse_cm
+    global _sse_client, _post_client, _endpoint, _reader_task, _pending, _tools_cache, _sse_cm
+
+    # Cancel any pending futures
+    for fut in _pending.values():
+        if not fut.done():
+            fut.cancel()
+    _pending = {}
 
     if _reader_task:
         _reader_task.cancel()
@@ -205,7 +211,6 @@ async def disconnect() -> None:
     _post_client = None
     _endpoint = None
     _reader_task = None
-    _responses = None
     _tools_cache = None
     _sse_cm = None
     log.info("MCP disconnected")
@@ -220,11 +225,15 @@ async def get_tools() -> list[dict]:
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> dict:
     """Execute a tool on the MCP server and return the result as a dict."""
-    if _post_client is None or _endpoint is None or _responses is None:
+    if _post_client is None or _endpoint is None:
         raise RuntimeError("MCP client not connected — call connect() first")
 
     call_id = _next_id()
     print(f"[mcp] call_tool: {name} (id={call_id}) args={str(arguments)}")
+
+    loop = asyncio.get_event_loop()
+    fut: asyncio.Future = loop.create_future()
+    _pending[call_id] = fut
 
     r = await _post_client.post(_endpoint, json={
         "jsonrpc": "2.0",
@@ -234,16 +243,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict:
     })
     print(f"[mcp] POST status: {r.status_code}")
 
-    # Wait for the response with our ID (skip notifications)
-    while True:
-        try:
-            resp = await asyncio.wait_for(_responses.get(), 120)
-        except asyncio.TimeoutError:
-            print(f"[mcp] TIMEOUT waiting for response: {name} (id={call_id})")
-            return {"error": f"MCP tool call timed out: {name}"}
-        print(f"[mcp] response id={resp.get('id')} (waiting for {call_id}): {str(resp)}")
-        if resp.get("id") == call_id:
-            break
+    try:
+        resp = await asyncio.wait_for(fut, 120)
+    except asyncio.TimeoutError:
+        print(f"[mcp] TIMEOUT waiting for response: {name} (id={call_id})")
+        return {"error": f"MCP tool call timed out: {name}"}
+    finally:
+        _pending.pop(call_id, None)
+
+    print(f"[mcp] response id={resp.get('id')} (waiting for {call_id}): {str(resp)}")
 
     # Handle JSON-RPC error responses
     if "error" in resp:
