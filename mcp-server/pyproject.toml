@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "datris-mcp-server"
-version = "1.4.2"
+version = "1.4.3"
 description = "MCP server for the Datris AI Agent-Native Data Platform"
 readme = "README.md"
 license = {text = "Apache-2.0"}

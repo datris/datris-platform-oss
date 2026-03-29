@@ -91,6 +91,7 @@ mcp-server/.venv/
 docs/config/commands.mdx
 docs/config/ec2-ollama.mdx
 docs/config/mcp-registry.mdx
+docs/config/new-release.mdx
 
 # mcp-publisher tokens
 .mcpregistry_github_token
