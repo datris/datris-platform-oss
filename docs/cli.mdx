@@ -20,6 +20,17 @@ The CLI connects to the MCP server via SSE. Set the server URL with an environme
 export MCP_SERVER_URL=http://localhost:3000/sse    # default
 ```
 
+## JSON Output
+
+Every command supports `--json` to return raw JSON instead of human-readable output. This is useful for scripting and programmatic use.
+
+```bash
+datris pipelines --json
+datris query "SELECT * FROM trades" --json
+datris analyze "top 5 stocks" --table trades --json
+datris health --json
+```
+
 ## Commands
 
 ### `datris help`
@@ -58,6 +69,8 @@ datris ingest <FILE> [OPTIONS]
 | `--database` | Database name (default: `datris`) |
 | `--ai-validate` | AI data quality rule — plain-English instruction |
 | `--ai-transform` | AI transformation instruction — plain-English instruction |
+| `--ai-analyze` | Ask a question about the data after ingestion completes |
+| `--json` | Return raw JSON |
 
 **Examples:**
 
@@ -84,11 +97,16 @@ datris ingest events.json --dest mongodb --database analytics
 
 # Ingest into a vector store for RAG
 datris ingest manual.pdf --dest pgvector
+
+# Ingest + analyze in one command
+datris ingest trades.csv --dest postgres --ai-analyze "What are the top 5 stocks by volume?"
+
+# Ingest a document and ask a question about it
+datris ingest annual-report.pdf --dest pgvector --ai-analyze "What was the company's revenue?"
+
+# Ingest + analyze, raw JSON output for scripts
+datris ingest trades.csv --dest postgres --ai-analyze "top 5 by volume" --json
 ```
-
-**AI Validation** (`--ai-validate`): Datris generates a Python validation script from your instruction and runs it locally against all data. The script checks every row and reports failures. Cost is ~$0.003 per rule regardless of file size.
-
-**AI Transformation** (`--ai-transform`): Datris generates a Python transformation script from your instruction and runs it locally against all data. The script transforms every row according to your instruction.
 
 ---
 
@@ -104,6 +122,7 @@ datris query "SELECT symbol, close FROM public.trades WHERE close > 100" --limit
 | Option | Description |
 |--------|-------------|
 | `--limit` | Max rows returned (default: 100, max: 1000) |
+| `--json` | Return raw JSON |
 
 ---
 
@@ -120,36 +139,47 @@ datris search "What is the return policy?" --store pgvector --collection support
 | `--store` | Vector store: `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector` (default: `pgvector`) |
 | `--collection` | Collection/table name (required) |
 | `--top-k` | Number of results (default: 5) |
+| `--json` | Return raw JSON |
 
 ---
 
-### `datris ask`
+### `datris analyze`
 
-RAG — search a vector store and generate an AI answer from the results.
-
-```bash
-datris ask "What is the return policy?" --store pgvector --collection support_docs
-```
-
-Same options as `datris search`.
-
----
-
-### `datris ask-sql`
-
-Natural language SQL — describe what you want in plain English, and Datris generates and executes the SQL query.
+Ask a question about your data using AI. Works with any destination type — auto-picks the right approach based on `--dest`.
 
 ```bash
-datris ask-sql "what are the top 5 stocks by volume?" --table trades
-datris ask-sql "show monthly revenue trends" --table sales --schema public --database analytics
+datris analyze <QUESTION> --table <TABLE> [OPTIONS]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--table` | Table name (required) |
-| `--schema` | Schema name (default: `public`) |
-| `--database` | Database name (default: `datris`) |
-| `--limit` | Max rows (default: 100) |
+| `--table, -t` | Table/collection name (required) |
+| `--dest, -d` | Data source type: `postgres`, `mongodb`, `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector` (default: `postgres`) |
+| `--top-k, -k` | Number of search results for vector stores (default: 5) |
+| `--json` | Return raw JSON instead of AI narrative |
+
+**Examples:**
+
+```bash
+# Analyze PostgreSQL data — AI generates SQL, executes it, returns AI answer
+datris analyze "What are the top 5 stocks by volume?" --table trades
+
+# Analyze MongoDB data
+datris analyze "How many events occurred in March?" --table events --dest mongodb
+
+# Analyze vector store data (RAG) — semantic search + AI answer
+datris analyze "What is the return policy?" --table support_docs --dest pgvector
+datris analyze "What was quarterly revenue?" --table financial_docs --dest qdrant
+
+# Raw JSON output for scripts
+datris analyze "top 5 stocks" --table trades --json
+```
+
+**How it works by destination:**
+
+- **PostgreSQL** — AI generates a SQL query from your question, executes it, then summarizes the results in a natural language answer
+- **MongoDB** — fetches documents from the collection, then AI answers the question based on the data
+- **Vector stores** — performs semantic search to find relevant chunks, then AI generates an answer from the retrieved context
 
 ---
 
@@ -168,6 +198,7 @@ datris query-mongo events --projection '{"name": 1, "status": 1}'
 | `--filter` | MongoDB filter JSON (default: `{}`) |
 | `--projection` | Fields to include/exclude |
 | `--limit` | Max documents (default: 100) |
+| `--json` | Return raw JSON |
 
 ---
 
@@ -193,6 +224,7 @@ datris delete my_pipeline --keep-data
 | Option | Description |
 |--------|-------------|
 | `--keep-data` | Keep destination data (only delete the pipeline config) |
+| `--json` | Return raw JSON |
 
 ---
 

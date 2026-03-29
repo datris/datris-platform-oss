@@ -218,17 +218,19 @@ datris ingest trades.csv --dest postgres \
 # Ingest into a vector store for RAG
 datris ingest manual.pdf --dest pgvector
 
-# Query PostgreSQL
+# Ingest + analyze in one command
+datris ingest trades.csv --dest postgres --ai-analyze "What are the top 5 stocks by volume?"
+datris ingest report.pdf --dest pgvector --ai-analyze "What was the company's revenue?"
+
+# Analyze existing data (PostgreSQL, MongoDB, or vector stores)
+datris analyze "top 5 stocks by volume" --table trades
+datris analyze "What is the return policy?" --table support_docs --dest pgvector
+
+# Query PostgreSQL directly
 datris query "SELECT * FROM public.sales LIMIT 10"
 
-# Natural language query
-datris ask-sql "what are the top 5 stocks by volume?" --table trades
-
-# Semantic search
+# Semantic search (raw results)
 datris search "quarterly revenue" --store pgvector --collection financial_docs
-
-# RAG — search + AI answer
-datris ask "What is the return policy?" --store pgvector --collection support_docs
 
 # List pipelines, check health, get status
 datris pipelines
