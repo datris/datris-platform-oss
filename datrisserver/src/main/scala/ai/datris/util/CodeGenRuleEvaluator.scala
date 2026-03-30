@@ -102,6 +102,7 @@ object CodeGenRuleEvaluator {
         val cleanScript = cleanGeneratedScript(scriptContent)
 
         logger.info("CodeGen DQ: generated script (" + cleanScript.length + " chars)")
+        logger.info("CodeGen DQ: script content:\n" + cleanScript)
 
         // Step 2: Write data and script to temp files
         val dataFile: Path = Files.createTempFile("dq_data_", "." + fileExtension)

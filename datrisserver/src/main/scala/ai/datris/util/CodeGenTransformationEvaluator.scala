@@ -103,6 +103,7 @@ object CodeGenTransformationEvaluator {
         val cleanScript = cleanGeneratedScript(scriptContent)
 
         logger.info("CodeGen Transformation: generated script (" + cleanScript.length + " chars)")
+        logger.info("CodeGen Transformation: script content:\n" + cleanScript)
 
         // Step 2: Write data and script to temp files
         val inputFile: Path = Files.createTempFile("tx_input_", "." + fileExtension)

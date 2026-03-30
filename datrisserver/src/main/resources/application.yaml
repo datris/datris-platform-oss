@@ -60,11 +60,11 @@ mongodb:
 sendPipelineNotifications: "true"
 ttlFileNotifierQueueMessages: "60"
 
-# AI schema generation (optional)
+# AI provider (required)
 ai:
   enabled: "true"
-  provider: "ollama"
-  aiSecretName: "oss/ollama"
+  provider: "anthropic"
+  aiSecretName: "oss/anthropic"
 
 # Kafka consumer
 kafkaConsumer:

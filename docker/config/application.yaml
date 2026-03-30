@@ -60,7 +60,7 @@ mongodb:
 sendPipelineNotifications: "true"
 ttlFileNotifierQueueMessages: "60"
 
-# AI schema generation
+# AI provider (required)
 ai:
   enabled: "true"
   provider: "anthropic"

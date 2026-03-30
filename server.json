@@ -7,12 +7,12 @@
     "url": "https://github.com/datris/datris-platform-oss",
     "source": "github"
   },
-  "version": "1.4.3",
+  "version": "1.4.4",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "datris-mcp-server",
-      "version": "1.4.3",
+      "version": "1.4.4",
       "transport": {
         "type": "stdio"
       },
