@@ -91,6 +91,8 @@ mcp-server/.venv/
 docs/config/commands.mdx
 docs/config/ec2-ollama.mdx
 docs/config/mcp-registry.mdx
+docs/config/hosted-datris-plan.md
+docs/plans/
 docs/config/new-release.mdx
 
 # mcp-publisher tokens
