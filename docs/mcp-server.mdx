@@ -142,6 +142,62 @@ Add to `.mcp.json` in your project root:
 }
 ```
 
+## Talking to Claude
+
+Once the MCP server is configured, just talk to Claude naturally. Claude sees all 30+ Datris tools and picks the right one based on your request.
+
+### Ingest data
+
+> "Create a pipeline called stock_prices and ingest this CSV into PostgreSQL"
+
+> "Upload this PDF to pgvector so I can search it later"
+
+> "Ingest this sales data into PostgreSQL and validate that all prices are positive"
+
+### Query data
+
+> "Show me the top 10 stocks by volume from the stock_prices table"
+
+> "What's the average closing price for AAPL?"
+
+> "How many orders were placed in March?"
+
+### Search documents (RAG)
+
+> "Search my financial documents for information about quarterly revenue"
+
+> "What does the employee handbook say about the return policy?"
+
+### Profile data
+
+> "Profile this CSV file and tell me what validation rules I should add"
+
+> "What does this data look like? Give me a summary"
+
+### Manage pipelines
+
+> "List all my pipelines"
+
+> "Delete the test_pipeline"
+
+> "What's the status of the stock_prices pipeline?"
+
+### Explore databases
+
+> "What tables are in my PostgreSQL database?"
+
+> "Show me the columns in the orders table"
+
+> "What vector collections do I have?"
+
+### Health and diagnostics
+
+> "Are all the backend services running?"
+
+> "Check the health of the platform"
+
+You can also drag and drop files directly into the Claude chat to upload them for ingestion or profiling.
+
 ## Environment Variables
 
 | Variable | Default | Description |
