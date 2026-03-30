@@ -1,5 +1,7 @@
 FROM python:3.12-slim
 
+LABEL io.modelcontextprotocol.server.name="io.github.datris/datris"
+
 WORKDIR /app
 
 COPY requirements.txt .

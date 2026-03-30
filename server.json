@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.datris/datris",
   "title": "Datris",
-  "description": "AI Agent-Native Data Platform — ingest, validate, transform, query, and search data.",
+  "description": "MCP server for AI-driven data platform operations — ingest, validate, transform, analyze, and query data from enterprise sources. 32 tools covering ETL orchestration, AI-generated data quality rules (Python codegen via LLM), vector database search, and secrets-managed connectivity. Supports PostgreSQL, MongoDB, Kafka, S3/MinIO, HashiCorp Vault, and vector stores (Qdrant, Weaviate, Milvus, Chroma, pgvector). Open source (AGPL), installable via uvx datris-mcp-server.",
   "repository": {
     "url": "https://github.com/datris/datris-platform-oss",
     "source": "github"
@@ -15,6 +15,31 @@
       "version": "1.4.4",
       "transport": {
         "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PIPELINE_URL",
+          "description": "URL of the Datris pipeline server",
+          "isRequired": true,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "PIPELINE_API_KEY",
+          "description": "API key for the Datris pipeline server (if key validation is enabled)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "docker.io/datrisai/datris-mcp-server:1.4.4",
+      "version": "1.4.4",
+      "runtimeHint": "docker",
+      "transport": {
+        "type": "sse"
       },
       "environmentVariables": [
         {
