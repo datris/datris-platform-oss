@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "datris-mcp-server"
 version = "1.4.4"
-description = "MCP server for the Datris AI Agent-Native Data Platform"
+description = "MCP server for AI-driven data pipeline operations — ingest, validate, transform, analyze, and query data. 32 tools covering ETL, AI data quality, vector search, PostgreSQL, MongoDB, Kafka, S3/MinIO, HashiCorp Vault, Qdrant, Weaviate, Milvus, Chroma, pgvector."
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
     {name = "Datris", email = "info@datris.ai"}
 ]
-keywords = ["mcp", "datris", "data-platform", "ai-agent", "model-context-protocol"]
+keywords = ["mcp", "datris", "data-platform", "ai-agent", "model-context-protocol", "etl", "data-quality", "vector-search", "postgresql", "mongodb", "kafka", "qdrant", "weaviate", "milvus", "chroma", "pgvector", "minio", "hashicorp-vault"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

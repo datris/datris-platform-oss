@@ -2,10 +2,11 @@
 """
 Datris MCP Server
 
-A thin REST API client that exposes the Datris platform as MCP tools so AI agents
-(Claude, Cursor, etc.) can natively interact with the platform — discover data,
-create pipelines, upload files, monitor jobs, search vector databases, query
-structured data, and answer questions with AI.
+MCP server for AI-driven data platform operations — ingest, validate, transform,
+analyze, and query data from enterprise sources. 32 tools covering ETL orchestration,
+AI-generated data quality rules (Python codegen via LLM), vector database search,
+and secrets-managed connectivity. Supports PostgreSQL, MongoDB, Kafka, S3/MinIO,
+HashiCorp Vault, and vector stores (Qdrant, Weaviate, Milvus, Chroma, pgvector).
 
 Usage:
     pip install -r requirements.txt
@@ -15,6 +16,9 @@ Usage:
 
     # SSE mode (for Docker / remote agents)
     python server.py --sse --port 3000
+
+    # Streamable HTTP mode (for Smithery / remote clients)
+    python server.py --streamable-http --port 3000
 """
 
 import argparse
@@ -1335,15 +1339,49 @@ async def run_sse(port: int):
     await srv.serve()
 
 
+async def run_streamable_http(port: int):
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    import contextlib
+    import uvicorn
+
+    session_manager = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        async with session_manager.run():
+            yield
+
+    async def app(scope, receive, send):
+        if scope["type"] == "lifespan":
+            from starlette.applications import Starlette
+            starlette_app = Starlette(lifespan=lifespan)
+            await starlette_app(scope, receive, send)
+            return
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path == "/mcp":
+                await session_manager.handle_request(scope, receive, send)
+                return
+        await send({"type": "http.response.start", "status": 404, "headers": []})
+        await send({"type": "http.response.body", "body": b"Not Found"})
+
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, lifespan="on")
+    srv = uvicorn.Server(config)
+    await srv.serve()
+
+
 def main():
     import asyncio
 
     parser = argparse.ArgumentParser(description="Datris MCP Server")
     parser.add_argument("--sse", action="store_true", help="Run in SSE mode (default: stdio)")
-    parser.add_argument("--port", type=int, default=3000, help="SSE port (default: 3000)")
+    parser.add_argument("--streamable-http", action="store_true", help="Run in Streamable HTTP mode")
+    parser.add_argument("--port", type=int, default=3000, help="Server port (default: 3000)")
     args = parser.parse_args()
 
-    if args.sse:
+    if args.streamable_http:
+        asyncio.run(run_streamable_http(args.port))
+    elif args.sse:
         asyncio.run(run_sse(args.port))
     else:
         asyncio.run(run_stdio())

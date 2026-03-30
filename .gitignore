@@ -92,6 +92,7 @@ docs/config/commands.mdx
 docs/config/ec2-ollama.mdx
 docs/config/mcp-registry.mdx
 docs/config/new-release.mdx
+docs/plans/
 
 # mcp-publisher tokens
 .mcpregistry_github_token
