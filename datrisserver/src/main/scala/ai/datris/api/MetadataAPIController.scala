@@ -153,11 +153,16 @@ class MetadataAPIController {
             val client = com.mongodb.client.MongoClients.create(settings)
 
             try {
-                val env = DatrisEnvironment.values.environment
-                val databases = client.listDatabaseNames().asScala
-                    .filter(db => !Set("admin", "config", "local").contains(db))
-                    .filter(db => db != env)
-                    .toList.sorted
+                val env = DatrisEnvironment.current.environment
+                val databases = if (DatrisEnvironment.current.multiTenant) {
+                    // Multi-tenant: only show the tenant's database
+                    List(env)
+                } else {
+                    client.listDatabaseNames().asScala
+                        .filter(db => !Set("admin", "config", "local").contains(db))
+                        .filter(db => db != env)
+                        .toList.sorted
+                }
                 val gson = new Gson
                 new ResponseEntity[String](gson.toJson(databases.asJava), HttpStatus.OK)
             } finally {
@@ -186,9 +191,21 @@ class MetadataAPIController {
             val client = com.mongodb.client.MongoClients.create(settings)
 
             try {
-                // List collections from the specified database, or all non-system databases
-                val env = DatrisEnvironment.values.environment
-                val collections = if (database != null && database.nonEmpty) {
+                val env = DatrisEnvironment.current.environment
+                val dbName = if (DatrisEnvironment.current.multiTenant) {
+                    // Multi-tenant: always use the tenant's database
+                    env
+                } else if (database != null && database.nonEmpty) {
+                    database
+                } else {
+                    env
+                }
+
+                val collections = if (dbName == database || DatrisEnvironment.current.multiTenant) {
+                    // Show all collections in the tenant's database
+                    client.getDatabase(dbName).listCollectionNames().asScala
+                        .toList.sorted
+                } else if (database != null && database.nonEmpty) {
                     client.getDatabase(database).listCollectionNames().asScala
                         .filter(name => !name.startsWith(env + "-"))
                         .toList.sorted
@@ -197,10 +214,10 @@ class MetadataAPIController {
                     val allDbs = client.listDatabaseNames().asScala
                         .filter(db => !Set("admin", "config", "local").contains(db))
                         .toList
-                    allDbs.flatMap { dbName =>
-                        client.getDatabase(dbName).listCollectionNames().asScala
+                    allDbs.flatMap { db =>
+                        client.getDatabase(db).listCollectionNames().asScala
                             .filter(name => !name.startsWith(env + "-"))
-                            .map(col => dbName + "." + col)
+                            .map(col => db + "." + col)
                     }.sorted
                 }
                 val gson = new Gson
@@ -224,7 +241,7 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/qdrant/collections called")
             APIKeyValidator.validate(apiKey)
 
-            val secretName = DatrisEnvironment.values.qdrantSecretName
+            val secretName = DatrisEnvironment.current.qdrantSecretName
             if (secretName == null || secretName.isEmpty)
                 return new ResponseEntity[String]("[]", HttpStatus.OK)
 
@@ -265,7 +282,7 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/weaviate/classes called")
             APIKeyValidator.validate(apiKey)
 
-            val secretName = DatrisEnvironment.values.weaviateSecretName
+            val secretName = DatrisEnvironment.current.weaviateSecretName
             if (secretName == null || secretName.isEmpty)
                 return new ResponseEntity[String]("[]", HttpStatus.OK)
 
@@ -322,7 +339,7 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/milvus/collections called")
             APIKeyValidator.validate(apiKey)
 
-            val secretName = DatrisEnvironment.values.milvusSecretName
+            val secretName = DatrisEnvironment.current.milvusSecretName
             if (secretName == null || secretName.isEmpty)
                 return new ResponseEntity[String]("[]", HttpStatus.OK)
 
@@ -364,7 +381,7 @@ class MetadataAPIController {
             logger.info("API endpoint GET /metadata/chroma/collections called")
             APIKeyValidator.validate(apiKey)
 
-            val secretName = DatrisEnvironment.values.chromaSecretName
+            val secretName = DatrisEnvironment.current.chromaSecretName
             if (secretName == null || secretName.isEmpty)
                 return new ResponseEntity[String]("[]", HttpStatus.OK)
 

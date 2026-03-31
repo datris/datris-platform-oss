@@ -28,7 +28,7 @@ class SecretsAPIController {
             logger.info("API endpoint GET /secrets called")
             APIKeyValidator.validate(apiKey)
 
-            val env = DatrisEnvironment.values.environment
+            val env = DatrisEnvironment.current.environment
             val secrets = SecretsUtil.listSecrets(env)
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(secrets.asJava), HttpStatus.OK)
@@ -47,7 +47,7 @@ class SecretsAPIController {
             logger.info("API endpoint GET /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
 
-            val env = DatrisEnvironment.values.environment
+            val env = DatrisEnvironment.current.environment
             val secretPath = env + "/" + name
             val secretMap = SecretsUtil.getSecretMap(secretPath)
 
@@ -87,7 +87,7 @@ class SecretsAPIController {
             logger.info("API endpoint PUT /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
 
-            val env = DatrisEnvironment.values.environment
+            val env = DatrisEnvironment.current.environment
             val secretPath = env + "/" + name
 
             val json = JsonParser.parseString(body).getAsJsonObject
@@ -116,7 +116,7 @@ class SecretsAPIController {
             logger.info("API endpoint DELETE /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
 
-            val env = DatrisEnvironment.values.environment
+            val env = DatrisEnvironment.current.environment
             val secretPath = env + "/" + name
             SecretsUtil.deleteSecret(secretPath)
             new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)

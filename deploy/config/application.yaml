@@ -1,0 +1,76 @@
+spring:
+  servlet:
+    multipart:
+      max-file-size: 1GB
+      max-request-size: 1GB
+  server:
+    tomcat:
+      connection-timeout: "600000"
+  management:
+    health:
+      probes:
+        enabled: "true"
+      livenessState:
+        enabled: "true"
+      readinessState:
+        enabled: "true"
+  data:
+    mongodb:
+      uri: mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@mongodb:27017/${ENVIRONMENT}
+logging:
+  level:
+    root: INFO
+    org.springframework.web: INFO
+    ai.datris: INFO
+schedule:
+  checkFileNotifierQueue: "5000"
+  findJobsToStart: "5000"
+  checkDatabaseSourceQueries: "30000"
+environment: ${ENVIRONMENT}
+useApiKeys: "true"
+multiTenant: "false"
+
+# Object store: MinIO (Docker service)
+minio:
+  server: http://minio:9000
+
+# Secrets: HashiCorp Vault (Docker service)
+secrets:
+  apiKeysSecretName: ${ENVIRONMENT}/api-keys
+  postgresSecretName: ${ENVIRONMENT}/postgres
+  minIOSecretName: ${ENVIRONMENT}/minio
+  activeMQSecretName: ${ENVIRONMENT}/activemq
+  mongoDbSecretName: ${ENVIRONMENT}/mongodb
+  kafkaProducerSecretName: ${ENVIRONMENT}/kafka-producer
+  embeddingSecretName: ${ENVIRONMENT}/embedding
+  qdrantSecretName: ${ENVIRONMENT}/qdrant
+  weaviateSecretName: ${ENVIRONMENT}/weaviate
+  milvusSecretName: ${ENVIRONMENT}/milvus
+  chromaSecretName: ${ENVIRONMENT}/chroma
+  pgvectorSecretName: ${ENVIRONMENT}/pgvector
+
+# Queue + notifications: ActiveMQ (Docker service)
+activemq:
+  server: tcp://activemq:61616
+
+# NoSQL: MongoDB (Docker service)
+mongodb:
+  connectionString: mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@mongodb:27017
+  database: ${ENVIRONMENT}
+
+sendPipelineNotifications: "true"
+ttlFileNotifierQueueMessages: "60"
+
+# AI provider (required)
+ai:
+  enabled: "true"
+  provider: ${AI_PROVIDER}
+  aiSecretName: "${ENVIRONMENT}/${AI_PROVIDER}"
+
+# Kafka consumer
+kafkaConsumer:
+  enabled: ${KAFKA_ENABLED:-false}
+  bootstrapServers: kafka:9092
+  groupId: ${ENVIRONMENT}-group
+  topicPollingInterval: "500"
+  topicPrefix: ${ENVIRONMENT}

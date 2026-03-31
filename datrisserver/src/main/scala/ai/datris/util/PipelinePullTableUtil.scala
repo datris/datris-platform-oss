@@ -27,18 +27,18 @@ object PipelinePullTableUtil {
 
         val pipelinePull = PipelinePull(pipeline, nextPullDateAsString, null)
         val gson = new Gson()
-        NoSQLDbUtil.putItemJSON(DatrisEnvironment.values.dataPullTableName, "pipeline", pipeline, "json", gson.toJson(pipelinePull))
+        NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline, "json", gson.toJson(pipelinePull))
     }
 
     def deleteEntryIfExists(pipeline: String): Unit = {
         // Make sure an entry already exists for the key
-        val existing = NoSQLDbUtil.getItemJSON(DatrisEnvironment.values.dataPullTableName, "pipeline", pipeline, "json").orNull
+        val existing = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline, "json").orNull
         if(existing != null)
-            NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.values.dataPullTableName, "pipeline", pipeline)
+            NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline)
     }
 
     def getAll: List[PipelinePull] = {
-        val jsonItems = NoSQLDbUtil.getAllItemsAsJSON(DatrisEnvironment.values.dataPullTableName)
+        val jsonItems = NoSQLDbUtil.getAllItemsAsJSON(DatrisEnvironment.current.dataPullTableName)
         val gson = new Gson()
         jsonItems.map(item => {
             val pipelinePullTable = gson.fromJson(item, classOf[PipelinePullTable])
@@ -50,9 +50,9 @@ object PipelinePullTableUtil {
         val gson = new Gson()
 
         // Get the existing pull information
-        val json = NoSQLDbUtil.getItemJSON(DatrisEnvironment.values.dataPullTableName, "pipeline", pipeline, "json").orNull
+        val json = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline, "json").orNull
         if(json == null)
-            throw new DatrisException("The table: " + DatrisEnvironment.values.dataPullTableName + " does not contain an entry for the pipeline: " + pipeline + ", re-register the pipeline with the API")
+            throw new DatrisException("The table: " + DatrisEnvironment.current.dataPullTableName + " does not contain an entry for the pipeline: " + pipeline + ", re-register the pipeline with the API")
         val pipelinePull = gson.fromJson(json, classOf[PipelinePull])
 
         val newNextPullDate = {
@@ -70,12 +70,12 @@ object PipelinePullTableUtil {
         val newPipelinePull = PipelinePull(pipeline, newNextPullDate, newLastPullTimestampUsed)
 
         // Write the Dataset pull info NoSQL
-        NoSQLDbUtil.putItemJSON(DatrisEnvironment.values.dataPullTableName, "pipeline", pipeline, "json", gson.toJson(newPipelinePull))
+        NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline, "json", gson.toJson(newPipelinePull))
     }
 
     def getNextPullDate(pipeline: String): Date = {
-        val json = NoSQLDbUtil.getItemJSON(DatrisEnvironment.values.dataPullTableName, "pipeline", pipeline, "json")
-            .getOrElse(throw new DatrisException("The table: " + DatrisEnvironment.values.dataPullTableName + " does not contain an entry for the pipeline: " + pipeline + ", re-register the pipeline with the API"))
+        val json = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline, "json")
+            .getOrElse(throw new DatrisException("The table: " + DatrisEnvironment.current.dataPullTableName + " does not contain an entry for the pipeline: " + pipeline + ", re-register the pipeline with the API"))
         val gson = new Gson()
         val pipelinePull = gson.fromJson(json, classOf[PipelinePull])
         dateFormatter.parse(pipelinePull.nextPullDate)

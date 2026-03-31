@@ -15,6 +15,7 @@ case class JobContext(
                          pipelineProperties: PipelineProperties,
                          state: JobState,
                          thread: Thread,
-                         statusUtil: StatusUtil
+                         statusUtil: StatusUtil,
+                         tenantEnvironment: DatrisEnvironment = null
                      )
 

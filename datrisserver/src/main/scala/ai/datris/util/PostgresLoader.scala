@@ -75,7 +75,7 @@ class PostgresLoader(jobContext: JobContext) {
 
     private def createStagingFile(): String = {
         // Write the data to a temp location
-        val tempUrl = "s3://" + DatrisEnvironment.values.environment + "-temp/data/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + ".csv"
+        val tempUrl = "s3://" + DatrisEnvironment.current.environment + "-temp/data/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + ".csv"
         val data = if (jobContext.data.rows != null && jobContext.data.rows.nonEmpty)
             projectRowsToDestSchema(jobContext.data.rows).mkString("\n")
         else if (jobContext.data.rawData != null)
@@ -245,7 +245,7 @@ class PostgresLoader(jobContext: JobContext) {
         attributes.put("database", config.destination.database.dbName)
         attributes.put("table", config.destination.database.table)
 
-        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, jsonNotification, attributes.asScala.toMap)
+        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
     }
 }

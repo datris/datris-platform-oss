@@ -74,7 +74,7 @@ class KafkaConsumerRunner(
 
         // Determine the pipeline name and read the configuration
         val pipeline = {
-            val prefix = Option(DatrisEnvironment.values)
+            val prefix = Option(DatrisEnvironment.current)
                 .map(_.kafkaConsumerConfig)
                 .map(_.topicPrefix)
                 .filter(_.nonEmpty)
@@ -83,7 +83,7 @@ class KafkaConsumerRunner(
                 case None => topic
             }
         }
-        val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
+        val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
 
         if(config == null)
             logger.error("Pipeline: " + pipeline + " is not configured in the NoSQL database")
@@ -100,7 +100,7 @@ class KafkaConsumerRunner(
         }
         else {
             // Write data to a unique path in the -temp bucket
-            val tempLocation = "s3://" + DatrisEnvironment.values.environment + "-temp/kafka/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + "/"
+            val tempLocation = "s3://" + DatrisEnvironment.current.environment + "-temp/kafka/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + "/"
             val tempFilename = config.name + "." +  GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + ".tmp"
             val tempUrl = tempLocation + tempFilename
             ObjectStoreUtil.writeBucketObject(ObjectStoreUtil.getBucket(tempUrl), ObjectStoreUtil.getKey(tempUrl), data)

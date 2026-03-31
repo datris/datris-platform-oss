@@ -15,7 +15,7 @@ import org.slf4j.{Logger, LoggerFactory}
 
 class FileNotifier {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
-    private val statusUtil = new StatusUtil().init(DatrisEnvironment.values.pipelineStatusTableName, this.getClass.getSimpleName)
+    private val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
 
     def process(bucket: String, key: String): JobContext = {
         logger.info("Processing queue message, bucket: " + bucket + ", key: " + key)
@@ -33,11 +33,11 @@ class FileNotifier {
             // Save the metadata in NoSQL
             val gson = new Gson
             val jsonMetadata = gson.toJson(metadata)
-            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.values.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", jsonMetadata)
+            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", jsonMetadata)
 
             statusUtil.info("begin", "Data received, bucket: " + bucket + ", key: " + key)
 
-            val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, metadata.pipeline)
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, metadata.pipeline)
             if(config == null)
                 throw new DatrisException("Pipeline: " + metadata.pipeline + " is not configured in the NoSQL database")
 
@@ -47,7 +47,7 @@ class FileNotifier {
 
             statusUtil.info("end", "Process completed successfully")
 
-            JobContext(pipelineToken, metadata, data, config, null, INITIALIZED, null, statusUtil)
+            JobContext(pipelineToken, metadata, data, config, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
         } catch {
             case e: Exception =>
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))

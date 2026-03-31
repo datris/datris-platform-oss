@@ -35,7 +35,7 @@ class FileUploadAPIController {
             APIKeyValidator.validate(apiKey)
 
             // Validate pipeline is registered before processing
-            val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if (config == null)
                 throw new IllegalArgumentException("Pipeline '" + pipeline + "' is not registered. Use POST /api/v1/pipeline to register it first.")
 
@@ -52,7 +52,7 @@ class FileUploadAPIController {
                     else
                         config.name + "." + dateFormat.format(new Date()) + "." + System.currentTimeMillis().toString + ".pipeline." + ext
                 }
-                val path = "s3://" + DatrisEnvironment.values.environment + "-raw/temp/" + config.name + "/" + rawFilename
+                val path = "s3://" + DatrisEnvironment.current.environment + "-raw/temp/" + config.name + "/" + rawFilename
                 ObjectStoreUtil.writeBucketObjectFromStream(ObjectStoreUtil.getBucket(path), ObjectStoreUtil.getKey(path), new ByteArrayInputStream(byteArray), byteArray.length.toLong)
                 new ResponseEntity[String](HttpStatus.OK)
             } else {
@@ -66,7 +66,7 @@ class FileUploadAPIController {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 try {
-                    val statusUtil = new StatusUtil().init(DatrisEnvironment.values.pipelineStatusTableName, this.getClass.getSimpleName)
+                    val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
                     statusUtil.setFilename(pipeline)
                     statusUtil.error("end", e.getMessage)
                 }
@@ -100,7 +100,7 @@ class FileUploadAPIController {
             logger.info("API endpoint POST /pipeline/generate called for pipeline: " + pipelineName + ", filename: " + filename)
             APIKeyValidator.validate(apiKey)
 
-            if (!DatrisEnvironment.values.aiEnabled)
+            if (!DatrisEnvironment.current.aiEnabled)
                 throw new DatrisException("AI schema generation is disabled. Set 'ai.enabled: true' in application.yaml to enable it.")
 
             val json = {
@@ -136,7 +136,7 @@ class FileUploadAPIController {
             logger.info("API endpoint POST /pipeline/profile called, filename: " + filename)
             APIKeyValidator.validate(apiKey)
 
-            if (!DatrisEnvironment.values.aiEnabled)
+            if (!DatrisEnvironment.current.aiEnabled)
                 throw new DatrisException("AI data profiling is disabled. Set 'ai.enabled: true' in application.yaml to enable it.")
 
             val fileContent = new String(multipartFile.getBytes, "UTF-8")

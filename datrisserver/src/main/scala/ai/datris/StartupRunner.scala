@@ -23,6 +23,9 @@ class StartupRunner extends ApplicationRunner {
     @Value("${useApiKeys}")
     var useApiKeys: Boolean = _
 
+    @Value("${multiTenant:false}")
+    var multiTenant: Boolean = _
+
     @Value("${secrets.apiKeysSecretName:}")
     var apiKeysSecretName: String = _
 
@@ -163,7 +166,8 @@ class StartupRunner extends ApplicationRunner {
             weaviateSecretName,
             milvusSecretName,
             chromaSecretName,
-            pgvectorSecretName
+            pgvectorSecretName,
+            multiTenant
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

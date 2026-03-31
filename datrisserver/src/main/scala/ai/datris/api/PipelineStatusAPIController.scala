@@ -58,7 +58,7 @@ PipelineStatusAPIController {
             logger.info("API endpoint DELETE /pipeline/status called — clearing all ingestion history")
             APIKeyValidator.validate(apiKey)
 
-            val tableName = DatrisEnvironment.values.pipelineStatusTableName
+            val tableName = DatrisEnvironment.current.pipelineStatusTableName
             val detailCount = NoSQLDbUtil.deleteAll(tableName)
             val summaryCount = NoSQLDbUtil.deleteAll(tableName + "-summary")
 

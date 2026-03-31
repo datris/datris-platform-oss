@@ -29,7 +29,7 @@ class HealthCheckAPIController {
             logger.info("API endpoint GET /health/services called")
             APIKeyValidator.validate(apiKey)
 
-            val env = DatrisEnvironment.values
+            val env = DatrisEnvironment.current
             val results = new java.util.LinkedHashMap[String, Any]()
 
             // Core infrastructure — always checked
@@ -130,7 +130,7 @@ class HealthCheckAPIController {
 
     private def checkMinIO(): java.util.Map[String, String] = {
         try {
-            val config = DatrisEnvironment.values.minIOConfig
+            val config = DatrisEnvironment.current.minIOConfig
             if (config == null || config.endpoint == null) return statusNotConfigured()
             val client = io.minio.MinioClient.builder()
                 .endpoint(config.endpoint)
@@ -145,7 +145,7 @@ class HealthCheckAPIController {
 
     private def checkActiveMQ(): java.util.Map[String, String] = {
         try {
-            val config = DatrisEnvironment.values.activeMQConfig
+            val config = DatrisEnvironment.current.activeMQConfig
             if (config == null || config.server == null) return statusNotConfigured()
             val factory = new org.apache.activemq.ActiveMQConnectionFactory()
             factory.setBrokerURL(config.server)

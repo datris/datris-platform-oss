@@ -66,9 +66,9 @@ class ActiveMQNotificationUtility(val connectionFactory: ActiveMQConnectionFacto
 object ActiveMQNotificationUtilBuilder {
     def build(): NotificationUtility = {
         val connectionFactory = new ActiveMQConnectionFactory()
-        connectionFactory.setBrokerURL(DatrisEnvironment.values.activeMQConfig.server)
-        connectionFactory.setUserName(DatrisEnvironment.values.activeMQConfig.username)
-        connectionFactory.setPassword(DatrisEnvironment.values.activeMQConfig.password)
+        connectionFactory.setBrokerURL(DatrisEnvironment.current.activeMQConfig.server)
+        connectionFactory.setUserName(DatrisEnvironment.current.activeMQConfig.username)
+        connectionFactory.setPassword(DatrisEnvironment.current.activeMQConfig.password)
 
         connectionFactory.setTrustAllPackages(false)
         connectionFactory.setTrustedPackages(java.util.Arrays.asList("ai.datris"))

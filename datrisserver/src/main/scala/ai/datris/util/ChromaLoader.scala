@@ -187,6 +187,6 @@ class ChromaLoader(jobContext: JobContext) {
             "collection" -> chromaConfig.collectionName
         )
         val gson = new Gson()
-        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, gson.toJson(notification.asJava), attributes)
+        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, gson.toJson(notification.asJava), attributes)
     }
 }

@@ -101,7 +101,7 @@ class ActiveMQLoader(jobContext: JobContext) {
         attributes.put("destination", "activemq")
         attributes.put("queueName", activeMQConfig.queueName)
 
-        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, jsonNotification, attributes.asScala.toMap)
+        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
     }
 }

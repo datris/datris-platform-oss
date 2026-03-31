@@ -114,9 +114,9 @@ class ActiveMQQueueUtility(val connectionFactory: ConnectionFactory) extends Que
 object ActiveMQUtilBuilder {
     def build(): QueueUtility = {
         val connectionFactory = new ActiveMQConnectionFactory()
-        connectionFactory.setBrokerURL(DatrisEnvironment.values.activeMQConfig.server)
-        connectionFactory.setUserName(DatrisEnvironment.values.activeMQConfig.username)
-        connectionFactory.setPassword(DatrisEnvironment.values.activeMQConfig.password)
+        connectionFactory.setBrokerURL(DatrisEnvironment.current.activeMQConfig.server)
+        connectionFactory.setUserName(DatrisEnvironment.current.activeMQConfig.username)
+        connectionFactory.setPassword(DatrisEnvironment.current.activeMQConfig.password)
 
         connectionFactory.setTrustAllPackages(false)
         connectionFactory.setTrustedPackages(java.util.Arrays.asList("ai.datris"))

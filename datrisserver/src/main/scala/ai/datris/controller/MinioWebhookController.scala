@@ -17,7 +17,7 @@ class MinioWebhookController {
     @PostMapping(Array("/minio-events"))
     def handleMinioEvent(@RequestBody payload: String): String = {
         logger.info(s"Received MinIO event: $payload")
-        QueueUtil.add(DatrisEnvironment.values.fileNotifierQueue, payload)
+        QueueUtil.add(DatrisEnvironment.current.fileNotifierQueue, payload)
         "OK"
     }
 }

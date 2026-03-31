@@ -40,7 +40,7 @@ class ConfigAPIController {
             if (filename == null || filename.isEmpty)
                 throw new DatrisException("File must have a name")
 
-            val bucket = DatrisEnvironment.values.environment + "-config"
+            val bucket = DatrisEnvironment.current.environment + "-config"
             val key = fileType + "/" + filename
 
             val bytes = file.getBytes
@@ -86,7 +86,7 @@ class ConfigAPIController {
             }
 
             val filename = name.trim + extension
-            val bucket = DatrisEnvironment.values.environment + "-config"
+            val bucket = DatrisEnvironment.current.environment + "-config"
             val key = "validation-schema/" + filename
 
             val bytes = schema.getBytes("UTF-8")

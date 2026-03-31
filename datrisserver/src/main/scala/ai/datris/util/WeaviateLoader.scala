@@ -162,6 +162,6 @@ class WeaviateLoader(jobContext: JobContext) {
             "collection" -> weaviateConfig.className
         )
         val gson = new Gson()
-        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, gson.toJson(notification.asJava), attributes)
+        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, gson.toJson(notification.asJava), attributes)
     }
 }

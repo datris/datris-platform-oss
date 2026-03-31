@@ -41,7 +41,7 @@ object AIUtil {
     }
 
     def maxInputChars(): Int = {
-        val aiConfig = DatrisEnvironment.values.aiConfig
+        val aiConfig = DatrisEnvironment.current.aiConfig
         val maxInputTokens = aiConfig.provider.toLowerCase match {
             case "ollama" => 100000
             case "openai" => 100000
@@ -63,7 +63,7 @@ object AIUtil {
     }
 
     def callAIWithSystem(systemPrompt: String, userPrompt: String): String = {
-        val aiConfig = DatrisEnvironment.values.aiConfig
+        val aiConfig = DatrisEnvironment.current.aiConfig
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
@@ -118,7 +118,7 @@ object AIUtil {
     }
 
     def callAI(prompt: String): String = {
-        val aiConfig = DatrisEnvironment.values.aiConfig
+        val aiConfig = DatrisEnvironment.current.aiConfig
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
@@ -193,7 +193,7 @@ object AIUtil {
     }
 
     def extractText(apiResponse: String): String = {
-        val aiConfig = DatrisEnvironment.values.aiConfig
+        val aiConfig = DatrisEnvironment.current.aiConfig
         val gson = new Gson()
         val responseMap = gson.fromJson(apiResponse, classOf[java.util.Map[String, Any]])
 

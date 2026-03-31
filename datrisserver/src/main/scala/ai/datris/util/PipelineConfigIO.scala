@@ -12,7 +12,7 @@ object PipelineConfigIO {
     def readAll(tableName: String): List[PipelineConfig] = {
         val pipelineNames = NoSQLDbUtil.getItemsKeysByKeyName(tableName, "name")
         pipelineNames.map(name => {
-            read(DatrisEnvironment.values.pipelineTableName, name)
+            read(DatrisEnvironment.current.pipelineTableName, name)
         })
     }
 
@@ -37,7 +37,7 @@ object PipelineConfigIO {
     def write(datasetConfig: PipelineConfig): Unit = {
         val gson = new Gson
         val json = gson.toJson(datasetConfig)
-        NoSQLDbUtil.putItemJSON(DatrisEnvironment.values.pipelineTableName, "name", datasetConfig.name, "value", json)
+        NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.pipelineTableName, "name", datasetConfig.name, "value", json)
     }
 
     def getSourceFileExtension(config: PipelineConfig): String = {

@@ -41,10 +41,12 @@ class PGVectorLoader(jobContext: JobContext) {
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
-        // Get configs
-        val embeddingConfig = EmbeddingUtil.getConfig(pgvectorConfig.embeddingSecretName)
-        val pgSecret = SecretsUtil.getSecretMap(pgvectorConfig.postgresSecretName)
-            .getOrElse(throw new DatrisException("PostgreSQL secret not found: " + pgvectorConfig.postgresSecretName))
+        // Get configs — use tenant secret names if in multi-tenant mode
+        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else pgvectorConfig.embeddingSecretName
+        val pgvectorSecretName = if (DatrisEnvironment.current.pgvectorSecretName != null) DatrisEnvironment.current.pgvectorSecretName else pgvectorConfig.postgresSecretName
+        val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
+        val pgSecret = SecretsUtil.getSecretMap(pgvectorSecretName)
+            .getOrElse(throw new DatrisException("PostgreSQL secret not found: " + pgvectorSecretName))
         val jdbcUrl = pgSecret.get("jdbcUrl")
         if (jdbcUrl == null) throw new DatrisException("'jdbcUrl' not found in pgvector secret: " + pgvectorConfig.postgresSecretName)
         val username = Option(pgSecret.get("username")).getOrElse("postgres")
@@ -180,6 +182,6 @@ class PGVectorLoader(jobContext: JobContext) {
             "table" -> pgvectorConfig.tableName
         )
         val gson = new Gson()
-        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, gson.toJson(notification.asJava), attributes)
+        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, gson.toJson(notification.asJava), attributes)
     }
 }

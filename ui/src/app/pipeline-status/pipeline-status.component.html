@@ -101,7 +101,7 @@
 
     <div class="modal-footer">
       <button class="secondary-btn" (click)="closeUploadModal()">Cancel</button>
-      <button class="primary-btn" (click)="upload()" [disabled]="!selectedPipeline || !uploadFile || uploading">
+      <button class="primary-btn" (click)="upload()" [disabled]="!selectedPipeline || !uploadFile || uploading || uploadResult">
         {{ uploading ? 'Uploading...' : 'Upload & Process' }}
       </button>
     </div>

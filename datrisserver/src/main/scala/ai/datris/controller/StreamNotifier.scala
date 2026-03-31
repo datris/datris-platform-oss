@@ -19,7 +19,7 @@ import scala.collection.JavaConverters._
 
 class StreamNotifier {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
-    private val statusUtil = new StatusUtil().init(DatrisEnvironment.values.pipelineStatusTableName, this.getClass.getSimpleName)
+    private val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
 
     def process(byteArray: Array[Byte], filename: String, pipeline: String, publisherToken: String): JobContext = {
         logger.info("StreamNotifier processing pipeline: " + pipeline + ", filename: " + filename)
@@ -30,14 +30,14 @@ class StreamNotifier {
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(Option(publisherToken).getOrElse(pipelineToken))
 
-            val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
             val metadata = PipelineMetadata(pipeline, filename, null, Option(publisherToken).getOrElse(pipelineToken), bulkUpload = false)
             val gson = new Gson
             // Must persist metadata before any statusUtil calls so getPipelineName can resolve the pipeline token
-            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.values.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", gson.toJson(metadata))
+            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", gson.toJson(metadata))
 
             statusUtil.info("begin", "Stream data received, pipeline: " + pipeline + ", filename: " + filename)
             statusUtil.info("processing", "Total data size: " + byteArray.length.toString)
@@ -46,7 +46,7 @@ class StreamNotifier {
 
             statusUtil.info("end", "Process completed successfully")
 
-            JobContext(pipelineToken, metadata, dataObj, config, null, INITIALIZED, null, statusUtil)
+            JobContext(pipelineToken, metadata, dataObj, config, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
         } catch {
             case e: Exception =>
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
@@ -164,7 +164,7 @@ class StreamNotifier {
             val metadata = PipelineMetadata(pipeline, null, null, pipelineToken, bulkUpload = false)
             val gson = new Gson
             val jsonMetadata = gson.toJson(metadata)
-            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.values.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", jsonMetadata)
+            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", jsonMetadata)
 
             val dataObj = Data(data.length, null, null, null, data)
 

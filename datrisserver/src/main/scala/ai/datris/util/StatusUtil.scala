@@ -231,7 +231,7 @@ class StatusUtil {
         }
         else if(pipelineToken != null) {
             // metadata.json file ingestion
-            val rawValue = NoSQLDbUtil.getItemJSON(DatrisEnvironment.values.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata").getOrElse(
+            val rawValue = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata").getOrElse(
                 throw new DatrisException("Internal error, pipelineToken: " + pipelineToken + " was not found in the NoSQL table")
             )
             val jsonMetadata = rawValue

@@ -202,11 +202,11 @@ object MongoDBUtilBuilder {
 
     // Default client from DatrisEnvironment (cached)
     private lazy val defaultClient: MongoClient =
-        createClient(DatrisEnvironment.values.mongoDbConfig.connectionString)
+        createClient(DatrisEnvironment.current.mongoDbConfig.connectionString)
 
     // Default: uses DatrisEnvironment for both connection string and database
     def build(): NoSQLDbUtility = {
-        new MongoDBUtil(defaultClient.getDatabase(DatrisEnvironment.values.mongoDbConfig.database))
+        new MongoDBUtil(defaultClient.getDatabase(DatrisEnvironment.current.mongoDbConfig.database))
     }
 
     // Override database only (reuses default connection)

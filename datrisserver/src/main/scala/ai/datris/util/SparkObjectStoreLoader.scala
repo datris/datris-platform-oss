@@ -29,7 +29,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
             if (config.destination.objectStore.destinationBucketOverride != null)
                 config.destination.objectStore.destinationBucketOverride
             else
-                DatrisEnvironment.values.environment + "-data"
+                DatrisEnvironment.current.environment + "-data"
         }
         val prefixKey = config.destination.objectStore.prefixKey
         val outputPath = "s3a://" + bucket + "/" + prefixKey
@@ -169,7 +169,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         attributes.put("destination", "objectStore")
         attributes.put("prefixKey", config.destination.objectStore.prefixKey)
 
-        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, jsonNotification, attributes.asScala.toMap)
+        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
     }
 }

@@ -90,7 +90,7 @@ class Transformation(jobContext: JobContext) {
                 if (filePath.startsWith("s3"))
                     filePath
                 else
-                    "s3://" + DatrisEnvironment.values.environment + "-config/javascript/" + filePath
+                    "s3://" + DatrisEnvironment.current.environment + "-config/javascript/" + filePath
             }
             statusUtil.info("processing", "Running row function: javascript, using script: " + url)
             ObjectStoreUtil.readBucketObject(ObjectStoreUtil.getBucket(url), ObjectStoreUtil.getKey(url)).getOrElse(

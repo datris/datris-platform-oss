@@ -1,11 +1,13 @@
 # Datris — The First AI Agent-Native Data Platform
 
+[![Try Hosted Free](https://img.shields.io/badge/Try_Hosted_Free-14_day_trial-00b4ff?style=for-the-badge)](https://datris.ai/signup)
+
 [![PyPI](https://img.shields.io/pypi/v/datris-mcp-server)](https://pypi.org/project/datris-mcp-server/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.datris%2Fdatris-blue)](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris)
 [![Docker Hub](https://img.shields.io/docker/v/datrisai/datris-server?label=Docker%20Hub)](https://hub.docker.com/u/datrisai)
 [![License](https://img.shields.io/github/license/datris/datris-platform-oss)](LICENSE)
 
-[datris.ai](https://datris.ai) · [Documentation](https://docs.datris.ai) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
+[datris.ai](https://datris.ai) · [Try Hosted Free](https://datris.ai/signup) · [Documentation](https://docs.datris.ai) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
 
 Ingest, validate, transform, store, and retrieve your data — whether you're an AI agent talking through MCP or a developer writing config. One platform for both.
 

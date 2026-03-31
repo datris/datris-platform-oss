@@ -33,7 +33,7 @@ class DataQuality(jobContext: JobContext) {
                 if(config.dataQuality.validationSchema.startsWith("s3://"))
                     config.dataQuality.validationSchema
                 else
-                    "s3://" + DatrisEnvironment.values.environment + "-config/validation-schema/" + config.dataQuality.validationSchema
+                    "s3://" + DatrisEnvironment.current.environment + "-config/validation-schema/" + config.dataQuality.validationSchema
             }
 
             statusUtil.info("processing", "Validating the incoming data for pipeline: " + config.name + ", against the validation schema: " + schemaFileUrl)

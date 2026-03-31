@@ -38,7 +38,7 @@ object MongoDBQueryUtil {
         logger.info("Querying MongoDB collection: " + collection + " with limit: " + effectiveLimit)
 
         val secrets = SecretsRetrieverUtil.mongoDbSecrets()
-        val dbUtil = MongoDBUtilBuilder.build(secrets.connectionString, DatrisEnvironment.values.mongoDbConfig.database)
+        val dbUtil = MongoDBUtilBuilder.build(secrets.connectionString, DatrisEnvironment.current.mongoDbConfig.database)
 
         // Use the underlying MongoDBUtil's database to run a find query
         val connString = new com.mongodb.ConnectionString(secrets.connectionString)
@@ -48,7 +48,7 @@ object MongoDBQueryUtil {
         val client = com.mongodb.client.MongoClients.create(settings)
 
         try {
-            val dbName = if (database != null && database.nonEmpty) database else DatrisEnvironment.values.mongoDbConfig.database
+            val dbName = if (database != null && database.nonEmpty) database else DatrisEnvironment.current.mongoDbConfig.database
             val db = client.getDatabase(dbName)
             val coll = db.getCollection(collection)
 

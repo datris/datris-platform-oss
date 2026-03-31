@@ -30,8 +30,8 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "financial_documents")
-            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
-            val qdrantSecretName = optString(body, "qdrantSecretName", DatrisEnvironment.values.qdrantSecretName)
+            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
+            val qdrantSecretName = tenantSecretName(optString(body, "qdrantSecretName", DatrisEnvironment.current.qdrantSecretName), DatrisEnvironment.current.qdrantSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = QdrantSearchUtil.search(query, collection, embeddingSecretName, qdrantSecretName, topK)
@@ -53,8 +53,8 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val className = optString(body, "className", "FinancialDocuments")
-            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
-            val weaviateSecretName = optString(body, "weaviateSecretName", DatrisEnvironment.values.weaviateSecretName)
+            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
+            val weaviateSecretName = tenantSecretName(optString(body, "weaviateSecretName", DatrisEnvironment.current.weaviateSecretName), DatrisEnvironment.current.weaviateSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = WeaviateSearchUtil.search(query, className, embeddingSecretName, weaviateSecretName, topK)
@@ -76,8 +76,8 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "financial_documents")
-            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
-            val milvusSecretName = optString(body, "milvusSecretName", DatrisEnvironment.values.milvusSecretName)
+            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
+            val milvusSecretName = tenantSecretName(optString(body, "milvusSecretName", DatrisEnvironment.current.milvusSecretName), DatrisEnvironment.current.milvusSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = MilvusSearchUtil.search(query, collection, embeddingSecretName, milvusSecretName, topK)
@@ -99,8 +99,8 @@ class SearchAPIController {
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "financial_documents")
-            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
-            val chromaSecretName = optString(body, "chromaSecretName", DatrisEnvironment.values.chromaSecretName)
+            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
+            val chromaSecretName = tenantSecretName(optString(body, "chromaSecretName", DatrisEnvironment.current.chromaSecretName), DatrisEnvironment.current.chromaSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = ChromaSearchUtil.search(query, collection, embeddingSecretName, chromaSecretName, topK)
@@ -123,8 +123,8 @@ class SearchAPIController {
             val query = requireString(body, "query")
             val table = optString(body, "table", "financial_documents")
             val schema = optString(body, "schema", "public")
-            val embeddingSecretName = optString(body, "embeddingSecretName", DatrisEnvironment.values.embeddingSecretName)
-            val postgresSecretName = optString(body, "postgresSecretName", DatrisEnvironment.values.pgvectorSecretName)
+            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
+            val postgresSecretName = tenantSecretName(optString(body, "postgresSecretName", DatrisEnvironment.current.pgvectorSecretName), DatrisEnvironment.current.pgvectorSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = PGVectorSearchUtil.search(query, table, embeddingSecretName, postgresSecretName, schema, topK)
@@ -152,6 +152,11 @@ class SearchAPIController {
 
     private def optString(body: java.util.Map[String, Any], key: String, default: String): String = {
         Option(body.get(key)).map(_.toString).getOrElse(default)
+    }
+
+    /** In multi-tenant mode, always use DatrisEnvironment.current secret names to ensure tenant isolation */
+    private def tenantSecretName(clientValue: String, tenantValue: String): String = {
+        if (DatrisEnvironment.current.multiTenant) tenantValue else clientValue
     }
 
     private def optInt(body: java.util.Map[String, Any], key: String, default: Int): Int = {

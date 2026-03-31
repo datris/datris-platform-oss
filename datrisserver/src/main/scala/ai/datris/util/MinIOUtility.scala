@@ -30,7 +30,7 @@ class MinIOUtility(val client: MinioClient) extends ObjectStoreUtility {
     override def getURI(path: String): URI = {
         val bucket = getBucket(path)
         val key = getKey(path)
-        val endpoint = DatrisEnvironment.values.minIOConfig.endpoint
+        val endpoint = DatrisEnvironment.current.minIOConfig.endpoint
         new URI(endpoint + "/" + bucket + "/" + key)
     }
 
@@ -158,9 +158,9 @@ class MinIOUtility(val client: MinioClient) extends ObjectStoreUtility {
 
 object MinIOUtilBuilder {
     def build(): ObjectStoreUtility = {
-        val endpoint  = DatrisEnvironment.values.minIOConfig.endpoint
-        val accessKey = DatrisEnvironment.values.minIOConfig.accessKey
-        val secretKey = DatrisEnvironment.values.minIOConfig.secretKey
+        val endpoint  = DatrisEnvironment.current.minIOConfig.endpoint
+        val accessKey = DatrisEnvironment.current.minIOConfig.accessKey
+        val secretKey = DatrisEnvironment.current.minIOConfig.secretKey
 
         val minioClient = MinioClient.builder()
             .endpoint(endpoint)

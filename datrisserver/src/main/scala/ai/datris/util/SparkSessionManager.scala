@@ -16,7 +16,7 @@ object SparkSessionManager {
     def getOrCreate(): SparkSession = synchronized {
         if (session == null || session.sparkContext.isStopped) {
             logger.info("Creating new SparkSession")
-            val minIOConfig = DatrisEnvironment.values.minIOConfig
+            val minIOConfig = DatrisEnvironment.current.minIOConfig
             val builder = SparkSession.builder()
                 .master("local[*]")
                 .appName("pipeline-oss")

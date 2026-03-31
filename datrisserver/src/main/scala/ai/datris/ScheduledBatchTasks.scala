@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.model.{ObjectStoreEventMessage, DatrisEnvironment}
+import ai.datris.model.{ObjectStoreEventMessage, DatrisEnvironment, TenantContext}
 import ai.datris.util.{NoSQLDbUtil, QueueUtil}
 import ai.datris.controller.{FileNotifier, JobRunner}
 import ai.datris.model._
@@ -41,12 +41,12 @@ class ScheduledBatchTasks {
     private def checkFileNotifierQueue(): Unit = {
         try {
             if(isAppInitialized) {
-                val messages = QueueUtil.receiveMessages(DatrisEnvironment.values.fileNotifierQueue, maxMessages = 10, longPolling = true)
+                val messages = QueueUtil.receiveMessages(DatrisEnvironment.current.fileNotifierQueue, maxMessages = 10, longPolling = true)
 
                 val gson = new Gson
                 messages.asScala.foreach(message => {
                     val eventMessage = gson.fromJson(message.body, classOf[ObjectStoreEventMessage])
-                    QueueUtil.deleteMessage(DatrisEnvironment.values.fileNotifierQueue, message.receiptHandle)
+                    QueueUtil.deleteMessage(DatrisEnvironment.current.fileNotifierQueue, message.receiptHandle)
 
                     if(eventMessage != null && eventMessage.Records != null) {
                         if(! hasMessageBeenProcessed(message.messageId, eventMessage))
@@ -68,16 +68,16 @@ class ScheduledBatchTasks {
 
     private def hasMessageBeenProcessed(messageID: String, eventMessageS3: ObjectStoreEventMessage): Boolean = {
         // Check the NoSQL table to determine if this message has already been processed
-        val message = NoSQLDbUtil.getItemJSON(DatrisEnvironment.values.fileNotifierMessageTableName, "id", messageID, "value")
+        val message = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.fileNotifierMessageTableName, "id", messageID, "value")
         if(message.isEmpty) {
             // Create a future TTL
             val now = Calendar.getInstance
-            now.add(Calendar.DATE, DatrisEnvironment.values.ttlFileNotifierQueueMessages) // Days in future for TTL to delete this new entry from the table
+            now.add(Calendar.DATE, DatrisEnvironment.current.ttlFileNotifierQueueMessages) // Days in future for TTL to delete this new entry from the table
             val epoch = now.getTime.getTime
             logger.info("File notifier queue message TTL: " + epoch.toString)
 
             // Write out the Message ID with the future TTL
-            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.values.fileNotifierMessageTableName, "id", messageID, "ttl", epoch.toString)
+            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.current.fileNotifierMessageTableName, "id", messageID, "ttl", epoch.toString)
             false
         }
         else
@@ -85,8 +85,22 @@ class ScheduledBatchTasks {
     }
 
     private def newFileReceived(bucket: String, key: String): Unit = {
-        val jobContext = new FileNotifier().process(bucket, key)
-        GlobalJobContext.addJobContext(jobContext)
+        resolveEnvironmentFromBucket(bucket).foreach(env => TenantContext.set(env))
+        try {
+            val jobContext = new FileNotifier().process(bucket, key)
+            GlobalJobContext.addJobContext(jobContext)
+        } finally {
+            TenantContext.clear()
+        }
+    }
+
+    private def resolveEnvironmentFromBucket(bucket: String): Option[DatrisEnvironment] = {
+        if (DatrisEnvironment.values.multiTenant) {
+            val envName = bucket.replaceAll("-(raw|raw-plus|config|temp)$", "")
+            if (envName != bucket && envName != DatrisEnvironment.values.environment) {
+                Some(DatrisEnvironment.forEnvironment(envName))
+            } else None
+        } else None
     }
 
     @Scheduled(fixedRateString = "${schedule.findJobsToStart}")
@@ -158,7 +172,7 @@ class ScheduledBatchTasks {
     }
 
     private def isAppInitialized: Boolean = {
-        DatrisEnvironment != null && DatrisEnvironment.values != null && DatrisEnvironment.values.initialized
+        DatrisEnvironment != null && DatrisEnvironment.current != null && DatrisEnvironment.current.initialized
     }
 }
 

@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.model.{DatrisEnvironment, DatrisException}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext}
 import ai.datris.model.JobContext
 import ai.datris.util._
 import org.slf4j.{Logger, LoggerFactory}
@@ -36,8 +36,21 @@ class JobRunner(jobContext: JobContext) extends Runnable {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     def run(): Unit = {
+        // Set tenant context for this background thread
+        if (jobContext.tenantEnvironment != null) {
+            TenantContext.set(jobContext.tenantEnvironment)
+        }
+        try {
+            runInternal()
+        } finally {
+            TenantContext.clear()
+        }
+    }
+
+    private def runInternal(): Unit = {
         val config = jobContext.config
         val statusUtil = jobContext.statusUtil
+        val tenantEnv = jobContext.tenantEnvironment
 
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
         try {
@@ -66,49 +79,55 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             // Run all destinations in parallel on the dedicated thread pool
             implicit val ec: ExecutionContext = JobRunner.destinationEC
 
+            // Wrap each destination loader to propagate tenant context to the thread pool
+            def withTenant[T](f: => T): T = {
+                if (tenantEnv != null) TenantContext.set(tenantEnv)
+                try { f } finally { TenantContext.clear() }
+            }
+
             val destinationFutures = List(
                 if (config.destination.objectStore != null)
-                    Some(Future(new SparkObjectStoreLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new SparkObjectStoreLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.database != null && config.destination.database.usePostgres)
-                    Some(Future(new PostgresLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new PostgresLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.database != null && config.destination.database.useMongoDB)
-                    Some(Future(new MongoDBLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new MongoDBLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.restEndpoint != null)
-                    Some(Future(new RestEndpointRunner(jobContextTransform, config.destination.restEndpoint).process()))
+                    Some(Future(withTenant(new RestEndpointRunner(jobContextTransform, config.destination.restEndpoint).process())))
                 else None,
 
                 if (config.destination.kafka != null)
-                    Some(Future(new KafkaLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new KafkaLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.activeMQ != null)
-                    Some(Future(new ActiveMQLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new ActiveMQLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.qdrant != null)
-                    Some(Future(new QdrantLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new QdrantLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.weaviate != null)
-                    Some(Future(new WeaviateLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new WeaviateLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.pgvector != null)
-                    Some(Future(new PGVectorLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new PGVectorLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.milvus != null)
-                    Some(Future(new MilvusLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new MilvusLoader(jobContextTransform).process())))
                 else None,
 
                 if (config.destination.chroma != null)
-                    Some(Future(new ChromaLoader(jobContextTransform).process()))
+                    Some(Future(withTenant(new ChromaLoader(jobContextTransform).process())))
                 else None
 
             ).flatten
@@ -132,7 +151,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
 
     private def getAIErrorExplanation(errorMessage: String): String = {
         try {
-            if (!DatrisEnvironment.values.aiEnabled || DatrisEnvironment.values.aiConfig == null)
+            if (!DatrisEnvironment.current.aiEnabled || DatrisEnvironment.current.aiConfig == null)
                 return null
 
             val configJson = new Gson().toJson(jobContext.config)

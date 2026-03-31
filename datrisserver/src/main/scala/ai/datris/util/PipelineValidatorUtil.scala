@@ -143,7 +143,7 @@ object PipelineValidatorUtil {
             }
 
             // Get the existing configuration
-            val existingConfig = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, config.name)
+            val existingConfig = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, config.name)
             if(existingConfig != null) {
                 if(existingConfig.destination.objectStore != null) {
                     if(existingConfig.destination.objectStore.partitionBy != null && config.destination.objectStore.partitionBy == null)

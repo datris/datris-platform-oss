@@ -14,7 +14,7 @@ object AIProfileUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     def profile(fileContent: String, filename: String, delimiter: String, header: Boolean, sampleSize: Int): String = {
-        if (!DatrisEnvironment.values.aiEnabled)
+        if (!DatrisEnvironment.current.aiEnabled)
             throw new DatrisException("AI profiling requires ai.enabled: true in application.yaml")
 
         val isJson = filename.toLowerCase.endsWith(".json")

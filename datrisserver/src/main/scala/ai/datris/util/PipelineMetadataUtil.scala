@@ -74,7 +74,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
         statusUtil.info("processing","Pipeline name: " + pipeline)
 
         val inputStream = ObjectStoreUtil.getInputStream(bucket, key)
-        val tempWriteDirectory = "s3://" + DatrisEnvironment.values.environment + "-raw/temp/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + "/"
+        val tempWriteDirectory = "s3://" + DatrisEnvironment.current.environment + "-raw/temp/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + "/"
 
         // .gz files extract to only one file
         if(key.toLowerCase.endsWith(".gz")) {

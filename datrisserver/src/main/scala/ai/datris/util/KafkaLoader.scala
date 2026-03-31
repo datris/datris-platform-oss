@@ -167,7 +167,7 @@ class KafkaLoader(jobContext: JobContext) {
         attributes.put("destination", "kafka")
         attributes.put("topic", config.destination.kafka.topic)
 
-        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, jsonNotification, attributes.asScala.toMap)
+        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
     }
 }

@@ -32,7 +32,7 @@ object AISchemaUtil {
     }
 
     def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
-        val aiConfig = DatrisEnvironment.values.aiConfig
+        val aiConfig = DatrisEnvironment.current.aiConfig
         if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
             throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
 
@@ -108,7 +108,7 @@ object AISchemaUtil {
     }
 
     def generateJsonSchema(sampleData: String): String = {
-        val aiConfig = DatrisEnvironment.values.aiConfig
+        val aiConfig = DatrisEnvironment.current.aiConfig
         if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
             throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
 
@@ -129,7 +129,7 @@ object AISchemaUtil {
     }
 
     def generateXsdSchema(sampleData: String): String = {
-        val aiConfig = DatrisEnvironment.values.aiConfig
+        val aiConfig = DatrisEnvironment.current.aiConfig
         if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
             throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
 

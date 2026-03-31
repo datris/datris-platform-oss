@@ -25,7 +25,7 @@ class DataPuller {
             // Attempt a pull?
             val now = new Date()
             if(now.compareTo(nextPullDate) > 0) {
-                val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipelinePull.pipeline)
+                val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelinePull.pipeline)
 
                 // Before we pull the data, save the actual pull data date and generate the next pull date from the cron expression
                 val generatedNextPullDate = PipelinePullTableUtil.generateNextPullDate(config.source.databaseAttributes.cronExpression)
@@ -45,7 +45,7 @@ class DataPuller {
                         val date = dateFormat.format(new Date())
                         config.name + "." + date + "." + System.currentTimeMillis().toString + ".pipeline.csv"
                     }
-                    val path = "s3://" + DatrisEnvironment.values.environment + "-raw/temp/" + config.name + "/" + rawFilename
+                    val path = "s3://" + DatrisEnvironment.current.environment + "-raw/temp/" + config.name + "/" + rawFilename
                     ObjectStoreUtil.writeBucketObject(ObjectStoreUtil.getBucket(path), ObjectStoreUtil.getKey(path), data)
                 }
             }

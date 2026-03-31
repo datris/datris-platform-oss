@@ -31,7 +31,7 @@ class PipelineAPIController {
             logger.info("API endpoint GET /pipeline called with pipeline: " + pipeline)
             APIKeyValidator.validate(apiKey)
 
-            val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if(config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
             val gson = new Gson
@@ -51,9 +51,9 @@ class PipelineAPIController {
             logger.info("API endpoint GET /pipelines called")
             APIKeyValidator.validate(apiKey)
 
-            val pipelineNames = NoSQLDbUtil.getItemsKeysByKeyName(DatrisEnvironment.values.pipelineTableName, "name")
+            val pipelineNames = NoSQLDbUtil.getItemsKeysByKeyName(DatrisEnvironment.current.pipelineTableName, "name")
             val pipelineConfigs = pipelineNames.map(name => {
-                PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, name)
+                PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name)
             }).asJava
 
             val gson = new Gson
@@ -101,7 +101,7 @@ class PipelineAPIController {
             logger.info("API endpoint DELETE /pipeline with pipeline name: " + pipeline + ", deleteData: " + deleteData)
             APIKeyValidator.validate(apiKey)
 
-            val config = PipelineConfigIO.read(DatrisEnvironment.values.pipelineTableName, pipeline)
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if(config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
@@ -114,7 +114,7 @@ class PipelineAPIController {
             }
 
             // Delete the json configuration
-            NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.values.pipelineTableName, "name", pipeline)
+            NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
 
             new ResponseEntity[String](HttpStatus.OK)
         }
@@ -175,7 +175,7 @@ class PipelineAPIController {
         // pgvector — DROP TABLE
         if (dest.pgvector != null) {
             try {
-                val secretName = DatrisEnvironment.values.pgvectorSecretName
+                val secretName = DatrisEnvironment.current.pgvectorSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
                 if (secret.isDefined) {
                     val secretMap = secret.get
@@ -207,7 +207,7 @@ class PipelineAPIController {
         // Qdrant — delete collection
         if (dest.qdrant != null) {
             try {
-                val secretName = DatrisEnvironment.values.qdrantSecretName
+                val secretName = DatrisEnvironment.current.qdrantSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
                 if (secret.isDefined) {
                     val secretMap = secret.get
@@ -238,7 +238,7 @@ class PipelineAPIController {
         // Weaviate — delete class
         if (dest.weaviate != null) {
             try {
-                val secretName = DatrisEnvironment.values.weaviateSecretName
+                val secretName = DatrisEnvironment.current.weaviateSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
                 if (secret.isDefined) {
                     val secretMap = secret.get
@@ -269,7 +269,7 @@ class PipelineAPIController {
         // Milvus — drop collection
         if (dest.milvus != null) {
             try {
-                val secretName = DatrisEnvironment.values.milvusSecretName
+                val secretName = DatrisEnvironment.current.milvusSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
                 if (secret.isDefined) {
                     val secretMap = secret.get
@@ -305,7 +305,7 @@ class PipelineAPIController {
         // Chroma — delete collection
         if (dest.chroma != null) {
             try {
-                val secretName = DatrisEnvironment.values.chromaSecretName
+                val secretName = DatrisEnvironment.current.chromaSecretName
                 val secret = SecretsUtil.getSecretMap(secretName)
                 if (secret.isDefined) {
                     val secretMap = secret.get

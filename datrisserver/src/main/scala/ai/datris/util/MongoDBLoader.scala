@@ -209,7 +209,7 @@ class MongoDBLoader(jobContext: JobContext) {
         attributes.put("database", config.destination.database.dbName)
         attributes.put("table", config.destination.database.table)
 
-        NotificationUtil.add(DatrisEnvironment.values.pipelineTopic, jsonNotification, attributes.asScala.toMap)
+        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, jsonNotification, attributes.asScala.toMap)
         statusUtil.info("processing", "notification sent: " + jsonNotification)
     }
 }
