@@ -1,0 +1,79 @@
+<div class="container">
+  <h1 class="page-title">Configuration</h1>
+
+  <div class="config-card" *ngIf="!loading">
+    <div class="info-grid">
+      <div class="info-row">
+        <span class="info-label">Environment</span>
+        <span class="info-value accent">{{ environment }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Version</span>
+        <span class="info-value">{{ version }}</span>
+      </div>
+    </div>
+
+    <div class="trial-notice" *ngIf="isTrial">
+      <p>AI configuration is managed by Datris during the free trial. Upgrade to a dedicated instance to customize your AI provider and API keys.</p>
+      <div class="trial-config" *ngIf="trialAiProvider">
+        <div class="trial-row">
+          <span class="trial-label">AI Provider</span>
+          <span class="trial-value">{{ trialAiProvider }} — {{ trialAiModel }}</span>
+        </div>
+        <div class="trial-row">
+          <span class="trial-label">Embedding Provider</span>
+          <span class="trial-value">OpenAI — {{ trialEmbeddingModel }}</span>
+        </div>
+      </div>
+    </div>
+
+    <ng-container *ngIf="!isTrial">
+      <div class="config-section">
+        <h2 class="section-title">AI Provider</h2>
+        <p class="section-hint">Used for schema generation, data quality rules, transformations, and error explanations.</p>
+
+        <div class="form-row">
+          <label class="form-label">Provider</label>
+          <select class="form-input" [(ngModel)]="aiProvider" (ngModelChange)="onProviderChange()">
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label">Model</label>
+          <select class="form-input" [(ngModel)]="aiModel">
+            <option *ngFor="let m of modelOptions" [value]="m.value">{{ m.label }}</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label">{{ aiProvider === 'anthropic' ? 'Anthropic' : 'OpenAI' }} API Key</label>
+          <input class="form-input" type="text" [(ngModel)]="aiApiKey"
+                 [placeholder]="aiProvider === 'anthropic' ? 'sk-ant-...' : 'sk-...'" />
+        </div>
+      </div>
+
+      <div class="config-section" *ngIf="showEmbeddingKey">
+        <h2 class="section-title">Embedding Provider</h2>
+        <p class="section-hint">Used for RAG and vector search. Always uses OpenAI text-embedding-3-small.</p>
+
+        <div class="form-row">
+          <label class="form-label">OpenAI API Key</label>
+          <input class="form-input" type="text" [(ngModel)]="embeddingApiKey" placeholder="sk-..." />
+        </div>
+      </div>
+
+      <div class="config-actions">
+        <button class="save-btn" (click)="save()" [disabled]="saving">
+          {{ saving ? 'Saving...' : 'Save Configuration' }}
+        </button>
+      </div>
+
+      <div class="success-message" *ngIf="success">{{ success }}</div>
+      <div class="error-message" *ngIf="error">{{ error }}</div>
+    </ng-container>
+  </div>
+
+  <div class="loading" *ngIf="loading">Loading configuration...</div>
+</div>

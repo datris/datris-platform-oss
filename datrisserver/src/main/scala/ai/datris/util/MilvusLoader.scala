@@ -45,10 +45,12 @@ class MilvusLoader(jobContext: JobContext) {
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
-        // Get configs
-        val embeddingConfig = EmbeddingUtil.getConfig(milvusConfig.embeddingSecretName)
-        val milvusSecret = SecretsUtil.getSecretMap(milvusConfig.milvusSecretName)
-            .getOrElse(throw new DatrisException("Milvus secret not found: " + milvusConfig.milvusSecretName))
+        // Get configs — use tenant secret names if in multi-tenant mode
+        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else milvusConfig.embeddingSecretName
+        val milvusSecretName = if (DatrisEnvironment.current.milvusSecretName != null) DatrisEnvironment.current.milvusSecretName else milvusConfig.milvusSecretName
+        val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
+        val milvusSecret = SecretsUtil.getSecretMap(milvusSecretName)
+            .getOrElse(throw new DatrisException("Milvus secret not found: " + milvusSecretName))
         val host = milvusSecret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Milvus secret: " + milvusConfig.milvusSecretName)
         val port = Option(milvusSecret.get("port")).getOrElse("19530")

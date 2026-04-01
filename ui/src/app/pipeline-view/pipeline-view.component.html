@@ -21,10 +21,17 @@
 
   <div class="confirm-delete" *ngIf="confirmDelete">
     <span class="confirm-text">Delete pipeline "{{ name }}"?</span>
-    <button class="confirm-btn" (click)="deletePipeline()" [disabled]="deleteLoading">
-      {{ deleteLoading ? 'Deleting...' : 'Yes, Delete' }}
-    </button>
-    <button class="cancel-btn" (click)="cancelDelete()">Cancel</button>
+    <div class="delete-options">
+      <button class="confirm-btn" (click)="deletePipeline(true)" [disabled]="deleteLoading">
+        <span class="material-icons">delete_forever</span>
+        {{ deleteLoading ? 'Deleting...' : 'Delete Config & Data' }}
+      </button>
+      <button class="confirm-btn data-only" (click)="deletePipeline(false)" [disabled]="deleteLoading">
+        <span class="material-icons">cleaning_services</span>
+        {{ deleteLoading ? 'Deleting...' : 'Delete Data Only' }}
+      </button>
+      <button class="cancel-btn" (click)="cancelDelete()">Cancel</button>
+    </div>
   </div>
 
   <div class="error-box" *ngIf="error">

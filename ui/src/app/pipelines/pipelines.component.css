@@ -137,6 +137,59 @@ tbody tr:last-child td {
   background: rgba(239, 68, 68, 0.1);
 }
 
+.delete-menu {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.del-opt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.del-opt .material-icons {
+  font-size: 14px;
+}
+
+.del-all {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+.del-all:hover {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+.del-data {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+}
+
+.del-data:hover {
+  background: rgba(251, 191, 36, 0.3);
+}
+
+.del-cancel {
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 4px 6px;
+}
+
+.del-cancel:hover {
+  color: var(--text-primary);
+}
+
 .empty-state {
   text-align: center;
   padding: 48px;

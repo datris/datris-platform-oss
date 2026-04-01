@@ -42,10 +42,12 @@ class WeaviateLoader(jobContext: JobContext) {
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
-        // Get configs
-        val embeddingConfig = EmbeddingUtil.getConfig(weaviateConfig.embeddingSecretName)
-        val weaviateSecret = SecretsUtil.getSecretMap(weaviateConfig.weaviateSecretName)
-            .getOrElse(throw new DatrisException("Weaviate secret not found: " + weaviateConfig.weaviateSecretName))
+        // Get configs — use tenant secret names if in multi-tenant mode
+        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else weaviateConfig.embeddingSecretName
+        val weaviateSecretName = if (DatrisEnvironment.current.weaviateSecretName != null) DatrisEnvironment.current.weaviateSecretName else weaviateConfig.weaviateSecretName
+        val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
+        val weaviateSecret = SecretsUtil.getSecretMap(weaviateSecretName)
+            .getOrElse(throw new DatrisException("Weaviate secret not found: " + weaviateSecretName))
         val host = weaviateSecret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Weaviate secret: " + weaviateConfig.weaviateSecretName)
         val port = Option(weaviateSecret.get("port")).getOrElse("8079")

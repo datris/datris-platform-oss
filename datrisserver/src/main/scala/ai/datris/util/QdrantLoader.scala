@@ -47,10 +47,12 @@ class QdrantLoader(jobContext: JobContext) {
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
-        // Get configs
-        val embeddingConfig = EmbeddingUtil.getConfig(qdrantConfig.embeddingSecretName)
-        val qdrantSecret = SecretsUtil.getSecretMap(qdrantConfig.qdrantSecretName)
-            .getOrElse(throw new DatrisException("Qdrant secret not found: " + qdrantConfig.qdrantSecretName))
+        // Get configs — use tenant secret names if in multi-tenant mode
+        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else qdrantConfig.embeddingSecretName
+        val qdrantSecretName = if (DatrisEnvironment.current.qdrantSecretName != null) DatrisEnvironment.current.qdrantSecretName else qdrantConfig.qdrantSecretName
+        val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
+        val qdrantSecret = SecretsUtil.getSecretMap(qdrantSecretName)
+            .getOrElse(throw new DatrisException("Qdrant secret not found: " + qdrantSecretName))
         val host = qdrantSecret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Qdrant secret: " + qdrantConfig.qdrantSecretName)
         val port = Option(qdrantSecret.get("port")).map(_.toInt).getOrElse(6334)

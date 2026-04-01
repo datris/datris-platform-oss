@@ -1,5 +1,6 @@
 import { Component, OnInit } from '@angular/core';
 import { SearchService, QueryResponse } from '../search.service';
+import { HealthService } from '../health.service';
 
 @Component({
   selector: 'app-search',
@@ -48,7 +49,7 @@ export class SearchComponent implements OnInit {
   vectorSecretName = 'oss/pgvector';
   topK = 5;
 
-  constructor(private searchService: SearchService) { }
+  constructor(private searchService: SearchService, public healthService: HealthService) { }
 
   ngOnInit(): void {
     this.loadPgSchemas();

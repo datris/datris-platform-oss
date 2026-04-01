@@ -20,6 +20,10 @@ export class PipelineService {
     return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name));
   }
 
+  deletePipelineData(name: string): Observable<any> {
+    return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name) + '&deleteData=true&deleteConfig=false', { responseType: 'text' as 'json' });
+  }
+
   createPipeline(config: any): Observable<string> {
     return this.http.post('/api/v1/pipeline', config, { responseType: 'text' });
   }

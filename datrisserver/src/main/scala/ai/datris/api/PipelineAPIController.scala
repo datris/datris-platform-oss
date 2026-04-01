@@ -96,16 +96,17 @@ class PipelineAPIController {
     @DeleteMapping(path = Array("/pipeline"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def deletePipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                             @RequestParam pipeline: String,
-                            @RequestParam(defaultValue = "true") deleteData: String): ResponseEntity[String] = {
+                            @RequestParam(defaultValue = "true") deleteData: String,
+                            @RequestParam(defaultValue = "true") deleteConfig: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint DELETE /pipeline with pipeline name: " + pipeline + ", deleteData: " + deleteData)
+            logger.info("API endpoint DELETE /pipeline with pipeline name: " + pipeline + ", deleteData: " + deleteData + ", deleteConfig: " + deleteConfig)
             APIKeyValidator.validate(apiKey)
 
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if(config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
-            if(config.source.databaseAttributes != null)
+            if(deleteConfig.equalsIgnoreCase("true") && config.source.databaseAttributes != null)
                 PipelinePullTableUtil.deleteEntryIfExists(config.name)
 
             // Clean up destination data
@@ -114,7 +115,8 @@ class PipelineAPIController {
             }
 
             // Delete the json configuration
-            NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
+            if(deleteConfig.equalsIgnoreCase("true"))
+                NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
 
             new ResponseEntity[String](HttpStatus.OK)
         }

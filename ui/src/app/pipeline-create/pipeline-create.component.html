@@ -381,15 +381,15 @@
           </optgroup>
           <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured' && sourceType !== 'xml'">
             <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO)</option>
-            <option value="kafka">Kafka</option>
+            <option value="kafka" *ngIf="healthService.isAvailable('kafka')">Kafka</option>
             <option value="activemq">ActiveMQ</option>
             <option value="restendpoint">REST Endpoint</option>
           </optgroup>
           <optgroup label="Vector Databases">
-            <option value="qdrant">Qdrant</option>
-            <option value="weaviate">Weaviate</option>
-            <option value="milvus">Milvus</option>
-            <option value="chroma">Chroma</option>
+            <option value="qdrant" *ngIf="healthService.isAvailable('qdrant')">Qdrant</option>
+            <option value="weaviate" *ngIf="healthService.isAvailable('weaviate')">Weaviate</option>
+            <option value="milvus" *ngIf="healthService.isAvailable('milvus')">Milvus</option>
+            <option value="chroma" *ngIf="healthService.isAvailable('chroma')">Chroma</option>
             <option value="pgvector">pgvector</option>
           </optgroup>
         </select>

@@ -44,10 +44,12 @@ class ChromaLoader(jobContext: JobContext) {
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
-        // Get configs
-        val embeddingConfig = EmbeddingUtil.getConfig(chromaConfig.embeddingSecretName)
-        val chromaSecret = SecretsUtil.getSecretMap(chromaConfig.chromaSecretName)
-            .getOrElse(throw new DatrisException("Chroma secret not found: " + chromaConfig.chromaSecretName))
+        // Get configs — use tenant secret names if in multi-tenant mode
+        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else chromaConfig.embeddingSecretName
+        val chromaSecretName = if (DatrisEnvironment.current.chromaSecretName != null) DatrisEnvironment.current.chromaSecretName else chromaConfig.chromaSecretName
+        val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
+        val chromaSecret = SecretsUtil.getSecretMap(chromaSecretName)
+            .getOrElse(throw new DatrisException("Chroma secret not found: " + chromaSecretName))
         val host = chromaSecret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Chroma secret: " + chromaConfig.chromaSecretName)
         val port = Option(chromaSecret.get("port")).getOrElse("8000")

@@ -155,8 +155,9 @@ class SearchAPIController {
     }
 
     /** In multi-tenant mode, always use DatrisEnvironment.current secret names to ensure tenant isolation */
+    /** Always use the server's secret name — the client may have stale/incorrect names */
     private def tenantSecretName(clientValue: String, tenantValue: String): String = {
-        if (DatrisEnvironment.current.multiTenant) tenantValue else clientValue
+        tenantValue
     }
 
     private def optInt(body: java.util.Map[String, Any], key: String, default: Int): Int = {

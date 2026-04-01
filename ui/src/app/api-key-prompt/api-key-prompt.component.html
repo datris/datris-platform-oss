@@ -1,0 +1,20 @@
+<div class="overlay">
+  <div class="prompt-card">
+    <img src="datris-full-logo.png" alt="Datris" class="logo">
+    <h2>Connect to Datris</h2>
+    <p class="subtitle">Enter your API key to access the platform. You can find it in your <a href="https://staging.datris.ai/dashboard" target="_blank">dashboard</a>.</p>
+
+    <div class="input-group">
+      <input
+        type="text"
+        [(ngModel)]="apiKey"
+        placeholder="Enter your API key"
+        (keydown.enter)="connect()"
+        autofocus
+      />
+      <button (click)="connect()" class="connect-btn">Connect</button>
+    </div>
+
+    <p class="error" *ngIf="error">{{ error }}</p>
+  </div>
+</div>

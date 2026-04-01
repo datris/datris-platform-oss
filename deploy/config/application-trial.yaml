@@ -64,8 +64,8 @@ ttlFileNotifierQueueMessages: "60"
 # AI provider (required)
 ai:
   enabled: "true"
-  provider: "openai"
-  aiSecretName: "${ENVIRONMENT}/openai"
+  provider: "anthropic"
+  aiSecretName: "${ENVIRONMENT}/anthropic"
 
 # Kafka consumer (disabled on shared trial — saves RAM)
 kafkaConsumer:

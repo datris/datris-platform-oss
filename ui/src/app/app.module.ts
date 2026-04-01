@@ -11,8 +11,11 @@ import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.compo
 import { SearchComponent } from './search/search.component';
 import { McpComponent } from './mcp/mcp.component';
 import { SecretsComponent } from './secrets/secrets.component';
+import { ApiKeyPromptComponent } from './api-key-prompt/api-key-prompt.component';
+import { ConfigurationComponent } from './configuration/configuration.component';
 import { AppRoutingModule } from './app-routing.module';
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import { apiKeyInterceptor } from './api-key.interceptor';
 import { MaterialModule } from './material.module';
 
 @NgModule({
@@ -26,7 +29,9 @@ import { MaterialModule } from './material.module';
     PipelineDetailComponent,
     SearchComponent,
     McpComponent,
-    SecretsComponent
+    SecretsComponent,
+    ApiKeyPromptComponent,
+    ConfigurationComponent
   ],
   imports: [
     BrowserModule,
@@ -34,7 +39,7 @@ import { MaterialModule } from './material.module';
     AppRoutingModule,
     MaterialModule
   ],
-  providers: [provideHttpClient()],
+  providers: [provideHttpClient(withInterceptors([apiKeyInterceptor]))],
   bootstrap: [AppComponent]
 })
 export class AppModule { }

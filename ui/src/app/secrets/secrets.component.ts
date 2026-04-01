@@ -1,4 +1,5 @@
 import { Component, OnInit } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
 import { SecretsService } from '../secrets.service';
 
 interface SecretField {
@@ -39,9 +40,14 @@ export class SecretsComponent implements OnInit {
   confirmDelete = false;
   deleteLoading = false;
 
-  constructor(private secretsService: SecretsService) { }
+  isTrial = false;
+
+  constructor(private secretsService: SecretsService, private http: HttpClient) { }
 
   ngOnInit(): void {
+    this.http.get<any>('/api/v1/version').subscribe({
+      next: (data) => { this.isTrial = (data.environment || '').startsWith('trial-'); }
+    });
     this.loadSecrets();
   }
 

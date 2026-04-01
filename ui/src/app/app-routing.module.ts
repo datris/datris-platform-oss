@@ -9,6 +9,7 @@ import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.compo
 import { SearchComponent } from './search/search.component';
 import { McpComponent } from './mcp/mcp.component';
 import { SecretsComponent } from './secrets/secrets.component';
+import { ConfigurationComponent } from './configuration/configuration.component';
 
 const routes: Routes = [
   { path: '', redirectTo: 'mcp', pathMatch: 'full' },
@@ -20,6 +21,7 @@ const routes: Routes = [
   { path: 'pipeline/:pipelineToken/:pipeline', component: PipelineDetailComponent },
   { path: 'search', component: SearchComponent },
   { path: 'mcp', component: McpComponent },
+  { path: 'configuration', component: ConfigurationComponent },
   { path: 'secrets', component: SecretsComponent }
 ];
 

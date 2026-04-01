@@ -40,7 +40,7 @@ export class McpComponent implements OnInit {
   // Section 3: Config Generator
   selectedAgent = 'claude-desktop';
   pipelineUrl = 'http://localhost:8080';
-  pipelineApiKey = '';
+  pipelineApiKey = localStorage.getItem('datris-api-key') || '';
   copySuccess = false;
 
   // Section 4: Tool Playground

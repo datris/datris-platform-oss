@@ -10,10 +10,10 @@
           <option value="mongodb">MongoDB</option>
         </optgroup>
         <optgroup label="Vector Search">
-          <option value="qdrant">Qdrant</option>
-          <option value="weaviate">Weaviate</option>
-          <option value="milvus">Milvus</option>
-          <option value="chroma">Chroma</option>
+          <option value="qdrant" *ngIf="healthService.isAvailable('qdrant')">Qdrant</option>
+          <option value="weaviate" *ngIf="healthService.isAvailable('weaviate')">Weaviate</option>
+          <option value="milvus" *ngIf="healthService.isAvailable('milvus')">Milvus</option>
+          <option value="chroma" *ngIf="healthService.isAvailable('chroma')">Chroma</option>
           <option value="pgvector">pgvector</option>
         </optgroup>
       </select>

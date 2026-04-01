@@ -40,14 +40,32 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     this.router.navigate(['/pipelines', name, 'edit']);
   }
 
-  deletePipeline(event: Event, name: string): void {
-    event.stopPropagation();
-    if (!confirm('Delete dataset "' + name + '"? This cannot be undone.')) return;
+  deleteTarget = '';
 
-    this.pipelineService.deletePipeline(name).subscribe({
-      next: () => this.loadPipelines(),
-      error: (err) => alert('Failed to delete dataset: ' + (err.error || err.message))
-    });
+  promptDelete(event: Event, name: string): void {
+    event.stopPropagation();
+    this.deleteTarget = name;
+  }
+
+  cancelDelete(event: Event): void {
+    event.stopPropagation();
+    this.deleteTarget = '';
+  }
+
+  confirmDelete(event: Event, deleteConfig: boolean): void {
+    event.stopPropagation();
+    const name = this.deleteTarget;
+    if (deleteConfig) {
+      this.pipelineService.deletePipeline(name).subscribe({
+        next: () => { this.deleteTarget = ''; this.loadPipelines(); },
+        error: (err) => { alert('Failed to delete: ' + (err.error || err.message)); this.deleteTarget = ''; }
+      });
+    } else {
+      this.pipelineService.deletePipelineData(name).subscribe({
+        next: () => { this.deleteTarget = ''; },
+        error: (err) => { alert('Failed to delete data: ' + (err.error || err.message)); this.deleteTarget = ''; }
+      });
+    }
   }
 
   getSourceType(dataset: any): string {

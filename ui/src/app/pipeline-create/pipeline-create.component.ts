@@ -2,6 +2,7 @@ import { Component, OnInit } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
+import { HealthService } from '../health.service';
 
 interface SchemaField {
   name: string;
@@ -109,7 +110,7 @@ export class PipelineCreateComponent implements OnInit {
 
   fieldTypes = ['string', 'int', 'bigint', 'float', 'double', 'boolean', 'date', 'timestamp'];
 
-  constructor(private pipelineService: PipelineService, private searchService: SearchService, private route: ActivatedRoute, private router: Router) { }
+  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private route: ActivatedRoute, private router: Router) { }
 
   ngOnInit(): void {
     const editName = this.route.snapshot.paramMap.get('name');

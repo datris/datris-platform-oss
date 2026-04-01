@@ -8,6 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.build.sbt.BuildInfo
+import ai.datris.model.DatrisEnvironment
 import ai.datris.util.APIKeyValidator
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -26,7 +27,7 @@ class VersionAPIController {
         try {
             logger.info("API endpoint GET /api/v1/version called")
             APIKeyValidator.validate(apiKey)
-            val map = Map("version" -> BuildInfo.version).asJava
+            val map = Map("version" -> BuildInfo.version, "environment" -> DatrisEnvironment.current.environment).asJava
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(map), HttpStatus.OK)
         }

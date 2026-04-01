@@ -65,17 +65,34 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
     this.confirmDelete = false;
   }
 
-  deletePipeline(): void {
+  deletePipeline(deleteConfig: boolean): void {
     this.deleteLoading = true;
-    this.pipelineService.deletePipeline(this.name).subscribe({
-      next: () => {
-        this.router.navigate(['/pipelines']);
-      },
-      error: (err) => {
-        this.error = err.error || err.message || 'Failed to delete pipeline';
-        this.deleteLoading = false;
-        this.confirmDelete = false;
-      }
-    });
+    if (deleteConfig) {
+      // Delete config + data
+      this.pipelineService.deletePipeline(this.name).subscribe({
+        next: () => {
+          this.router.navigate(['/pipelines']);
+        },
+        error: (err) => {
+          this.error = err.error || err.message || 'Failed to delete pipeline';
+          this.deleteLoading = false;
+          this.confirmDelete = false;
+        }
+      });
+    } else {
+      // Delete data only (keep config)
+      this.pipelineService.deletePipelineData(this.name).subscribe({
+        next: () => {
+          this.deleteLoading = false;
+          this.confirmDelete = false;
+          this.error = '';
+        },
+        error: (err) => {
+          this.error = err.error || err.message || 'Failed to delete data';
+          this.deleteLoading = false;
+          this.confirmDelete = false;
+        }
+      });
+    }
   }
 }
