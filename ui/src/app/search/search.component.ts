@@ -1,4 +1,5 @@
 import { Component, OnInit } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
 import { SearchService, QueryResponse } from '../search.service';
 import { HealthService } from '../health.service';
 
@@ -49,9 +50,19 @@ export class SearchComponent implements OnInit {
   vectorSecretName = 'oss/pgvector';
   topK = 5;
 
-  constructor(private searchService: SearchService, public healthService: HealthService) { }
+  isTrial = false;
+
+  constructor(private searchService: SearchService, public healthService: HealthService, private http: HttpClient) { }
 
   ngOnInit(): void {
+    this.http.get<any>('/api/v1/version').subscribe({
+      next: (data) => {
+        this.isTrial = data.multiTenant === 'true';
+        if (this.isTrial) {
+          this.pgDatabase = data.environment || 'datris';
+        }
+      }
+    });
     this.loadPgSchemas();
     this.loadMongoDatabases();
   }

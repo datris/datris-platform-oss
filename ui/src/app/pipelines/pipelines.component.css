@@ -39,6 +39,134 @@
   transform: translateY(-1px);
 }
 
+.page-description {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin: 0 0 20px;
+}
+
+.page-description strong {
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.diagram-link {
+  color: var(--accent-cyan);
+  cursor: pointer;
+  text-decoration: none;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.diagram-link:hover {
+  text-decoration: underline;
+}
+
+/* Diagram Modal */
+.diagram-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  width: 1100px;
+  max-width: 95vw;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.diagram-body {
+  padding: 24px;
+  overflow-x: hidden;
+}
+
+.diagram-flow {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.diagram-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 140px;
+}
+
+.diagram-col-wide {
+  min-width: 280px;
+}
+
+.diagram-heading {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.diagram-arrow {
+  display: flex;
+  align-items: center;
+  padding-top: 28px;
+  color: var(--text-muted);
+}
+
+.diagram-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.diagram-chip.source {
+  background: var(--bg-card-alt);
+  border-left: 3px solid var(--text-muted);
+  color: var(--text-primary);
+}
+
+.diagram-chip.process {
+  background: rgba(0, 180, 255, 0.08);
+  border: 1px solid rgba(0, 180, 255, 0.2);
+  color: var(--text-primary);
+}
+
+.diagram-chip.storage {
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.diagram-chip.notify {
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.diagram-chip-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  color: #0a0e1a;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .search-bar {
   display: flex;
   align-items: center;

@@ -3,6 +3,13 @@
     <h1 class="page-title">Pipelines</h1>
     <button class="create-btn" routerLink="/pipelines/create">+ Create Pipeline</button>
   </div>
+  <p class="page-description">
+    A pipeline defines how your data flows from source to destination. Create a pipeline to configure
+    your data source, schema, data quality rules, and transformations. Once configured, upload files through
+    the <strong>Ingestion</strong> tab to process and load your data. Then use the <strong>Search</strong> tab to query
+    structured data in PostgreSQL and MongoDB, or perform semantic search across documents using vector databases.
+    <a class="diagram-link" (click)="showDiagram = true">View Pipeline Architecture</a>
+  </p>
 
   <div class="search-bar" *ngIf="pipelines.length > 0">
     <span class="material-icons search-icon">search</span>
@@ -50,7 +57,67 @@
   </div>
 
   <div class="empty-state" *ngIf="pipelines.length === 0">
-    <p>No pipelines registered. Use the API or MCP server to create one.</p>
+    <p>No pipelines registered. Use the Create Pipeline button, the API or MCP server to create one.</p>
+  </div>
+</div>
+
+<!-- Pipeline Architecture Diagram Modal -->
+<div class="modal-overlay" *ngIf="showDiagram" (click)="showDiagram = false">
+  <div class="diagram-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Ingestion Pipeline</h2>
+      <button class="modal-close" (click)="showDiagram = false">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="diagram-body">
+      <div class="diagram-flow">
+        <!-- Sources -->
+        <div class="diagram-col">
+          <div class="diagram-heading">Sources</div>
+          <div class="diagram-chip source">Data Upload</div>
+          <div class="diagram-chip source">MinIO</div>
+          <div class="diagram-chip source">DB Pull</div>
+          <div class="diagram-chip source">Kafka</div>
+        </div>
+        <div class="diagram-arrow"><span class="material-icons">arrow_forward</span></div>
+        <!-- Processing -->
+        <div class="diagram-col">
+          <div class="diagram-heading">Processing</div>
+          <div class="diagram-chip process"><span class="step-num">1</span> Preprocessor</div>
+          <div class="diagram-chip process"><span class="step-num">2</span> Data Quality (AI)</div>
+          <div class="diagram-chip process"><span class="step-num">3</span> Transformation (AI)</div>
+        </div>
+        <div class="diagram-arrow"><span class="material-icons">arrow_forward</span></div>
+        <!-- Storage -->
+        <div class="diagram-col diagram-col-wide">
+          <div class="diagram-heading">Storage</div>
+          <div class="diagram-chip-row">
+            <div class="diagram-chip storage">MinIO (Parquet/ORC)</div>
+            <div class="diagram-chip storage">PostgreSQL</div>
+            <div class="diagram-chip storage">MongoDB</div>
+          </div>
+          <div class="diagram-chip-row">
+            <div class="diagram-chip storage">Kafka</div>
+            <div class="diagram-chip storage">ActiveMQ</div>
+            <div class="diagram-chip storage">REST API</div>
+            <div class="diagram-chip storage">Qdrant</div>
+          </div>
+          <div class="diagram-chip-row">
+            <div class="diagram-chip storage">Weaviate</div>
+            <div class="diagram-chip storage">Milvus</div>
+            <div class="diagram-chip storage">Chroma</div>
+            <div class="diagram-chip storage">pgvector</div>
+          </div>
+        </div>
+        <div class="diagram-arrow"><span class="material-icons">arrow_forward</span></div>
+        <!-- Notification -->
+        <div class="diagram-col">
+          <div class="diagram-heading">Notification</div>
+          <div class="diagram-chip notify"><span class="material-icons" style="font-size: 16px">notifications</span> Email &middot; Slack &middot; Webhook</div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 

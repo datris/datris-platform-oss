@@ -12,6 +12,7 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   pipelines: any[] = [];
   filteredPipelines: any[] = [];
   searchQuery = '';
+  showDiagram = false;
   private refreshInterval: any;
 
   // Upload modal

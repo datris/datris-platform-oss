@@ -93,10 +93,16 @@ DELETE /api/v1/pipeline?pipeline={name}
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `pipeline` | query | Yes | Pipeline name |
+| `deleteData` | query | No | Delete destination data (default: `true`) |
+| `deleteConfig` | query | No | Delete pipeline configuration (default: `true`). Set to `false` to delete data only while keeping the pipeline config. |
 
-**Example:**
+**Examples:**
 ```bash
+# Delete pipeline and all data
 curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data"
+
+# Delete data only, keep pipeline configuration
+curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data&deleteData=true&deleteConfig=false"
 ```
 
 **Response:** `200 OK`

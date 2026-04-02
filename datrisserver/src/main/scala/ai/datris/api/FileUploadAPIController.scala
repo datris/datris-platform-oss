@@ -10,14 +10,15 @@ import ai.datris.model.{GlobalJobContext, DatrisEnvironment, DatrisException}
 import ai.datris.util.{AIProfileUtil, AISchemaUtil, PipelineConfigIO, ObjectStoreUtil, StatusUtil}
 import ai.datris.controller.StreamNotifier
 import ai.datris.util.APIKeyValidator
+import org.apache.commons.compress.archivers.ArchiveStreamFactory
+import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 import org.springframework.web.multipart.MultipartFile
 
-import java.io.ByteArrayInputStream
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.io.{BufferedInputStream, ByteArrayInputStream}
+import scala.util.control.Breaks._
 
 @RestController
 @RequestMapping(Array("/api/v1"))
@@ -43,20 +44,82 @@ class FileUploadAPIController {
             val filename = multipartFile.getOriginalFilename
 
             if (isCompressed(filename)) {
-                // Compressed files: write to S3 raw bucket and let the normal FileNotifier path handle decompression
-                val dateFormat = new SimpleDateFormat("yyyy-MM-dd.HH-mm-ss-SSS")
-                val rawFilename = {
-                    val ext = filename.substring(filename.lastIndexOf('.') + 1)
-                    if (publishertoken != null)
-                        config.name + "." + publishertoken + "." + dateFormat.format(new Date()) + "." + System.currentTimeMillis().toString + ".pipeline." + ext
-                    else
-                        config.name + "." + dateFormat.format(new Date()) + "." + System.currentTimeMillis().toString + ".pipeline." + ext
+                // Compressed files: extract all entries, concatenate data, submit as single batch job
+                val extractedFiles = new java.util.ArrayList[(String, Array[Byte])]()
+                val lower = filename.toLowerCase
+
+                if (lower.endsWith(".gz")) {
+                    val gzIn = new GzipCompressorInputStream(new BufferedInputStream(new ByteArrayInputStream(byteArray)))
+                    val extractedBytes = gzIn.readAllBytes()
+                    gzIn.close()
+                    val extractedName = filename.replaceAll("(?i)\\.gz$", "")
+                    extractedFiles.add((extractedName, extractedBytes))
+                } else {
+                    val buffered = new BufferedInputStream(new ByteArrayInputStream(byteArray))
+                    val archiveIn: org.apache.commons.compress.archivers.ArchiveInputStream[_ <: org.apache.commons.compress.archivers.ArchiveEntry] =
+                        new ArchiveStreamFactory().createArchiveInputStream(buffered)
+                    breakable {
+                        while (true) {
+                            val entry = archiveIn.getNextEntry
+                            if (entry == null) break
+                            if (!entry.isDirectory &&
+                                !entry.getName.startsWith("__MAC") &&
+                                !entry.getName.startsWith("META-INF") &&
+                                !entry.getName.startsWith("./._")) {
+                                val entryBytes = archiveIn.readAllBytes()
+                                val entryName = entry.getName.split("/").last
+                                extractedFiles.add((entryName, entryBytes))
+                            }
+                        }
+                    }
+                    archiveIn.close()
                 }
-                val path = "s3://" + DatrisEnvironment.current.environment + "-raw/temp/" + config.name + "/" + rawFilename
-                ObjectStoreUtil.writeBucketObjectFromStream(ObjectStoreUtil.getBucket(path), ObjectStoreUtil.getKey(path), new ByteArrayInputStream(byteArray), byteArray.length.toLong)
-                new ResponseEntity[String](HttpStatus.OK)
+
+                if (extractedFiles.size() == 0) {
+                    throw new DatrisException("No files found in archive: " + filename)
+                } else if (extractedFiles.size() == 1) {
+                    // Single file in archive — process normally
+                    val (name, bytes) = extractedFiles.get(0)
+                    logger.info("Extracted 1 file from archive: " + name + " (" + bytes.length + " bytes)")
+                    val jobContext = new StreamNotifier().process(bytes, name, pipeline, publishertoken)
+                    GlobalJobContext.addJobContext(jobContext)
+                    new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)
+                } else {
+                    // Batch mode: concatenate all files into one payload
+                    logger.info("Batch mode: " + extractedFiles.size() + " files extracted from " + filename)
+                    val combined = new java.io.ByteArrayOutputStream()
+                    var firstFile = true
+                    import scala.collection.JavaConverters._
+                    for ((name, bytes) <- extractedFiles.asScala) {
+                        logger.info("  Batch file: " + name + " (" + bytes.length + " bytes)")
+                        if (firstFile) {
+                            combined.write(bytes)
+                            firstFile = false
+                        } else {
+                            // Skip header line for subsequent files (CSV)
+                            val content = new String(bytes, "UTF-8")
+                            val lines = content.split("\n", 2)
+                            if (lines.length > 1 && config.source.fileAttributes != null &&
+                                config.source.fileAttributes.csvAttributes != null &&
+                                config.source.fileAttributes.csvAttributes.header) {
+                                // CSV with header — skip first line
+                                if (!combined.toString("UTF-8").endsWith("\n")) combined.write('\n')
+                                combined.write(lines(1).getBytes("UTF-8"))
+                            } else {
+                                // Non-CSV or no header — append all content
+                                if (!combined.toString("UTF-8").endsWith("\n")) combined.write('\n')
+                                combined.write(bytes)
+                            }
+                        }
+                    }
+                    val batchBytes = combined.toByteArray
+                    logger.info("Batch combined size: " + batchBytes.length + " bytes from " + extractedFiles.size() + " files")
+                    val jobContext = new StreamNotifier().process(batchBytes, extractedFiles.get(0)._1, pipeline, publishertoken)
+                    GlobalJobContext.addJobContext(jobContext)
+                    new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)
+                }
             } else {
-                // Uncompressed files: pass bytes directly into the pipeline in memory, bypassing S3
+                // Single file: process directly via StreamNotifier
                 val jobContext = new StreamNotifier().process(byteArray, filename, pipeline, publishertoken)
                 GlobalJobContext.addJobContext(jobContext)
                 new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)

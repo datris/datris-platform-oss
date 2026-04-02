@@ -55,7 +55,7 @@ class PostgresLoader(jobContext: JobContext) {
 
             if(config.destination.database.truncateBeforeWrite) {
                 statusUtil.info("processing", "'truncateTableBeforeWrite' is set to true, truncating table")
-                statement.execute("truncate table " + dbName + "." + config.destination.database.schema + "." + config.destination.database.table)
+                statement.execute("truncate table \"" + dbName + "\".\"" + config.destination.database.schema + "\".\"" + config.destination.database.table + "\"")
             }
 
             copyInto(conn, statement, file)
@@ -176,7 +176,7 @@ class PostgresLoader(jobContext: JobContext) {
 
         // Begin
         val schema = config.destination.database.schema
-        sql.append("create table if not exists " + dbName + "." + schema + "." + tableName + " (")
+        sql.append("create table if not exists \"" + dbName + "\".\"" + schema + "\".\"" + tableName + "\" (")
 
         // Fields
         config.destination.schemaProperties.fields.forEach(field => {

@@ -1,4 +1,4 @@
-<app-api-key-prompt *ngIf="!hasApiKey" (keySet)="onApiKeySet()"></app-api-key-prompt>
+<app-api-key-prompt *ngIf="!hasApiKey && requiresApiKey" (keySet)="onApiKeySet()"></app-api-key-prompt>
 <ng-container *ngIf="hasApiKey">
   <nav class="top-nav">
     <a routerLink="/"><img src="datris-full-logo.png" alt="Datris logo" class="logo"></a>
@@ -9,6 +9,10 @@
       <a class="tab" routerLink="/search" routerLinkActive="tab-active">Search</a>
       <a class="tab" routerLink="/configuration" routerLinkActive="tab-active">Configuration</a>
       <a class="tab" routerLink="/secrets" routerLinkActive="tab-active" *ngIf="!isTrial">Secrets</a>
+    </div>
+    <div class="env-info" *ngIf="environment">
+      <span class="env-label">{{ environment }}</span>
+      <span class="env-version">v{{ version }}</span>
     </div>
   </nav>
   <main class="main-content">

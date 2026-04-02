@@ -21,6 +21,13 @@
   background-clip: text;
 }
 
+.page-description {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin: -12px 0 20px;
+}
+
 .header-actions {
   display: flex;
   gap: 10px;

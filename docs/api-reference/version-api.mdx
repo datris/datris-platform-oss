@@ -19,6 +19,14 @@ curl http://localhost:8080/api/v1/version
 **Response:** `200 OK`
 ```json
 {
-  "version": "latest-version-here"
+  "version": "1.4.4",
+  "environment": "oss",
+  "multiTenant": "false"
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `version` | Server version |
+| `environment` | Environment name (e.g., `oss` for self-hosted, or tenant prefix for managed hosting) |
+| `multiTenant` | Whether the server is running in multi-tenant mode |

@@ -46,6 +46,25 @@
   background: rgba(0, 180, 255, 0.1);
 }
 
+.env-info {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+}
+
+.env-label {
+  color: var(--accent-cyan);
+  font-weight: 600;
+}
+
+.env-version {
+  opacity: 0.6;
+}
+
 .main-content {
   padding-top: 80px;
 }

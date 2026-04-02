@@ -6,6 +6,11 @@
       <button class="create-btn" (click)="openUploadModal()">+ Upload File</button>
     </div>
   </div>
+  <p class="page-description">
+    Upload files to process them through your configured pipelines. Each ingestion run applies your schema validation,
+    data quality rules, and transformations, then loads the results into your chosen destinations. Click any row to see
+    the detailed processing steps, status, and any warnings or errors for that run.
+  </p>
 
   <div class="confirm-clear" *ngIf="confirmClear">
     <span class="confirm-text">Clear all ingestion history?</span>

@@ -44,7 +44,7 @@
       <div class="form-row-inline">
         <div class="form-field">
           <label class="form-label">Database</label>
-          <input class="form-input" [(ngModel)]="pgDatabase" placeholder="datris">
+          <input class="form-input" [(ngModel)]="pgDatabase" placeholder="datris" [readonly]="isTrial">
         </div>
         <div class="form-field">
           <label class="form-label">Limit</label>
@@ -58,7 +58,7 @@
       <div class="form-row-inline">
         <div class="form-field" style="flex: 2">
           <label class="form-label">Database</label>
-          <select class="form-input" [(ngModel)]="mongoDatabase" (ngModelChange)="onMongoDatabaseChange()">
+          <select class="form-input" [(ngModel)]="mongoDatabase" (ngModelChange)="onMongoDatabaseChange()" [disabled]="isTrial">
             <option value="">Select database...</option>
             <option *ngFor="let db of mongoDatabases" [value]="db">{{ db }}</option>
           </select>
@@ -121,7 +121,7 @@
           <input class="form-input" type="number" [(ngModel)]="topK">
         </div>
       </div>
-      <div class="form-row-inline">
+      <div class="form-row-inline" *ngIf="!isTrial">
         <div class="form-field">
           <label class="form-label">Embedding Secret Name</label>
           <input class="form-input" [(ngModel)]="embeddingSecretName" placeholder="oss/embedding">

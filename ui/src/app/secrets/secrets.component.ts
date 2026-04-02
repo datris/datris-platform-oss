@@ -46,7 +46,7 @@ export class SecretsComponent implements OnInit {
 
   ngOnInit(): void {
     this.http.get<any>('/api/v1/version').subscribe({
-      next: (data) => { this.isTrial = (data.environment || '').startsWith('trial-'); }
+      next: (data) => { this.isTrial = data.multiTenant === 'true'; }
     });
     this.loadSecrets();
   }
