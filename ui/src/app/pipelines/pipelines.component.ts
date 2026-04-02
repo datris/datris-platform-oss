@@ -60,7 +60,8 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     }
   }
 
-  viewPipeline(name: string): void {
+  viewPipeline(event: Event, name: string): void {
+    event.stopPropagation();
     this.router.navigate(['/pipelines', name]);
   }
 

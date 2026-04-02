@@ -66,7 +66,15 @@ class FileUploadAPIController {
                                 !entry.getName.startsWith("__MAC") &&
                                 !entry.getName.startsWith("META-INF") &&
                                 !entry.getName.startsWith("./._")) {
-                                val entryBytes = archiveIn.readAllBytes()
+                                // Read entry bytes using a buffer — readAllBytes() can over-read on archive streams
+                                val buffer = new java.io.ByteArrayOutputStream()
+                                val buf = new Array[Byte](8192)
+                                var len = archiveIn.read(buf)
+                                while (len != -1) {
+                                    buffer.write(buf, 0, len)
+                                    len = archiveIn.read(buf)
+                                }
+                                val entryBytes = buffer.toByteArray
                                 val entryName = entry.getName.split("/").last
                                 extractedFiles.add((entryName, entryBytes))
                             }
@@ -75,48 +83,52 @@ class FileUploadAPIController {
                     archiveIn.close()
                 }
 
+                import scala.collection.JavaConverters._
+
                 if (extractedFiles.size() == 0) {
                     throw new DatrisException("No files found in archive: " + filename)
-                } else if (extractedFiles.size() == 1) {
-                    // Single file in archive — process normally
-                    val (name, bytes) = extractedFiles.get(0)
-                    logger.info("Extracted 1 file from archive: " + name + " (" + bytes.length + " bytes)")
-                    val jobContext = new StreamNotifier().process(bytes, name, pipeline, publishertoken)
-                    GlobalJobContext.addJobContext(jobContext)
-                    new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)
-                } else {
-                    // Batch mode: concatenate all files into one payload
-                    logger.info("Batch mode: " + extractedFiles.size() + " files extracted from " + filename)
+                }
+
+                val isCsv = config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null
+
+                if (isCsv && extractedFiles.size() > 1) {
+                    // CSV batch mode: concatenate all files into one payload (skip headers on files 2+)
+                    logger.info("CSV batch mode: " + extractedFiles.size() + " files extracted from " + filename)
                     val combined = new java.io.ByteArrayOutputStream()
                     var firstFile = true
-                    import scala.collection.JavaConverters._
                     for ((name, bytes) <- extractedFiles.asScala) {
                         logger.info("  Batch file: " + name + " (" + bytes.length + " bytes)")
                         if (firstFile) {
                             combined.write(bytes)
                             firstFile = false
                         } else {
-                            // Skip header line for subsequent files (CSV)
                             val content = new String(bytes, "UTF-8")
                             val lines = content.split("\n", 2)
-                            if (lines.length > 1 && config.source.fileAttributes != null &&
-                                config.source.fileAttributes.csvAttributes != null &&
-                                config.source.fileAttributes.csvAttributes.header) {
-                                // CSV with header — skip first line
+                            if (lines.length > 1 && config.source.fileAttributes.csvAttributes.header) {
                                 if (!combined.toString("UTF-8").endsWith("\n")) combined.write('\n')
                                 combined.write(lines(1).getBytes("UTF-8"))
                             } else {
-                                // Non-CSV or no header — append all content
                                 if (!combined.toString("UTF-8").endsWith("\n")) combined.write('\n')
                                 combined.write(bytes)
                             }
                         }
                     }
                     val batchBytes = combined.toByteArray
-                    logger.info("Batch combined size: " + batchBytes.length + " bytes from " + extractedFiles.size() + " files")
+                    logger.info("CSV batch combined size: " + batchBytes.length + " bytes from " + extractedFiles.size() + " files")
                     val jobContext = new StreamNotifier().process(batchBytes, extractedFiles.get(0)._1, pipeline, publishertoken)
                     GlobalJobContext.addJobContext(jobContext)
                     new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)
+                } else {
+                    // Non-CSV or single file: process each file individually
+                    logger.info("Processing " + extractedFiles.size() + " file(s) individually from " + filename)
+                    val pipelineTokens = new java.util.ArrayList[String]()
+                    for ((name, bytes) <- extractedFiles.asScala) {
+                        logger.info("  Processing: " + name + " (" + bytes.length + " bytes)")
+                        val jobContext = new StreamNotifier().process(bytes, name, pipeline, publishertoken)
+                        GlobalJobContext.addJobContext(jobContext)
+                        pipelineTokens.add(jobContext.pipelineToken)
+                    }
+                    new ResponseEntity[String](pipelineTokens.size() + " file(s) submitted", HttpStatus.OK)
                 }
             } else {
                 // Single file: process directly via StreamNotifier

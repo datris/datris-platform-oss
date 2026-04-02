@@ -265,7 +265,7 @@ tbody tr:last-child td {
 }
 
 .actions-cell {
-  width: 120px;
+  width: 150px;
   text-align: right;
   display: flex;
   gap: 4px;
@@ -351,6 +351,12 @@ tbody tr:last-child td {
 
 .del-cancel:hover {
   color: var(--text-primary);
+}
+
+.view-btn:hover {
+  color: var(--accent-cyan);
+  border-color: rgba(0, 180, 255, 0.3);
+  background: rgba(0, 180, 255, 0.1);
 }
 
 .ingest-btn:hover {

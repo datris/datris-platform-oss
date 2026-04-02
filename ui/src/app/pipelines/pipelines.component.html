@@ -27,11 +27,12 @@
         </tr>
       </thead>
       <tbody>
-        <tr *ngFor="let ds of filteredPipelines" (click)="viewPipeline(ds.name)">
+        <tr *ngFor="let ds of filteredPipelines" (click)="editPipeline($event, ds.name)">
           <td class="dataset-name">{{ ds.name }}</td>
           <td>{{ getSourceType(ds) }}</td>
           <td>{{ getDestinations(ds) }}</td>
           <td class="actions-cell">
+            <button class="action-btn view-btn" (click)="viewPipeline($event, ds.name)" title="View configuration"><span class="material-icons">visibility</span></button>
             <button class="action-btn ingest-btn" (click)="openUploadModal($event, ds.name)" title="Ingest data"><span class="material-icons">upload_file</span></button>
             <button class="action-btn edit-btn" (click)="editPipeline($event, ds.name)" title="Edit pipeline"><span class="material-icons">edit</span></button>
             <button class="action-btn delete-btn" (click)="promptDelete($event, ds.name)" title="Delete pipeline" *ngIf="deleteTarget !== ds.name"><span class="material-icons">delete</span></button>

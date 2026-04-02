@@ -145,23 +145,35 @@ class PGVectorLoader(jobContext: JobContext) {
             // Create schema if needed
             stmt.execute("CREATE SCHEMA IF NOT EXISTS \"" + schemaName + "\"")
 
-            // Build CREATE TABLE with metadata columns
-            val metadataColumns = if (pgvectorConfig.metadata != null) {
-                pgvectorConfig.metadata.asScala.keys.map(key => "\"" + key + "\" TEXT").mkString(", ", ", ", "")
-            } else ""
+            // Check if table already exists
+            val rs = stmt.executeQuery(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema = '" + schemaName.replace("'", "''") +
+                "' AND table_name = '" + tableName.replace("'", "''") + "'"
+            )
+            val tableExists = rs.next()
+            rs.close()
 
-            val createSql =
-                s"""CREATE TABLE IF NOT EXISTS "$schemaName"."$tableName" (
-                   |    id UUID PRIMARY KEY,
-                   |    text TEXT,
-                   |    chunk_index INTEGER,
-                   |    source_pipeline TEXT,
-                   |    filename TEXT$metadataColumns,
-                   |    embedding vector($dimension)
-                   |)""".stripMargin
+            if (!tableExists) {
+                // Build CREATE TABLE with metadata columns
+                val metadataColumns = if (pgvectorConfig.metadata != null) {
+                    pgvectorConfig.metadata.asScala.keys.map(key => "\"" + key + "\" TEXT").mkString(", ", ", ", "")
+                } else ""
 
-            statusUtil.info("processing", "Ensuring table: " + schemaName + "." + tableName + " with vector dimension: " + dimension)
-            stmt.execute(createSql)
+                val createSql =
+                    s"""CREATE TABLE "$schemaName"."$tableName" (
+                       |    id UUID PRIMARY KEY,
+                       |    text TEXT,
+                       |    chunk_index INTEGER,
+                       |    source_pipeline TEXT,
+                       |    filename TEXT$metadataColumns,
+                       |    embedding vector($dimension)
+                       |)""".stripMargin
+
+                statusUtil.info("processing", "Creating table: " + schemaName + "." + tableName + " with vector dimension: " + dimension)
+                stmt.execute(createSql)
+            } else {
+                statusUtil.info("processing", "Table already exists: " + schemaName + "." + tableName)
+            }
             conn.commit()
         } finally {
             stmt.close()
