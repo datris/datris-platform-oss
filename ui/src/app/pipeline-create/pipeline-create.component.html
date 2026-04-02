@@ -37,9 +37,7 @@
         <p class="form-hint">Upload a sample file to auto-detect the source type and generate the schema.</p>
         <div class="file-upload-row">
           <input type="file" (change)="onSampleFileSelected($event)" class="file-input">
-          <button class="secondary-btn" (click)="analyzeSampleFile()" [disabled]="!sampleFile || generatingSchema">
-            {{ generatingSchema ? 'Analyzing...' : 'Analyze File' }}
-          </button>
+          <span class="analyzing-label" *ngIf="generatingSchema">Analyzing...</span>
         </div>
       </div>
       <div class="info-box" *ngIf="sampleFileDetected">

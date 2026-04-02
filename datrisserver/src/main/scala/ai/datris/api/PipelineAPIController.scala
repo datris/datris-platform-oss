@@ -138,8 +138,9 @@ class PipelineAPIController {
                 val properties = new Properties()
                 properties.setProperty("user", secrets.username)
                 properties.setProperty("password", secrets.password)
+                val pgDbName = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment else dest.database.dbName
                 val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
-                val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/" + dest.database.dbName
+                val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/" + pgDbName
                 val conn = DriverManager.getConnection(jdbcUrl, properties)
                 try {
                     val schema = if (dest.database.schema != null) dest.database.schema else "public"
@@ -163,7 +164,8 @@ class PipelineAPIController {
                 val settings = com.mongodb.MongoClientSettings.builder().applyConnectionString(connString).build()
                 val client = com.mongodb.client.MongoClients.create(settings)
                 try {
-                    val dbName = if (dest.database.dbName != null) dest.database.dbName else "datris"
+                    val dbName = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
+                        else if (dest.database.dbName != null) dest.database.dbName else "datris"
                     client.getDatabase(dbName).getCollection(dest.database.table).drop()
                     logger.info("Dropped MongoDB collection: " + dbName + "." + dest.database.table)
                 } finally {
@@ -185,11 +187,14 @@ class PipelineAPIController {
                     val username = secretMap.get("username")
                     val password = secretMap.get("password")
                     if (jdbcUrl != null) {
+                        val pgvJdbcUrl = if (DatrisEnvironment.current.multiTenant) {
+                            jdbcUrl.replaceFirst("/[^/]*$", "/" + DatrisEnvironment.current.environment)
+                        } else jdbcUrl
                         Class.forName("org.postgresql.Driver")
                         val properties = new Properties()
                         properties.setProperty("user", username)
                         properties.setProperty("password", password)
-                        val conn = DriverManager.getConnection(jdbcUrl, properties)
+                        val conn = DriverManager.getConnection(pgvJdbcUrl, properties)
                         try {
                             val schema = if (dest.pgvector.schemaName != null) dest.pgvector.schemaName else "public"
                             val stmt = conn.createStatement()

@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import ai.datris.util.{APIKeyValidator, SecretsRetrieverUtil, SecretsUtil}
+import ai.datris.util.{APIKeyValidator, PipelineConfigIO, SecretsRetrieverUtil, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -23,16 +23,77 @@ import scala.collection.JavaConverters._
 class MetadataAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[MetadataAPIController])
 
+    /** In multi-tenant mode, return the tenant's isolated postgres database name and ensure it exists. */
+    private def tenantPostgresDb(): String = {
+        val env = DatrisEnvironment.current.environment
+        // Ensure tenant database exists
+        try {
+            val secrets = SecretsRetrieverUtil.postgresSecrets()
+            val properties = new Properties()
+            properties.setProperty("user", secrets.username)
+            properties.setProperty("password", secrets.password)
+            val conn = DriverManager.getConnection(secrets.jdbcUrl + "/postgres", properties)
+            try {
+                val rs = conn.createStatement().executeQuery(
+                    "SELECT 1 FROM pg_database WHERE datname = '" + env.replace("'", "''") + "'"
+                )
+                if (!rs.next()) {
+                    conn.createStatement().execute("CREATE DATABASE \"" + env.replace("\"", "\"\"") + "\"")
+                    logger.info("Created tenant database: " + env)
+                }
+                rs.close()
+            } finally { conn.close() }
+        } catch {
+            case e: Exception => logger.warn("Could not ensure tenant database: " + e.getMessage)
+        }
+        env
+    }
+
+    private def getTenantMongoCollections(): Set[String] = {
+        try {
+            val pipelines = PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+            pipelines.flatMap { p =>
+                if (p.destination == null) Nil
+                else Option(p.destination.database).filter(_.useMongoDB).map(_.table).toList
+            }.filter(_ != null).toSet
+        } catch {
+            case _: Exception => Set.empty[String]
+        }
+    }
+
+    private def getTenantVectorCollections(destType: String): Set[String] = {
+        try {
+            val pipelines = PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+            pipelines.flatMap { p =>
+                if (p.destination == null) Nil
+                else destType match {
+                    case "qdrant" => Option(p.destination.qdrant).map(_.collectionName).toList
+                    case "weaviate" => Option(p.destination.weaviate).map(_.className).toList
+                    case "milvus" => Option(p.destination.milvus).map(_.collectionName).toList
+                    case "chroma" => Option(p.destination.chroma).map(_.collectionName).toList
+                    case _ => Nil
+                }
+            }.filter(_ != null).toSet
+        } catch {
+            case _: Exception => Set.empty[String]
+        }
+    }
+
     @GetMapping(path = Array("/metadata/postgres/databases"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getPostgresDatabases(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /metadata/postgres/databases called")
             APIKeyValidator.validate(apiKey)
 
-            val results = queryPostgres("postgres",
-                "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres') ORDER BY datname"
-            )
-            val databases = results.map(_.get("datname").toString)
+            val databases = if (DatrisEnvironment.current.multiTenant) {
+                // Multi-tenant: only show the tenant's isolated database
+                List(tenantPostgresDb())
+            } else {
+                val results = queryPostgres("postgres",
+                    "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres') ORDER BY datname"
+                )
+                results.map(_.get("datname").toString)
+            }
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(databases.asJava), HttpStatus.OK)
         }
@@ -47,10 +108,11 @@ class MetadataAPIController {
     def getPostgresSchemas(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                            @RequestParam(defaultValue = "datris") database: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /metadata/postgres/schemas called, database: " + database)
+            val dbName = if (DatrisEnvironment.current.multiTenant) tenantPostgresDb() else database
+            logger.info("API endpoint GET /metadata/postgres/schemas called, database: " + dbName)
             APIKeyValidator.validate(apiKey)
 
-            val results = queryPostgres(database,
+            val results = queryPostgres(dbName,
                 "SELECT schema_name FROM information_schema.schemata " +
                 "WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast') " +
                 "ORDER BY schema_name"
@@ -72,7 +134,8 @@ class MetadataAPIController {
                           @RequestParam(defaultValue = "public") schema: String,
                           @RequestParam(defaultValue = "false") vectorOnly: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /metadata/postgres/tables called, database: " + database + ", schema: " + schema + ", vectorOnly: " + vectorOnly)
+            val dbName = if (DatrisEnvironment.current.multiTenant) tenantPostgresDb() else database
+            logger.info("API endpoint GET /metadata/postgres/tables called, database: " + dbName + ", schema: " + schema + ", vectorOnly: " + vectorOnly)
             APIKeyValidator.validate(apiKey)
 
             val sql = if (vectorOnly.equalsIgnoreCase("true")) {
@@ -96,7 +159,7 @@ class MetadataAPIController {
                 "ORDER BY table_name"
             }
 
-            val results = queryPostgres(database, sql)
+            val results = queryPostgres(dbName, sql)
             val tables = results.map(_.get("table_name").toString)
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(tables.asJava), HttpStatus.OK)
@@ -114,10 +177,11 @@ class MetadataAPIController {
                            @RequestParam(defaultValue = "public") schema: String,
                            @RequestParam table: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /metadata/postgres/columns called, database: " + database + ", schema: " + schema + ", table: " + table)
+            val dbName = if (DatrisEnvironment.current.multiTenant) tenantPostgresDb() else database
+            logger.info("API endpoint GET /metadata/postgres/columns called, database: " + dbName + ", schema: " + schema + ", table: " + table)
             APIKeyValidator.validate(apiKey)
 
-            val results = queryPostgres(database,
+            val results = queryPostgres(dbName,
                 "SELECT column_name, data_type FROM information_schema.columns " +
                 "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
                 "AND table_name = '" + table.replace("'", "''") + "' " +
@@ -201,9 +265,11 @@ class MetadataAPIController {
                     env
                 }
 
-                val collections = if (dbName == database || DatrisEnvironment.current.multiTenant) {
-                    // Show all collections in the tenant's database
+                val collections = if (DatrisEnvironment.current.multiTenant) {
+                    // Multi-tenant: only show collections that belong to tenant's pipelines
+                    val tenantCollections = getTenantMongoCollections()
                     client.getDatabase(dbName).listCollectionNames().asScala
+                        .filter(tenantCollections.contains)
                         .toList.sorted
                 } else if (database != null && database.nonEmpty) {
                     client.getDatabase(database).listCollectionNames().asScala
@@ -261,8 +327,11 @@ class MetadataAPIController {
             val client = new io.qdrant.client.QdrantClient(builder.build())
 
             try {
-                val collections = client.listCollectionsAsync().get(5, java.util.concurrent.TimeUnit.SECONDS)
-                val names = collections.asScala.map(_.toString).toList.sorted
+                val allCollections = client.listCollectionsAsync().get(5, java.util.concurrent.TimeUnit.SECONDS)
+                val names = if (DatrisEnvironment.current.multiTenant) {
+                    val tenantNames = getTenantVectorCollections("qdrant")
+                    allCollections.asScala.map(_.toString).filter(tenantNames.contains).toList.sorted
+                } else allCollections.asScala.map(_.toString).toList.sorted
                 val gson = new Gson
                 new ResponseEntity[String](gson.toJson(names.asJava), HttpStatus.OK)
             } finally {
@@ -313,10 +382,14 @@ class MetadataAPIController {
 
                     val json = com.google.gson.JsonParser.parseString(body).getAsJsonObject
                     val classesArray = json.getAsJsonArray("classes")
-                    val names = if (classesArray != null)
+                    val allNames = if (classesArray != null)
                         classesArray.asScala.map(_.getAsJsonObject.get("class").getAsString).toList.sorted
                     else
                         List.empty[String]
+                    val names = if (DatrisEnvironment.current.multiTenant) {
+                        val tenantNames = getTenantVectorCollections("weaviate")
+                        allNames.filter(tenantNames.contains)
+                    } else allNames
                     val gson = new Gson
                     new ResponseEntity[String](gson.toJson(names.asJava), HttpStatus.OK)
                 } finally {
@@ -361,7 +434,11 @@ class MetadataAPIController {
 
             try {
                 val resp = client.listCollections()
-                val names = resp.getCollectionNames.asScala.toList.sorted
+                val allNames = resp.getCollectionNames.asScala.toList.sorted
+                val names = if (DatrisEnvironment.current.multiTenant) {
+                    val tenantNames = getTenantVectorCollections("milvus")
+                    allNames.filter(tenantNames.contains)
+                } else allNames
                 val gson = new Gson
                 new ResponseEntity[String](gson.toJson(names.asJava), HttpStatus.OK)
             } finally {
@@ -409,9 +486,13 @@ class MetadataAPIController {
                         throw new DatrisException("Chroma list collections failed (HTTP " + statusCode + ")")
 
                     val json = com.google.gson.JsonParser.parseString(body).getAsJsonArray
-                    val names = json.asScala
+                    val allNames = json.asScala
                         .map(_.getAsJsonObject.get("name").getAsString)
                         .toList.sorted
+                    val names = if (DatrisEnvironment.current.multiTenant) {
+                        val tenantNames = getTenantVectorCollections("chroma")
+                        allNames.filter(tenantNames.contains)
+                    } else allNames
                     val gson = new Gson
                     new ResponseEntity[String](gson.toJson(names.asJava), HttpStatus.OK)
                 } finally {

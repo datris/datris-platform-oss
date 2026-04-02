@@ -47,8 +47,12 @@ class PGVectorLoader(jobContext: JobContext) {
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val pgSecret = SecretsUtil.getSecretMap(pgvectorSecretName)
             .getOrElse(throw new DatrisException("PostgreSQL secret not found: " + pgvectorSecretName))
-        val jdbcUrl = pgSecret.get("jdbcUrl")
-        if (jdbcUrl == null) throw new DatrisException("'jdbcUrl' not found in pgvector secret: " + pgvectorConfig.postgresSecretName)
+        val rawJdbcUrl = pgSecret.get("jdbcUrl")
+        if (rawJdbcUrl == null) throw new DatrisException("'jdbcUrl' not found in pgvector secret: " + pgvectorConfig.postgresSecretName)
+        // In multi-tenant mode, override the database in the JDBC URL to the tenant's isolated database
+        val jdbcUrl = if (DatrisEnvironment.current.multiTenant) {
+            rawJdbcUrl.replaceFirst("/[^/]*$", "/" + DatrisEnvironment.current.environment)
+        } else rawJdbcUrl
         val username = Option(pgSecret.get("username")).getOrElse("postgres")
         val password = Option(pgSecret.get("password")).getOrElse("")
 

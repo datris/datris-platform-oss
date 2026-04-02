@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
+import { PipelineStatusService } from '../pipeline-status.service';
 
 @Component({
   selector: 'app-pipelines',
@@ -9,9 +10,20 @@ import { PipelineService } from '../pipeline.service';
 })
 export class PipelinesComponent implements OnInit, OnDestroy {
   pipelines: any[] = [];
+  filteredPipelines: any[] = [];
+  searchQuery = '';
   private refreshInterval: any;
 
-  constructor(private pipelineService: PipelineService, private router: Router) { }
+  // Upload modal
+  showUploadModal = false;
+  uploadPipelineName = '';
+  uploadPipelineConfig: any = null;
+  uploadFile: File | null = null;
+  uploading = false;
+  uploadResult = '';
+  uploadError = '';
+
+  constructor(private pipelineService: PipelineService, private pipelineStatusService: PipelineStatusService, private router: Router) { }
 
   ngOnInit(): void {
     this.loadPipelines();
@@ -26,9 +38,25 @@ export class PipelinesComponent implements OnInit, OnDestroy {
 
   loadPipelines(): void {
     this.pipelineService.getPipelines().subscribe({
-      next: (data) => this.pipelines = data || [],
+      next: (data) => {
+        this.pipelines = (data || []).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        this.filterPipelines();
+      },
       error: (err) => console.error('Failed to load pipelines', err)
     });
+  }
+
+  filterPipelines(): void {
+    const q = this.searchQuery.toLowerCase().trim();
+    if (!q) {
+      this.filteredPipelines = this.pipelines;
+    } else {
+      this.filteredPipelines = this.pipelines.filter(p =>
+        (p.name || '').toLowerCase().includes(q) ||
+        this.getSourceType(p).toLowerCase().includes(q) ||
+        this.getDestinations(p).toLowerCase().includes(q)
+      );
+    }
   }
 
   viewPipeline(name: string): void {
@@ -94,5 +122,49 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     if (dataset.destination.chroma) dests.push('Chroma');
     if (dataset.destination.pgvector) dests.push('pgvector');
     return dests.join(', ');
+  }
+
+  // Upload modal
+  openUploadModal(event: Event, name: string): void {
+    event.stopPropagation();
+    this.uploadPipelineName = name;
+    this.uploadPipelineConfig = null;
+    this.uploadFile = null;
+    this.uploading = false;
+    this.uploadResult = '';
+    this.uploadError = '';
+    this.showUploadModal = true;
+    this.pipelineService.getPipeline(name).subscribe({
+      next: (config) => this.uploadPipelineConfig = config,
+      error: () => {}
+    });
+  }
+
+  closeUploadModal(): void {
+    this.showUploadModal = false;
+  }
+
+  onUploadFileSelected(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    if (input.files && input.files.length > 0) {
+      this.uploadFile = input.files[0];
+    }
+  }
+
+  uploadAndProcess(): void {
+    if (!this.uploadFile || !this.uploadPipelineName) return;
+    this.uploading = true;
+    this.uploadError = '';
+    this.uploadResult = '';
+    this.pipelineStatusService.uploadFile(this.uploadFile, this.uploadPipelineName).subscribe({
+      next: () => {
+        this.uploadResult = 'File uploaded successfully! Go to the Ingestion tab to monitor progress.';
+        this.uploading = false;
+      },
+      error: (err) => {
+        this.uploadError = err.error || err.message || 'Upload failed';
+        this.uploading = false;
+      }
+    });
   }
 }

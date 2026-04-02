@@ -4,7 +4,12 @@
     <button class="create-btn" routerLink="/pipelines/create">+ Create Pipeline</button>
   </div>
 
-  <div class="table-container" *ngIf="pipelines.length > 0">
+  <div class="search-bar" *ngIf="pipelines.length > 0">
+    <span class="material-icons search-icon">search</span>
+    <input class="search-input" [(ngModel)]="searchQuery" (ngModelChange)="filterPipelines()" placeholder="Search pipelines...">
+  </div>
+
+  <div class="table-container" *ngIf="filteredPipelines.length > 0">
     <table>
       <thead>
         <tr>
@@ -15,11 +20,12 @@
         </tr>
       </thead>
       <tbody>
-        <tr *ngFor="let ds of pipelines" (click)="viewPipeline(ds.name)">
+        <tr *ngFor="let ds of filteredPipelines" (click)="viewPipeline(ds.name)">
           <td class="dataset-name">{{ ds.name }}</td>
           <td>{{ getSourceType(ds) }}</td>
           <td>{{ getDestinations(ds) }}</td>
           <td class="actions-cell">
+            <button class="action-btn ingest-btn" (click)="openUploadModal($event, ds.name)" title="Ingest data"><span class="material-icons">upload_file</span></button>
             <button class="action-btn edit-btn" (click)="editPipeline($event, ds.name)" title="Edit pipeline"><span class="material-icons">edit</span></button>
             <button class="action-btn delete-btn" (click)="promptDelete($event, ds.name)" title="Delete pipeline" *ngIf="deleteTarget !== ds.name"><span class="material-icons">delete</span></button>
             <div class="delete-menu" *ngIf="deleteTarget === ds.name" (click)="$event.stopPropagation()">
@@ -39,7 +45,51 @@
     </table>
   </div>
 
+  <div class="empty-state" *ngIf="pipelines.length > 0 && filteredPipelines.length === 0">
+    <p>No pipelines match "{{ searchQuery }}"</p>
+  </div>
+
   <div class="empty-state" *ngIf="pipelines.length === 0">
     <p>No pipelines registered. Use the API or MCP server to create one.</p>
+  </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="modal-overlay" *ngIf="showUploadModal" (click)="closeUploadModal()">
+  <div class="modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Ingest Data</h2>
+      <button class="modal-close" (click)="closeUploadModal()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="pipeline-name-label">Pipeline: <strong>{{ uploadPipelineName }}</strong></div>
+
+      <div class="pipeline-info" *ngIf="uploadPipelineConfig">
+        <div class="info-row">
+          <span class="info-label">Source Type</span>
+          <span class="info-value">{{ getSourceType(uploadPipelineConfig) }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Destinations</span>
+          <span class="info-value">{{ getDestinations(uploadPipelineConfig) }}</span>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label">File</label>
+        <input type="file" (change)="onUploadFileSelected($event)" class="file-input">
+      </div>
+
+      <div class="success-box" *ngIf="uploadResult">{{ uploadResult }}</div>
+      <div class="error-box" *ngIf="uploadError">{{ uploadError }}</div>
+    </div>
+    <div class="modal-footer">
+      <button class="secondary-btn" (click)="closeUploadModal()">{{ uploadResult ? 'Close' : 'Cancel' }}</button>
+      <button class="primary-btn" (click)="uploadAndProcess()" [disabled]="!uploadFile || uploading || uploadResult">
+        {{ uploading ? 'Uploading...' : 'Upload & Process' }}
+      </button>
+    </div>
   </div>
 </div>

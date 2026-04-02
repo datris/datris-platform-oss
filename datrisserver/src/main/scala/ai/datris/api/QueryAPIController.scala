@@ -30,7 +30,8 @@ class QueryAPIController {
 
             val sql = Option(body.get("sql")).map(_.toString)
                 .getOrElse(throw new ai.datris.model.DatrisException("'sql' parameter is required"))
-            val database = Option(body.get("database")).map(_.toString).getOrElse("datris")
+            val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
+                else Option(body.get("database")).map(_.toString).getOrElse("datris")
             val limit = Option(body.get("limit")).map {
                 case d: java.lang.Double => d.intValue()
                 case i: java.lang.Integer => i.intValue()
@@ -73,7 +74,8 @@ class QueryAPIController {
                 case other => other.toString.toInt
             }.getOrElse(20)
 
-            val database = Option(body.get("database")).map(_.toString).orNull
+            val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
+                else Option(body.get("database")).map(_.toString).orNull
             val results = MongoDBQueryUtil.query(collection, filter, projection, limit, database)
 
             // Parse each JSON string back into an object for proper nesting
@@ -105,7 +107,8 @@ class QueryAPIController {
                 .getOrElse(throw new DatrisException("'question' parameter is required"))
             val table = Option(body.get("table")).map(_.toString)
                 .getOrElse(throw new DatrisException("'table' parameter is required"))
-            val database = Option(body.get("database")).map(_.toString).getOrElse("datris")
+            val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
+                else Option(body.get("database")).map(_.toString).getOrElse("datris")
             val schema = Option(body.get("schema")).map(_.toString).getOrElse("public")
             val limit = Option(body.get("limit")).map {
                 case d: java.lang.Double => d.intValue()

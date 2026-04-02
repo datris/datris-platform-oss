@@ -22,10 +22,14 @@ class PostgresLoader(jobContext: JobContext) {
     private val config = jobContext.config
     private val statusUtil = jobContext.statusUtil
 
+    /** In multi-tenant mode, use the tenant's isolated database; otherwise use the pipeline config value. */
+    private val dbName: String = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
+        else config.destination.database.dbName
+
     def process(): Unit = {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
 
-        statusUtil.info("begin", "Loading the data into Postgres database: " + config.destination.database.dbName + ", table: " + config.destination.database.table)
+        statusUtil.info("begin", "Loading the data into Postgres database: " + dbName + ", table: " + config.destination.database.table)
 
         val secrets = SecretsRetrieverUtil.postgresSecrets()
 
@@ -39,7 +43,7 @@ class PostgresLoader(jobContext: JobContext) {
             val properties = new Properties()
             properties.setProperty("user", secrets.username)
             properties.setProperty("password", secrets.password)
-            val jdbcUrl = secrets.jdbcUrl + "/" + config.destination.database.dbName
+            val jdbcUrl = secrets.jdbcUrl + "/" + dbName
             statusUtil.info("processing", "jdbc url: " + jdbcUrl)
             conn = DriverManager.getConnection(jdbcUrl, properties)
             statusUtil.info("processing", "Postgres connection acquired")
@@ -51,7 +55,7 @@ class PostgresLoader(jobContext: JobContext) {
 
             if(config.destination.database.truncateBeforeWrite) {
                 statusUtil.info("processing", "'truncateTableBeforeWrite' is set to true, truncating table")
-                statement.execute("truncate table " + config.destination.database.dbName + "." + config.destination.database.schema + "." + config.destination.database.table)
+                statement.execute("truncate table " + dbName + "." + config.destination.database.schema + "." + config.destination.database.table)
             }
 
             copyInto(conn, statement, file)
@@ -171,7 +175,6 @@ class PostgresLoader(jobContext: JobContext) {
         val sql = new StringBuilder()
 
         // Begin
-        val dbName = config.destination.database.dbName
         val schema = config.destination.database.schema
         sql.append("create table if not exists " + dbName + "." + schema + "." + tableName + " (")
 
@@ -230,7 +233,7 @@ class PostgresLoader(jobContext: JobContext) {
             null,
             null,
             config.destination.database.schema,
-            config.destination.database.dbName,
+            dbName,
             config.destination.database.table,
             null
         )
@@ -242,7 +245,7 @@ class PostgresLoader(jobContext: JobContext) {
         attributes.put("pipeline", config.name)
         attributes.put("destination", "postgres")
         attributes.put("schema", config.destination.database.schema)
-        attributes.put("database", config.destination.database.dbName)
+        attributes.put("database", dbName)
         attributes.put("table", config.destination.database.table)
 
         NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, jsonNotification, attributes.asScala.toMap)

@@ -258,6 +258,18 @@ option {
   color: var(--text-secondary);
 }
 
+.analyzing-label {
+  font-size: 13px;
+  color: var(--accent-cyan);
+  font-weight: 600;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 /* Info box */
 .info-box {
   padding: 12px 16px;

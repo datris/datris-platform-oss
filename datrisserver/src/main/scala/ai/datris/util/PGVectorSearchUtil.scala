@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.DatrisException
+import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.sql.{Connection, DriverManager}
@@ -27,8 +27,11 @@ object PGVectorSearchUtil {
 
         val pgSecret = SecretsUtil.getSecretMap(postgresSecretName)
             .getOrElse(throw new DatrisException("PostgreSQL secret not found: " + postgresSecretName))
-        val jdbcUrl = pgSecret.get("jdbcUrl")
-        if (jdbcUrl == null) throw new DatrisException("'jdbcUrl' not found in pgvector secret: " + postgresSecretName)
+        val rawJdbcUrl = pgSecret.get("jdbcUrl")
+        if (rawJdbcUrl == null) throw new DatrisException("'jdbcUrl' not found in pgvector secret: " + postgresSecretName)
+        val jdbcUrl = if (DatrisEnvironment.current.multiTenant) {
+            rawJdbcUrl.replaceFirst("/[^/]*$", "/" + DatrisEnvironment.current.environment)
+        } else rawJdbcUrl
         val username = Option(pgSecret.get("username")).getOrElse("postgres")
         val password = Option(pgSecret.get("password")).getOrElse("")
 

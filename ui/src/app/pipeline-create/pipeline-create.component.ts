@@ -413,6 +413,10 @@ export class PipelineCreateComponent implements OnInit {
     const input = event.target as HTMLInputElement;
     if (input.files && input.files.length > 0) {
       this.sampleFile = input.files[0];
+      // Auto-analyze if pipeline name is set
+      if (this.pipelineName.trim()) {
+        this.analyzeSampleFile();
+      }
     }
   }
 
@@ -574,7 +578,7 @@ export class PipelineCreateComponent implements OnInit {
       return;
     }
     if (this.step === 1 && this.sampleFile && !this.sampleFileDetected) {
-      this.error = 'Please press Analyze File before continuing';
+      this.error = 'Please wait for the file analysis to complete or enter a pipeline name first';
       return;
     }
 
