@@ -354,6 +354,37 @@ export class McpComponent implements OnInit {
         { name: 'fields', type: 'object', description: 'JSON with endpoint, model, apiKey fields', required: true, inputType: 'textarea' }
       ],
       playgroundEnabled: true
+    },
+    // --- Managed Service ---
+    {
+      name: 'signup_trial',
+      description: 'Sign up for a free 14-day Datris trial. Returns an API key for the hosted MCP endpoint. No API key required.',
+      category: 'Managed Service',
+      parameters: [
+        { name: 'email', type: 'string', description: 'Email address', required: true, inputType: 'text' },
+        { name: 'password', type: 'string', description: 'Password (min 8 characters)', required: true, inputType: 'text' },
+        { name: 'company', type: 'string', description: 'Company or project name', required: true, inputType: 'text' },
+        { name: 'ai_provider', type: 'string', description: 'AI provider: anthropic or openai (default: anthropic)', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: false
+    },
+    {
+      name: 'upgrade_to_dedicated',
+      description: 'Upgrade from shared trial to a dedicated instance. Returns a Stripe checkout URL for payment.',
+      category: 'Managed Service',
+      parameters: [
+        { name: 'droplet_size', type: 'string', description: 'Compute size (default: s-2vcpu-8gb)', required: false, inputType: 'text' },
+        { name: 'storage_gb', type: 'integer', description: 'Block storage in GB (default: 25)', required: false, inputType: 'text' },
+        { name: 'region', type: 'string', description: 'Datacenter region (default: nyc1)', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: false
+    },
+    {
+      name: 'check_upgrade_status',
+      description: 'Check dedicated instance provisioning status. Returns new MCP endpoint URL and API key when ready.',
+      category: 'Managed Service',
+      parameters: [],
+      playgroundEnabled: false
     }
   ];
 
