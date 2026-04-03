@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import contextvars
 import json
 import os
 from typing import Any
@@ -35,6 +36,11 @@ load_dotenv()
 
 PIPELINE_URL = os.getenv("PIPELINE_URL", "http://localhost:8080")
 PIPELINE_API_KEY = os.getenv("PIPELINE_API_KEY", "")
+REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "").lower() in ("true", "1", "yes")
+WEBSITE_URL = os.getenv("WEBSITE_URL", "https://datris.ai")
+
+# Per-session API key for multi-tenant SSE/HTTP connections
+_session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("_session_api_key", default="")
 
 server = Server("datris", instructions="""\
 Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, and vector stores — all driven by pipeline configurations that AI agents can create and manage programmatically.
@@ -61,11 +67,17 @@ Do NOT call update_secret unless you need to configure AI provider keys and they
 """)
 
 
+def _effective_api_key() -> str:
+    """Return the per-session API key if set, otherwise the global env var."""
+    return _session_api_key.get() or PIPELINE_API_KEY
+
+
 def _headers():
     """Build request headers."""
     h = {"Content-Type": "application/json"}
-    if PIPELINE_API_KEY:
-        h["x-api-key"] = PIPELINE_API_KEY
+    key = _effective_api_key()
+    if key:
+        h["x-api-key"] = key
     return h
 
 
@@ -84,8 +96,9 @@ def _upload(path, file_path, data=None):
     with open(file_path, "rb") as f:
         files = {"file": (os.path.basename(file_path), f)}
         h = {}
-        if PIPELINE_API_KEY:
-            h["x-api-key"] = PIPELINE_API_KEY
+        key = _effective_api_key()
+        if key:
+            h["x-api-key"] = key
         resp = requests.post(
             f"{PIPELINE_URL}{path}",
             headers=h,
@@ -111,8 +124,9 @@ def _upload_content(path, content_b64, filename, data=None):
         with open(tmp_path, "rb") as f:
             files = {"file": (filename, f)}
             h = {}
-            if PIPELINE_API_KEY:
-                h["x-api-key"] = PIPELINE_API_KEY
+            key = _effective_api_key()
+            if key:
+                h["x-api-key"] = key
             resp = requests.post(
                 f"{PIPELINE_URL}{path}",
                 headers=h,
@@ -994,6 +1008,57 @@ async def list_tools():
                 "required": ["name", "fields"]
             }
         ),
+        # --- Managed Service ---
+        Tool(
+            name="signup_trial",
+            description="Sign up for a free 14-day Datris trial. Returns an API key you can use to connect to the hosted MCP endpoint. No API key required to call this tool — it is the bootstrap for getting one.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "description": "Email address for the trial account"},
+                    "password": {"type": "string", "description": "Password for the trial account (min 8 characters)"},
+                    "company": {"type": "string", "description": "Company or project name"},
+                    "ai_provider": {
+                        "type": "string",
+                        "enum": ["anthropic", "openai"],
+                        "description": "AI provider for the trial (default: anthropic)"
+                    },
+                },
+                "required": ["email", "password", "company"]
+            }
+        ),
+        Tool(
+            name="upgrade_to_dedicated",
+            description="Upgrade from a shared trial to a dedicated Datris instance. Returns a Stripe checkout URL — the user must complete payment in their browser. After payment, provisioning starts automatically. Use check_upgrade_status to monitor progress.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "droplet_size": {
+                        "type": "string",
+                        "enum": ["s-2vcpu-8gb", "s-4vcpu-16gb", "s-8vcpu-32gb", "s-16vcpu-64gb"],
+                        "description": "Compute size (default: s-2vcpu-8gb)"
+                    },
+                    "storage_gb": {
+                        "type": "integer",
+                        "enum": [25, 50, 100, 250, 500, 1000],
+                        "description": "Block storage in GB (default: 25)"
+                    },
+                    "region": {
+                        "type": "string",
+                        "description": "Datacenter region (default: nyc1). Options: nyc1, nyc3, sfo3, ams3, lon1, fra1, tor1, blr1, sgp1, syd1"
+                    },
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="check_upgrade_status",
+            description="Check the status of a dedicated instance upgrade. Returns 'none' if no upgrade started, 'provisioning' if in progress, or 'active' with the new MCP endpoint URL and API key when ready. No input needed — your identity is resolved from your API key.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            }
+        ),
     ]
 
 
@@ -1300,6 +1365,82 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps({"error": f"Only these secrets can be updated: {', '.join(sorted(allowed))}"})
         return _call("put", f"/api/v1/secrets/{secret_name}", json=args["fields"])
 
+    # --- Managed Service ---
+    elif name == "signup_trial":
+        payload = {
+            "email": args["email"],
+            "password": args["password"],
+            "company": args["company"],
+            "ai_provider": args.get("ai_provider", "anthropic"),
+        }
+        try:
+            resp = requests.post(f"{WEBSITE_URL}/api/provision/agent-trial", json=payload, timeout=30)
+            data = resp.json()
+            if resp.status_code == 201:
+                return json.dumps({
+                    "status": "Trial created",
+                    "api_key": data.get("apiKey"),
+                    "mcp_url": f"https://mcp.trial.datris.ai/sse",
+                    "trial_expires": data.get("trialExpires"),
+                    "message": "Reconnect to the MCP endpoint with your API key in the x-api-key header to start using Datris tools."
+                })
+            return json.dumps({"error": data.get("error", f"Signup failed (HTTP {resp.status_code})")})
+        except requests.RequestException as e:
+            return json.dumps({"error": f"Failed to reach Datris website: {e}"})
+
+    elif name == "upgrade_to_dedicated":
+        api_key = _effective_api_key()
+        if not api_key:
+            return json.dumps({"error": "API key required. Sign up first using signup_trial."})
+        payload = {
+            "dropletSize": args.get("droplet_size", "s-2vcpu-8gb"),
+            "storageGb": args.get("storage_gb", 25),
+            "region": args.get("region", "nyc1"),
+        }
+        try:
+            resp = requests.post(
+                f"{WEBSITE_URL}/api/billing/checkout",
+                json=payload,
+                headers={"x-api-key": api_key},
+                timeout=30
+            )
+            data = resp.json()
+            if resp.status_code == 200 and data.get("url"):
+                return json.dumps({
+                    "status": "Checkout ready",
+                    "checkout_url": data["url"],
+                    "message": "Open this URL in a browser to complete payment. After payment, provisioning starts automatically. Use check_upgrade_status to monitor progress."
+                })
+            return json.dumps({"error": data.get("error", f"Checkout failed (HTTP {resp.status_code})")})
+        except requests.RequestException as e:
+            return json.dumps({"error": f"Failed to reach Datris website: {e}"})
+
+    elif name == "check_upgrade_status":
+        api_key = _effective_api_key()
+        if not api_key:
+            return json.dumps({"error": "API key required. Sign up first using signup_trial."})
+        try:
+            resp = requests.get(
+                f"{WEBSITE_URL}/api/provision/status",
+                headers={"x-api-key": api_key},
+                timeout=30
+            )
+            data = resp.json()
+            status = data.get("status", "none")
+            result = {"status": status}
+            if status == "active" and data.get("domain"):
+                result["domain"] = data["domain"]
+                result["mcp_url"] = f"https://mcp.{data['domain']}/sse"
+                result["api_key"] = data.get("apiKey")
+                result["message"] = "Your dedicated instance is ready! Reconnect to the new MCP URL with the new API key."
+            elif status == "provisioning":
+                result["message"] = "Your dedicated instance is being provisioned. Check back in a few minutes."
+            elif status == "none":
+                result["message"] = "No upgrade in progress. Use upgrade_to_dedicated to start."
+            return json.dumps(result)
+        except requests.RequestException as e:
+            return json.dumps({"error": f"Failed to reach Datris website: {e}"})
+
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -1314,6 +1455,20 @@ async def run_stdio():
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
+def _extract_api_key(scope) -> str:
+    """Extract x-api-key from ASGI scope headers or query string."""
+    # Check headers first
+    for header_name, header_value in scope.get("headers", []):
+        if header_name == b"x-api-key":
+            return header_value.decode("utf-8")
+    # Fall back to query string (?api_key=...)
+    qs = scope.get("query_string", b"").decode("utf-8")
+    for part in qs.split("&"):
+        if part.startswith("api_key="):
+            return part[8:]
+    return ""
+
+
 async def run_sse(port: int):
     from mcp.server.sse import SseServerTransport
     import uvicorn
@@ -1324,6 +1479,14 @@ async def run_sse(port: int):
         if scope["type"] == "http":
             path = scope.get("path", "")
             if path == "/sse":
+                api_key = _extract_api_key(scope)
+                if REQUIRE_API_KEY and not api_key:
+                    await send({"type": "http.response.start", "status": 401,
+                                "headers": [[b"content-type", b"application/json"]]})
+                    await send({"type": "http.response.body",
+                                "body": b'{"error":"x-api-key header required. Use the signup_trial tool or sign up at datris.ai to get an API key."}'})
+                    return
+                _session_api_key.set(api_key)
                 async with sse.connect_sse(scope, receive, send) as streams:
                     await server.run(streams[0], streams[1], server.create_initialization_options())
                 return
@@ -1360,6 +1523,14 @@ async def run_streamable_http(port: int):
         if scope["type"] == "http":
             path = scope.get("path", "")
             if path == "/mcp":
+                api_key = _extract_api_key(scope)
+                if REQUIRE_API_KEY and not api_key:
+                    await send({"type": "http.response.start", "status": 401,
+                                "headers": [[b"content-type", b"application/json"]]})
+                    await send({"type": "http.response.body",
+                                "body": b'{"error":"x-api-key header required. Use the signup_trial tool or sign up at datris.ai to get an API key."}'})
+                    return
+                _session_api_key.set(api_key)
                 await session_manager.handle_request(scope, receive, send)
                 return
         await send({"type": "http.response.start", "status": 404, "headers": []})
