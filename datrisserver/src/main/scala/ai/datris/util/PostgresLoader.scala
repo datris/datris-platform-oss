@@ -118,13 +118,17 @@ class PostgresLoader(jobContext: JobContext) {
                 sourceFields.zipWithIndex.map { case (f, idx) => f.name.toLowerCase -> idx }.toMap
         }
 
-        // For each destination field, find its index in the source row
-        val destColumnIndices = destFields.map { destField =>
-            sourceIndex.getOrElse(destField.name.toLowerCase,
-                throw new DatrisException("Destination schema field '" + destField.name + "' not found in source schema or file header"))
+        // For each destination field that exists in source, find its index
+        // Missing columns (dropped from CSV) are skipped — Postgres defaults them to NULL
+        val projectedDest = destFields.filter(f => sourceIndex.contains(f.name.toLowerCase))
+        val destColumnIndices = projectedDest.map(f => sourceIndex(f.name.toLowerCase))
+
+        if (projectedDest.size < destFields.size) {
+            val missing = destFields.filterNot(f => sourceIndex.contains(f.name.toLowerCase)).map(_.name)
+            statusUtil.info("processing", "Dropped columns (will be NULL in destination): " + missing.mkString(", "))
         }
 
-        statusUtil.info("processing", "Projecting " + sourceFields.size + " source columns to " + destFields.size + " destination columns: " + destFields.map(_.name).mkString(", "))
+        statusUtil.info("processing", "Projecting " + sourceFields.size + " source columns to " + projectedDest.size + " destination columns: " + projectedDest.map(_.name).mkString(", "))
 
         rows.map { row =>
             val columns = row.split(delimiter, -1).toList
@@ -141,10 +145,14 @@ class PostgresLoader(jobContext: JobContext) {
         val sql = new StringBuilder()
         sql.append("COPY " + "\"" + config.destination.database.schema + "\"" + "." + "\"" + config.destination.database.table + "\"")
 
-        // Specify destination column names explicitly to match the projected data
+        // Only include columns that are present in the data (handles dropped columns)
         val destFields = config.destination.schemaProperties.fields.asScala
+        val copyFields = if (jobContext.data.header != null && jobContext.data.header.nonEmpty) {
+            val headerSet = jobContext.data.header.map(_.toLowerCase).toSet
+            destFields.filter(f => headerSet.contains(f.name.toLowerCase))
+        } else destFields
         sql.append(" (")
-        sql.append(destFields.map(f => "\"" + f.name + "\"").mkString(", "))
+        sql.append(copyFields.map(f => "\"" + f.name + "\"").mkString(", "))
         sql.append(")")
 
         sql.append(" FROM STDIN (")
@@ -221,6 +229,26 @@ class PostgresLoader(jobContext: JobContext) {
 
         statusUtil.info("processing", "Postgres create table statement: " + sql.mkString)
         statement.execute(sql.mkString)
+
+        // Additive schema evolution: add any new columns that don't exist in the table yet
+        val existingColumnsRs = statement.executeQuery(
+            s"""SELECT column_name FROM information_schema.columns
+               |WHERE table_catalog = '$dbName' AND table_schema = '${config.destination.database.schema}'
+               |AND table_name = '$tableName'""".stripMargin)
+        val existingColumns = scala.collection.mutable.Set[String]()
+        while (existingColumnsRs.next()) {
+            existingColumns.add(existingColumnsRs.getString("column_name").toLowerCase)
+        }
+        existingColumnsRs.close()
+
+        config.destination.schemaProperties.fields.forEach(field => {
+            if (!existingColumns.contains(field.name.toLowerCase)) {
+                val colType = if (field.`type`.equalsIgnoreCase("string")) "text" else field.`type`
+                val alterSql = s"""ALTER TABLE "$dbName"."${config.destination.database.schema}"."$tableName" ADD COLUMN IF NOT EXISTS "${field.name}" $colType"""
+                statusUtil.info("processing", "Schema evolution: " + alterSql)
+                statement.execute(alterSql)
+            }
+        })
     }
 
     private def sendNotification(): Unit = {

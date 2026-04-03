@@ -25,7 +25,7 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 | `get_pipeline` | Get a specific pipeline configuration by name |
 | `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Specify destination type. |
 | `delete_pipeline` | Delete a pipeline and its destination data |
-| `upload_data` | Upload data (base64-encoded) to a pipeline for processing (returns pipeline token) |
+| `upload_data` | Upload data (base64-encoded) to a pipeline for processing. New CSV columns are auto-added to the schema ([schema evolution](/schemas#schema-evolution)). Returns pipeline token. |
 | `get_job_status` | Get job status by pipeline token or pipeline name |
 | `kill_job` | Kill a running job by pipeline token |
 | `profile_data` | AI-profile data (base64-encoded) with summary stats and suggested DQ rules |
@@ -84,6 +84,16 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 |------|-------------|
 | `upload_config` | Upload a JSON Schema config file (base64-encoded content) |
 | `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
+
+### Managed Service
+
+Tools for signing up, upgrading, and monitoring hosted Datris instances. Available on the remote MCP endpoint at `mcp.trial.datris.ai`.
+
+| Tool | Description |
+|------|-------------|
+| `signup_trial` | Sign up for a free 14-day trial. Returns an API key and MCP endpoint URL. No authentication required. |
+| `upgrade_to_dedicated` | Upgrade from shared trial to a dedicated instance. Returns a Stripe checkout URL. |
+| `check_upgrade_status` | Check provisioning status. Returns `none`, `provisioning`, or `active` with the new MCP endpoint. |
 
 ## Setup
 

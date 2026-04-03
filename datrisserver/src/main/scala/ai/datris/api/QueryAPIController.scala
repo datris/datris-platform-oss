@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import com.google.common.base.Throwables
-import com.google.gson.Gson
+import com.google.gson.{Gson, GsonBuilder}
 import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
 import ai.datris.util.{AIUtil, APIKeyValidator, PostgresQueryUtil, MongoDBQueryUtil, SecretsRetrieverUtil}
 import org.slf4j.{Logger, LoggerFactory}
@@ -40,7 +40,7 @@ class QueryAPIController {
 
             val results = PostgresQueryUtil.query(sql, database, limit)
 
-            val gson = new Gson
+            val gson = new GsonBuilder().serializeNulls().create()
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("results", results)
             response.put("count", results.size())
@@ -144,7 +144,7 @@ class QueryAPIController {
             // Step 3: Execute the generated SQL
             val results = PostgresQueryUtil.query(sql, database, limit)
 
-            val gson = new Gson
+            val gson = new GsonBuilder().serializeNulls().create()
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("question", question)
             response.put("sql", sql)

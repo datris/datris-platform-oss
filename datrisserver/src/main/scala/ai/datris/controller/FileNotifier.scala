@@ -41,13 +41,13 @@ class FileNotifier {
             if(config == null)
                 throw new DatrisException("Pipeline: " + metadata.pipeline + " is not configured in the NoSQL database")
 
-            // Read the data into memory
-            val data = DataUtil.read(bucket, key, config, metadata, statusUtil)
+            // Read the data into memory (includes schema evolution)
+            val (data, resolvedConfig) = DataUtil.read(bucket, key, config, metadata, statusUtil)
             statusUtil.info("processing", "Total file size: " + data.size.toString)
 
             statusUtil.info("end", "Process completed successfully")
 
-            JobContext(pipelineToken, metadata, data, config, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
+            JobContext(pipelineToken, metadata, data, resolvedConfig, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
         } catch {
             case e: Exception =>
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))

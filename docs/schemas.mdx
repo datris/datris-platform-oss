@@ -96,6 +96,54 @@ curl -X POST "http://localhost:8080/api/v1/config/generate-schema" \
 
 Valid types: `json-schema` (generates Draft 4 JSON Schema) and `xsd` (generates W3C XSD). The generated schema is stored at `{environment}-config/validation-schema/{name}.json` or `{name}.xsd`.
 
+## Schema Evolution
+
+Datris supports **additive schema evolution** — when new columns appear in uploaded data, the pipeline schema automatically expands to include them. No manual intervention or pipeline recreation is needed.
+
+### How it works
+
+1. You create a pipeline with a 3-column CSV (e.g., `name`, `age`, `city`)
+2. Later, you upload a CSV with a 4th column (e.g., `name`, `age`, `city`, `email`)
+3. Datris detects the new `email` column, adds it to the pipeline schema as type `string`, and runs `ALTER TABLE` on the PostgreSQL destination to add the column
+4. The data is processed with all 4 columns
+5. Previous rows have `NULL` for the new column; new rows have the full data
+
+Each schema change increments a `schemaVersion` counter in the pipeline config, so you can track how the schema has evolved over time.
+
+### What triggers evolution
+
+- **New columns in the CSV header** that are not in the stored schema → automatically added as `string` type
+
+### What does NOT trigger evolution
+
+- **Missing columns** — if a CSV is missing a non-key column from the schema, the missing values are filled with empty strings (existing behavior). Key fields must always be present.
+- **Column renames** — treated as a removal + addition. The old column gets empty values, and the new column is added.
+- **Type changes** — new columns default to `string`. Changing an existing column's type requires manual pipeline update.
+- **JSON/XML data** — these use a single `_json` or `_xml` field, so column-level evolution does not apply.
+
+### Example
+
+```bash
+# Create pipeline with 3-column data
+curl -X POST http://localhost:8080/api/v1/pipeline/upload \
+  -F "file=@data_v1.csv" -F "pipeline=customers"
+# data_v1.csv: name,age,city
+
+# Later, upload data with a new column
+curl -X POST http://localhost:8080/api/v1/pipeline/upload \
+  -F "file=@data_v2.csv" -F "pipeline=customers"
+# data_v2.csv: name,age,city,email
+# → Schema evolves automatically, ALTER TABLE adds "email" column
+```
+
+Check the evolved schema:
+
+```bash
+curl http://localhost:8080/api/v1/pipeline?pipeline=customers
+# source.schemaProperties.schemaVersion: 2
+# source.schemaProperties.fields: [name, age, city, email]
+```
+
 ## Source vs Destination Schemas
 
 A **source schema** describes the data as it arrives (columns, JSON keys, database columns). It is always required.

@@ -86,7 +86,8 @@ case class ChunkingConfig(
 
 case class SchemaProperties(
                                dbName: String,
-                               fields: java.util.List[SchemaField]
+                               fields: java.util.List[SchemaField],
+                               schemaVersion: Int = 1
                            )
 
 case class DataQuality(

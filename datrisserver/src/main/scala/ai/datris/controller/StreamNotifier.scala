@@ -42,11 +42,11 @@ class StreamNotifier {
             statusUtil.info("begin", "Stream data received, pipeline: " + pipeline + ", filename: " + filename)
             statusUtil.info("processing", "Total data size: " + byteArray.length.toString)
 
-            val dataObj = parseData(byteArray, config)
+            val (dataObj, resolvedConfig) = parseData(byteArray, config)
 
             statusUtil.info("end", "Process completed successfully")
 
-            JobContext(pipelineToken, metadata, dataObj, config, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
+            JobContext(pipelineToken, metadata, dataObj, resolvedConfig, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
         } catch {
             case e: Exception =>
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
@@ -54,47 +54,24 @@ class StreamNotifier {
         }
     }
 
-    private def parseData(byteArray: Array[Byte], config: PipelineConfig): Data = {
+    private def parseData(byteArray: Array[Byte], originalConfig: PipelineConfig): (Data, PipelineConfig) = {
+        var config = originalConfig
         val size = byteArray.length.toLong
 
         if (config.source.fileAttributes.csvAttributes != null) {
             val trimColumns = config.transformation != null && config.transformation.trimColumnWhitespace
-            val schemaColumns = config.source.schemaProperties.fields.asScala.map(_.name).toList
 
             val sourceColumns = {
                 if (config.source.fileAttributes.csvAttributes.header) {
                     val headerLine = new String(byteArray, "UTF-8").linesIterator.next()
                     headerLine.split(Pattern.quote(config.source.fileAttributes.csvAttributes.delimiter)).map(_.toLowerCase).toList
                 } else
-                    schemaColumns
+                    config.source.schemaProperties.fields.asScala.map(_.name).toList
             }
 
-            // Detect missing schema columns in the CSV header
-            val missingColumns = schemaColumns.filterNot(col =>
-                sourceColumns.exists(_.equalsIgnoreCase(col)))
-
-            if (missingColumns.nonEmpty) {
-                // Fail if any missing column is a key field
-                val keyFields = Option(config.destination)
-                    .flatMap(d => Option(d.database))
-                    .flatMap(db => Option(db.keyFields))
-                    .map(_.asScala.map(_.toLowerCase).toSet)
-                    .getOrElse(Set.empty)
-
-                val missingKeyFields = missingColumns.filter(col => keyFields.contains(col.toLowerCase))
-                if (missingKeyFields.nonEmpty) {
-                    throw new DatrisException(
-                        "CSV is missing required key field(s): " + missingKeyFields.mkString(", ") +
-                        ". CSV columns: " + sourceColumns.mkString(", ") +
-                        ". Expected columns: " + schemaColumns.mkString(", "))
-                }
-
-                statusUtil.info("processing", "CSV is missing columns (will be filled as empty): " + missingColumns.mkString(", "))
-            }
-
-            // Only request columns that exist in the CSV header
-            val presentColumns = schemaColumns.filter(col =>
-                sourceColumns.exists(_.equalsIgnoreCase(col)))
+            // Schema evolution: detect new/missing columns, update config
+            val (resolvedConfig, schemaColumns, presentColumns, missingColumns) = DataUtil.evolveSchema(sourceColumns, config, statusUtil)
+            config = resolvedConfig
 
             val csvData = new CSVReader().readFromStream(
                 new ByteArrayInputStream(byteArray),
@@ -115,33 +92,22 @@ class StreamNotifier {
                 if (missingColumns.isEmpty) {
                     (schemaColumns, dataRows)
                 } else {
-                    // Insert empty values for missing columns
-                    val presentSet = presentColumns.map(_.toLowerCase).toSet
-                    val presentIndices = schemaColumns.map(col =>
-                        if (presentSet.contains(col.toLowerCase))
-                            presentColumns.indexWhere(_.equalsIgnoreCase(col))
-                        else -1
-                    )
-                    val rebuiltRows = dataRows.map { row =>
-                        val cols = row.split(delimiter, -1).toList
-                        presentIndices.map(idx =>
-                            if (idx >= 0 && idx < cols.size) cols(idx) else ""
-                        ).mkString(delimiter)
-                    }
-                    (schemaColumns, rebuiltRows)
+                    // Return only present columns — PostgresLoader will COPY only these,
+                    // and Postgres will default missing columns to NULL
+                    (presentColumns, dataRows)
                 }
             }
 
             if (rows.isEmpty)
                 throw new DatrisException("No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row.")
 
-            Data(size, header, config.source.schemaProperties.fields.asScala.toList, rows, null)
+            (Data(size, header, config.source.schemaProperties.fields.asScala.toList, rows, null), config)
         }
         else if (config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
-            Data(size, null, null, null, new String(byteArray, "UTF-8"))
+            (Data(size, null, null, null, new String(byteArray, "UTF-8")), config)
         }
         else if (config.source.fileAttributes.unstructuredAttributes != null) {
-            Data(size, null, null, null, null, byteArray)
+            (Data(size, null, null, null, null, byteArray), config)
         }
         else
             throw new DatrisException("StreamNotifier: unsupported file type in pipeline config for pipeline: " + config.name)

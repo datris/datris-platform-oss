@@ -22,6 +22,7 @@ Content-Type: multipart/form-data
 **Behavior:**
 - **Compressed files** (`.zip`, `.gz`, `.tar`, `.jar`): Staged to MinIO raw bucket for asynchronous processing
 - **Uncompressed files**: Processed immediately in-memory
+- **Schema evolution**: If a CSV file contains new columns not in the pipeline schema, they are automatically added (as `string` type) and the destination table is altered. See [Schema Evolution](/schemas#schema-evolution).
 
 **Example:**
 ```bash
