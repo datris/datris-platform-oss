@@ -395,7 +395,7 @@
 
       <!-- PostgreSQL -->
       <ng-container *ngIf="destType === 'postgres'">
-        <div class="form-row">
+        <div class="form-row" *ngIf="!isTrial">
           <label class="form-label">Database</label>
           <select class="form-input" [(ngModel)]="pgDbName" (ngModelChange)="onPgDbChange()">
             <option *ngFor="let db of pgDatabases" [value]="db">{{ db }}</option>
@@ -423,7 +423,7 @@
 
       <!-- MongoDB -->
       <ng-container *ngIf="destType === 'mongodb'">
-        <div class="form-row">
+        <div class="form-row" *ngIf="!isTrial">
           <label class="form-label">Database</label>
           <select class="form-input" [(ngModel)]="mongoDbName" (ngModelChange)="onMongoDbChange()">
             <option *ngFor="let db of mongoDatabases" [value]="db">{{ db }}</option>

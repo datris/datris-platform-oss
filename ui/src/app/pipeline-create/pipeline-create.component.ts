@@ -1,5 +1,6 @@
 import { Component, OnInit } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
+import { HttpClient } from '@angular/common/http';
 import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
@@ -110,9 +111,22 @@ export class PipelineCreateComponent implements OnInit {
 
   fieldTypes = ['string', 'int', 'bigint', 'float', 'double', 'boolean', 'date', 'timestamp'];
 
-  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private route: ActivatedRoute, private router: Router) { }
+  isTrial = false;
+
+  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private route: ActivatedRoute, private router: Router, private http: HttpClient) { }
 
   ngOnInit(): void {
+    this.http.get<any>('/api/v1/version').subscribe({
+      next: (data) => {
+        this.isTrial = data.multiTenant === 'true';
+        if (this.isTrial) {
+          this.pgDbName = data.environment || 'datris';
+          this.mongoDbName = data.environment || 'datris';
+          this.schemaDbName = data.environment || 'datris';
+        }
+      }
+    });
+
     const editName = this.route.snapshot.paramMap.get('name');
     if (editName) {
       this.isEditMode = true;
