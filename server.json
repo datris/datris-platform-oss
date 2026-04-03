@@ -57,24 +57,6 @@
           "isSecret": true
         }
       ]
-    },
-    {
-      "registryType": "custom",
-      "identifier": "https://mcp.trial.datris.ai",
-      "version": "1.5.3",
-      "transport": {
-        "type": "sse",
-        "url": "https://mcp.trial.datris.ai/sse"
-      },
-      "environmentVariables": [
-        {
-          "name": "PIPELINE_API_KEY",
-          "description": "API key for your Datris account (sign up at datris.ai or use the signup_trial tool)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true
-        }
-      ]
     }
   ]
 }
