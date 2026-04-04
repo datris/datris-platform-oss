@@ -4,6 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
+import { TapService } from '../tap.service';
 
 interface SchemaField {
   name: string;
@@ -23,10 +24,13 @@ export class PipelineCreateComponent implements OnInit {
   generatingSchema = false;
   sampleFileDetected = false;
 
-  // Step 1 — Basics + Sample File
+  // Step 1 — Basics + Source
   pipelineName = '';
+  pipelineSource = 'tap';  // 'tap' | 'file'
   sampleFile: File | null = null;
   sourceType = 'csv';
+  taps: any[] = [];
+  selectedTapName = '';
 
   // Step 2 — Source config
   csvDelimiter = ',';
@@ -113,7 +117,7 @@ export class PipelineCreateComponent implements OnInit {
 
   isTrial = false;
 
-  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private route: ActivatedRoute, private router: Router, private http: HttpClient) { }
+  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private tapService: TapService, private route: ActivatedRoute, private router: Router, private http: HttpClient) { }
 
   ngOnInit(): void {
     this.http.get<any>('/api/v1/version').subscribe({
@@ -125,6 +129,13 @@ export class PipelineCreateComponent implements OnInit {
           this.schemaDbName = data.environment || 'datris';
         }
       }
+    });
+
+    // Load taps for "Create from Tap" option
+    this.tapService.getTaps().subscribe({
+      next: (data) => this.taps = (data || []).filter((t: any) => t.lastTestRunDataType || t.lastRunDataType)
+                        .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')),
+      error: () => {}
     });
 
     const editName = this.route.snapshot.paramMap.get('name');
@@ -408,6 +419,50 @@ export class PipelineCreateComponent implements OnInit {
         this.destType = 'pgvector';
       }
       this.onDestTypeChange();
+    }
+  }
+
+  onTapSelected(tapName: string): void {
+    const tap = this.taps.find(t => t.name === tapName);
+    if (!tap) return;
+
+    const dataType = tap.lastTestRunDataType || tap.lastRunDataType || '';
+    const columns = tap.lastTestRunColumns || tap.lastRunColumns || [];
+
+    // Map tap data type to pipeline source type
+    if (dataType === 'csv') {
+      this.sourceType = 'csv';
+      if (columns.length > 0) {
+        this.schemaFields = columns.map((name: string) => ({ name, type: 'string' }));
+      }
+    } else if (dataType === 'json') {
+      this.sourceType = 'json';
+      this.schemaFields = [{ name: '_json', type: 'string' }];
+    } else if (dataType === 'xml') {
+      this.sourceType = 'xml';
+      this.schemaFields = [{ name: '_xml', type: 'string' }];
+    }
+
+    this.sampleFileDetected = true;
+    this.onSourceTypeChange();
+    // Restore columns after onSourceTypeChange resets them for csv
+    if (dataType === 'csv' && columns.length > 0) {
+      this.schemaFields = columns.map((name: string) => ({ name, type: 'string' }));
+    }
+  }
+
+  getColumnPreview(): string {
+    const names = this.schemaFields.filter(f => f.name).map(f => f.name);
+    if (names.length <= 5) return names.join(', ');
+    return names.slice(0, 5).join(', ') + ', ...';
+  }
+
+  onPipelineSourceChange(): void {
+    if (this.pipelineSource === 'file') {
+      this.selectedTapName = '';
+      this.sampleFileDetected = false;
+      this.sourceType = 'csv';
+      this.schemaFields = [{ name: '', type: 'string' }];
     }
   }
 
@@ -942,6 +997,18 @@ export class PipelineCreateComponent implements OnInit {
 
     this.pipelineService.createPipeline(config).subscribe({
       next: () => {
+        // If created from a tap, link the tap to this pipeline
+        if (this.pipelineSource === 'tap' && this.selectedTapName) {
+          const tap = this.taps.find(t => t.name === this.selectedTapName);
+          if (tap) {
+            tap.targetPipeline = this.pipelineName;
+            this.tapService.createOrUpdateTap(tap).subscribe({
+              next: () => this.router.navigate(['/pipelines']),
+              error: () => this.router.navigate(['/pipelines'])
+            });
+            return;
+          }
+        }
         this.router.navigate(['/pipelines']);
       },
       error: (err: any) => {

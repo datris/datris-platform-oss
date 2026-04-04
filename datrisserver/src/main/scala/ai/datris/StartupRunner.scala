@@ -167,7 +167,8 @@ class StartupRunner extends ApplicationRunner {
             milvusSecretName,
             chromaSecretName,
             pgvectorSecretName,
-            multiTenant
+            multiTenant,
+            tapTableName = environment + "-tap"
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

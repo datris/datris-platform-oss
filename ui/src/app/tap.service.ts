@@ -1,0 +1,50 @@
+import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class TapService {
+  constructor(private http: HttpClient) { }
+
+  getTaps(): Observable<any[]> {
+    return this.http.get<any[]>('/api/v1/taps');
+  }
+
+  getTap(name: string): Observable<any> {
+    return this.http.get<any>('/api/v1/tap?name=' + encodeURIComponent(name));
+  }
+
+  createOrUpdateTap(config: any): Observable<any> {
+    return this.http.post<any>('/api/v1/tap', config);
+  }
+
+  deleteTap(name: string): Observable<any> {
+    return this.http.delete<any>('/api/v1/tap?name=' + encodeURIComponent(name));
+  }
+
+  generateCron(description: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/cron', { description });
+  }
+
+  generateScript(description: string, tapName: string, oldScriptPath?: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null });
+  }
+
+  testTap(config: any): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/test', config);
+  }
+
+  runTap(name: string, pushToPipeline: boolean = false): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/run', { name, pushToPipeline: String(pushToPipeline) });
+  }
+
+  fixScript(tapName: string, script: string, diagnosis: string, logs: string, error: string, oldScriptPath?: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/fix', { tapName, script, diagnosis, logs, error, oldScriptPath: oldScriptPath || null });
+  }
+
+  getPipelines(): Observable<any[]> {
+    return this.http.get<any[]>('/api/v1/pipelines');
+  }
+}

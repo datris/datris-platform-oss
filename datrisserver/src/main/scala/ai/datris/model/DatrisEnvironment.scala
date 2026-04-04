@@ -55,7 +55,8 @@ object DatrisEnvironment {
             milvusSecretName = env + "/milvus",
             chromaSecretName = env + "/chroma",
             pgvectorSecretName = env + "/pgvector",
-            aiConfig = tenantAiConfig
+            aiConfig = tenantAiConfig,
+            tapTableName = env + "-tap"
         )
     }
 }
@@ -88,5 +89,6 @@ case class DatrisEnvironment(
                                   milvusSecretName: String,
                                   chromaSecretName: String,
                                   pgvectorSecretName: String,
-                                  multiTenant: Boolean
+                                  multiTenant: Boolean,
+                                  tapTableName: String = null
                               )

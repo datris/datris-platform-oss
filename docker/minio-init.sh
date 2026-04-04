@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
 echo "Waiting for MinIO to be ready..."
@@ -13,18 +13,19 @@ mc mb --ignore-existing myminio/oss-raw-plus
 mc mb --ignore-existing myminio/oss-temp
 
 echo "Waiting for Pipeline server to be reachable..."
-until wget -q --spider http://pipeline:8080/api/v1/version 2>/dev/null; do
+until bash -c 'echo > /dev/tcp/datris/8080' 2>/dev/null; do
   sleep 3
 done
+echo "Pipeline server is reachable."
 
 echo "Configuring MinIO webhook notification endpoint..."
 mc admin config set myminio notify_webhook:1 \
-  endpoint=http://pipeline:8080/minio-events \
+  endpoint=http://datris:8080/minio-events \
   queue_limit=1000 \
   queue_dir=/tmp/minio-events
 
 echo "Restarting MinIO to apply notification config..."
-mc admin service restart myminio
+mc admin service restart myminio --json 2>/dev/null || true
 
 echo "Waiting for MinIO to come back..."
 sleep 5

@@ -505,6 +505,99 @@ def secrets(json_output):
 
 @cli.command()
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def taps(json_output):
+    """List all taps."""
+    result = mcp("list_taps")
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    if isinstance(result, list):
+        if not result:
+            click.echo("No taps created.")
+            return
+        for t in result:
+            name = t.get("name", "unknown")
+            pipeline = t.get("targetPipeline", "")
+            status = t.get("lastRunStatus", "never")
+            cron = t.get("cronExpression", "")
+            records = t.get("lastRunRecordCount", 0)
+            schedule = f" [{cron}]" if cron else ""
+            click.echo(f"  {name} → {pipeline}{schedule}  ({status}, {records} records)")
+    else:
+        click.echo(json.dumps(result, indent=2)[:500])
+
+
+@cli.group()
+def tap():
+    """Manage taps (create, run, delete)."""
+    pass
+
+
+@tap.command("create")
+@click.argument("description")
+@click.option("--pipeline", "-p", required=True, help="Target pipeline name")
+@click.option("--name", "-n", default=None, help="Tap name (default: derived from pipeline)")
+@click.option("--cron", default=None, help="CRON expression for scheduling (Quartz format)")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def tap_create(description, pipeline, name, cron, json_output):
+    """Create a tap from a plain-English description."""
+    tap_name = name or f"{pipeline}-tap"
+    click.echo(f"  Generating script for tap '{tap_name}'...")
+
+    args = {
+        "name": tap_name,
+        "description": description,
+        "target_pipeline": pipeline,
+    }
+    if cron:
+        args["cron_expression"] = cron
+
+    result = mcp("create_tap", args)
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    if isinstance(result, dict) and result.get("error"):
+        click.echo(f"  Error: {result['error'][:200]}")
+        sys.exit(1)
+    click.echo(f"  ✓ Tap '{tap_name}' created → {pipeline}")
+    if cron:
+        click.echo(f"  ✓ Schedule: {cron}")
+
+
+@tap.command("run")
+@click.argument("name")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def tap_run(name, json_output):
+    """Run a tap manually."""
+    click.echo(f"  Running tap '{name}'...")
+    result = mcp("run_tap", {"name": name})
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    if isinstance(result, dict):
+        if result.get("error"):
+            click.echo(f"  Error: {result['error'][:200]}")
+            sys.exit(1)
+        status = result.get("status", "unknown")
+        records = result.get("recordCount", 0)
+        click.echo(f"  ✓ {status} — {records} records fetched")
+    else:
+        click.echo(f"  {result}")
+
+
+@tap.command("delete")
+@click.argument("name")
+def tap_delete(name):
+    """Delete a tap."""
+    result = mcp("delete_tap", {"name": name})
+    if isinstance(result, dict) and result.get("error"):
+        click.echo(f"  Error: {result['error'][:200]}")
+        sys.exit(1)
+    click.echo(f"  ✓ Tap '{name}' deleted")
+
+
+@cli.command()
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
 def version(json_output):
     """Get server version."""
     result = mcp("get_version")

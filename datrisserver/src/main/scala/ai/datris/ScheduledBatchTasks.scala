@@ -11,7 +11,7 @@ import ai.datris.model.{ObjectStoreEventMessage, DatrisEnvironment, TenantContex
 import ai.datris.util.{NoSQLDbUtil, QueueUtil}
 import ai.datris.controller.{FileNotifier, JobRunner}
 import ai.datris.model._
-import ai.datris.util.DataPuller
+import ai.datris.util.{DataPuller, TapScheduler}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
@@ -34,6 +34,18 @@ class ScheduledBatchTasks {
         } catch {
             case e: Exception =>
                 logger.error("checkForDatabaseSourceQueries error: " + Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @Scheduled(fixedRateString = "${schedule.checkTapSchedules}")
+    private def checkTapSchedules(): Unit = {
+        try {
+            if(isAppInitialized) {
+                TapScheduler.checkSchedules()
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("checkTapSchedules error: " + Throwables.getStackTraceAsString(e))
         }
     }
 

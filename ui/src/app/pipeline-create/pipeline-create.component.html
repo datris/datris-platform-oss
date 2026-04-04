@@ -25,35 +25,68 @@
 
   <div class="form-card">
 
-    <!-- Step 1: Name + Sample File -->
+    <!-- Step 1: Name + Source -->
     <div *ngIf="step === 1">
-      <h2 class="step-title">Pipeline Name & Sample File</h2>
+      <h2 class="step-title">Pipeline Name & Data Source</h2>
       <div class="form-row">
         <label class="form-label">Pipeline Name</label>
         <input class="form-input" [(ngModel)]="pipelineName" placeholder="my_pipeline">
       </div>
-      <div class="form-row">
-        <label class="form-label">Upload a sample file (optional)</label>
-        <p class="form-hint">Upload a sample file to auto-detect the source type and generate the schema.</p>
-        <div class="file-upload-row">
-          <input type="file" (change)="onSampleFileSelected($event)" class="file-input">
-          <span class="analyzing-label" *ngIf="generatingSchema">Analyzing...</span>
+
+      <!-- Source toggle -->
+      <div class="source-toggle" *ngIf="!isEditMode">
+        <button class="toggle-btn" [class.active]="pipelineSource === 'tap'" (click)="pipelineSource = 'tap'; onPipelineSourceChange()">
+          <span class="material-icons">water_drop</span> From Tap
+        </button>
+        <button class="toggle-btn" [class.active]="pipelineSource === 'file'" (click)="pipelineSource = 'file'; onPipelineSourceChange()">
+          <span class="material-icons">upload_file</span> From Sample File
+        </button>
+      </div>
+
+      <!-- From Sample File -->
+      <div *ngIf="pipelineSource === 'file'">
+        <div class="form-row">
+          <label class="form-label">Upload a sample file (optional)</label>
+          <p class="form-hint">Upload a sample file to auto-detect the source type and generate the schema.</p>
+          <div class="file-upload-row">
+            <input type="file" (change)="onSampleFileSelected($event)" class="file-input">
+            <span class="analyzing-label" *ngIf="generatingSchema">Analyzing...</span>
+          </div>
+        </div>
+        <div class="info-box" *ngIf="sampleFileDetected">
+          Detected source type: <strong>{{ sourceType === 'unstructured' ? 'Document' : sourceType.toUpperCase() }}</strong>
+          <span *ngIf="schemaFields.length > 0 && sourceType !== 'unstructured'"> &mdash; {{ schemaFields.length }} fields detected</span>
+        </div>
+        <hr class="divider" *ngIf="!sampleFileDetected">
+        <div class="form-row" *ngIf="!sampleFileDetected">
+          <p class="form-hint">Or configure manually:</p>
+          <label class="form-label">Source Type</label>
+          <select class="form-input" [(ngModel)]="sourceType" (ngModelChange)="onSourceTypeChange()">
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+            <option value="xml">XML</option>
+            <option value="unstructured">Document (PDF, Word, Excel, PowerPoint, text, etc.)</option>
+          </select>
         </div>
       </div>
-      <div class="info-box" *ngIf="sampleFileDetected">
-        Detected source type: <strong>{{ sourceType === 'unstructured' ? 'Document' : sourceType.toUpperCase() }}</strong>
-        <span *ngIf="schemaFields.length > 0 && sourceType !== 'unstructured'"> &mdash; {{ schemaFields.length }} fields detected</span>
-      </div>
-      <hr class="divider" *ngIf="!sampleFileDetected">
-      <div class="form-row" *ngIf="!sampleFileDetected">
-        <p class="form-hint">Or configure manually:</p>
-        <label class="form-label">Source Type</label>
-        <select class="form-input" [(ngModel)]="sourceType" (ngModelChange)="onSourceTypeChange()">
-          <option value="csv">CSV</option>
-          <option value="json">JSON</option>
-          <option value="xml">XML</option>
-          <option value="unstructured">Document (PDF, Word, Excel, PowerPoint, text, etc.)</option>
-        </select>
+
+      <!-- From Tap -->
+      <div *ngIf="pipelineSource === 'tap'">
+        <div class="form-row">
+          <label class="form-label">Select a Tap</label>
+          <p class="form-hint">Choose a tap that has been tested. The data type and columns will be used to configure the pipeline.</p>
+          <select class="form-input" [(ngModel)]="selectedTapName" (ngModelChange)="onTapSelected($event)">
+            <option value="" disabled>Select a tap...</option>
+            <option *ngFor="let t of taps" [value]="t.name">{{ t.name }} &mdash; {{ (t.lastTestRunDataType || t.lastRunDataType).toUpperCase() }}, {{ t.lastTestRunRecordCount || t.lastRunRecordCount }} records</option>
+          </select>
+        </div>
+        <div class="info-box" *ngIf="selectedTapName && sampleFileDetected">
+          Source type: <strong>{{ sourceType.toUpperCase() }}</strong>
+          <span *ngIf="schemaFields.length > 0 && schemaFields[0].name"> &mdash; {{ schemaFields.length }} columns: {{ getColumnPreview() }}</span>
+        </div>
+        <div class="info-box warn" *ngIf="taps.length === 0">
+          No taps with test data found. Create and test a tap first in the Taps tab.
+        </div>
       </div>
     </div>
 

@@ -1059,6 +1059,70 @@ async def list_tools():
                 "properties": {},
             }
         ),
+
+        # --- Taps ---
+        Tool(
+            name="create_tap",
+            description="Create a tap — an AI-generated Python script that fetches data from an external source and pushes it into a pipeline. Describe what data you want to fetch, specify the target pipeline, and optionally set a CRON schedule.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Unique tap name (e.g., 'weather-data')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Plain-English description of what data to fetch (e.g., 'Fetch current weather for NYC from Open-Meteo API')"
+                    },
+                    "target_pipeline": {
+                        "type": "string",
+                        "description": "Name of the pipeline to push fetched data into"
+                    },
+                    "cron_expression": {
+                        "type": "string",
+                        "description": "Optional Quartz CRON expression for scheduling (e.g., '0 0 * * * ?' for hourly)"
+                    },
+                },
+                "required": ["name", "description", "target_pipeline"]
+            }
+        ),
+        Tool(
+            name="list_taps",
+            description="List all taps with their status, target pipeline, schedule, and last run info.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            }
+        ),
+        Tool(
+            name="run_tap",
+            description="Manually trigger a tap to run immediately. The tap's script will execute and push fetched data to the target pipeline.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap to run"
+                    },
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="delete_tap",
+            description="Delete a tap and its stored script.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap to delete"
+                    },
+                },
+                "required": ["name"]
+            }
+        ),
     ]
 
 
@@ -1440,6 +1504,74 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps(result)
         except requests.RequestException as e:
             return json.dumps({"error": f"Failed to reach Datris website: {e}"})
+
+    # --- Taps ---
+    elif name == "create_tap":
+        tap_name = args["name"]
+        description = args["description"]
+        target_pipeline = args["target_pipeline"]
+        cron_expression = args.get("cron_expression")
+
+        # Step 1: Generate script via AI
+        gen_result = _call("post", "/api/v1/tap/generate", json={"description": description, "tapName": tap_name})
+        try:
+            gen_data = json.loads(gen_result)
+            if "error" in gen_data:
+                return gen_result
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"error": f"Script generation failed: {gen_result[:200]}"})
+
+        # Step 2: Save the tap config
+        tap_config = {
+            "name": tap_name,
+            "description": description,
+            "scriptPath": gen_data.get("scriptPath"),
+            "targetPipeline": target_pipeline,
+            "packages": gen_data.get("packages"),
+            "enabled": True,
+        }
+        if cron_expression:
+            tap_config["cronExpression"] = cron_expression
+
+        save_result = _call("post", "/api/v1/tap", json=tap_config)
+        try:
+            saved = json.loads(save_result)
+            if "error" in saved:
+                return save_result
+            return json.dumps({"message": f"Tap '{tap_name}' created successfully", "tap": saved})
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"message": f"Tap '{tap_name}' created"})
+
+    elif name == "list_taps":
+        result = _call("get", "/api/v1/taps")
+        try:
+            taps = json.loads(result)
+            if isinstance(taps, list):
+                summary = []
+                for t in taps:
+                    summary.append({
+                        "name": t.get("name"),
+                        "description": t.get("description"),
+                        "targetPipeline": t.get("targetPipeline"),
+                        "cronExpression": t.get("cronExpression"),
+                        "enabled": t.get("enabled"),
+                        "lastRunStatus": t.get("lastRunStatus"),
+                        "lastRunTime": t.get("lastRunTime"),
+                        "lastRunRecordCount": t.get("lastRunRecordCount"),
+                        "lastTestRunStatus": t.get("lastTestRunStatus"),
+                        "lastTestRunTime": t.get("lastTestRunTime"),
+                        "lastTestRunRecordCount": t.get("lastTestRunRecordCount"),
+                    })
+                return json.dumps(summary, indent=2)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return result
+
+    elif name == "run_tap":
+        return _call("post", "/api/v1/tap/run", json={"name": args["name"]})
+
+    elif name == "delete_tap":
+        return _call("delete", f"/api/v1/tap?name={args['name']}")
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

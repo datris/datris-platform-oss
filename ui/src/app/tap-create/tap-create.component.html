@@ -1,0 +1,243 @@
+<div class="container">
+  <div class="page-header">
+    <h1 class="page-title">{{ isEditMode ? 'Edit Tap' : 'Create Tap' }}</h1>
+  </div>
+
+  <!-- Step indicator -->
+  <div class="steps">
+    <span class="step-dot" [class.active]="step >= 1" [class.current]="step === 1">1</span>
+    <span class="step-line" [class.active]="step >= 2"></span>
+    <span class="step-dot" [class.active]="step >= 2" [class.current]="step === 2">2</span>
+    <span class="step-line" [class.active]="step >= 3"></span>
+    <span class="step-dot" [class.active]="step >= 3" [class.current]="step === 3">3</span>
+    <span class="step-line" [class.active]="step >= 4"></span>
+    <span class="step-dot" [class.active]="step >= 4" [class.current]="step === 4">4</span>
+    <span class="step-line" [class.active]="step >= 5"></span>
+    <span class="step-dot" [class.active]="step >= 5" [class.current]="step === 5">5</span>
+  </div>
+
+  <div class="form-card">
+    <!-- Step 1: Describe -->
+    <div *ngIf="step === 1">
+      <h2 class="step-title">Describe Your Data Source</h2>
+      <p class="step-desc">Give your tap a name and describe in plain English what data you want to fetch.</p>
+
+      <div class="form-group">
+        <label class="form-label">Tap Name</label>
+        <input class="form-input" [(ngModel)]="tapName" placeholder="e.g., weather-data" [readonly]="isEditMode">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">What data do you want to fetch?</label>
+        <textarea class="form-textarea" [(ngModel)]="description" rows="4"
+                  placeholder="e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed"></textarea>
+      </div>
+    </div>
+
+    <!-- Step 2: Generate -->
+    <div *ngIf="step === 2">
+      <h2 class="step-title">Generate Script</h2>
+      <p class="step-desc">Datris will use AI to generate a Python script based on your description.</p>
+
+      <div class="form-group">
+        <label class="form-label">Tap Instruction</label>
+        <textarea class="form-textarea" [(ngModel)]="description" rows="3"
+                  placeholder="Describe what data to fetch..."></textarea>
+      </div>
+
+      <button class="generate-btn" (click)="generateScript()" [disabled]="generating || !description.trim()">
+        <span class="material-icons">{{ generating ? 'hourglass_empty' : 'auto_awesome' }}</span>
+        {{ generating ? 'Generating...' : script ? 'Regenerate Script' : 'Generate Script' }}
+      </button>
+
+      <div class="code-preview" *ngIf="script">
+        <pre>{{ script }}</pre>
+      </div>
+
+      <div class="packages-info" *ngIf="packages.length > 0">
+        <span class="packages-label">Required packages:</span>
+        <span class="package-chip" *ngFor="let pkg of packages">{{ pkg }}</span>
+      </div>
+    </div>
+
+    <!-- Step 3: Edit & Test -->
+    <div *ngIf="step === 3">
+      <h2 class="step-title">Edit & Test</h2>
+      <p class="step-desc">Review and edit the generated script, manage packages, then test it.</p>
+
+      <div class="form-group">
+        <label class="form-label">Instruction</label>
+        <div class="instruction-row">
+          <textarea class="form-textarea" [(ngModel)]="description" rows="4"></textarea>
+          <button class="generate-btn regen-btn" (click)="regenerateScript()" [disabled]="generating || !description.trim()">
+            <span class="material-icons">{{ generating ? 'hourglass_empty' : 'auto_awesome' }}</span>
+            {{ generating ? 'Regenerating...' : 'Regenerate' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Python Script</label>
+        <textarea class="form-textarea code-editor" [(ngModel)]="script" rows="16"></textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Extra Pip Packages</label>
+        <div class="packages-list">
+          <div class="package-row" *ngFor="let pkg of packages; let i = index; trackBy: trackByIndex">
+            <input class="form-input package-input" [(ngModel)]="packages[i]" placeholder="package-name">
+            <button class="remove-btn" (click)="removePackage(i)"><span class="material-icons">close</span></button>
+          </div>
+          <button class="add-btn" (click)="addPackage()">+ Add Package</button>
+        </div>
+      </div>
+
+      <div class="diagnosis-applied" *ngIf="diagnosisApplied">
+        <span class="material-icons">check_circle</span>
+        AI diagnosis has been applied to the script. Run the test again to verify the fix.
+      </div>
+
+      <button class="test-btn" (click)="testScript()" [disabled]="testing">
+        <span class="material-icons">{{ testing ? 'hourglass_empty' : 'science' }}</span>
+        {{ testing ? 'Testing...' : 'Test Script' }}
+      </button>
+
+      <div class="testing-indicator" *ngIf="testing">
+        <div class="spinner"></div>
+        <span>Running script — this may take a few minutes for large data fetches...</span>
+      </div>
+
+      <div class="test-logs" *ngIf="testLogs">
+        <div class="logs-header">Script Output</div>
+        <pre class="logs-content">{{ testLogs }}</pre>
+      </div>
+
+      <div class="test-results" *ngIf="testRecordCount > 0">
+        <div class="test-success">
+          Fetched {{ testRecordCount }} records
+          <span class="datatype-badge" *ngIf="testDataType">{{ testDataType.toUpperCase() }}</span>
+        </div>
+
+        <!-- Table view for array of objects -->
+        <div class="preview-table-wrap" *ngIf="getTestColumns().length > 0">
+          <table class="preview-table">
+            <thead>
+              <tr>
+                <th *ngFor="let col of getTestColumns()">{{ col }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let row of getPreviewRows()">
+                <td *ngFor="let col of getTestColumns()">{{ row[col] }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="preview-note" *ngIf="testRecordCount > 10">Showing first 10 of {{ testRecordCount }} records</div>
+
+        <!-- Raw JSON fallback if records aren't tabular -->
+        <div class="code-preview" *ngIf="getTestColumns().length === 0 && testRecords">
+          <pre>{{ testRecords | json }}</pre>
+        </div>
+      </div>
+
+      <div class="test-results" *ngIf="testRecordCount === 0 && testError === '' && !testing && testRecords !== null">
+        <div class="test-success">Test completed — 0 records returned</div>
+      </div>
+
+      <div class="error-box" *ngIf="testError">{{ testError }}</div>
+
+      <div class="ai-explanation" *ngIf="aiExplanation">
+        <div class="ai-explanation-header">
+          <span class="material-icons">auto_awesome</span>
+          AI Diagnosis
+        </div>
+        <div class="ai-explanation-body">{{ aiExplanation }}</div>
+        <div class="ai-explanation-footer">
+          <button class="apply-diagnosis-btn" (click)="applyDiagnosis()" [disabled]="applyingDiagnosis">
+            <span class="material-icons">{{ applyingDiagnosis ? 'hourglass_empty' : 'healing' }}</span>
+            {{ applyingDiagnosis ? 'Regenerating...' : 'Apply Diagnosis to Script' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: Schedule -->
+    <div *ngIf="step === 4">
+      <h2 class="step-title">Schedule (Optional)</h2>
+      <p class="step-desc">Set up a CRON schedule to run this tap automatically.</p>
+
+      <div class="form-group">
+        <label class="toggle-row">
+          <input type="checkbox" [(ngModel)]="useSchedule">
+          <span>Enable scheduled runs</span>
+        </label>
+      </div>
+
+      <div *ngIf="useSchedule">
+        <div class="form-group">
+          <label class="form-label">Preset</label>
+          <div class="preset-row">
+            <button class="preset-btn" [class.active]="cronPreset === 'hourly'" (click)="setCronPreset('hourly')">Every Hour</button>
+            <button class="preset-btn" [class.active]="cronPreset === 'daily'" (click)="setCronPreset('daily')">Daily (Midnight)</button>
+            <button class="preset-btn" [class.active]="cronPreset === 'weekly'" (click)="setCronPreset('weekly')">Weekly (Monday)</button>
+            <button class="preset-btn" [class.active]="cronPreset === 'custom'" (click)="setCronPreset('custom')">Custom</button>
+          </div>
+        </div>
+
+        <div class="form-group" *ngIf="cronPreset === 'custom'">
+          <label class="form-label">Describe your schedule</label>
+          <div class="cron-ai-row">
+            <input class="form-input" [(ngModel)]="cronPrompt" placeholder="e.g., Every weekday at 4pm ET, Every 15 minutes, Twice a day at 8am and 6pm">
+            <button class="generate-cron-btn" (click)="generateCron()" [disabled]="generatingCron || !cronPrompt.trim()">
+              <span class="material-icons">{{ generatingCron ? 'hourglass_empty' : 'auto_awesome' }}</span>
+              {{ generatingCron ? 'Generating...' : 'Generate' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">CRON Expression (Quartz format)</label>
+          <input class="form-input cron-input" [(ngModel)]="cronExpression" placeholder="0 0 * * * ?">
+        </div>
+
+        <div class="form-group">
+          <label class="toggle-row">
+            <input type="checkbox" [(ngModel)]="enabled">
+            <span>Enabled</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 5: Review & Save -->
+    <div *ngIf="step === 5">
+      <h2 class="step-title">Review & Save</h2>
+
+      <div class="review-card">
+        <div class="review-row"><span class="review-label">Name</span><span class="review-value">{{ tapName }}</span></div>
+        <div class="review-row"><span class="review-label">Description</span><span class="review-value">{{ description }}</span></div>
+        <div class="review-row" *ngIf="packages.length > 0"><span class="review-label">Packages</span><span class="review-value">{{ packages.join(', ') }}</span></div>
+        <div class="review-row" *ngIf="testDataType"><span class="review-label">Data Type</span><span class="review-value"><span class="datatype-badge">{{ testDataType.toUpperCase() }}</span></span></div>
+        <div class="review-row" *ngIf="testColumns.length > 0"><span class="review-label">Columns</span><span class="review-value">{{ testColumns.join(', ') }}</span></div>
+        <div class="review-row" *ngIf="testRecordCount > 0"><span class="review-label">Test Records</span><span class="review-value">{{ testRecordCount }}</span></div>
+        <div class="review-row"><span class="review-label">Schedule</span><span class="review-value">{{ useSchedule ? cronExpression : 'None (manual only)' }}</span></div>
+        <div class="review-row"><span class="review-label">Enabled</span><span class="review-value">{{ enabled ? 'Yes' : 'No' }}</span></div>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div class="error-box" *ngIf="error">{{ error }}</div>
+
+    <!-- Navigation -->
+    <div class="nav-buttons">
+      <button class="secondary-btn" *ngIf="step > 1" (click)="prevStep()" [disabled]="isBusy()">Back</button>
+      <button class="secondary-btn" routerLink="/taps" *ngIf="step === 1">Cancel</button>
+      <div class="spacer"></div>
+      <button class="primary-btn" *ngIf="step < 5" (click)="nextStep()" [disabled]="isBusy() || (step === 3 && scriptDirty && !testPassed())">Next</button>
+      <button class="primary-btn" *ngIf="step === 5" (click)="save()" [disabled]="saving || isBusy()">
+        {{ saving ? 'Saving...' : 'Save Tap' }}
+      </button>
+    </div>
+  </div>
+</div>

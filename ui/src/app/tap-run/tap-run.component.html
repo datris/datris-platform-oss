@@ -1,0 +1,86 @@
+<div class="container">
+  <div class="page-header">
+    <h1 class="page-title">Test Tap: {{ tapName }}</h1>
+    <button class="back-btn" (click)="backToTaps()">
+      <span class="material-icons">arrow_back</span> Back to Taps
+    </button>
+  </div>
+
+  <!-- Instruction -->
+  <div class="instruction-box" *ngIf="description">
+    <span class="instruction-label">Instruction:</span> {{ description }}
+  </div>
+
+  <!-- Loading -->
+  <div class="loading" *ngIf="loading">Loading tap configuration...</div>
+
+  <!-- Controls -->
+  <div class="controls" *ngIf="!loading">
+    <div class="pipeline-option" *ngIf="targetPipeline">
+      <label class="toggle-row">
+        <input type="checkbox" [(ngModel)]="pushToPipeline">
+        <span>Send data to pipeline: <strong>{{ targetPipeline }}</strong></span>
+      </label>
+    </div>
+
+    <button class="run-btn" (click)="runTap()" [disabled]="running">
+      <span class="material-icons">{{ running ? 'hourglass_empty' : 'play_arrow' }}</span>
+      {{ running ? 'Running...' : 'Run Test' }}
+    </button>
+  </div>
+
+  <!-- Running indicator -->
+  <div class="running-card" *ngIf="running">
+    <div class="spinner"></div>
+    <div class="running-text">
+      <div class="running-title">Executing tap script...</div>
+      <div class="running-hint">This may take a few minutes depending on the data source.</div>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <div class="status-card" *ngIf="hasRun && !running" [ngClass]="status === 'success' ? 'status-success' : 'status-failure'">
+    <span class="material-icons status-icon">{{ status === 'success' ? 'check_circle' : 'error' }}</span>
+    <div class="status-text">
+      <div class="status-title">{{ status === 'success' ? 'Tap completed successfully' : 'Tap execution failed' }}</div>
+      <div class="status-detail" *ngIf="status === 'success'">
+        Fetched {{ recordCount }} records{{ pushToPipeline && targetPipeline ? ' — sent to pipeline: ' + targetPipeline : '' }}
+      </div>
+    </div>
+  </div>
+
+  <!-- Error -->
+  <div class="error-box" *ngIf="error">{{ error }}</div>
+
+  <!-- Logs -->
+  <div class="section" *ngIf="logs">
+    <div class="section-header">Script Output</div>
+    <pre class="logs-content">{{ logs }}</pre>
+  </div>
+
+  <!-- Results table -->
+  <div class="section" *ngIf="recordCount > 0 && getColumns().length > 0">
+    <div class="section-header">Results ({{ recordCount }} records)</div>
+    <div class="table-wrap">
+      <table class="results-table">
+        <thead>
+          <tr>
+            <th *ngFor="let col of getColumns()">{{ col }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let row of getPreviewRows()">
+            <td *ngFor="let col of getColumns()">{{ row[col] }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="preview-note" *ngIf="recordCount > 20">Showing first 20 of {{ recordCount }} records</div>
+  </div>
+
+  <!-- Actions after run -->
+  <div class="actions" *ngIf="hasRun && !running">
+    <button class="secondary-btn" (click)="backToTaps()">Back to Taps</button>
+    <button class="primary-btn" (click)="runTap()">Run Again</button>
+  </div>
+</div>

@@ -26,6 +26,7 @@ schedule:
   checkFileNotifierQueue: "5000"
   findJobsToStart: "5000"
   checkDatabaseSourceQueries: "30000"
+  checkTapSchedules: "30000"
 environment: oss
 useApiKeys: "false"
 multiTenant: "false"
