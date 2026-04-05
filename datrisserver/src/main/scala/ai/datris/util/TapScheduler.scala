@@ -9,7 +9,8 @@ import ai.datris.model.DatrisEnvironment
 import org.quartz.CronExpression
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.util.Date
+import java.text.SimpleDateFormat
+import java.util.{Date, TimeZone}
 
 object TapScheduler {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -27,7 +28,9 @@ object TapScheduler {
                             // Never run before — wait for the first scheduled time
                             false
                         } else {
-                            val lastRun = Date.from(java.time.Instant.parse(tap.lastRunTime))
+                            val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+                            sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+                            val lastRun = sdf.parse(tap.lastRunTime)
                             val nextRun = cron.getNextValidTimeAfter(lastRun)
                             now.after(nextRun)
                         }

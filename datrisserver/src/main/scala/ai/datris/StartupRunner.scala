@@ -107,6 +107,12 @@ class StartupRunner extends ApplicationRunner {
     @Value("${tapScriptTimeoutSeconds:300}")
     var tapScriptTimeoutSeconds: Int = _
 
+    @Value("${dateFormat:yyyy-MM-dd HH:mm:ss z}")
+    var dateFormat: String = _
+
+    @Value("${dateTimezone:UTC}")
+    var dateTimezone: String = _
+
     @Override
     def run(args: ApplicationArguments): Unit =  {
         initDatrisEnvironment()
@@ -173,7 +179,9 @@ class StartupRunner extends ApplicationRunner {
             multiTenant,
             tapTableName = environment + "-tap",
             tapLogTableName = environment + "-tap-log",
-            tapScriptTimeoutSeconds = tapScriptTimeoutSeconds
+            tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
+            dateFormat = dateFormat,
+            dateTimezone = dateTimezone
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

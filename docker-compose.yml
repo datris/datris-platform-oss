@@ -2,6 +2,10 @@ networks:
   datris-net:
     driver: bridge
 
+volumes:
+  pip-cache:
+  pip-packages:
+
 services:
   minio:
     image: minio/minio:latest
@@ -142,6 +146,8 @@ services:
       VAULT_TOKEN: root-token
     volumes:
       - ./docker/config:/config
+      - pip-cache:/root/.cache/pip
+      - pip-packages:/usr/local/lib/python3.12/dist-packages
     networks:
       - datris-net
 

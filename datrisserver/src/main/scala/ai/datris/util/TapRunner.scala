@@ -10,7 +10,8 @@ import ai.datris.controller.{JobRunner, StreamNotifier}
 import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.time.Instant
+import java.text.SimpleDateFormat
+import java.util.{Date, TimeZone}
 
 object TapRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -23,7 +24,9 @@ object TapRunner {
      * @return TapScriptResult with fetched records
      */
     def run(tapConfig: TapConfig, pushToPipeline: Boolean = true): TapScriptResult = {
-        val now = Instant.now().toString
+        val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+        sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+        val now = sdf.format(new Date())
         val startMs = System.currentTimeMillis()
 
         // Only update status in DB for real runs, not tests

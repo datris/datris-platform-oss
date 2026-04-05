@@ -93,5 +93,7 @@ case class DatrisEnvironment(
                                   multiTenant: Boolean,
                                   tapTableName: String = null,
                                   tapLogTableName: String = null,
-                                  tapScriptTimeoutSeconds: Int = 300
+                                  tapScriptTimeoutSeconds: Int = 300,
+                                  dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
+                                  dateTimezone: String = "UTC"
                               )

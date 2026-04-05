@@ -339,6 +339,58 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     }
   }
 
+  describeCron(expr: string): string {
+    if (!expr || !expr.trim()) return '';
+    const parts = expr.trim().split(/\s+/);
+    if (parts.length < 6) return expr;
+
+    const [sec, min, hour, dom, mon, dow] = parts;
+
+    // Common presets
+    if (sec === '0' && min === '0' && hour === '0' && dom === '*' && mon === '*' && dow === '?')
+      return 'Every day at midnight';
+    if (sec === '0' && min === '0' && hour === '*' && dom === '*' && mon === '*' && dow === '?')
+      return 'Every hour';
+    if (sec === '0' && min === '0' && hour === '0' && dom === '?' && mon === '*' && dow === 'MON')
+      return 'Every Monday at midnight';
+
+    // Build a readable description
+    const describePart = (val: string, unit: string): string => {
+      if (val === '*' || val === '?') return '';
+      if (val.includes('/')) {
+        const [, interval] = val.split('/');
+        return `every ${interval} ${unit}${parseInt(interval) > 1 ? 's' : ''}`;
+      }
+      if (val.includes(',')) return `${unit}s ${val}`;
+      return `${unit} ${val}`;
+    };
+
+    const pieces: string[] = [];
+    const hourDesc = describePart(hour, 'hour');
+    const minDesc = describePart(min, 'minute');
+    const domDesc = describePart(dom, 'day');
+    const monDesc = describePart(mon, 'month');
+    const dowDesc = dow !== '?' && dow !== '*' ? `on ${dow}` : '';
+
+    if (hour !== '*' && hour !== '?' && !hour.includes('/')) {
+      const h = parseInt(hour);
+      const m = parseInt(min) || 0;
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+      const mStr = m < 10 ? '0' + m : '' + m;
+      pieces.push(`at ${h12}:${mStr} ${ampm}`);
+    } else {
+      if (hourDesc) pieces.push(hourDesc);
+      if (minDesc) pieces.push(minDesc);
+    }
+
+    if (domDesc) pieces.push(domDesc);
+    if (monDesc) pieces.push(monDesc);
+    if (dowDesc) pieces.push(dowDesc);
+
+    return pieces.length > 0 ? pieces.join(', ') : expr;
+  }
+
   addPackage(): void {
     this.packages.push('');
   }

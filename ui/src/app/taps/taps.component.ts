@@ -200,10 +200,6 @@ export class TapsComponent implements OnInit, OnDestroy {
 
   formatTime(time: string): string {
     if (!time) return '-';
-    try {
-      return new Date(time).toLocaleString();
-    } catch {
-      return time;
-    }
+    return time;
   }
 }

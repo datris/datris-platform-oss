@@ -97,6 +97,11 @@
         {{ generating ? 'Generating...' : script ? 'Regenerate Script' : 'Generate Script' }}
       </button>
 
+      <div class="testing-indicator" *ngIf="generating">
+        <div class="spinner"></div>
+        <span>Generating script — this may take a minute...</span>
+      </div>
+
       <div class="code-preview" *ngIf="script">
         <pre>{{ script }}</pre>
       </div>
@@ -205,6 +210,10 @@
             <span class="material-icons">{{ applyingDiagnosis ? 'hourglass_empty' : 'healing' }}</span>
             {{ applyingDiagnosis ? 'Regenerating...' : 'Apply Diagnosis to Script' }}
           </button>
+          <div class="testing-indicator" *ngIf="applyingDiagnosis">
+            <div class="spinner"></div>
+            <span>Applying AI diagnosis — regenerating script...</span>
+          </div>
         </div>
       </div>
     </div>
@@ -269,7 +278,7 @@
         <div class="review-row" *ngIf="testDataType"><span class="review-label">Data Type</span><span class="review-value"><span class="datatype-badge">{{ testDataType.toUpperCase() }}</span></span></div>
         <div class="review-row" *ngIf="testColumns.length > 0"><span class="review-label">Columns</span><span class="review-value">{{ testColumns.join(', ') }}</span></div>
         <div class="review-row" *ngIf="testRecordCount > 0"><span class="review-label">Test Records</span><span class="review-value">{{ testRecordCount }}</span></div>
-        <div class="review-row"><span class="review-label">Schedule</span><span class="review-value">{{ useSchedule ? cronExpression : 'None (manual only)' }}</span></div>
+        <div class="review-row"><span class="review-label">Schedule</span><span class="review-value">{{ useSchedule ? cronExpression + ' — ' + describeCron(cronExpression) : 'None (manual only)' }}</span></div>
         <div class="review-row"><span class="review-label">Enabled</span><span class="review-value">{{ enabled ? 'Yes' : 'No' }}</span></div>
       </div>
     </div>

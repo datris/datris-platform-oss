@@ -28,6 +28,8 @@ schedule:
   checkDatabaseSourceQueries: "30000"
   checkTapSchedules: "30000"
 tapScriptTimeoutSeconds: "300"
+dateFormat: "yyyy-MM-dd HH:mm:ss z"
+dateTimezone: "America/New_York"
 environment: oss
 useApiKeys: "false"
 multiTenant: "false"

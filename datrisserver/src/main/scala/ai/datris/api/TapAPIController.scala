@@ -105,7 +105,9 @@ class TapAPIController {
 
             // Set timestamps
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
-            val now = Instant.now().toString
+            val sdf2 = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+            sdf2.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+            val now = sdf2.format(new java.util.Date())
             val configToSave = if (existing != null)
                 tapConfig.copy(createdAt = existing.createdAt, updatedAt = now)
             else
@@ -387,7 +389,9 @@ class TapAPIController {
 
             // Save test run status when not pushing to pipeline
             if (!pushToPipeline) {
-                val now = java.time.Instant.now().toString
+                val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+                sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+                val now = sdf.format(new java.util.Date())
                 val updated = tapConfig.copy(
                     lastTestRunStatus = if (result.error == null) "success" else "failure",
                     lastTestRunTime = now,

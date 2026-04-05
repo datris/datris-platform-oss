@@ -294,7 +294,8 @@ class Transformation(jobContext: JobContext) {
         columnMap.foreach { case (key, value) => bindings.put(key, value) }
 
         // Add the _pipelinetimestamp as the last parameter
-        val formatter= new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS z")
+        val formatter = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+        formatter.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
         val pipelineTimestamp = formatter.format(new Date(System.currentTimeMillis()))
         bindings.put("_pipelinetimestamp", pipelineTimestamp)
 
