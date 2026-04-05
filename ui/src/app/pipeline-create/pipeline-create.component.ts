@@ -426,6 +426,11 @@ export class PipelineCreateComponent implements OnInit {
     const tap = this.taps.find(t => t.name === tapName);
     if (!tap) return;
 
+    // Derive pipeline name from tap name if not set
+    if (!this.pipelineName.trim()) {
+      this.pipelineName = tapName.replace(/-tap$/, '') + '-pipeline';
+    }
+
     const dataType = tap.lastTestRunDataType || tap.lastRunDataType || '';
     const columns = tap.lastTestRunColumns || tap.lastRunColumns || [];
 
@@ -482,10 +487,7 @@ export class PipelineCreateComponent implements OnInit {
     const input = event.target as HTMLInputElement;
     if (input.files && input.files.length > 0) {
       this.sampleFile = input.files[0];
-      // Auto-analyze if pipeline name is set
-      if (this.pipelineName.trim()) {
-        this.analyzeSampleFile();
-      }
+      this.analyzeSampleFile();
     }
   }
 
@@ -561,10 +563,7 @@ export class PipelineCreateComponent implements OnInit {
   }
 
   analyzeSampleFile(): void {
-    if (!this.sampleFile || !this.pipelineName.trim()) {
-      this.error = !this.pipelineName.trim() ? 'Pipeline name is required' : 'Please select a file';
-      return;
-    }
+    if (!this.sampleFile) return;
 
     const filename = this.sampleFile.name;
     const detectedType = this.detectSourceType(filename);
@@ -591,7 +590,7 @@ export class PipelineCreateComponent implements OnInit {
       this.error = '';
 
       this.pipelineService.generateSchema(
-        this.sampleFile, this.pipelineName,
+        this.sampleFile, this.pipelineName.trim() || 'temp_schema_detect',
         detectedType === 'csv' ? this.csvDelimiter : undefined,
         detectedType === 'csv' ? this.csvHeader : undefined
       ).subscribe({
@@ -644,10 +643,6 @@ export class PipelineCreateComponent implements OnInit {
     }
     if (this.step === 1 && this.generatingSchema) {
       this.error = 'Please wait for the file analysis to complete';
-      return;
-    }
-    if (this.step === 1 && this.sampleFile && !this.sampleFileDetected) {
-      this.error = 'Please wait for the file analysis to complete or enter a pipeline name first';
       return;
     }
 

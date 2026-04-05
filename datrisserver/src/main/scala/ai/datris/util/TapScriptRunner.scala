@@ -19,7 +19,7 @@ case class TapScriptResult(records: String, recordCount: Int, error: String, log
 
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private val SCRIPT_TIMEOUT_SECONDS = 300
+    private def scriptTimeoutSeconds: Int = DatrisEnvironment.current.tapScriptTimeoutSeconds
 
     private val WRAPPER_TEMPLATE =
         """import json, sys, os, importlib.util
@@ -80,8 +80,19 @@ object TapScriptRunner {
             Files.write(scriptFile, scriptContent.getBytes("UTF-8"))
             Files.write(wrapperFile, WRAPPER_TEMPLATE.getBytes("UTF-8"))
 
-            // Step 4: Execute the wrapper
-            val (rawOutput, logs) = executeWithTimeout(wrapperFile.toString, scriptFile.toString, SCRIPT_TIMEOUT_SECONDS)
+            // Step 4: Load secrets as env vars if configured
+            val secretEnvVars: Seq[(String, String)] = if (tapConfig.secretName != null && tapConfig.secretName.nonEmpty) {
+                val secretPath = DatrisEnvironment.current.environment + "/" + tapConfig.secretName
+                logger.info("TapScriptRunner: loading secrets from: " + secretPath)
+                SecretsUtil.getSecretMap(secretPath).map(_.asScala.filterNot(_._1 == "_type").toSeq).getOrElse(Seq.empty)
+            } else Seq.empty
+
+            // Always inject DATRIS_DATABASE so scripts can discover the correct database name
+            val platformEnvVars = Seq("DATRIS_DATABASE" -> DatrisEnvironment.current.environment)
+            val allEnvVars = platformEnvVars ++ secretEnvVars
+
+            // Step 5: Execute the wrapper
+            val (rawOutput, logs) = executeWithTimeout(wrapperFile.toString, scriptFile.toString, scriptTimeoutSeconds, allEnvVars)
             logger.info("TapScriptRunner: script executed, output length: " + rawOutput.length + " chars")
             if (logs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + logs)
 
@@ -139,7 +150,7 @@ object TapScriptRunner {
         }
     }
 
-    private def executeWithTimeout(wrapperPath: String, scriptPath: String, timeoutSec: Int): (String, String) = {
+    private def executeWithTimeout(wrapperPath: String, scriptPath: String, timeoutSec: Int, envVars: Seq[(String, String)] = Seq.empty): (String, String) = {
         val stdout = new StringBuilder
         val stderr = new StringBuilder
         val processLogger = ProcessLogger(
@@ -147,7 +158,7 @@ object TapScriptRunner {
             line => stderr.append(line).append("\n")
         )
 
-        val process = Process(Seq("python3", wrapperPath, scriptPath))
+        val process = Process(Seq("python3", wrapperPath, scriptPath), None, envVars: _*)
         val future = Future {
             process.!(processLogger)
         }

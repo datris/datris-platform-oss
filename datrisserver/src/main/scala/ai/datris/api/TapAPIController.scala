@@ -67,6 +67,32 @@ class TapAPIController {
         }
     }
 
+    @GetMapping(path = Array("/tap/logs"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getTapLogs(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                   @RequestParam name: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /tap/logs called for tap: " + name)
+            APIKeyValidator.validate(apiKey)
+
+            val allKeys = NoSQLDbUtil.getItemsKeysByKeyName(DatrisEnvironment.current.tapLogTableName, "key")
+            val tapKeys = allKeys.filter(_.startsWith(name + "|")).sorted.reverse.take(50)
+
+            val gson = new Gson
+            val logs = tapKeys.flatMap(key => {
+                val json = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value").orNull
+                if (json != null) {
+                    Some(gson.fromJson(json, classOf[ai.datris.model.TapRunLog]))
+                } else None
+            })
+
+            new ResponseEntity[String](gson.toJson(logs.asJava), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @PostMapping(path = Array("/tap"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def createOrUpdateTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                           @RequestBody tapConfig: TapConfig): ResponseEntity[String] = {
@@ -163,13 +189,14 @@ class TapAPIController {
             val description = body.get("description")
             val tapName = Option(body.get("tapName")).getOrElse("tap-" + System.currentTimeMillis())
             val oldScriptPath = body.get("oldScriptPath")
+            val secretName = body.get("secretName")
             logger.info("API endpoint POST /tap/generate called, tapName: " + tapName)
             APIKeyValidator.validate(apiKey)
 
             if (description == null || description.isEmpty)
                 throw new DatrisException("Description is required")
 
-            val result = TapScriptGenerator.generate(description, tapName, oldScriptPath)
+            val result = TapScriptGenerator.generate(description, tapName, oldScriptPath, secretName)
 
             // Update scriptPath in MongoDB if tap already exists
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
@@ -233,10 +260,17 @@ class TapAPIController {
             val extracted = AIUtil.extractText(responseText)
             val cleaned = cleanAIResponse(extracted)
 
+            // Extract JSON from the response — AI may include text before/after the JSON
+            val jsonStr = {
+                val start = cleaned.indexOf('{')
+                val end = cleaned.lastIndexOf('}')
+                if (start >= 0 && end > start) cleaned.substring(start, end + 1) else cleaned
+            }
+
             // Try parsing as JSON first; if that fails, treat the whole response as a script
             val (fixedScript, packages) = try {
                 val gson2 = new Gson
-                val result = gson2.fromJson(cleaned, classOf[java.util.Map[String, Any]])
+                val result = gson2.fromJson(jsonStr, classOf[java.util.Map[String, Any]])
                 val s = Option(result.get("script")).map(_.toString).getOrElse(cleaned)
                 val p: java.util.List[String] = {
                     val raw = result.get("packages")

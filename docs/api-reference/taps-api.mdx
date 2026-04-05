@@ -1,0 +1,216 @@
+---
+title: "Taps API"
+description: "API endpoints for managing taps"
+---
+
+## List Taps
+
+```
+GET /api/v1/taps
+```
+
+Returns all registered taps.
+
+**Response:** JSON array of tap configurations.
+
+## Get Tap
+
+```
+GET /api/v1/tap?name={tapName}
+```
+
+Returns a single tap configuration, including the script content from MinIO.
+
+**Parameters:**
+| Parameter | Type | Description |
+|---|---|---|
+| `name` | query | Tap name (required) |
+
+## Create or Update Tap
+
+```
+POST /api/v1/tap
+Content-Type: application/json
+```
+
+**Body:**
+```json
+{
+  "name": "stock-prices-tap",
+  "description": "Fetch daily stock prices from yfinance",
+  "scriptPath": "tap-scripts/stock-prices-tap_a1b2c3d4.py",
+  "targetPipeline": "stock-prices-pipeline",
+  "packages": ["yfinance"],
+  "secretName": "my-api-creds",
+  "cronExpression": "0 0 0 * * ?",
+  "enabled": true
+}
+```
+
+## Delete Tap
+
+```
+DELETE /api/v1/tap?name={tapName}
+```
+
+Deletes the tap configuration and its script from MinIO.
+
+## Generate Script (AI)
+
+```
+POST /api/v1/tap/generate
+Content-Type: application/json
+```
+
+Uses AI to generate a Python `fetch()` script from a plain-English description.
+
+**Body:**
+```json
+{
+  "description": "Fetch daily stock prices for S&P 500 from yfinance",
+  "tapName": "stock-prices-tap",
+  "oldScriptPath": "tap-scripts/old_script.py",
+  "secretName": "my-api-creds"
+}
+```
+
+**Response:**
+```json
+{
+  "script": "import requests\n\ndef fetch():\n    ...",
+  "packages": ["yfinance"],
+  "scriptPath": "tap-scripts/stock-prices-tap_a1b2c3d4.py"
+}
+```
+
+## Fix Script (AI Diagnosis)
+
+```
+POST /api/v1/tap/fix
+Content-Type: application/json
+```
+
+Uses AI to fix a script based on a diagnosis of what went wrong.
+
+**Body:**
+```json
+{
+  "tapName": "stock-prices-tap",
+  "script": "current script content...",
+  "diagnosis": "The API endpoint is wrong...",
+  "logs": "script output logs...",
+  "error": "error message...",
+  "oldScriptPath": "tap-scripts/old_script.py"
+}
+```
+
+**Response:** Same format as Generate Script.
+
+## Test Tap
+
+```
+POST /api/v1/tap/test
+Content-Type: application/json
+```
+
+Executes the tap script without sending data to a pipeline. Returns results, logs, and AI diagnosis if issues detected.
+
+**Body:** A TapConfig JSON object (same as Create).
+
+**Response:**
+```json
+{
+  "records": [{"ticker": "AAPL", "close": 255.92}, ...],
+  "recordCount": 503,
+  "dataType": "csv",
+  "columns": ["ticker", "date", "open", "high", "low", "close", "volume"],
+  "logs": "Retrieved 503 tickers...\nBatch 1/11...",
+  "error": null,
+  "aiExplanation": null
+}
+```
+
+If errors or 0 records are detected, `aiExplanation` contains an AI-generated diagnosis.
+
+## Run Tap
+
+```
+POST /api/v1/tap/run
+Content-Type: application/json
+```
+
+Executes a saved tap. Optionally sends data to the configured pipeline.
+
+**Body:**
+```json
+{
+  "name": "stock-prices-tap",
+  "pushToPipeline": "true"
+}
+```
+
+**Response:**
+```json
+{
+  "tap": "stock-prices-tap",
+  "description": "Fetch daily stock prices...",
+  "status": "success",
+  "records": [...],
+  "recordCount": 503,
+  "dataType": "csv",
+  "logs": "...",
+  "error": null
+}
+```
+
+## Generate CRON Expression (AI)
+
+```
+POST /api/v1/tap/cron
+Content-Type: application/json
+```
+
+Converts a plain-English schedule description to a Quartz CRON expression.
+
+**Body:**
+```json
+{
+  "description": "Every weekday at 4pm ET"
+}
+```
+
+**Response:**
+```json
+{
+  "cronExpression": "0 0 16 ? * MON-FRI"
+}
+```
+
+## Run History
+
+```
+GET /api/v1/tap/logs?name={tapName}
+```
+
+Returns the last 50 run log entries for a tap, sorted by most recent first.
+
+**Response:**
+```json
+[
+  {
+    "tapName": "stock-prices-tap",
+    "runTime": "2026-04-04T20:23:22Z",
+    "status": "success",
+    "recordCount": 503,
+    "dataType": "csv",
+    "logs": "Retrieved 503 tickers...",
+    "error": null,
+    "pushToPipeline": false,
+    "durationMs": 45000
+  }
+]
+```
+
+## Authentication
+
+All endpoints require the `x-api-key` header if API key authentication is enabled.

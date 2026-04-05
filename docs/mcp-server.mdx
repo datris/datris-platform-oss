@@ -78,6 +78,15 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 |------|-------------|
 | `ai_answer` | Answer a question using AI based on provided context (RAG) |
 
+### Taps
+
+| Tool | Description |
+|------|-------------|
+| `create_tap` | Create a tap — AI-generated Python script that fetches external data. Specify description, target pipeline, and optional CRON schedule |
+| `list_taps` | List all taps with status, target pipeline, schedule, and last run info |
+| `run_tap` | Trigger a tap run manually |
+| `delete_tap` | Delete a tap and its stored script |
+
 ### Configuration
 
 | Tool | Description |

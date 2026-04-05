@@ -104,6 +104,9 @@ class StartupRunner extends ApplicationRunner {
     @Value("${secrets.pgvectorSecretName:}")
     var pgvectorSecretName: String = _
 
+    @Value("${tapScriptTimeoutSeconds:300}")
+    var tapScriptTimeoutSeconds: Int = _
+
     @Override
     def run(args: ApplicationArguments): Unit =  {
         initDatrisEnvironment()
@@ -168,7 +171,9 @@ class StartupRunner extends ApplicationRunner {
             chromaSecretName,
             pgvectorSecretName,
             multiTenant,
-            tapTableName = environment + "-tap"
+            tapTableName = environment + "-tap",
+            tapLogTableName = environment + "-tap-log",
+            tapScriptTimeoutSeconds = tapScriptTimeoutSeconds
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

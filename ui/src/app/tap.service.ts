@@ -28,8 +28,8 @@ export class TapService {
     return this.http.post<any>('/api/v1/tap/cron', { description });
   }
 
-  generateScript(description: string, tapName: string, oldScriptPath?: string): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null });
+  generateScript(description: string, tapName: string, oldScriptPath?: string, secretName?: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null, secretName: secretName || null });
   }
 
   testTap(config: any): Observable<any> {
@@ -42,6 +42,10 @@ export class TapService {
 
   fixScript(tapName: string, script: string, diagnosis: string, logs: string, error: string, oldScriptPath?: string): Observable<any> {
     return this.http.post<any>('/api/v1/tap/fix', { tapName, script, diagnosis, logs, error, oldScriptPath: oldScriptPath || null });
+  }
+
+  getTapLogs(name: string): Observable<any[]> {
+    return this.http.get<any[]>('/api/v1/tap/logs?name=' + encodeURIComponent(name));
   }
 
   getPipelines(): Observable<any[]> {

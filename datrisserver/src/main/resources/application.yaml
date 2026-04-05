@@ -27,6 +27,7 @@ schedule:
   findJobsToStart: "5000"
   checkDatabaseSourceQueries: "30000"
   checkTapSchedules: "30000"
+tapScriptTimeoutSeconds: "300"
 environment: oss
 useApiKeys: "false"
 multiTenant: "false"

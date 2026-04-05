@@ -5,8 +5,9 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, TapConfig}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, TapConfig, TapRunLog}
 import ai.datris.controller.{JobRunner, StreamNotifier}
+import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.time.Instant
@@ -23,6 +24,7 @@ object TapRunner {
      */
     def run(tapConfig: TapConfig, pushToPipeline: Boolean = true): TapScriptResult = {
         val now = Instant.now().toString
+        val startMs = System.currentTimeMillis()
 
         // Only update status in DB for real runs, not tests
         if (pushToPipeline) {
@@ -32,18 +34,22 @@ object TapRunner {
 
         try {
             val result = TapScriptRunner.run(tapConfig)
+            val durationMs = System.currentTimeMillis() - startMs
 
-            if (result.error != null) {
+            if (result.error != null || result.recordCount == 0) {
+                val errorMsg = if (result.error != null) result.error
+                    else "Script returned 0 records"
                 if (pushToPipeline) {
                     val failedConfig = tapConfig.copy(
                         lastRunStatus = "failure",
                         lastRunTime = now,
                         lastRunRecordCount = 0,
-                        lastRunError = result.error
+                        lastRunError = errorMsg
                     )
                     TapConfigIO.write(failedConfig)
                 }
-                return result
+                writeRunLog(tapConfig.name, now, "failure", result.recordCount, result.dataType, result.logs, errorMsg, pushToPipeline, durationMs)
+                return result.copy(error = errorMsg)
             }
 
             // Push to pipeline if requested, records exist, and a target pipeline is configured
@@ -64,9 +70,11 @@ object TapRunner {
                 TapConfigIO.write(successConfig)
             }
 
+            writeRunLog(tapConfig.name, now, "success", result.recordCount, result.dataType, result.logs, null, pushToPipeline, durationMs)
             result
         } catch {
             case e: Exception =>
+                val durationMs = System.currentTimeMillis() - startMs
                 logger.error("TapRunner failed for tap: " + tapConfig.name, e)
                 if (pushToPipeline) {
                     val failedConfig = tapConfig.copy(
@@ -77,7 +85,21 @@ object TapRunner {
                     )
                     TapConfigIO.write(failedConfig)
                 }
+                writeRunLog(tapConfig.name, now, "failure", 0, null, null, e.getMessage, pushToPipeline, durationMs)
                 TapScriptResult(null, 0, e.getMessage)
+        }
+    }
+
+    private def writeRunLog(tapName: String, runTime: String, status: String, recordCount: Int,
+                            dataType: String, logs: String, error: String, pushToPipeline: Boolean, durationMs: Long): Unit = {
+        try {
+            val log = TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, pushToPipeline, durationMs)
+            val gson = new Gson
+            val key = tapName + "|" + runTime
+            NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", gson.toJson(log))
+        } catch {
+            case e: Exception =>
+                logger.warn("Failed to write tap run log: " + e.getMessage)
         }
     }
 

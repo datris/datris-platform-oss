@@ -29,9 +29,10 @@
 
       <div class="form-group">
         <label class="form-label">What data do you want to fetch?</label>
-        <textarea class="form-textarea" [(ngModel)]="description" rows="4"
+        <textarea class="form-textarea" [(ngModel)]="description" rows="8"
                   placeholder="e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed"></textarea>
       </div>
+
     </div>
 
     <!-- Step 2: Generate -->
@@ -41,8 +42,54 @@
 
       <div class="form-group">
         <label class="form-label">Tap Instruction</label>
-        <textarea class="form-textarea" [(ngModel)]="description" rows="3"
+        <textarea class="form-textarea" [(ngModel)]="description" rows="10"
                   placeholder="Describe what data to fetch..."></textarea>
+      </div>
+
+      <!-- Credentials -->
+      <div class="form-group">
+        <label class="form-label">Credentials (optional)</label>
+        <p class="form-hint">Select an existing tap secret, edit one, or create a new one. Secret keys are available as environment variables in your script.</p>
+        <div class="secret-select-row">
+          <select class="form-select" [ngModel]="secretName || ''" (ngModelChange)="onSecretChange($event)">
+            <option value="">None</option>
+            <option *ngFor="let s of availableSecrets" [value]="s">{{ s }}</option>
+            <option value="__create__">+ Create New Secret</option>
+          </select>
+          <button class="edit-secret-btn" *ngIf="secretName && !showCreateSecret && !editingSecret" (click)="editSecret()">
+            <span class="material-icons">edit</span> Edit
+          </button>
+        </div>
+      </div>
+
+      <!-- Create or Edit Secret -->
+      <div class="create-secret-card" *ngIf="showCreateSecret || editingSecret">
+        <div class="form-group" *ngIf="showCreateSecret">
+          <label class="form-label">Secret Name</label>
+          <input class="form-input" [(ngModel)]="newSecretName" placeholder="e.g., my-api-creds">
+        </div>
+        <div class="secret-editing-label" *ngIf="editingSecret">
+          Editing secret: <strong>{{ secretName }}</strong>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Key-Value Pairs</label>
+          <div class="secret-fields">
+            <div class="secret-field-row" *ngFor="let field of newSecretFields; let i = index">
+              <input class="form-input secret-key" [(ngModel)]="field.key" placeholder="KEY_NAME">
+              <input class="form-input secret-value" [(ngModel)]="field.value" placeholder="value">
+              <button class="remove-btn" (click)="removeSecretField(i)" *ngIf="newSecretFields.length > 1">
+                <span class="material-icons">close</span>
+              </button>
+            </div>
+            <button class="add-btn" (click)="addSecretField()">+ Add Field</button>
+          </div>
+        </div>
+        <div class="secret-actions">
+          <button class="secondary-btn" (click)="cancelCreateSecret()">Cancel</button>
+          <button class="primary-btn" (click)="saveNewSecret()" [disabled]="savingSecret">
+            {{ savingSecret ? 'Saving...' : (editingSecret ? 'Save Changes' : 'Create Secret') }}
+          </button>
+        </div>
       </div>
 
       <button class="generate-btn" (click)="generateScript()" [disabled]="generating || !description.trim()">
@@ -68,7 +115,7 @@
       <div class="form-group">
         <label class="form-label">Instruction</label>
         <div class="instruction-row">
-          <textarea class="form-textarea" [(ngModel)]="description" rows="4"></textarea>
+          <textarea class="form-textarea" [(ngModel)]="description" rows="8"></textarea>
           <button class="generate-btn regen-btn" (click)="regenerateScript()" [disabled]="generating || !description.trim()">
             <span class="material-icons">{{ generating ? 'hourglass_empty' : 'auto_awesome' }}</span>
             {{ generating ? 'Regenerating...' : 'Regenerate' }}
@@ -218,6 +265,7 @@
         <div class="review-row"><span class="review-label">Name</span><span class="review-value">{{ tapName }}</span></div>
         <div class="review-row"><span class="review-label">Description</span><span class="review-value">{{ description }}</span></div>
         <div class="review-row" *ngIf="packages.length > 0"><span class="review-label">Packages</span><span class="review-value">{{ packages.join(', ') }}</span></div>
+        <div class="review-row" *ngIf="secretName"><span class="review-label">Credentials</span><span class="review-value">{{ secretName }}</span></div>
         <div class="review-row" *ngIf="testDataType"><span class="review-label">Data Type</span><span class="review-value"><span class="datatype-badge">{{ testDataType.toUpperCase() }}</span></span></div>
         <div class="review-row" *ngIf="testColumns.length > 0"><span class="review-label">Columns</span><span class="review-value">{{ testColumns.join(', ') }}</span></div>
         <div class="review-row" *ngIf="testRecordCount > 0"><span class="review-label">Test Records</span><span class="review-value">{{ testRecordCount }}</span></div>

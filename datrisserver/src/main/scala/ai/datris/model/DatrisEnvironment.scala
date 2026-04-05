@@ -56,7 +56,8 @@ object DatrisEnvironment {
             chromaSecretName = env + "/chroma",
             pgvectorSecretName = env + "/pgvector",
             aiConfig = tenantAiConfig,
-            tapTableName = env + "-tap"
+            tapTableName = env + "-tap",
+            tapLogTableName = env + "-tap-log"
         )
     }
 }
@@ -90,5 +91,7 @@ case class DatrisEnvironment(
                                   chromaSecretName: String,
                                   pgvectorSecretName: String,
                                   multiTenant: Boolean,
-                                  tapTableName: String = null
+                                  tapTableName: String = null,
+                                  tapLogTableName: String = null,
+                                  tapScriptTimeoutSeconds: Int = 300
                               )

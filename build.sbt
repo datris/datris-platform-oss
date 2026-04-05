@@ -30,49 +30,46 @@ lazy val allDependencies = Seq(
 
     // Google
     "com.google.guava" % "guava" % "33.0.0-jre",
-    "com.google.code.gson" % "gson" % "2.9.1",
+    "com.google.code.gson" % "gson" % "2.11.0",
 
     // Apache commons
     "org.apache.commons" % "commons-compress" % "1.28.0",
-    "org.apache.commons" % "commons-csv" % "1.9.0",
+    "org.apache.commons" % "commons-csv" % "1.12.0",
 
     // JSON schema validation
     "org.everit.json" % "org.everit.json.schema" % "1.5.1",
 
     // Scheduling
-    "org.quartz-scheduler" % "quartz" % "2.3.2",
-
-    // CSV parsing
-    "io.deephaven" % "deephaven-csv" % "0.8.0",
+    "org.quartz-scheduler" % "quartz" % "2.5.0",
 
     // Databases
     "org.postgresql" % "postgresql" % "42.7.7",
-    "mysql" % "mysql-connector-java" % "8.0.32",
+    "com.mysql" % "mysql-connector-j" % "8.4.0",
 
     // Kafka
     "org.apache.kafka" % "kafka-clients" % "3.9.1",
 
     // Logging
-    "org.slf4j" % "slf4j-api" % "1.7.36",
+    "org.slf4j" % "slf4j-api" % "2.0.16",
 
     // Spring Boot
-    "org.springframework.boot" % "spring-boot-starter" % "3.2.4",
-    "org.springframework.boot" % "spring-boot-starter-web" % "3.2.4",
+    "org.springframework.boot" % "spring-boot-starter" % "3.2.12",
+    "org.springframework.boot" % "spring-boot-starter-web" % "3.2.12",
 
     // Spark
     "org.apache.spark" %% "spark-core" % "3.5.4",
     "org.apache.spark" %% "spark-sql" % "3.5.4",
-    "org.apache.hadoop" % "hadoop-aws" % "3.3.4",
+    "org.apache.hadoop" % "hadoop-aws" % "3.3.6",
 
     // Secrets: HashiCorp Vault
     "io.github.jopenlibs" % "vault-java-driver" % "6.2.1",
 
     // Queue + notifications: ActiveMQ
-    "org.apache.activemq" % "activemq-client" % "5.18.3",
-    "org.apache.activemq" % "activemq-pool" % "5.18.3",
+    "org.apache.activemq" % "activemq-client" % "5.18.6",
+    "org.apache.activemq" % "activemq-pool" % "5.18.6",
 
     // NoSQL: MongoDB
-    "org.mongodb" % "mongodb-driver-sync" % "4.11.1",
+    "org.mongodb" % "mongodb-driver-sync" % "4.11.4",
 
     // Vector database: Qdrant
     "io.qdrant" % "client" % "1.12.0",
@@ -85,13 +82,13 @@ lazy val allDependencies = Seq(
 
     // Document text extraction
     "org.apache.pdfbox" % "pdfbox" % "3.0.4",
-    "org.apache.poi" % "poi" % "5.2.5",
-    "org.apache.poi" % "poi-ooxml" % "5.2.5",
-    "org.apache.poi" % "poi-scratchpad" % "5.2.5",
+    "org.apache.poi" % "poi" % "5.3.0",
+    "org.apache.poi" % "poi-ooxml" % "5.3.0",
+    "org.apache.poi" % "poi-scratchpad" % "5.3.0",
     "org.jsoup" % "jsoup" % "1.17.2",
 
     // Email parsing
-    "com.sun.mail" % "jakarta.mail" % "2.0.1",
+    "org.eclipse.angus" % "angus-mail" % "2.0.3",
 
     // JavaScript engine (Nashorn removed in Java 15+)
     "org.openjdk.nashorn" % "nashorn-core" % "15.4"

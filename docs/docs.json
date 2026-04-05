@@ -29,6 +29,12 @@
             ]
           },
           {
+            "group": "Taps",
+            "pages": [
+              "taps"
+            ]
+          },
+          {
             "group": "Ingestion",
             "pages": [
               "ingestion/file-upload",
@@ -129,7 +135,8 @@
               "api-reference/secrets-api",
               "api-reference/status-api",
               "api-reference/health-api",
-              "api-reference/version-api"
+              "api-reference/version-api",
+              "api-reference/taps-api"
             ]
           }
         ]

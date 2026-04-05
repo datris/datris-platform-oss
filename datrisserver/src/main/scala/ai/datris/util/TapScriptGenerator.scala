@@ -10,6 +10,7 @@ import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.UUID
+import scala.collection.JavaConverters._
 
 case class TapGenerateResult(script: String, packages: java.util.List[String], scriptPath: String)
 
@@ -29,6 +30,33 @@ object TapScriptGenerator {
           |- Include 30-second timeouts for network requests
           |- Return an empty list on failure rather than raising exceptions
           |- Be completely self-contained
+          |- If authentication is needed, use os.environ.get('KEY_NAME') to access credentials
+          |- NEVER hardcode API keys, tokens, or passwords in the script
+          |
+          |If the script needs to query or discover data from the Datris platform:
+          |- Use os.environ.get('DATRIS_PLATFORM_HOST') and os.environ.get('DATRIS_PLATFORM_PORT') for host/port
+          |- Use os.environ.get('DATRIS_DATABASE') for the database name
+          |- Base URL: http://{host}:{port}/api/v1
+          |
+          |Metadata discovery (GET requests, all return JSON arrays):
+          |- GET /api/v1/metadata/postgres/databases → list of database names
+          |- GET /api/v1/metadata/postgres/schemas?database={db} → list of schema names
+          |- GET /api/v1/metadata/postgres/tables?database={db}&schema=public → list of table names
+          |- GET /api/v1/metadata/postgres/columns?database={db}&schema=public&table=TABLE → list of {name, type}
+          |- GET /api/v1/metadata/mongodb/databases → list of database names
+          |- GET /api/v1/metadata/mongodb/collections?database={db} → list of collection names
+          |
+          |Query endpoints (POST requests):
+          |- PostgreSQL: POST /api/v1/query/postgres
+          |  Body: {"sql": "SELECT * FROM public.table_name", "database": "{db}"}
+          |  Response: {"results": [...list of row dicts...], "count": N}
+          |- MongoDB: POST /api/v1/query/mongodb
+          |  Body: {"query": "...", "database": "{db}", "collection": "collection_name"}
+          |  Response: {"results": [...], "count": N}
+          |
+          |Where {db} = os.environ.get('DATRIS_DATABASE').
+          |Use metadata endpoints to discover tables and columns dynamically when the user
+          |describes data by name rather than providing exact table names.
           |
           |Return ONLY the JSON object, no markdown fences or commentary.""".stripMargin
 
@@ -40,13 +68,23 @@ object TapScriptGenerator {
      * @param tapName     the tap name (used for the MinIO key)
      * @return TapGenerateResult with script content, packages, and MinIO path
      */
-    def generate(description: String, tapName: String, oldScriptPath: String = null): TapGenerateResult = {
+    def generate(description: String, tapName: String, oldScriptPath: String = null, secretName: String = null): TapGenerateResult = {
         logger.info("TapScriptGenerator: generating script for tap: " + tapName)
 
         if (!DatrisEnvironment.current.aiEnabled)
             throw new DatrisException("AI is not enabled. Set 'ai.enabled: true' in application.yaml")
 
-        val userPrompt = "Generate a Python script to: " + description
+        // Build user prompt with available secret keys if configured
+        val secretKeysHint = if (secretName != null && secretName.nonEmpty) {
+            val secretPath = DatrisEnvironment.current.environment + "/" + secretName
+            val keys = SecretsUtil.getSecretMap(secretPath).map(_.keySet().asScala.filterNot(_ == "_type").toList).getOrElse(List.empty)
+            if (keys.nonEmpty)
+                "\n\nThe following environment variables are available for authentication: " +
+                    keys.mkString(", ") + ". Access them with os.environ.get('KEY_NAME')."
+            else ""
+        } else ""
+
+        val userPrompt = "Generate a Python script to: " + description + secretKeysHint
 
         // Call AI to generate the script
         val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt)

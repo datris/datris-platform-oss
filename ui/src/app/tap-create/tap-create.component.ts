@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { TapService } from '../tap.service';
+import { SecretsService } from '../secrets.service';
 
 @Component({
   selector: 'app-tap-create',
@@ -16,6 +17,13 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // Step 1 — Describe
   tapName = '';
   description = '';
+  secretName = '';
+  availableSecrets: string[] = [];
+  showCreateSecret = false;
+  editingSecret = false;
+  newSecretName = '';
+  newSecretFields: {key: string, value: string}[] = [{key: '', value: ''}];
+  savingSecret = false;
 
   // Step 2 — Generate
   generating = false;
@@ -50,7 +58,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // Active subscription for cancellation
   private activeSub: Subscription | null = null;
 
-  constructor(private tapService: TapService, private router: Router, private route: ActivatedRoute) { }
+  constructor(private tapService: TapService, private secretsService: SecretsService, private router: Router, private route: ActivatedRoute) { }
 
   ngOnInit(): void {
     const name = this.route.snapshot.paramMap.get('name');
@@ -71,10 +79,17 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             }
           }
           this.script = tap.script || '';
+          this.secretName = tap.secretName || '';
         },
         error: () => { this.error = 'Failed to load tap'; }
       });
     }
+
+    // Load tap secrets only
+    this.secretsService.listSecrets('tap').subscribe({
+      next: (secrets) => this.availableSecrets = secrets || [],
+      error: () => {}
+    });
   }
 
   ngOnDestroy(): void {
@@ -125,7 +140,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   generateScript(): void {
     this.generating = true;
     this.error = '';
-    this.activeSub = this.tapService.generateScript(this.description, this.tapName.trim(), this.scriptPath).subscribe({
+    this.activeSub = this.tapService.generateScript(this.description, this.tapName.trim(), this.scriptPath, this.secretName).subscribe({
       next: (result) => {
         this.script = result.script || '';
         this.scriptPath = result.scriptPath || '';
@@ -162,7 +177,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       name: this.tapName.trim(),
       description: this.description,
       scriptPath: this.scriptPath,
-      packages: this.packages.length > 0 ? this.packages : null
+      packages: this.packages.length > 0 ? this.packages : null,
+      secretName: this.secretName || null
     };
 
     this.activeSub = this.tapService.testTap(config).subscribe({
@@ -222,6 +238,82 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     });
   }
 
+  onSecretChange(value: string): void {
+    this.editingSecret = false;
+    if (value === '__create__') {
+      this.showCreateSecret = true;
+      this.secretName = '';
+    } else {
+      this.showCreateSecret = false;
+      this.secretName = value;
+    }
+  }
+
+  editSecret(): void {
+    this.editingSecret = true;
+    this.showCreateSecret = false;
+    this.newSecretFields = [{key: '', value: ''}];
+    this.secretsService.getSecret(this.secretName).subscribe({
+      next: (data) => {
+        const fields = data.fields || {};
+        this.newSecretFields = Object.entries(fields)
+          .filter(([k]) => k !== '_type')
+          .map(([k, v]) => ({key: k, value: v as string}));
+        if (this.newSecretFields.length === 0) {
+          this.newSecretFields = [{key: '', value: ''}];
+        }
+      },
+      error: () => { this.error = 'Failed to load secret'; this.editingSecret = false; }
+    });
+  }
+
+  addSecretField(): void {
+    this.newSecretFields.push({key: '', value: ''});
+  }
+
+  removeSecretField(index: number): void {
+    this.newSecretFields.splice(index, 1);
+  }
+
+  saveNewSecret(): void {
+    const name = this.editingSecret ? this.secretName : this.newSecretName.trim();
+    if (!name) { this.error = 'Secret name is required'; return; }
+    const fields: Record<string, string> = {};
+    this.newSecretFields.filter(f => f.key.trim()).forEach(f => fields[f.key.trim()] = f.value);
+    if (Object.keys(fields).length === 0) { this.error = 'At least one key-value pair is required'; return; }
+    // Auto-tag as tap secret
+    fields['_type'] = 'tap';
+
+    this.savingSecret = true;
+    this.error = '';
+    this.secretsService.putSecret(name, fields).subscribe({
+      next: () => {
+        this.secretName = name;
+        if (!this.availableSecrets.includes(name)) {
+          this.availableSecrets.push(name);
+          this.availableSecrets.sort();
+        }
+        this.showCreateSecret = false;
+        this.editingSecret = false;
+        this.newSecretName = '';
+        this.newSecretFields = [{key: '', value: ''}];
+        this.savingSecret = false;
+      },
+      error: (err) => {
+        this.error = 'Failed to save secret: ' + (typeof err.error === 'string' ? err.error : err.message).substring(0, 200);
+        this.savingSecret = false;
+      }
+    });
+  }
+
+  cancelCreateSecret(): void {
+    this.showCreateSecret = false;
+    this.editingSecret = false;
+    if (!this.editingSecret) this.secretName = '';
+    this.newSecretName = '';
+    this.newSecretFields = [{key: '', value: ''}];
+  }
+
   generateCron(): void {
     this.generatingCron = true;
     this.error = '';
@@ -278,6 +370,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       description: this.description,
       scriptPath: this.scriptPath,
       packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
+      secretName: this.secretName || null,
       cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
       enabled: this.enabled,
       lastTestRunDataType: this.testDataType || null,

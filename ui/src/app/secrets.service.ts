@@ -8,8 +8,9 @@ import { Observable } from 'rxjs';
 export class SecretsService {
   constructor(private http: HttpClient) { }
 
-  listSecrets(): Observable<string[]> {
-    return this.http.get<string[]>('/api/v1/secrets');
+  listSecrets(type?: string): Observable<string[]> {
+    const url = type ? '/api/v1/secrets?type=' + encodeURIComponent(type) : '/api/v1/secrets';
+    return this.http.get<string[]>(url);
   }
 
   getSecret(name: string): Observable<any> {

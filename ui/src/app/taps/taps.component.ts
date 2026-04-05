@@ -28,7 +28,9 @@ export class TapsComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.loadTaps();
     this.loadPipelines();
-    this.refreshInterval = setInterval(() => this.loadTaps(), 5000);
+    this.refreshInterval = setInterval(() => {
+      if (!this.editingName && !this.editingPipeline) this.loadTaps();
+    }, 5000);
   }
 
   loadPipelines(): void {
@@ -65,6 +67,44 @@ export class TapsComponent implements OnInit, OnDestroy {
         (t.targetPipeline || '').toLowerCase().includes(q)
       );
     }
+  }
+
+  viewConfigTap = '';
+  viewConfigJson = '';
+  logsTap = '';
+  logsData: any[] = [];
+  logsLoading = false;
+
+  viewConfig(event: Event, name: string): void {
+    event.stopPropagation();
+    this.tapService.getTap(name).subscribe({
+      next: (tap) => {
+        this.viewConfigJson = JSON.stringify(tap, null, 2);
+        this.viewConfigTap = name;
+      },
+      error: () => alert('Failed to load tap config')
+    });
+  }
+
+  viewLogs(event: Event, name: string): void {
+    event.stopPropagation();
+    this.logsTap = name;
+    this.logsLoading = true;
+    this.logsData = [];
+    this.tapService.getTapLogs(name).subscribe({
+      next: (logs) => { this.logsData = logs || []; this.logsLoading = false; },
+      error: () => { this.logsLoading = false; alert('Failed to load run history'); }
+    });
+  }
+
+  closeLogs(): void {
+    this.logsTap = '';
+    this.logsData = [];
+  }
+
+  closeViewConfig(): void {
+    this.viewConfigTap = '';
+    this.viewConfigJson = '';
   }
 
   editTap(event: Event, name: string): void {

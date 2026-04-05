@@ -1,0 +1,173 @@
+---
+title: "Taps"
+description: "AI-generated Python scripts that fetch data from external sources"
+---
+
+A **Tap** is an AI-generated Python script that fetches data from external sources — APIs, web scraping, databases — and pushes it into a Datris pipeline. Describe what data you want in plain English, and Datris generates the script for you.
+
+Taps can run on a schedule using CRON expressions, or be triggered manually. They support credentials management via Vault secrets and include AI-powered diagnosis when scripts fail.
+
+## Creating a Tap
+
+The Tap creation wizard walks you through 5 steps:
+
+### Step 1: Describe
+Give your tap a name and describe in plain English what data you want to fetch.
+
+**Example instructions:**
+- *"Fetch current weather data for New York from the Open-Meteo API"*
+- *"Retrieve daily stock prices for all S&P 500 companies from yfinance"*
+- *"Get the latest news headlines from the BBC RSS feed"*
+
+### Step 2: Generate Script
+Edit your instruction if needed and click **Generate Script**. Datris uses AI to create a Python script with a `fetch()` function that returns a list of records.
+
+**Credentials**: If your data source requires API keys or authentication, select an existing tap secret or create a new one. Secret keys are injected as environment variables — the AI automatically generates code using `os.environ.get('KEY_NAME')`.
+
+The generated script can use these pre-installed packages:
+- `requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`
+- Additional packages can be specified and are installed at runtime via pip
+
+### Step 3: Edit & Test
+Review and edit the generated script. You can:
+- Modify the Python code directly
+- Add or remove pip packages
+- Click **Test Script** to execute and preview results
+- If errors occur, an **AI Diagnosis** explains what went wrong
+- Click **Apply Diagnosis to Script** to auto-fix the issue
+
+The test must return records successfully before you can proceed.
+
+### Step 4: Schedule (Optional)
+Set up automatic runs with a CRON expression:
+- **Presets**: Every Hour, Daily (Midnight), Weekly (Monday)
+- **Custom**: Describe your schedule in plain English (e.g., "Every weekday at 4pm ET") and click Generate to create the CRON expression
+
+### Step 5: Review & Save
+Review all settings and save the tap.
+
+## Querying Datris Data
+
+Tap scripts can query data already stored in the Datris platform. The following environment variables are automatically available:
+
+| Variable | Description |
+|---|---|
+| `DATRIS_DATABASE` | The database name for the current environment |
+
+If you configure `DATRIS_PLATFORM_HOST` and `DATRIS_PLATFORM_PORT` in your tap secret, scripts can call the Datris API:
+
+**Discover tables:**
+```python
+# List all tables
+response = requests.get(f'http://{host}:{port}/api/v1/metadata/postgres/tables?database={db}&schema=public')
+tables = response.json()
+```
+
+**Query data:**
+```python
+# Query a specific table
+response = requests.post(f'http://{host}:{port}/api/v1/query/postgres', json={
+    'sql': 'SELECT * FROM public.my_table',
+    'database': db
+})
+results = response.json()['results']
+```
+
+## Credentials / Secrets
+
+Tap secrets are stored in HashiCorp Vault and injected as environment variables when the script runs. They are managed directly in the tap wizard (Step 2).
+
+- **Select existing**: Choose from previously created tap secrets
+- **Create new**: Define key-value pairs inline (e.g., `API_KEY=your-key`)
+- **Edit existing**: Modify an existing secret's fields
+
+Tap secrets are tagged with `_type=tap` and only appear in the tap dropdown — not mixed with system secrets like database credentials.
+
+**Never hardcode credentials in scripts.** Always use `os.environ.get('KEY_NAME')`.
+
+## Running Taps
+
+### Test Run (from UI)
+Click the play button on the taps list to open the Run page:
+- Shows the tap instruction
+- **Send to pipeline** checkbox (only if a target pipeline is configured)
+- Displays script output, results table, and errors
+- **Run Again** button for re-execution
+
+### CRON Schedule
+Taps with a `cronExpression` run automatically. The scheduler checks every 30 seconds for taps that are due. A tap won't run if it's already running or has never been run before (first run must be manual).
+
+### Sending Data to Pipelines
+When "Send to pipeline" is checked:
+1. The tap executes the script
+2. Records are converted to the pipeline's expected format (CSV or JSON)
+3. Data is fed through the pipeline's processing chain (data quality, transformation, destinations)
+
+## Data Types
+
+The system automatically detects the data type from what `fetch()` returns:
+
+| Return Value | Detected Type |
+|---|---|
+| List of flat dicts (all scalar values) | **CSV** |
+| List of dicts with nested objects | **JSON** |
+| List of lists/tuples | **CSV** |
+| XML string | **XML** |
+| Other string | **Text** |
+
+## Creating Pipelines from Taps
+
+On the Pipeline creation wizard, select **From Tap** to auto-populate the pipeline's source type and schema from a tap's test results. The tap's data type and columns are used to configure the pipeline automatically.
+
+## Run History
+
+Click the history icon on the taps list to view a tap's run history. Each entry shows:
+- Status (success/failure)
+- Timestamp and duration
+- Record count
+- Whether data was sent to a pipeline
+- Expandable script output logs and error messages
+
+## MCP Tools
+
+AI agents can manage taps via MCP:
+
+| Tool | Description |
+|---|---|
+| `create_tap` | Generate and save a tap from a description |
+| `list_taps` | List all taps with status |
+| `run_tap` | Trigger a tap run |
+| `delete_tap` | Delete a tap |
+
+## CLI Commands
+
+```bash
+# List all taps
+datris taps
+
+# Create a tap
+datris tap create "Fetch weather data from Open-Meteo API" --pipeline weather --cron "0 0 * * * ?"
+
+# Run a tap manually
+datris tap run my-tap
+
+# Delete a tap
+datris tap delete my-tap
+```
+
+## Configuration
+
+| Setting | File | Default | Description |
+|---|---|---|---|
+| `tapScriptTimeoutSeconds` | `application.yaml` | `300` | Maximum script execution time in seconds |
+| `schedule.checkTapSchedules` | `application.yaml` | `30000` | CRON scheduler poll interval in milliseconds |
+
+## Script Requirements
+
+The `fetch()` function must:
+- Take no arguments
+- Return a list of dictionaries (records) or a string (JSON/XML/text)
+- Handle errors gracefully with try/except
+- Include timeouts on network requests (30 seconds recommended)
+- Return an empty list on failure rather than raising exceptions
+- Use `os.environ.get()` for any credentials

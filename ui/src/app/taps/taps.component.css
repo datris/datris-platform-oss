@@ -305,6 +305,18 @@ tbody tr:last-child td {
   cursor: not-allowed;
 }
 
+.view-btn:hover {
+  color: var(--accent-cyan);
+  border-color: rgba(0, 180, 255, 0.3);
+  background: rgba(0, 180, 255, 0.1);
+}
+
+.history-btn:hover {
+  color: var(--accent-cyan);
+  border-color: rgba(0, 180, 255, 0.3);
+  background: rgba(0, 180, 255, 0.1);
+}
+
 .edit-btn:hover {
   color: var(--accent-cyan);
   border-color: rgba(0, 180, 255, 0.3);
@@ -365,6 +377,209 @@ tbody tr:last-child td {
 
 .del-cancel:hover {
   color: var(--text-primary);
+}
+
+/* Logs modal */
+.logs-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  width: 800px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.logs-loading, .logs-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.log-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.log-entry {
+  border-bottom: 1px solid var(--border-color);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.log-entry:hover {
+  background: var(--bg-hover);
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  font-size: 13px;
+}
+
+.log-time {
+  color: var(--text-secondary);
+  min-width: 160px;
+}
+
+.log-records {
+  color: var(--text-muted);
+}
+
+.log-duration {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.log-pipeline-flag {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background: rgba(0, 180, 255, 0.1);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(0, 180, 255, 0.2);
+}
+
+.log-error-hint {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.log-expand {
+  margin-left: auto;
+  font-size: 18px;
+  color: var(--text-muted);
+}
+
+.log-detail {
+  padding: 0 16px 12px;
+}
+
+.log-detail-row {
+  margin-bottom: 8px;
+}
+
+.log-detail-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.log-detail-value {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.log-error-text {
+  color: #f87171;
+}
+
+.log-output {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Config modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.config-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  width: 700px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.config-json {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: #e6edf3;
+  background: #0d1117;
+  padding: 16px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-x: auto;
 }
 
 .empty-state {

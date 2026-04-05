@@ -11,6 +11,7 @@ case class TapConfig(
     scriptPath: String = null,
     targetPipeline: String,
     packages: java.util.List[String] = null,
+    secretName: String = null,
     cronExpression: String = null,
     enabled: Boolean = true,
     lastRunStatus: String = null,

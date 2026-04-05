@@ -34,6 +34,7 @@ until mc alias set myminio http://minio:9000 minioadmin minioadmin > /dev/null 2
 done
 
 echo "Setting up bucket event notifications on oss-raw..."
+mc event remove myminio/oss-raw --force 2>/dev/null || true
 mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .metadata.json --event put
 mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.csv --event put
 mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.json --event put
