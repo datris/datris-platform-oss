@@ -25,6 +25,18 @@
 
   <div class="form-card">
 
+    <!-- Top navigation buttons -->
+    <div class="btn-row btn-row-top">
+      <button class="secondary-btn" (click)="prevStep()" *ngIf="step > 1">Back</button>
+      <div class="spacer"></div>
+      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 9">
+        Next
+      </button>
+      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 9">
+        {{ creating ? 'Saving...' : (isEditMode ? 'Save Pipeline' : 'Create Pipeline') }}
+      </button>
+    </div>
+
     <!-- Step 1: Name + Source -->
     <div *ngIf="step === 1">
       <h2 class="step-title">Pipeline Name & Data Source</h2>
@@ -604,17 +616,5 @@
 
     <!-- Error -->
     <div class="error-box" *ngIf="error">{{ error }}</div>
-
-    <!-- Navigation buttons -->
-    <div class="btn-row">
-      <button class="secondary-btn" (click)="prevStep()" *ngIf="step > 1">Back</button>
-      <div class="spacer"></div>
-      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 9">
-        Next
-      </button>
-      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 9">
-        {{ creating ? 'Saving...' : (isEditMode ? 'Save Pipeline' : 'Create Pipeline') }}
-      </button>
-    </div>
   </div>
 </div>

@@ -29,7 +29,8 @@ object DatrisEnvironment {
                     provider,
                     map.getOrElse("endpoint", values.aiConfig.endpoint),
                     map.getOrElse("model", values.aiConfig.model),
-                    map.getOrElse("apiKey", values.aiConfig.apiKey)
+                    map.getOrElse("apiKey", values.aiConfig.apiKey),
+                    map.getOrElse("version", values.aiConfig.version)
                 )
             }.getOrElse(values.aiConfig)
         } catch {
@@ -57,7 +58,8 @@ object DatrisEnvironment {
             pgvectorSecretName = env + "/pgvector",
             aiConfig = tenantAiConfig,
             tapTableName = env + "-tap",
-            tapLogTableName = env + "-tap-log"
+            tapLogTableName = env + "-tap-log",
+            postgresDatabase = env
         )
     }
 }
@@ -95,5 +97,6 @@ case class DatrisEnvironment(
                                   tapLogTableName: String = null,
                                   tapScriptTimeoutSeconds: Int = 300,
                                   dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
-                                  dateTimezone: String = "UTC"
+                                  dateTimezone: String = "UTC",
+                                  postgresDatabase: String = "datris"
                               )

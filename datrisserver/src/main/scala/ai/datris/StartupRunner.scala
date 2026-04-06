@@ -77,6 +77,9 @@ class StartupRunner extends ApplicationRunner {
     @Value("${mongodb.database}")
     var mongoDbDatabase: String = _
 
+    @Value("${postgres.database:datris}")
+    var postgresDatabase: String = _
+
     @Value("${ai.enabled:false}")
     var aiEnabled: Boolean = _
 
@@ -85,6 +88,9 @@ class StartupRunner extends ApplicationRunner {
 
     @Value("${ai.aiSecretName:}")
     var aiSecretName: String = _
+
+    @Value("${ai.version:}")
+    var aiVersion: String = _
 
     @Value("${secrets.embeddingSecretName:}")
     var embeddingSecretName: String = _
@@ -181,7 +187,8 @@ class StartupRunner extends ApplicationRunner {
             tapLogTableName = environment + "-tap-log",
             tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
             dateFormat = dateFormat,
-            dateTimezone = dateTimezone
+            dateTimezone = dateTimezone,
+            postgresDatabase = postgresDatabase
         )
 
         DatrisEnvironment.init(pipelineEnvironment)
@@ -245,7 +252,7 @@ class StartupRunner extends ApplicationRunner {
                 throw new DatrisException("'model' not found in AI secret: " + aiSecretName)
             val apiKey = Option(secret.get("apiKey")).getOrElse("")
             logger.info("AI provider configured: " + aiProvider + ", model: " + model + ", endpoint: " + endpoint)
-            AIConfig(aiProvider, endpoint, model, apiKey)
+            AIConfig(aiProvider, endpoint, model, apiKey, aiVersion)
         }
         DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, aiEnabled = aiEnabled))
     }

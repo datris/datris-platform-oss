@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { TapService } from '../tap.service';
@@ -24,6 +24,13 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   newSecretName = '';
   newSecretFields: {key: string, value: string}[] = [{key: '', value: ''}];
   savingSecret = false;
+
+  // Step 1 — Brainstorm chat
+  brainstormMessages: Array<{role: string, content: string}> = [];
+  brainstormInput = '';
+  brainstorming = false;
+  suggestedEnvVars: string[] = [];
+  @ViewChild('brainstormInputEl') brainstormInputEl?: ElementRef<HTMLInputElement>;
 
   // Step 2 — Generate
   generating = false;
@@ -112,19 +119,17 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.generating = false;
     this.testing = false;
     this.applyingDiagnosis = false;
+    this.brainstorming = false;
   }
 
   nextStep(): void {
     this.error = '';
     if (this.step === 1) {
       if (!this.tapName.trim()) { this.error = 'Tap name is required'; return; }
-      if (!this.description.trim()) { this.error = 'Description is required'; return; }
+      if (!this.description.trim()) { this.error = 'Instruction is required'; return; }
+      if (!this.script) { this.error = 'Generate a script first'; return; }
     }
-    if (this.step === 2 && !this.script) {
-      this.error = 'Generate a script first';
-      return;
-    }
-    if (this.step === 3 && this.scriptDirty && !this.testPassed()) {
+    if (this.step === 2 && this.scriptDirty && !this.testPassed()) {
       this.error = 'Test the script successfully before continuing';
       return;
     }
@@ -135,6 +140,29 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.cancelActive();
     if (this.step > 1) this.step--;
     this.error = '';
+  }
+
+  sendBrainstorm(): void {
+    if (!this.brainstormInput.trim() || this.brainstorming) return;
+    const userMsg = { role: 'user', content: this.brainstormInput.trim() };
+    this.brainstormMessages.push(userMsg);
+    this.brainstormInput = '';
+    this.brainstorming = true;
+    this.error = '';
+    this.activeSub = this.tapService.brainstorm(this.brainstormMessages, this.description).subscribe({
+      next: (result) => {
+        this.brainstormMessages.push({ role: 'assistant', content: result.reply || '' });
+        if (result.description) this.description = result.description;
+        if (Array.isArray(result.suggestedEnvVars)) this.suggestedEnvVars = result.suggestedEnvVars;
+        this.brainstorming = false;
+        // Return focus to the input so the user can keep chatting without grabbing the mouse
+        setTimeout(() => this.brainstormInputEl?.nativeElement.focus(), 0);
+      },
+      error: (err) => {
+        this.error = 'Brainstorm failed: ' + (err.error || err.message);
+        this.brainstorming = false;
+      }
+    });
   }
 
   generateScript(): void {
@@ -236,6 +264,14 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.applyingDiagnosis = false;
       }
     });
+  }
+
+  useSuggestedEnvVars(): void {
+    if (this.suggestedEnvVars.length === 0) return;
+    this.showCreateSecret = true;
+    this.editingSecret = false;
+    this.secretName = '';
+    this.newSecretFields = this.suggestedEnvVars.map(k => ({key: k, value: ''}));
   }
 
   onSecretChange(value: string): void {

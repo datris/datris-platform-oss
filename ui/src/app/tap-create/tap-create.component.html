@@ -12,8 +12,6 @@
     <span class="step-dot" [class.active]="step >= 3" [class.current]="step === 3">3</span>
     <span class="step-line" [class.active]="step >= 4"></span>
     <span class="step-dot" [class.active]="step >= 4" [class.current]="step === 4">4</span>
-    <span class="step-line" [class.active]="step >= 5"></span>
-    <span class="step-dot" [class.active]="step >= 5" [class.current]="step === 5">5</span>
   </div>
 
   <div class="form-card">
@@ -28,22 +26,52 @@
       </div>
 
       <div class="form-group">
-        <label class="form-label">What data do you want to fetch?</label>
-        <textarea class="form-textarea" [(ngModel)]="description" rows="8"
-                  placeholder="e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed"></textarea>
+        <label class="form-label">
+          <span class="material-icons brainstorm-icon">auto_awesome</span>
+          Brainstorm with AI (Optional)
+        </label>
+        <p class="form-hint">Not sure what to write? Chat with the AI to refine your idea — your instruction below will update automatically.</p>
+
+        <div class="brainstorm-chat" *ngIf="brainstormMessages.length > 0">
+          <div *ngFor="let msg of brainstormMessages" class="brainstorm-msg" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'">
+            <span class="material-icons brainstorm-msg-icon">{{ msg.role === 'user' ? 'person' : 'auto_awesome' }}</span>
+            <div class="brainstorm-msg-content">{{ msg.content }}</div>
+          </div>
+        </div>
+
+        <div class="testing-indicator" *ngIf="brainstorming">
+          <div class="spinner"></div>
+          <span>Thinking...</span>
+        </div>
+
+        <div class="brainstorm-input-row">
+          <input class="form-input" [(ngModel)]="brainstormInput"
+                 (keyup.enter)="sendBrainstorm()"
+                 [disabled]="brainstorming"
+                 placeholder="e.g., I want stock prices for tech companies"
+                 #brainstormInputEl>
+          <button class="brainstorm-send-btn" (click)="sendBrainstorm()" [disabled]="brainstorming || !brainstormInput.trim()">
+            <span class="material-icons">send</span>
+            Send
+          </button>
+        </div>
+
+        <div class="suggested-envvars" *ngIf="suggestedEnvVars.length > 0">
+          <div class="suggested-envvars-header">
+            <span class="material-icons">key</span>
+            Suggested environment variables for this tap:
+          </div>
+          <div class="suggested-envvars-list">
+            <span class="package-chip" *ngFor="let v of suggestedEnvVars">{{ v }}</span>
+          </div>
+          <button class="add-btn" (click)="useSuggestedEnvVars()">+ Create tap secret with these keys</button>
+        </div>
       </div>
 
-    </div>
-
-    <!-- Step 2: Generate -->
-    <div *ngIf="step === 2">
-      <h2 class="step-title">Generate Script</h2>
-      <p class="step-desc">Datris will use AI to generate a Python script based on your description.</p>
-
       <div class="form-group">
-        <label class="form-label">Tap Instruction</label>
+        <label class="form-label">Instruction</label>
         <textarea class="form-textarea" [(ngModel)]="description" rows="10"
-                  placeholder="Describe what data to fetch..."></textarea>
+                  placeholder="e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed"></textarea>
       </div>
 
       <!-- Credentials -->
@@ -102,7 +130,7 @@
         <span>Generating script — this may take a minute...</span>
       </div>
 
-      <div class="code-preview" *ngIf="script">
+      <div class="code-preview script-preview" *ngIf="script">
         <pre>{{ script }}</pre>
       </div>
 
@@ -112,8 +140,8 @@
       </div>
     </div>
 
-    <!-- Step 3: Edit & Test -->
-    <div *ngIf="step === 3">
+    <!-- Step 2: Edit & Test -->
+    <div *ngIf="step === 2">
       <h2 class="step-title">Edit & Test</h2>
       <p class="step-desc">Review and edit the generated script, manage packages, then test it.</p>
 
@@ -218,8 +246,8 @@
       </div>
     </div>
 
-    <!-- Step 4: Schedule -->
-    <div *ngIf="step === 4">
+    <!-- Step 3: Schedule -->
+    <div *ngIf="step === 3">
       <h2 class="step-title">Schedule (Optional)</h2>
       <p class="step-desc">Set up a CRON schedule to run this tap automatically.</p>
 
@@ -266,13 +294,13 @@
       </div>
     </div>
 
-    <!-- Step 5: Review & Save -->
-    <div *ngIf="step === 5">
+    <!-- Step 4: Review & Save -->
+    <div *ngIf="step === 4">
       <h2 class="step-title">Review & Save</h2>
 
       <div class="review-card">
         <div class="review-row"><span class="review-label">Name</span><span class="review-value">{{ tapName }}</span></div>
-        <div class="review-row"><span class="review-label">Description</span><span class="review-value">{{ description }}</span></div>
+        <div class="review-row"><span class="review-label">Instruction</span><span class="review-value">{{ description }}</span></div>
         <div class="review-row" *ngIf="packages.length > 0"><span class="review-label">Packages</span><span class="review-value">{{ packages.join(', ') }}</span></div>
         <div class="review-row" *ngIf="secretName"><span class="review-label">Credentials</span><span class="review-value">{{ secretName }}</span></div>
         <div class="review-row" *ngIf="testDataType"><span class="review-label">Data Type</span><span class="review-value"><span class="datatype-badge">{{ testDataType.toUpperCase() }}</span></span></div>
@@ -291,8 +319,8 @@
       <button class="secondary-btn" *ngIf="step > 1" (click)="prevStep()" [disabled]="isBusy()">Back</button>
       <button class="secondary-btn" routerLink="/taps" *ngIf="step === 1">Cancel</button>
       <div class="spacer"></div>
-      <button class="primary-btn" *ngIf="step < 5" (click)="nextStep()" [disabled]="isBusy() || (step === 3 && scriptDirty && !testPassed())">Next</button>
-      <button class="primary-btn" *ngIf="step === 5" (click)="save()" [disabled]="saving || isBusy()">
+      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 2 && scriptDirty && !testPassed())">Next</button>
+      <button class="primary-btn" *ngIf="step === 4" (click)="save()" [disabled]="saving || isBusy()">
         {{ saving ? 'Saving...' : 'Save Tap' }}
       </button>
     </div>

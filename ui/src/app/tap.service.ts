@@ -28,6 +28,10 @@ export class TapService {
     return this.http.post<any>('/api/v1/tap/cron', { description });
   }
 
+  brainstorm(messages: Array<{role: string, content: string}>, currentDescription: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/brainstorm', { messages, currentDescription });
+  }
+
   generateScript(description: string, tapName: string, oldScriptPath?: string, secretName?: string): Observable<any> {
     return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null, secretName: secretName || null });
   }

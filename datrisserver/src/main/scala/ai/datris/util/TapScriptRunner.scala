@@ -87,8 +87,12 @@ object TapScriptRunner {
                 SecretsUtil.getSecretMap(secretPath).map(_.asScala.filterNot(_._1 == "_type").toSeq).getOrElse(Seq.empty)
             } else Seq.empty
 
-            // Always inject DATRIS_DATABASE so scripts can discover the correct database name
-            val platformEnvVars = Seq("DATRIS_DATABASE" -> DatrisEnvironment.current.environment)
+            // Always inject Datris platform env vars so scripts can call back into the platform
+            val platformEnvVars = Seq(
+                "DATRIS_DATABASE" -> DatrisEnvironment.current.postgresDatabase,
+                "DATRIS_PLATFORM_HOST" -> "localhost",
+                "DATRIS_PLATFORM_PORT" -> "8080"
+            )
             val allEnvVars = platformEnvVars ++ secretEnvVars
 
             // Step 5: Execute the wrapper

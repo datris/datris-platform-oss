@@ -40,6 +40,59 @@ object AIUtil {
         }
     }
 
+    /**
+     * Execute an HTTP POST against the AI provider with consistent retry behavior.
+     * Retries up to 5 times on transient status codes (429, 503, 529) with linear backoff.
+     * Throws DatrisException on any other non-200 status.
+     */
+    private def executeWithRetry(client: CloseableHttpClient, httpPostFactory: () => HttpPost): String = {
+        val maxRetries = 5
+        var attempt = 0
+        var result: String = null
+        while (result == null) {
+            val httpPost = httpPostFactory()
+            val startTime = System.currentTimeMillis()
+            val response = client.execute(httpPost)
+            val elapsedMs = System.currentTimeMillis() - startTime
+            val statusCode = response.getStatusLine.getStatusCode
+            if ((statusCode == 429 || statusCode == 529 || statusCode == 503) && attempt < maxRetries) {
+                EntityUtils.consume(response.getEntity)
+                attempt += 1
+                val waitSeconds = 5 * attempt
+                logger.warn("AI API returned " + statusCode + " (transient), waiting " + waitSeconds + "s before retry " + attempt + " of " + maxRetries)
+                Thread.sleep(waitSeconds * 1000L)
+            } else if (statusCode != 200) {
+                throw new DatrisException("AI API returned error status: " + statusCode + ", body: " + EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8))
+            } else {
+                result = EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
+                logger.info("AI API responded in " + elapsedMs + "ms, response length: " + result.length + " chars")
+            }
+        }
+        result
+    }
+
+    /**
+     * Build an HttpPost with provider-specific auth headers and content-type.
+     * Pulled out so all three callAI* methods can share the same logic.
+     */
+    private def buildHttpPost(aiConfig: AIConfig, jsonBody: String): HttpPost = {
+        val httpPost = new HttpPost(aiConfig.endpoint)
+        aiConfig.provider.toLowerCase match {
+            case "openai" =>
+                httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
+            case "ollama" =>
+                if (aiConfig.apiKey != null && aiConfig.apiKey.nonEmpty)
+                    httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
+            case _ =>  // anthropic
+                httpPost.addHeader("x-api-key", aiConfig.apiKey)
+                val v = if (aiConfig.version != null && aiConfig.version.nonEmpty) aiConfig.version else "2023-06-01"
+                httpPost.addHeader("anthropic-version", v)
+        }
+        httpPost.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
+        httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8))
+        httpPost
+    }
+
     def maxInputChars(): Int = {
         val aiConfig = DatrisEnvironment.current.aiConfig
         val maxInputTokens = aiConfig.provider.toLowerCase match {
@@ -94,27 +147,46 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
+    }
 
-        val httpPost = new HttpPost(aiConfig.endpoint)
-        aiConfig.provider.toLowerCase match {
-            case "openai" =>
-                httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
-            case "ollama" =>
-                if (aiConfig.apiKey != null && aiConfig.apiKey.nonEmpty)
-                    httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
-            case _ =>
-                httpPost.addHeader("x-api-key", aiConfig.apiKey)
-                httpPost.addHeader("anthropic-version", "2023-06-01")
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)]): String = {
+        val aiConfig = DatrisEnvironment.current.aiConfig
+        if (aiConfig == null)
+            throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
+
+        logger.info("Calling AI with conversation, " + messages.size + " messages, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model)
+
+        val messagesArr = new JsonArray()
+
+        // For OpenAI/Ollama, system instruction goes as the first system role message
+        if (!aiConfig.provider.toLowerCase.equals("anthropic")) {
+            val systemMsg = new JsonObject()
+            systemMsg.addProperty("role", "system")
+            systemMsg.addProperty("content", systemPrompt)
+            messagesArr.add(systemMsg)
         }
-        httpPost.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
-        httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8))
 
-        val response = client.execute(httpPost)
-        val statusCode = response.getStatusLine.getStatusCode
-        if (statusCode != 200)
-            throw new DatrisException("AI API returned error status: " + statusCode + ", body: " + EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8))
+        messages.foreach { case (role, content) =>
+            val msgObj = new JsonObject()
+            msgObj.addProperty("role", role)
+            msgObj.addProperty("content", content)
+            messagesArr.add(msgObj)
+        }
 
-        EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
+        val requestObj = new JsonObject()
+        requestObj.addProperty("model", aiConfig.model)
+        requestObj.addProperty("max_tokens", 8192)
+        requestObj.add("messages", messagesArr)
+
+        // For Anthropic, system instruction goes as a top-level field
+        if (aiConfig.provider.toLowerCase.equals("anthropic")) {
+            requestObj.addProperty("system", systemPrompt)
+        }
+
+        val jsonBody = requestObj.toString
+        val client = getClient(aiConfig.provider)
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
     }
 
     def callAI(prompt: String): String = {
@@ -153,43 +225,7 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
-
-        val maxRetries = 5
-        var attempt = 0
-        var result: String = null
-        while (result == null) {
-            val httpPost = new HttpPost(aiConfig.endpoint)
-            aiConfig.provider.toLowerCase match {
-                case "openai" =>
-                    httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
-                case "ollama" =>
-                    if (aiConfig.apiKey != null && aiConfig.apiKey.nonEmpty)
-                        httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
-                case _ =>
-                    httpPost.addHeader("x-api-key", aiConfig.apiKey)
-                    httpPost.addHeader("anthropic-version", "2023-06-01")
-            }
-            httpPost.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
-            httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8))
-
-            val startTime = System.currentTimeMillis()
-            val response = client.execute(httpPost)
-            val elapsedMs = System.currentTimeMillis() - startTime
-            val statusCode = response.getStatusLine.getStatusCode
-            if (statusCode == 429 && attempt < maxRetries) {
-                EntityUtils.consume(response.getEntity)
-                attempt += 1
-                val waitSeconds = 10 * attempt
-                logger.warn("AI API rate limited (429), waiting " + waitSeconds + "s before retry " + attempt + " of " + maxRetries)
-                Thread.sleep(waitSeconds * 1000L)
-            } else if (statusCode != 200) {
-                throw new DatrisException("AI API returned error status: " + statusCode + ", body: " + EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8))
-            } else {
-                result = EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
-                logger.info("AI API responded in " + elapsedMs + "ms, response length: " + result.length + " chars")
-            }
-        }
-        result
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
     }
 
     def extractText(apiResponse: String): String = {

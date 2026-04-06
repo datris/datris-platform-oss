@@ -23,6 +23,7 @@
           <th>Name</th>
           <th>Source</th>
           <th>Destinations</th>
+          <th>Tap</th>
           <th></th>
         </tr>
       </thead>
@@ -31,6 +32,12 @@
           <td class="dataset-name">{{ ds.name }}</td>
           <td>{{ getSourceType(ds) }}</td>
           <td>{{ getDestinations(ds) }}</td>
+          <td>
+            <a class="tap-link" *ngIf="pipelineToTap[ds.name]" (click)="goToTap($event, pipelineToTap[ds.name])">
+              <span class="material-icons tap-icon">water_drop</span>{{ pipelineToTap[ds.name] }}
+            </a>
+            <span *ngIf="!pipelineToTap[ds.name]" class="tap-none">—</span>
+          </td>
           <td class="actions-cell">
             <button class="action-btn view-btn" (click)="viewPipeline($event, ds.name)" title="View configuration"><span class="material-icons">visibility</span></button>
             <button class="action-btn ingest-btn" (click)="openUploadModal($event, ds.name)" title="Ingest data"><span class="material-icons">upload_file</span></button>

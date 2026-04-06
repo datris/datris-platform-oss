@@ -34,8 +34,10 @@ object TapScriptGenerator {
           |- NEVER hardcode API keys, tokens, or passwords in the script
           |
           |If the script needs to query or discover data from the Datris platform:
-          |- Use os.environ.get('DATRIS_PLATFORM_HOST') and os.environ.get('DATRIS_PLATFORM_PORT') for host/port
-          |- Use os.environ.get('DATRIS_DATABASE') for the database name
+          |- Use os.environ.get('DATRIS_PLATFORM_HOST') for the host (always injected by the platform)
+          |- Use os.environ.get('DATRIS_PLATFORM_PORT') for the port (always injected by the platform)
+          |- Use os.environ.get('DATRIS_DATABASE') for the database name (always injected by the platform)
+          |- DO NOT provide fallback defaults for DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, or DATRIS_DATABASE — the platform always injects them. Use os.environ['DATRIS_DATABASE'] or os.environ.get('DATRIS_DATABASE') with NO second argument.
           |- Base URL: http://{host}:{port}/api/v1
           |
           |Metadata discovery (GET requests, all return JSON arrays):

@@ -538,3 +538,24 @@ tbody tr:last-child td {
   color: var(--text-muted);
   font-size: 16px;
 }
+
+.tap-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent-cyan);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.tap-link:hover {
+  text-decoration: underline;
+}
+
+.tap-icon {
+  font-size: 16px;
+}
+
+.tap-none {
+  color: var(--text-muted);
+}

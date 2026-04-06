@@ -55,6 +55,53 @@ DELETE /api/v1/tap?name={tapName}
 
 Deletes the tap configuration and its script from MinIO.
 
+## Brainstorm (AI Chat)
+
+```
+POST /api/v1/tap/brainstorm
+Content-Type: application/json
+```
+
+Multi-turn conversational endpoint that helps the user refine a vague tap idea into a clear instruction. The UI calls this on every message in the brainstorm chat panel of the tap creation wizard. The AI:
+
+- Asks one focused clarifying question at a time
+- Suggests specific data sources (e.g., yfinance, Alpha Vantage, Open-Meteo)
+- Recognizes Datris platform tables and uses the metadata/query endpoints
+- Returns an updated **instruction draft** on every turn so the UI can keep the instruction box in sync
+- Returns **suggestedEnvVars** when an external API requires authentication
+
+**Body:**
+```json
+{
+  "messages": [
+    {"role": "user", "content": "I'm looking for company earnings data"},
+    {"role": "assistant", "content": "Which companies?..."},
+    {"role": "user", "content": "Tickers from the consumer_discretionary_earnings table on Datris"}
+  ],
+  "currentDescription": "Optional: the current draft instruction so the AI has context"
+}
+```
+
+**Response:**
+```json
+{
+  "reply": "Got it. Which earnings data source — yfinance (free), Alpha Vantage, or Polygon.io?",
+  "description": "Query the consumer_discretionary_earnings table via /api/v1/query/postgres to get the ticker list. (Source TBD.)",
+  "suggestedEnvVars": []
+}
+```
+
+After the user picks Alpha Vantage, a subsequent call returns:
+```json
+{
+  "reply": "Good choice. The script will need an Alpha Vantage API key — please create a tap secret with ALPHA_VANTAGE_API_KEY in the credentials section below.",
+  "description": "Query the consumer_discretionary_earnings table via /api/v1/query/postgres to get tickers, then for each ticker call the Alpha Vantage EARNINGS endpoint and return historical earnings records. Use os.environ.get('ALPHA_VANTAGE_API_KEY') for authentication.",
+  "suggestedEnvVars": ["ALPHA_VANTAGE_API_KEY"]
+}
+```
+
+The AI never suggests `DATRIS_DATABASE`, `DATRIS_PLATFORM_HOST`, or `DATRIS_PLATFORM_PORT` in `suggestedEnvVars` — those are always injected by the platform.
+
 ## Generate Script (AI)
 
 ```

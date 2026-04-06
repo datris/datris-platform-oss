@@ -184,6 +184,126 @@ class TapAPIController {
         }
     }
 
+    @PostMapping(path = Array("/tap/brainstorm"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def brainstorm(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                   @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /tap/brainstorm called")
+            APIKeyValidator.validate(apiKey)
+
+            val messagesRaw = body.get("messages").asInstanceOf[java.util.List[java.util.Map[String, String]]]
+            val currentDescription = Option(body.get("currentDescription")).map(_.toString).getOrElse("")
+
+            if (messagesRaw == null || messagesRaw.isEmpty)
+                throw new DatrisException("messages array is required")
+
+            val messages = messagesRaw.asScala.map { m =>
+                (m.get("role"), m.get("content"))
+            }.toSeq
+
+            val systemPrompt =
+                """You are a data engineering assistant helping users describe a "tap" — a Python script that fetches data from an external source and returns a list of records.
+                  |
+                  |Your job is to converse with the user to understand:
+                  |1. What data they want
+                  |2. The source (external API, website, or the Datris platform itself)
+                  |3. Any filters, time range, or specific fields
+                  |4. Authentication needs
+                  |
+                  |IMPORTANT — The Datris platform is the host for this tap. It exposes its own data via REST endpoints that the generated script can call:
+                  |- Metadata discovery: /api/v1/metadata/postgres/{databases,schemas,tables,columns} and /api/v1/metadata/mongodb/{databases,collections}
+                  |- Queries: POST /api/v1/query/postgres with {sql, database} and POST /api/v1/query/mongodb with {query, database, collection}
+                  |- The script can read from existing Datris tables/collections (e.g., to get a list of tickers, IDs, parameters) and use those values to drive an external API fetch.
+                  |
+                  |So if a user says "get the tickers from the consumer_discretionary_earnings table on Datris", confidently confirm — the script generator knows how to query that table. Do NOT tell the user it's TBD or unknown.
+                  |
+                  |DO NOT ask the user about things the platform can discover automatically:
+                  |- Database name (always available as DATRIS_DATABASE env var)
+                  |- Schema name (default to "public" for postgres, or have the script call /api/v1/metadata/postgres/schemas to find it)
+                  |- Whether a table exists or what columns it has (the script will call /api/v1/metadata/postgres/columns at runtime to discover the schema)
+                  |- Exact column types or names — the script can introspect them
+                  |
+                  |Only ask the user for things the platform CANNOT discover: which external API to use, time ranges, filters, business logic, or credentials. When the user mentions a Datris table by name, just confirm and write the instruction — the generated script will handle metadata discovery on its own.
+                  |
+                  |CREDENTIALS — Many external data sources need API keys, tokens, or other secrets. The Datris tap runner injects environment variables into the script at runtime. Common ones include:
+                  |- DATRIS_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT (auto-injected for accessing the Datris platform itself)
+                  |- API_KEY, ALPHA_VANTAGE_API_KEY, POLYGON_API_KEY, NEWSAPI_KEY, etc. (must be configured by the user in a "tap secret")
+                  |
+                  |Whenever the data source needs authentication, you MUST:
+                  |1. Tell the user which environment variables the script will need (suggest specific names like ALPHA_VANTAGE_API_KEY)
+                  |2. Mention that they should create or select a "tap secret" containing those keys in the Credentials section below the chat
+                  |3. Include the env var names in the instruction draft so the script generator references them via os.environ.get()
+                  |
+                  |For free, no-auth sources (yfinance, Open-Meteo, public RSS feeds), no credentials are needed — say so explicitly.
+                  |
+                  |Ask ONE focused clarifying question at a time. Suggest specific data sources when relevant (e.g., yfinance for stocks, Alpha Vantage for fundamentals, Open-Meteo for weather, NewsAPI for news). Be concise — 1-2 sentences per turn. When you have enough information, tell the user the instruction is ready and they can proceed.
+                  |
+                  |After EACH user message, return JSON with three fields:
+                  |{
+                  |  "reply": "your next message or question",
+                  |  "description": "the current best draft of the tap instruction, written as a clear technical directive for code generation",
+                  |  "suggestedEnvVars": ["ENV_VAR_NAME_1", "ENV_VAR_NAME_2"]
+                  |}
+                  |
+                  |The description should always reflect everything known so far. If the user hasn't provided enough info yet, the description can be partial. Never leave description empty after the first user message — always provide your best guess. When the user references a Datris table/collection, the description should explicitly say so (e.g., "Query the consumer_discretionary_earnings table via /api/v1/query/postgres to get the ticker list, then fetch...").
+                  |
+                  |suggestedEnvVars should list any environment variable names the script will need that are NOT auto-injected by Datris (so do NOT include DATRIS_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT). For example, if the user picks Alpha Vantage, suggest ["ALPHA_VANTAGE_API_KEY"]. For free sources with no auth, return an empty array []. Always return the field, even when empty.
+                  |
+                  |Return ONLY the JSON object, no markdown fences, no commentary.""".stripMargin
+
+            // Prepend a system-style note about current description if present
+            val messagesWithContext: Seq[(String, String)] = if (currentDescription.nonEmpty) {
+                val contextNote = (messages.head._1, "[Current instruction draft: " + currentDescription + "]\n\n" + messages.head._2)
+                contextNote +: messages.tail
+            } else {
+                messages
+            }
+
+            val responseText = AIUtil.callAIWithMessages(systemPrompt, messagesWithContext)
+            val rawText = AIUtil.extractText(responseText).trim
+
+            // Strip markdown code fences if present
+            var cleaned = rawText
+                .replaceAll("(?s)^```(?:json)?\\s*", "")
+                .replaceAll("(?s)\\s*```$", "")
+                .trim
+
+            // Extract first JSON object substring if there's surrounding text
+            val firstBrace = cleaned.indexOf('{')
+            val lastBrace = cleaned.lastIndexOf('}')
+            if (firstBrace >= 0 && lastBrace > firstBrace) {
+                cleaned = cleaned.substring(firstBrace, lastBrace + 1)
+            }
+
+            val gson = new Gson
+            val response = new java.util.HashMap[String, Any]()
+
+            try {
+                val parsed = gson.fromJson(cleaned, classOf[java.util.Map[String, Any]])
+                response.put("reply", Option(parsed.get("reply")).map(_.toString).getOrElse(""))
+                response.put("description", Option(parsed.get("description")).map(_.toString).getOrElse(currentDescription))
+                val envVars = parsed.get("suggestedEnvVars") match {
+                    case list: java.util.List[_] => list
+                    case _ => new java.util.ArrayList[String]()
+                }
+                response.put("suggestedEnvVars", envVars)
+            } catch {
+                case _: Exception =>
+                    // LLM didn't return JSON — use raw text as reply, keep current description
+                    logger.warn("Brainstorm AI did not return valid JSON, using raw text as reply")
+                    response.put("reply", rawText)
+                    response.put("description", currentDescription)
+                    response.put("suggestedEnvVars", new java.util.ArrayList[String]())
+            }
+
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @PostMapping(path = Array("/tap/generate"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                        @RequestBody body: java.util.Map[String, String]): ResponseEntity[String] = {

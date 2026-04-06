@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy } from '@angular/core';
 import { Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 import { PipelineStatusService } from '../pipeline-status.service';
+import { TapService } from '../tap.service';
 
 @Component({
   selector: 'app-pipelines',
@@ -13,6 +14,7 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   filteredPipelines: any[] = [];
   searchQuery = '';
   showDiagram = false;
+  pipelineToTap: { [pipelineName: string]: string } = {};
   private refreshInterval: any;
 
   // Upload modal
@@ -24,11 +26,33 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   uploadResult = '';
   uploadError = '';
 
-  constructor(private pipelineService: PipelineService, private pipelineStatusService: PipelineStatusService, private router: Router) { }
+  constructor(private pipelineService: PipelineService, private pipelineStatusService: PipelineStatusService, private tapService: TapService, private router: Router) { }
 
   ngOnInit(): void {
     this.loadPipelines();
-    this.refreshInterval = setInterval(() => this.loadPipelines(), 5000);
+    this.loadTaps();
+    this.refreshInterval = setInterval(() => {
+      this.loadPipelines();
+      this.loadTaps();
+    }, 5000);
+  }
+
+  loadTaps(): void {
+    this.tapService.getTaps().subscribe({
+      next: (taps) => {
+        const map: { [pipelineName: string]: string } = {};
+        (taps || []).forEach((t: any) => {
+          if (t.targetPipeline) map[t.targetPipeline] = t.name;
+        });
+        this.pipelineToTap = map;
+      },
+      error: () => {}
+    });
+  }
+
+  goToTap(event: Event, tapName: string): void {
+    event.stopPropagation();
+    this.router.navigate(['/taps', tapName, 'edit']);
   }
 
   ngOnDestroy(): void {
