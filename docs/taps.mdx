@@ -13,7 +13,7 @@ Taps can run on a schedule using CRON expressions, or be triggered manually. The
 
 ## Creating a Tap
 
-The Tap creation wizard walks you through 4 steps:
+The Tap creation wizard walks you through 4 steps — or 5, if you link the tap to a pipeline (the optional 5th step lets you run the tap immediately and push data through the pipeline before leaving the wizard).
 
 ### Step 1: Describe
 
@@ -64,12 +64,28 @@ The test must return records successfully before you can proceed to step 3.
 ### Step 3: Schedule (Optional)
 
 Set up automatic runs with a CRON expression:
-- **Presets**: Every Hour, Daily (Midnight), Weekly (Monday)
+- **Presets**: Every Hour, Daily (Midnight), Weekdays (Midnight), Weekly (Monday)
 - **Custom**: Describe your schedule in plain English (e.g., "Every weekday at 4pm ET") and click Generate to create the CRON expression
+
+The **Schedule is active** checkbox controls whether the cron actually fires. Uncheck it to pause a tap without losing its schedule definition — useful when you want to temporarily stop a tap but keep its CRON expression intact for later.
 
 ### Step 4: Review & Save
 
-Review all settings (including a human-readable description of the CRON schedule, e.g. `0 0 16 ? * MON-FRI — at 4:00 PM, on MON-FRI`) and save the tap.
+Review all settings (including a human-readable description of the CRON schedule, e.g. `0 0 16 ? * MON-FRI — at 4:00 PM, on MON-FRI`).
+
+From step 4 you can also link the tap to a pipeline so its output flows through validation, transformation, and into your destination automatically. Two options:
+
+- **Attach to Pipeline** — pick an existing pipeline whose source columns match the tap's test output exactly. If columns don't match, you'll see exactly which columns are missing or extra so you can fix the mismatch before attaching.
+- **Generate Pipeline** — create a new pipeline pre-wired to the tap's output. The new pipeline's destination is Postgres (`public.<tap_name>`) for tabular data, or MongoDB for nested/document data. **All columns are created as `string`** for safe ingestion — tap output shape can vary across runs, and string columns ingest reliably regardless of what the script returns. You can promote individual columns to richer types in the pipeline editor once you're confident about the data shape.
+
+If a pipeline is linked when you click save, the wizard advances to step 5; otherwise it returns to the Taps list.
+
+### Step 5: Run the Tap (Optional)
+
+Step 5 only appears when the tap is linked to a pipeline. It's a one-time launch screen with two buttons:
+
+- **Run the Tap Now** — runs the tap script immediately and pushes the records it returns into the linked pipeline. The pipeline applies any data quality and transformation rules and writes to its destination. After the run completes you're returned to the Taps list.
+- **Done** — skip the run and return to the Taps list. You can run the tap later from the Taps page or via the MCP `run_tap` tool.
 
 ## Querying Datris Data
 
