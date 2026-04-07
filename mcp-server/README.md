@@ -88,7 +88,7 @@ Add to `.mcp.json` in your project root:
 - **AI** — RAG-powered question answering
 - **System** — health checks, version info
 
-See the full documentation at [docs/mcp.md](https://github.com/datris/datris-platform-oss/blob/main/docs/mcp.md).
+See the full documentation at [docs.datris.ai/mcp-server](https://docs.datris.ai/mcp-server).
 
 ## License
 

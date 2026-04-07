@@ -87,9 +87,16 @@ object TapScriptRunner {
                 SecretsUtil.getSecretMap(secretPath).map(_.asScala.filterNot(_._1 == "_type").toSeq).getOrElse(Seq.empty)
             } else Seq.empty
 
-            // Always inject Datris platform env vars so scripts can call back into the platform
+            // Always inject Datris platform env vars so scripts can call back into the platform.
+            // Mongo db follows the same multi-tenant rule as MetadataAPIController.scala (line 226):
+            // in multi-tenant mode the tenant name IS the mongo database name.
+            val mongoDatabase = if (DatrisEnvironment.current.multiTenant)
+                DatrisEnvironment.current.environment
+            else
+                DatrisEnvironment.current.mongoDbConfig.database
             val platformEnvVars = Seq(
-                "DATRIS_DATABASE" -> DatrisEnvironment.current.postgresDatabase,
+                "DATRIS_POSTGRES_DATABASE" -> DatrisEnvironment.current.postgresDatabase,
+                "DATRIS_MONGODB_DATABASE" -> mongoDatabase,
                 "DATRIS_PLATFORM_HOST" -> "localhost",
                 "DATRIS_PLATFORM_PORT" -> "8080"
             )
@@ -109,20 +116,35 @@ object TapScriptRunner {
             val dataJson = gson.toJson(data)
             val recordCount = if (dataType == "json" || dataType == "csv") countRecords(dataJson) else 1
 
-            // Extract columns from first record if csv (list of dicts with column keys)
-            val columns: java.util.List[String] = if (dataType == "csv" && recordCount > 0) {
+            // For CSV-shaped data: normalize column names so they pass PipelineValidatorUtil
+            // (which only allows [A-Za-z0-9_]+) and so downstream SQL doesn't need quoting.
+            // Rewrites BOTH the records (key by key) and the extracted columns array.
+            // No-op for json/xml/text — those go to mongo destinations as raw blobs.
+            val (normalizedDataJson, columns): (String, java.util.List[String]) = if (dataType == "csv" && recordCount > 0) {
                 try {
                     val list = gson.fromJson(dataJson, classOf[java.util.List[java.util.Map[String, Any]]])
                     if (list != null && !list.isEmpty) {
-                        new java.util.ArrayList[String](list.get(0).keySet())
-                    } else null
-                } catch { case _: Exception => null }
-            } else null
+                        // Build the normalized key mapping from the first record so order is stable
+                        val firstKeys = list.get(0).keySet().asScala.toList
+                        val keyMap: Map[String, String] = firstKeys.map(k => k -> normalizeColumnName(k)).toMap
+                        val normalizedCols = new java.util.ArrayList[String](firstKeys.map(keyMap).asJava)
+                        val rewrittenList = new java.util.ArrayList[java.util.Map[String, Any]](list.size())
+                        list.asScala.foreach { row =>
+                            val newRow = new java.util.LinkedHashMap[String, Any]()
+                            row.asScala.foreach { case (k, v) =>
+                                newRow.put(keyMap.getOrElse(k, normalizeColumnName(k)), v)
+                            }
+                            rewrittenList.add(newRow)
+                        }
+                        (gson.toJson(rewrittenList), normalizedCols)
+                    } else (dataJson, null)
+                } catch { case _: Exception => (dataJson, null) }
+            } else (dataJson, null)
 
             logger.info("TapScriptRunner: dataType=" + dataType + ", fetched " + recordCount + " records" +
                 (if (columns != null) ", columns=" + columns else ""))
 
-            TapScriptResult(dataJson, recordCount, null, if (logs.nonEmpty) logs else null, dataType, columns)
+            TapScriptResult(normalizedDataJson, recordCount, null, if (logs.nonEmpty) logs else null, dataType, columns)
         } catch {
             case e: DatrisException =>
                 logger.error("TapScriptRunner failed: " + e.getMessage)
@@ -183,6 +205,67 @@ object TapScriptRunner {
             case e: Exception =>
                 throw new DatrisException("Tap script execution error: " + maskSecrets(e.getMessage, secretValues))
         }
+    }
+
+    /** Spell-out mapping for special characters that have semantic meaning in
+      * column names. Each spell-out is wrapped in underscores so word
+      * boundaries are preserved regardless of surrounding context (e.g.
+      * `Surprise%` and `Surprise(%)` both yield `surprise_percent`). The
+      * collapse + strip steps in `normalizeColumnName` clean up duplicates.
+      *
+      * Order doesn't matter functionally, but is grouped here by semantic theme.
+      */
+    private val SPELL_OUT_CHARS: Seq[(String, String)] = Seq(
+        // Math / comparison
+        "%" -> "_percent_",
+        "+" -> "_plus_",
+        "*" -> "_star_",
+        "^" -> "_pow_",
+        "=" -> "_equals_",
+        "<" -> "_lt_",
+        ">" -> "_gt_",
+        "/" -> "_per_",
+        // Currency / units
+        "$" -> "_dollars_",
+        "#" -> "_num_",
+        // Logical / connector
+        "&" -> "_and_",
+        "@" -> "_at_",
+        "~" -> "_approx_",
+        "!" -> "_bang_"
+    )
+
+    /** Convert a source column name into a SQL-safe identifier matching
+      * PipelineValidatorUtil's `[A-Za-z0-9_]+` regex.
+      *
+      * Steps:
+      *   1. Spell out semantically meaningful special characters (see
+      *      SPELL_OUT_CHARS) into `_word_` tokens.
+      *   2. Replace any remaining run of non-`[A-Za-z0-9_]` characters with `_`.
+      *   3. Collapse runs of `_` into a single `_`.
+      *   4. Strip leading/trailing `_`.
+      *   5. Lowercase.
+      *   6. Fall back to `"col"` if the result is empty (e.g. input was `___`).
+      *
+      * Examples:
+      *   "EPS Estimate"  -> "eps_estimate"
+      *   "Reported EPS"  -> "reported_eps"
+      *   "Surprise(%)"   -> "surprise_percent"
+      *   "Surprise%"     -> "surprise_percent"   (no-paren form)
+      *   "Order#"        -> "order_num"
+      *   "miles/hour"    -> "miles_per_hour"
+      *   "R&D Spending"  -> "r_and_d_spending"
+      *   "ticker"        -> "ticker"             (no-op for already-clean names)
+      */
+    private[util] def normalizeColumnName(name: String): String = {
+        if (name == null || name.isEmpty) return name
+        var s = name
+        SPELL_OUT_CHARS.foreach { case (ch, word) => s = s.replace(ch, word) }
+        s = s.replaceAll("[^A-Za-z0-9_]+", "_")
+        s = s.replaceAll("_+", "_")
+        s = s.stripPrefix("_").stripSuffix("_")
+        s = s.toLowerCase
+        if (s.isEmpty) "col" else s
     }
 
     private def maskSecrets(text: String, secretValues: Seq[String]): String = {

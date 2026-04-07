@@ -30,6 +30,7 @@ The pipeline server is configured via `application.yaml` (or `application.proper
 | `schedule.checkFileNotifierQueue` | `5000` | Polling interval for file notification queue (ms) |
 | `schedule.findJobsToStart` | `5000` | Interval to check for queued jobs (ms) |
 | `schedule.checkDatabaseSourceQueries` | `30000` | Interval to check for database pulls (ms) |
+| `schedule.checkTapSchedules` | `30000` | Interval to check for taps with CRON schedules due to run (ms) |
 
 ### Pipeline
 
@@ -42,6 +43,21 @@ The pipeline server is configured via `application.yaml` (or `application.proper
 | `ttlFileNotifierQueueMessages` | `60` | Days to retain processed message IDs for deduplication |
 | `tapScriptTimeoutSeconds` | `300` | Maximum tap script execution time in seconds |
 
+### CORS
+
+Cross-Origin Resource Sharing controls which browser origins can call the Datris API directly. The default `*` allows any origin and is appropriate for local development. **In production, lock this down to your real frontend origin(s).**
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `cors.allowedOrigins` | `*` | Comma-separated list of allowed origins. Use `*` for any origin (development only), or specific URLs like `https://app.example.com,https://admin.example.com`. Applied globally to all `/api/**` endpoints. |
+
+In the deploy config, this reads from the `CORS_ALLOWED_ORIGINS` environment variable so you can change it without rebuilding the image:
+
+```yaml
+cors:
+  allowedOrigins: ${CORS_ALLOWED_ORIGINS:*}
+```
+
 ### Date / Timezone
 
 All display timestamps across the platform (pipeline status, tap run history, etc.) are formatted using these settings.
@@ -49,7 +65,7 @@ All display timestamps across the platform (pipeline status, tap run history, et
 | Property | Default | Description |
 |----------|---------|-------------|
 | `dateFormat` | `yyyy-MM-dd HH:mm:ss z` | Java `SimpleDateFormat` pattern. Use `z` to print the timezone abbreviation (e.g., `UTC`, `EDT`, `EST`) |
-| `dateTimezone` | `UTC` | IANA timezone ID (e.g., `UTC`, `America/New_York`, `Europe/London`). When the format includes `z`, daylight saving is handled automatically |
+| `dateTimezone` | `America/New_York` | IANA timezone ID (e.g., `UTC`, `America/New_York`, `Europe/London`). When the format includes `z`, daylight saving is handled automatically |
 
 **Example — Eastern time with auto-DST:**
 ```yaml
@@ -112,13 +128,13 @@ ActiveMQ credentials are stored in Vault under `secrets.activeMQSecretName`:
 | Property | Description |
 |----------|-------------|
 | `mongodb.connectionString` | MongoDB connection URI (e.g., `mongodb://localhost:27017`) |
-| `mongodb.database` | Database name for pipeline metadata |
+| `mongodb.database` | Database name for pipeline metadata. Also injected into tap scripts as the `DATRIS_MONGODB_DATABASE` environment variable. In multi-tenant mode the tenant name is used instead of this value. |
 
 ### PostgreSQL
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `postgres.database` | `datris` | Default database name used by `/api/v1/query/postgres` and `/api/v1/metadata/postgres/*` when no `database` parameter is supplied. Also injected into tap scripts as the `DATRIS_DATABASE` environment variable. In multi-tenant mode this value is automatically overridden per-request with the tenant name. |
+| `postgres.database` | `datris` | Default database name used by `/api/v1/query/postgres` and `/api/v1/metadata/postgres/*` when no `database` parameter is supplied. Also injected into tap scripts as the `DATRIS_POSTGRES_DATABASE` environment variable. In multi-tenant mode this value is automatically overridden per-request with the tenant name. |
 
 PostgreSQL connection details (`username`, `password`, `jdbcUrl`) are stored in Vault under `secrets.postgresSecretName` — see the Vault Secret Formats section below.
 
@@ -137,8 +153,8 @@ PostgreSQL connection details (`username`, `password`, `jdbcUrl`) are stored in 
 | Property | Default | Description |
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
-| `ai.provider` | `ollama` | AI provider — `anthropic`, `openai`, or `ollama` |
-| `ai.aiSecretName` | `oss/ollama` | Vault secret name containing `endpoint`, `model`, and `apiKey` |
+| `ai.provider` | `anthropic` | AI provider — `anthropic`, `openai`, or `ollama` |
+| `ai.aiSecretName` | `oss/anthropic` | Vault secret name containing `endpoint`, `model`, and `apiKey` |
 | `ai.version` | `2023-06-01` | API version sent to the provider. For Anthropic this is the value of the `anthropic-version` request header. Other providers can reuse this field for their own version headers. |
 
 All AI calls (`callAI`, `callAIWithSystem`, `callAIWithMessages`) share a unified retry helper that automatically retries on transient `429` (rate limited), `503` (service unavailable), and `529` (overloaded) responses with linear backoff (5s, 10s, 15s, 20s, 25s) for up to 5 attempts. This applies uniformly across all configured providers.

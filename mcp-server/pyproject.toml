@@ -39,7 +39,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://datris.ai"
 Repository = "https://github.com/datris/datris-platform-oss"
-Documentation = "https://github.com/datris/datris-platform-oss/blob/main/docs/mcp.md"
+Documentation = "https://docs.datris.ai/mcp-server"
 Issues = "https://github.com/datris/datris-platform-oss/issues"
 
 [project.scripts]

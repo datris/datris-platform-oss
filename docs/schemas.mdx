@@ -59,6 +59,49 @@ These types are supported by the server but are never auto-generated. Use them w
 
 Refer to [data-types](/ingestion/data-types) for type mappings to PostgreSQL and Spark.
 
+## Column Naming Rules
+
+Column names in pipeline `schemaProperties.fields` must match `[A-Za-z0-9_]+` — letters, digits, and underscores only. Spaces, parentheses, percent signs, hyphens, and other punctuation are rejected by the pipeline validator at registration time. Names are also case-insensitive for duplicate detection: `Foo` and `foo` collide.
+
+Recommended convention: lowercase snake_case (e.g. `customer_id`, `eps_estimate`).
+
+### Tap auto-normalization
+
+When a tap returns records whose keys contain disallowed characters (common with pandas DataFrames or APIs that preserve human-readable column titles), the platform automatically normalizes them in `TapScriptRunner` before they enter the pipeline.
+
+The conversion runs in this order:
+
+1. **Spell out semantically meaningful special characters** as `_word_` tokens (see table below)
+2. **Replace any remaining non-alphanumeric character** with `_`
+3. **Collapse runs of `_`** into a single `_`
+4. **Trim** leading/trailing `_`
+5. **Lowercase**
+
+#### Special character spell-out table
+
+| Character | Replacement | Example |
+|---|---|---|
+| `%` | `percent` | `Surprise(%)` → `surprise_percent` |
+| `#` | `num` | `Order#` → `order_num` |
+| `$` | `dollars` | `Price$` → `price_dollars` |
+| `&` | `and` | `R&D Spending` → `r_and_d_spending` |
+| `@` | `at` | `Email@Domain` → `email_at_domain` |
+| `+` | `plus` | `Type A+` → `type_a_plus` |
+| `=` | `equals` | `a=b` → `a_equals_b` |
+| `<` | `lt` | `a<b` → `a_lt_b` |
+| `>` | `gt` | `a>b` → `a_gt_b` |
+| `/` | `per` | `miles/hour` → `miles_per_hour` |
+| `*` | `star` | `count*` → `count_star` |
+| `^` | `pow` | `x^2` → `x_pow_2` |
+| `~` | `approx` | `~Population` → `approx_population` |
+| `!` | `bang` | `Score!` → `score_bang` |
+
+Other special characters (spaces, hyphens, parentheses, brackets, dots, commas, colons, quotes, etc.) are simply replaced with `_`. So `EPS Estimate` becomes `eps_estimate` and `Cost ($)` becomes `cost_dollars`.
+
+This normalization only applies to tabular results (`dataType: csv`). JSON and XML results destined for MongoDB are passed through unchanged in the `_json` field.
+
+See [Taps → Script Requirements](/taps#script-requirements) for the script-side perspective.
+
 ## Auto-Generating a Schema
 
 If you have a representative CSV file, the pipeline can infer a schema automatically using AI. POST the file to the `/api/v1/pipeline/generate` endpoint:

@@ -3,6 +3,10 @@ title: "Taps API"
 description: "API endpoints for managing taps"
 ---
 
+<Note>
+**Beta.** The Taps API is stable but may add fields or refine response shapes in upcoming releases. Existing endpoints will remain backward-compatible where possible.
+</Note>
+
 ## List Taps
 
 ```
@@ -100,7 +104,7 @@ After the user picks Alpha Vantage, a subsequent call returns:
 }
 ```
 
-The AI never suggests `DATRIS_DATABASE`, `DATRIS_PLATFORM_HOST`, or `DATRIS_PLATFORM_PORT` in `suggestedEnvVars` — those are always injected by the platform.
+The AI never suggests `DATRIS_POSTGRES_DATABASE`, `DATRIS_MONGODB_DATABASE`, `DATRIS_PLATFORM_HOST`, or `DATRIS_PLATFORM_PORT` in `suggestedEnvVars` — those are always injected by the platform.
 
 ## Generate Script (AI)
 
@@ -178,6 +182,8 @@ Executes the tap script without sending data to a pipeline. Returns results, log
 ```
 
 If errors or 0 records are detected, `aiExplanation` contains an AI-generated diagnosis.
+
+For `dataType: "csv"`, **column names in `columns` and the keys inside each record in `records` are normalized** by the platform: lowercase, `[a-z0-9_]` only, with `%` rewritten to `percent`. Source data with names like `EPS Estimate` or `Surprise(%)` will appear as `eps_estimate` and `surprise_percent`. JSON/XML results destined for MongoDB are not normalized. See [Schema Definition → Column Naming Rules](/schemas#column-naming-rules).
 
 ## Run Tap
 

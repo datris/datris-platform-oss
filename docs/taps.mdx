@@ -3,9 +3,13 @@ title: "Taps"
 description: "AI-generated Python scripts that fetch data from external sources"
 ---
 
+<Note>
+**Beta.** Taps are a new feature and the API and UI may evolve based on user feedback. Core functionality is stable and production-ready, but we may add fields, rename properties, or adjust workflow steps in upcoming releases.
+</Note>
+
 A **Tap** is an AI-generated Python script that fetches data from external sources — APIs, web scraping, databases — and pushes it into a Datris pipeline. Describe what data you want in plain English, and Datris generates the script for you.
 
-Taps can run on a schedule using CRON expressions, or be triggered manually. They support credentials management via Vault secrets and include AI-powered diagnosis when scripts fail.
+Taps can run on a schedule using CRON expressions, or be triggered manually. They support credentials management via Vault secrets and include AI-powered diagnosis when scripts fail, return zero records, or emit deprecation/warning output.
 
 ## Creating a Tap
 
@@ -73,37 +77,59 @@ Tap scripts can query data already stored in the Datris platform. The following 
 
 | Variable | Description |
 |---|---|
-| `DATRIS_DATABASE` | The PostgreSQL database name (configured via `postgres.database` in `application.yaml`, or the tenant name in multi-tenant mode) |
+| `DATRIS_POSTGRES_DATABASE` | PostgreSQL database name (configured via `postgres.database` in `application.yaml`, or the tenant name in multi-tenant mode) |
+| `DATRIS_MONGODB_DATABASE` | MongoDB database name (configured via `mongodb.database` in `application.yaml`, or the tenant name in multi-tenant mode) |
 | `DATRIS_PLATFORM_HOST` | Hostname of the Datris platform (`localhost` inside the Docker container) |
 | `DATRIS_PLATFORM_PORT` | Port of the Datris platform (`8080` by default) |
 
+In single-tenant deployments the postgres and mongo database names may differ (postgres defaults to `datris`, mongo defaults to `oss`); in multi-tenant mode both resolve to the same tenant name. Always use the variable that matches the backend you are querying.
+
 Scripts can call the Datris API directly using these:
 
-**Discover tables:**
+**Discover tables (PostgreSQL):**
 ```python
 import os, requests
 host = os.environ['DATRIS_PLATFORM_HOST']
 port = os.environ['DATRIS_PLATFORM_PORT']
-db = os.environ['DATRIS_DATABASE']
+pg_db = os.environ['DATRIS_POSTGRES_DATABASE']
 base_url = f'http://{host}:{port}/api/v1'
 
 # List all tables
 response = requests.get(f'{base_url}/metadata/postgres/tables',
-                        params={'database': db, 'schema': 'public'})
+                        params={'database': pg_db, 'schema': 'public'})
 tables = response.json()
 ```
 
-**Query data:**
+Column names returned by `/api/v1/metadata/postgres/columns` reflect the live table schema, which always satisfies the platform's `[A-Za-z0-9_]+` rule (see [Column Naming Rules](/schemas#column-naming-rules)). You can use them directly in SELECT clauses without quoting.
+
+**Query PostgreSQL data:**
 ```python
-# Query a specific table
 response = requests.post(f'{base_url}/query/postgres', json={
     'sql': 'SELECT * FROM public.my_table',
-    'database': db
+    'database': pg_db
 })
 results = response.json()['results']
 ```
 
-The brainstorm AI knows about these endpoints, so if you mention "the X table on Datris" it will write the instruction to use them — no need to describe schema or column names; the script can introspect those at runtime via `/api/v1/metadata/postgres/columns`.
+**Query MongoDB data:**
+```python
+mongo_db = os.environ['DATRIS_MONGODB_DATABASE']
+
+# List collections
+response = requests.get(f'{base_url}/metadata/mongodb/collections',
+                        params={'database': mongo_db})
+collections = response.json()
+
+# Query a collection
+response = requests.post(f'{base_url}/query/mongodb', json={
+    'database': mongo_db,
+    'collection': 'my_collection',
+    'query': '{}'
+})
+results = response.json()['results']
+```
+
+The brainstorm AI knows about all of these endpoints, so if you mention "the X table on Datris" or "the Y collection on Datris" it will write the instruction to use the appropriate backend — no need to describe schema or column names; the script can introspect those at runtime via `/api/v1/metadata/postgres/columns` or `/api/v1/metadata/mongodb/collections`.
 
 ## Credentials / Secrets
 
@@ -208,4 +234,5 @@ The `fetch()` function must:
 - Include timeouts on network requests (30 seconds recommended)
 - Return an empty list on failure rather than raising exceptions
 - Use `os.environ.get()` for any credentials
-- Read `DATRIS_DATABASE`, `DATRIS_PLATFORM_HOST`, and `DATRIS_PLATFORM_PORT` directly without fallback defaults — they are always injected by the platform
+- Read `DATRIS_POSTGRES_DATABASE`, `DATRIS_MONGODB_DATABASE`, `DATRIS_PLATFORM_HOST`, and `DATRIS_PLATFORM_PORT` directly without fallback defaults — they are always injected by the platform
+- **Column names are auto-normalized** for tabular results (list of dicts). The platform converts each key to lowercase snake_case using only `[a-z0-9_]` so that downstream pipeline registration succeeds and SQL queries don't need quoting. Examples: `EPS Estimate` → `eps_estimate`, `Surprise(%)` → `surprise_percent`. You can return raw source column names — the platform will clean them — but for clarity in the test preview, prefer to emit clean keys directly. **JSON/XML results destined for MongoDB are not normalized** (they go through as raw blobs in the `_json` field). See [Schema Definition → Column Naming Rules](/schemas#column-naming-rules) for the underlying validator rule.

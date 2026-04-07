@@ -4,7 +4,7 @@ info:
   description: |
     REST API for the Datris AI Data Platform. Ingest, validate, transform, store, and retrieve data.
 
-    For AI agent integration, use the [MCP Server](https://github.com/datris/datris-platform-oss/blob/main/docs/mcp.md) instead.
+    For AI agent integration, use the [MCP Server](https://docs.datris.ai/mcp-server) instead.
   version: 1.0.0
   contact:
     name: Datris
@@ -112,6 +112,157 @@ components:
           type: string
         path:
           type: string
+
+    TapConfig:
+      type: object
+      required: [name, description, targetPipeline]
+      properties:
+        name:
+          type: string
+          description: Unique tap identifier
+        description:
+          type: string
+          description: Plain-English instruction used to generate the script
+        scriptPath:
+          type: string
+          description: MinIO path of the generated Python script
+        targetPipeline:
+          type: string
+          description: Pipeline this tap feeds into (may be empty for unattached taps)
+        packages:
+          type: array
+          items:
+            type: string
+          description: Extra pip packages required by the script
+        secretName:
+          type: string
+          description: Name of the tap secret (Vault) injected as env vars at runtime
+        cronExpression:
+          type: string
+          description: Quartz CRON expression for scheduled runs (omit for manual-only)
+        enabled:
+          type: boolean
+          default: true
+        lastRunStatus:
+          type: string
+          enum: [success, failure]
+        lastRunTime:
+          type: string
+        lastRunRecordCount:
+          type: integer
+        lastRunError:
+          type: string
+        lastRunDataType:
+          type: string
+          enum: [csv, json, xml, text]
+        lastRunColumns:
+          type: array
+          items:
+            type: string
+        lastTestRunStatus:
+          type: string
+        lastTestRunTime:
+          type: string
+        lastTestRunRecordCount:
+          type: integer
+        lastTestRunError:
+          type: string
+        lastTestRunDataType:
+          type: string
+        lastTestRunColumns:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    TapRunLog:
+      type: object
+      properties:
+        tapName:
+          type: string
+        runTime:
+          type: string
+        status:
+          type: string
+          enum: [success, failure]
+        recordCount:
+          type: integer
+        dataType:
+          type: string
+        logs:
+          type: string
+        error:
+          type: string
+        pushToPipeline:
+          type: boolean
+        durationMs:
+          type: integer
+          format: int64
+
+    TapRunResult:
+      type: object
+      properties:
+        tap:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [success, failure]
+        records:
+          type: array
+          items:
+            type: object
+        recordCount:
+          type: integer
+        dataType:
+          type: string
+        columns:
+          type: array
+          items:
+            type: string
+        logs:
+          type: string
+        error:
+          type: string
+        aiExplanation:
+          type: string
+
+    TapBrainstormRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [user, assistant]
+              content:
+                type: string
+        currentDescription:
+          type: string
+          description: Current draft instruction (optional context for the AI)
+
+    TapBrainstormResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+          description: The AI's next chat message
+        description:
+          type: string
+          description: Updated draft instruction the UI should sync into the instruction box
+        suggestedEnvVars:
+          type: array
+          items:
+            type: string
+          description: Environment variable names the script will need (excludes platform-injected DATRIS_* vars)
 
 paths:
   # ── Pipeline Management ──────────────────────────────────────
@@ -1120,3 +1271,283 @@ paths:
                     type: string
         '500':
           description: Error
+
+  # ── Taps (Beta) ──────────────────────────────────────────
+
+  /api/v1/taps:
+    get:
+      tags: [Taps]
+      summary: List all taps
+      description: Returns all registered tap configurations.
+      responses:
+        '200':
+          description: Array of tap configurations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TapConfig'
+
+  /api/v1/tap:
+    get:
+      tags: [Taps]
+      summary: Get a tap configuration
+      description: Returns a single tap configuration, including the script content from MinIO.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Tap name
+      responses:
+        '200':
+          description: Tap configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TapConfig'
+        '404':
+          description: Tap not found
+    post:
+      tags: [Taps]
+      summary: Create or update a tap
+      description: Creates a new tap or updates an existing tap with the same `name`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TapConfig'
+      responses:
+        '200':
+          description: Saved tap configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TapConfig'
+        '400':
+          description: Validation error
+    delete:
+      tags: [Taps]
+      summary: Delete a tap
+      description: Deletes the tap configuration and its script from MinIO.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+        '404':
+          description: Tap not found
+
+  /api/v1/tap/logs:
+    get:
+      tags: [Taps]
+      summary: Get tap run history
+      description: Returns the last 50 run log entries for a tap, sorted by most recent first.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Array of run log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TapRunLog'
+
+  /api/v1/tap/brainstorm:
+    post:
+      tags: [Taps]
+      summary: Brainstorm chat (AI)
+      description: |
+        Multi-turn conversational endpoint that helps refine a vague tap idea into a clear instruction.
+        The AI asks one focused clarifying question at a time, suggests data sources, recognizes Datris
+        platform tables, and returns an updated instruction draft on every turn.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TapBrainstormRequest'
+      responses:
+        '200':
+          description: Updated chat reply, instruction draft, and suggested env vars
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TapBrainstormResponse'
+
+  /api/v1/tap/generate:
+    post:
+      tags: [Taps]
+      summary: Generate tap script (AI)
+      description: Uses AI to generate a Python `fetch()` script from a plain-English description.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description, tapName]
+              properties:
+                description:
+                  type: string
+                tapName:
+                  type: string
+                oldScriptPath:
+                  type: string
+                  description: Path of a previous script to delete after the new one is written
+                secretName:
+                  type: string
+                  description: Tap secret name — env var keys are passed to the AI as context
+      responses:
+        '200':
+          description: Generated script
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  script:
+                    type: string
+                  packages:
+                    type: array
+                    items:
+                      type: string
+                  scriptPath:
+                    type: string
+
+  /api/v1/tap/fix:
+    post:
+      tags: [Taps]
+      summary: Fix tap script (AI diagnosis)
+      description: Uses AI to fix a script based on a diagnosis of what went wrong.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tapName, script]
+              properties:
+                tapName:
+                  type: string
+                script:
+                  type: string
+                diagnosis:
+                  type: string
+                logs:
+                  type: string
+                error:
+                  type: string
+                oldScriptPath:
+                  type: string
+      responses:
+        '200':
+          description: Fixed script (same shape as /tap/generate)
+
+  /api/v1/tap/test:
+    post:
+      tags: [Taps]
+      summary: Test a tap
+      description: |
+        Executes the tap script without sending data to a pipeline. Returns results, logs, and an
+        AI-generated diagnosis if errors or zero records are detected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TapConfig'
+      responses:
+        '200':
+          description: Test results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      type: object
+                  recordCount:
+                    type: integer
+                  dataType:
+                    type: string
+                  columns:
+                    type: array
+                    items:
+                      type: string
+                  logs:
+                    type: string
+                  error:
+                    type: string
+                  aiExplanation:
+                    type: string
+
+  /api/v1/tap/run:
+    post:
+      tags: [Taps]
+      summary: Run a tap
+      description: Executes a saved tap. Optionally sends data to the configured pipeline.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                pushToPipeline:
+                  type: string
+                  enum: ['true', 'false']
+                  description: Whether to feed records into the configured target pipeline
+      responses:
+        '200':
+          description: Run result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TapRunResult'
+
+  /api/v1/tap/cron:
+    post:
+      tags: [Taps]
+      summary: Generate CRON expression (AI)
+      description: Converts a plain-English schedule description to a Quartz CRON expression.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [description]
+              properties:
+                description:
+                  type: string
+                  example: Every weekday at 4pm ET
+      responses:
+        '200':
+          description: Generated CRON expression
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cronExpression:
+                    type: string
+                    example: 0 0 16 ? * MON-FRI

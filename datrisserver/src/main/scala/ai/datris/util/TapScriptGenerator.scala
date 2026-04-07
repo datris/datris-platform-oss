@@ -33,30 +33,37 @@ object TapScriptGenerator {
           |- If authentication is needed, use os.environ.get('KEY_NAME') to access credentials
           |- NEVER hardcode API keys, tokens, or passwords in the script
           |
+          |Column naming for tabular results:
+          |- When returning a list of dicts (CSV-shaped data), prefer snake_case keys composed of [a-z0-9_] only.
+          |- The platform automatically normalizes column names at runtime (e.g. "EPS Estimate" → "eps_estimate", "Surprise(%)" → "surprise_percent"), but generating clean keys directly is preferred so the user sees them faithfully in the test preview and in the pipeline schema.
+          |- If the source returns columns with spaces, parens, or punctuation (common with pandas DataFrames), rename them in the script before adding to the record dict.
+          |
           |If the script needs to query or discover data from the Datris platform:
           |- Use os.environ.get('DATRIS_PLATFORM_HOST') for the host (always injected by the platform)
           |- Use os.environ.get('DATRIS_PLATFORM_PORT') for the port (always injected by the platform)
-          |- Use os.environ.get('DATRIS_DATABASE') for the database name (always injected by the platform)
-          |- DO NOT provide fallback defaults for DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, or DATRIS_DATABASE — the platform always injects them. Use os.environ['DATRIS_DATABASE'] or os.environ.get('DATRIS_DATABASE') with NO second argument.
+          |- Use os.environ.get('DATRIS_POSTGRES_DATABASE') for the PostgreSQL database name (always injected by the platform)
+          |- Use os.environ.get('DATRIS_MONGODB_DATABASE') for the MongoDB database name (always injected by the platform)
+          |- These two database names may differ in single-tenant deployments; in multi-tenant mode they resolve to the same tenant name. Always use the variable that matches the backend you are querying.
+          |- DO NOT provide fallback defaults for DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, or DATRIS_MONGODB_DATABASE — the platform always injects them. Use os.environ['NAME'] or os.environ.get('NAME') with NO second argument.
           |- Base URL: http://{host}:{port}/api/v1
           |
           |Metadata discovery (GET requests, all return JSON arrays):
           |- GET /api/v1/metadata/postgres/databases → list of database names
-          |- GET /api/v1/metadata/postgres/schemas?database={db} → list of schema names
-          |- GET /api/v1/metadata/postgres/tables?database={db}&schema=public → list of table names
-          |- GET /api/v1/metadata/postgres/columns?database={db}&schema=public&table=TABLE → list of {name, type}
+          |- GET /api/v1/metadata/postgres/schemas?database={pg_db} → list of schema names
+          |- GET /api/v1/metadata/postgres/tables?database={pg_db}&schema=public → list of table names
+          |- GET /api/v1/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE → list of {name, type}
           |- GET /api/v1/metadata/mongodb/databases → list of database names
-          |- GET /api/v1/metadata/mongodb/collections?database={db} → list of collection names
+          |- GET /api/v1/metadata/mongodb/collections?database={mongo_db} → list of collection names
           |
           |Query endpoints (POST requests):
           |- PostgreSQL: POST /api/v1/query/postgres
-          |  Body: {"sql": "SELECT * FROM public.table_name", "database": "{db}"}
+          |  Body: {"sql": "SELECT * FROM public.table_name", "database": "{pg_db}"}
           |  Response: {"results": [...list of row dicts...], "count": N}
           |- MongoDB: POST /api/v1/query/mongodb
-          |  Body: {"query": "...", "database": "{db}", "collection": "collection_name"}
+          |  Body: {"query": "...", "database": "{mongo_db}", "collection": "collection_name"}
           |  Response: {"results": [...], "count": N}
           |
-          |Where {db} = os.environ.get('DATRIS_DATABASE').
+          |Where {pg_db} = os.environ.get('DATRIS_POSTGRES_DATABASE') and {mongo_db} = os.environ.get('DATRIS_MONGODB_DATABASE').
           |Use metadata endpoints to discover tables and columns dynamically when the user
           |describes data by name rather than providing exact table names.
           |
@@ -95,32 +102,85 @@ object TapScriptGenerator {
 
         logger.info("TapScriptGenerator: AI response length: " + cleaned.length + " chars")
 
-        // Parse the JSON response
         val gson = new Gson
-        val result = gson.fromJson(cleaned, classOf[java.util.Map[String, Any]])
-        if (result == null)
-            throw new DatrisException("AI returned invalid response for tap script generation")
 
-        val script = Option(result.get("script")).map(_.toString).getOrElse(
-            throw new DatrisException("AI response missing 'script' field")
-        )
-
-        val packages: java.util.List[String] = {
-            val raw = result.get("packages")
-            if (raw == null) new java.util.ArrayList[String]()
-            else {
-                raw match {
-                    case list: java.util.List[_] =>
-                        val stringList = new java.util.ArrayList[String]()
-                        val it = list.iterator()
-                        while (it.hasNext) {
-                            stringList.add(it.next().toString)
+        // Try to parse an LLM response as a {script, packages} JSON object.
+        // Returns Some((script, packages)) on success, None on any failure.
+        // Handles preamble/suffix text around the JSON and common LLM formatting quirks.
+        def tryParseAsJsonObject(text: String): Option[(String, java.util.List[String])] = {
+            try {
+                val start = text.indexOf('{')
+                val end = text.lastIndexOf('}')
+                val isolated = if (start >= 0 && end > start) text.substring(start, end + 1) else text
+                val result = gson.fromJson(isolated, classOf[java.util.Map[String, Any]])
+                Option(result).flatMap { r =>
+                    Option(r.get("script")).map(_.toString).filter(_.trim.nonEmpty).map { s =>
+                        val p: java.util.List[String] = r.get("packages") match {
+                            case null => new java.util.ArrayList[String]()
+                            case list: java.util.List[_] =>
+                                val stringList = new java.util.ArrayList[String]()
+                                val it = list.iterator()
+                                while (it.hasNext) stringList.add(it.next().toString)
+                                stringList
+                            case _ => new java.util.ArrayList[String]()
                         }
-                        stringList
-                    case _ => new java.util.ArrayList[String]()
+                        (s, p)
+                    }
                 }
-            }
+            } catch { case _: Exception => None }
         }
+
+        // Attempt 1: parse the original response as a JSON object.
+        //
+        // Attempt 2 (retry): if attempt 1 failed, the LLM probably returned a raw script or a
+        // JSON string literal. Call the AI again with a short format-only prompt that shows
+        // the bad response back to the model and asks for the same content reformulated as a
+        // valid JSON object. This is cheap on the happy path (never fires) and turns a hard
+        // failure into a one-extra-call inconvenience on the unhappy path.
+        //
+        // Attempt 3 (fallback): if the retry still fails, treat the cleaned response as a
+        // raw Python script with no package list — better than crashing, user can add
+        // packages manually in Edit & Test.
+        val (script, packages): (String, java.util.List[String]) =
+            tryParseAsJsonObject(cleaned).orElse {
+                logger.warn("TapScriptGenerator: first response did not parse as JSON — retrying with format reminder")
+                val preview = if (cleaned.length > 2000) cleaned.take(2000) + "\n... (truncated)" else cleaned
+                val retrySystemPrompt =
+                    """Return ONLY a JSON object with exactly two fields:
+                      |  "script": the complete Python 3 script as a string
+                      |  "packages": an array of pip package names (empty array if none)
+                      |No markdown fences, no string literals, no commentary — a JSON object.""".stripMargin
+                val retryUserPrompt =
+                    s"""Your previous response for the task below was not a valid JSON object. Here is what you returned:
+                       |
+                       |$preview
+                       |
+                       |Return the same Python script reformulated as a valid JSON object of the form {"script": "...", "packages": [...]}.
+                       |
+                       |Original task: $userPrompt""".stripMargin
+                try {
+                    val retryText = AIUtil.extractText(AIUtil.callAIWithSystem(retrySystemPrompt, retryUserPrompt))
+                    val retryCleaned = cleanResponse(retryText)
+                    logger.info("TapScriptGenerator: retry response length: " + retryCleaned.length + " chars")
+                    tryParseAsJsonObject(retryCleaned)
+                } catch {
+                    case e: Exception =>
+                        logger.warn("TapScriptGenerator: retry call failed: " + e.getMessage)
+                        None
+                }
+            }.getOrElse {
+                // Final fallback: treat the original cleaned response as a raw script.
+                // Try to unwrap a JSON string literal first in case the LLM returned "..." form.
+                val unwrapped = try {
+                    val s = gson.fromJson(cleaned, classOf[String])
+                    if (s != null && s.nonEmpty) s else cleaned
+                } catch { case _: Exception => cleaned }
+                logger.warn("TapScriptGenerator: retry also failed — treating as raw script (length: " + unwrapped.length + ")")
+                (unwrapped, new java.util.ArrayList[String]())
+            }
+
+        if (script == null || script.trim.isEmpty)
+            throw new DatrisException("AI returned an empty script")
 
         // Store script in MinIO (cleanup old)
         val scriptPath = storeScript(tapName, script, oldScriptPath)

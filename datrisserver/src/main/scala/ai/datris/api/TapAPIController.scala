@@ -217,7 +217,7 @@ class TapAPIController {
                   |So if a user says "get the tickers from the consumer_discretionary_earnings table on Datris", confidently confirm — the script generator knows how to query that table. Do NOT tell the user it's TBD or unknown.
                   |
                   |DO NOT ask the user about things the platform can discover automatically:
-                  |- Database name (always available as DATRIS_DATABASE env var)
+                  |- Database name (the postgres database is available as DATRIS_POSTGRES_DATABASE and the mongo database is available as DATRIS_MONGODB_DATABASE — both auto-injected)
                   |- Schema name (default to "public" for postgres, or have the script call /api/v1/metadata/postgres/schemas to find it)
                   |- Whether a table exists or what columns it has (the script will call /api/v1/metadata/postgres/columns at runtime to discover the schema)
                   |- Exact column types or names — the script can introspect them
@@ -225,7 +225,7 @@ class TapAPIController {
                   |Only ask the user for things the platform CANNOT discover: which external API to use, time ranges, filters, business logic, or credentials. When the user mentions a Datris table by name, just confirm and write the instruction — the generated script will handle metadata discovery on its own.
                   |
                   |CREDENTIALS — Many external data sources need API keys, tokens, or other secrets. The Datris tap runner injects environment variables into the script at runtime. Common ones include:
-                  |- DATRIS_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT (auto-injected for accessing the Datris platform itself)
+                  |- DATRIS_POSTGRES_DATABASE, DATRIS_MONGODB_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT (auto-injected for accessing the Datris platform itself)
                   |- API_KEY, ALPHA_VANTAGE_API_KEY, POLYGON_API_KEY, NEWSAPI_KEY, etc. (must be configured by the user in a "tap secret")
                   |
                   |Whenever the data source needs authentication, you MUST:
@@ -246,7 +246,7 @@ class TapAPIController {
                   |
                   |The description should always reflect everything known so far. If the user hasn't provided enough info yet, the description can be partial. Never leave description empty after the first user message — always provide your best guess. When the user references a Datris table/collection, the description should explicitly say so (e.g., "Query the consumer_discretionary_earnings table via /api/v1/query/postgres to get the ticker list, then fetch...").
                   |
-                  |suggestedEnvVars should list any environment variable names the script will need that are NOT auto-injected by Datris (so do NOT include DATRIS_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT). For example, if the user picks Alpha Vantage, suggest ["ALPHA_VANTAGE_API_KEY"]. For free sources with no auth, return an empty array []. Always return the field, even when empty.
+                  |suggestedEnvVars should list any environment variable names the script will need that are NOT auto-injected by Datris (so do NOT include DATRIS_POSTGRES_DATABASE, DATRIS_MONGODB_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT). For example, if the user picks Alpha Vantage, suggest ["ALPHA_VANTAGE_API_KEY"]. For free sources with no auth, return an empty array []. Always return the field, even when empty.
                   |
                   |Return ONLY the JSON object, no markdown fences, no commentary.""".stripMargin
 
@@ -465,19 +465,31 @@ class TapAPIController {
             response.put("dataType", result.dataType)
             response.put("columns", result.columns)
 
-            // AI explanation if there's an error, 0 records, or logs contain error indicators
-            val logsHaveErrors = result.logs != null && result.logs.nonEmpty &&
-                (result.logs.toLowerCase.contains("error") || result.logs.toLowerCase.contains("exception") ||
-                 result.logs.toLowerCase.contains("failed") || result.logs.toLowerCase.contains("forbidden") ||
-                 result.logs.toLowerCase.contains("traceback"))
-            val needsExplanation = result.error != null || result.recordCount == 0 || logsHaveErrors
+            // AI explanation if there's an error, 0 records, or logs contain notable indicators.
+            // "deprecat" and "warning" catch cases where the script "succeeded" but the runtime
+            // output is trying to tell us something (e.g. yfinance DeprecationWarning, urllib3
+            // warnings, pandas FutureWarning) — the user shouldn't have to manually ask for a
+            // review when the logs are already shouting.
+            val logsHaveIssues = result.logs != null && result.logs.nonEmpty && {
+                val lower = result.logs.toLowerCase
+                lower.contains("error") || lower.contains("exception") ||
+                lower.contains("failed") || lower.contains("forbidden") ||
+                lower.contains("traceback") || lower.contains("deprecat") ||
+                lower.contains("warning")
+            }
+            val needsExplanation = result.error != null || result.recordCount == 0 || logsHaveIssues
             if (needsExplanation) {
                 val script = try {
                     val env = DatrisEnvironment.current.environment
                     ObjectStoreUtil.readBucketObject(env + "-config", tapConfig.scriptPath).getOrElse("")
                 } catch { case _: Exception => "" }
                 val aiExplanation = getAIExplanation(tapConfig.description, script, result)
-                response.put("aiExplanation", aiExplanation)
+                // Swallow the "all clear" response so the UI doesn't show an empty diagnosis
+                // panel just because the heuristic fired on a benign warning.
+                val isAllClear = aiExplanation != null &&
+                    aiExplanation.trim.toLowerCase.stripSuffix(".").stripSuffix("!") == "no issues detected"
+                if (aiExplanation != null && !isAllClear)
+                    response.put("aiExplanation", aiExplanation)
             }
 
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
@@ -551,9 +563,17 @@ class TapAPIController {
             val error = Option(result.error).getOrElse("").take(1000)
             val truncatedScript = if (script.length > 3000) script.take(3000) + "\n... (truncated)" else script
 
+            val outcomeLine = if (result.error != null)
+                s"The script failed with an error after returning ${result.recordCount} records."
+            else if (result.recordCount == 0)
+                "The script ran without raising an exception but returned 0 records."
+            else
+                s"The script ran successfully and returned ${result.recordCount} records, but the runtime output may suggest improvements."
+
             val prompt =
-                s"""You are a data engineering assistant. A user created a Tap (a Python script that fetches data from an external source).
-                   |The script was tested but returned ${result.recordCount} records${if (result.error != null) " and failed with an error" else ""}.
+                s"""You are a data engineering assistant reviewing a Tap — a Python script that fetches data from an external source and returns a list of records from its `fetch()` function.
+                   |
+                   |$outcomeLine
                    |
                    |Tap description: $description
                    |
@@ -565,9 +585,13 @@ class TapAPIController {
                    |
                    |${if (error.nonEmpty) "Error: " + error else ""}
                    |
+                   |Analyze the script and its runtime output, and respond with ONE of the following:
+                   |  (a) If the script failed or returned 0 records, explain what went wrong and suggest a specific fix.
+                   |  (b) If the script succeeded but the logs contain deprecation warnings, the result table looks incomplete (e.g. many NULL/None fields), or the approach relies on deprecated APIs, suggest a concrete improvement — for example, migrating to the recommended API, adding missing fields, or handling edge cases. Be specific about WHICH line/function to change.
+                   |  (c) If the script is healthy and the output looks clean, respond with exactly "No issues detected." and nothing else.
+                   |
                    |Respond in plain English only — no JSON, no code fences, no markdown formatting.
-                   |Explain in 2-3 concise sentences what went wrong and suggest a specific fix for the Python script.
-                   |Reference the exact line or function that needs to change. Focus on actionable advice the user can apply immediately.""".stripMargin
+                   |Keep it to 2-3 concise sentences. Reference the exact line, function, or API that needs to change. Focus on actionable advice the user can apply immediately.""".stripMargin
 
             val responseText = AIUtil.callAI(prompt)
             AIUtil.extractText(responseText).trim

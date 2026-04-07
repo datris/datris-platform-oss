@@ -146,11 +146,16 @@ export class SearchComponent implements OnInit, OnDestroy {
     if (this.pgSelectedSchema && this.pgSelectedTable) {
       this.searchService.getPostgresColumns(this.pgDatabase, this.pgSelectedSchema, this.pgSelectedTable).subscribe({
         next: (columns) => {
-          const colNames = columns.map((c: any) => c.name).join(', ');
-          this.pgSql = 'SELECT ' + colNames + ' FROM ' + this.pgSelectedSchema + '.' + this.pgSelectedTable;
+          // Double-quote every identifier so columns like `eps estimate` and
+          // `surprise(%)` survive parsing. Embedded quotes get escaped per the
+          // SQL standard (`"` → `""`).
+          const quote = (id: string) => '"' + id.replace(/"/g, '""') + '"';
+          const colNames = columns.map((c: any) => quote(c.name)).join(', ');
+          this.pgSql = 'SELECT ' + colNames + ' FROM ' + quote(this.pgSelectedSchema) + '.' + quote(this.pgSelectedTable);
         },
         error: () => {
-          this.pgSql = 'SELECT * FROM ' + this.pgSelectedSchema + '.' + this.pgSelectedTable;
+          const quote = (id: string) => '"' + id.replace(/"/g, '""') + '"';
+          this.pgSql = 'SELECT * FROM ' + quote(this.pgSelectedSchema) + '.' + quote(this.pgSelectedTable);
         }
       });
     }

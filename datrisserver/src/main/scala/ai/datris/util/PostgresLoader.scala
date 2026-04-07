@@ -53,11 +53,6 @@ class PostgresLoader(jobContext: JobContext) {
 
             val file = createStagingFile()
 
-            if(config.destination.database.truncateBeforeWrite) {
-                statusUtil.info("processing", "'truncateTableBeforeWrite' is set to true, truncating table")
-                statement.execute("truncate table \"" + dbName + "\".\"" + config.destination.database.schema + "\".\"" + config.destination.database.table + "\"")
-            }
-
             copyInto(conn, statement, file)
 
             if (config.destination.database.useTransaction)
@@ -141,6 +136,13 @@ class PostgresLoader(jobContext: JobContext) {
 
         if(!config.destination.database.manageTableManually)
             createTableIfUndefined(statement, config.destination.database.table)
+
+        // Truncate AFTER create-if-not-exists so first-run pipelines with truncateBeforeWrite=true
+        // don't fail against a not-yet-existing table.
+        if(config.destination.database.truncateBeforeWrite) {
+            statusUtil.info("processing", "'truncateTableBeforeWrite' is set to true, truncating table")
+            statement.execute("truncate table \"" + dbName + "\".\"" + config.destination.database.schema + "\".\"" + config.destination.database.table + "\"")
+        }
 
         val sql = new StringBuilder()
         sql.append("COPY " + "\"" + config.destination.database.schema + "\"" + "." + "\"" + config.destination.database.table + "\"")
