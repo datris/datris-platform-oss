@@ -21,14 +21,30 @@
       <thead>
         <tr>
           <th>Name</th>
-          <th>Source</th>
+          <th>Tap</th>
+          <th>Data Type</th>
           <th>Destinations</th>
           <th></th>
         </tr>
       </thead>
       <tbody>
         <tr *ngFor="let ds of filteredPipelines" (click)="editPipeline($event, ds.name)">
-          <td class="dataset-name">{{ ds.name }}</td>
+          <td class="dataset-name dataset-name-link" (click)="startEditName($event, ds)">
+            <span *ngIf="editingName !== ds.name">{{ ds.name }}</span>
+            <input *ngIf="editingName === ds.name" class="inline-name-input"
+                   [(ngModel)]="editingNameValue"
+                   (blur)="cancelEditName($event)"
+                   (keydown.enter)="saveEditName(ds)"
+                   (keydown.escape)="cancelEditName($event)"
+                   (click)="$event.stopPropagation()"
+                   #nameInput>
+          </td>
+          <td>
+            <a class="tap-link" *ngIf="pipelineToTap[ds.name]" (click)="goToTap($event, pipelineToTap[ds.name])">
+              <span class="material-icons tap-icon">water_drop</span>{{ pipelineToTap[ds.name] }}
+            </a>
+            <span *ngIf="!pipelineToTap[ds.name]" class="tap-none">—</span>
+          </td>
           <td>{{ getSourceType(ds) }}</td>
           <td>{{ getDestinations(ds) }}</td>
           <td class="actions-cell">
@@ -76,9 +92,9 @@
         <!-- Sources -->
         <div class="diagram-col">
           <div class="diagram-heading">Sources</div>
+          <div class="diagram-chip source">Tap</div>
           <div class="diagram-chip source">Data Upload</div>
           <div class="diagram-chip source">MinIO</div>
-          <div class="diagram-chip source">DB Pull</div>
           <div class="diagram-chip source">Kafka</div>
         </div>
         <div class="diagram-arrow"><span class="material-icons">arrow_forward</span></div>
@@ -115,7 +131,7 @@
         <!-- Notification -->
         <div class="diagram-col">
           <div class="diagram-heading">Notification</div>
-          <div class="diagram-chip notify"><span class="material-icons" style="font-size: 16px">notifications</span> Email &middot; Slack &middot; Webhook</div>
+          <div class="diagram-chip notify"><span class="material-icons" style="font-size: 16px">notifications</span> ActiveMQ &middot; Email</div>
         </div>
       </div>
     </div>

@@ -18,7 +18,6 @@ import java.io.ByteArrayInputStream
 
 @RestController
 @RequestMapping(Array("/api/v1"))
-@CrossOrigin(origins = Array("*"), methods = Array(RequestMethod.POST, RequestMethod.OPTIONS))
 class ConfigAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[ConfigAPIController])
 

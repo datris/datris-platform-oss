@@ -4,6 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
+import { TapService } from '../tap.service';
 
 interface SchemaField {
   name: string;
@@ -23,10 +24,13 @@ export class PipelineCreateComponent implements OnInit {
   generatingSchema = false;
   sampleFileDetected = false;
 
-  // Step 1 — Basics + Sample File
+  // Step 1 — Basics + Source
   pipelineName = '';
+  pipelineSource = 'file';  // 'file' | 'tap' | 'manual'
   sampleFile: File | null = null;
   sourceType = 'csv';
+  taps: any[] = [];
+  selectedTapName = '';
 
   // Step 2 — Source config
   csvDelimiter = ',';
@@ -76,12 +80,18 @@ export class PipelineCreateComponent implements OnInit {
   // Step 7 — Destination
   destType = 'postgres';
   pgDbName = 'datris';
+  dbTruncateBeforeWrite = false;
   pgSchema = 'public';
   pgTable = '';
   mongoDbName = 'datris';
   mongoTable = '';
   osPrefix = '';
   osFormat = 'parquet';
+  osBucket = '';
+  osDeleteBeforeWrite = false;
+  osPartitionBy: string[] = [];
+  pgKeyFields: string[] = [];
+  mongoKeyFields: string[] = [];
   kafkaTopic = '';
   amqQueue = '';
   restEndpointUrl = '';
@@ -113,7 +123,7 @@ export class PipelineCreateComponent implements OnInit {
 
   isTrial = false;
 
-  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private route: ActivatedRoute, private router: Router, private http: HttpClient) { }
+  constructor(private pipelineService: PipelineService, private searchService: SearchService, public healthService: HealthService, private tapService: TapService, private route: ActivatedRoute, private router: Router, private http: HttpClient) { }
 
   ngOnInit(): void {
     this.http.get<any>('/api/v1/version').subscribe({
@@ -125,6 +135,13 @@ export class PipelineCreateComponent implements OnInit {
           this.schemaDbName = data.environment || 'datris';
         }
       }
+    });
+
+    // Load taps for "Create from Tap" option
+    this.tapService.getTaps().subscribe({
+      next: (data) => this.taps = (data || []).filter((t: any) => t.lastTestRunDataType || t.lastRunDataType)
+                        .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')),
+      error: () => {}
     });
 
     const editName = this.route.snapshot.paramMap.get('name');
@@ -213,14 +230,21 @@ export class PipelineCreateComponent implements OnInit {
       this.pgDbName = dest.database.dbName || 'datris';
       this.pgSchema = dest.database.schema || 'public';
       this.pgTable = dest.database.table || '';
+      this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
+      this.pgKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
     } else if (dest?.database?.useMongoDB) {
       this.destType = 'mongodb';
       this.mongoDbName = dest.database.dbName || 'datris';
       this.mongoTable = dest.database.table || '';
+      this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
+      this.mongoKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
     } else if (dest?.objectStore) {
       this.destType = 'objectstore';
       this.osPrefix = dest.objectStore.prefixKey || '';
       this.osFormat = dest.objectStore.fileFormat || 'parquet';
+      this.osBucket = dest.objectStore.destinationBucketOverride || '';
+      this.osDeleteBeforeWrite = !!dest.objectStore.deleteBeforeWrite;
+      this.osPartitionBy = Array.isArray(dest.objectStore.partitionBy) ? [...dest.objectStore.partitionBy] : [];
     } else if (dest?.kafka) {
       this.destType = 'kafka';
       this.kafkaTopic = dest.kafka.topic || '';
@@ -411,6 +435,60 @@ export class PipelineCreateComponent implements OnInit {
     }
   }
 
+  onTapSelected(tapName: string): void {
+    const tap = this.taps.find(t => t.name === tapName);
+    if (!tap) return;
+
+    // Derive pipeline name from tap name if not set
+    if (!this.pipelineName.trim()) {
+      this.pipelineName = tapName.replace(/-tap$/, '') + '-pipeline';
+    }
+
+    const dataType = tap.lastTestRunDataType || tap.lastRunDataType || '';
+    const columns = tap.lastTestRunColumns || tap.lastRunColumns || [];
+
+    // Map tap data type to pipeline source type
+    if (dataType === 'csv') {
+      this.sourceType = 'csv';
+      if (columns.length > 0) {
+        this.schemaFields = columns.map((name: string) => ({ name, type: 'string' }));
+      }
+    } else if (dataType === 'json') {
+      this.sourceType = 'json';
+      this.schemaFields = [{ name: '_json', type: 'string' }];
+    } else if (dataType === 'xml') {
+      this.sourceType = 'xml';
+      this.schemaFields = [{ name: '_xml', type: 'string' }];
+    }
+
+    this.sampleFileDetected = true;
+    this.onSourceTypeChange();
+    // Restore columns after onSourceTypeChange resets them for csv
+    if (dataType === 'csv' && columns.length > 0) {
+      this.schemaFields = columns.map((name: string) => ({ name, type: 'string' }));
+    }
+  }
+
+  getColumnPreview(): string {
+    const names = this.schemaFields.filter(f => f.name).map(f => f.name);
+    if (names.length <= 5) return names.join(', ');
+    return names.slice(0, 5).join(', ') + ', ...';
+  }
+
+  onPipelineSourceChange(): void {
+    if (this.pipelineSource === 'file') {
+      this.selectedTapName = '';
+      this.sampleFileDetected = false;
+      this.sourceType = 'csv';
+      this.schemaFields = [{ name: '', type: 'string' }];
+    } else if (this.pipelineSource === 'manual') {
+      this.selectedTapName = '';
+      this.sampleFileDetected = true; // skip file upload requirement, user defines everything by hand
+      this.sourceType = 'csv';
+      this.schemaFields = [{ name: '', type: 'string' }];
+    }
+  }
+
   addField(): void {
     this.schemaFields.push({ name: '', type: 'string' });
   }
@@ -427,10 +505,7 @@ export class PipelineCreateComponent implements OnInit {
     const input = event.target as HTMLInputElement;
     if (input.files && input.files.length > 0) {
       this.sampleFile = input.files[0];
-      // Auto-analyze if pipeline name is set
-      if (this.pipelineName.trim()) {
-        this.analyzeSampleFile();
-      }
+      this.analyzeSampleFile();
     }
   }
 
@@ -506,10 +581,7 @@ export class PipelineCreateComponent implements OnInit {
   }
 
   analyzeSampleFile(): void {
-    if (!this.sampleFile || !this.pipelineName.trim()) {
-      this.error = !this.pipelineName.trim() ? 'Pipeline name is required' : 'Please select a file';
-      return;
-    }
+    if (!this.sampleFile) return;
 
     const filename = this.sampleFile.name;
     const detectedType = this.detectSourceType(filename);
@@ -536,7 +608,7 @@ export class PipelineCreateComponent implements OnInit {
       this.error = '';
 
       this.pipelineService.generateSchema(
-        this.sampleFile, this.pipelineName,
+        this.sampleFile, this.pipelineName.trim() || 'temp_schema_detect',
         detectedType === 'csv' ? this.csvDelimiter : undefined,
         detectedType === 'csv' ? this.csvHeader : undefined
       ).subscribe({
@@ -591,8 +663,12 @@ export class PipelineCreateComponent implements OnInit {
       this.error = 'Please wait for the file analysis to complete';
       return;
     }
-    if (this.step === 1 && this.sampleFile && !this.sampleFileDetected) {
-      this.error = 'Please wait for the file analysis to complete or enter a pipeline name first';
+    if (this.step === 1 && !this.isEditMode && this.pipelineSource === 'file' && !this.sampleFileDetected) {
+      this.error = 'Please upload a sample file to continue';
+      return;
+    }
+    if (this.step === 1 && !this.isEditMode && this.pipelineSource === 'tap' && !this.selectedTapName) {
+      this.error = 'Please select a tap to continue';
       return;
     }
 
@@ -666,7 +742,7 @@ export class PipelineCreateComponent implements OnInit {
         if (!this.mongoDbName.trim()) { this.error = 'Database name is required'; return; }
         if (!this.mongoTable.trim()) { this.error = 'Collection name is required'; return; }
       } else if (this.destType === 'objectstore') {
-        if (!this.osPrefix.trim()) { this.error = 'Prefix key is required'; return; }
+        if (!this.osPrefix.trim()) { this.error = 'Key is required'; return; }
       } else if (this.destType === 'kafka') {
         if (!this.kafkaTopic.trim()) { this.error = 'Topic is required'; return; }
       } else if (this.destType === 'activemq') {
@@ -878,11 +954,21 @@ export class PipelineCreateComponent implements OnInit {
 
     // Destination
     if (this.destType === 'postgres') {
-      config.destination.database = { dbName: this.pgDbName, schema: this.pgSchema, table: this.pgTable, usePostgres: true };
+      const pgDb: any = { dbName: this.pgDbName, schema: this.pgSchema, table: this.pgTable, usePostgres: true, truncateBeforeWrite: this.dbTruncateBeforeWrite };
+      const pgKeys = this.pgKeyFields.filter(k => k && k.trim());
+      if (pgKeys.length > 0) pgDb.keyFields = pgKeys;
+      config.destination.database = pgDb;
     } else if (this.destType === 'mongodb') {
-      config.destination.database = { dbName: this.mongoDbName, table: this.mongoTable, useMongoDB: true };
+      const mongoDb: any = { dbName: this.mongoDbName, table: this.mongoTable, useMongoDB: true, truncateBeforeWrite: this.dbTruncateBeforeWrite };
+      const mongoKeys = this.mongoKeyFields.filter(k => k && k.trim());
+      if (mongoKeys.length > 0) mongoDb.keyFields = mongoKeys;
+      config.destination.database = mongoDb;
     } else if (this.destType === 'objectstore') {
-      config.destination.objectStore = { prefixKey: this.osPrefix, fileFormat: this.osFormat };
+      const os: any = { prefixKey: this.osPrefix, fileFormat: this.osFormat, deleteBeforeWrite: this.osDeleteBeforeWrite };
+      if (this.osBucket.trim()) os.destinationBucketOverride = this.osBucket.trim();
+      const partitions = this.osPartitionBy.filter(p => p && p.trim());
+      if (partitions.length > 0) os.partitionBy = partitions;
+      config.destination.objectStore = os;
     } else if (this.destType === 'kafka') {
       config.destination.kafka = { topic: this.kafkaTopic };
     } else if (this.destType === 'activemq') {
@@ -942,6 +1028,18 @@ export class PipelineCreateComponent implements OnInit {
 
     this.pipelineService.createPipeline(config).subscribe({
       next: () => {
+        // If created from a tap, link the tap to this pipeline
+        if (this.pipelineSource === 'tap' && this.selectedTapName) {
+          const tap = this.taps.find(t => t.name === this.selectedTapName);
+          if (tap) {
+            tap.targetPipeline = this.pipelineName;
+            this.tapService.createOrUpdateTap(tap).subscribe({
+              next: () => this.router.navigate(['/pipelines']),
+              error: () => this.router.navigate(['/pipelines'])
+            });
+            return;
+          }
+        }
         this.router.navigate(['/pipelines']);
       },
       error: (err: any) => {

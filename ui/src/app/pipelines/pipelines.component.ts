@@ -1,7 +1,8 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChildren, ElementRef, QueryList } from '@angular/core';
 import { Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 import { PipelineStatusService } from '../pipeline-status.service';
+import { TapService } from '../tap.service';
 
 @Component({
   selector: 'app-pipelines',
@@ -13,6 +14,11 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   filteredPipelines: any[] = [];
   searchQuery = '';
   showDiagram = false;
+  pipelineToTap: { [pipelineName: string]: string } = {};
+  editingName = '';
+  editingNameValue = '';
+  private editingNameOriginal = '';
+  @ViewChildren('nameInput') nameInputs?: QueryList<ElementRef<HTMLInputElement>>;
   private refreshInterval: any;
 
   // Upload modal
@@ -24,11 +30,84 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   uploadResult = '';
   uploadError = '';
 
-  constructor(private pipelineService: PipelineService, private pipelineStatusService: PipelineStatusService, private router: Router) { }
+  constructor(private pipelineService: PipelineService, private pipelineStatusService: PipelineStatusService, private tapService: TapService, private router: Router) { }
 
   ngOnInit(): void {
     this.loadPipelines();
-    this.refreshInterval = setInterval(() => this.loadPipelines(), 5000);
+    this.loadTaps();
+    this.refreshInterval = setInterval(() => {
+      // Pause auto-refresh while the user is editing a row name so the input
+      // doesn't get destroyed mid-edit when the table re-renders.
+      if (this.editingName) return;
+      this.loadPipelines();
+      this.loadTaps();
+    }, 5000);
+  }
+
+  startEditName(event: Event, pipeline: any): void {
+    event.stopPropagation();
+    this.editingName = pipeline.name;
+    this.editingNameValue = pipeline.name;
+    this.editingNameOriginal = pipeline.name;
+    setTimeout(() => {
+      const input = this.nameInputs?.first;
+      if (input) input.nativeElement.focus();
+    });
+  }
+
+  saveEditName(pipeline: any): void {
+    const newName = this.editingNameValue.trim();
+    const oldName = this.editingNameOriginal;
+    this.editingName = '';
+
+    if (!newName || newName === oldName) return;
+
+    // Rename: load full config, POST as new name, delete old config (data only — keep)
+    this.pipelineService.getPipeline(oldName).subscribe({
+      next: (config) => {
+        const renamed = { ...config, name: newName };
+        this.pipelineService.createPipeline(renamed).subscribe({
+          next: () => {
+            this.pipelineService.deletePipeline(oldName).subscribe({
+              next: () => this.loadPipelines(),
+              error: () => this.loadPipelines()
+            });
+          },
+          error: (err) => {
+            alert('Failed to rename: ' + (err.error || err.message));
+            this.loadPipelines();
+          }
+        });
+      },
+      error: (err) => {
+        alert('Failed to load pipeline for rename: ' + (err.error || err.message));
+        this.loadPipelines();
+      }
+    });
+  }
+
+  cancelEditName(event: Event): void {
+    event.stopPropagation();
+    this.editingName = '';
+    this.editingNameValue = '';
+  }
+
+  loadTaps(): void {
+    this.tapService.getTaps().subscribe({
+      next: (taps) => {
+        const map: { [pipelineName: string]: string } = {};
+        (taps || []).forEach((t: any) => {
+          if (t.targetPipeline) map[t.targetPipeline] = t.name;
+        });
+        this.pipelineToTap = map;
+      },
+      error: () => {}
+    });
+  }
+
+  goToTap(event: Event, tapName: string): void {
+    event.stopPropagation();
+    this.router.navigate(['/taps', tapName, 'edit']);
   }
 
   ngOnDestroy(): void {

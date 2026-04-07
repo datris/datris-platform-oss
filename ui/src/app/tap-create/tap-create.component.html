@@ -1,0 +1,328 @@
+<div class="container">
+  <div class="page-header">
+    <h1 class="page-title">{{ isEditMode ? 'Edit Tap' : 'Create Tap' }}</h1>
+  </div>
+
+  <!-- Step indicator -->
+  <div class="steps">
+    <span class="step-dot" [class.active]="step >= 1" [class.current]="step === 1">1</span>
+    <span class="step-line" [class.active]="step >= 2"></span>
+    <span class="step-dot" [class.active]="step >= 2" [class.current]="step === 2">2</span>
+    <span class="step-line" [class.active]="step >= 3"></span>
+    <span class="step-dot" [class.active]="step >= 3" [class.current]="step === 3">3</span>
+    <span class="step-line" [class.active]="step >= 4"></span>
+    <span class="step-dot" [class.active]="step >= 4" [class.current]="step === 4">4</span>
+  </div>
+
+  <div class="form-card">
+    <!-- Step 1: Describe -->
+    <div *ngIf="step === 1">
+      <h2 class="step-title">Describe Your Data Source</h2>
+      <p class="step-desc">Give your tap a name and describe in plain English what data you want to fetch.</p>
+
+      <div class="form-group">
+        <label class="form-label">Tap Name</label>
+        <input class="form-input" [(ngModel)]="tapName" placeholder="e.g., weather-data" [readonly]="isEditMode">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">
+          <span class="material-icons brainstorm-icon">auto_awesome</span>
+          Brainstorm with AI (Optional)
+        </label>
+        <p class="form-hint">Not sure what to write? Chat with the AI to refine your idea — your instruction below will update automatically.</p>
+
+        <div class="brainstorm-chat" *ngIf="brainstormMessages.length > 0">
+          <div *ngFor="let msg of brainstormMessages" class="brainstorm-msg" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'">
+            <span class="material-icons brainstorm-msg-icon">{{ msg.role === 'user' ? 'person' : 'auto_awesome' }}</span>
+            <div class="brainstorm-msg-content">{{ msg.content }}</div>
+          </div>
+        </div>
+
+        <div class="testing-indicator" *ngIf="brainstorming">
+          <div class="spinner"></div>
+          <span>Thinking...</span>
+        </div>
+
+        <div class="brainstorm-input-row">
+          <input class="form-input" [(ngModel)]="brainstormInput"
+                 (keyup.enter)="sendBrainstorm()"
+                 [disabled]="brainstorming"
+                 placeholder="e.g., I want stock prices for tech companies"
+                 #brainstormInputEl>
+          <button class="brainstorm-send-btn" (click)="sendBrainstorm()" [disabled]="brainstorming || !brainstormInput.trim()">
+            <span class="material-icons">send</span>
+            Send
+          </button>
+        </div>
+
+        <div class="suggested-envvars" *ngIf="suggestedEnvVars.length > 0">
+          <div class="suggested-envvars-header">
+            <span class="material-icons">key</span>
+            Suggested environment variables for this tap:
+          </div>
+          <div class="suggested-envvars-list">
+            <span class="package-chip" *ngFor="let v of suggestedEnvVars">{{ v }}</span>
+          </div>
+          <button class="add-btn" (click)="useSuggestedEnvVars()">+ Create tap secret with these keys</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Instruction</label>
+        <textarea class="form-textarea" [(ngModel)]="description" rows="10"
+                  placeholder="e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed"></textarea>
+      </div>
+
+      <!-- Credentials -->
+      <div class="form-group">
+        <label class="form-label">Credentials (optional)</label>
+        <p class="form-hint">Select an existing tap secret, edit one, or create a new one. Secret keys are available as environment variables in your script.</p>
+        <div class="secret-select-row">
+          <select class="form-select" [ngModel]="secretName || ''" (ngModelChange)="onSecretChange($event)">
+            <option value="">None</option>
+            <option *ngFor="let s of availableSecrets" [value]="s">{{ s }}</option>
+            <option value="__create__">+ Create New Secret</option>
+          </select>
+          <button class="edit-secret-btn" *ngIf="secretName && !showCreateSecret && !editingSecret" (click)="editSecret()">
+            <span class="material-icons">edit</span> Edit
+          </button>
+        </div>
+      </div>
+
+      <!-- Create or Edit Secret -->
+      <div class="create-secret-card" *ngIf="showCreateSecret || editingSecret">
+        <div class="form-group" *ngIf="showCreateSecret">
+          <label class="form-label">Secret Name</label>
+          <input class="form-input" [(ngModel)]="newSecretName" placeholder="e.g., my-api-creds">
+        </div>
+        <div class="secret-editing-label" *ngIf="editingSecret">
+          Editing secret: <strong>{{ secretName }}</strong>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Key-Value Pairs</label>
+          <div class="secret-fields">
+            <div class="secret-field-row" *ngFor="let field of newSecretFields; let i = index">
+              <input class="form-input secret-key" [(ngModel)]="field.key" placeholder="KEY_NAME">
+              <input class="form-input secret-value" [(ngModel)]="field.value" placeholder="value">
+              <button class="remove-btn" (click)="removeSecretField(i)" *ngIf="newSecretFields.length > 1">
+                <span class="material-icons">close</span>
+              </button>
+            </div>
+            <button class="add-btn" (click)="addSecretField()">+ Add Field</button>
+          </div>
+        </div>
+        <div class="secret-actions">
+          <button class="secondary-btn" (click)="cancelCreateSecret()">Cancel</button>
+          <button class="primary-btn" (click)="saveNewSecret()" [disabled]="savingSecret">
+            {{ savingSecret ? 'Saving...' : (editingSecret ? 'Save Changes' : 'Create Secret') }}
+          </button>
+        </div>
+      </div>
+
+      <button class="generate-btn" (click)="generateScript()" [disabled]="generating || !description.trim()">
+        <span class="material-icons">{{ generating ? 'hourglass_empty' : 'auto_awesome' }}</span>
+        {{ generating ? 'Generating...' : script ? 'Regenerate Script' : 'Generate Script' }}
+      </button>
+
+      <div class="testing-indicator" *ngIf="generating">
+        <div class="spinner"></div>
+        <span>Generating script — this may take a minute...</span>
+      </div>
+
+      <div class="code-preview script-preview" *ngIf="script">
+        <pre>{{ script }}</pre>
+      </div>
+
+      <div class="packages-info" *ngIf="packages.length > 0">
+        <span class="packages-label">Required packages:</span>
+        <span class="package-chip" *ngFor="let pkg of packages">{{ pkg }}</span>
+      </div>
+    </div>
+
+    <!-- Step 2: Edit & Test -->
+    <div *ngIf="step === 2">
+      <h2 class="step-title">Edit & Test</h2>
+      <p class="step-desc">Review and edit the generated script, manage packages, then test it.</p>
+
+      <div class="form-group">
+        <label class="form-label">Instruction</label>
+        <div class="instruction-row">
+          <textarea class="form-textarea" [(ngModel)]="description" rows="8"></textarea>
+          <button class="generate-btn regen-btn" (click)="regenerateScript()" [disabled]="generating || !description.trim()">
+            <span class="material-icons">{{ generating ? 'hourglass_empty' : 'auto_awesome' }}</span>
+            {{ generating ? 'Regenerating...' : 'Regenerate' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Python Script</label>
+        <textarea class="form-textarea code-editor" [(ngModel)]="script" rows="16"></textarea>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Extra Pip Packages</label>
+        <div class="packages-list">
+          <div class="package-row" *ngFor="let pkg of packages; let i = index; trackBy: trackByIndex">
+            <input class="form-input package-input" [(ngModel)]="packages[i]" placeholder="package-name">
+            <button class="remove-btn" (click)="removePackage(i)"><span class="material-icons">close</span></button>
+          </div>
+          <button class="add-btn" (click)="addPackage()">+ Add Package</button>
+        </div>
+      </div>
+
+      <div class="diagnosis-applied" *ngIf="diagnosisApplied">
+        <span class="material-icons">check_circle</span>
+        AI diagnosis has been applied to the script. Run the test again to verify the fix.
+      </div>
+
+      <button class="test-btn" (click)="testScript()" [disabled]="testing">
+        <span class="material-icons">{{ testing ? 'hourglass_empty' : 'science' }}</span>
+        {{ testing ? 'Testing...' : 'Test Script' }}
+      </button>
+
+      <div class="testing-indicator" *ngIf="testing">
+        <div class="spinner"></div>
+        <span>Running script — this may take a few minutes for large data fetches...</span>
+      </div>
+
+      <div class="test-logs" *ngIf="testLogs">
+        <div class="logs-header">Script Output</div>
+        <pre class="logs-content">{{ testLogs }}</pre>
+      </div>
+
+      <div class="test-results" *ngIf="testRecordCount > 0">
+        <div class="test-success">
+          Fetched {{ testRecordCount }} records
+          <span class="datatype-badge" *ngIf="testDataType">{{ testDataType.toUpperCase() }}</span>
+        </div>
+
+        <!-- Table view for array of objects -->
+        <div class="preview-table-wrap" *ngIf="getTestColumns().length > 0">
+          <table class="preview-table">
+            <thead>
+              <tr>
+                <th *ngFor="let col of getTestColumns()">{{ col }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let row of getPreviewRows()">
+                <td *ngFor="let col of getTestColumns()">{{ row[col] }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="preview-note" *ngIf="testRecordCount > 10">Showing first 10 of {{ testRecordCount }} records</div>
+
+        <!-- Raw JSON fallback if records aren't tabular -->
+        <div class="code-preview" *ngIf="getTestColumns().length === 0 && testRecords">
+          <pre>{{ testRecords | json }}</pre>
+        </div>
+      </div>
+
+      <div class="test-results" *ngIf="testRecordCount === 0 && testError === '' && !testing && testRecords !== null">
+        <div class="test-success">Test completed — 0 records returned</div>
+      </div>
+
+      <div class="error-box" *ngIf="testError">{{ testError }}</div>
+
+      <div class="ai-explanation" *ngIf="aiExplanation">
+        <div class="ai-explanation-header">
+          <span class="material-icons">auto_awesome</span>
+          AI Diagnosis
+        </div>
+        <div class="ai-explanation-body">{{ aiExplanation }}</div>
+        <div class="ai-explanation-footer">
+          <button class="apply-diagnosis-btn" (click)="applyDiagnosis()" [disabled]="applyingDiagnosis">
+            <span class="material-icons">{{ applyingDiagnosis ? 'hourglass_empty' : 'healing' }}</span>
+            {{ applyingDiagnosis ? 'Regenerating...' : 'Apply Diagnosis to Script' }}
+          </button>
+          <div class="testing-indicator" *ngIf="applyingDiagnosis">
+            <div class="spinner"></div>
+            <span>Applying AI diagnosis — regenerating script...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: Schedule -->
+    <div *ngIf="step === 3">
+      <h2 class="step-title">Schedule (Optional)</h2>
+      <p class="step-desc">Set up a CRON schedule to run this tap automatically.</p>
+
+      <div class="form-group">
+        <label class="toggle-row">
+          <input type="checkbox" [(ngModel)]="useSchedule">
+          <span>Enable scheduled runs</span>
+        </label>
+      </div>
+
+      <div *ngIf="useSchedule">
+        <div class="form-group">
+          <label class="form-label">Preset</label>
+          <div class="preset-row">
+            <button class="preset-btn" [class.active]="cronPreset === 'hourly'" (click)="setCronPreset('hourly')">Every Hour</button>
+            <button class="preset-btn" [class.active]="cronPreset === 'daily'" (click)="setCronPreset('daily')">Daily (Midnight)</button>
+            <button class="preset-btn" [class.active]="cronPreset === 'weekly'" (click)="setCronPreset('weekly')">Weekly (Monday)</button>
+            <button class="preset-btn" [class.active]="cronPreset === 'custom'" (click)="setCronPreset('custom')">Custom</button>
+          </div>
+        </div>
+
+        <div class="form-group" *ngIf="cronPreset === 'custom'">
+          <label class="form-label">Describe your schedule</label>
+          <div class="cron-ai-row">
+            <input class="form-input" [(ngModel)]="cronPrompt" placeholder="e.g., Every weekday at 4pm ET, Every 15 minutes, Twice a day at 8am and 6pm">
+            <button class="generate-cron-btn" (click)="generateCron()" [disabled]="generatingCron || !cronPrompt.trim()">
+              <span class="material-icons">{{ generatingCron ? 'hourglass_empty' : 'auto_awesome' }}</span>
+              {{ generatingCron ? 'Generating...' : 'Generate' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">CRON Expression (Quartz format)</label>
+          <input class="form-input cron-input" [(ngModel)]="cronExpression" placeholder="0 0 * * * ?">
+        </div>
+
+        <div class="form-group">
+          <label class="toggle-row">
+            <input type="checkbox" [(ngModel)]="enabled">
+            <span>Enabled</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: Review & Save -->
+    <div *ngIf="step === 4">
+      <h2 class="step-title">Review & Save</h2>
+
+      <div class="review-card">
+        <div class="review-row"><span class="review-label">Name</span><span class="review-value">{{ tapName }}</span></div>
+        <div class="review-row"><span class="review-label">Instruction</span><span class="review-value">{{ description }}</span></div>
+        <div class="review-row" *ngIf="packages.length > 0"><span class="review-label">Packages</span><span class="review-value">{{ packages.join(', ') }}</span></div>
+        <div class="review-row" *ngIf="secretName"><span class="review-label">Credentials</span><span class="review-value">{{ secretName }}</span></div>
+        <div class="review-row" *ngIf="testDataType"><span class="review-label">Data Type</span><span class="review-value"><span class="datatype-badge">{{ testDataType.toUpperCase() }}</span></span></div>
+        <div class="review-row" *ngIf="testColumns.length > 0"><span class="review-label">Columns</span><span class="review-value">{{ testColumns.join(', ') }}</span></div>
+        <div class="review-row" *ngIf="testRecordCount > 0"><span class="review-label">Test Records</span><span class="review-value">{{ testRecordCount }}</span></div>
+        <div class="review-row"><span class="review-label">Schedule</span><span class="review-value">{{ useSchedule ? cronExpression + ' — ' + describeCron(cronExpression) : 'None (manual only)' }}</span></div>
+        <div class="review-row"><span class="review-label">Enabled</span><span class="review-value">{{ enabled ? 'Yes' : 'No' }}</span></div>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div class="error-box" *ngIf="error">{{ error }}</div>
+
+    <!-- Navigation -->
+    <div class="nav-buttons">
+      <button class="secondary-btn" *ngIf="step > 1" (click)="prevStep()" [disabled]="isBusy()">Back</button>
+      <button class="secondary-btn" routerLink="/taps" *ngIf="step === 1">Cancel</button>
+      <div class="spacer"></div>
+      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 2 && scriptDirty && !testPassed())">Next</button>
+      <button class="primary-btn" *ngIf="step === 4" (click)="save()" [disabled]="saving || isBusy()">
+        {{ saving ? 'Saving...' : 'Save Tap' }}
+      </button>
+    </div>
+  </div>
+</div>

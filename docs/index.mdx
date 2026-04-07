@@ -30,6 +30,7 @@ Intelligence at every stage — from ingestion to delivery, Datris makes data en
   - *"Extract city and state from the address column into separate columns"*
   - *"Standardize company names — remove Inc, LLC, Corp suffixes and trim whitespace"*
   - *"Convert all currency amounts from EUR to USD using a rate of 1.08"*
+- **Taps** - AI-generated Python scripts that fetch data from external sources (APIs, web scraping, databases) and push it into pipelines. Describe what data you want in plain English, and Datris generates the script. Includes AI diagnosis when scripts fail, CRON scheduling, and credentials management via Vault secrets
 - **Datris CLI** - Command-line interface for ingesting data, running queries, and managing pipelines. `datris ingest data.csv --ai-validate "prices > 0" --ai-transform "convert dates to YYYY/MM/DD"`
 - **AI schema generation** - Upload any data and receive a complete, ready-to-register pipeline configuration — field names and types inferred automatically
 - **AI data profiling** - Upload a data and get summary statistics, quality issues, and suggested validation rules — all powered by AI analysis

@@ -17,19 +17,28 @@ import scala.collection.JavaConverters._
 
 @RestController
 @RequestMapping(Array("/api/v1"))
-@CrossOrigin(origins = Array("*"), methods = Array(RequestMethod.GET, RequestMethod.PUT, RequestMethod.DELETE, RequestMethod.OPTIONS))
 class SecretsAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
     private val SENSITIVE_FIELDS = Set("password", "apikey", "secretkey", "token", "secret")
 
     @GetMapping(path = Array("/secrets"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def listSecrets(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    def listSecrets(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                    @RequestParam(required = false, name = "type") secretType: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /secrets called")
+            logger.info("API endpoint GET /secrets called" + (if (secretType != null) ", type=" + secretType else ""))
             APIKeyValidator.validate(apiKey)
 
             val env = DatrisEnvironment.current.environment
-            val secrets = SecretsUtil.listSecrets(env)
+            val allSecrets = SecretsUtil.listSecrets(env)
+
+            val secrets = if (secretType != null && secretType.nonEmpty) {
+                // Filter by _type field
+                allSecrets.filter(name => {
+                    val secretMap = SecretsUtil.getSecretMap(env + "/" + name)
+                    secretMap.exists(m => secretType.equals(m.get("_type")))
+                })
+            } else allSecrets
+
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(secrets.asJava), HttpStatus.OK)
         }

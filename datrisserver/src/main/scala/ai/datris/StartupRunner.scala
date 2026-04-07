@@ -77,6 +77,9 @@ class StartupRunner extends ApplicationRunner {
     @Value("${mongodb.database}")
     var mongoDbDatabase: String = _
 
+    @Value("${postgres.database:datris}")
+    var postgresDatabase: String = _
+
     @Value("${ai.enabled:false}")
     var aiEnabled: Boolean = _
 
@@ -85,6 +88,9 @@ class StartupRunner extends ApplicationRunner {
 
     @Value("${ai.aiSecretName:}")
     var aiSecretName: String = _
+
+    @Value("${ai.version:}")
+    var aiVersion: String = _
 
     @Value("${secrets.embeddingSecretName:}")
     var embeddingSecretName: String = _
@@ -103,6 +109,15 @@ class StartupRunner extends ApplicationRunner {
 
     @Value("${secrets.pgvectorSecretName:}")
     var pgvectorSecretName: String = _
+
+    @Value("${tapScriptTimeoutSeconds:300}")
+    var tapScriptTimeoutSeconds: Int = _
+
+    @Value("${dateFormat:yyyy-MM-dd HH:mm:ss z}")
+    var dateFormat: String = _
+
+    @Value("${dateTimezone:UTC}")
+    var dateTimezone: String = _
 
     @Override
     def run(args: ApplicationArguments): Unit =  {
@@ -167,7 +182,13 @@ class StartupRunner extends ApplicationRunner {
             milvusSecretName,
             chromaSecretName,
             pgvectorSecretName,
-            multiTenant
+            multiTenant,
+            tapTableName = environment + "-tap",
+            tapLogTableName = environment + "-tap-log",
+            tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
+            dateFormat = dateFormat,
+            dateTimezone = dateTimezone,
+            postgresDatabase = postgresDatabase
         )
 
         DatrisEnvironment.init(pipelineEnvironment)
@@ -231,7 +252,7 @@ class StartupRunner extends ApplicationRunner {
                 throw new DatrisException("'model' not found in AI secret: " + aiSecretName)
             val apiKey = Option(secret.get("apiKey")).getOrElse("")
             logger.info("AI provider configured: " + aiProvider + ", model: " + model + ", endpoint: " + endpoint)
-            AIConfig(aiProvider, endpoint, model, apiKey)
+            AIConfig(aiProvider, endpoint, model, apiKey, aiVersion)
         }
         DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, aiEnabled = aiEnabled))
     }

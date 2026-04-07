@@ -10,6 +10,9 @@ import { SearchComponent } from './search/search.component';
 import { McpComponent } from './mcp/mcp.component';
 import { SecretsComponent } from './secrets/secrets.component';
 import { ConfigurationComponent } from './configuration/configuration.component';
+import { TapsComponent } from './taps/taps.component';
+import { TapCreateComponent } from './tap-create/tap-create.component';
+import { TapRunComponent } from './tap-run/tap-run.component';
 
 const routes: Routes = [
   { path: '', redirectTo: 'mcp', pathMatch: 'full' },
@@ -17,6 +20,10 @@ const routes: Routes = [
   { path: 'pipelines/create', component: PipelineCreateComponent },
   { path: 'pipelines/:name/edit', component: PipelineCreateComponent },
   { path: 'pipelines/:name', component: PipelineViewComponent },
+  { path: 'taps', component: TapsComponent },
+  { path: 'taps/create', component: TapCreateComponent },
+  { path: 'taps/:name/edit', component: TapCreateComponent },
+  { path: 'taps/:name/run', component: TapRunComponent },
   { path: 'ingestion', component: PipelineStatusComponent },
   { path: 'pipeline/:pipelineToken/:pipeline', component: PipelineDetailComponent },
   { path: 'search', component: SearchComponent },

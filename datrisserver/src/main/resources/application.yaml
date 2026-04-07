@@ -26,9 +26,18 @@ schedule:
   checkFileNotifierQueue: "5000"
   findJobsToStart: "5000"
   checkDatabaseSourceQueries: "30000"
+  checkTapSchedules: "30000"
+tapScriptTimeoutSeconds: "300"
+dateFormat: "yyyy-MM-dd HH:mm:ss z"
+dateTimezone: "America/New_York"
 environment: oss
 useApiKeys: "false"
 multiTenant: "false"
+
+# CORS allowed origins (comma-separated). Use "*" for any origin (dev only).
+# Production: lock down to specific origins, e.g. "https://app.datris.ai,https://admin.datris.ai"
+cors:
+  allowedOrigins: "*"
 
 # Object store: MinIO
 minio:
@@ -58,6 +67,10 @@ mongodb:
   connectionString: mongodb://localhost:27017
   database: oss
 
+# SQL: PostgreSQL
+postgres:
+  database: datris
+
 sendPipelineNotifications: "true"
 ttlFileNotifierQueueMessages: "60"
 
@@ -66,6 +79,7 @@ ai:
   enabled: "true"
   provider: "anthropic"
   aiSecretName: "oss/anthropic"
+  version: "2023-06-01"
 
 # Kafka consumer
 kafkaConsumer:

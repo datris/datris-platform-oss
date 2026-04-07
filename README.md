@@ -13,7 +13,8 @@ Ingest, validate, transform, store, and retrieve your data — whether you're an
 
 ## Why Datris?
 
-- **Agent-native** — Built-in MCP server with 30+ tools. Claude, Cursor, OpenClaw, and any MCP-compatible agent can operate pipelines through natural conversation
+- **Agent-native** — Built-in MCP server with 35+ tools. Claude, Cursor, OpenClaw, and any MCP-compatible agent can operate pipelines through natural conversation
+- **Taps** — AI-generated Python scripts that fetch data from external sources (APIs, web scraping, databases) and push it into pipelines. Describe what you want, Datris generates the script. Includes AI diagnosis, CRON scheduling, and credentials via Vault
 - **AI at every stage** — AI data quality, AI transformations, AI schema generation, AI profiling, AI error explanation, natural language queries, RAG
 - **No vendor lock-in** — 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault). Runs anywhere Docker does
 - **Configuration-driven** — Define pipelines through JSON. No code required
@@ -56,6 +57,8 @@ datris ingest data.csv --dest postgres
 datris ingest sales.csv --ai-validate "prices > 0" --ai-transform "convert dates to YYYY/MM/DD"
 datris query "SELECT * FROM sales"
 datris search "quarterly revenue" --store pgvector
+datris tap create "Fetch S&P 500 daily prices from yfinance" --pipeline stocks
+datris taps
 ```
 
 ## What It Does

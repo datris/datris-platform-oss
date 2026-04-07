@@ -4,11 +4,12 @@
     <a routerLink="/"><img src="datris-full-logo.png" alt="Datris logo" class="logo"></a>
     <div class="tab-bar">
       <a class="tab" routerLink="/mcp" routerLinkActive="tab-active">MCP</a>
+      <a class="tab" routerLink="/taps" routerLinkActive="tab-active">Taps</a>
       <a class="tab" routerLink="/pipelines" routerLinkActive="tab-active">Pipelines</a>
       <a class="tab" routerLink="/ingestion" routerLinkActive="tab-active">Ingestion</a>
       <a class="tab" routerLink="/search" routerLinkActive="tab-active">Search</a>
-      <a class="tab" routerLink="/configuration" routerLinkActive="tab-active">Configuration</a>
       <a class="tab" routerLink="/secrets" routerLinkActive="tab-active" *ngIf="!isTrial">Secrets</a>
+      <a class="tab" routerLink="/configuration" routerLinkActive="tab-active">Configuration</a>
     </div>
     <div class="env-info" *ngIf="environment">
       <span class="env-label">{{ environment }}</span>

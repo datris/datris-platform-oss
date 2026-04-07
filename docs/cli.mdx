@@ -248,6 +248,58 @@ datris secrets
 
 ---
 
+### `datris taps`
+
+List all taps.
+
+```bash
+datris taps
+```
+
+---
+
+### `datris tap create`
+
+Create a tap from a plain-English description.
+
+```bash
+datris tap create "<description>" --pipeline <name> [--name <tap-name>] [--cron "<expression>"]
+```
+
+| Option | Description |
+|---|---|
+| `--pipeline`, `-p` | Target pipeline name (required) |
+| `--name`, `-n` | Tap name (default: derived from pipeline name) |
+| `--cron` | CRON expression for scheduling (Quartz format) |
+
+**Examples:**
+```bash
+datris tap create "Fetch daily stock prices for S&P 500 from yfinance" --pipeline stocks --cron "0 0 0 * * ?"
+datris tap create "Get weather data from Open-Meteo API" --pipeline weather --name weather-tap
+```
+
+---
+
+### `datris tap run`
+
+Run a tap manually.
+
+```bash
+datris tap run <name>
+```
+
+---
+
+### `datris tap delete`
+
+Delete a tap.
+
+```bash
+datris tap delete <name>
+```
+
+---
+
 ### `datris version`
 
 Get the server version.

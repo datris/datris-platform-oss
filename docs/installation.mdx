@@ -58,6 +58,17 @@ docker compose up -d
 
 This pulls the latest pre-built images from Docker Hub and restarts the services. No build tools required.
 
+## Volumes
+
+The `datris` service uses two named Docker volumes that are created automatically by `docker compose up` — no user action required:
+
+| Volume | Mounted at | Purpose |
+|---|---|---|
+| `pip-cache` | `/root/.cache/pip` | Caches downloaded pip wheel files so tap-installed packages don't have to be re-downloaded |
+| `pip-packages` | `/usr/local/lib/python3.12/dist-packages` | Persists installed Python packages across container restarts so taps that need extra packages (e.g., `yfinance`) install once and stay installed |
+
+The first time a tap installs a new package, pip downloads it normally (~30 seconds for `yfinance`). Subsequent runs of the same or another tap that needs that package are near-instant — pip reports "Requirement already satisfied" and proceeds.
+
 ## Services
 
 | Service | Port | Purpose |

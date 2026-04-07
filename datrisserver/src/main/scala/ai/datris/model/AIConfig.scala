@@ -9,5 +9,6 @@ case class AIConfig(
                        provider: String,
                        endpoint: String,
                        model: String,
-                       apiKey: String
+                       apiKey: String,
+                       version: String = ""
                    )

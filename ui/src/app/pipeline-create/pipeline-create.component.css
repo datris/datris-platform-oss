@@ -271,6 +271,50 @@ option {
 }
 
 /* Info box */
+/* Source toggle */
+.source-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.toggle-btn:hover {
+  border-color: var(--text-muted);
+}
+
+.toggle-btn.active {
+  border-color: var(--accent-cyan);
+  background: rgba(0, 180, 255, 0.08);
+  color: var(--accent-cyan);
+}
+
+.toggle-btn .material-icons {
+  font-size: 20px;
+}
+
+.info-box.warn {
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.25);
+  color: #fbbf24;
+}
+
 .info-box {
   padding: 12px 16px;
   background: rgba(0, 180, 255, 0.08);
@@ -376,6 +420,13 @@ option {
   align-items: center;
   margin-top: 24px;
   gap: 12px;
+}
+
+.btn-row-top {
+  margin-top: 0;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .spacer {

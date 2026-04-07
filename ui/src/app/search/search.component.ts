@@ -1,5 +1,8 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Router, NavigationEnd } from '@angular/router';
+import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
 import { SearchService, QueryResponse } from '../search.service';
 import { HealthService } from '../health.service';
 
@@ -8,7 +11,7 @@ import { HealthService } from '../health.service';
   templateUrl: './search.component.html',
   styleUrls: ['./search.component.css']
 })
-export class SearchComponent implements OnInit {
+export class SearchComponent implements OnInit, OnDestroy {
   queryType = 'postgres';
   loading = false;
   error = '';
@@ -51,8 +54,9 @@ export class SearchComponent implements OnInit {
   topK = 5;
 
   isTrial = false;
+  private routerSub: Subscription | null = null;
 
-  constructor(private searchService: SearchService, public healthService: HealthService, private http: HttpClient) { }
+  constructor(private searchService: SearchService, public healthService: HealthService, private http: HttpClient, private router: Router) { }
 
   ngOnInit(): void {
     this.http.get<any>('/api/v1/version').subscribe({
@@ -64,6 +68,38 @@ export class SearchComponent implements OnInit {
       }
     });
     this.loadPgSchemas();
+    this.loadMongoDatabases();
+
+    // Refresh metadata whenever the user navigates back to /search
+    this.routerSub = this.router.events.pipe(
+      filter(e => e instanceof NavigationEnd)
+    ).subscribe((e: any) => {
+      if (e.urlAfterRedirects === '/search' || e.url === '/search') {
+        this.refreshMetadata();
+      }
+    });
+  }
+
+  ngOnDestroy(): void {
+    if (this.routerSub) {
+      this.routerSub.unsubscribe();
+      this.routerSub = null;
+    }
+  }
+
+  refreshMetadata(): void {
+    // Reload postgres schemas/tables and mongo databases/collections so the user
+    // sees any tables created since they last visited the tab.
+    this.searchService.getPostgresSchemas(this.pgDatabase).subscribe({
+      next: (schemas) => {
+        this.pgSchemas = schemas;
+        if (this.pgSchemas.length > 0 && !this.pgSelectedSchema) {
+          this.pgSelectedSchema = this.pgSchemas.includes('public') ? 'public' : this.pgSchemas[0];
+        }
+        if (this.pgSelectedSchema) this.loadPgTables();
+      },
+      error: () => {}
+    });
     this.loadMongoDatabases();
   }
 

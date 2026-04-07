@@ -12,7 +12,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import java.security.InvalidParameterException
 import java.sql.Timestamp
 import java.text.SimpleDateFormat
-import java.util.Date
+import java.util.{Date, TimeZone}
 
 class StatusUtil {
     private val logger: Logger = LoggerFactory.getLogger(classOf[StatusUtil])
@@ -108,7 +108,11 @@ class StatusUtil {
         val nowTimestamp = new Timestamp(new Date().getTime)
         val nowInMillis = new Timestamp(new Date().getTime).getTime
 
-        val dateFormat = "MM-dd-yyyy HH:mm:ss z"
+        def utcFormatter: SimpleDateFormat = {
+            val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+            sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+            sdf
+        }
         val pipelineName = getPipelineName(status.filename, status.pipelineToken)
 
         // Query for the pipeline token in the pipeline status summary table
@@ -161,8 +165,8 @@ class StatusUtil {
                 pipelineName,
                 pipelineToken.orNull,
                 processName.orNull,
-                new SimpleDateFormat(dateFormat).format(Timestamp.valueOf(pipelineStatusSummary.createdAtTimestamp)),
-                new SimpleDateFormat(dateFormat).format(nowTimestamp),
+                utcFormatter.format(Timestamp.valueOf(pipelineStatusSummary.createdAtTimestamp)),
+                utcFormatter.format(nowTimestamp),
                 totalTime,
                 statusString
             )
@@ -185,8 +189,8 @@ class StatusUtil {
                 pipelineName,
                 pipelineToken.orNull,
                 processName.orNull,
-                new SimpleDateFormat(dateFormat).format(nowTimestamp),
-                new SimpleDateFormat(dateFormat).format(nowTimestamp),
+                utcFormatter.format(nowTimestamp),
+                utcFormatter.format(nowTimestamp),
                 "0 seconds",
                 "processing"
             )
@@ -203,7 +207,7 @@ class StatusUtil {
         // Save the pipeline status record
         val pipelineStatus = PipelineStatus(
             0,
-            new SimpleDateFormat(dateFormat).format(nowTimestamp),
+            utcFormatter.format(nowTimestamp),
             pipelineName,
             status.processName,
             status.publisherToken,

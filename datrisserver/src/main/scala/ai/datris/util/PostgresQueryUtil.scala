@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import com.google.gson.Gson
-import ai.datris.model.DatrisException
+import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.sql.{Connection, DriverManager, ResultSet}
@@ -24,8 +24,11 @@ object PostgresQueryUtil {
         "TRUNCATE", "GRANT", "REVOKE", "COPY", "CALL", "EXECUTE", "EXEC"
     )
 
-    def query(sql: String, database: String = "datris", limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] = {
+    def query(sql: String, database: String = null, limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] = {
         validateQuery(sql)
+
+        val effectiveDb = if (database != null && database.nonEmpty) database
+            else DatrisEnvironment.current.postgresDatabase
 
         val effectiveLimit = math.min(if (limit > 0) limit else DEFAULT_LIMIT, MAX_LIMIT)
         val finalSql = appendLimitIfNeeded(sql.trim.stripSuffix(";"), effectiveLimit)
@@ -44,7 +47,7 @@ object PostgresQueryUtil {
         val jdbcUrl = {
             val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
             val hasDatabase = afterProtocol.contains("/")
-            if (hasDatabase) secrets.jdbcUrl else secrets.jdbcUrl + "/" + database
+            if (hasDatabase) secrets.jdbcUrl else secrets.jdbcUrl + "/" + effectiveDb
         }
 
         var conn: Connection = null

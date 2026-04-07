@@ -13,6 +13,9 @@ import { McpComponent } from './mcp/mcp.component';
 import { SecretsComponent } from './secrets/secrets.component';
 import { ApiKeyPromptComponent } from './api-key-prompt/api-key-prompt.component';
 import { ConfigurationComponent } from './configuration/configuration.component';
+import { TapsComponent } from './taps/taps.component';
+import { TapCreateComponent } from './tap-create/tap-create.component';
+import { TapRunComponent } from './tap-run/tap-run.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { apiKeyInterceptor } from './api-key.interceptor';
@@ -31,7 +34,10 @@ import { MaterialModule } from './material.module';
     McpComponent,
     SecretsComponent,
     ApiKeyPromptComponent,
-    ConfigurationComponent
+    ConfigurationComponent,
+    TapsComponent,
+    TapCreateComponent,
+    TapRunComponent
   ],
   imports: [
     BrowserModule,

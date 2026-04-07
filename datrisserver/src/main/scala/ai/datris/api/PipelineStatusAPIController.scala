@@ -15,7 +15,6 @@ import org.springframework.web.bind.annotation._
 
 @RestController
 @RequestMapping(Array("/api/v1"))
-@CrossOrigin(origins = Array("*"),  methods = Array(RequestMethod.GET, RequestMethod.DELETE, RequestMethod.OPTIONS))
 class
 PipelineStatusAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[PipelineStatusAPIController])

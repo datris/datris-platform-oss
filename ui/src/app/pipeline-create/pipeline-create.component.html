@@ -25,35 +25,86 @@
 
   <div class="form-card">
 
-    <!-- Step 1: Name + Sample File -->
+    <!-- Top navigation buttons -->
+    <div class="btn-row btn-row-top">
+      <button class="secondary-btn" (click)="prevStep()" *ngIf="step > 1">Back</button>
+      <div class="spacer"></div>
+      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 9">
+        Next
+      </button>
+      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 9">
+        {{ creating ? 'Saving...' : (isEditMode ? 'Save Pipeline' : 'Create Pipeline') }}
+      </button>
+    </div>
+
+    <!-- Step 1: Name + Source -->
     <div *ngIf="step === 1">
-      <h2 class="step-title">Pipeline Name & Sample File</h2>
+      <h2 class="step-title">Pipeline Name & Data Source</h2>
       <div class="form-row">
         <label class="form-label">Pipeline Name</label>
         <input class="form-input" [(ngModel)]="pipelineName" placeholder="my_pipeline">
       </div>
-      <div class="form-row">
-        <label class="form-label">Upload a sample file (optional)</label>
-        <p class="form-hint">Upload a sample file to auto-detect the source type and generate the schema.</p>
-        <div class="file-upload-row">
-          <input type="file" (change)="onSampleFileSelected($event)" class="file-input">
-          <span class="analyzing-label" *ngIf="generatingSchema">Analyzing...</span>
+
+      <!-- Source toggle -->
+      <div class="source-toggle" *ngIf="!isEditMode">
+        <button class="toggle-btn" [class.active]="pipelineSource === 'file'" (click)="pipelineSource = 'file'; onPipelineSourceChange()">
+          <span class="material-icons">upload_file</span> From Sample File
+        </button>
+        <button class="toggle-btn" [class.active]="pipelineSource === 'tap'" (click)="pipelineSource = 'tap'; onPipelineSourceChange()">
+          <span class="material-icons">water_drop</span> From Tap
+        </button>
+        <button class="toggle-btn" [class.active]="pipelineSource === 'manual'" (click)="pipelineSource = 'manual'; onPipelineSourceChange()">
+          <span class="material-icons">edit</span> Enter Manually
+        </button>
+      </div>
+
+      <!-- From Sample File -->
+      <div *ngIf="pipelineSource === 'file'">
+        <div class="form-row">
+          <label class="form-label">Upload a sample file</label>
+          <p class="form-hint">Upload a sample file to auto-detect the source type and generate the schema.</p>
+          <div class="file-upload-row">
+            <input type="file" (change)="onSampleFileSelected($event)" class="file-input">
+            <span class="analyzing-label" *ngIf="generatingSchema">Analyzing...</span>
+          </div>
+        </div>
+        <div class="info-box" *ngIf="sampleFileDetected">
+          Detected source type: <strong>{{ sourceType === 'unstructured' ? 'Document' : sourceType.toUpperCase() }}</strong>
+          <span *ngIf="schemaFields.length > 0 && sourceType !== 'unstructured'"> &mdash; {{ schemaFields.length }} fields detected</span>
         </div>
       </div>
-      <div class="info-box" *ngIf="sampleFileDetected">
-        Detected source type: <strong>{{ sourceType === 'unstructured' ? 'Document' : sourceType.toUpperCase() }}</strong>
-        <span *ngIf="schemaFields.length > 0 && sourceType !== 'unstructured'"> &mdash; {{ schemaFields.length }} fields detected</span>
+
+      <!-- From Tap -->
+      <div *ngIf="pipelineSource === 'tap'">
+        <div class="form-row">
+          <label class="form-label">Select a Tap</label>
+          <p class="form-hint">Choose a tap that has been tested. The data type and columns will be used to configure the pipeline.</p>
+          <select class="form-input" [(ngModel)]="selectedTapName" (ngModelChange)="onTapSelected($event)">
+            <option value="" disabled>Select a tap...</option>
+            <option *ngFor="let t of taps" [value]="t.name">{{ t.name }} &mdash; {{ (t.lastTestRunDataType || t.lastRunDataType).toUpperCase() }}, {{ t.lastTestRunRecordCount || t.lastRunRecordCount }} records</option>
+          </select>
+        </div>
+        <div class="info-box" *ngIf="selectedTapName && sampleFileDetected">
+          Source type: <strong>{{ sourceType.toUpperCase() }}</strong>
+          <span *ngIf="schemaFields.length > 0 && schemaFields[0].name"> &mdash; {{ schemaFields.length }} columns: {{ getColumnPreview() }}</span>
+        </div>
+        <div class="info-box warn" *ngIf="taps.length === 0">
+          No taps with test data found. Create and test a tap first in the Taps tab.
+        </div>
       </div>
-      <hr class="divider" *ngIf="!sampleFileDetected">
-      <div class="form-row" *ngIf="!sampleFileDetected">
-        <p class="form-hint">Or configure manually:</p>
-        <label class="form-label">Source Type</label>
-        <select class="form-input" [(ngModel)]="sourceType" (ngModelChange)="onSourceTypeChange()">
-          <option value="csv">CSV</option>
-          <option value="json">JSON</option>
-          <option value="xml">XML</option>
-          <option value="unstructured">Document (PDF, Word, Excel, PowerPoint, text, etc.)</option>
-        </select>
+
+      <!-- Enter Manually -->
+      <div *ngIf="pipelineSource === 'manual'">
+        <div class="form-row">
+          <label class="form-label">Source Type</label>
+          <p class="form-hint">Choose the source type. You'll define the schema and configure all settings manually in the next steps.</p>
+          <select class="form-input" [(ngModel)]="sourceType" (ngModelChange)="onSourceTypeChange()">
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+            <option value="xml">XML</option>
+            <option value="unstructured">Document (PDF, Word, Excel, PowerPoint, text, etc.)</option>
+          </select>
+        </div>
       </div>
     </div>
 
@@ -419,6 +470,20 @@
             <input class="form-input override-input" [(ngModel)]="pgTable" placeholder="or type a new table name">
           </div>
         </div>
+        <div class="form-row" *ngIf="destSchemaFields.length > 0 && destSchemaFields[0].name">
+          <label class="form-label">Key Fields (optional)</label>
+          <p class="form-hint">Select one or more destination columns that uniquely identify a row. Used for upserts. Hold Cmd/Ctrl to select multiple.</p>
+          <select class="form-input" multiple [(ngModel)]="pgKeyFields" size="6">
+            <option *ngFor="let f of destSchemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" [(ngModel)]="dbTruncateBeforeWrite">
+            <span>Truncate before write</span>
+          </label>
+          <p class="form-hint">When enabled, the destination table is emptied (TRUNCATE) before each ingestion run. Use this for full snapshot replacements.</p>
+        </div>
       </ng-container>
 
       <!-- MongoDB -->
@@ -426,6 +491,7 @@
         <div class="form-row" *ngIf="!isTrial">
           <label class="form-label">Database</label>
           <select class="form-input" [(ngModel)]="mongoDbName" (ngModelChange)="onMongoDbChange()">
+            <option *ngIf="mongoDbName && !mongoDatabases.includes(mongoDbName)" [value]="mongoDbName">{{ mongoDbName }}</option>
             <option *ngFor="let db of mongoDatabases" [value]="db">{{ db }}</option>
           </select>
           <input class="form-input override-input" [(ngModel)]="mongoDbName" placeholder="or type a new database name">
@@ -438,13 +504,32 @@
           </select>
           <input class="form-input override-input" [(ngModel)]="mongoTable" placeholder="or type a new collection name">
         </div>
+        <div class="form-row" *ngIf="schemaFields.length > 0 && schemaFields[0].name">
+          <label class="form-label">Key Fields (optional)</label>
+          <p class="form-hint">Select one or more fields that uniquely identify a document. Used for upserts. Hold Cmd/Ctrl to select multiple.</p>
+          <select class="form-input" multiple [(ngModel)]="mongoKeyFields" size="6">
+            <option *ngFor="let f of schemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" [(ngModel)]="dbTruncateBeforeWrite">
+            <span>Truncate before write</span>
+          </label>
+          <p class="form-hint">When enabled, all documents in the destination collection are deleted before each ingestion run. Use this for full snapshot replacements.</p>
+        </div>
       </ng-container>
 
       <!-- Object Store -->
       <ng-container *ngIf="destType === 'objectstore'">
+        <div class="form-row">
+          <label class="form-label">Bucket (optional)</label>
+          <input class="form-input" [(ngModel)]="osBucket" placeholder="leave blank to use the default {{ '{environment}' }}-raw bucket">
+          <p class="form-hint">Leave blank to use the default <code>{{ '{environment}' }}-raw</code> bucket. Stored as <code>destinationBucketOverride</code> on the object store config.</p>
+        </div>
         <div class="form-row-inline">
           <div class="form-field">
-            <label class="form-label">Prefix Key</label>
+            <label class="form-label">Key</label>
             <input class="form-input" [(ngModel)]="osPrefix" placeholder="data/my_pipeline/">
           </div>
           <div class="form-field">
@@ -454,6 +539,20 @@
               <option value="orc">ORC</option>
             </select>
           </div>
+        </div>
+        <div class="form-row" *ngIf="destSchemaFields.length > 0 && destSchemaFields[0].name">
+          <label class="form-label">Partition By (optional)</label>
+          <p class="form-hint">Select one or more fields from the destination schema to partition the output by. Hold Cmd/Ctrl to select multiple.</p>
+          <select class="form-input" multiple [(ngModel)]="osPartitionBy" size="10">
+            <option *ngFor="let f of destSchemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" [(ngModel)]="osDeleteBeforeWrite">
+            <span>Truncate before write</span>
+          </label>
+          <p class="form-hint">When enabled, all existing data at the destination path is deleted before each ingestion run. Use this for full snapshot replacements.</p>
         </div>
       </ng-container>
 
@@ -564,24 +663,12 @@
     <div *ngIf="step === 9">
       <h2 class="step-title">Review Configuration</h2>
       <div class="form-row">
-        <label class="form-label">Dataset Configuration (editable)</label>
+        <label class="form-label">Pipeline Configuration (editable)</label>
         <textarea class="form-input form-textarea config-editor" [(ngModel)]="configJson" rows="20"></textarea>
       </div>
     </div>
 
     <!-- Error -->
     <div class="error-box" *ngIf="error">{{ error }}</div>
-
-    <!-- Navigation buttons -->
-    <div class="btn-row">
-      <button class="secondary-btn" (click)="prevStep()" *ngIf="step > 1">Back</button>
-      <div class="spacer"></div>
-      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 9">
-        Next
-      </button>
-      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 9">
-        {{ creating ? 'Saving...' : (isEditMode ? 'Save Pipeline' : 'Create Pipeline') }}
-      </button>
-    </div>
   </div>
 </div>

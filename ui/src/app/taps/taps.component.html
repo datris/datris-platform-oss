@@ -1,0 +1,173 @@
+<div class="container">
+  <div class="page-header">
+    <h1 class="page-title">Taps <span class="beta-tag">(beta)</span></h1>
+    <button class="create-btn" routerLink="/taps/create">+ Create Tap</button>
+  </div>
+  <p class="page-description">
+    A tap is an AI-generated Python script that fetches data from an external source and pushes it into a pipeline.
+    Create a tap by describing what data you want to fetch, and Datris will generate the script for you.
+    Taps can run on a schedule using CRON expressions.
+  </p>
+
+  <div class="search-bar" *ngIf="taps.length > 0">
+    <span class="material-icons search-icon">search</span>
+    <input class="search-input" [(ngModel)]="searchQuery" (ngModelChange)="filterTaps()" placeholder="Search taps...">
+  </div>
+
+  <div class="table-container" *ngIf="filteredTaps.length > 0">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Description</th>
+          <th>Target Pipeline</th>
+          <th>Schedule</th>
+          <th>Data Type</th>
+          <th>Last Run</th>
+          <th>Last Test Run</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let tap of filteredTaps">
+          <td class="tap-name tap-name-link" (click)="startEditName($event, tap)">
+            <span *ngIf="editingName !== tap.name">{{ tap.name }}</span>
+            <input *ngIf="editingName === tap.name" class="inline-name-input"
+                   [(ngModel)]="editingNameValue"
+                   (blur)="cancelEditName($event)"
+                   (keydown.enter)="saveEditName(tap)"
+                   (keydown.escape)="cancelEditName($event)"
+                   (click)="$event.stopPropagation()"
+                   #nameInput>
+          </td>
+          <td class="tap-desc">{{ tap.description }}</td>
+          <td class="pipeline-cell" (click)="openPipelineDropdown($event, tap.name)">
+            <span *ngIf="editingPipeline !== tap.name" class="pipeline-value">
+              {{ tap.targetPipeline || 'Not set' }}
+              <span class="material-icons pipeline-edit-icon">edit</span>
+            </span>
+            <select *ngIf="editingPipeline === tap.name" class="pipeline-select"
+                    (change)="setPipeline($event, tap, pipelineSelect.value)"
+                    #pipelineSelect
+                    (click)="$event.stopPropagation()">
+              <option value="" [selected]="!tap.targetPipeline">None</option>
+              <option *ngFor="let p of pipelines" [value]="p.name" [selected]="tap.targetPipeline === p.name">{{ p.name }}</option>
+            </select>
+          </td>
+          <td class="tap-cron">{{ tap.cronExpression || '-' }}</td>
+          <td class="tap-datatype">
+            <span class="datatype-badge" *ngIf="tap.lastRunDataType || tap.lastTestRunDataType">
+              {{ (tap.lastRunDataType || tap.lastTestRunDataType).toUpperCase() }}
+            </span>
+            <span *ngIf="!tap.lastRunDataType && !tap.lastTestRunDataType">-</span>
+          </td>
+          <td>
+            <span class="status-badge" [ngClass]="getStatusClass(tap.lastRunStatus)">
+              {{ tap.lastRunStatus || 'never' }}
+            </span>
+            <span class="last-run-time">{{ formatTime(tap.lastRunTime) }}</span>
+            <span class="run-records" *ngIf="tap.lastRunRecordCount">{{ tap.lastRunRecordCount }} records</span>
+          </td>
+          <td>
+            <span class="status-badge" [ngClass]="getStatusClass(tap.lastTestRunStatus)">
+              {{ tap.lastTestRunStatus || 'never' }}
+            </span>
+            <span class="last-run-time">{{ formatTime(tap.lastTestRunTime) }}</span>
+            <span class="run-records" *ngIf="tap.lastTestRunRecordCount">{{ tap.lastTestRunRecordCount }} records</span>
+          </td>
+          <td class="actions-cell">
+            <button class="action-btn view-btn" (click)="viewConfig($event, tap.name)" title="View tap config">
+              <span class="material-icons">code</span>
+            </button>
+            <button class="action-btn history-btn" (click)="viewLogs($event, tap.name)" title="Run history">
+              <span class="material-icons">history</span>
+            </button>
+            <button class="action-btn edit-btn" (click)="editTap($event, tap.name)" title="Edit tap">
+              <span class="material-icons">edit</span>
+            </button>
+            <button class="action-btn run-btn" (click)="runTap($event, tap.name)" title="Test run now">
+              <span class="material-icons">play_arrow</span>
+            </button>
+            <button class="action-btn delete-btn" (click)="promptDelete($event, tap.name)" title="Delete tap"
+                    *ngIf="deleteTarget !== tap.name">
+              <span class="material-icons">delete</span>
+            </button>
+            <div class="delete-confirm" *ngIf="deleteTarget === tap.name" (click)="$event.stopPropagation()">
+              <button class="del-opt del-yes" (click)="confirmDelete($event)">
+                <span class="material-icons">delete_forever</span> Delete
+              </button>
+              <button class="del-opt del-cancel" (click)="cancelDelete($event)">
+                <span class="material-icons">close</span>
+              </button>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="empty-state" *ngIf="taps.length > 0 && filteredTaps.length === 0">
+    <p>No taps match "{{ searchQuery }}"</p>
+  </div>
+
+  <div class="empty-state" *ngIf="taps.length === 0">
+    <p>No taps created. Use the Create Tap button, the API, CLI, or MCP server to create one.</p>
+  </div>
+</div>
+
+<!-- Run History Modal -->
+<div class="modal-overlay" *ngIf="logsTap" (click)="closeLogs()">
+  <div class="logs-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Run History: {{ logsTap }}</h2>
+      <button class="modal-close" (click)="closeLogs()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="logs-loading" *ngIf="logsLoading">Loading...</div>
+      <div class="logs-empty" *ngIf="!logsLoading && logsData.length === 0">No run history yet.</div>
+      <div class="log-entries" *ngIf="logsData.length > 0">
+        <div class="log-entry" *ngFor="let log of logsData" (click)="log._expanded = !log._expanded">
+          <div class="log-summary">
+            <span class="status-badge" [ngClass]="getStatusClass(log.status)">{{ log.status }}</span>
+            <span class="log-time">{{ formatTime(log.runTime) }}</span>
+            <span class="log-records" *ngIf="log.recordCount">{{ log.recordCount }} records</span>
+            <span class="log-duration" *ngIf="log.durationMs">{{ (log.durationMs / 1000).toFixed(1) }}s</span>
+            <span class="log-pipeline-flag" *ngIf="log.pushToPipeline">pipeline</span>
+            <span class="log-error-hint" *ngIf="log.error">error</span>
+            <span class="material-icons log-expand">{{ log._expanded ? 'expand_less' : 'expand_more' }}</span>
+          </div>
+          <div class="log-detail" *ngIf="log._expanded">
+            <div class="log-detail-row" *ngIf="log.error">
+              <span class="log-detail-label">Error</span>
+              <span class="log-detail-value log-error-text">{{ log.error }}</span>
+            </div>
+            <div class="log-detail-row" *ngIf="log.logs">
+              <span class="log-detail-label">Script Output</span>
+              <pre class="log-output">{{ log.logs }}</pre>
+            </div>
+            <div class="log-detail-row" *ngIf="!log.logs && !log.error">
+              <span class="log-detail-value">No output captured.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- View Config Modal -->
+<div class="modal-overlay" *ngIf="viewConfigTap" (click)="closeViewConfig()">
+  <div class="config-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">{{ viewConfigTap }}</h2>
+      <button class="modal-close" (click)="closeViewConfig()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <pre class="config-json">{{ viewConfigJson }}</pre>
+    </div>
+  </div>
+</div>
