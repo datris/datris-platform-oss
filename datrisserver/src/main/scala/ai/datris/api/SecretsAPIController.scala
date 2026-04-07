@@ -17,7 +17,6 @@ import scala.collection.JavaConverters._
 
 @RestController
 @RequestMapping(Array("/api/v1"))
-@CrossOrigin(origins = Array("*"), methods = Array(RequestMethod.GET, RequestMethod.PUT, RequestMethod.DELETE, RequestMethod.OPTIONS))
 class SecretsAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
     private val SENSITIVE_FIELDS = Set("password", "apikey", "secretkey", "token", "secret")

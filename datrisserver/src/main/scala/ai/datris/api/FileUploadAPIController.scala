@@ -22,7 +22,6 @@ import scala.util.control.Breaks._
 
 @RestController
 @RequestMapping(Array("/api/v1"))
-@CrossOrigin(origins = Array("*"), methods = Array(RequestMethod.GET, RequestMethod.POST, RequestMethod.DELETE, RequestMethod.OPTIONS))
 class FileUploadAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileUploadAPIController])
 

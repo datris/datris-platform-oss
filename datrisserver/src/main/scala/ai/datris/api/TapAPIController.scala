@@ -18,7 +18,6 @@ import scala.collection.JavaConverters._
 
 @RestController
 @RequestMapping(Array("/api/v1"))
-@CrossOrigin(origins = Array("*"), methods = Array(RequestMethod.GET, RequestMethod.POST, RequestMethod.DELETE, RequestMethod.OPTIONS))
 class TapAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[TapAPIController])
 

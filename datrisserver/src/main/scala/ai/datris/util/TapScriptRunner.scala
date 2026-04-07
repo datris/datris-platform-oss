@@ -96,9 +96,10 @@ object TapScriptRunner {
             val allEnvVars = platformEnvVars ++ secretEnvVars
 
             // Step 5: Execute the wrapper
-            val (rawOutput, logs) = executeWithTimeout(wrapperFile.toString, scriptFile.toString, scriptTimeoutSeconds, allEnvVars)
+            val secretValues = secretEnvVars.map(_._2)
+            val (rawOutput, logs) = executeWithTimeout(wrapperFile.toString, scriptFile.toString, scriptTimeoutSeconds, allEnvVars, secretValues)
             logger.info("TapScriptRunner: script executed, output length: " + rawOutput.length + " chars")
-            if (logs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + logs)
+            if (logs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + maskSecrets(logs, secretValues))
 
             // Step 5: Parse envelope to extract data type and records
             val gson = new com.google.gson.Gson
@@ -154,7 +155,7 @@ object TapScriptRunner {
         }
     }
 
-    private def executeWithTimeout(wrapperPath: String, scriptPath: String, timeoutSec: Int, envVars: Seq[(String, String)] = Seq.empty): (String, String) = {
+    private def executeWithTimeout(wrapperPath: String, scriptPath: String, timeoutSec: Int, envVars: Seq[(String, String)] = Seq.empty, secretValues: Seq[String] = Seq.empty): (String, String) = {
         val stdout = new StringBuilder
         val stderr = new StringBuilder
         val processLogger = ProcessLogger(
@@ -170,7 +171,7 @@ object TapScriptRunner {
         try {
             val exitCode = Await.result(future, timeoutSec.seconds)
             if (exitCode != 0) {
-                val errOutput = stderr.toString.take(1000)
+                val errOutput = maskSecrets(stderr.toString.take(1000), secretValues)
                 logger.error("Tap script exited with code " + exitCode + ": " + errOutput)
                 throw new DatrisException("Tap script failed (exit code " + exitCode + "): " + errOutput)
             }
@@ -180,7 +181,15 @@ object TapScriptRunner {
                 throw new DatrisException("Tap script timed out after " + timeoutSec + " seconds")
             case e: DatrisException => throw e
             case e: Exception =>
-                throw new DatrisException("Tap script execution error: " + e.getMessage)
+                throw new DatrisException("Tap script execution error: " + maskSecrets(e.getMessage, secretValues))
+        }
+    }
+
+    private def maskSecrets(text: String, secretValues: Seq[String]): String = {
+        if (text == null || text.isEmpty) return text
+        secretValues.foldLeft(text) { (acc, secret) =>
+            if (secret == null || secret.length < 4) acc
+            else acc.replace(secret, "••••••••")
         }
     }
 

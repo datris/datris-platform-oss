@@ -34,6 +34,11 @@ environment: oss
 useApiKeys: "false"
 multiTenant: "false"
 
+# CORS allowed origins (comma-separated). Use "*" for any origin (dev only).
+# Production: lock down to specific origins, e.g. "https://app.datris.ai,https://admin.datris.ai"
+cors:
+  allowedOrigins: "*"
+
 # Object store: MinIO
 minio:
   server: http://localhost:9000

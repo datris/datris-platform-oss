@@ -30,6 +30,10 @@ environment: ${ENVIRONMENT}
 useApiKeys: "true"
 multiTenant: "false"
 
+# CORS allowed origins (comma-separated). Lock down in production.
+cors:
+  allowedOrigins: ${CORS_ALLOWED_ORIGINS:*}
+
 # Object store: MinIO (Docker service)
 minio:
   server: http://minio:9000

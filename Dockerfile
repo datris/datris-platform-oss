@@ -6,4 +6,7 @@ RUN mkdir -p /usr/src/datrisserver /usr/src/datrisserver/config
 COPY ${JAR_FILE} /usr/src/datrisserver/datrisserver.jar
 COPY docker-init.sh /usr/src/datrisserver/docker-init.sh
 RUN chmod +x /usr/src/datrisserver/docker-init.sh
+RUN groupadd -r datris && useradd -r -g datris -d /usr/src/datrisserver datris \
+    && chown -R datris:datris /usr/src/datrisserver
+USER datris
 ENTRYPOINT ["/usr/src/datrisserver/docker-init.sh"]
