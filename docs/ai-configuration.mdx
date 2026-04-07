@@ -164,3 +164,70 @@ docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 ## AI Provider Required
 
 An AI provider must be configured for the platform to start. Set `ai.enabled: "true"` and configure at least one provider (Anthropic, OpenAI, or Ollama) in `application.yaml` and Vault.
+
+## Stronger Model for Code Generation
+
+Some AI tasks generate executable code: tap script generation, AI data quality rules (`aiRule`), AI transformations (`aiTransformation`), JSON Schema / XSD generation, and natural-language → SQL. The quality of these outputs is directly tied to the model's coding ability.
+
+By default the platform points code-generation tasks at a stronger model than the one used for general AI calls (error explanation, brainstorm chat, CRON generation, profiling, etc.). Cheap chatty paths stay on the default model so you only pay the upgrade on the calls that benefit.
+
+### Defaults
+
+The `oss/codegen` Vault secret is seeded automatically by `docker/vault-init.sh` based on `AI_PROVIDER`, reusing the same API key as your main provider:
+
+| `AI_PROVIDER` | Main model | Codegen model | API key |
+|---|---|---|---|
+| `anthropic` | `claude-sonnet-4-6` | `claude-opus-4-6` | `ANTHROPIC_API_KEY` |
+| `openai` | `gpt-4o` | `gpt-5.4` | `OPENAI_API_KEY` |
+| `ollama` | `${OLLAMA_MODEL}` | `${OLLAMA_MODEL}` (same — keeps RAM footprint flat) | none |
+
+Override the codegen model by setting `CODEGEN_MODEL` in `.env`:
+
+```bash
+CODEGEN_MODEL=claude-opus-4-6
+```
+
+### application.yaml
+
+The default config enables codegen with the seeded secret:
+
+```yaml
+ai:
+  enabled: "true"
+  provider: "anthropic"
+  aiSecretName: "oss/anthropic"
+  version: "2023-06-01"
+  codegen:
+    secretName: "oss/codegen"
+```
+
+### Disabling
+
+To use the same model for codegen as for everything else, remove the `codegen:` block from `application.yaml` and restart. The platform falls back to the main `ai.*` config with zero behavior change.
+
+### Which call sites switch
+
+| Feature | Uses codegen config? |
+|---|---|
+| Tap script generation (`fetch()` Python) | Yes |
+| Tap script auto-fix | Yes |
+| AI data quality rules (`aiRule`) | Yes |
+| AI transformations (`aiTransformation`) | Yes |
+| CSV / JSON Schema / XSD generation | Yes |
+| Natural language → SQL (`/query/ai`) | Yes |
+| CRON generation, brainstorm chat, error explanation | No (cheap, stays on default) |
+| Data profiling, AI question answering | No (analysis/prose, stays on default) |
+| AI header validation | No (classification, stays on default) |
+
+### Multi-tenant
+
+In multi-tenant deployments each tenant can override the codegen model independently by creating a Vault secret at `{tenantName}/codegen` with the same `{endpoint, model, apiKey}` shape. The fallback chain is:
+
+1. Tenant's `{env}/codegen` Vault secret (if it exists)
+2. Global codegen config (if `ai.codegen.secretName` is set)
+3. Tenant's main AI config
+4. Global main AI config
+
+### Misconfiguration
+
+If `ai.codegen.secretName` points to a missing or malformed secret at startup, the platform fails to start with a clear error — there's no silent fallback to the main config.

@@ -15,6 +15,15 @@ object DatrisEnvironment {
     /** Returns the per-request tenant environment if set, otherwise the global singleton. */
     def current: DatrisEnvironment = TenantContext.get().getOrElse(values)
 
+    /** Resolve which AIConfig to use for code-generation tasks (tap scripts, AI DQ,
+      * AI transformations, schema generation, NL→SQL). Falls back to the main aiConfig
+      * when no codegen config has been configured. Reads `.current` so multi-tenant
+      * resolution happens automatically per request. */
+    def aiConfigForCodegen: AIConfig = {
+        val env = current
+        env.codegenAiConfig.getOrElse(env.aiConfig)
+    }
+
     /** Build a tenant-specific environment by replacing the environment string
       * and all derived names, while keeping global infrastructure config. */
     def forEnvironment(env: String): DatrisEnvironment = {
@@ -37,6 +46,28 @@ object DatrisEnvironment {
             case _: Exception => values.aiConfig
         }
 
+        // Load tenant's codegen AI config from Vault at fixed path {env}/codegen.
+        // If the tenant secret doesn't exist, fall back to the global codegen config
+        // (which itself may be None — in which case aiConfigForCodegen returns the main aiConfig).
+        val tenantCodegenAiConfig: Option[AIConfig] = try {
+            val secret = ai.datris.util.SecretsUtil.getSecretMap(env + "/codegen")
+            secret.map { s =>
+                import scala.collection.JavaConverters._
+                val map = s.asScala
+                // Defaults inherit from the global codegen config when set, otherwise from the tenant's main AI config.
+                val defaults = values.codegenAiConfig.getOrElse(tenantAiConfig)
+                AIConfig(
+                    map.getOrElse("provider", defaults.provider),
+                    map.getOrElse("endpoint", defaults.endpoint),
+                    map.getOrElse("model", defaults.model),
+                    map.getOrElse("apiKey", defaults.apiKey),
+                    map.getOrElse("version", defaults.version)
+                )
+            }.orElse(values.codegenAiConfig)
+        } catch {
+            case _: Exception => values.codegenAiConfig
+        }
+
         values.copy(
             environment = env,
             fileNotifierQueue = env + "-file-notifier",
@@ -57,6 +88,7 @@ object DatrisEnvironment {
             chromaSecretName = env + "/chroma",
             pgvectorSecretName = env + "/pgvector",
             aiConfig = tenantAiConfig,
+            codegenAiConfig = tenantCodegenAiConfig,
             tapTableName = env + "-tap",
             tapLogTableName = env + "-tap-log",
             postgresDatabase = env
@@ -98,5 +130,6 @@ case class DatrisEnvironment(
                                   tapScriptTimeoutSeconds: Int = 300,
                                   dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
                                   dateTimezone: String = "UTC",
-                                  postgresDatabase: String = "datris"
+                                  postgresDatabase: String = "datris",
+                                  codegenAiConfig: Option[AIConfig] = None
                               )

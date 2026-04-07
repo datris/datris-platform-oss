@@ -26,12 +26,25 @@ object TapScriptGenerator {
           |  Pre-installed packages do not need to be listed. Use an empty list if none needed.
           |
           |The script must:
-          |- Handle errors gracefully with try/except
-          |- Include 30-second timeouts for network requests
-          |- Return an empty list on failure rather than raising exceptions
           |- Be completely self-contained
+          |- Include 30-second timeouts for network requests
           |- If authentication is needed, use os.environ.get('KEY_NAME') to access credentials
           |- NEVER hardcode API keys, tokens, or passwords in the script
+          |
+          |Error handling — IMPORTANT:
+          |- Let exceptions propagate from `fetch()`. Do NOT wrap the body of `fetch()` in `try/except: return []`. Do NOT swallow exceptions silently. The platform runs your script in a wrapper that captures the full traceback when `fetch()` raises, and the traceback is the only signal the user (and the AI diagnosis tool) have for debugging.
+          |- Only catch an exception if you can actually recover from it AND the recovery does something more useful than `return []`. For example, retrying once with backoff is fine; falling back to an alternate endpoint is fine; suppressing the error and returning empty is NOT fine.
+          |- If you must catch an exception in a partial-failure scenario (e.g. one row out of many fails to parse), use `print(f"...", file=sys.stderr)` to log the issue and `continue`. Never suppress without logging.
+          |- Never use bare `except:` or `except Exception: pass`. Catch the specific exception type you expect.
+          |
+          |HTTP requests — IMPORTANT:
+          |- Always set a `User-Agent` header on HTTP requests. Many sites (Wikipedia, GitHub raw, etc.) return 403 Forbidden to default Python `requests` user-agents. Use something like `headers={'User-Agent': 'Mozilla/5.0 (compatible; datris-tap/1.0)'}`.
+          |- Always check `resp.status_code` or call `resp.raise_for_status()` before parsing the body.
+          |
+          |Pandas — IMPORTANT (modern API):
+          |- The platform runs pandas 2.x. When parsing HTML you have already fetched (e.g. from `requests.get(...).text`), you MUST wrap the string in `io.StringIO`: `pd.read_html(io.StringIO(resp.text), ...)`. Passing the raw string directly was deprecated in pandas 2.1 and now raises a parser error because lxml treats it as a file path. Add `import io` at the top of the script when you do this.
+          |- The same rule applies to `pd.read_csv` and `pd.read_json` when given a string of content rather than a path or URL — wrap in `io.StringIO`.
+          |- When extracting integer columns from a yfinance/pandas DataFrame, be aware that any NaN in a numeric column promotes the entire column to `float64`. If you cast a value with `int(x)`, it will produce a Python int — but if you let JSON serialize a `numpy.float64` directly it will emit `2880264.0`. Always cast numeric values to Python `int`/`float`/`str` before adding to the record dict.
           |
           |Column naming for tabular results:
           |- When returning a list of dicts (CSV-shaped data), prefer snake_case keys composed of [a-z0-9_] only.
@@ -95,9 +108,10 @@ object TapScriptGenerator {
 
         val userPrompt = "Generate a Python script to: " + description + secretKeysHint
 
-        // Call AI to generate the script
-        val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt)
-        val extracted = AIUtil.extractText(responseText)
+        // Call AI to generate the script — use codegen config (falls back to main aiConfig when unset)
+        val codegenCfg = DatrisEnvironment.aiConfigForCodegen
+        val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt, codegenCfg)
+        val extracted = AIUtil.extractText(responseText, codegenCfg)
         val cleaned = cleanResponse(extracted)
 
         logger.info("TapScriptGenerator: AI response length: " + cleaned.length + " chars")
@@ -159,7 +173,7 @@ object TapScriptGenerator {
                        |
                        |Original task: $userPrompt""".stripMargin
                 try {
-                    val retryText = AIUtil.extractText(AIUtil.callAIWithSystem(retrySystemPrompt, retryUserPrompt))
+                    val retryText = AIUtil.extractText(AIUtil.callAIWithSystem(retrySystemPrompt, retryUserPrompt, codegenCfg), codegenCfg)
                     val retryCleaned = cleanResponse(retryText)
                     logger.info("TapScriptGenerator: retry response length: " + retryCleaned.length + " chars")
                     tryParseAsJsonObject(retryCleaned)

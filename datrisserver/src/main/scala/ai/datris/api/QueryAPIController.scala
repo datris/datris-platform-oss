@@ -135,8 +135,9 @@ class QueryAPIController {
             val userPrompt = "Table: " + schema + "." + table + "\nColumns: " + columnDefs + "\n\nQuestion: " + question
 
             logger.info("Generating SQL for question: " + question + ", table: " + schema + "." + table)
-            val aiResponse = AIUtil.callAIWithSystem(systemPrompt, userPrompt)
-            val sql = AIUtil.extractText(aiResponse).trim.stripPrefix("```sql").stripPrefix("```").stripSuffix("```").trim.stripSuffix(";")
+            val codegenCfg = DatrisEnvironment.aiConfigForCodegen
+            val aiResponse = AIUtil.callAIWithSystem(systemPrompt, userPrompt, codegenCfg)
+            val sql = AIUtil.extractText(aiResponse, codegenCfg).trim.stripPrefix("```sql").stripPrefix("```").stripSuffix("```").trim.stripSuffix(";")
 
             logger.info("Generated SQL: " + sql)
 

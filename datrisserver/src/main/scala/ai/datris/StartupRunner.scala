@@ -92,6 +92,18 @@ class StartupRunner extends ApplicationRunner {
     @Value("${ai.version:}")
     var aiVersion: String = _
 
+    // Optional: stronger model for code-generation tasks (tap scripts, AI DQ,
+    // AI transformations, schema generation, NL→SQL). When unset, codegen call
+    // sites use the same model as the main `ai.*` config — zero behavior change.
+    @Value("${ai.codegen.secretName:}")
+    var codegenSecretName: String = _
+
+    @Value("${ai.codegen.provider:}")
+    var codegenProvider: String = _
+
+    @Value("${ai.codegen.version:}")
+    var codegenVersion: String = _
+
     @Value("${secrets.embeddingSecretName:}")
     var embeddingSecretName: String = _
 
@@ -254,7 +266,31 @@ class StartupRunner extends ApplicationRunner {
             logger.info("AI provider configured: " + aiProvider + ", model: " + model + ", endpoint: " + endpoint)
             AIConfig(aiProvider, endpoint, model, apiKey, aiVersion)
         }
-        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, aiEnabled = aiEnabled))
+
+        // Optional codegen AI config — fail fast on misconfiguration.
+        val codegenAiConfig: Option[AIConfig] = {
+            if (codegenSecretName == null || codegenSecretName.isEmpty) {
+                None
+            } else {
+                val cgProvider = if (codegenProvider != null && codegenProvider.nonEmpty) codegenProvider else aiProvider
+                if (!Seq("anthropic", "openai", "ollama").contains(cgProvider.toLowerCase))
+                    throw new DatrisException("Unsupported AI codegen provider: '" + cgProvider + "'. Valid values are: anthropic, openai, ollama")
+                val cgVersion = if (codegenVersion != null && codegenVersion.nonEmpty) codegenVersion else aiVersion
+                val secret = SecretsUtil.getSecretMap(codegenSecretName)
+                    .getOrElse(throw new DatrisException("AI codegen secret not found in Vault, secret name: " + codegenSecretName + ". Create it with: vault kv put secret/" + codegenSecretName + " endpoint=<url> model=<model> apiKey=<key>"))
+                val endpoint = secret.get("endpoint")
+                if (endpoint == null)
+                    throw new DatrisException("'endpoint' not found in AI codegen secret: " + codegenSecretName)
+                val model = secret.get("model")
+                if (model == null)
+                    throw new DatrisException("'model' not found in AI codegen secret: " + codegenSecretName)
+                val apiKey = Option(secret.get("apiKey")).getOrElse("")
+                logger.info("AI codegen configured: " + cgProvider + ", model: " + model + ", endpoint: " + endpoint)
+                Some(AIConfig(cgProvider, endpoint, model, apiKey, cgVersion))
+            }
+        }
+
+        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, codegenAiConfig = codegenAiConfig, aiEnabled = aiEnabled))
     }
 
     private def initKafkaConsumerRunner(): Unit = {

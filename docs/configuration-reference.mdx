@@ -156,6 +156,9 @@ PostgreSQL connection details (`username`, `password`, `jdbcUrl`) are stored in 
 | `ai.provider` | `anthropic` | AI provider — `anthropic`, `openai`, or `ollama` |
 | `ai.aiSecretName` | `oss/anthropic` | Vault secret name containing `endpoint`, `model`, and `apiKey` |
 | `ai.version` | `2023-06-01` | API version sent to the provider. For Anthropic this is the value of the `anthropic-version` request header. Other providers can reuse this field for their own version headers. |
+| `ai.codegen.secretName` | `oss/codegen` | Vault secret name for the model used for code-generation tasks (tap scripts, AI DQ, AI transformations, schema generation, NL→SQL). Seeded automatically by `docker/vault-init.sh` based on `AI_PROVIDER` — Anthropic gets `claude-opus-4-6`, OpenAI gets `gpt-5.4`, Ollama reuses the main model. Remove this block to fall back to the main `ai.*` model. |
+| `ai.codegen.provider` | _inherits `ai.provider`_ | Optional codegen provider override (`anthropic`, `openai`, `ollama`). |
+| `ai.codegen.version` | _inherits `ai.version`_ | Optional codegen API version override. |
 
 All AI calls (`callAI`, `callAIWithSystem`, `callAIWithMessages`) share a unified retry helper that automatically retries on transient `429` (rate limited), `503` (service unavailable), and `529` (overloaded) responses with linear backoff (5s, 10s, 15s, 20s, 25s) for up to 5 attempts. This applies uniformly across all configured providers.
 

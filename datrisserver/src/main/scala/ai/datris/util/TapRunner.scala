@@ -141,8 +141,15 @@ object TapRunner {
         val jsonArray = com.google.gson.JsonParser.parseString(json).getAsJsonArray
         if (jsonArray.size() == 0) return ""
 
-        val firstObj = jsonArray.get(0).getAsJsonObject
-        val columns = firstObj.keySet().asScala.toList
+        // Compute the union of keys across ALL records, preserving first-seen order.
+        // Some sources (e.g., yfinance financial data) emit records with variable shape,
+        // and using only the first record's keys silently drops columns that appear later.
+        val seen = scala.collection.mutable.LinkedHashSet[String]()
+        (0 until jsonArray.size()).foreach { i =>
+            val obj = jsonArray.get(i).getAsJsonObject
+            obj.keySet().asScala.foreach(seen.add)
+        }
+        val columns = seen.toList
         val header = columns.mkString(delimiter)
 
         val rows = (0 until jsonArray.size()).map(i => {

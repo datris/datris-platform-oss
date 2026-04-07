@@ -11,6 +11,32 @@ import org.quartz.CronExpression
 import scala.collection.JavaConverters._
 
 object PipelineValidatorUtil {
+    /** Substitute well-known placeholder values that AISchemaUtil templates emit
+      * (DATABASE_NAME, SCHEMA_NAME) with sensible runtime defaults from DatrisEnvironment.
+      * Runs before validate so configs that came from auto-generation are immediately usable.
+      *
+      * - dbName: null/empty/"DATABASE_NAME" → DatrisEnvironment.current.postgresDatabase
+      * - schema: "SCHEMA_NAME" → "public"
+      *
+      * Table name is intentionally left alone — if it's still "TABLE_NAME" the user
+      * forgot to fill it in and validation should reject it.
+      */
+    def applyDefaults(config: PipelineConfig): PipelineConfig = {
+        if (config == null || config.destination == null || config.destination.database == null)
+            return config
+
+        val db = config.destination.database
+        val needsDbName = db.dbName == null || db.dbName.isEmpty || db.dbName == "DATABASE_NAME"
+        val needsSchema = db.schema == "SCHEMA_NAME"
+        if (!needsDbName && !needsSchema) return config
+
+        val newDb = db.copy(
+            dbName = if (needsDbName) DatrisEnvironment.current.postgresDatabase else db.dbName,
+            schema = if (needsSchema) "public" else db.schema
+        )
+        config.copy(destination = config.destination.copy(database = newDb))
+    }
+
     def validate(config: PipelineConfig): Unit = {
         if (config.name == null)
             throw new DatrisException("pipeline 'name' is not defined in the JSON")

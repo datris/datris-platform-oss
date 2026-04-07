@@ -3,7 +3,8 @@
     <h1 class="page-title">{{ isEditMode ? 'Edit Tap' : 'Create Tap' }}</h1>
   </div>
 
-  <!-- Step indicator -->
+  <!-- Step indicator. The 5th dot only exists once a pipeline is linked,
+       since step 5 (Run the tap) is only meaningful in that case. -->
   <div class="steps">
     <span class="step-dot" [class.active]="step >= 1" [class.current]="step === 1">1</span>
     <span class="step-line" [class.active]="step >= 2"></span>
@@ -12,6 +13,10 @@
     <span class="step-dot" [class.active]="step >= 3" [class.current]="step === 3">3</span>
     <span class="step-line" [class.active]="step >= 4"></span>
     <span class="step-dot" [class.active]="step >= 4" [class.current]="step === 4">4</span>
+    <ng-container *ngIf="targetPipeline">
+      <span class="step-line" [class.active]="step >= 5"></span>
+      <span class="step-dot" [class.active]="step >= 5" [class.current]="step === 5">5</span>
+    </ng-container>
   </div>
 
   <div class="form-card">
@@ -70,7 +75,7 @@
 
       <div class="form-group">
         <label class="form-label">Instruction</label>
-        <textarea class="form-textarea" [(ngModel)]="description" rows="10"
+        <textarea class="form-textarea" [(ngModel)]="description" rows="5"
                   placeholder="e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed"></textarea>
       </div>
 
@@ -148,7 +153,7 @@
       <div class="form-group">
         <label class="form-label">Instruction</label>
         <div class="instruction-row">
-          <textarea class="form-textarea" [(ngModel)]="description" rows="8"></textarea>
+          <textarea class="form-textarea" [(ngModel)]="description" rows="5"></textarea>
           <button class="generate-btn regen-btn" (click)="regenerateScript()" [disabled]="generating || !description.trim()">
             <span class="material-icons">{{ generating ? 'hourglass_empty' : 'auto_awesome' }}</span>
             {{ generating ? 'Regenerating...' : 'Regenerate' }}
@@ -264,6 +269,7 @@
           <div class="preset-row">
             <button class="preset-btn" [class.active]="cronPreset === 'hourly'" (click)="setCronPreset('hourly')">Every Hour</button>
             <button class="preset-btn" [class.active]="cronPreset === 'daily'" (click)="setCronPreset('daily')">Daily (Midnight)</button>
+            <button class="preset-btn" [class.active]="cronPreset === 'weekdays'" (click)="setCronPreset('weekdays')">Weekdays (Midnight)</button>
             <button class="preset-btn" [class.active]="cronPreset === 'weekly'" (click)="setCronPreset('weekly')">Weekly (Monday)</button>
             <button class="preset-btn" [class.active]="cronPreset === 'custom'" (click)="setCronPreset('custom')">Custom</button>
           </div>
@@ -283,12 +289,14 @@
         <div class="form-group">
           <label class="form-label">CRON Expression (Quartz format)</label>
           <input class="form-input cron-input" [(ngModel)]="cronExpression" placeholder="0 0 * * * ?">
+          <div class="cron-validation-error" *ngIf="cronError()">{{ cronError() }}</div>
+          <div class="cron-validation-ok" *ngIf="cronExpression.trim() && !cronError()">{{ describeCron(cronExpression) }}</div>
         </div>
 
         <div class="form-group">
           <label class="toggle-row">
             <input type="checkbox" [(ngModel)]="enabled">
-            <span>Enabled</span>
+            <span>Schedule is active (uncheck to pause without losing the schedule)</span>
           </label>
         </div>
       </div>
@@ -309,6 +317,145 @@
         <div class="review-row"><span class="review-label">Schedule</span><span class="review-value">{{ useSchedule ? cronExpression + ' — ' + describeCron(cronExpression) : 'None (manual only)' }}</span></div>
         <div class="review-row"><span class="review-label">Enabled</span><span class="review-value">{{ enabled ? 'Yes' : 'No' }}</span></div>
       </div>
+
+      <!-- Pipeline link -->
+      <div class="pipeline-link-section">
+        <h3 class="section-subtitle">Pipeline</h3>
+        <p class="section-help">Link this tap to a pipeline so its output flows through validation, transformation, and into your destination automatically.</p>
+
+        <div *ngIf="!targetPipeline" class="pipeline-buttons">
+          <button class="secondary-btn pipeline-btn" (click)="openAttachModal()" [disabled]="testColumns.length === 0">
+            <span class="material-icons">link</span>
+            Attach to Pipeline
+          </button>
+          <button class="secondary-btn pipeline-btn" (click)="openGenerateModal()" [disabled]="testColumns.length === 0">
+            <span class="material-icons">add_circle</span>
+            Generate Pipeline
+          </button>
+        </div>
+        <div *ngIf="testColumns.length === 0" class="pipeline-hint">Run a successful test in step 3 first — pipeline linking needs the tap's output columns.</div>
+
+        <div *ngIf="targetPipeline" class="linked-pipeline">
+          <span class="material-icons">check_circle</span>
+          <span>Linked to: <strong>{{ targetPipeline }}</strong></span>
+          <button class="link-btn" (click)="detachPipeline()">Detach</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 5: Run the Tap (only when a pipeline is linked) -->
+    <div *ngIf="step === 5">
+      <h2 class="step-title">Run the Tap</h2>
+      <p class="step-desc">Your tap is saved and linked to <strong>{{ targetPipeline }}</strong>. You can run it now to push data through the pipeline, or skip and run it later from the Taps tab.</p>
+
+      <div class="review-card">
+        <div class="review-row">
+          <span class="review-label">Tap</span>
+          <span class="review-value">{{ tapName }}</span>
+        </div>
+        <div class="review-row">
+          <span class="review-label">Pipeline</span>
+          <span class="review-value">{{ targetPipeline }}</span>
+        </div>
+        <div class="review-row">
+          <span class="review-label">What happens</span>
+          <span class="review-value">The tap script runs, and the records it returns are streamed into the linked pipeline. The pipeline applies any data quality / transformation rules and writes to its destination.</span>
+        </div>
+      </div>
+
+      <div class="testing-indicator" *ngIf="runningTap">
+        <div class="spinner"></div>
+        <span>Running the tap and pushing data to the pipeline...</span>
+      </div>
+
+      <div class="error-box" *ngIf="runError">{{ runError }}</div>
+    </div>
+
+    <!-- Modal A: Attach to Pipeline -->
+    <div class="modal-overlay" *ngIf="showAttachModal" (click)="closeAttachModal()">
+      <div class="modal-card" (click)="$event.stopPropagation()">
+        <div class="modal-header">
+          <h2 class="modal-title">Attach to Pipeline</h2>
+          <button class="modal-close" (click)="closeAttachModal()"><span class="material-icons">close</span></button>
+        </div>
+        <div class="modal-body">
+          <div *ngIf="loadingPipelines" class="modal-loading">Loading pipelines...</div>
+          <div *ngIf="!loadingPipelines && availablePipelines.length === 0" class="modal-empty">No pipelines found. Create one with the Generate Pipeline button instead.</div>
+          <div *ngIf="!loadingPipelines && availablePipelines.length > 0">
+            <label class="form-label">Pick a pipeline</label>
+            <select class="form-input" [(ngModel)]="selectedPipelineName" (change)="onPipelineSelected()">
+              <option value="">— Select —</option>
+              <option *ngFor="let p of availablePipelines" [value]="p.name">{{ p.name }}</option>
+            </select>
+
+            <div *ngIf="columnMatchResult" class="column-match-block">
+              <div *ngIf="columnMatchResult.match" class="column-match">
+                <span class="material-icons">check_circle</span>
+                Columns match exactly. Ready to attach.
+              </div>
+              <div *ngIf="!columnMatchResult.match" class="column-mismatch">
+                <div class="column-mismatch-header">
+                  <span class="material-icons">warning</span>
+                  Columns do not match — cannot attach.
+                </div>
+                <div *ngIf="columnMatchResult.missing.length > 0" class="column-mismatch-list">
+                  <div class="column-mismatch-label">Tap is missing these pipeline columns:</div>
+                  <div class="column-chips">
+                    <span class="column-chip missing" *ngFor="let c of columnMatchResult.missing">{{ c }}</span>
+                  </div>
+                </div>
+                <div *ngIf="columnMatchResult.extra.length > 0" class="column-mismatch-list">
+                  <div class="column-mismatch-label">Tap has extra columns the pipeline doesn't expect:</div>
+                  <div class="column-chips">
+                    <span class="column-chip extra" *ngFor="let c of columnMatchResult.extra">{{ c }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" (click)="closeAttachModal()">Cancel</button>
+          <button class="primary-btn" (click)="confirmAttach()"
+                  [disabled]="!columnMatchResult || !columnMatchResult.match">Attach</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal B: Generate Pipeline -->
+    <div class="modal-overlay" *ngIf="showGenerateModal" (click)="closeGenerateModal()">
+      <div class="modal-card" (click)="$event.stopPropagation()">
+        <div class="modal-header">
+          <h2 class="modal-title">Generate Pipeline from Tap</h2>
+          <button class="modal-close" (click)="closeGenerateModal()" [disabled]="generatingPipeline"><span class="material-icons">close</span></button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">Pipeline name</label>
+            <input class="form-input" [(ngModel)]="generatedPipelineName" [disabled]="generatingPipeline">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Source</label>
+            <div class="generate-summary">{{ (testDataType || 'json').toUpperCase() }} from tap output</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Destination</label>
+            <div class="generate-summary">{{ destinationDescription() }}</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Columns ({{ testColumns.length }})</label>
+            <div class="generate-summary generate-columns">{{ testColumns.join(', ') }}</div>
+            <div class="generate-help">All columns will be created as <code>string</code> for safe ingestion. You can promote individual columns to richer types in the pipeline editor once you're confident about the data shape.</div>
+          </div>
+          <div class="error-box" *ngIf="generateError">{{ generateError }}</div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" (click)="closeGenerateModal()" [disabled]="generatingPipeline">Cancel</button>
+          <button class="primary-btn" (click)="confirmGenerate()" [disabled]="generatingPipeline || !generatedPipelineName.trim()">
+            {{ generatingPipeline ? 'Generating...' : 'Create Pipeline' }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Error -->
@@ -316,13 +463,20 @@
 
     <!-- Navigation -->
     <div class="nav-buttons">
-      <button class="secondary-btn" *ngIf="step > 1" (click)="prevStep()" [disabled]="isBusy()">Back</button>
+      <button class="secondary-btn" *ngIf="step > 1 && step < 5" (click)="prevStep()" [disabled]="isBusy()">Back</button>
       <button class="secondary-btn" routerLink="/taps" *ngIf="step === 1">Cancel</button>
       <div class="spacer"></div>
-      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 2 && scriptDirty && !testPassed())">Next</button>
+      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
       <button class="primary-btn" *ngIf="step === 4" (click)="save()" [disabled]="saving || isBusy()">
-        {{ saving ? 'Saving...' : 'Save Tap' }}
+        {{ saving ? 'Saving...' : (targetPipeline ? 'Save Tap & Continue' : 'Save Tap') }}
       </button>
+      <ng-container *ngIf="step === 5">
+        <button class="secondary-btn" (click)="finishWithoutRun()" [disabled]="runningTap">Done</button>
+        <button class="primary-btn" (click)="runTapNow()" [disabled]="runningTap">
+          <span class="material-icons">play_arrow</span>
+          {{ runningTap ? 'Running...' : 'Run the Tap Now' }}
+        </button>
+      </ng-container>
     </div>
   </div>
 </div>

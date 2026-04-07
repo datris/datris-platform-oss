@@ -221,6 +221,9 @@ class TapAPIController {
                   |- Schema name (default to "public" for postgres, or have the script call /api/v1/metadata/postgres/schemas to find it)
                   |- Whether a table exists or what columns it has (the script will call /api/v1/metadata/postgres/columns at runtime to discover the schema)
                   |- Exact column types or names — the script can introspect them
+                  |- The exact table or collection name when the user doesn't name one (the script can list tables via /api/v1/metadata/postgres/tables and pick the one with a matching column like 'ticker' or 'symbol')
+                  |
+                  |When the user says "the data is on Datris" but doesn't name the table, do NOT ask for it and do NOT ask "should the script look for a column named X?" — just confidently state that the script will discover the right table at runtime by listing tables and matching on a likely column name, write that into the description draft, and move on to the next missing piece (time range, filters, output fields, external API choice). Asking the user to confirm a discovery strategy is still asking — don't do it.
                   |
                   |Only ask the user for things the platform CANNOT discover: which external API to use, time ranges, filters, business logic, or credentials. When the user mentions a Datris table by name, just confirm and write the instruction — the generated script will handle metadata discovery on its own.
                   |
@@ -240,11 +243,18 @@ class TapAPIController {
                   |After EACH user message, return JSON with three fields:
                   |{
                   |  "reply": "your next message or question",
-                  |  "description": "the current best draft of the tap instruction, written as a clear technical directive for code generation",
+                  |  "description": "a plain-English statement of what data the user wants and where it comes from — written for the user to read, NOT for code generation. No URLs, no API paths, no Python method names, no implementation detail.",
                   |  "suggestedEnvVars": ["ENV_VAR_NAME_1", "ENV_VAR_NAME_2"]
                   |}
                   |
-                  |The description should always reflect everything known so far. If the user hasn't provided enough info yet, the description can be partial. Never leave description empty after the first user message — always provide your best guess. When the user references a Datris table/collection, the description should explicitly say so (e.g., "Query the consumer_discretionary_earnings table via /api/v1/query/postgres to get the ticker list, then fetch...").
+                  |The description should always reflect everything known so far. If the user hasn't provided enough info yet, the description can be partial. Never leave description empty after the first user message — always provide your best guess.
+                  |
+                  |Write the description as plain English, the way you'd explain the task to a colleague. NEVER include:
+                  |- API URLs or paths (e.g., /api/v1/metadata/postgres/tables)
+                  |- HTTP verbs (POST, GET)
+                  |- Python library method names (e.g., ticker.earnings_history)
+                  |- File paths or environment variable names
+                  |The script generator already knows how to call Datris APIs and which Python libraries to use — your job is to capture intent, not implementation. When the user references a Datris table/collection, name it in plain English (e.g., "Get the ticker list from the consumer_discretionary_earnings table on Datris, then fetch quarterly earnings for each ticker from yfinance."). When the table is unknown, say so plainly (e.g., "Look up the ticker list from a table on Datris, then fetch quarterly earnings for each ticker from yfinance.").
                   |
                   |suggestedEnvVars should list any environment variable names the script will need that are NOT auto-injected by Datris (so do NOT include DATRIS_POSTGRES_DATABASE, DATRIS_MONGODB_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT). For example, if the user picks Alpha Vantage, suggest ["ALPHA_VANTAGE_API_KEY"]. For free sources with no auth, return an empty array []. Always return the field, even when empty.
                   |
@@ -377,8 +387,9 @@ class TapAPIController {
                    |
                    |Fix the script based on the diagnosis. Return the complete corrected script.""".stripMargin
 
-            val responseText = AIUtil.callAIWithSystem(systemPrompt, userPrompt)
-            val extracted = AIUtil.extractText(responseText)
+            val codegenCfg = DatrisEnvironment.aiConfigForCodegen
+            val responseText = AIUtil.callAIWithSystem(systemPrompt, userPrompt, codegenCfg)
+            val extracted = AIUtil.extractText(responseText, codegenCfg)
             val cleaned = cleanAIResponse(extracted)
 
             // Extract JSON from the response — AI may include text before/after the JSON

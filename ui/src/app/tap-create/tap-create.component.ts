@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy, ViewChild, ElementRef } from '@angular/co
 import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { TapService } from '../tap.service';
+import { PipelineService } from '../pipeline.service';
 import { SecretsService } from '../secrets.service';
 
 @Component({
@@ -59,13 +60,31 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   generatingCron = false;
   enabled = true;
 
-  // Step 5 — Save
+  // Step 4 — Pipeline link (attach to existing or generate new)
+  targetPipeline = '';
+  showAttachModal = false;
+  loadingPipelines = false;
+  availablePipelines: any[] = [];
+  selectedPipelineName = '';
+  columnMatchResult: { match: boolean; missing: string[]; extra: string[] } | null = null;
+
+  showGenerateModal = false;
+  generatedPipelineName = '';
+  generatingPipeline = false;
+  generatedFields: Array<{name: string, type: string}> = [];
+  generateError = '';
+
+  // Save
   saving = false;
+
+  // Step 5 — Run (only reachable when targetPipeline is set)
+  runningTap = false;
+  runError = '';
 
   // Active subscription for cancellation
   private activeSub: Subscription | null = null;
 
-  constructor(private tapService: TapService, private secretsService: SecretsService, private router: Router, private route: ActivatedRoute) { }
+  constructor(private tapService: TapService, private pipelineService: PipelineService, private secretsService: SecretsService, private router: Router, private route: ActivatedRoute) { }
 
   ngOnInit(): void {
     const name = this.route.snapshot.paramMap.get('name');
@@ -87,6 +106,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           }
           this.script = tap.script || '';
           this.secretName = tap.secretName || '';
+          this.targetPipeline = tap.targetPipeline || '';
         },
         error: () => { this.error = 'Failed to load tap'; }
       });
@@ -133,6 +153,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       this.error = 'Test the script successfully before continuing';
       return;
     }
+    if (this.step === 3 && this.useSchedule) {
+      const cronErr = this.validateCron(this.cronExpression);
+      if (cronErr) { this.error = cronErr; return; }
+    }
     this.step++;
   }
 
@@ -155,8 +179,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         if (result.description) this.description = result.description;
         if (Array.isArray(result.suggestedEnvVars)) this.suggestedEnvVars = result.suggestedEnvVars;
         this.brainstorming = false;
-        // Return focus to the input so the user can keep chatting without grabbing the mouse
-        setTimeout(() => this.brainstormInputEl?.nativeElement.focus(), 0);
+        // Return focus to the input so the user can keep chatting without grabbing the mouse.
+        // Use requestAnimationFrame so Angular has time to flip [disabled]="brainstorming"
+        // back to false — focus() against a still-disabled input silently no-ops.
+        requestAnimationFrame(() => this.brainstormInputEl?.nativeElement.focus());
       },
       error: (err) => {
         this.error = 'Brainstorm failed: ' + (err.error || err.message);
@@ -370,9 +396,58 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     switch (preset) {
       case 'hourly': this.cronExpression = '0 0 * * * ?'; break;
       case 'daily': this.cronExpression = '0 0 0 * * ?'; break;
+      case 'weekdays': this.cronExpression = '0 0 0 ? * MON-FRI'; break;
       case 'weekly': this.cronExpression = '0 0 0 ? * MON'; break;
       case 'custom': this.cronExpression = ''; break;
     }
+  }
+
+  /**
+   * Validate a Quartz CRON expression. Returns null if valid, or an error string.
+   * Quartz format: seconds minutes hours day-of-month month day-of-week [year]
+   * - 6 or 7 space-separated fields
+   * - day-of-month and day-of-week: exactly one must be '?' (Quartz disallows specifying both)
+   * - Each field must contain only allowed characters and (where applicable) numeric values in range
+   */
+  validateCron(expr: string): string | null {
+    if (!expr || !expr.trim()) return 'CRON expression is required';
+    const parts = expr.trim().split(/\s+/);
+    if (parts.length < 6 || parts.length > 7) return 'CRON must have 6 or 7 fields (got ' + parts.length + ')';
+
+    const [sec, min, hour, dom, mon, dow] = parts;
+
+    // Quartz: exactly one of day-of-month / day-of-week must be '?'
+    const domQ = dom === '?';
+    const dowQ = dow === '?';
+    if (domQ === dowQ) return "Exactly one of day-of-month or day-of-week must be '?' (Quartz rule)";
+
+    // Per-field range checks (only for plain numeric values; allow * , - / ? L W # and named values)
+    const ranges: Array<[string, string, number, number]> = [
+      ['second', sec, 0, 59],
+      ['minute', min, 0, 59],
+      ['hour', hour, 0, 23],
+      ['day-of-month', dom, 1, 31],
+      ['month', mon, 1, 12],
+      ['day-of-week', dow, 1, 7],
+    ];
+    const allowedChars = /^[0-9*?,\-/LW#A-Z]+$/i;
+    for (const [name, val, lo, hi] of ranges) {
+      if (!allowedChars.test(val)) return "Invalid characters in " + name + " field: '" + val + "'";
+      // Extract any plain integers and bounds-check them
+      const nums = val.match(/\d+/g);
+      if (nums) {
+        for (const n of nums) {
+          const v = parseInt(n, 10);
+          if (v < lo || v > hi) return name + " value " + v + " out of range (" + lo + "-" + hi + ")";
+        }
+      }
+    }
+    return null;
+  }
+
+  cronError(): string {
+    if (!this.useSchedule) return '';
+    return this.validateCron(this.cronExpression) || '';
   }
 
   describeCron(expr: string): string {
@@ -459,6 +534,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       scriptPath: this.scriptPath,
       packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
       secretName: this.secretName || null,
+      targetPipeline: this.targetPipeline || null,
       cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
       enabled: this.enabled,
       lastTestRunDataType: this.testDataType || null,
@@ -467,11 +543,198 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     };
 
     this.tapService.createOrUpdateTap(config).subscribe({
-      next: () => this.router.navigate(['/taps']),
+      next: () => {
+        this.saving = false;
+        // If a pipeline is linked, advance to step 5 so the user can optionally
+        // run the tap and push data to the pipeline before leaving. Otherwise
+        // there's nothing meaningful to do on step 5 — go straight to /taps.
+        if (this.targetPipeline) {
+          this.step = 5;
+        } else {
+          this.router.navigate(['/taps']);
+        }
+      },
       error: (err) => {
         this.error = 'Save failed: ' + (err.error || err.message);
         this.saving = false;
       }
     });
   }
+
+  // ---------- Step 5 — Run the tap ----------
+
+  runTapNow(): void {
+    if (this.runningTap) return;
+    this.runError = '';
+    this.runningTap = true;
+    this.tapService.runTap(this.tapName.trim(), true).subscribe({
+      next: () => {
+        this.runningTap = false;
+        this.router.navigate(['/taps']);
+      },
+      error: (err) => {
+        this.runError = 'Run failed: ' + (err.error || err.message || 'unknown');
+        this.runningTap = false;
+      }
+    });
+  }
+
+  finishWithoutRun(): void {
+    this.router.navigate(['/taps']);
+  }
+
+  // ---------- Pipeline link: Attach to existing ----------
+
+  openAttachModal(): void {
+    this.error = '';
+    this.selectedPipelineName = '';
+    this.columnMatchResult = null;
+    this.showAttachModal = true;
+    this.loadingPipelines = true;
+    this.pipelineService.getPipelines().subscribe({
+      next: (pipelines) => {
+        this.availablePipelines = pipelines || [];
+        this.loadingPipelines = false;
+      },
+      error: () => {
+        this.error = 'Failed to load pipelines';
+        this.loadingPipelines = false;
+      }
+    });
+  }
+
+  closeAttachModal(): void {
+    this.showAttachModal = false;
+  }
+
+  onPipelineSelected(): void {
+    const pipeline = this.availablePipelines.find(p => p.name === this.selectedPipelineName);
+    if (!pipeline) { this.columnMatchResult = null; return; }
+
+    const pipelineFields: string[] = (pipeline.source && pipeline.source.schemaProperties && pipeline.source.schemaProperties.fields || [])
+      .map((f: any) => f.name);
+    const tapCols = this.testColumns || [];
+    const missing = pipelineFields.filter(f => !tapCols.includes(f));
+    const extra = tapCols.filter(c => !pipelineFields.includes(c));
+    this.columnMatchResult = {
+      match: missing.length === 0 && extra.length === 0,
+      missing,
+      extra
+    };
+  }
+
+  confirmAttach(): void {
+    if (!this.columnMatchResult || !this.columnMatchResult.match) return;
+    this.targetPipeline = this.selectedPipelineName;
+    this.showAttachModal = false;
+  }
+
+  detachPipeline(): void {
+    this.targetPipeline = '';
+  }
+
+  // ---------- Pipeline link: Generate new ----------
+
+  openGenerateModal(): void {
+    this.error = '';
+    this.generateError = '';
+    this.generatedPipelineName = this.derivePipelineName(this.tapName);
+    this.generatedFields = [];
+    this.showGenerateModal = true;
+  }
+
+  closeGenerateModal(): void {
+    if (this.generatingPipeline) return;
+    this.showGenerateModal = false;
+  }
+
+  derivePipelineName(tapName: string): string {
+    let base = (tapName || '').trim().toLowerCase();
+    if (base.endsWith('-tap')) base = base.substring(0, base.length - 4);
+    return base;
+  }
+
+  /** Map dataType → destination table name (SQL-safe: dashes → underscores). */
+  private derivedTableName(): string {
+    return this.generatedPipelineName.replace(/-/g, '_');
+  }
+
+  destinationDescription(): string {
+    const t = (this.testDataType || 'json').toLowerCase();
+    const name = this.derivedTableName();
+    if (t === 'csv') return 'Postgres → public.' + name;
+    return 'MongoDB → collection ' + name;
+  }
+
+  confirmGenerate(): void {
+    if (this.generatingPipeline) return;
+    this.generateError = '';
+    this.generatingPipeline = true;
+
+    // All-string schema by default. Tap output shape is unstable across runs
+    // (yfinance NaN-contamination promotes int columns to float, REST APIs
+    // change types between calls, etc.) — inferring narrow types from a small
+    // test sample produces hard-to-debug COPY failures in production. Storing
+    // everything as text guarantees the data lands identical to what the tap
+    // returned. Users can promote individual columns to richer types in the
+    // pipeline editor once they're confident about the data shape.
+    const fields = (this.testColumns || []).map(name => ({ name, type: 'string' }));
+    this.generatedFields = fields;
+    const config = this.buildPipelineConfigFromTap(fields);
+    this.pipelineService.createPipeline(config).subscribe({
+      next: () => {
+        this.targetPipeline = this.generatedPipelineName;
+        this.generatingPipeline = false;
+        this.showGenerateModal = false;
+      },
+      error: (err) => {
+        this.generateError = 'Pipeline create failed: ' + (err.error || err.message || 'unknown');
+        this.generatingPipeline = false;
+      }
+    });
+  }
+
+  private buildPipelineConfigFromTap(fields: Array<{name: string, type: string}>): any {
+    const dataType = (this.testDataType || 'json').toLowerCase();
+    const tableName = this.derivedTableName();
+
+    const source: any = {
+      schemaProperties: {
+        fields: fields
+      },
+      fileAttributes: {} as any
+    };
+
+    if (dataType === 'csv') {
+      source.fileAttributes.csvAttributes = { delimiter: ',', header: true, encoding: 'UTF-8' };
+    } else if (dataType === 'xml') {
+      source.fileAttributes.xmlAttributes = { everyRowContainsObject: false, encoding: 'UTF-8' };
+    } else {
+      // json or text — store as json document
+      source.fileAttributes.jsonAttributes = { everyRowContainsObject: false, encoding: 'UTF-8' };
+    }
+
+    const destination: any = { database: {} };
+    if (dataType === 'csv') {
+      destination.database = {
+        dbName: 'DATABASE_NAME',
+        schema: 'public',
+        table: tableName,
+        usePostgres: true
+      };
+    } else {
+      destination.database = {
+        dbName: 'DATABASE_NAME',
+        table: tableName,
+        useMongoDB: true
+      };
+    }
+
+    return {
+      name: this.generatedPipelineName,
+      source,
+      destination
+    };
+  }
+
 }

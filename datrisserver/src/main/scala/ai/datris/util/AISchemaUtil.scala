@@ -32,7 +32,7 @@ object AISchemaUtil {
     }
 
     def buildCsvConfig(pipeline: String, fileContent: String, delimiter: String, header: Boolean): String = {
-        val aiConfig = DatrisEnvironment.current.aiConfig
+        val aiConfig = DatrisEnvironment.aiConfigForCodegen
         if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
             throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
 
@@ -41,8 +41,8 @@ object AISchemaUtil {
         val prompt = buildCsvPrompt(truncatedContent, myDelimiter)
 
         logger.info("Calling AI API for CSV schema generation, pipeline: " + pipeline + ", provider: " + aiConfig.provider)
-        val responseText = AIUtil.callAI(prompt)
-        val text = AIUtil.extractText(responseText)
+        val responseText = AIUtil.callAI(prompt, aiConfig)
+        val text = AIUtil.extractText(responseText, aiConfig)
         val fieldsJson = extractJsonArray(text)
 
         buildConfig(
@@ -108,7 +108,7 @@ object AISchemaUtil {
     }
 
     def generateJsonSchema(sampleData: String): String = {
-        val aiConfig = DatrisEnvironment.current.aiConfig
+        val aiConfig = DatrisEnvironment.aiConfigForCodegen
         if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
             throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
 
@@ -123,13 +123,13 @@ object AISchemaUtil {
                |$truncated""".stripMargin
 
         logger.info("Calling AI for JSON Schema generation")
-        val responseText = AIUtil.callAI(prompt)
-        val text = AIUtil.extractText(responseText)
+        val responseText = AIUtil.callAI(prompt, aiConfig)
+        val text = AIUtil.extractText(responseText, aiConfig)
         extractJsonObject(text)
     }
 
     def generateXsdSchema(sampleData: String): String = {
-        val aiConfig = DatrisEnvironment.current.aiConfig
+        val aiConfig = DatrisEnvironment.aiConfigForCodegen
         if (aiConfig == null || aiConfig.endpoint == null || aiConfig.endpoint.isEmpty)
             throw new DatrisException("AI configuration is not set. Configure 'ai.endpoint' and 'ai.model' in application.yaml")
 
@@ -143,8 +143,8 @@ object AISchemaUtil {
                |$truncated""".stripMargin
 
         logger.info("Calling AI for XSD generation")
-        val responseText = AIUtil.callAI(prompt)
-        val text = AIUtil.extractText(responseText)
+        val responseText = AIUtil.callAI(prompt, aiConfig)
+        val text = AIUtil.extractText(responseText, aiConfig)
         extractXml(text)
     }
 

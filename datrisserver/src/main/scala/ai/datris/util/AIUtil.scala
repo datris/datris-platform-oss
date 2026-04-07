@@ -115,8 +115,10 @@ object AIUtil {
         Math.max(batchSize, 1)
     }
 
-    def callAIWithSystem(systemPrompt: String, userPrompt: String): String = {
-        val aiConfig = DatrisEnvironment.current.aiConfig
+    def callAIWithSystem(systemPrompt: String, userPrompt: String): String =
+        callAIWithSystem(systemPrompt, userPrompt, DatrisEnvironment.current.aiConfig)
+
+    def callAIWithSystem(systemPrompt: String, userPrompt: String, aiConfig: AIConfig): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
@@ -150,8 +152,10 @@ object AIUtil {
         executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
     }
 
-    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)]): String = {
-        val aiConfig = DatrisEnvironment.current.aiConfig
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)]): String =
+        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig)
+
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
@@ -189,8 +193,10 @@ object AIUtil {
         executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
     }
 
-    def callAI(prompt: String): String = {
-        val aiConfig = DatrisEnvironment.current.aiConfig
+    def callAI(prompt: String): String =
+        callAI(prompt, DatrisEnvironment.current.aiConfig)
+
+    def callAI(prompt: String, aiConfig: AIConfig): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
@@ -228,8 +234,10 @@ object AIUtil {
         executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
     }
 
-    def extractText(apiResponse: String): String = {
-        val aiConfig = DatrisEnvironment.current.aiConfig
+    def extractText(apiResponse: String): String =
+        extractText(apiResponse, DatrisEnvironment.current.aiConfig)
+
+    def extractText(apiResponse: String, aiConfig: AIConfig): String = {
         val gson = new Gson()
         val responseMap = gson.fromJson(apiResponse, classOf[java.util.Map[String, Any]])
 

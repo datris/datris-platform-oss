@@ -80,6 +80,16 @@ ai:
   provider: "anthropic"
   aiSecretName: "oss/anthropic"
   version: "2023-06-01"
+  # Stronger model for code-generation tasks (tap scripts, AI DQ, AI transformations,
+  # schema generation, NL→SQL). The `oss/codegen` Vault secret is seeded automatically
+  # by docker/vault-init.sh based on AI_PROVIDER:
+  #   anthropic → claude-opus-4-6
+  #   openai    → gpt-5.4
+  #   ollama    → same as the main OLLAMA_MODEL (no upgrade — keeps RAM footprint flat)
+  # Override with CODEGEN_MODEL in .env, or remove this block to use the main `ai.*` model
+  # for codegen too.
+  codegen:
+    secretName: "oss/codegen"
 
 # Kafka consumer
 kafkaConsumer:

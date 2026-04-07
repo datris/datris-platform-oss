@@ -73,8 +73,9 @@ class PipelineAPIController {
             logger.info("API endpoint POST /pipeline with pipeline name: " + config.name)
             APIKeyValidator.validate(apiKey)
 
-            PipelineValidatorUtil.validate(config)
-            val modifiedConfig = PipelineValidatorUtil.modify(config)
+            val withDefaults = PipelineValidatorUtil.applyDefaults(config)
+            PipelineValidatorUtil.validate(withDefaults)
+            val modifiedConfig = PipelineValidatorUtil.modify(withDefaults)
 
             // Write to NoSQL pipeline table
             PipelineConfigIO.write(modifiedConfig)

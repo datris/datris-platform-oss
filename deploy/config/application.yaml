@@ -70,6 +70,13 @@ ai:
   enabled: "true"
   provider: ${AI_PROVIDER}
   aiSecretName: "${ENVIRONMENT}/${AI_PROVIDER}"
+  # Optional: stronger model for code-generation tasks (tap scripts, AI DQ,
+  # AI transformations, schema generation, NL→SQL). When unset, codegen
+  # uses the same model as `ai.*` above.
+  codegen:
+    secretName: "${CODEGEN_SECRET_NAME:-}"
+    provider: "${CODEGEN_PROVIDER:-}"
+    version: "${CODEGEN_VERSION:-}"
 
 # Kafka consumer
 kafkaConsumer:

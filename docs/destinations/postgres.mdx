@@ -55,7 +55,7 @@ When `manageTableManually` is `false`, the pipeline also creates the target sche
 
 ## Custom COPY Options
 
-Use the `options` array to pass additional PostgreSQL `COPY` options. Each entry is appended to the `COPY` command. When no options are specified, the default is `FORMAT csv, NULL '.'`.
+Use the `options` array to pass additional PostgreSQL `COPY` options. Each entry is appended to the `COPY` command. When no options are specified, the default is `FORMAT csv` — Postgres CSV mode treats unquoted empty fields as `NULL` automatically. If your source uses a non-empty placeholder for missing values (e.g. a literal `.`), normalize it at the source layer or set the `NULL` option explicitly via `options`.
 
 ## Configuration Example
 

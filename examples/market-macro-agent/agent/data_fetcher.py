@@ -64,10 +64,14 @@ async def fetch_fred(
                 )
                 resp.raise_for_status()
                 for obs in resp.json().get("observations", []):
+                    # FRED returns the literal string "." for missing
+                    # observations. Convert to None so csv.DictWriter emits an
+                    # empty field, which Postgres COPY treats as NULL.
+                    raw = obs["value"]
                     rows.append({
                         "series_id": sid,
                         "date": obs["date"],
-                        "value": obs["value"],
+                        "value": None if raw == "." else raw,
                         "fetched_at": datetime.utcnow().isoformat(),
                     })
             except Exception as e:

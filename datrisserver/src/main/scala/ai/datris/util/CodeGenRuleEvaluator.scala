@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.DatrisException
+import ai.datris.model.{DatrisEnvironment, DatrisException}
 import com.google.gson.{GsonBuilder, JsonArray}
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -96,9 +96,10 @@ object CodeGenRuleEvaluator {
     private def evaluate(userPrompt: String, fileContent: String, fileExtension: String): List[(Int, String)] = {
         logger.info("CodeGen DQ: generating Python validation script")
 
-        // Step 1: Generate the Python script via LLM
-        val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt)
-        val scriptContent = AIUtil.extractText(responseText)
+        // Step 1: Generate the Python script via LLM (uses codegen config when set)
+        val codegenCfg = DatrisEnvironment.aiConfigForCodegen
+        val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt, codegenCfg)
+        val scriptContent = AIUtil.extractText(responseText, codegenCfg)
         val cleanScript = cleanGeneratedScript(scriptContent)
 
         logger.info("CodeGen DQ: generated script (" + cleanScript.length + " chars)")

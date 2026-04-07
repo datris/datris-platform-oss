@@ -33,8 +33,15 @@ object TapScriptRunner {
           |sys.stdout = _real_stdout
           |# Detect data type from result
           |if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
-          |    sample = result[0]
-          |    is_flat = all(isinstance(v, (str, int, float, bool, type(None))) for v in sample.values())
+          |    # Scan ALL records — a single nested value anywhere makes this json,
+          |    # not csv. Checking only result[0] would misclassify variable-shape
+          |    # rows where later records contain dicts/lists.
+          |    is_flat = all(
+          |        isinstance(row, dict) and all(
+          |            isinstance(v, (str, int, float, bool, type(None))) for v in row.values()
+          |        )
+          |        for row in result
+          |    )
           |    data_type = "csv" if is_flat else "json"
           |    data = json.dumps(result)
           |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], (list, tuple)):
@@ -124,15 +131,24 @@ object TapScriptRunner {
                 try {
                     val list = gson.fromJson(dataJson, classOf[java.util.List[java.util.Map[String, Any]]])
                     if (list != null && !list.isEmpty) {
-                        // Build the normalized key mapping from the first record so order is stable
-                        val firstKeys = list.get(0).keySet().asScala.toList
-                        val keyMap: Map[String, String] = firstKeys.map(k => k -> normalizeColumnName(k)).toMap
-                        val normalizedCols = new java.util.ArrayList[String](firstKeys.map(keyMap).asJava)
+                        // Compute the union of keys across ALL records (first-seen order).
+                        // Sources like yfinance emit variable-shape rows; using only the first
+                        // record's keys silently drops columns that appear in later records and
+                        // breaks downstream pipeline schemas built from this list.
+                        val seen = scala.collection.mutable.LinkedHashSet[String]()
+                        list.asScala.foreach(row => row.keySet().asScala.foreach(seen.add))
+                        val allKeys = seen.toList
+                        val keyMap: Map[String, String] = allKeys.map(k => k -> normalizeColumnName(k)).toMap
+                        val normalizedCols = new java.util.ArrayList[String](allKeys.map(keyMap).asJava)
                         val rewrittenList = new java.util.ArrayList[java.util.Map[String, Any]](list.size())
                         list.asScala.foreach { row =>
                             val newRow = new java.util.LinkedHashMap[String, Any]()
-                            row.asScala.foreach { case (k, v) =>
-                                newRow.put(keyMap.getOrElse(k, normalizeColumnName(k)), v)
+                            // Insert in union order so every record has the same key order;
+                            // missing keys become null.
+                            allKeys.foreach { k =>
+                                val normalized = keyMap(k)
+                                if (row.containsKey(k)) newRow.put(normalized, row.get(k))
+                                else newRow.put(normalized, null)
                             }
                             rewrittenList.add(newRow)
                         }

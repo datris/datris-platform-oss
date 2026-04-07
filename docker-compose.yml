@@ -89,6 +89,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+      AI_PROVIDER: ${AI_PROVIDER:-anthropic}
+      CODEGEN_MODEL: ${CODEGEN_MODEL:-}
     volumes:
       - ./docker/vault-init.sh:/vault-init.sh
     entrypoint: ["/bin/sh", "/vault-init.sh"]
