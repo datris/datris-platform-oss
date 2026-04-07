@@ -177,6 +177,7 @@
   border: 1px solid var(--border-color);
   border-radius: 8px;
   transition: border-color 0.2s;
+  max-width: 360px;
 }
 
 .search-bar:focus-within {
@@ -558,4 +559,26 @@ tbody tr:last-child td {
 
 .tap-none {
   color: var(--text-muted);
+}
+
+.dataset-name-link {
+  cursor: pointer;
+}
+
+.dataset-name-link:hover {
+  text-decoration: underline;
+}
+
+.inline-name-input {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  border: 1px solid var(--accent-cyan);
+  border-radius: 4px;
+  color: var(--accent-cyan);
+  outline: none;
+  box-sizing: border-box;
 }

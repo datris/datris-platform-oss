@@ -26,7 +26,7 @@ export class PipelineCreateComponent implements OnInit {
 
   // Step 1 — Basics + Source
   pipelineName = '';
-  pipelineSource = 'tap';  // 'tap' | 'file'
+  pipelineSource = 'file';  // 'file' | 'tap' | 'manual'
   sampleFile: File | null = null;
   sourceType = 'csv';
   taps: any[] = [];
@@ -80,12 +80,18 @@ export class PipelineCreateComponent implements OnInit {
   // Step 7 — Destination
   destType = 'postgres';
   pgDbName = 'datris';
+  dbTruncateBeforeWrite = false;
   pgSchema = 'public';
   pgTable = '';
   mongoDbName = 'datris';
   mongoTable = '';
   osPrefix = '';
   osFormat = 'parquet';
+  osBucket = '';
+  osDeleteBeforeWrite = false;
+  osPartitionBy: string[] = [];
+  pgKeyFields: string[] = [];
+  mongoKeyFields: string[] = [];
   kafkaTopic = '';
   amqQueue = '';
   restEndpointUrl = '';
@@ -224,14 +230,21 @@ export class PipelineCreateComponent implements OnInit {
       this.pgDbName = dest.database.dbName || 'datris';
       this.pgSchema = dest.database.schema || 'public';
       this.pgTable = dest.database.table || '';
+      this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
+      this.pgKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
     } else if (dest?.database?.useMongoDB) {
       this.destType = 'mongodb';
       this.mongoDbName = dest.database.dbName || 'datris';
       this.mongoTable = dest.database.table || '';
+      this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
+      this.mongoKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
     } else if (dest?.objectStore) {
       this.destType = 'objectstore';
       this.osPrefix = dest.objectStore.prefixKey || '';
       this.osFormat = dest.objectStore.fileFormat || 'parquet';
+      this.osBucket = dest.objectStore.destinationBucketOverride || '';
+      this.osDeleteBeforeWrite = !!dest.objectStore.deleteBeforeWrite;
+      this.osPartitionBy = Array.isArray(dest.objectStore.partitionBy) ? [...dest.objectStore.partitionBy] : [];
     } else if (dest?.kafka) {
       this.destType = 'kafka';
       this.kafkaTopic = dest.kafka.topic || '';
@@ -468,6 +481,11 @@ export class PipelineCreateComponent implements OnInit {
       this.sampleFileDetected = false;
       this.sourceType = 'csv';
       this.schemaFields = [{ name: '', type: 'string' }];
+    } else if (this.pipelineSource === 'manual') {
+      this.selectedTapName = '';
+      this.sampleFileDetected = true; // skip file upload requirement, user defines everything by hand
+      this.sourceType = 'csv';
+      this.schemaFields = [{ name: '', type: 'string' }];
     }
   }
 
@@ -645,6 +663,14 @@ export class PipelineCreateComponent implements OnInit {
       this.error = 'Please wait for the file analysis to complete';
       return;
     }
+    if (this.step === 1 && !this.isEditMode && this.pipelineSource === 'file' && !this.sampleFileDetected) {
+      this.error = 'Please upload a sample file to continue';
+      return;
+    }
+    if (this.step === 1 && !this.isEditMode && this.pipelineSource === 'tap' && !this.selectedTapName) {
+      this.error = 'Please select a tap to continue';
+      return;
+    }
 
     // Validate step 2 — source configuration
     if (this.step === 2) {
@@ -716,7 +742,7 @@ export class PipelineCreateComponent implements OnInit {
         if (!this.mongoDbName.trim()) { this.error = 'Database name is required'; return; }
         if (!this.mongoTable.trim()) { this.error = 'Collection name is required'; return; }
       } else if (this.destType === 'objectstore') {
-        if (!this.osPrefix.trim()) { this.error = 'Prefix key is required'; return; }
+        if (!this.osPrefix.trim()) { this.error = 'Key is required'; return; }
       } else if (this.destType === 'kafka') {
         if (!this.kafkaTopic.trim()) { this.error = 'Topic is required'; return; }
       } else if (this.destType === 'activemq') {
@@ -928,11 +954,21 @@ export class PipelineCreateComponent implements OnInit {
 
     // Destination
     if (this.destType === 'postgres') {
-      config.destination.database = { dbName: this.pgDbName, schema: this.pgSchema, table: this.pgTable, usePostgres: true };
+      const pgDb: any = { dbName: this.pgDbName, schema: this.pgSchema, table: this.pgTable, usePostgres: true, truncateBeforeWrite: this.dbTruncateBeforeWrite };
+      const pgKeys = this.pgKeyFields.filter(k => k && k.trim());
+      if (pgKeys.length > 0) pgDb.keyFields = pgKeys;
+      config.destination.database = pgDb;
     } else if (this.destType === 'mongodb') {
-      config.destination.database = { dbName: this.mongoDbName, table: this.mongoTable, useMongoDB: true };
+      const mongoDb: any = { dbName: this.mongoDbName, table: this.mongoTable, useMongoDB: true, truncateBeforeWrite: this.dbTruncateBeforeWrite };
+      const mongoKeys = this.mongoKeyFields.filter(k => k && k.trim());
+      if (mongoKeys.length > 0) mongoDb.keyFields = mongoKeys;
+      config.destination.database = mongoDb;
     } else if (this.destType === 'objectstore') {
-      config.destination.objectStore = { prefixKey: this.osPrefix, fileFormat: this.osFormat };
+      const os: any = { prefixKey: this.osPrefix, fileFormat: this.osFormat, deleteBeforeWrite: this.osDeleteBeforeWrite };
+      if (this.osBucket.trim()) os.destinationBucketOverride = this.osBucket.trim();
+      const partitions = this.osPartitionBy.filter(p => p && p.trim());
+      if (partitions.length > 0) os.partitionBy = partitions;
+      config.destination.objectStore = os;
     } else if (this.destType === 'kafka') {
       config.destination.kafka = { topic: this.kafkaTopic };
     } else if (this.destType === 'activemq') {
