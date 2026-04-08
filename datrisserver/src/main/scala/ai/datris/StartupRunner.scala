@@ -83,28 +83,15 @@ class StartupRunner extends ApplicationRunner {
     @Value("${ai.enabled:false}")
     var aiEnabled: Boolean = _
 
-    @Value("${ai.provider:anthropic}")
-    var aiProvider: String = _
+    // AI configuration — three independent, self-describing Vault secrets.
+    // Each secret carries provider/endpoint/model/apiKey/version inline.
+    @Value("${ai.aiPrimary.secretName:}")
+    var aiPrimarySecretName: String = _
 
-    @Value("${ai.aiSecretName:}")
-    var aiSecretName: String = _
-
-    @Value("${ai.version:}")
-    var aiVersion: String = _
-
-    // Optional: stronger model for code-generation tasks (tap scripts, AI DQ,
-    // AI transformations, schema generation, NL→SQL). When unset, codegen call
-    // sites use the same model as the main `ai.*` config — zero behavior change.
     @Value("${ai.codegen.secretName:}")
     var codegenSecretName: String = _
 
-    @Value("${ai.codegen.provider:}")
-    var codegenProvider: String = _
-
-    @Value("${ai.codegen.version:}")
-    var codegenVersion: String = _
-
-    @Value("${secrets.embeddingSecretName:}")
+    @Value("${ai.embedding.secretName:}")
     var embeddingSecretName: String = _
 
     @Value("${secrets.qdrantSecretName:}")
@@ -245,52 +232,64 @@ class StartupRunner extends ApplicationRunner {
             else
                 null
         }
-        // AI configuration is required — CodeGen data quality and transformation depend on it
+        // AI configuration is required — CodeGen data quality and transformation depend on it.
+        // Three independent secrets, each fully self-describing (provider/endpoint/model/apiKey/version
+        // all live inside the Vault secret).
         if (!aiEnabled)
             throw new DatrisException("AI is required but not enabled. Set 'ai.enabled: true' in application.yaml")
-        if (aiSecretName == null || aiSecretName.isEmpty)
-            throw new DatrisException("AI is enabled but no secret is configured. Set 'ai.aiSecretName' in application.yaml (e.g., 'oss/ai')")
-        if (!Seq("anthropic", "openai", "ollama").contains(aiProvider.toLowerCase))
-            throw new DatrisException("Unsupported AI provider: '" + aiProvider + "'. Valid values are: anthropic, openai, ollama")
+        if (aiPrimarySecretName == null || aiPrimarySecretName.isEmpty)
+            throw new DatrisException("AI is enabled but no primary secret is configured. Set 'ai.aiPrimary.secretName' in application.yaml (e.g., 'oss/ai-primary')")
 
-        val aiConfig = {
-            val secret = SecretsUtil.getSecretMap(aiSecretName)
-                .getOrElse(throw new DatrisException("AI secret not found in Vault, secret name: " + aiSecretName + ". Create it with: vault kv put secret/" + aiSecretName + " endpoint=<url> model=<model> apiKey=<key>"))
-            val endpoint = secret.get("endpoint")
-            if (endpoint == null)
-                throw new DatrisException("'endpoint' not found in AI secret: " + aiSecretName)
-            val model = secret.get("model")
-            if (model == null)
-                throw new DatrisException("'model' not found in AI secret: " + aiSecretName)
-            val apiKey = Option(secret.get("apiKey")).getOrElse("")
-            logger.info("AI provider configured: " + aiProvider + ", model: " + model + ", endpoint: " + endpoint)
-            AIConfig(aiProvider, endpoint, model, apiKey, aiVersion)
-        }
+        val aiConfig = loadAiConfigFromSecret(aiPrimarySecretName, "ai-primary", required = true).get
+        logger.info("AI primary configured: " + aiConfig.provider + ", model: " + aiConfig.model + ", endpoint: " + aiConfig.endpoint)
 
-        // Optional codegen AI config — fail fast on misconfiguration.
-        val codegenAiConfig: Option[AIConfig] = {
-            if (codegenSecretName == null || codegenSecretName.isEmpty) {
-                None
-            } else {
-                val cgProvider = if (codegenProvider != null && codegenProvider.nonEmpty) codegenProvider else aiProvider
-                if (!Seq("anthropic", "openai", "ollama").contains(cgProvider.toLowerCase))
-                    throw new DatrisException("Unsupported AI codegen provider: '" + cgProvider + "'. Valid values are: anthropic, openai, ollama")
-                val cgVersion = if (codegenVersion != null && codegenVersion.nonEmpty) codegenVersion else aiVersion
-                val secret = SecretsUtil.getSecretMap(codegenSecretName)
-                    .getOrElse(throw new DatrisException("AI codegen secret not found in Vault, secret name: " + codegenSecretName + ". Create it with: vault kv put secret/" + codegenSecretName + " endpoint=<url> model=<model> apiKey=<key>"))
-                val endpoint = secret.get("endpoint")
-                if (endpoint == null)
-                    throw new DatrisException("'endpoint' not found in AI codegen secret: " + codegenSecretName)
-                val model = secret.get("model")
-                if (model == null)
-                    throw new DatrisException("'model' not found in AI codegen secret: " + codegenSecretName)
-                val apiKey = Option(secret.get("apiKey")).getOrElse("")
-                logger.info("AI codegen configured: " + cgProvider + ", model: " + model + ", endpoint: " + endpoint)
-                Some(AIConfig(cgProvider, endpoint, model, apiKey, cgVersion))
-            }
-        }
+        // Optional codegen AI config — None if the secret doesn't exist (codegen will fall back to main).
+        val codegenAiConfig: Option[AIConfig] =
+            if (codegenSecretName == null || codegenSecretName.isEmpty) None
+            else loadAiConfigFromSecret(codegenSecretName, "codegen", required = false)
+        codegenAiConfig.foreach(c => logger.info("AI codegen configured: " + c.provider + ", model: " + c.model + ", endpoint: " + c.endpoint))
 
         DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, codegenAiConfig = codegenAiConfig, aiEnabled = aiEnabled))
+    }
+
+    /** Load an AIConfig from a self-describing Vault secret. The secret must contain
+      * `provider`, `endpoint`, `model`, and `apiKey`. `version` is optional.
+      *
+      * @param required when true, missing/empty fields throw; when false, returns None.
+      */
+    private def loadAiConfigFromSecret(secretName: String, label: String, required: Boolean): Option[AIConfig] = {
+        val secretOpt = SecretsUtil.getSecretMap(secretName)
+        if (secretOpt.isEmpty) {
+            if (required)
+                throw new DatrisException("AI " + label + " secret not found in Vault: " + secretName +
+                    ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|ollama> endpoint=<url> model=<model> apiKey=<key>")
+            else return None
+        }
+        val secret = secretOpt.get
+        val provider = Option(secret.get("provider")).map(_.trim).getOrElse("")
+        val endpoint = Option(secret.get("endpoint")).map(_.trim).getOrElse("")
+        val model = Option(secret.get("model")).map(_.trim).getOrElse("")
+        val apiKey = Option(secret.get("apiKey")).getOrElse("")
+        val version = Option(secret.get("version")).getOrElse("")
+
+        if (provider.isEmpty) {
+            if (required) throw new DatrisException("'provider' not found in AI " + label + " secret: " + secretName)
+            else return None
+        }
+        if (!Seq("anthropic", "openai", "ollama").contains(provider.toLowerCase))
+            throw new DatrisException("Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, ollama")
+        if (endpoint.isEmpty) {
+            if (required) throw new DatrisException("'endpoint' not found in AI " + label + " secret: " + secretName)
+            else return None
+        }
+        if (model.isEmpty) {
+            if (required) throw new DatrisException("'model' not found in AI " + label + " secret: " + secretName)
+            else return None
+        }
+        // For optional configs, an empty apiKey on a non-ollama provider means "not set" — fall back.
+        if (!required && apiKey.isEmpty && provider.toLowerCase != "ollama") return None
+
+        Some(AIConfig(provider, endpoint, model, apiKey, version))
     }
 
     private def initKafkaConsumerRunner(): Unit = {

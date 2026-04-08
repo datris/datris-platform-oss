@@ -13,66 +13,151 @@
       </div>
     </div>
 
+    <div class="status-block" *ngIf="multiTenant">
+      <div class="status-block-row">
+        <span class="status-label">AI Provider</span>
+        <span class="status-value" *ngIf="usingDefaultAiPrimary">Datris-managed (default)</span>
+        <span class="status-value accent" *ngIf="!usingDefaultAiPrimary">Your own {{ aiPrimaryProvider === 'anthropic' ? 'Anthropic' : 'OpenAI' }} key</span>
+      </div>
+      <div class="status-block-row">
+        <span class="status-label">CodeGen Provider</span>
+        <span class="status-value" *ngIf="usingDefaultCodegen">Datris-managed (default)</span>
+        <span class="status-value accent" *ngIf="!usingDefaultCodegen">Your own {{ codegenProvider === 'anthropic' ? 'Anthropic' : 'OpenAI' }} CodeGen key</span>
+      </div>
+      <div class="status-block-row">
+        <span class="status-label">Embedding Provider</span>
+        <span class="status-value" *ngIf="usingDefaultEmbedding">Datris-managed (default)</span>
+        <span class="status-value accent" *ngIf="!usingDefaultEmbedding">Your own {{ embeddingProvider === 'openai' ? 'OpenAI' : (embeddingProvider === 'ollama' ? 'Ollama' : embeddingProvider) }} embedding</span>
+      </div>
+    </div>
+
     <div class="note-banner" *ngIf="isTrial">
       <p class="note-title">NOTE: Bring your own AI key for a much better experience.</p>
       <p>During the free trial, Datris provides shared Anthropic and OpenAI keys so you can try every feature out of the box. These shared keys are rate-limited and use cost-conscious models.</p>
       <p><strong>For dramatically faster and higher-quality results from CodeGen, AI lookups, data quality rules, transformations, and schema inference, paste your own Anthropic or OpenAI API key below.</strong> Your key is stored encrypted in your isolated tenant vault and is only used for your own pipelines.</p>
-      <div class="status-row">
-        <span class="status-label">Currently using</span>
-        <span class="status-value" *ngIf="usingDatrisDefaults">Datris-managed keys (default)</span>
-        <span class="status-value accent" *ngIf="!usingDatrisDefaults">Your own {{ aiProvider === 'anthropic' ? 'Anthropic' : 'OpenAI' }} key</span>
-      </div>
     </div>
 
-    <ng-container>
-      <div class="config-section">
-        <h2 class="section-title">AI Provider</h2>
-        <p class="section-hint">Used for schema generation, data quality rules, transformations, and error explanations.</p>
+    <div class="config-layout">
+      <div class="config-main">
+        <div class="config-section">
+          <h2 class="section-title">AI Provider</h2>
+          <p class="section-hint">Used for schema generation, data quality rules, transformations, error explanations, and other general AI tasks.</p>
 
-        <div class="form-row">
-          <label class="form-label">Provider</label>
-          <select class="form-input" [(ngModel)]="aiProvider" (ngModelChange)="onProviderChange()">
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI</option>
-          </select>
+          <div class="form-row">
+            <label class="form-label">Provider</label>
+            <select class="form-input" [(ngModel)]="aiPrimaryProvider" (ngModelChange)="onAiPrimaryProviderChange()">
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">Model</label>
+            <select class="form-input" [(ngModel)]="aiPrimaryModel">
+              <option *ngFor="let m of aiPrimaryModelOptions" [value]="m.value">{{ m.label }}</option>
+            </select>
+          </div>
+
+          <a class="advanced-toggle" (click)="showAdvancedAiPrimary = !showAdvancedAiPrimary">
+            {{ showAdvancedAiPrimary ? '▼' : '▶' }} Advanced
+          </a>
+          <div class="form-row" *ngIf="showAdvancedAiPrimary">
+            <label class="form-label">Endpoint</label>
+            <input class="form-input" type="text" [(ngModel)]="aiPrimaryEndpoint"
+                   placeholder="https://api.anthropic.com/v1/messages" />
+          </div>
         </div>
 
-        <div class="form-row">
-          <label class="form-label">Model</label>
-          <select class="form-input" [(ngModel)]="aiModel">
-            <option *ngFor="let m of modelOptions" [value]="m.value">{{ m.label }}</option>
-          </select>
+        <div class="config-section">
+          <h2 class="section-title">CodeGen Provider</h2>
+          <p class="section-hint">Used for tasks that generate executable code: tap script generation, AI data quality rules, AI transformations, JSON Schema / XSD generation, and natural-language → SQL. Quality is directly tied to the model's coding ability — picking a stronger model here often produces dramatically better results.</p>
+
+          <div class="form-row">
+            <label class="form-label">Provider</label>
+            <select class="form-input" [(ngModel)]="codegenProvider" (ngModelChange)="onCodegenProviderChange()">
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">Model</label>
+            <select class="form-input" [(ngModel)]="codegenModel">
+              <option *ngFor="let m of codegenModelOptions" [value]="m.value">{{ m.label }}</option>
+            </select>
+          </div>
+
+          <a class="advanced-toggle" (click)="showAdvancedCodegen = !showAdvancedCodegen">
+            {{ showAdvancedCodegen ? '▼' : '▶' }} Advanced
+          </a>
+          <div class="form-row" *ngIf="showAdvancedCodegen">
+            <label class="form-label">Endpoint</label>
+            <input class="form-input" type="text" [(ngModel)]="codegenEndpoint"
+                   placeholder="https://api.anthropic.com/v1/messages" />
+          </div>
         </div>
 
-        <div class="form-row">
-          <label class="form-label">{{ aiProvider === 'anthropic' ? 'Anthropic' : 'OpenAI' }} API Key</label>
-          <input class="form-input" type="text" [(ngModel)]="aiApiKey"
-                 [placeholder]="aiProvider === 'anthropic' ? 'sk-ant-...' : 'sk-...'" />
+        <div class="config-section">
+          <h2 class="section-title">Embedding Provider</h2>
+          <p class="section-hint">Used for vector destinations (Qdrant, Weaviate, Milvus, Chroma, pgvector) and semantic search. Must be an OpenAI-compatible embeddings endpoint. Anthropic-only deployments use a bundled local Ollama service running bge-m3 — no OpenAI key required.</p>
+
+          <div class="form-row">
+            <label class="form-label">Provider</label>
+            <select class="form-input" [(ngModel)]="embeddingProvider" (ngModelChange)="onEmbeddingProviderChange()">
+              <option value="openai">OpenAI</option>
+              <option value="ollama">Ollama (local, bundled)</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">Model</label>
+            <select class="form-input" [(ngModel)]="embeddingModel">
+              <option *ngFor="let m of embeddingModelOptions" [value]="m.value">{{ m.label }}</option>
+            </select>
+          </div>
+
+          <a class="advanced-toggle" (click)="showAdvancedEmbedding = !showAdvancedEmbedding">
+            {{ showAdvancedEmbedding ? '▼' : '▶' }} Advanced
+          </a>
+          <div class="form-row" *ngIf="showAdvancedEmbedding">
+            <label class="form-label">Endpoint</label>
+            <input class="form-input" type="text" [(ngModel)]="embeddingEndpoint"
+                   placeholder="https://api.openai.com/v1/embeddings" />
+          </div>
+
+          <p class="section-hint" *ngIf="embeddingProvider === 'ollama'" style="margin-top: 8px;">
+            Ollama runs locally as a bundled docker-compose service — no API key needed.
+          </p>
         </div>
+
+        <div class="config-actions">
+          <button class="save-btn" (click)="save()" [disabled]="saving || resetting">
+            {{ saving ? 'Saving...' : 'Save Configuration' }}
+          </button>
+          <button class="reset-btn" *ngIf="isTrial && (!usingDefaultAiPrimary || !usingDefaultCodegen || !usingDefaultEmbedding)" (click)="resetToDatrisDefaults()" [disabled]="saving || resetting">
+            {{ resetting ? 'Resetting...' : 'Reset to Datris-managed' }}
+          </button>
+        </div>
+
+        <div class="success-message" *ngIf="success">{{ success }}</div>
+        <div class="error-message" *ngIf="error">{{ error }}</div>
       </div>
 
-      <div class="config-section" *ngIf="showEmbeddingKey">
-        <h2 class="section-title">Embedding Provider</h2>
-        <p class="section-hint">Used for RAG and vector search. Always uses OpenAI text-embedding-3-small.</p>
+      <aside class="keys-panel">
+        <h2 class="keys-panel-title">Your API Keys</h2>
+        <p class="keys-panel-hint">Enter each provider's key once. The sections on the left use the key for whichever provider they're set to.</p>
+
+        <div class="form-row">
+          <label class="form-label">Anthropic API Key</label>
+          <input class="form-input" type="text" [(ngModel)]="anthropicApiKey" placeholder="sk-ant-..." />
+        </div>
 
         <div class="form-row">
           <label class="form-label">OpenAI API Key</label>
-          <input class="form-input" type="text" [(ngModel)]="embeddingApiKey" placeholder="sk-..." />
+          <input class="form-input" type="text" [(ngModel)]="openaiApiKey" placeholder="sk-..." />
         </div>
-      </div>
-
-      <div class="config-actions">
-        <button class="save-btn" (click)="save()" [disabled]="saving || resetting">
-          {{ saving ? 'Saving...' : 'Save Configuration' }}
-        </button>
-        <button class="reset-btn" *ngIf="isTrial && !usingDatrisDefaults" (click)="resetToDatrisDefaults()" [disabled]="saving || resetting">
-          {{ resetting ? 'Resetting...' : 'Reset to Datris-managed' }}
-        </button>
-      </div>
-
-      <div class="success-message" *ngIf="success">{{ success }}</div>
-      <div class="error-message" *ngIf="error">{{ error }}</div>
-    </ng-container>
+      </aside>
+    </div>
   </div>
 
   <div class="loading" *ngIf="loading">Loading configuration...</div>

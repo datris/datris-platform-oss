@@ -51,7 +51,6 @@ secrets:
   activeMQSecretName: oss/activemq
   mongoDbSecretName: oss/mongodb
   kafkaProducerSecretName: oss/kafka-producer
-  embeddingSecretName: oss/embedding
   qdrantSecretName: oss/qdrant
   weaviateSecretName: oss/weaviate
   milvusSecretName: oss/milvus
@@ -74,22 +73,24 @@ postgres:
 sendPipelineNotifications: "true"
 ttlFileNotifierQueueMessages: "60"
 
-# AI provider (required)
+# AI configuration — three independent, self-describing Vault secrets.
+# Each secret carries its own provider, endpoint, model, apiKey, and (optionally) version,
+# so the resolver never derives the path from a YAML provider field. Per-tenant overrides
+# in multi-tenant mode live at {env}/ai-primary, {env}/codegen, {env}/embedding.
+#
+# vault-init.sh seeds all three based on which API key is set in .env:
+#   - OPENAI_API_KEY    → all three point at OpenAI
+#   - ANTHROPIC_API_KEY → ai-primary + codegen point at Anthropic; embedding falls back
+#                          to the local ollama sidecar (bge-m3) so vector destinations
+#                          work out of the box without an OpenAI key.
 ai:
   enabled: "true"
-  provider: "anthropic"
-  aiSecretName: "oss/anthropic"
-  version: "2023-06-01"
-  # Stronger model for code-generation tasks (tap scripts, AI DQ, AI transformations,
-  # schema generation, NL→SQL). The `oss/codegen` Vault secret is seeded automatically
-  # by docker/vault-init.sh based on AI_PROVIDER:
-  #   anthropic → claude-opus-4-6
-  #   openai    → gpt-5.4
-  #   ollama    → same as the main OLLAMA_MODEL (no upgrade — keeps RAM footprint flat)
-  # Override with CODEGEN_MODEL in .env, or remove this block to use the main `ai.*` model
-  # for codegen too.
+  aiPrimary:
+    secretName: "oss/ai-primary"
   codegen:
     secretName: "oss/codegen"
+  embedding:
+    secretName: "oss/embedding"
 
 # Kafka consumer
 kafkaConsumer:

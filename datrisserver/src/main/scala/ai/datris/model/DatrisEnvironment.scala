@@ -25,48 +25,16 @@ object DatrisEnvironment {
     }
 
     /** Build a tenant-specific environment by replacing the environment string
-      * and all derived names, while keeping global infrastructure config. */
+      * and all derived names, while keeping global infrastructure config.
+      *
+      * Per-tenant AI overrides live at fixed paths that mirror the global slots:
+      *   {env}/ai-primary, {env}/codegen, {env}/embedding
+      * Each is fully self-describing — provider/endpoint/model/apiKey are read from
+      * the secret itself, no path derivation. */
     def forEnvironment(env: String): DatrisEnvironment = {
-        // Load tenant's AI config from Vault
-        val tenantAiConfig = try {
-            val provider = values.aiConfig.provider
-            val secret = ai.datris.util.SecretsUtil.getSecretMap(env + "/" + provider)
-            secret.map { s =>
-                import scala.collection.JavaConverters._
-                val map = s.asScala
-                AIConfig(
-                    provider,
-                    map.getOrElse("endpoint", values.aiConfig.endpoint),
-                    map.getOrElse("model", values.aiConfig.model),
-                    map.getOrElse("apiKey", values.aiConfig.apiKey),
-                    map.getOrElse("version", values.aiConfig.version)
-                )
-            }.getOrElse(values.aiConfig)
-        } catch {
-            case _: Exception => values.aiConfig
-        }
-
-        // Load tenant's codegen AI config from Vault at fixed path {env}/codegen.
-        // If the tenant secret doesn't exist, fall back to the global codegen config
-        // (which itself may be None — in which case aiConfigForCodegen returns the main aiConfig).
-        val tenantCodegenAiConfig: Option[AIConfig] = try {
-            val secret = ai.datris.util.SecretsUtil.getSecretMap(env + "/codegen")
-            secret.map { s =>
-                import scala.collection.JavaConverters._
-                val map = s.asScala
-                // Defaults inherit from the global codegen config when set, otherwise from the tenant's main AI config.
-                val defaults = values.codegenAiConfig.getOrElse(tenantAiConfig)
-                AIConfig(
-                    map.getOrElse("provider", defaults.provider),
-                    map.getOrElse("endpoint", defaults.endpoint),
-                    map.getOrElse("model", defaults.model),
-                    map.getOrElse("apiKey", defaults.apiKey),
-                    map.getOrElse("version", defaults.version)
-                )
-            }.orElse(values.codegenAiConfig)
-        } catch {
-            case _: Exception => values.codegenAiConfig
-        }
+        val tenantAiConfig = loadTenantAiConfig(env + "/ai-primary").getOrElse(values.aiConfig)
+        val tenantCodegenAiConfig: Option[AIConfig] =
+            loadTenantAiConfig(env + "/codegen").orElse(values.codegenAiConfig)
 
         values.copy(
             environment = env,
@@ -93,6 +61,28 @@ object DatrisEnvironment {
             tapLogTableName = env + "-tap-log",
             postgresDatabase = env
         )
+    }
+
+    /** Load a tenant AI override from a self-describing Vault secret.
+      * Returns None when the secret doesn't exist or has an empty apiKey (zombie record). */
+    private def loadTenantAiConfig(path: String): Option[AIConfig] = {
+        try {
+            ai.datris.util.SecretsUtil.getSecretMap(path).flatMap { s =>
+                import scala.collection.JavaConverters._
+                val map = s.asScala
+                val provider = map.getOrElse("provider", "").trim
+                val endpoint = map.getOrElse("endpoint", "").trim
+                val apiKey   = map.getOrElse("apiKey", "")
+                if (provider.isEmpty || endpoint.isEmpty || apiKey.isEmpty) None
+                else Some(AIConfig(
+                    provider,
+                    endpoint,
+                    map.getOrElse("model", ""),
+                    apiKey,
+                    map.getOrElse("version", "")
+                ))
+            }
+        } catch { case _: Exception => None }
     }
 }
 

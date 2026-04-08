@@ -5,6 +5,7 @@ networks:
 volumes:
   pip-cache:
   pip-packages:
+  ollama-data:
 
 services:
   minio:
@@ -124,6 +125,36 @@ services:
     networks:
       - datris-net
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - datris-net
+    # Pull bge-m3 (1024-dim embedding model) on first start, then keep serving.
+    # Subsequent restarts find the model in the persistent volume — no re-download.
+    # The ollama image has no curl; we wait for `ollama list` to succeed instead.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        ollama serve &
+        SERVE_PID=$$!
+        echo "Waiting for ollama server to come up..."
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        echo "Pulling bge-m3 (this may take a few minutes on first run)..."
+        ollama pull bge-m3 || echo "WARNING: bge-m3 pull failed; embedding requests will error until it succeeds."
+        wait $$SERVE_PID
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q bge-m3"]
+      interval: 10s
+      timeout: 5s
+      retries: 90
+      start_period: 60s
+
   datris:
     image: datrisai/datris-server:latest
     #build: .  # Uncomment to build from source instead of pulling from Docker Hub
@@ -143,6 +174,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_started
+      ollama:
+        condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: root-token

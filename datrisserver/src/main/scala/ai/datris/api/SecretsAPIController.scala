@@ -67,7 +67,7 @@ class SecretsAPIController {
 
                     val fields = new java.util.LinkedHashMap[String, String]()
                     data.asScala.foreach { case (key, value) =>
-                        if (isSensitive(key)) {
+                        if (isSensitive(key) && value != null && value.nonEmpty) {
                             fields.put(key, "••••••••")
                         } else {
                             fields.put(key, value)
@@ -99,16 +99,41 @@ class SecretsAPIController {
             val env = DatrisEnvironment.current.environment
             val secretPath = env + "/" + name
 
+            // Existing secret at the same path — used to preserve sensitive fields
+            // when the request sends them as the masked placeholder.
+            val existing = SecretsUtil.getSecretMap(secretPath).map(_.asScala).getOrElse(scala.collection.mutable.Map.empty[String, String])
+
             val json = JsonParser.parseString(body).getAsJsonObject
-            val data = new java.util.LinkedHashMap[String, Object]()
+            val incoming = new java.util.LinkedHashMap[String, Object]()
             json.entrySet().asScala.foreach { entry =>
                 val value = entry.getValue
                 if (value.isJsonPrimitive) {
-                    data.put(entry.getKey, value.getAsString)
+                    val key = entry.getKey
+                    val strValue = value.getAsString
+                    if (isSensitive(key) && strValue == "••••••••") {
+                        // Masked placeholder ⇒ preserve existing value at this path (if any).
+                        existing.get(key).filter(_.nonEmpty).foreach(v => incoming.put(key, v))
+                    } else {
+                        incoming.put(key, strValue)
+                    }
                 }
             }
 
-            SecretsUtil.writeSecret(secretPath, data)
+            // Special-case the codegen secret: if the request omits or blanks out apiKey,
+            // copy it from the AI primary secret at {env}/ai-primary. This lets the UI
+            // omit the apiKey when the user wants codegen to reuse the main key without
+            // re-entering it.
+            if (name == "codegen") {
+                val providedApiKey = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).getOrElse("")
+                if (providedApiKey.isEmpty) {
+                    val mainKey = SecretsUtil.getSecretMap(env + "/ai-primary")
+                        .flatMap(m => Option(m.get("apiKey")))
+                        .filter(_.nonEmpty)
+                    mainKey.foreach(k => incoming.put("apiKey", k))
+                }
+            }
+
+            SecretsUtil.writeSecret(secretPath, incoming)
             new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
         }
         catch {
