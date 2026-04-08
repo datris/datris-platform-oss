@@ -28,10 +28,9 @@ export class ConfigurationComponent implements OnInit {
   environment = '';
   version = '';
   isTrial = false;
-  trialAiProvider = '';
-  trialAiModel = '';
-  trialEmbeddingModel = '';
+  usingDatrisDefaults = true;
   saving = false;
+  resetting = false;
   success = '';
   error = '';
   loading = true;
@@ -45,11 +44,7 @@ export class ConfigurationComponent implements OnInit {
         this.environment = data.environment || '';
         this.version = data.version || '';
         this.isTrial = this.environment.startsWith('trial-');
-        if (!this.isTrial) {
-          this.loadConfig();
-        } else {
-          this.loadTrialConfig();
-        }
+        this.loadConfig();
       },
       error: () => { this.loading = false; }
     });
@@ -70,33 +65,14 @@ export class ConfigurationComponent implements OnInit {
     }
   }
 
-  loadTrialConfig(): void {
-    // Read AI provider secret to show what's being used
-    const providers = ['anthropic', 'openai'];
-    for (const provider of providers) {
-      this.http.get<any>('/api/v1/secrets/' + provider).subscribe({
-        next: (data) => {
-          if (data && data.fields && data.fields.model) {
-            this.trialAiProvider = provider.charAt(0).toUpperCase() + provider.slice(1);
-            this.trialAiModel = data.fields.model;
-          }
-        },
-        error: () => {} // secret doesn't exist for this provider
-      });
-    }
-    this.http.get<any>('/api/v1/secrets/embedding').subscribe({
-      next: (data) => {
-        if (data && data.fields && data.fields.model) {
-          this.trialEmbeddingModel = data.fields.model;
-        }
-      },
-      error: () => {}
-    });
-    this.loading = false;
-  }
-
   loadConfig(): void {
-    // Read the AI provider secret from Vault via the Secrets API
+    // Read the AI provider secret from Vault via the Secrets API.
+    // In trial/multi-tenant mode this scopes to the user's tenant vault path,
+    // so an empty result means they're using the shared Datris-managed keys.
+    this.aiApiKey = '';
+    this.embeddingApiKey = '';
+    this.usingDatrisDefaults = true;
+
     this.http.get<any>('/api/v1/secrets').subscribe({
       next: (secrets) => {
         // Find the AI provider secret (anthropic or openai)
@@ -104,6 +80,7 @@ export class ConfigurationComponent implements OnInit {
         for (const provider of providers) {
           if (secrets && secrets.includes(provider)) {
             this.aiProvider = provider;
+            this.usingDatrisDefaults = false;
             this.http.get<any>('/api/v1/secrets/' + provider).subscribe({
               next: (data) => {
                 if (data && data.fields) {
@@ -128,6 +105,26 @@ export class ConfigurationComponent implements OnInit {
         this.loading = false;
       },
       error: () => { this.loading = false; }
+    });
+  }
+
+  resetToDatrisDefaults(): void {
+    if (!this.isTrial) return;
+    this.resetting = true;
+    this.success = '';
+    this.error = '';
+
+    const deletes = ['anthropic', 'openai', 'embedding'].map(name =>
+      this.http.delete('/api/v1/secrets/' + name, { responseType: 'text' }).toPromise().catch(() => null)
+    );
+
+    Promise.all(deletes).then(() => {
+      this.aiApiKey = '';
+      this.embeddingApiKey = '';
+      this.usingDatrisDefaults = true;
+      this.resetting = false;
+      this.success = 'Reverted to Datris-managed AI keys.';
+      this.loadConfig();
     });
   }
 
@@ -165,6 +162,7 @@ export class ConfigurationComponent implements OnInit {
               error: () => {} // ignore if doesn't exist
             });
 
+            this.usingDatrisDefaults = false;
             this.success = 'Configuration saved. Changes take effect on the next pipeline run.';
             this.saving = false;
           },

@@ -54,41 +54,62 @@
   color: #00b4ff;
 }
 
-.trial-notice {
+.note-banner {
   background: rgba(0, 180, 255, 0.06);
   border: 1px solid rgba(0, 180, 255, 0.2);
+  border-left: 3px solid #00b4ff;
   border-radius: 8px;
   padding: 16px 20px;
+  margin-bottom: 24px;
   color: #8b9dc3;
   font-size: 0.85rem;
   line-height: 1.6;
 }
 
-.trial-notice p {
-  margin: 0 0 14px;
+.note-banner p {
+  margin: 0 0 10px;
 }
 
-.trial-config {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.note-banner p:last-of-type {
+  margin-bottom: 0;
 }
 
-.trial-row {
+.note-banner .note-title {
+  color: #00b4ff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+}
+
+.note-banner strong {
+  color: #f0f4ff;
+  font-weight: 600;
+}
+
+.status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 180, 255, 0.15);
 }
 
-.trial-label {
-  font-size: 0.8rem;
+.status-label {
+  font-size: 0.75rem;
   color: #5a6b8a;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
-.trial-value {
+.status-value {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.8rem;
   color: #f0f4ff;
+}
+
+.status-value.accent {
+  color: #00e5a0;
 }
 
 .config-section {
@@ -140,6 +161,30 @@
 
 .config-actions {
   margin-top: 24px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.reset-btn {
+  padding: 10px 20px;
+  background: transparent;
+  color: #8b9dc3;
+  font-weight: 500;
+  font-size: 0.85rem;
+  border: 1px solid rgba(99, 179, 237, 0.25);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.reset-btn:hover:not(:disabled) {
+  color: #f0f4ff;
+  border-color: rgba(99, 179, 237, 0.5);
+}
+
+.reset-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .save-btn {
