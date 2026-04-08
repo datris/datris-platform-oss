@@ -3,7 +3,7 @@ title: "AI Configuration"
 description: "Configure AI features"
 ---
 
-The pipeline integrates with AI providers for these features:
+The data platform integrates with AI providers for these features:
 
 - **Schema generation** — upload a file to `POST /api/v1/pipeline/generate` and receive a complete pipeline configuration with inferred field names and types
 - **Data quality rules** — describe validation logic in plain English using `aiRule` instead of writing code
@@ -16,7 +16,7 @@ All features use the same provider configuration.
 
 ## Choosing a Provider
 
-The pipeline supports cloud providers (Anthropic, OpenAI) and local models via Ollama.
+The data platform supports cloud providers (Anthropic, OpenAI) and local models via Ollama.
 
 **Cloud providers are recommended for production use.** They offer higher accuracy and stronger domain knowledge. The AI generates scripts from a sample of the data (not the full file), so there are no file size limitations tied to the model's context window.
 
@@ -107,7 +107,7 @@ ai:
 ollama pull qwen2.5:14b-instruct
 ```
 
-The pipeline running in Docker reaches Ollama on the host via `host.docker.internal`. The Vault secret is seeded automatically by `docker/vault-init.sh`. To set it manually:
+The data platform running in Docker reaches Ollama on the host via `host.docker.internal`. The Vault secret is seeded automatically by `docker/vault-init.sh`. To set it manually:
 
 ```bash
 docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
@@ -164,6 +164,56 @@ docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 ## AI Provider Required
 
 An AI provider must be configured for the platform to start. Set `ai.enabled: "true"` and configure at least one provider (Anthropic, OpenAI, or Ollama) in `application.yaml` and Vault.
+
+## Multi-Tenant: Per-Tenant API Key Overrides
+
+In multi-tenant deployments (`multiTenant: "true"` in `application.yaml`) each tenant can override the global AI provider key with their own. The platform resolves the AI config per-request: if a Vault secret exists at `{tenantEnv}/{provider}` (for example `trial-alice/anthropic` or `trial-alice/openai`) it is used as an override; otherwise the global `ai.aiSecretName` from `application.yaml` is used as a fallback. No restart, no code changes — the override takes effect on the next AI call.
+
+### Why bring your own key
+
+The global key configured by the operator is often a shared, rate-limited, cost-conscious default — fine for evaluating the platform but a bottleneck for serious work. Bringing your own key lets you:
+
+- Run AI features against your own quota and account, with no shared rate limits
+- Pick a stronger model than the operator-configured default
+- Isolate cost and usage tracking to your own provider account
+- Get dramatically faster, higher-quality results from CodeGen, AI lookups, data quality rules, transformations, and schema inference
+
+This is especially relevant for the hosted free trial at [datris.ai](https://datris.ai), where the shared Datris-managed key is conservatively budgeted.
+
+### Setting your key from the UI (Configuration tab)
+
+The easiest way for an end user to override their tenant key is through the platform UI:
+
+1. Open the **Configuration** tab.
+2. Pick a provider (`Anthropic` or `OpenAI`), select a model, and paste your API key.
+3. Click **Save Configuration**.
+
+The status indicator at the top of the page flips from "Datris-managed keys (default)" to "Your own {provider} key". From this point on, all AI features run against your key.
+
+To revert to the operator-configured shared key, click **Reset to Datris-managed**. This deletes the per-tenant Vault secrets and falls the tenant back to the global default.
+
+### Setting a tenant key directly in Vault
+
+For operators who provision tenants programmatically, write the secret directly to the tenant's Vault path:
+
+```bash
+docker-compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+  vault kv put secret/trial-alice/anthropic \
+  endpoint="https://api.anthropic.com/v1/messages" \
+  model="claude-sonnet-4-6" \
+  apiKey="sk-ant-..."
+```
+
+Replace `trial-alice` with the tenant's environment name. The secret shape (`endpoint`, `model`, `apiKey`) is the same as the global secret described under [Vault Secret](#vault-secret) above.
+
+### Resolution chain
+
+The fallback chain for the main AI provider config in multi-tenant mode is:
+
+1. Tenant's `{env}/anthropic` (or `{env}/openai`) Vault secret, if it exists
+2. Global `ai.aiSecretName` from `application.yaml`
+
+The codegen secret follows an independent fallback chain — see [Multi-tenant](#multi-tenant) under "Stronger Model for Code Generation" below. A tenant can override the main key, the codegen key, or both, in any combination.
 
 ## Stronger Model for Code Generation
 
@@ -227,6 +277,8 @@ In multi-tenant deployments each tenant can override the codegen model independe
 2. Global codegen config (if `ai.codegen.secretName` is set)
 3. Tenant's main AI config
 4. Global main AI config
+
+The same per-tenant override pattern applies to the **main** AI provider key independently — see [Multi-Tenant: Per-Tenant API Key Overrides](#multi-tenant-per-tenant-api-key-overrides) above. A tenant can override the main key, the codegen key, or both.
 
 ### Misconfiguration
 

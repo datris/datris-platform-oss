@@ -16,6 +16,7 @@ import { ConfigurationComponent } from './configuration/configuration.component'
 import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
+import { GettingStartedComponent } from './getting-started/getting-started.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { apiKeyInterceptor } from './api-key.interceptor';
@@ -37,7 +38,8 @@ import { MaterialModule } from './material.module';
     ConfigurationComponent,
     TapsComponent,
     TapCreateComponent,
-    TapRunComponent
+    TapRunComponent,
+    GettingStartedComponent
   ],
   imports: [
     BrowserModule,

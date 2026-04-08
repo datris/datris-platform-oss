@@ -73,6 +73,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   generatingPipeline = false;
   generatedFields: Array<{name: string, type: string}> = [];
   generateError = '';
+  generatedTruncate = false;
 
   // Save
   saving = false;
@@ -720,13 +721,15 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         dbName: 'DATABASE_NAME',
         schema: 'public',
         table: tableName,
-        usePostgres: true
+        usePostgres: true,
+        truncateBeforeWrite: this.generatedTruncate
       };
     } else {
       destination.database = {
         dbName: 'DATABASE_NAME',
         table: tableName,
-        useMongoDB: true
+        useMongoDB: true,
+        truncateBeforeWrite: this.generatedTruncate
       };
     }
 

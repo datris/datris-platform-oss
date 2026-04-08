@@ -447,6 +447,13 @@
             <div class="generate-summary generate-columns">{{ testColumns.join(', ') }}</div>
             <div class="generate-help">All columns will be created as <code>string</code> for safe ingestion. You can promote individual columns to richer types in the pipeline editor once you're confident about the data shape.</div>
           </div>
+          <div class="form-group">
+            <label class="toggle-row">
+              <input type="checkbox" [(ngModel)]="generatedTruncate" [disabled]="generatingPipeline">
+              <span>Truncate destination before each tap run (full refresh)</span>
+            </label>
+            <div class="generate-help">When enabled, the destination table is cleared before every tap run, so it always reflects the latest tap output. Leave unchecked to append/upsert.</div>
+          </div>
           <div class="error-box" *ngIf="generateError">{{ generateError }}</div>
         </div>
         <div class="modal-footer">

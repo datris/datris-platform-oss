@@ -23,6 +23,7 @@ object TapScheduler {
             if (tap.cronExpression != null && tap.enabled && tap.lastRunStatus != "running") {
                 try {
                     val cron = new CronExpression(tap.cronExpression)
+                    cron.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
                     val shouldRun = {
                         if (tap.lastRunTime == null) {
                             // Never run before — wait for the first scheduled time

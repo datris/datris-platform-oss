@@ -1,0 +1,102 @@
+<div class="getting-started">
+  <header class="hero">
+    <h1>Datris Platform UI</h1>
+    <p class="tagline">The First AI Agent-Native Data Platform</p>
+    <p class="overview">
+      This is your <strong>testing and configuration environment</strong> for Datris.
+      Use it to set up <strong>Taps</strong> that pull data from external sources,
+      define <strong>Pipelines</strong> that validate and transform records, push data
+      through <strong>Ingestion</strong>, and <strong>Search</strong> the results — all
+      from one place. When you're happy with how things behave here, the same
+      configuration runs in production via the API, CLI, or MCP.
+    </p>
+  </header>
+
+  <section class="tabs-guide">
+    <h2>What each tab does</h2>
+
+    <div class="cards-grid">
+      <article class="tab-card">
+        <h3><a routerLink="/mcp">MCP</a></h3>
+        <p>
+          Connect an Agent — Claude, Cursor, or any MCP-compatible client — to Datris. This tab
+          gives you a ready-to-paste config block and shows the tools agents will
+          have access to (create pipelines, ingest data, run searches, etc.).
+          Start here if you want an AI agent driving Datris for you.
+        </p>
+      </article>
+
+      <article class="tab-card">
+        <h3><a routerLink="/taps">Taps</a></h3>
+        <p>
+          Taps are <strong>data feeds</strong> — scheduled or on-demand jobs that
+          pull data from an external source (REST API, file, etc.) and
+          hand it off to a pipeline. Use this tab to create a tap, preview its
+          output, run it manually, and link it to a pipeline.
+        </p>
+      </article>
+
+      <article class="tab-card">
+        <h3><a routerLink="/pipelines">Pipelines</a></h3>
+        <p>
+          Pipelines define <strong>how data is validated, transformed, and stored</strong>.
+          The 9-step wizard walks you through schema, AI data quality rules,
+          AI-generated transformations, and the destination. Every record you ingest
+          flows through a pipeline.
+        </p>
+      </article>
+
+      <article class="tab-card">
+        <h3><a routerLink="/ingestion">Ingestion</a></h3>
+        <p>
+          Watch data flow in. This tab shows recent ingestion runs, row counts,
+          validation failures, and lets you drill into individual jobs. It's your
+          live feedback loop while you're tuning a pipeline.
+        </p>
+      </article>
+
+      <article class="tab-card">
+        <h3><a routerLink="/search">Search</a></h3>
+        <p>
+          Query the data you've ingested. Run SQL, browse tables, or ask a natural-
+          language question and let Datris generate the answer. This is where you
+          confirm that the records made it through end-to-end.
+        </p>
+      </article>
+
+      <article class="tab-card" *ngIf="!isTrial">
+        <h3><a routerLink="/secrets">Secrets</a></h3>
+        <p>
+          Store API keys, database passwords, and other credentials that taps and
+          pipelines reference by name. Values are stored in Vault — never in plain
+          config.
+        </p>
+      </article>
+
+      <article class="tab-card">
+        <h3><a routerLink="/configuration">Configuration</a></h3>
+        <p>
+          Platform-wide settings: AI provider/model, default behaviors, and
+          environment info. Most users only visit this tab once during setup.
+        </p>
+      </article>
+
+      <article class="tab-card">
+        <h3><a href="https://docs.datris.ai" target="_blank" rel="noopener">Docs ↗</a></h3>
+        <p>
+          Full reference documentation, tutorials, and API specs. Opens in a new tab.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="next-steps">
+    <h2>Suggested first run</h2>
+    <ol>
+      <li>Open <a routerLink="/taps">Taps</a> and create a tap against a sample source.</li>
+      <li>Let the tap auto-create a <a routerLink="/pipelines">Pipeline</a>, or build one from scratch in the wizard.</li>
+      <li>Run the tap and watch rows arrive in <a routerLink="/ingestion">Ingestion</a>.</li>
+      <li>Query the result in <a routerLink="/search">Search</a>.</li>
+    </ol>
+  </section>
+</div>

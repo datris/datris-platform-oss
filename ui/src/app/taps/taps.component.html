@@ -54,7 +54,10 @@
               <option *ngFor="let p of pipelines" [value]="p.name" [selected]="tap.targetPipeline === p.name">{{ p.name }}</option>
             </select>
           </td>
-          <td class="tap-cron">{{ tap.cronExpression || '-' }}</td>
+          <td class="tap-cron tap-cron-link" (click)="openEditCron($event, tap)" title="Click to edit schedule">
+            <span>{{ tap.cronExpression || '-' }}</span>
+            <span class="material-icons cron-edit-icon">edit</span>
+          </td>
           <td class="tap-datatype">
             <span class="datatype-badge" *ngIf="tap.lastRunDataType || tap.lastTestRunDataType">
               {{ (tap.lastRunDataType || tap.lastTestRunDataType).toUpperCase() }}
@@ -153,6 +156,57 @@
           </div>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Cron Modal -->
+<div class="modal-overlay" *ngIf="editingCronTap" (click)="closeEditCron()">
+  <div class="cron-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Edit Schedule: {{ editingCronTap.name }}</h2>
+      <button class="modal-close" (click)="closeEditCron()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="cron-presets">
+        <button class="preset-btn" [class.active]="cronEditPreset === 'hourly'" (click)="setCronPreset('hourly')">Every Hour</button>
+        <button class="preset-btn" [class.active]="cronEditPreset === 'daily'" (click)="setCronPreset('daily')">Daily at Midnight</button>
+        <button class="preset-btn" [class.active]="cronEditPreset === 'weekdays'" (click)="setCronPreset('weekdays')">Weekdays at Midnight</button>
+        <button class="preset-btn" [class.active]="cronEditPreset === 'weekly'" (click)="setCronPreset('weekly')">Weekly (Mon)</button>
+        <button class="preset-btn" [class.active]="cronEditPreset === 'custom'" (click)="setCronPreset('custom')">Custom</button>
+      </div>
+
+      <label class="form-label">Describe your schedule (AI)</label>
+      <div class="cron-ai-row">
+        <input class="form-input" type="text" [(ngModel)]="cronPrompt"
+               placeholder="e.g., Every weekday at 4pm"
+               (keydown.enter)="generateCronFromPrompt()">
+        <button class="generate-btn" (click)="generateCronFromPrompt()"
+                [disabled]="generatingCron || !cronPrompt.trim()">
+          <span class="material-icons">{{ generatingCron ? 'hourglass_empty' : 'auto_awesome' }}</span>
+          {{ generatingCron ? 'Generating...' : 'Generate' }}
+        </button>
+      </div>
+
+      <label class="form-label">CRON Expression (Quartz format)</label>
+      <input class="form-input cron-input" type="text" [(ngModel)]="cronEditValue"
+             (ngModelChange)="cronEditPreset = 'custom'"
+             placeholder="0 0 0 ? * MON-FRI">
+      <div class="cron-validation-error" *ngIf="cronEditValidationError()">{{ cronEditValidationError() }}</div>
+      <div class="cron-validation-ok" *ngIf="cronEditValue.trim() && !cronEditValidationError()">
+        {{ describeCron(cronEditValue) }}
+      </div>
+
+      <div class="cron-validation-error" *ngIf="cronEditError">{{ cronEditError }}</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" (click)="closeEditCron()">Cancel</button>
+      <button class="btn-primary" (click)="saveCron()"
+              [disabled]="savingCron || (cronEditValue.trim() && !!cronEditValidationError())">
+        {{ savingCron ? 'Saving...' : 'Save' }}
+      </button>
     </div>
   </div>
 </div>

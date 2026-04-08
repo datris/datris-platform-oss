@@ -13,9 +13,11 @@ import { ConfigurationComponent } from './configuration/configuration.component'
 import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
+import { GettingStartedComponent } from './getting-started/getting-started.component';
 
 const routes: Routes = [
-  { path: '', redirectTo: 'mcp', pathMatch: 'full' },
+  { path: '', redirectTo: 'getting-started', pathMatch: 'full' },
+  { path: 'getting-started', component: GettingStartedComponent },
   { path: 'pipelines', component: PipelinesComponent },
   { path: 'pipelines/create', component: PipelineCreateComponent },
   { path: 'pipelines/:name/edit', component: PipelineCreateComponent },

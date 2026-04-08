@@ -243,6 +243,28 @@ tbody tr:last-child td {
   font-size: 13px;
 }
 
+.tap-cron-link {
+  cursor: pointer;
+  position: relative;
+}
+
+.tap-cron-link .cron-edit-icon {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-left: 6px;
+  vertical-align: middle;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.tap-cron-link:hover .cron-edit-icon {
+  opacity: 1;
+}
+
+.tap-cron-link:hover {
+  color: var(--accent-cyan);
+}
+
 .status-badge {
   display: inline-block;
   padding: 2px 8px;
@@ -596,4 +618,160 @@ tbody tr:last-child td {
   padding: 48px;
   color: var(--text-muted);
   font-size: 16px;
+}
+
+/* Cron edit modal */
+.cron-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  width: 600px;
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.cron-modal .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cron-modal .form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+  margin-top: 8px;
+}
+
+.cron-modal .form-input {
+  width: 100%;
+  background: var(--bg-input, #0d1117);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text-primary);
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.cron-modal .form-input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.cron-modal .cron-input {
+  font-family: var(--font-mono);
+}
+
+.cron-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cron-presets .preset-btn {
+  background: var(--bg-input, #0d1117);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 12px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cron-presets .preset-btn:hover {
+  border-color: var(--accent-cyan);
+}
+
+.cron-presets .preset-btn.active {
+  background: rgba(0, 180, 255, 0.15);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+.cron-ai-row {
+  display: flex;
+  gap: 8px;
+}
+
+.cron-ai-row .form-input {
+  flex: 1;
+}
+
+.cron-ai-row .generate-btn {
+  background: rgba(0, 180, 255, 0.15);
+  border: 1px solid var(--accent-cyan);
+  border-radius: 6px;
+  padding: 8px 16px;
+  color: var(--accent-cyan);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cron-ai-row .generate-btn .material-icons {
+  font-size: 16px;
+}
+
+.cron-ai-row .generate-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cron-validation-error {
+  color: #f87171;
+  font-size: 12px;
+  margin-top: -4px;
+}
+
+.cron-validation-ok {
+  color: #4ade80;
+  font-size: 12px;
+  margin-top: -4px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.modal-footer .btn-primary {
+  background: var(--accent-cyan);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  color: #001018;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.modal-footer .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-footer .btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 16px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
 }
