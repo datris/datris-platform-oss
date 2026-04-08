@@ -87,7 +87,23 @@ This triggers the GitHub Actions workflow that builds and pushes Docker images t
 
 Wait for the GitHub Actions build to complete before proceeding.
 
-## 7. Update Homebrew Tap
+## 7. Wait for GitHub Actions Docker Build
+
+The tag push in step 6 triggers the GitHub Actions workflow that builds multi-platform (amd64 + arm64) Docker images and pushes them to Docker Hub. **Wait for it to complete before proceeding.**
+
+```bash
+gh run list --repo datris/datris-platform-oss --limit 3
+```
+
+If the build was not triggered (e.g., workflow_dispatch needed), trigger it manually:
+
+```bash
+gh workflow run "Build and Push Docker Images" --repo datris/datris-platform-oss --ref v{x.y.z}
+```
+
+**Do NOT** build and push Docker images locally with `docker buildx` — this overwrites the multi-arch `:latest` tags with single-arch images, breaking `docker compose pull` on other platforms.
+
+## 8. Update Homebrew Tap
 
 Download the new tarball and get its sha256:
 
@@ -116,22 +132,6 @@ brew update
 brew upgrade datris
 datris --version
 ```
-
-## 8. Wait for GitHub Actions Docker Build
-
-The tag push in step 6 triggers the GitHub Actions workflow that builds multi-platform (amd64 + arm64) Docker images and pushes them to Docker Hub. **Wait for it to complete before proceeding.**
-
-```bash
-gh run list --repo datris/datris-platform-oss --limit 3
-```
-
-If the build was not triggered (e.g., workflow_dispatch needed), trigger it manually:
-
-```bash
-gh workflow run "Build and Push Docker Images" --repo datris/datris-platform-oss --ref v{x.y.z}
-```
-
-**Do NOT** build and push Docker images locally with `docker buildx` — this overwrites the multi-arch `:latest` tags with single-arch images, breaking `docker compose pull` on other platforms.
 
 ## 9. Deploy to Trial Droplet
 
@@ -206,8 +206,8 @@ curl -s https://api.trial.datris.ai/api/v1/version
 | 4 | PyPI | `twine upload` (before tagging!) |
 | 5 | Commit + push | GitHub `main` branch |
 | 6 | Tag | GitHub tag → triggers Docker Hub build + MCP Registry |
-| 7 | Homebrew | Update formula sha256, push tap repo |
-| 8 | Wait for Docker build | GitHub Actions builds multi-arch images — do NOT build locally |
+| 7 | Wait for Docker build | GitHub Actions builds multi-arch images — do NOT build locally |
+| 8 | Homebrew | Update formula sha256, push tap repo |
 | 9 | Trial Droplet | Pull `:latest` images, recreate containers, restart nginx |
 | 10 | MCP Registry | Automated (or `mcp-publisher publish` if failed) |
 | 11 | Verify | Docker, CLI, registry, trial app, docs |
