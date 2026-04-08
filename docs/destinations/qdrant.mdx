@@ -29,7 +29,6 @@ Ingest unstructured documents (PDFs, text files, HTML) into [Qdrant](https://qdr
             "documentType": "10-Q",
             "filingDate": "2026-01-30"
         },
-        "embeddingSecretName": "oss/embedding",
         "qdrantSecretName": "oss/qdrant"
     }
 }
@@ -40,7 +39,7 @@ Ingest unstructured documents (PDFs, text files, HTML) into [Qdrant](https://qdr
 | `collectionName` | string | (required) | Qdrant collection name. Auto-created if it doesn't exist. |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored on every chunk as Qdrant payload. Used for filtered search. |
-| `embeddingSecretName` | string | (required) | Vault secret name for the embedding API configuration. |
+| `embeddingSecretName` | string | _server default_ | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically — set this only to point a single pipeline at a different embedding model. |
 | `qdrantSecretName` | string | (required) | Vault secret name for Qdrant connection. |
 
 ## Supported File Types
@@ -81,10 +80,11 @@ vault kv put secret/oss/qdrant \
 
 ### Embedding API
 
-The embedding API is configured separately from the pipeline's AI provider, allowing you to use different services for embeddings vs. AI features.
+The embedding secret is server-level (`ai.embedding.secretName`, default `oss/embedding`) and is seeded automatically by `docker/vault-init.sh`. Each Vault secret is self-describing — the resolver reads `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version` from inside. See [AI Configuration](/ai-configuration) for the full picture.
 
 ```bash
 vault kv put secret/oss/embedding \
+  provider="openai" \
   endpoint="https://api.openai.com/v1/embeddings" \
   model="text-embedding-3-small" \
   apiKey="sk-..."
@@ -92,9 +92,10 @@ vault kv put secret/oss/embedding \
 
 | Field | Description |
 |-------|-------------|
-| `endpoint` | Embedding API URL. Supports OpenAI and OpenAI-compatible APIs (Ollama). |
+| `provider` | `openai` or `ollama`. (Anthropic has no embeddings API.) |
+| `endpoint` | Embedding API URL. Must speak the OpenAI embeddings contract. |
 | `model` | Embedding model name. |
-| `apiKey` | API key. Empty string for local Ollama. |
+| `apiKey` | API key. Omit for local Ollama. |
 
 **Common embedding configurations:**
 
@@ -102,7 +103,9 @@ vault kv put secret/oss/embedding \
 |----------|----------|-------|------------|
 | OpenAI | `https://api.openai.com/v1/embeddings` | `text-embedding-3-small` | 1536 |
 | OpenAI | `https://api.openai.com/v1/embeddings` | `text-embedding-3-large` | 3072 |
-| Ollama | `http://host.docker.internal:11434/api/embeddings` | `nomic-embed-text` | 768 |
+| Ollama (bundled sidecar) | `http://ollama:11434/v1/embeddings` | `bge-m3` | 1024 |
+
+For Anthropic-only deployments, the bundled Ollama sidecar serves `bge-m3` and `vault-init.sh` seeds the embedding secret to point at it — no OpenAI key required.
 
 ## Chunking Strategies
 

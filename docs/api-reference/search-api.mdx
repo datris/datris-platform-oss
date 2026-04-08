@@ -14,7 +14,7 @@ All search endpoints share these parameters:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `query` | string | Yes | | Natural language search query |
-| `embeddingSecretName` | string | No | Server default | Vault secret name for the embedding provider (must contain `endpoint`, `model`, and optionally `apiKey`). Uses server default from `application.yaml` if omitted. |
+| `embeddingSecretName` | string | No | `ai.embedding.secretName` | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing: `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version`. |
 | `topK` | integer | No | 5 | Number of results to return |
 
 ## Common Response Format
@@ -57,7 +57,6 @@ curl -X POST http://localhost:8080/api/v1/search/qdrant \
   -d '{
     "query": "quarterly revenue projections",
     "collection": "financial_documents",
-    "embeddingSecretName": "oss/openai-embedding",
     "qdrantSecretName": "oss/qdrant",
     "topK": 5
   }'
@@ -82,7 +81,6 @@ curl -X POST http://localhost:8080/api/v1/search/weaviate \
   -d '{
     "query": "quarterly revenue projections",
     "className": "FinancialDocuments",
-    "embeddingSecretName": "oss/openai-embedding",
     "weaviateSecretName": "oss/weaviate",
     "topK": 5
   }'
@@ -107,7 +105,6 @@ curl -X POST http://localhost:8080/api/v1/search/milvus \
   -d '{
     "query": "quarterly revenue projections",
     "collection": "financial_documents",
-    "embeddingSecretName": "oss/openai-embedding",
     "milvusSecretName": "oss/milvus",
     "topK": 5
   }'
@@ -132,7 +129,6 @@ curl -X POST http://localhost:8080/api/v1/search/chroma \
   -d '{
     "query": "quarterly revenue projections",
     "collection": "financial_documents",
-    "embeddingSecretName": "oss/openai-embedding",
     "chromaSecretName": "oss/chroma",
     "topK": 5
   }'
@@ -159,7 +155,6 @@ curl -X POST http://localhost:8080/api/v1/search/pgvector \
     "query": "quarterly revenue projections",
     "table": "financial_documents",
     "schema": "public",
-    "embeddingSecretName": "oss/openai-embedding",
     "postgresSecretName": "oss/pgvector",
     "topK": 5
   }'
@@ -226,13 +221,18 @@ Returns the AI-generated answer based on the provided context.
 
 ### Embedding Secret
 
+Self-describing — the resolver reads `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version` from inside the secret. See [AI Configuration](/ai-configuration).
+
 ```json
 {
+  "provider": "openai",
   "endpoint": "https://api.openai.com/v1/embeddings",
   "model": "text-embedding-3-small",
   "apiKey": "sk-..."
 }
 ```
+
+For Anthropic-only deployments, the bundled Ollama sidecar serves `bge-m3` and `vault-init.sh` seeds the embedding secret to point at it (`provider: "ollama"`, `endpoint: "http://ollama:11434/v1/embeddings"`, `model: "bge-m3"`).
 
 ### Vector Database Secrets
 

@@ -31,7 +31,6 @@ Chroma is the simplest vector database to set up — a single Docker container w
             "documentType": "10-Q",
             "filingDate": "2026-01-30"
         },
-        "embeddingSecretName": "oss/embedding",
         "chromaSecretName": "oss/chroma"
     }
 }
@@ -42,7 +41,7 @@ Chroma is the simplest vector database to set up — a single Docker container w
 | `collectionName` | string | (required) | Chroma collection name. Auto-created with cosine distance if it doesn't exist. |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored on every chunk. Used for filtered search. |
-| `embeddingSecretName` | string | (required) | Vault secret name for the embedding API configuration. |
+| `embeddingSecretName` | string | _server default_ | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically — set this only to point a single pipeline at a different embedding model. |
 | `chromaSecretName` | string | (required) | Vault secret name for Chroma connection. |
 
 ## Supported File Types
@@ -83,14 +82,17 @@ Chroma does not require authentication by default. For Chroma Cloud or authentic
 
 ### Embedding API
 
-The embedding API is shared with other vector database destinations. See [Qdrant documentation](/destinations/qdrant#embedding-api) for full details.
+The embedding secret is server-level (`ai.embedding.secretName`, default `oss/embedding`) and is seeded automatically by `docker/vault-init.sh`. You only need to write it manually if you want to point at a different embedding provider. See [AI Configuration](/ai-configuration) for the full picture.
 
 ```bash
 vault kv put secret/oss/embedding \
+  provider="openai" \
   endpoint="https://api.openai.com/v1/embeddings" \
   model="text-embedding-3-small" \
   apiKey="sk-..."
 ```
+
+For Anthropic-only deployments, the bundled Ollama sidecar serves `bge-m3` (1024-dim) and `vault-init.sh` seeds the embedding secret to point at it — no OpenAI key required.
 
 ## Chunking Strategies
 

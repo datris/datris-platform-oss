@@ -98,7 +98,6 @@ MinIO credentials are stored in Vault under the secret specified by `secrets.min
 | `secrets.activeMQSecretName` | Vault path for ActiveMQ credentials |
 | `secrets.mongoDbSecretName` | Vault path for MongoDB credentials |
 | `secrets.kafkaProducerSecretName` | Vault path for Kafka producer credentials |
-| `secrets.embeddingSecretName` | Vault path for embedding model credentials |
 | `secrets.qdrantSecretName` | Vault path for Qdrant connection |
 | `secrets.weaviateSecretName` | Vault path for Weaviate connection |
 | `secrets.milvusSecretName` | Vault path for Milvus connection |
@@ -150,15 +149,27 @@ PostgreSQL connection details (`username`, `password`, `jdbcUrl`) are stored in 
 
 ### AI (Required)
 
+AI configuration is split into three independent slots, each pointing at its own self-describing Vault secret. The resolver reads whatever it finds in the secret — `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version` — so the YAML side never needs a `provider` field.
+
 | Property | Default | Description |
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
-| `ai.provider` | `anthropic` | AI provider — `anthropic`, `openai`, or `ollama` |
-| `ai.aiSecretName` | `oss/anthropic` | Vault secret name containing `endpoint`, `model`, and `apiKey` |
-| `ai.version` | `2023-06-01` | API version sent to the provider. For Anthropic this is the value of the `anthropic-version` request header. Other providers can reuse this field for their own version headers. |
-| `ai.codegen.secretName` | `oss/codegen` | Vault secret name for the model used for code-generation tasks (tap scripts, AI DQ, AI transformations, schema generation, NL→SQL). Seeded automatically by `docker/vault-init.sh` based on `AI_PROVIDER` — Anthropic gets `claude-opus-4-6`, OpenAI gets `gpt-5.4`, Ollama reuses the main model. Remove this block to fall back to the main `ai.*` model. |
-| `ai.codegen.provider` | _inherits `ai.provider`_ | Optional codegen provider override (`anthropic`, `openai`, `ollama`). |
-| `ai.codegen.version` | _inherits `ai.version`_ | Optional codegen API version override. |
+| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). |
+| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest available model — Anthropic gets `claude-opus-4-6`, OpenAI gets `gpt-5.4`. |
+| `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled Ollama sidecar serving `bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
+
+Each Vault secret is self-describing and looks like:
+
+```bash
+vault kv put secret/oss/ai-primary \
+  provider="anthropic" \
+  endpoint="https://api.anthropic.com/v1/messages" \
+  model="claude-sonnet-4-6" \
+  apiKey="sk-ant-..." \
+  version="2023-06-01"
+```
+
+`docker/vault-init.sh` seeds all three secrets automatically based on which key is present in `.env` (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). For multi-tenant deployments, per-tenant override secrets live at `{env}/ai-primary`, `{env}/codegen`, `{env}/embedding`.
 
 All AI calls (`callAI`, `callAIWithSystem`, `callAIWithMessages`) share a unified retry helper that automatically retries on transient `429` (rate limited), `503` (service unavailable), and `529` (overloaded) responses with linear backoff (5s, 10s, 15s, 20s, 25s) for up to 5 attempts. This applies uniformly across all configured providers.
 

@@ -636,7 +636,7 @@ paths:
                   description: Qdrant collection name
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
+                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
                 qdrantSecretName:
                   type: string
                   description: Vault secret name for Qdrant connection
@@ -675,7 +675,7 @@ paths:
                   description: Weaviate class name (PascalCase)
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
+                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
                 weaviateSecretName:
                   type: string
                   description: Vault secret name for Weaviate connection
@@ -713,7 +713,7 @@ paths:
                   description: Milvus collection name
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
+                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
                 milvusSecretName:
                   type: string
                   description: Vault secret name for Milvus connection
@@ -751,7 +751,7 @@ paths:
                   description: Chroma collection name
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
+                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
                 chromaSecretName:
                   type: string
                   description: Vault secret name for Chroma connection
@@ -793,7 +793,7 @@ paths:
                   description: PostgreSQL schema
                 embeddingSecretName:
                   type: string
-                  description: Vault secret name for embedding provider (optional, uses server default if omitted)
+                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
                 postgresSecretName:
                   type: string
                   description: Vault secret name for PostgreSQL/pgvector connection

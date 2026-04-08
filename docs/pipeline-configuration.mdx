@@ -249,7 +249,7 @@ See [AI Transformation](/transformation/ai-transformation) for detailed document
 | `collectionName` | string | Qdrant collection name |
 | `chunking` | object | Chunking config (see below) |
 | `metadata` | object | Key-value metadata to attach to each chunk |
-| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `embeddingSecretName` | string | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName`. |
 | `qdrantSecretName` | string | Vault secret for Qdrant connection |
 
 ### Destination > Weaviate
@@ -259,7 +259,7 @@ See [AI Transformation](/transformation/ai-transformation) for detailed document
 | `className` | string | Weaviate class name |
 | `chunking` | object | Chunking config (see below) |
 | `metadata` | object | Key-value metadata to attach to each chunk |
-| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `embeddingSecretName` | string | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName`. |
 | `weaviateSecretName` | string | Vault secret for Weaviate connection |
 
 ### Destination > pgvector
@@ -270,7 +270,7 @@ See [AI Transformation](/transformation/ai-transformation) for detailed document
 | `schemaName` | string | PostgreSQL schema name |
 | `chunking` | object | Chunking config (see below) |
 | `metadata` | object | Key-value metadata to attach to each chunk |
-| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `embeddingSecretName` | string | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName`. |
 | `postgresSecretName` | string | Vault secret for PostgreSQL connection |
 
 ### Destination > Milvus
@@ -280,7 +280,7 @@ See [AI Transformation](/transformation/ai-transformation) for detailed document
 | `collectionName` | string | Milvus collection name |
 | `chunking` | object | Chunking config (see below) |
 | `metadata` | object | Key-value metadata to attach to each chunk |
-| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `embeddingSecretName` | string | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName`. |
 | `milvusSecretName` | string | Vault secret for Milvus connection |
 
 ### Destination > Chroma
@@ -290,7 +290,7 @@ See [AI Transformation](/transformation/ai-transformation) for detailed document
 | `collectionName` | string | Chroma collection name |
 | `chunking` | object | Chunking config (see below) |
 | `metadata` | object | Key-value metadata to attach to each chunk |
-| `embeddingSecretName` | string | Vault secret for the embedding provider |
+| `embeddingSecretName` | string | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName`. |
 | `chromaSecretName` | string | Vault secret for Chroma connection |
 
 ### Chunking Config

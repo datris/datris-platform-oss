@@ -32,7 +32,6 @@ pgvector uses your existing PostgreSQL infrastructure — no separate vector dat
             "document_type": "10-Q",
             "filing_date": "2026-01-30"
         },
-        "embeddingSecretName": "oss/embedding",
         "postgresSecretName": "oss/pgvector"
     }
 }
@@ -44,7 +43,7 @@ pgvector uses your existing PostgreSQL infrastructure — no separate vector dat
 | `schemaName` | string | `"public"` | PostgreSQL schema name. Auto-created if it doesn't exist. |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored as columns on every chunk. Use snake_case for column names. |
-| `embeddingSecretName` | string | (required) | Vault secret name for the embedding API configuration. |
+| `embeddingSecretName` | string | _server default_ | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically — set this only to point a single pipeline at a different embedding model. |
 | `postgresSecretName` | string | (required) | Vault secret name for PostgreSQL connection. |
 
 ## Supported File Types
@@ -87,14 +86,17 @@ This is separate from the pipeline's standard `oss/postgres` secret so the vecto
 
 ### Embedding API
 
-The embedding API is shared with other vector database destinations (e.g., Qdrant, Weaviate). See [Qdrant documentation](/destinations/qdrant#embedding-api) for full details.
+The embedding secret is server-level (`ai.embedding.secretName`, default `oss/embedding`) and is seeded automatically by `docker/vault-init.sh`. See [AI Configuration](/ai-configuration) and the [Qdrant docs](/destinations/qdrant#embedding-api) for the full picture.
 
 ```bash
 vault kv put secret/oss/embedding \
+  provider="openai" \
   endpoint="https://api.openai.com/v1/embeddings" \
   model="text-embedding-3-small" \
   apiKey="sk-..."
 ```
+
+For Anthropic-only deployments, the bundled Ollama sidecar serves `bge-m3` and `vault-init.sh` seeds the embedding secret to point at it — no OpenAI key required.
 
 ## Chunking Strategies
 

@@ -157,39 +157,51 @@ Response:
 
 AI schema generation is disabled by default. To enable it:
 
+Schema generation uses the **codegen** AI slot. As of v1.5.6, AI configuration is split into three independent self-describing Vault secrets — see [AI Configuration](/ai-configuration) for the full picture.
+
 **`application.yaml`** (or `docker/config/application.yaml` for Docker deployments):
 ```yaml
 ai:
   enabled: "true"
-  provider: "anthropic"       # anthropic or openai
-  aiSecretName: "oss/anthropic"
+  aiPrimary:
+    secretName: "oss/ai-primary"
+  codegen:
+    secretName: "oss/codegen"
+  embedding:
+    secretName: "oss/embedding"
 ```
 
-**Vault secret** (stored at `secret/<aiSecretName>`):
+**Vault secret** (each secret is self-describing — provider, endpoint, model, apiKey, and optionally version, all inline):
+
 ```bash
-vault kv put secret/oss/anthropic \
+vault kv put secret/oss/codegen \
+  provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-sonnet-4-6" \
-  apiKey="sk-ant-..."
+  model="claude-opus-4-6" \
+  apiKey="sk-ant-..." \
+  version="2023-06-01"
 ```
 
 For OpenAI:
 ```bash
-vault kv put secret/oss/openai \
+vault kv put secret/oss/codegen \
+  provider="openai" \
   endpoint="https://api.openai.com/v1/chat/completions" \
-  model="gpt-4o" \
+  model="gpt-5.4" \
   apiKey="sk-..."
 ```
 
-The Vault secret must contain three keys:
+The Vault secret keys:
 
 | Key | Description |
 |-----|-------------|
+| `provider` | `anthropic`, `openai`, or `ollama` |
 | `endpoint` | The AI provider API URL |
 | `model` | The model name to use |
-| `apiKey` | The API key for authentication |
+| `apiKey` | The API key for authentication (omit for local Ollama) |
+| `version` | Optional API version header (e.g. Anthropic's `anthropic-version`) |
 
-The pipeline reads the secret at startup. If `ai.enabled: true` and the secret is missing or any key is absent, startup will fail with a descriptive error.
+The pipeline reads the secret at startup. If `ai.enabled: true` and the codegen secret is missing or malformed, startup will fail with a descriptive error. `docker/vault-init.sh` seeds this automatically from `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env`.
 
 ---
 
@@ -199,5 +211,6 @@ The pipeline reads the secret at startup. If `ai.enabled: true` and the secret i
 |----------|-----------------|-------------|
 | Anthropic Claude | `anthropic` | `x-api-key` + `anthropic-version: 2023-06-01` |
 | OpenAI | `openai` | `Authorization: Bearer` |
+| Ollama (local) | `ollama` | none |
 
 Any other value for `provider` will cause startup to fail with an unsupported provider error.
