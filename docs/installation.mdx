@@ -58,6 +58,41 @@ docker compose up -d
 
 This pulls the latest pre-built images from Docker Hub and restarts the services. No build tools required.
 
+Your data is preserved across upgrades — Postgres pipelines, Vault secrets, MinIO buckets, MongoDB collections, and Kafka state all live in Docker volumes that survive `docker compose pull` and `docker compose up -d`.
+
+### Stale secrets after an upgrade
+
+Datris occasionally deprecates secret paths between versions (for example, v1.5.6 split AI configuration into three new Vault slots and stopped reading the old single-slot path). Because Vault data persists across upgrades, deprecated entries stay in Vault and continue to appear in the Secrets tab even though the server ignores them. To clean them up:
+
+- **Targeted (preserves your data):** delete the stale entries one at a time from the Secrets tab UI, or run `docker compose exec -e VAULT_TOKEN=root-token vault vault kv delete secret/oss/<name>` for each deprecated path.
+- **Total reset (destroys all data):** see the next section.
+
+### Reset everything (destroys all data)
+
+If you don't care about anything on this machine and want a completely fresh install — same data layout as a brand-new clone — wipe all volumes:
+
+```bash
+cd datris-platform-oss
+docker compose down -v
+docker compose up -d
+```
+
+**Warning:** `docker compose down -v` is destructive. The `-v` flag removes every Docker volume the project owns (both named volumes and the anonymous volumes the data services create automatically). You will lose:
+
+- **All your pipelines, runs, taps, and metadata** (Postgres `datris` database)
+- **All Vault secrets** — API keys, database credentials, AI configuration (will be re-seeded from your `.env` on next start, but only the defaults — any UI-edited overrides are gone)
+- **All MinIO object storage** — raw uploads, configs, temp files, processed outputs
+- **MongoDB destination data**
+- **Queued messages and offsets** in Kafka, Zookeeper, ActiveMQ
+- **The bundled `bge-m3` embedding model** in the `ollama-data` volume (will re-download ~1.2 GB on first start)
+- **Cached pip wheels and tap-installed Python packages** in the `pip-cache` and `pip-packages` volumes (taps that need extras like `yfinance` will re-install on first run)
+
+Only run `down -v` if you are certain none of the above matters, e.g. on a brand-new dev machine, after exporting anything you needed, or on a CI runner. **Never run `down -v` on a production or shared instance.**
+
+After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secrets from your `.env`, MinIO buckets are recreated, Postgres starts empty, and Ollama re-downloads `bge-m3` (a few minutes one-time).
+
+> **Note for production deployments:** the `deploy/docker-compose.prod.yml` file used by managed/dedicated installs uses bind mounts to host directories under `/data/*` instead of Docker volumes, so `docker compose -f docker-compose.prod.yml down -v` does **not** wipe the data — the host directories survive. To reset a prod install, you'd need to also delete the relevant `/data/*` directories on the host, which is a much riskier operation and not recommended outside of disaster recovery.
+
 ## Volumes
 
 The `datris` service uses two named Docker volumes that are created automatically by `docker compose up` — no user action required:
