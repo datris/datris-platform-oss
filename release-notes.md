@@ -4,15 +4,9 @@
 
 Trial-instance hardening and Configuration tab polish.
 
-### Server-side guard for trial AI configuration
+### Trial deployment hardening
 
-The trial-droplet Configuration tab has been UI-hidden since v1.5.6, but the underlying `PUT/DELETE /api/v1/secrets/{ai-primary|codegen|embedding}` endpoints were still reachable by anyone with a trial tenant API key. A trial user could `curl` directly to those endpoints and re-point their secret's `endpoint` field at an attacker-controlled URL — the next AI call from that tenant would then send the shared Datris-managed Anthropic key plus the user's prompts to the attacker. This release closes that hole at the server.
-
-- New `def isTrial: Boolean` on `DatrisEnvironment` (single source of truth — `environment.startsWith("trial-")`, the convention enforced by trial provisioning).
-- New `rejectIfTrialAiSecret` helper on `SecretsAPIController` blocks `PUT` and `DELETE` against the three locked slots (`ai-primary`, `codegen`, `embedding`) when `isTrial` is true, returning `403 Forbidden` with a directional error message pointing the caller at `https://datris.ai/dashboard` to upgrade.
-- `GET` is unchanged — trial UIs still need to read their secrets to render the status block.
-- Non-AI secrets (`postgres`, `qdrant`, `minio`, etc.) remain mutable on trials, keeping blast radius minimal.
-- Self-hosted and dedicated deployments are unaffected — `isTrial` returns `false` for any environment that doesn't start with `trial-`, so the guard is a no-op there.
+Additional server-side hardening for trial deployments. No action required and no behavior change for self-hosted or dedicated deployments.
 
 ### Trial codegen now runs on Haiku 4.5
 
