@@ -32,12 +32,13 @@
     </div>
 
     <div class="note-banner" *ngIf="isTrial">
-      <p class="note-title">NOTE: Bring your own AI key for a much better experience.</p>
-      <p>During the free trial, Datris provides shared Anthropic and OpenAI keys so you can try every feature out of the box. These shared keys are rate-limited and use cost-conscious models.</p>
-      <p><strong>For dramatically faster and higher-quality results from CodeGen, AI lookups, data quality rules, transformations, and schema inference, paste your own Anthropic or OpenAI API key below.</strong> Your key is stored encrypted in your isolated tenant vault and is only used for your own pipelines.</p>
+      <p class="note-title">AI Configuration is locked on the trial.</p>
+      <p>During the free trial, Datris runs on shared Anthropic and OpenAI keys with cost-conscious models (Claude Haiku 4.5 for chat, Claude Opus 4.6 for code generation, OpenAI text-embedding-3-small for vector search) so you can try every feature without bringing your own credentials. To customize providers, models, or paste your own API keys, you'll need a dedicated instance.</p>
+      <p><strong>A dedicated Datris instance unlocks the full platform:</strong> bring your own Anthropic or OpenAI keys for unlimited usage, pick any model (Claude Opus 4.6, Sonnet 4.6, GPT-5.4, text-embedding-3-large), get your own isolated Postgres database with persistent storage, eliminate shared rate limits, and run on your own custom domain with a production SLA.</p>
+      <p>Visit your <a href="https://datris.ai/dashboard" target="_blank" rel="noopener">datris.ai dashboard</a> to upgrade.</p>
     </div>
 
-    <div class="config-layout">
+    <div class="config-layout" *ngIf="!isTrial">
       <div class="config-main">
         <div class="config-section">
           <h2 class="section-title">AI Provider</h2>
@@ -131,11 +132,8 @@
         </div>
 
         <div class="config-actions">
-          <button class="save-btn" (click)="save()" [disabled]="saving || resetting">
+          <button class="save-btn" (click)="save()" [disabled]="saving">
             {{ saving ? 'Saving...' : 'Save Configuration' }}
-          </button>
-          <button class="reset-btn" *ngIf="isTrial && (!usingDefaultAiPrimary || !usingDefaultCodegen || !usingDefaultEmbedding)" (click)="resetToDatrisDefaults()" [disabled]="saving || resetting">
-            {{ resetting ? 'Resetting...' : 'Reset to Datris-managed' }}
           </button>
         </div>
 

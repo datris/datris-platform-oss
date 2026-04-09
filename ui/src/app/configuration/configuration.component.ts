@@ -83,7 +83,6 @@ export class ConfigurationComponent implements OnInit {
   isTrial = false;
   multiTenant = false;
   saving = false;
-  resetting = false;
   success = '';
   error = '';
   loading = true;
@@ -180,8 +179,8 @@ export class ConfigurationComponent implements OnInit {
           this.aiPrimaryEndpoint = fields.endpoint || this.endpointFor(this.aiPrimaryProvider, 'chat');
           this.maybeAddExtraModel('aiPrimary', this.aiPrimaryProvider, this.aiPrimaryModel);
           this.showAdvancedAiPrimary = this.endpointIsCustom(this.aiPrimaryEndpoint, this.aiPrimaryProvider, 'chat');
-          recordKeyForProvider(this.aiPrimaryProvider, fields.apiKey);
-          this.usingDefaultAiPrimary = false;
+          if (!this.isTrial) recordKeyForProvider(this.aiPrimaryProvider, fields.apiKey);
+          this.usingDefaultAiPrimary = this.isTrial;  // trials are always "Datris-managed"
         } else {
           this.aiPrimaryEndpoint = this.endpointFor(this.aiPrimaryProvider, 'chat');
         }
@@ -199,8 +198,8 @@ export class ConfigurationComponent implements OnInit {
           this.codegenEndpoint = fields.endpoint || this.endpointFor(this.codegenProvider, 'chat');
           this.maybeAddExtraModel('codegen', this.codegenProvider, this.codegenModel);
           this.showAdvancedCodegen = this.endpointIsCustom(this.codegenEndpoint, this.codegenProvider, 'chat');
-          recordKeyForProvider(this.codegenProvider, fields.apiKey);
-          this.usingDefaultCodegen = false;
+          if (!this.isTrial) recordKeyForProvider(this.codegenProvider, fields.apiKey);
+          this.usingDefaultCodegen = this.isTrial;  // trials are always "Datris-managed"
         } else {
           this.codegenEndpoint = this.endpointFor(this.codegenProvider, 'chat');
         }
@@ -218,8 +217,8 @@ export class ConfigurationComponent implements OnInit {
           this.embeddingEndpoint = fields.endpoint || this.endpointFor(this.embeddingProvider, 'embedding');
           this.maybeAddExtraModel('embedding', this.embeddingProvider, this.embeddingModel);
           this.showAdvancedEmbedding = this.endpointIsCustom(this.embeddingEndpoint, this.embeddingProvider, 'embedding');
-          recordKeyForProvider(this.embeddingProvider, fields.apiKey || '');
-          this.usingDefaultEmbedding = false;
+          if (!this.isTrial) recordKeyForProvider(this.embeddingProvider, fields.apiKey || '');
+          this.usingDefaultEmbedding = this.isTrial;  // trials are always "Datris-managed"
         } else {
           this.embeddingEndpoint = this.endpointFor(this.embeddingProvider, 'embedding');
         }
@@ -275,23 +274,6 @@ export class ConfigurationComponent implements OnInit {
     if (provider === 'anthropic') return this.anthropicApiKey;
     if (provider === 'openai') return this.openaiApiKey;
     return '';
-  }
-
-  resetToDatrisDefaults(): void {
-    if (!this.isTrial) return;
-    this.resetting = true;
-    this.success = '';
-    this.error = '';
-
-    const deletes = ['ai-primary', 'codegen', 'embedding'].map(name =>
-      this.http.delete('/api/v1/secrets/' + name, { responseType: 'text' }).toPromise().catch(() => null)
-    );
-
-    Promise.all(deletes).then(() => {
-      this.resetting = false;
-      this.success = 'Reverted to Datris-managed defaults.';
-      this.loadConfig();
-    });
   }
 
   /** A field still showing only the masked placeholder hasn't been edited. */
