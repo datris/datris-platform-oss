@@ -122,6 +122,15 @@
   font-weight: 600;
 }
 
+.note-banner a {
+  color: #00b4ff;
+  text-decoration: underline;
+}
+
+.note-banner a:hover {
+  color: #33c5ff;
+}
+
 .status-row {
   display: flex;
   align-items: center;
