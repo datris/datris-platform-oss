@@ -1,57 +1,50 @@
 # Release Notes
 
-## v1.5.6 — April 8, 2026
+## v1.5.7 — April 9, 2026
 
-**Breaking change.** AI configuration is restructured into three independent, self-describing Vault secrets. Existing v1.5.x deployments must update `application.yaml` and re-seed Vault on upgrade — see "Upgrading from v1.5.x" below.
+Trial-instance hardening and Configuration tab polish.
 
-### AI configuration: three independent secrets
+### Server-side guard for trial AI configuration
 
-The single `ai.aiSecretName` and `ai.provider` settings are gone. In their place, three top-level slots in `application.yaml`, each pointing at its own self-describing Vault secret:
+The trial-droplet Configuration tab has been UI-hidden since v1.5.6, but the underlying `PUT/DELETE /api/v1/secrets/{ai-primary|codegen|embedding}` endpoints were still reachable by anyone with a trial tenant API key. A trial user could `curl` directly to those endpoints and re-point their secret's `endpoint` field at an attacker-controlled URL — the next AI call from that tenant would then send the shared Datris-managed Anthropic key plus the user's prompts to the attacker. This release closes that hole at the server.
 
-```yaml
-ai:
-  enabled: "true"
-  aiPrimary:
-    secretName: "oss/ai-primary"
-  codegen:
-    secretName: "oss/codegen"
-  embedding:
-    secretName: "oss/embedding"
+- New `def isTrial: Boolean` on `DatrisEnvironment` (single source of truth — `environment.startsWith("trial-")`, the convention enforced by trial provisioning).
+- New `rejectIfTrialAiSecret` helper on `SecretsAPIController` blocks `PUT` and `DELETE` against the three locked slots (`ai-primary`, `codegen`, `embedding`) when `isTrial` is true, returning `403 Forbidden` with a directional error message pointing the caller at `https://datris.ai/dashboard` to upgrade.
+- `GET` is unchanged — trial UIs still need to read their secrets to render the status block.
+- Non-AI secrets (`postgres`, `qdrant`, `minio`, etc.) remain mutable on trials, keeping blast radius minimal.
+- Self-hosted and dedicated deployments are unaffected — `isTrial` returns `false` for any environment that doesn't start with `trial-`, so the guard is a no-op there.
+
+### Trial codegen now runs on Haiku 4.5
+
+Trial provisioning previously seeded `{env}/codegen` with Claude Opus 4.6 — every tap-script generation, AI DQ rule, AI transformation, and NL→SQL on a free trial was burning Opus tokens against Datris's shared key. Trial codegen now defaults to `claude-haiku-4-5-20251001`, matching the chat model and dramatically reducing per-trial cost. The shared trial key behavior is unchanged for self-hosted deployments — Opus remains the recommended codegen default for customers running on their own keys.
+
+### Configuration tab — trial banner refinements
+
+- The "AI Configuration is locked on the trial." banner copy is tightened: dropped the redundant "During the free trial" preamble, broadened the "dedicated instance unlocks" pitch from "your own isolated Postgres database" to cover every supported destination category (relational, document, vector, object storage), and updated the model list to reflect Haiku for both chat and codegen.
+- The "datris.ai dashboard" link in the banner now uses the page accent color (`#00b4ff`) with an underline so it's clearly clickable against the dim banner body, instead of inheriting the body color and disappearing.
+
+### Upgrading from v1.5.6
+
+No `application.yaml` or Vault changes required. Pull the new images and restart:
+
+```sh
+docker compose pull datris ui
+docker compose up -d datris ui
 ```
 
-Each Vault secret carries its full configuration inline (`provider`, `endpoint`, `model`, `apiKey`, optionally `version`). The resolver reads the secret at the configured path and uses whatever it finds — there is no path derivation from a YAML `provider` field.
-
-This single change fixes several long-standing issues:
-
-- **Provider switching now actually works.** Previously, switching the AI provider via the Configuration tab dropdown would write a per-tenant secret to a path the resolver never read, silently leaving the override inert. Now each section's secret has a fixed path the resolver always reads.
-- **Embedding is fully independent of the main AI provider.** Previously, the embedding section was tied to the AI provider type, and Anthropic-only deployments needed a separate OpenAI key for embeddings. Now any of the three slots can use any compatible provider, independently.
-- **Anthropic-only deployments work out of the box for vector destinations.** A new `ollama` service is bundled in `docker-compose.yml`, serving the `bge-m3` open-source embedding model (1024-dim). When the user only sets `ANTHROPIC_API_KEY`, `vault-init.sh` seeds the embedding secret to point at the bundled Ollama — no OpenAI key required for Qdrant, Weaviate, Milvus, Chroma, or pgvector pushes.
-- **`vault-init.sh` simplifies dramatically** — one branch on which API key the user supplied, three secret writes per branch, no more anthropic-vs-openai-vs-ollama matrix.
-
-### Configuration tab UI
-
-Three parallel sections (AI Provider, CodeGen Provider, Embedding Provider), each fully owning its provider/model/key. The status block at the top of the tab (multi-tenant deployments only) shows three rows — one per slot — clearly indicating which are using Datris-managed defaults and which are using your own keys. A single **Save Configuration** button writes whatever sections have been edited.
-
-### Bundled Ollama sidecar
-
-New `ollama` service in `docker-compose.yml`. On first start it pulls `bge-m3` (~1.2 GB) into a persistent `ollama-data` volume; subsequent restarts use the cached model. The `datris` service waits for ollama to be healthy before starting, so the first ingest doesn't fail if it tries to embed before bge-m3 is downloaded.
-
-### Upgrading from v1.5.x
-
-1. Update `application.yaml`: replace the old `ai.provider`, `ai.aiSecretName`, `ai.version`, `ai.codegen.provider`, `ai.codegen.version`, and `secrets.embeddingSecretName` settings with the three new `ai.aiPrimary.secretName`, `ai.codegen.secretName`, `ai.embedding.secretName` slots.
-2. Wipe Vault data so `vault-init.sh` re-seeds with the new layout: `docker compose down -v`.
-3. Make sure your `.env` has either `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` set.
-4. `docker compose up -d`. On first start the bundled Ollama service pulls `bge-m3`; this takes a few minutes once.
-
-For multi-tenant deployments, per-tenant override secrets also need to be migrated: `{env}/anthropic` and `{env}/openai` are no longer read. Per-tenant overrides now live at `{env}/ai-primary`, `{env}/codegen`, `{env}/embedding`. The Configuration tab UI automatically writes to the new paths, so trial users who reset and re-save their keys will end up at the right places.
+Multi-tenant trial deployments will pick up the security guard automatically once the `datris` container restarts. There is no migration step.
 
 ### Version
 
-- Server: 1.5.6
-- MCP Server: 1.5.6
-- CLI: 1.5.6
+- Server: 1.5.7
+- MCP Server: 1.5.7
+- CLI: 1.5.7
 
 ---
+
+## v1.5.6 — April 8, 2026
+
+See [v1.5.6 release notes](release-notes/v1.5.6.md).
 
 ## v1.5.5 — April 8, 2026
 

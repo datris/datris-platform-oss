@@ -20,6 +20,21 @@ import scala.collection.JavaConverters._
 class SecretsAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
     private val SENSITIVE_FIELDS = Set("password", "apikey", "secretkey", "token", "secret")
+    private val LOCKED_AI_SLOTS_ON_TRIAL = Set("ai-primary", "codegen", "embedding")
+
+    /** On trial tenants, block mutations to the three AI configuration slots.
+      * Trials run on shared Datris-managed Anthropic/OpenAI keys; allowing a tenant
+      * to point its endpoint or model at an attacker-controlled URL would exfiltrate
+      * the shared key on the next AI call. UI hiding alone is cosmetic — this is
+      * the actual security boundary. Returns Some(403 response) when the request
+      * should be rejected, None when it should proceed. */
+    private def rejectIfTrialAiSecret(name: String): Option[ResponseEntity[String]] = {
+        if (DatrisEnvironment.current.isTrial && LOCKED_AI_SLOTS_ON_TRIAL.contains(name)) {
+            Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](
+                "{\"error\": \"AI configuration is locked on the trial. " +
+                "Visit https://datris.ai/dashboard to upgrade to a dedicated instance.\"}"))
+        } else None
+    }
 
     @GetMapping(path = Array("/secrets"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def listSecrets(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
@@ -95,46 +110,47 @@ class SecretsAPIController {
         try {
             logger.info("API endpoint PUT /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
+            rejectIfTrialAiSecret(name).getOrElse {
+                val env = DatrisEnvironment.current.environment
+                val secretPath = env + "/" + name
 
-            val env = DatrisEnvironment.current.environment
-            val secretPath = env + "/" + name
+                // Existing secret at the same path — used to preserve sensitive fields
+                // when the request sends them as the masked placeholder.
+                val existing = SecretsUtil.getSecretMap(secretPath).map(_.asScala).getOrElse(scala.collection.mutable.Map.empty[String, String])
 
-            // Existing secret at the same path — used to preserve sensitive fields
-            // when the request sends them as the masked placeholder.
-            val existing = SecretsUtil.getSecretMap(secretPath).map(_.asScala).getOrElse(scala.collection.mutable.Map.empty[String, String])
-
-            val json = JsonParser.parseString(body).getAsJsonObject
-            val incoming = new java.util.LinkedHashMap[String, Object]()
-            json.entrySet().asScala.foreach { entry =>
-                val value = entry.getValue
-                if (value.isJsonPrimitive) {
-                    val key = entry.getKey
-                    val strValue = value.getAsString
-                    if (isSensitive(key) && strValue == "••••••••") {
-                        // Masked placeholder ⇒ preserve existing value at this path (if any).
-                        existing.get(key).filter(_.nonEmpty).foreach(v => incoming.put(key, v))
-                    } else {
-                        incoming.put(key, strValue)
+                val json = JsonParser.parseString(body).getAsJsonObject
+                val incoming = new java.util.LinkedHashMap[String, Object]()
+                json.entrySet().asScala.foreach { entry =>
+                    val value = entry.getValue
+                    if (value.isJsonPrimitive) {
+                        val key = entry.getKey
+                        val strValue = value.getAsString
+                        if (isSensitive(key) && strValue == "••••••••") {
+                            // Masked placeholder ⇒ preserve existing value at this path (if any).
+                            existing.get(key).filter(_.nonEmpty).foreach(v => incoming.put(key, v))
+                        } else {
+                            incoming.put(key, strValue)
+                        }
                     }
                 }
-            }
 
-            // Special-case the codegen secret: if the request omits or blanks out apiKey,
-            // copy it from the AI primary secret at {env}/ai-primary. This lets the UI
-            // omit the apiKey when the user wants codegen to reuse the main key without
-            // re-entering it.
-            if (name == "codegen") {
-                val providedApiKey = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).getOrElse("")
-                if (providedApiKey.isEmpty) {
-                    val mainKey = SecretsUtil.getSecretMap(env + "/ai-primary")
-                        .flatMap(m => Option(m.get("apiKey")))
-                        .filter(_.nonEmpty)
-                    mainKey.foreach(k => incoming.put("apiKey", k))
+                // Special-case the codegen secret: if the request omits or blanks out apiKey,
+                // copy it from the AI primary secret at {env}/ai-primary. This lets the UI
+                // omit the apiKey when the user wants codegen to reuse the main key without
+                // re-entering it.
+                if (name == "codegen") {
+                    val providedApiKey = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).getOrElse("")
+                    if (providedApiKey.isEmpty) {
+                        val mainKey = SecretsUtil.getSecretMap(env + "/ai-primary")
+                            .flatMap(m => Option(m.get("apiKey")))
+                            .filter(_.nonEmpty)
+                        mainKey.foreach(k => incoming.put("apiKey", k))
+                    }
                 }
-            }
 
-            SecretsUtil.writeSecret(secretPath, incoming)
-            new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
+                SecretsUtil.writeSecret(secretPath, incoming)
+                new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
+            }
         }
         catch {
             case e: Exception =>
@@ -149,11 +165,12 @@ class SecretsAPIController {
         try {
             logger.info("API endpoint DELETE /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
-
-            val env = DatrisEnvironment.current.environment
-            val secretPath = env + "/" + name
-            SecretsUtil.deleteSecret(secretPath)
-            new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
+            rejectIfTrialAiSecret(name).getOrElse {
+                val env = DatrisEnvironment.current.environment
+                val secretPath = env + "/" + name
+                SecretsUtil.deleteSecret(secretPath)
+                new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
+            }
         }
         catch {
             case e: Exception =>

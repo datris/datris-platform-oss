@@ -129,4 +129,10 @@ case class DatrisEnvironment(
                                   dateTimezone: String = "UTC",
                                   postgresDatabase: String = "datris",
                                   codegenAiConfig: Option[AIConfig] = None
-                              )
+                              ) {
+    /** True for trial-droplet tenants. Trials have AI configuration locked at the
+      * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention
+      * is enforced by the website's provision-trial.ts which always assigns
+      * `trial-{slug}-{shortid}` env names. */
+    def isTrial: Boolean = environment != null && environment.startsWith("trial-")
+}
