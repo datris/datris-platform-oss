@@ -35,6 +35,13 @@ object DatrisEnvironment {
         val tenantAiConfig = loadTenantAiConfig(env + "/ai-primary").getOrElse(values.aiConfig)
         val tenantCodegenAiConfig: Option[AIConfig] =
             loadTenantAiConfig(env + "/codegen").orElse(values.codegenAiConfig)
+        // Embedding secret falls through to the global default when no per-tenant
+        // override exists, matching the AI primary/codegen fallback behavior. Trial
+        // provisioning intentionally does not seed {env}/embedding so the Configuration
+        // UI can detect "Datris-managed (default)" by the absence of the override.
+        val tenantEmbeddingSecretName =
+            if (ai.datris.util.SecretsUtil.getSecretMap(env + "/embedding").isDefined) env + "/embedding"
+            else values.embeddingSecretName
 
         values.copy(
             environment = env,
@@ -49,7 +56,7 @@ object DatrisEnvironment {
             postgresSecretName = env + "/postgres",
             mongoDbSecretName = env + "/mongodb",
             kafkaProducerSecretName = env + "/kafka-producer",
-            embeddingSecretName = env + "/embedding",
+            embeddingSecretName = tenantEmbeddingSecretName,
             qdrantSecretName = env + "/qdrant",
             weaviateSecretName = env + "/weaviate",
             milvusSecretName = env + "/milvus",
