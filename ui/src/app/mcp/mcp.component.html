@@ -38,22 +38,22 @@
         <div class="workflow-step">
           <span class="step-number">0</span>
           <div class="step-content">
-            <span class="step-title">Configure AI</span>
-            <span class="step-detail">use update_secret to set AI provider API keys if not already configured</span>
+            <span class="step-title">Connect to Datris</span>
+            <span class="step-detail">the agent connects via MCP and receives the platform instructions, available tools, and capabilities automatically</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">1</span>
           <div class="step-content">
-            <span class="step-title">Discover existing data</span>
-            <span class="step-detail">use metadata tools to explore what's available</span>
+            <span class="step-title">Check existing pipelines &amp; taps</span>
+            <span class="step-detail">use list_pipelines and list_taps first &mdash; if a pipeline or tap already exists, skip to querying, running, or testing it directly. Use update_secret to configure AI provider keys if not already set.</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">2</span>
           <div class="step-content">
             <span class="step-title">Create a pipeline</span>
-            <span class="step-detail">use generate_schema to auto-create from a sample file, or create_pipeline manually</span>
+            <span class="step-detail">use create_pipeline with sample data &mdash; schema is auto-detected. Only create if one doesn't already exist for this data.</span>
           </div>
         </div>
         <div class="workflow-step">
@@ -66,8 +66,44 @@
         <div class="workflow-step">
           <span class="step-number">4</span>
           <div class="step-content">
-            <span class="step-title">Ingest data</span>
-            <span class="step-detail">use upload_data to process data through the pipeline</span>
+            <span class="step-title">Ingest data (choose one)</span>
+            <span class="step-detail"><strong>Option A:</strong> use upload_data to push data directly through the pipeline<br/>
+            <strong>Option B:</strong> create a tap to fetch data automatically from an external source (see Tap steps below)</span>
+          </div>
+        </div>
+        <div class="workflow-step step-sub">
+          <span class="step-number">4a</span>
+          <div class="step-content">
+            <span class="step-title">Create a tap</span>
+            <span class="step-detail">use create_tap with an instruction (AI generates the script &mdash; slower, 1-2 min) or write the Python fetch() function yourself and pass it as the script parameter (faster and more reliable)</span>
+          </div>
+        </div>
+        <div class="workflow-step step-sub">
+          <span class="step-number">4b</span>
+          <div class="step-content">
+            <span class="step-title">Test the tap</span>
+            <span class="step-detail">use test_tap to validate the script without pushing data</span>
+          </div>
+        </div>
+        <div class="workflow-step step-sub">
+          <span class="step-number">4c</span>
+          <div class="step-content">
+            <span class="step-title">Fix &amp; retest</span>
+            <span class="step-detail">if test fails, fix the script and call create_tap again &mdash; repeat until test passes</span>
+          </div>
+        </div>
+        <div class="workflow-step step-sub">
+          <span class="step-number">4d</span>
+          <div class="step-content">
+            <span class="step-title">Run the tap</span>
+            <span class="step-detail">use run_tap to execute and push fetched data to the pipeline</span>
+          </div>
+        </div>
+        <div class="workflow-step step-sub">
+          <span class="step-number">4e</span>
+          <div class="step-content">
+            <span class="step-title">Schedule (optional)</span>
+            <span class="step-detail">use update_tap with a cron_expression to run automatically &mdash; use get_tap_logs to monitor</span>
           </div>
         </div>
         <div class="workflow-step">

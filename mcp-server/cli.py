@@ -529,28 +529,49 @@ def taps(json_output):
 
 @cli.group()
 def tap():
-    """Manage taps (create, run, delete)."""
+    """Manage taps (create, show, run, test, update, logs, delete)."""
     pass
 
 
 @tap.command("create")
-@click.argument("description")
-@click.option("--pipeline", "-p", required=True, help="Target pipeline name")
-@click.option("--name", "-n", default=None, help="Tap name (default: derived from pipeline)")
+@click.argument("instruction", required=False, default=None)
+@click.option("--pipeline", "-p", default=None, help="Target pipeline name")
+@click.option("--name", "-n", default=None, help="Tap name (default: derived from pipeline or instruction)")
+@click.option("--script", "script_path", default=None, type=click.Path(exists=True), help="Path to a Python script file with a fetch() function")
 @click.option("--cron", default=None, help="CRON expression for scheduling (Quartz format)")
+@click.option("--secret", default=None, help="Vault secret name for credentials")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
-def tap_create(description, pipeline, name, cron, json_output):
-    """Create a tap from a plain-English description."""
-    tap_name = name or f"{pipeline}-tap"
-    click.echo(f"  Generating script for tap '{tap_name}'...")
+def tap_create(instruction, pipeline, name, script_path, cron, secret, json_output):
+    """Create a tap from an instruction (AI generates script), script file, or config only."""
+    # Derive tap name if not provided
+    if name:
+        tap_name = name
+    elif pipeline:
+        tap_name = f"{pipeline}-tap"
+    elif instruction:
+        tap_name = instruction.lower().replace(" ", "-")[:30].rstrip("-")
+    else:
+        click.echo("  Error: provide at least a --name, --pipeline, or instruction")
+        sys.exit(1)
 
-    args = {
-        "name": tap_name,
-        "description": description,
-        "target_pipeline": pipeline,
-    }
+    args = {"name": tap_name}
+
+    if script_path:
+        with open(script_path, "r") as f:
+            args["script"] = f.read()
+        click.echo(f"  Storing script for tap '{tap_name}'...")
+    elif instruction:
+        args["instruction"] = instruction
+        click.echo(f"  Generating script for tap '{tap_name}'...")
+    else:
+        click.echo(f"  Creating tap config '{tap_name}' (no script)...")
+
+    if pipeline:
+        args["target_pipeline"] = pipeline
     if cron:
         args["cron_expression"] = cron
+    if secret:
+        args["secret_name"] = secret
 
     result = mcp("create_tap", args)
     if json_output:
@@ -559,9 +580,11 @@ def tap_create(description, pipeline, name, cron, json_output):
     if isinstance(result, dict) and result.get("error"):
         click.echo(f"  Error: {result['error'][:200]}")
         sys.exit(1)
-    click.echo(f"  ✓ Tap '{tap_name}' created → {pipeline}")
+    click.echo(f"  ✓ Tap '{tap_name}' created")
+    if pipeline:
+        click.echo(f"    Pipeline: {pipeline}")
     if cron:
-        click.echo(f"  ✓ Schedule: {cron}")
+        click.echo(f"    Schedule: {cron}")
 
 
 @tap.command("run")
@@ -594,6 +617,120 @@ def tap_delete(name):
         click.echo(f"  Error: {result['error'][:200]}")
         sys.exit(1)
     click.echo(f"  ✓ Tap '{name}' deleted")
+
+
+@tap.command("show")
+@click.argument("name")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def tap_show(name, json_output):
+    """Show full details of a tap including its script."""
+    result = mcp("get_tap", {"name": name})
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    if isinstance(result, dict):
+        if result.get("error"):
+            click.echo(f"  Error: {result['error'][:200]}")
+            sys.exit(1)
+        click.echo(f"  Name:        {result.get('name')}")
+        click.echo(f"  Description: {result.get('description')}")
+        click.echo(f"  Pipeline:    {result.get('targetPipeline')}")
+        click.echo(f"  Schedule:    {result.get('cronExpression', 'manual')}")
+        click.echo(f"  Enabled:     {result.get('enabled')}")
+        click.echo(f"  Secret:      {result.get('secretName', 'none')}")
+        click.echo(f"  Last run:    {result.get('lastRunStatus', 'never')} ({result.get('lastRunTime', '')})")
+        click.echo(f"  Last test:   {result.get('lastTestRunStatus', 'never')} ({result.get('lastTestRunTime', '')})")
+        script = result.get("script")
+        if script:
+            click.echo(f"\n  --- Script ---\n{script}")
+    else:
+        click.echo(f"  {result}")
+
+
+@tap.command("test")
+@click.argument("name")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def tap_test(name, json_output):
+    """Test-run a tap without pushing to the pipeline."""
+    click.echo(f"  Testing tap '{name}'...")
+    result = mcp("test_tap", {"name": name})
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    if isinstance(result, dict):
+        if result.get("error"):
+            click.echo(f"  ✗ Error: {result['error'][:200]}")
+            sys.exit(1)
+        status = result.get("status", "unknown")
+        records = result.get("recordCount", 0)
+        data_type = result.get("dataType", "")
+        click.echo(f"  ✓ {status} — {records} records ({data_type})")
+    else:
+        click.echo(f"  {result}")
+
+
+@tap.command("logs")
+@click.argument("name")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def tap_logs(name, json_output):
+    """Show run history for a tap."""
+    result = mcp("get_tap_logs", {"name": name})
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    if isinstance(result, list):
+        if not result:
+            click.echo("  No run history.")
+            return
+        for entry in result:
+            status = entry.get("status", "unknown")
+            time = entry.get("runTime", "")
+            records = entry.get("recordCount", 0)
+            duration = entry.get("durationMs", 0)
+            pushed = entry.get("pushToPipeline", True)
+            icon = "✓" if status == "success" else "✗"
+            mode = " (test)" if not pushed else ""
+            click.echo(f"  {icon} {time} — {status}{mode}, {records} records, {duration}ms")
+            if entry.get("error"):
+                click.echo(f"    Error: {entry['error'][:150]}")
+    else:
+        click.echo(f"  {result}")
+
+
+@tap.command("update")
+@click.argument("name")
+@click.option("--enabled/--disabled", default=None, help="Enable or disable the tap")
+@click.option("--cron", default=None, help="CRON expression for scheduling")
+@click.option("--pipeline", "-p", default=None, help="Target pipeline name")
+@click.option("--description", "-d", default=None, help="New description")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def tap_update(name, enabled, cron, pipeline, description, json_output):
+    """Update a tap's configuration without regenerating the script."""
+    args = {"name": name}
+    if enabled is not None:
+        args["enabled"] = enabled
+    if cron is not None:
+        args["cron_expression"] = cron
+    if pipeline is not None:
+        args["target_pipeline"] = pipeline
+    if description is not None:
+        args["description"] = description
+
+    if len(args) == 1:
+        click.echo("  Nothing to update. Specify at least one option (--enabled/--disabled, --cron, --pipeline, --description).")
+        sys.exit(1)
+
+    result = mcp("update_tap", args)
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        return
+    if isinstance(result, dict):
+        if result.get("error"):
+            click.echo(f"  Error: {result['error'][:200]}")
+            sys.exit(1)
+        click.echo(f"  ✓ Tap '{name}' updated")
+    else:
+        click.echo(f"  {result}")
 
 
 @cli.command()

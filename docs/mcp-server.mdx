@@ -82,9 +82,13 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 
 | Tool | Description |
 |------|-------------|
-| `create_tap` | Create a tap — AI-generated Python script that fetches external data. Specify description, target pipeline, and optional CRON schedule |
+| `create_tap` | Create a tap from an instruction (AI generates script), a user-provided script, or config only. Optionally set target pipeline, CRON schedule, and secret name |
 | `list_taps` | List all taps with status, target pipeline, schedule, and last run info |
-| `run_tap` | Trigger a tap run manually |
+| `get_tap` | Get full details of a single tap including its Python script source |
+| `run_tap` | Execute a tap and push fetched data to the target pipeline |
+| `test_tap` | Test-run a tap without pushing data to the pipeline |
+| `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
+| `get_tap_logs` | Get run history for a tap (last 50 entries with status, duration, errors) |
 | `delete_tap` | Delete a tap and its stored script |
 
 ### Configuration

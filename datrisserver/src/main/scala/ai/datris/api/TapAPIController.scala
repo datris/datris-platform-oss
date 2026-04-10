@@ -145,6 +145,40 @@ class TapAPIController {
         }
     }
 
+    @PostMapping(path = Array("/tap/script"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def storeScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                    @RequestBody body: java.util.Map[String, String]): ResponseEntity[String] = {
+        try {
+            val tapName = body.get("tapName")
+            val script = body.get("script")
+            val oldScriptPath = body.get("oldScriptPath")
+            logger.info("API endpoint POST /tap/script called, tapName: " + tapName)
+            APIKeyValidator.validate(apiKey)
+
+            if (tapName == null || tapName.isEmpty)
+                throw new DatrisException("tapName is required")
+            if (script == null || script.isEmpty)
+                throw new DatrisException("script is required")
+
+            val scriptPath = TapScriptGenerator.storeScript(tapName, script, oldScriptPath)
+
+            // Update scriptPath if tap already exists
+            val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+            if (existing != null) {
+                TapConfigIO.write(existing.copy(scriptPath = scriptPath))
+            }
+
+            val gson = new Gson
+            val response = new java.util.HashMap[String, String]()
+            response.put("scriptPath", scriptPath)
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @PostMapping(path = Array("/tap/cron"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateCron(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                      @RequestBody body: java.util.Map[String, String]): ResponseEntity[String] = {

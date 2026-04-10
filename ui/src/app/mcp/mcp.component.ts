@@ -69,6 +69,86 @@ export class McpComponent implements OnInit {
       parameters: [],
       playgroundEnabled: true
     },
+    // --- Taps ---
+    {
+      name: 'create_tap',
+      description: 'Create a tap from an instruction (AI generates script), a user-provided script, or config only.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Unique tap name', required: true, inputType: 'text' },
+        { name: 'instruction', type: 'string', description: 'Plain-English instruction for AI script generation', required: false, inputType: 'textarea' },
+        { name: 'script', type: 'string', description: 'Python source code with a fetch() function', required: false, inputType: 'textarea' },
+        { name: 'target_pipeline', type: 'string', description: 'Pipeline to push fetched data into', required: false, inputType: 'text' },
+        { name: 'cron_expression', type: 'string', description: 'Quartz CRON schedule (e.g., 0 0 * * * ?)', required: false, inputType: 'text' },
+        { name: 'secret_name', type: 'string', description: 'Vault secret name for credentials', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'list_taps',
+      description: 'List all taps with status, target pipeline, schedule, and last run info.',
+      category: 'Taps',
+      parameters: [],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_tap',
+      description: 'Get the full details of a single tap including its Python script.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'run_tap',
+      description: 'Execute a tap and push fetched data to the target pipeline.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap to run', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'test_tap',
+      description: 'Test-run a tap without pushing data to the pipeline.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap to test', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'update_tap',
+      description: 'Update a tap\'s config without regenerating the script.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap to update', required: true, inputType: 'text' },
+        { name: 'enabled', type: 'boolean', description: 'Enable or disable the tap', required: false, inputType: 'text' },
+        { name: 'cron_expression', type: 'string', description: 'New CRON schedule', required: false, inputType: 'text' },
+        { name: 'target_pipeline', type: 'string', description: 'New target pipeline', required: false, inputType: 'text' },
+        { name: 'description', type: 'string', description: 'New description', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_tap_logs',
+      description: 'Get run history for a tap (last 50 entries).',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'delete_tap',
+      description: 'Delete a tap and its stored script.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap to delete', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
     // --- Pipeline Management ---
     {
       name: 'list_pipelines',
@@ -466,6 +546,7 @@ export class McpComponent implements OnInit {
       'Database Query': 'storage',
       'Metadata Discovery': 'explore',
       'AI': 'auto_awesome',
+      'Taps': 'water_drop',
       'Configuration': 'settings'
     };
     return icons[category] || 'extension';

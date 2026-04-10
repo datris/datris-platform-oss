@@ -54,13 +54,29 @@ NEVER rules:
   - If transformation is needed, use codegen_transform on create_pipeline (plain-English transformation instruction)
 
 Required workflow:
-  1. Check existing pipelines: call list_pipelines. If no pipelines exist, you MUST create one before querying — do NOT skip to querying database tables. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. Only re-ingest if data is stale.
+  1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
   2. Create a pipeline: call create_pipeline with your sample data (base64-encoded), pipeline name, and destination type. The schema is auto-detected from the data — you do not construct pipeline configs manually.
-  3. Ingest data: call upload_data with base64-encoded content and the pipeline name
+  3. Ingest data (choose one):
+     Option A — Direct upload: call upload_data with base64-encoded content and the pipeline name.
+     Option B — Create a tap: use create_tap to provide an instruction (AI generates the script) or your own Python script that fetches data from an external source and pushes it into the pipeline automatically. See Tap workflow below.
   4. Monitor: call get_job_status and poll until status is COMPLETED or FAILED. You MUST wait for COMPLETED before querying.
   5. If FAILED: read the error message from get_job_status. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
   6. Query & search: use query_postgres, query_mongodb for structured data; search_qdrant, search_pgvector, etc. for vector search
   7. RAG: pass search results as context to ai_answer with the user's question
+
+Tap workflow (for step 3 Option B):
+  Taps are Python scripts that fetch data from external sources and push it into pipelines. Use taps when data needs to be pulled from APIs, websites, databases, or other external sources on demand or on a schedule.
+  Two ways to create a tap:
+    - With instruction: provide a plain-English instruction and the platform's AI generates the script. This is slower (1-2 minutes) because the platform must generate and store the script.
+    - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries.
+  Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
+  1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
+  2. Test: call test_tap to validate the script without pushing data
+  3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
+  4. Run: call run_tap to execute and push data to the pipeline
+  5. Schedule (optional): call update_tap with a cron_expression to run the tap on a schedule
+  6. Monitor: call get_tap_logs to check run history
+  7. Manage: call update_tap to enable/disable, change schedule, or retarget pipeline; call get_tap to view details and script
 
 Do NOT call check_service_health as part of the normal workflow — it is slow. Only use it for diagnostics if something fails.
 Do NOT call update_secret unless you need to configure AI provider keys and they are not already set.
@@ -1063,7 +1079,7 @@ async def list_tools():
         # --- Taps ---
         Tool(
             name="create_tap",
-            description="Create a tap — an AI-generated Python script that fetches data from an external source and pushes it into a pipeline. Describe what data you want to fetch, specify the target pipeline, and optionally set a CRON schedule.",
+            description="Create a tap — a Python script that fetches data from an external source and pushes it into a pipeline. Provide a plain-English instruction to have AI generate the script, or supply your own script directly. The target pipeline and schedule can be set now or later via update_tap.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1071,9 +1087,13 @@ async def list_tools():
                         "type": "string",
                         "description": "Unique tap name (e.g., 'weather-data')"
                     },
-                    "description": {
+                    "instruction": {
                         "type": "string",
-                        "description": "Plain-English description of what data to fetch (e.g., 'Fetch current weather for NYC from Open-Meteo API')"
+                        "description": "Plain-English instruction for AI script generation (e.g., 'Fetch current weather for NYC from Open-Meteo API'). If provided, AI generates the Python script."
+                    },
+                    "script": {
+                        "type": "string",
+                        "description": "Raw Python source code with a fetch() function. Use this to provide your own script instead of AI generation."
                     },
                     "target_pipeline": {
                         "type": "string",
@@ -1083,8 +1103,12 @@ async def list_tools():
                         "type": "string",
                         "description": "Optional Quartz CRON expression for scheduling (e.g., '0 0 * * * ?' for hourly)"
                     },
+                    "secret_name": {
+                        "type": "string",
+                        "description": "Vault secret name containing API keys/credentials the script needs"
+                    },
                 },
-                "required": ["name", "description", "target_pipeline"]
+                "required": ["name"]
             }
         ),
         Tool(
@@ -1118,6 +1142,78 @@ async def list_tools():
                     "name": {
                         "type": "string",
                         "description": "Name of the tap to delete"
+                    },
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="get_tap",
+            description="Get the full details of a single tap, including its configuration and the generated Python script content.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap to retrieve"
+                    },
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="get_tap_logs",
+            description="Get the run history for a tap. Returns the last 50 run log entries sorted by most recent first, including status, record count, duration, errors, and logs.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap to get logs for"
+                    },
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="test_tap",
+            description="Test-run a tap without pushing data to the pipeline. Executes the tap's script and returns results, record count, and any errors. Use this to validate a script before running it for real.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap to test"
+                    },
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="update_tap",
+            description="Update an existing tap's configuration without regenerating the script. You can change the enabled state, CRON schedule, target pipeline, or description.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap to update"
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Enable or disable the tap"
+                    },
+                    "cron_expression": {
+                        "type": "string",
+                        "description": "New Quartz CRON expression (e.g., '0 0 * * * ?' for hourly)"
+                    },
+                    "target_pipeline": {
+                        "type": "string",
+                        "description": "New target pipeline name"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "New plain-English description"
                     },
                 },
                 "required": ["name"]
@@ -1508,30 +1604,60 @@ def _dispatch(name: str, args: dict) -> str:
     # --- Taps ---
     elif name == "create_tap":
         tap_name = args["name"]
-        description = args["description"]
-        target_pipeline = args["target_pipeline"]
+        instruction = args.get("instruction")
+        script = args.get("script")
+        target_pipeline = args.get("target_pipeline")
         cron_expression = args.get("cron_expression")
+        secret_name = args.get("secret_name")
 
-        # Step 1: Generate script via AI
-        gen_result = _call("post", "/api/v1/tap/generate", json={"description": description, "tapName": tap_name})
-        try:
-            gen_data = json.loads(gen_result)
-            if "error" in gen_data:
-                return gen_result
-        except (json.JSONDecodeError, TypeError):
-            return json.dumps({"error": f"Script generation failed: {gen_result[:200]}"})
+        script_path = None
+        packages = None
 
-        # Step 2: Save the tap config
+        # Mode 1: User-provided script — store directly
+        if script:
+            store_result = _call("post", "/api/v1/tap/script", json={"tapName": tap_name, "script": script})
+            try:
+                store_data = json.loads(store_result)
+                if "error" in store_data:
+                    return store_result
+                script_path = store_data.get("scriptPath")
+            except (json.JSONDecodeError, TypeError):
+                return json.dumps({"error": f"Script storage failed: {store_result[:200]}"})
+
+        # Mode 2: AI-generated script from instruction
+        elif instruction:
+            gen_payload = {"description": instruction, "tapName": tap_name}
+            if secret_name:
+                gen_payload["secretName"] = secret_name
+            gen_result = _call("post", "/api/v1/tap/generate", json=gen_payload)
+            try:
+                gen_data = json.loads(gen_result)
+                if "error" in gen_data:
+                    return gen_result
+                script_path = gen_data.get("scriptPath")
+                packages = gen_data.get("packages")
+            except (json.JSONDecodeError, TypeError):
+                return json.dumps({"error": f"Script generation failed: {gen_result[:200]}"})
+
+        # Mode 3: No script — config only (script added later)
+
+        # Save the tap config
         tap_config = {
             "name": tap_name,
-            "description": description,
-            "scriptPath": gen_data.get("scriptPath"),
-            "targetPipeline": target_pipeline,
-            "packages": gen_data.get("packages"),
             "enabled": True,
         }
+        if instruction:
+            tap_config["description"] = instruction
+        if script_path:
+            tap_config["scriptPath"] = script_path
+        if packages:
+            tap_config["packages"] = packages
+        if target_pipeline:
+            tap_config["targetPipeline"] = target_pipeline
         if cron_expression:
             tap_config["cronExpression"] = cron_expression
+        if secret_name:
+            tap_config["secretName"] = secret_name
 
         save_result = _call("post", "/api/v1/tap", json=tap_config)
         try:
@@ -1572,6 +1698,48 @@ def _dispatch(name: str, args: dict) -> str:
 
     elif name == "delete_tap":
         return _call("delete", f"/api/v1/tap?name={args['name']}")
+
+    elif name == "get_tap":
+        return _call("get", f"/api/v1/tap?name={args['name']}")
+
+    elif name == "get_tap_logs":
+        return _call("get", f"/api/v1/tap/logs?name={args['name']}")
+
+    elif name == "test_tap":
+        return _call("post", "/api/v1/tap/run", json={"name": args["name"], "pushToPipeline": "false"})
+
+    elif name == "update_tap":
+        # Fetch existing config
+        tap_result = _call("get", f"/api/v1/tap?name={args['name']}")
+        try:
+            tap_config = json.loads(tap_result)
+            if "error" in tap_config:
+                return tap_result
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"error": f"Tap '{args['name']}' not found"})
+
+        # Merge provided fields
+        if "enabled" in args:
+            tap_config["enabled"] = args["enabled"]
+        if "cron_expression" in args:
+            tap_config["cronExpression"] = args["cron_expression"]
+        if "target_pipeline" in args:
+            tap_config["targetPipeline"] = args["target_pipeline"]
+        if "description" in args:
+            tap_config["description"] = args["description"]
+
+        # Remove the script content field (GET /tap adds it but POST /tap doesn't expect it)
+        tap_config.pop("script", None)
+
+        # Save via upsert
+        save_result = _call("post", "/api/v1/tap", json=tap_config)
+        try:
+            saved = json.loads(save_result)
+            if "error" in saved:
+                return save_result
+            return json.dumps({"message": f"Tap '{args['name']}' updated", "tap": saved})
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"message": f"Tap '{args['name']}' updated"})
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

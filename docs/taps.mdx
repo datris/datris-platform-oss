@@ -211,10 +211,14 @@ AI agents can manage taps via MCP:
 
 | Tool | Description |
 |---|---|
-| `create_tap` | Generate and save a tap from a description |
-| `list_taps` | List all taps with status |
-| `run_tap` | Trigger a tap run |
-| `delete_tap` | Delete a tap |
+| `create_tap` | Create a tap from a plain-English instruction (AI generates the script), a user-provided script, or config only |
+| `list_taps` | List all taps with status, schedule, and last run info |
+| `get_tap` | Get full details of a single tap including its Python script |
+| `run_tap` | Execute a tap and push fetched data to the target pipeline |
+| `test_tap` | Test-run a tap without pushing data to the pipeline |
+| `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
+| `get_tap_logs` | Get run history for a tap (last 50 entries) |
+| `delete_tap` | Delete a tap and its stored script |
 
 ## CLI Commands
 
@@ -222,11 +226,32 @@ AI agents can manage taps via MCP:
 # List all taps
 datris taps
 
-# Create a tap
+# Create a tap with AI-generated script
 datris tap create "Fetch weather data from Open-Meteo API" --pipeline weather --cron "0 0 * * * ?"
+
+# Create a tap with your own script
+datris tap create --script ./my_script.py --name my-tap --pipeline weather
+
+# Create a tap config only (add script later)
+datris tap create --name my-tap --pipeline weather
+
+# Show tap details including script
+datris tap show my-tap
+
+# Test-run a tap (no data push)
+datris tap test my-tap
 
 # Run a tap manually
 datris tap run my-tap
+
+# View run history
+datris tap logs my-tap
+
+# Update a tap's schedule or config
+datris tap update my-tap --cron "0 0 * * * ?" --enabled
+
+# Disable a tap
+datris tap update my-tap --disabled
 
 # Delete a tap
 datris tap delete my-tap

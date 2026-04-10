@@ -95,6 +95,12 @@
   border: 1px solid var(--border-color);
 }
 
+.workflow-step.step-sub {
+  margin-left: 36px;
+  border-left: 2px solid var(--accent-cyan);
+  opacity: 0.9;
+}
+
 .step-number {
   flex-shrink: 0;
   width: 24px;
