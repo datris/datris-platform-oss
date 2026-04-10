@@ -72,19 +72,34 @@ async def run(
 
         await store.increment_api_calls()
 
-        response = await _client.messages.create(
+        # Stream the response so text arrives token-by-token in the browser
+        streamed_text = ""
+        content_blocks = []
+        stop_reason = None
+
+        async with _client.messages.stream(
             model=MODEL,
             max_tokens=4096,
             system=system_prompt,
             tools=tools,
             messages=history,
-        )
+        ) as stream:
+            async for event in stream:
+                if event.type == "content_block_start":
+                    if event.content_block.type == "text":
+                        streamed_text = ""
+                elif event.type == "content_block_delta":
+                    if event.delta.type == "text_delta":
+                        streamed_text += event.delta.text
+                        yield {"event": "partial_text", "data": {"text": streamed_text}}
 
-        print(f"[loop] stop_reason={response.stop_reason}, blocks={len(response.content)}")
+            response = await stream.get_final_message()
+
+        stop_reason = response.stop_reason
+        print(f"[loop] stop_reason={stop_reason}, blocks={len(response.content)}")
 
         # ── Max tokens — truncated response, treat as end_turn ───────────
-        if response.stop_reason == "max_tokens":
-            # Don't append incomplete tool_use blocks to history
+        if stop_reason == "max_tokens":
             text = "".join(
                 b.text for b in response.content if hasattr(b, "text")
             )
@@ -97,7 +112,7 @@ async def run(
         history.append({"role": "assistant", "content": response.content})
 
         # ── Terminal turn ──────────────────────────────────────────────────
-        if response.stop_reason == "end_turn":
+        if stop_reason == "end_turn":
             text = "".join(
                 b.text for b in response.content if hasattr(b, "text")
             )
@@ -107,14 +122,7 @@ async def run(
             break
 
         # ── Tool-use turn ──────────────────────────────────────────────────
-        if response.stop_reason == "tool_use":
-            # Surface any partial reasoning text first
-            partial = "".join(
-                b.text for b in response.content if hasattr(b, "text") and b.text.strip()
-            )
-            if partial:
-                yield {"event": "partial_text", "data": {"text": partial}}
-
+        if stop_reason == "tool_use":
             tool_blocks = [b for b in response.content if b.type == "tool_use"]
             tool_results = []
 
@@ -142,7 +150,6 @@ async def run(
                 # Truncate large results (e.g. base64 content from ingest_data)
                 # to prevent conversation history from growing too large
                 if len(result_str) > 2000:
-                    # Keep a summary instead of the full content
                     truncated = result_str[:1500]
                     result_str = truncated + f'... [truncated, {len(result_str)} chars total]"'
 

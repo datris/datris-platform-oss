@@ -91,7 +91,7 @@ Browser (vanilla JS)
 4. **Pipeline management**: Claude monitors jobs via `get_job_status`, queries results via
    `query_postgres` — all through MCP tools discovered dynamically
 5. **Intelligent acquisition**: If the user asks about data the agent doesn't have,
-   it asks for confirmation before fetching and ingesting new data (toggle in UI)
+   the agent automatically fetches and ingests it — no confirmation needed
 6. **Background refresh**: Active pipelines are automatically refreshed on a configurable timer
 
 ## Free data sources
