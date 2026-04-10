@@ -1,23 +1,28 @@
 # Release Notes
 
-## v1.5.7 — April 9, 2026
+## v1.5.8 — April 10, 2026
 
-Trial-instance hardening and Configuration tab polish.
+Ollama support for all AI configurations and hot-reload on save.
 
-### Trial deployment hardening
+### Ollama as a provider for all 3 AI configs
 
-Additional server-side hardening for trial deployments. No action required and no behavior change for self-hosted or dedicated deployments.
+The Configuration UI now offers **Ollama (local)** as a provider choice for AI Primary, CodeGen, and Embedding — enabling a fully local AI setup with no cloud API keys. When Ollama is selected, the model field switches to a free-text input so you can type any model you have available (e.g. `qwen3:14b`, `qwen2.5-coder:7b-instruct`).
 
-### Trial codegen now runs on Haiku 4.5
+For Embedding, two Ollama options are available:
+- **Ollama (local, bundled)** — uses the bundled docker-compose sidecar at `ollama:11434`, pre-fills `bge-m3`
+- **Ollama (local)** — for your own Ollama instance at `host.docker.internal:11434`, any embedding model
 
-Trial provisioning previously seeded `{env}/codegen` with Claude Opus 4.6 — every tap-script generation, AI DQ rule, AI transformation, and NL→SQL on a free trial was burning Opus tokens against Datris's shared key. Trial codegen now defaults to `claude-haiku-4-5-20251001`, matching the chat model and dramatically reducing per-trial cost. The shared trial key behavior is unchanged for self-hosted deployments — Opus remains the recommended codegen default for customers running on their own keys.
+The backend already supported Ollama for all three slots since v1.5.6. This release exposes it in the UI and fixes `loadTenantAiConfig` to accept empty `apiKey` for Ollama configs.
 
-### Configuration tab — trial banner refinements
+### Hot-reload AI configuration on save
 
-- The "AI Configuration is locked on the trial." banner copy is tightened: dropped the redundant "During the free trial" preamble, broadened the "dedicated instance unlocks" pitch from "your own isolated Postgres database" to cover every supported destination category (relational, document, vector, object storage), and updated the model list to reflect Haiku for both chat and codegen.
-- The "datris.ai dashboard" link in the banner now uses the page accent color (`#00b4ff`) with an underline so it's clearly clickable against the dim banner body, instead of inheriting the body color and disappearing.
+Saving AI configuration from the Configuration UI now takes effect immediately — **no server restart required**. Previously, `ai-primary` and `codegen` configs were cached at startup and required a container restart to pick up changes. The server now reloads these configs from Vault after each PUT to `/secrets/ai-primary` or `/secrets/codegen`.
 
-### Upgrading from v1.5.6
+### Provider switching remembers your model
+
+When switching between providers in the Configuration UI, the previously entered model is stashed and restored when you switch back. Switching to Ollama clears the model field (since it uses free-text input); switching back to Anthropic/OpenAI restores the dropdown selection.
+
+### Upgrading from v1.5.7
 
 No `application.yaml` or Vault changes required. Pull the new images and restart:
 
@@ -26,15 +31,17 @@ docker compose pull datris ui
 docker compose up -d datris ui
 ```
 
-Multi-tenant trial deployments will pick up the security guard automatically once the `datris` container restarts. There is no migration step.
-
 ### Version
 
-- Server: 1.5.7
-- MCP Server: 1.5.7
-- CLI: 1.5.7
+- Server: 1.5.8
+- MCP Server: 1.5.8
+- CLI: 1.5.8
 
 ---
+
+## v1.5.7 — April 9, 2026
+
+See [v1.5.7 release notes](release-notes/v1.5.7.md).
 
 ## v1.5.6 — April 8, 2026
 

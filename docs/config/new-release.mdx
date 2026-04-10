@@ -56,10 +56,10 @@ sbt clean assembly
 cd mcp-server
 rm -rf dist/
 python3 -m build
-twine upload dist/*
+twine upload dist/* -u __token__ -p <PYPI_TOKEN>
 ```
 
-Enter your PyPI API token when prompted (or use `twine upload dist/* -u __token__ -p <token>`).
+Replace `<PYPI_TOKEN>` with the PyPI API token (starts with `pypi-`). The `-u __token__` flag is required for token-based auth.
 
 Verify:
 ```bash
