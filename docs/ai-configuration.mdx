@@ -44,7 +44,9 @@ Each Vault secret carries its full configuration inline:
 | `apiKey` | Yes (no for ollama) | Provider API key |
 | `version` | Optional | API version (Anthropic uses `2023-06-01`) |
 
-The resolver reads each secret at the configured path and uses whatever it finds inside — there is no path derivation from a YAML `provider` field. This means the three slots can independently use different providers (e.g. Anthropic for `aiPrimary` + `codegen`, OpenAI-compatible Ollama for `embedding`).
+The resolver reads each secret at the configured path and uses whatever it finds inside — there is no path derivation from a YAML `provider` field. This means the three slots can independently use different providers (e.g. Anthropic for `aiPrimary`, Ollama for `codegen`, OpenAI for `embedding`).
+
+**All three slots support Ollama** — you can run the entire platform on local models with no API keys. The Configuration UI offers Ollama as a provider choice for every section, with a free-text model input since Ollama supports hundreds of community models.
 
 ## Quick Start with `.env`
 
@@ -78,6 +80,20 @@ When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic
 
 The `ollama` service is part of `docker-compose.yml`. On first start it pulls `bge-m3` (~1.2 GB) into a persistent volume; subsequent restarts use the cached model.
 
+### Fully local with Ollama
+
+You can run all three slots on a local Ollama instance — no cloud API keys needed. Ollama must be reachable from inside the Docker network. If Ollama runs on your host machine, use `host.docker.internal` as the hostname:
+
+| Slot | Provider | Endpoint | Model (example) |
+|------|----------|----------|-----------------|
+| `oss/ai-primary` | ollama | `http://host.docker.internal:11434/v1/chat/completions` | `qwen3:14b` |
+| `oss/codegen` | ollama | `http://host.docker.internal:11434/v1/chat/completions` | `qwen2.5-coder:7b-instruct` |
+| `oss/embedding` | ollama | `http://ollama:11434/v1/embeddings` | `bge-m3` |
+
+The embedding slot can use the bundled Ollama sidecar (`ollama:11434`) which auto-pulls `bge-m3`. For AI Primary and CodeGen, you must have the models available at your Ollama endpoint (e.g. `ollama pull qwen3:14b`).
+
+The Configuration UI makes this easy — select **Ollama (local)** as the provider, type your model name, and the endpoint defaults to `host.docker.internal:11434`. No API key is required.
+
 ### Optional model overrides
 
 Override the seeded models by setting these in `.env`:
@@ -88,9 +104,13 @@ OPENAI_MODEL=gpt-4.1
 CODEGEN_MODEL=claude-opus-4-6   # or gpt-5 if using OpenAI
 ```
 
+## Hot Reload
+
+When you save AI configuration from the Configuration UI, the server reloads the `ai-primary` and `codegen` configs from Vault immediately — **no restart required**. The next AI call uses the updated provider, model, and endpoint. The `embedding` config is read from Vault on each request and also requires no restart.
+
 ## Setting Secrets Manually
 
-To write a secret directly to Vault:
+To write a secret directly to Vault (note: manual Vault writes do **not** trigger hot reload — restart the server or re-save from the UI):
 
 ```bash
 docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
@@ -114,10 +134,15 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 The embedding endpoint must speak the **OpenAI embeddings API** (`POST /v1/embeddings` with `{model, input}` body returning `{data: [{embedding: [...]}]}`). That contract is implemented by:
 
 - **OpenAI** — `https://api.openai.com/v1/embeddings`
-- **Ollama** — `http://ollama:11434/v1/embeddings` (the bundled sidecar serves `bge-m3` out of the box)
+- **Ollama (bundled)** — `http://ollama:11434/v1/embeddings` (the bundled sidecar serves `bge-m3` out of the box)
+- **Ollama (local)** — `http://host.docker.internal:11434/v1/embeddings` (your own Ollama with any embedding model)
 - **Self-hosted vLLM, LM Studio, etc.** — anything implementing the same contract
 
 Anthropic has no embeddings API, so `provider: "anthropic"` is not valid for the `embedding` slot.
+
+## Chat Provider Notes
+
+The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
 
 ## Stronger Model for Code Generation
 
@@ -155,8 +180,9 @@ A per-tenant secret takes effect on the next AI call — no restart needed. The 
 Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI:
 
 1. Open the **Configuration** tab.
-2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider, model, and API key inputs.
-3. Fill in the keys you want to override and click **Save Configuration**. The platform writes the secrets to the tenant's Vault path.
+2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, and Ollama (local).
+3. For Anthropic/OpenAI, enter your API key in the right-hand panel and pick a model from the dropdown. For Ollama, type the model name directly — no API key needed.
+4. Click **Save Configuration**. Changes take effect immediately — no restart required.
 
 The status block at the top shows which slots are using Datris-managed defaults vs your own keys.
 
