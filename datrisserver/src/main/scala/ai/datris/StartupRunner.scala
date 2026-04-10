@@ -118,6 +118,9 @@ class StartupRunner extends ApplicationRunner {
     @Value("${dateTimezone:UTC}")
     var dateTimezone: String = _
 
+    @Value("${hosted:false}")
+    var hosted: Boolean = _
+
     @Override
     def run(args: ApplicationArguments): Unit =  {
         initDatrisEnvironment()
@@ -187,7 +190,8 @@ class StartupRunner extends ApplicationRunner {
             tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
             dateFormat = dateFormat,
             dateTimezone = dateTimezone,
-            postgresDatabase = postgresDatabase
+            postgresDatabase = postgresDatabase,
+            hosted = hosted
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

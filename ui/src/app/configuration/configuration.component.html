@@ -33,7 +33,7 @@
 
     <div class="note-banner" *ngIf="isTrial">
       <p class="note-title">AI Configuration is locked on the trial.</p>
-      <p>Datris runs on shared Anthropic and OpenAI keys with cost-conscious models (Claude Haiku 4.5 for chat and code generation, OpenAI text-embedding-3-small for vector search) so you can try every feature without bringing your own credentials. To customize providers, models, or paste your own API keys, you'll need a dedicated instance.</p>
+      <p>Datris runs on shared Anthropic keys with cost-conscious models (Claude Haiku 4.5 for chat and code generation, a bundled embedding model for vector search) so you can try every feature without bringing your own credentials. To customize providers, models, or paste your own API keys, you'll need a dedicated instance.</p>
       <p><strong>A dedicated Datris instance unlocks the full platform:</strong> bring your own Anthropic or OpenAI keys for unlimited usage, pick any model (Claude Opus 4.6, Sonnet 4.6, GPT-5.4, text-embedding-3-large), connect to every supported destination with dedicated infrastructure — relational databases (Postgres, MySQL), document stores (MongoDB), vector stores (Qdrant, Weaviate, Milvus, Chroma, pgvector), and object storage (S3, MinIO) — with persistent storage, no shared rate limits, your own custom domain, and a production SLA.</p>
       <p>Visit your <a href="https://datris.ai/dashboard" target="_blank" rel="noopener">datris.ai dashboard</a> to upgrade.</p>
     </div>
@@ -49,7 +49,7 @@
             <select class="form-input" [(ngModel)]="aiPrimaryProvider" (ngModelChange)="onAiPrimaryProviderChange()">
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
-              <option value="ollama">Ollama (local)</option>
+              <option value="ollama" *ngIf="!isHosted">Ollama (local)</option>
             </select>
           </div>
 
@@ -62,18 +62,20 @@
                    placeholder="e.g. llama3.3, qwen3, deepseek-r1" *ngIf="aiPrimaryProvider === 'ollama'" />
           </div>
 
-          <a class="advanced-toggle" (click)="showAdvancedAiPrimary = !showAdvancedAiPrimary">
-            {{ showAdvancedAiPrimary ? '▼' : '▶' }} Advanced
-          </a>
-          <div class="form-row" *ngIf="showAdvancedAiPrimary">
-            <label class="form-label">Endpoint</label>
-            <input class="form-input" type="text" [(ngModel)]="aiPrimaryEndpoint"
-                   placeholder="https://api.anthropic.com/v1/messages" />
-          </div>
+          <div *ngIf="!isHosted">
+            <a class="advanced-toggle" (click)="showAdvancedAiPrimary = !showAdvancedAiPrimary">
+              {{ showAdvancedAiPrimary ? '▼' : '▶' }} Advanced
+            </a>
+            <div class="form-row" *ngIf="showAdvancedAiPrimary">
+              <label class="form-label">Endpoint</label>
+              <input class="form-input" type="text" [(ngModel)]="aiPrimaryEndpoint"
+                     placeholder="https://api.anthropic.com/v1/messages" />
+            </div>
 
-          <p class="section-hint" *ngIf="aiPrimaryProvider === 'ollama'" style="margin-top: 8px;">
-            Ollama runs locally — no API key needed. The model must be available at your Ollama endpoint.
-          </p>
+            <p class="section-hint" *ngIf="aiPrimaryProvider === 'ollama'" style="margin-top: 8px;">
+              Ollama runs locally — no API key needed. The model must be available at your Ollama endpoint.
+            </p>
+          </div>
         </div>
 
         <div class="config-section">
@@ -85,7 +87,7 @@
             <select class="form-input" [(ngModel)]="codegenProvider" (ngModelChange)="onCodegenProviderChange()">
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
-              <option value="ollama">Ollama (local)</option>
+              <option value="ollama" *ngIf="!isHosted">Ollama (local)</option>
             </select>
           </div>
 
@@ -98,57 +100,96 @@
                    placeholder="e.g. qwen3, deepseek-r1, codellama" *ngIf="codegenProvider === 'ollama'" />
           </div>
 
-          <a class="advanced-toggle" (click)="showAdvancedCodegen = !showAdvancedCodegen">
-            {{ showAdvancedCodegen ? '▼' : '▶' }} Advanced
-          </a>
-          <div class="form-row" *ngIf="showAdvancedCodegen">
-            <label class="form-label">Endpoint</label>
-            <input class="form-input" type="text" [(ngModel)]="codegenEndpoint"
-                   placeholder="https://api.anthropic.com/v1/messages" />
-          </div>
+          <div *ngIf="!isHosted">
+            <a class="advanced-toggle" (click)="showAdvancedCodegen = !showAdvancedCodegen">
+              {{ showAdvancedCodegen ? '▼' : '▶' }} Advanced
+            </a>
+            <div class="form-row" *ngIf="showAdvancedCodegen">
+              <label class="form-label">Endpoint</label>
+              <input class="form-input" type="text" [(ngModel)]="codegenEndpoint"
+                     placeholder="https://api.anthropic.com/v1/messages" />
+            </div>
 
-          <p class="section-hint" *ngIf="codegenProvider === 'ollama'" style="margin-top: 8px;">
-            Ollama runs locally — no API key needed. The model must be available at your Ollama endpoint.
-          </p>
+            <p class="section-hint" *ngIf="codegenProvider === 'ollama'" style="margin-top: 8px;">
+              Ollama runs locally — no API key needed. The model must be available at your Ollama endpoint.
+            </p>
+          </div>
         </div>
 
         <div class="config-section">
           <h2 class="section-title">Embedding Provider</h2>
           <p class="section-hint">Used for vector destinations (Qdrant, Weaviate, Milvus, Chroma, pgvector) and semantic search. Must be an OpenAI-compatible embeddings endpoint. Anthropic-only deployments use a bundled local Ollama service running bge-m3 — no OpenAI key required.</p>
 
-          <div class="form-row">
-            <label class="form-label">Provider</label>
-            <select class="form-input" [(ngModel)]="embeddingProvider" (ngModelChange)="onEmbeddingProviderChange()">
-              <option value="openai">OpenAI</option>
-              <option value="ollama">Ollama (local, bundled)</option>
-              <option value="ollama-local">Ollama (local)</option>
-            </select>
+          <!-- Hosted + Anthropic: locked to bundled Ollama bge-m3 -->
+          <div *ngIf="isHosted && aiPrimaryProvider === 'anthropic'">
+            <div class="form-row">
+              <label class="form-label">Provider</label>
+              <span class="form-value-locked">Ollama bge-m3 (bundled)</span>
+            </div>
+            <p class="section-hint" style="margin-top: 8px;">
+              A bundled Ollama instance provides bge-m3 embeddings automatically — no API key or configuration needed.
+            </p>
           </div>
 
-          <div class="form-row">
-            <label class="form-label">Model</label>
-            <select class="form-input" [(ngModel)]="embeddingModel" *ngIf="embeddingProvider !== 'ollama' && embeddingProvider !== 'ollama-local'">
-              <option *ngFor="let m of embeddingModelOptions" [value]="m.value">{{ m.label }}</option>
-            </select>
-            <input class="form-input" type="text" [(ngModel)]="embeddingModel"
-                   placeholder="e.g. bge-m3, nomic-embed-text" *ngIf="embeddingProvider === 'ollama' || embeddingProvider === 'ollama-local'" />
+          <!-- Hosted + OpenAI: OpenAI or bundled Ollama -->
+          <div *ngIf="isHosted && aiPrimaryProvider !== 'anthropic'">
+            <div class="form-row">
+              <label class="form-label">Provider</label>
+              <select class="form-input" [(ngModel)]="embeddingProvider" (ngModelChange)="onEmbeddingProviderChange()">
+                <option value="openai">OpenAI</option>
+                <option value="ollama">Ollama (bundled)</option>
+              </select>
+            </div>
+
+            <div class="form-row">
+              <label class="form-label">Model</label>
+              <select class="form-input" [(ngModel)]="embeddingModel" *ngIf="embeddingProvider === 'openai'">
+                <option *ngFor="let m of embeddingModelOptions" [value]="m.value">{{ m.label }}</option>
+              </select>
+              <span class="form-value-locked" *ngIf="embeddingProvider === 'ollama'">bge-m3 (1024-dim, bundled)</span>
+            </div>
+
+            <p class="section-hint" *ngIf="embeddingProvider === 'ollama'" style="margin-top: 8px;">
+              A bundled Ollama instance provides bge-m3 embeddings automatically — no API key needed.
+            </p>
           </div>
 
-          <a class="advanced-toggle" (click)="showAdvancedEmbedding = !showAdvancedEmbedding">
-            {{ showAdvancedEmbedding ? '▼' : '▶' }} Advanced
-          </a>
-          <div class="form-row" *ngIf="showAdvancedEmbedding">
-            <label class="form-label">Endpoint</label>
-            <input class="form-input" type="text" [(ngModel)]="embeddingEndpoint"
-                   placeholder="https://api.openai.com/v1/embeddings" />
-          </div>
+          <!-- OSS: full flexibility -->
+          <div *ngIf="!isHosted">
+            <div class="form-row">
+              <label class="form-label">Provider</label>
+              <select class="form-input" [(ngModel)]="embeddingProvider" (ngModelChange)="onEmbeddingProviderChange()">
+                <option value="openai">OpenAI</option>
+                <option value="ollama">Ollama (local, bundled)</option>
+                <option value="ollama-local">Ollama (local)</option>
+              </select>
+            </div>
 
-          <p class="section-hint" *ngIf="embeddingProvider === 'ollama'" style="margin-top: 8px;">
-            Ollama runs locally as a bundled docker-compose service — no API key needed.
-          </p>
-          <p class="section-hint" *ngIf="embeddingProvider === 'ollama-local'" style="margin-top: 8px;">
-            Ollama runs locally — no API key needed. The model must be available at your Ollama endpoint.
-          </p>
+            <div class="form-row">
+              <label class="form-label">Model</label>
+              <select class="form-input" [(ngModel)]="embeddingModel" *ngIf="embeddingProvider !== 'ollama' && embeddingProvider !== 'ollama-local'">
+                <option *ngFor="let m of embeddingModelOptions" [value]="m.value">{{ m.label }}</option>
+              </select>
+              <input class="form-input" type="text" [(ngModel)]="embeddingModel"
+                     placeholder="e.g. bge-m3, nomic-embed-text" *ngIf="embeddingProvider === 'ollama' || embeddingProvider === 'ollama-local'" />
+            </div>
+
+            <a class="advanced-toggle" (click)="showAdvancedEmbedding = !showAdvancedEmbedding">
+              {{ showAdvancedEmbedding ? '▼' : '▶' }} Advanced
+            </a>
+            <div class="form-row" *ngIf="showAdvancedEmbedding">
+              <label class="form-label">Endpoint</label>
+              <input class="form-input" type="text" [(ngModel)]="embeddingEndpoint"
+                     placeholder="https://api.openai.com/v1/embeddings" />
+            </div>
+
+            <p class="section-hint" *ngIf="embeddingProvider === 'ollama'" style="margin-top: 8px;">
+              Ollama runs locally as a bundled docker-compose service — no API key needed.
+            </p>
+            <p class="section-hint" *ngIf="embeddingProvider === 'ollama-local'" style="margin-top: 8px;">
+              Ollama runs locally — no API key needed. The model must be available at your Ollama endpoint.
+            </p>
+          </div>
         </div>
 
         <div class="config-actions">

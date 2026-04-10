@@ -89,6 +89,7 @@ export class ConfigurationComponent implements OnInit {
   environment = '';
   version = '';
   isTrial = false;
+  isHosted = false;
   multiTenant = false;
   saving = false;
   success = '';
@@ -103,6 +104,7 @@ export class ConfigurationComponent implements OnInit {
         this.environment = data.environment || '';
         this.version = data.version || '';
         this.isTrial = this.environment.startsWith('trial-');
+        this.isHosted = String(data.hosted) === 'true';
         this.multiTenant = String(data.multiTenant) === 'true';
         this.loadConfig();
       },
@@ -151,6 +153,19 @@ export class ConfigurationComponent implements OnInit {
     // Refresh endpoint to the new provider's standard URL unless the user has customized it.
     if (!this.showAdvancedAiPrimary) {
       this.aiPrimaryEndpoint = this.endpointFor(this.aiPrimaryProvider, 'chat');
+    }
+    // On hosted instances, auto-set embedding based on the AI provider.
+    if (this.isHosted) {
+      if (this.aiPrimaryProvider === 'anthropic') {
+        this.embeddingProvider = 'ollama';
+        this.embeddingModel = 'bge-m3';
+        this.embeddingEndpoint = this.endpointFor('ollama', 'embedding');
+      } else if (this.aiPrimaryProvider === 'openai' && this.embeddingProvider === 'ollama') {
+        // Switching from Anthropic→OpenAI: default to OpenAI embeddings (user can switch back to Ollama)
+        this.embeddingProvider = 'openai';
+        this.embeddingModel = 'text-embedding-3-small';
+        this.embeddingEndpoint = this.endpointFor('openai', 'embedding');
+      }
     }
   }
 

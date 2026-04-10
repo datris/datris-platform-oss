@@ -83,6 +83,8 @@ ttlFileNotifierQueueMessages: "60"
 #   - ANTHROPIC_API_KEY → ai-primary + codegen point at Anthropic; embedding falls back
 #                          to the local ollama sidecar (bge-m3) so vector destinations
 #                          work out of the box without an OpenAI key.
+hosted: "false"
+
 ai:
   enabled: "true"
   aiPrimary:

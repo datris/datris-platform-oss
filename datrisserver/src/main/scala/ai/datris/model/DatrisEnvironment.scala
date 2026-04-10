@@ -137,7 +137,8 @@ case class DatrisEnvironment(
                                   dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
                                   dateTimezone: String = "UTC",
                                   postgresDatabase: String = "datris",
-                                  codegenAiConfig: Option[AIConfig] = None
+                                  codegenAiConfig: Option[AIConfig] = None,
+                              hosted: Boolean = false
                               ) {
     /** True for trial-droplet tenants. Trials have AI configuration locked at the
       * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention
