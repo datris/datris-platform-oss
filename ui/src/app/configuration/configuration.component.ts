@@ -38,6 +38,14 @@ export class ConfigurationComponent implements OnInit {
   extraCodegenModel: { value: string; label: string } | null = null;
   extraEmbeddingModel: { value: string; label: string } | null = null;
 
+  // Remember the model the user typed/selected per provider so switching away and back restores it.
+  private aiPrimaryModelMemory: Record<string, string> = {};
+  private codegenModelMemory: Record<string, string> = {};
+  private embeddingModelMemory: Record<string, string> = {};
+  private prevAiPrimaryProvider = 'anthropic';
+  private prevCodegenProvider = 'anthropic';
+  private prevEmbeddingProvider = 'openai';
+
   models: Record<string, { value: string; label: string }[]> = {
     anthropic: [
       { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (recommended)' },
@@ -126,9 +134,19 @@ export class ConfigurationComponent implements OnInit {
   }
 
   onAiPrimaryProviderChange(): void {
-    const options = this.aiPrimaryModelOptions;
-    if (options.length > 0 && !options.find(m => m.value === this.aiPrimaryModel)) {
-      this.aiPrimaryModel = options[0].value;
+    // Stash the model from the previous provider so switching back restores it.
+    if (this.aiPrimaryModel) {
+      this.aiPrimaryModelMemory[this.prevAiPrimaryProvider] = this.aiPrimaryModel;
+    }
+    this.prevAiPrimaryProvider = this.aiPrimaryProvider;
+    const remembered = this.aiPrimaryModelMemory[this.aiPrimaryProvider];
+    if (remembered) {
+      this.aiPrimaryModel = remembered;
+    } else if (this.isOllama(this.aiPrimaryProvider)) {
+      this.aiPrimaryModel = '';
+    } else {
+      const options = this.aiPrimaryModelOptions;
+      this.aiPrimaryModel = options.length > 0 ? options[0].value : '';
     }
     // Refresh endpoint to the new provider's standard URL unless the user has customized it.
     if (!this.showAdvancedAiPrimary) {
@@ -137,9 +155,18 @@ export class ConfigurationComponent implements OnInit {
   }
 
   onCodegenProviderChange(): void {
-    const options = this.codegenModelOptions;
-    if (options.length > 0 && !options.find(m => m.value === this.codegenModel)) {
-      this.codegenModel = options[0].value;
+    if (this.codegenModel) {
+      this.codegenModelMemory[this.prevCodegenProvider] = this.codegenModel;
+    }
+    this.prevCodegenProvider = this.codegenProvider;
+    const remembered = this.codegenModelMemory[this.codegenProvider];
+    if (remembered) {
+      this.codegenModel = remembered;
+    } else if (this.isOllama(this.codegenProvider)) {
+      this.codegenModel = '';
+    } else {
+      const options = this.codegenModelOptions;
+      this.codegenModel = options.length > 0 ? options[0].value : '';
     }
     if (!this.showAdvancedCodegen) {
       this.codegenEndpoint = this.endpointFor(this.codegenProvider, 'chat');
@@ -147,9 +174,20 @@ export class ConfigurationComponent implements OnInit {
   }
 
   onEmbeddingProviderChange(): void {
-    const options = this.embeddingModelOptions;
-    if (options.length > 0 && !options.find(m => m.value === this.embeddingModel)) {
-      this.embeddingModel = options[0].value;
+    if (this.embeddingModel) {
+      this.embeddingModelMemory[this.prevEmbeddingProvider] = this.embeddingModel;
+    }
+    this.prevEmbeddingProvider = this.embeddingProvider;
+    const remembered = this.embeddingModelMemory[this.embeddingProvider];
+    if (remembered) {
+      this.embeddingModel = remembered;
+    } else if (this.embeddingProvider === 'ollama') {
+      this.embeddingModel = 'bge-m3';
+    } else if (this.embeddingProvider === 'ollama-local') {
+      this.embeddingModel = '';
+    } else {
+      const options = this.embeddingModelOptions;
+      this.embeddingModel = options.length > 0 ? options[0].value : '';
     }
     if (!this.showAdvancedEmbedding) {
       this.embeddingEndpoint = this.endpointFor(this.embeddingProvider, 'embedding');
@@ -173,13 +211,14 @@ export class ConfigurationComponent implements OnInit {
     this.http.get<any>('/api/v1/secrets/ai-primary').subscribe({
       next: (data) => {
         const fields = data && data.fields;
-        if (fields && fields.apiKey) {
+        if (fields && (fields.apiKey || (fields.provider || '').toLowerCase() === 'ollama')) {
           this.aiPrimaryProvider = (fields.provider || 'anthropic').toLowerCase();
+          this.prevAiPrimaryProvider = this.aiPrimaryProvider;
           this.aiPrimaryModel = fields.model || '';
           this.aiPrimaryEndpoint = fields.endpoint || this.endpointFor(this.aiPrimaryProvider, 'chat');
           this.maybeAddExtraModel('aiPrimary', this.aiPrimaryProvider, this.aiPrimaryModel);
           this.showAdvancedAiPrimary = this.endpointIsCustom(this.aiPrimaryEndpoint, this.aiPrimaryProvider, 'chat');
-          if (!this.isTrial) recordKeyForProvider(this.aiPrimaryProvider, fields.apiKey);
+          if (!this.isTrial) recordKeyForProvider(this.aiPrimaryProvider, fields.apiKey || '');
           this.usingDefaultAiPrimary = this.isTrial;  // trials are always "Datris-managed"
         } else {
           this.aiPrimaryEndpoint = this.endpointFor(this.aiPrimaryProvider, 'chat');
@@ -192,13 +231,14 @@ export class ConfigurationComponent implements OnInit {
     this.http.get<any>('/api/v1/secrets/codegen').subscribe({
       next: (data) => {
         const fields = data && data.fields;
-        if (fields && fields.apiKey) {
+        if (fields && (fields.apiKey || (fields.provider || '').toLowerCase() === 'ollama')) {
           this.codegenProvider = (fields.provider || 'anthropic').toLowerCase();
+          this.prevCodegenProvider = this.codegenProvider;
           this.codegenModel = fields.model || '';
           this.codegenEndpoint = fields.endpoint || this.endpointFor(this.codegenProvider, 'chat');
           this.maybeAddExtraModel('codegen', this.codegenProvider, this.codegenModel);
           this.showAdvancedCodegen = this.endpointIsCustom(this.codegenEndpoint, this.codegenProvider, 'chat');
-          if (!this.isTrial) recordKeyForProvider(this.codegenProvider, fields.apiKey);
+          if (!this.isTrial) recordKeyForProvider(this.codegenProvider, fields.apiKey || '');
           this.usingDefaultCodegen = this.isTrial;  // trials are always "Datris-managed"
         } else {
           this.codegenEndpoint = this.endpointFor(this.codegenProvider, 'chat');
@@ -212,7 +252,13 @@ export class ConfigurationComponent implements OnInit {
       next: (data) => {
         const fields = data && data.fields;
         if (fields && (fields.apiKey || (fields.provider || '').toLowerCase() === 'ollama')) {
-          this.embeddingProvider = (fields.provider || 'openai').toLowerCase();
+          let ep = (fields.provider || 'openai').toLowerCase();
+          // Distinguish bundled vs unbundled Ollama by endpoint — bundled uses docker hostname.
+          if (ep === 'ollama' && fields.endpoint && !fields.endpoint.includes('ollama:')) {
+            ep = 'ollama-local';
+          }
+          this.embeddingProvider = ep;
+          this.prevEmbeddingProvider = this.embeddingProvider;
           this.embeddingModel = fields.model || '';
           this.embeddingEndpoint = fields.endpoint || this.endpointFor(this.embeddingProvider, 'embedding');
           this.maybeAddExtraModel('embedding', this.embeddingProvider, this.embeddingModel);
@@ -273,7 +319,7 @@ export class ConfigurationComponent implements OnInit {
   private keyForProvider(provider: string): string {
     if (provider === 'anthropic') return this.anthropicApiKey;
     if (provider === 'openai') return this.openaiApiKey;
-    return '';
+    return '';  // ollama / ollama-local need no key
   }
 
   /** A field still showing only the masked placeholder hasn't been edited. */
@@ -282,16 +328,22 @@ export class ConfigurationComponent implements OnInit {
     return /^[•]+$/.test(value.trim());
   }
 
+  /** Returns true if the provider value is any Ollama variant (bundled or unbundled). */
+  private isOllama(provider: string): boolean {
+    return provider === 'ollama' || provider === 'ollama-local';
+  }
+
   private endpointFor(provider: string, kind: 'chat' | 'embedding'): string {
     const p = provider.toLowerCase();
     if (kind === 'embedding') {
       if (p === 'openai') return 'https://api.openai.com/v1/embeddings';
       if (p === 'ollama') return 'http://ollama:11434/v1/embeddings';
+      if (p === 'ollama-local') return 'http://host.docker.internal:11434/v1/embeddings';
       return '';
     }
     if (p === 'anthropic') return 'https://api.anthropic.com/v1/messages';
     if (p === 'openai') return 'https://api.openai.com/v1/chat/completions';
-    if (p === 'ollama') return 'http://ollama:11434/v1/chat/completions';
+    if (p === 'ollama') return 'http://host.docker.internal:11434/v1/chat/completions';
     return '';
   }
 
@@ -303,7 +355,7 @@ export class ConfigurationComponent implements OnInit {
     // masked-preservation logic keeps the existing apiKey at that path.
     const sectionReady = (provider: string, model: string): boolean => {
       if (!model || !model.trim()) return false;
-      if (provider === 'ollama') return true;
+      if (this.isOllama(provider)) return true;
       const key = this.keyForProvider(provider);
       return !!(key && key.length > 0);
     };
@@ -326,9 +378,12 @@ export class ConfigurationComponent implements OnInit {
 
     const useEndpoint = (typed: string, fallback: string) => (typed && typed.trim()) ? typed.trim() : fallback;
 
+    // Backend only knows "ollama" — map the UI-only "ollama-local" variant.
+    const backendProvider = (p: string) => p === 'ollama-local' ? 'ollama' : p;
+
     if (aiPrimaryReady) {
       const body: any = {
-        provider: this.aiPrimaryProvider,
+        provider: backendProvider(this.aiPrimaryProvider),
         endpoint: useEndpoint(this.aiPrimaryEndpoint, this.endpointFor(this.aiPrimaryProvider, 'chat')),
         model: this.aiPrimaryModel,
         apiKey: this.keyForProvider(this.aiPrimaryProvider)
@@ -339,7 +394,7 @@ export class ConfigurationComponent implements OnInit {
 
     if (codegenReady) {
       const body: any = {
-        provider: this.codegenProvider,
+        provider: backendProvider(this.codegenProvider),
         endpoint: useEndpoint(this.codegenEndpoint, this.endpointFor(this.codegenProvider, 'chat')),
         model: this.codegenModel,
         apiKey: this.keyForProvider(this.codegenProvider)
@@ -350,7 +405,7 @@ export class ConfigurationComponent implements OnInit {
 
     if (embeddingReady) {
       const body: any = {
-        provider: this.embeddingProvider,
+        provider: backendProvider(this.embeddingProvider),
         endpoint: useEndpoint(this.embeddingEndpoint, this.endpointFor(this.embeddingProvider, 'embedding')),
         model: this.embeddingModel,
         apiKey: this.keyForProvider(this.embeddingProvider)

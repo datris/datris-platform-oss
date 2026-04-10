@@ -70,6 +70,15 @@ object DatrisEnvironment {
         )
     }
 
+    /** Reload AI configuration from Vault without restarting.
+      * Called after the UI saves new AI secrets. */
+    def reloadAiConfig(): Unit = synchronized {
+        val env = values.environment
+        val aiConfig = loadTenantAiConfig(env + "/ai-primary").getOrElse(values.aiConfig)
+        val codegenAiConfig: Option[AIConfig] = loadTenantAiConfig(env + "/codegen").orElse(values.codegenAiConfig)
+        values = values.copy(aiConfig = aiConfig, codegenAiConfig = codegenAiConfig)
+    }
+
     /** Load a tenant AI override from a self-describing Vault secret.
       * Returns None when the secret doesn't exist or has an empty apiKey (zombie record). */
     private def loadTenantAiConfig(path: String): Option[AIConfig] = {
@@ -80,7 +89,7 @@ object DatrisEnvironment {
                 val provider = map.getOrElse("provider", "").trim
                 val endpoint = map.getOrElse("endpoint", "").trim
                 val apiKey   = map.getOrElse("apiKey", "")
-                if (provider.isEmpty || endpoint.isEmpty || apiKey.isEmpty) None
+                if (provider.isEmpty || endpoint.isEmpty || (apiKey.isEmpty && provider.toLowerCase != "ollama")) None
                 else Some(AIConfig(
                     provider,
                     endpoint,

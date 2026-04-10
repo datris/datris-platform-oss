@@ -149,6 +149,13 @@ class SecretsAPIController {
                 }
 
                 SecretsUtil.writeSecret(secretPath, incoming)
+
+                // Hot-reload AI config when an AI secret changes — no restart required.
+                if (Set("ai-primary", "codegen").contains(name)) {
+                    DatrisEnvironment.reloadAiConfig()
+                    logger.info("AI configuration reloaded from Vault after PUT /secrets/" + name)
+                }
+
                 new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
             }
         }
