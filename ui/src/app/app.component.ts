@@ -18,9 +18,29 @@ export class AppComponent implements OnInit {
   constructor(private healthService: HealthService, private http: HttpClient) {}
 
   ngOnInit(): void {
+    // Accept API key from URL query param (set by dashboard link)
+    const urlKey = new URLSearchParams(window.location.search).get('key');
+    if (urlKey) {
+      localStorage.setItem('datris-api-key', urlKey);
+      this.hasApiKey = true;
+      // Clean the URL
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
     if (this.hasApiKey) {
-      this.healthService.loadHealth();
-      this.loadEnvironment();
+      // Validate the stored API key is still valid
+      this.http.get<any>('/api/v1/version').subscribe({
+        next: () => {
+          this.healthService.loadHealth();
+          this.loadEnvironment();
+        },
+        error: () => {
+          // Stored key is invalid — clear it and show the prompt
+          localStorage.removeItem('datris-api-key');
+          this.hasApiKey = false;
+          this.requiresApiKey = true;
+        }
+      });
     } else {
       // Check if server requires API keys — self-hosted with useApiKeys=false won't
       this.http.get<any>('/api/v1/version').subscribe({
