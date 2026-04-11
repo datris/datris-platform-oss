@@ -238,6 +238,18 @@
   border-color: #00b4ff;
 }
 
+.form-value-locked {
+  display: inline-block;
+  padding: 10px 12px;
+  background: rgba(0, 229, 160, 0.08);
+  border: 1px solid rgba(0, 229, 160, 0.2);
+  border-radius: 6px;
+  color: #00e5a0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
 .config-actions {
   margin-top: 24px;
   display: flex;

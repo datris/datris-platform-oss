@@ -26,7 +26,7 @@ class VersionAPIController {
         try {
             logger.info("API endpoint GET /api/v1/version called")
             APIKeyValidator.validate(apiKey)
-            val map = Map("version" -> BuildInfo.version, "environment" -> DatrisEnvironment.current.environment, "multiTenant" -> DatrisEnvironment.current.multiTenant.toString).asJava
+            val map = Map("version" -> BuildInfo.version, "environment" -> DatrisEnvironment.current.environment, "multiTenant" -> DatrisEnvironment.current.multiTenant.toString, "hosted" -> DatrisEnvironment.current.hosted.toString).asJava
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(map), HttpStatus.OK)
         }
