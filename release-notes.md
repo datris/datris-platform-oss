@@ -1,37 +1,23 @@
 # Release Notes
 
-## v1.5.9 — April 11, 2026
+## v1.6.0 — April 11, 2026
 
-Full tap MCP tool suite and user-supplied tap scripts.
+Dedicated instance support and hosted platform improvements.
 
-### New MCP tools for taps
+### Configuration UI: hosted-aware
 
-Four new MCP tools give agents complete control over taps:
+The Configuration tab adapts when running on a hosted instance:
 
-- **get_tap** — retrieve full tap details including the generated Python script
-- **test_tap** — validate a tap script without pushing data to the pipeline
-- **update_tap** — enable/disable, change schedule, retarget pipeline, or replace the script
-- **get_tap_logs** — view run history with status, record counts, duration, and errors
+- **AI Primary & CodeGen:** hides the Ollama option (not applicable on hosted — bundled Ollama handles embeddings only)
+- **Embedding on hosted + Anthropic:** locked to "Ollama bge-m3 (bundled)" — no configuration needed
+- **Embedding on hosted + OpenAI:** dropdown with OpenAI and bundled Ollama options
+- **Advanced toggle:** hidden on hosted instances
 
-### User-supplied tap scripts
+### UI: improved multi-user session handling
 
-`create_tap` now accepts an optional `script` parameter — a raw Python `fetch()` function you write yourself instead of relying on AI generation. This is faster and more reliable when you know exactly what data to fetch. A `secret_name` parameter was also added to inject Vault credentials into the script.
+The platform UI now handles user switching more reliably on shared instances, ensuring each user sees their own environment without manual intervention.
 
-The CLI's `datris tap create` mirrors this: pass `--script path/to/script.py` to supply your own script, or omit it for AI generation as before. A new `datris tap show` command displays full tap details.
-
-### Server: direct script storage endpoint
-
-New `POST /tap/script` API endpoint lets clients store a tap script directly without AI generation, and automatically links it to an existing tap config.
-
-### Updated agent workflow
-
-The MCP system prompt now includes a dedicated "Tap workflow" section guiding agents through the full create → test → run → schedule → monitor cycle, and the required workflow step 1 now checks for existing taps alongside pipelines.
-
-### UI: tap workflow steps
-
-The MCP tab workflow diagram now shows the two ingestion options (direct upload vs. tap) and includes sub-steps 4a–4d for the full tap lifecycle: create, test, run, and schedule.
-
-### Upgrading from v1.5.8
+### Upgrading from v1.5.9
 
 No configuration changes required. Pull the new images and restart:
 
@@ -40,13 +26,19 @@ docker compose pull datris ui mcp-server
 docker compose up -d datris ui mcp-server
 ```
 
+Self-hosted users: the `hosted` flag defaults to `false` — no action needed.
+
 ### Version
 
-- Server: 1.5.9
-- MCP Server: 1.5.9
-- CLI: 1.5.9
+- Server: 1.6.0
+- MCP Server: 1.6.0
+- CLI: 1.6.0
 
 ---
+
+## v1.5.9 — April 11, 2026
+
+See [v1.5.9 release notes](release-notes/v1.5.9.md).
 
 ## v1.5.8 — April 10, 2026
 

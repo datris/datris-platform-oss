@@ -76,7 +76,7 @@ async def _connect():
     await _post_client.post(_endpoint, json={
         "jsonrpc": "2.0", "id": init_id,
         "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": "1.5.9"}},
+        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": "1.6.0"}},
     })
     await asyncio.wait_for(_responses.get(), 10)
     await _post_client.post(_endpoint, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -139,7 +139,7 @@ def b64_file(path):
 # ── CLI Commands ──────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option(version="1.5.9")
+@click.version_option(version="1.6.0")
 def cli():
     """Datris CLI — The Agent-Native Data Platform"""
     pass
@@ -742,7 +742,7 @@ def version(json_output):
         click.echo(json.dumps(result, indent=2))
         return
     click.echo(f"  Server: {result.get('text', result) if isinstance(result, dict) else result}")
-    click.echo(f"  CLI: 1.5.9")
+    click.echo(f"  CLI: 1.6.0")
 
 
 def main():
