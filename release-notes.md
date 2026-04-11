@@ -1,43 +1,56 @@
 # Release Notes
 
-## v1.5.8 — April 10, 2026
+## v1.5.9 — April 11, 2026
 
-Ollama support for all AI configurations and hot-reload on save.
+Full tap MCP tool suite and user-supplied tap scripts.
 
-### Ollama as a provider for all 3 AI configs
+### New MCP tools for taps
 
-The Configuration UI now offers **Ollama (local)** as a provider choice for AI Primary, CodeGen, and Embedding — enabling a fully local AI setup with no cloud API keys. When Ollama is selected, the model field switches to a free-text input so you can type any model you have available (e.g. `qwen3:14b`, `qwen2.5-coder:7b-instruct`).
+Four new MCP tools give agents complete control over taps:
 
-For Embedding, two Ollama options are available:
-- **Ollama (local, bundled)** — uses the bundled docker-compose sidecar at `ollama:11434`, pre-fills `bge-m3`
-- **Ollama (local)** — for your own Ollama instance at `host.docker.internal:11434`, any embedding model
+- **get_tap** — retrieve full tap details including the generated Python script
+- **test_tap** — validate a tap script without pushing data to the pipeline
+- **update_tap** — enable/disable, change schedule, retarget pipeline, or replace the script
+- **get_tap_logs** — view run history with status, record counts, duration, and errors
 
-The backend already supported Ollama for all three slots since v1.5.6. This release exposes it in the UI and fixes `loadTenantAiConfig` to accept empty `apiKey` for Ollama configs.
+### User-supplied tap scripts
 
-### Hot-reload AI configuration on save
+`create_tap` now accepts an optional `script` parameter — a raw Python `fetch()` function you write yourself instead of relying on AI generation. This is faster and more reliable when you know exactly what data to fetch. A `secret_name` parameter was also added to inject Vault credentials into the script.
 
-Saving AI configuration from the Configuration UI now takes effect immediately — **no server restart required**. Previously, `ai-primary` and `codegen` configs were cached at startup and required a container restart to pick up changes. The server now reloads these configs from Vault after each PUT to `/secrets/ai-primary` or `/secrets/codegen`.
+The CLI's `datris tap create` mirrors this: pass `--script path/to/script.py` to supply your own script, or omit it for AI generation as before. A new `datris tap show` command displays full tap details.
 
-### Provider switching remembers your model
+### Server: direct script storage endpoint
 
-When switching between providers in the Configuration UI, the previously entered model is stashed and restored when you switch back. Switching to Ollama clears the model field (since it uses free-text input); switching back to Anthropic/OpenAI restores the dropdown selection.
+New `POST /tap/script` API endpoint lets clients store a tap script directly without AI generation, and automatically links it to an existing tap config.
 
-### Upgrading from v1.5.7
+### Updated agent workflow
 
-No `application.yaml` or Vault changes required. Pull the new images and restart:
+The MCP system prompt now includes a dedicated "Tap workflow" section guiding agents through the full create → test → run → schedule → monitor cycle, and the required workflow step 1 now checks for existing taps alongside pipelines.
+
+### UI: tap workflow steps
+
+The MCP tab workflow diagram now shows the two ingestion options (direct upload vs. tap) and includes sub-steps 4a–4d for the full tap lifecycle: create, test, run, and schedule.
+
+### Upgrading from v1.5.8
+
+No configuration changes required. Pull the new images and restart:
 
 ```sh
-docker compose pull datris ui
-docker compose up -d datris ui
+docker compose pull datris ui mcp-server
+docker compose up -d datris ui mcp-server
 ```
 
 ### Version
 
-- Server: 1.5.8
-- MCP Server: 1.5.8
-- CLI: 1.5.8
+- Server: 1.5.9
+- MCP Server: 1.5.9
+- CLI: 1.5.9
 
 ---
+
+## v1.5.8 — April 10, 2026
+
+See [v1.5.8 release notes](release-notes/v1.5.8.md).
 
 ## v1.5.7 — April 9, 2026
 
