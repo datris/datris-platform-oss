@@ -27,6 +27,25 @@
       </article>
 
       <article class="tab-card">
+        <h3><a routerLink="/data-catalog">Data Catalog</a></h3>
+        <p>
+          Organize your data assets into <strong>catalogs</strong> — logical groups of related
+          taps and pipelines. Catalogs are created through Discovery or when building
+          individual taps and pipelines. View, manage, and delete entire catalogs from here.
+        </p>
+      </article>
+
+      <article class="tab-card">
+        <h3><a routerLink="/discovery">Discovery</a></h3>
+        <p>
+          <strong>AI-powered data discovery.</strong> Chat about data sources, then let AI
+          enumerate all available datasets. Select the ones you want, configure parameters,
+          and bulk-build taps, pipelines, and schedules — all in one guided flow.
+          The fastest way to onboard a new data source.
+        </p>
+      </article>
+
+      <article class="tab-card">
         <h3><a routerLink="/taps">Taps</a></h3>
         <p>
           Taps are <strong>data feeds</strong> — scheduled or on-demand jobs that
@@ -93,10 +112,15 @@
   <section class="next-steps">
     <h2>Suggested first run</h2>
     <ol>
-      <li>Open <a routerLink="/taps">Taps</a> and create a tap against a sample source.</li>
-      <li>Let the tap auto-create a <a routerLink="/pipelines">Pipeline</a>, or build one from scratch in the wizard.</li>
-      <li>Run the tap and watch rows arrive in <a routerLink="/ingestion">Ingestion</a>.</li>
-      <li>Query the result in <a routerLink="/search">Search</a>.</li>
+      <li>Open <a routerLink="/discovery">Discovery</a> and ask about a data source (e.g., "yfinance" for stock data).</li>
+      <li>Select the datasets you want and build taps — the AI generates scripts and tests them.</li>
+      <li>Create pipelines for each tap and optionally set up schedules.</li>
+      <li>Run the taps and watch data arrive in <a routerLink="/ingestion">Ingestion</a>.</li>
+      <li>Query the results in <a routerLink="/search">Search</a>.</li>
     </ol>
+    <p class="alt-flow">
+      <strong>Alternative:</strong> Open <a routerLink="/taps">Taps</a> to create a single tap manually,
+      or connect an <a routerLink="/mcp">MCP agent</a> to drive the entire workflow programmatically.
+    </p>
   </section>
 </div>

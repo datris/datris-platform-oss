@@ -15,7 +15,42 @@
   </div>
 
   <div class="table-container" *ngIf="filteredTaps.length > 0">
-    <table>
+    <div *ngFor="let group of catalogGroups" class="catalog-group">
+      <div class="catalog-group-header" (click)="group.expanded = !group.expanded">
+        <span class="material-icons catalog-expand-icon">{{ group.expanded ? 'expand_more' : 'chevron_right' }}</span>
+        <span class="material-icons catalog-folder-icon">{{ group.name === 'Uncataloged' ? 'folder_off' : 'folder' }}</span>
+        <span class="catalog-group-name">{{ group.name }}</span>
+        <span class="catalog-group-count">{{ group.taps.length }}</span>
+        <!-- Run all taps in catalog -->
+        <button class="catalog-action-btn catalog-run-btn" *ngIf="runCatalogTarget !== group.name && deleteCatalogTarget !== group.name"
+                (click)="runCatalogTarget = group.name; $event.stopPropagation()"
+                title="Run all taps in this catalog">
+          <span class="material-icons">play_arrow</span>
+        </button>
+        <div class="catalog-action-confirm" *ngIf="runCatalogTarget === group.name" (click)="$event.stopPropagation()">
+          <button class="confirm-opt confirm-run" (click)="runCatalogTaps(group); $event.stopPropagation()" [disabled]="group.running">
+            <span class="material-icons">{{ group.running ? 'hourglass_empty' : 'play_arrow' }}</span> {{ group.running ? 'Running...' : 'Run All' }}
+          </button>
+          <button class="confirm-opt confirm-cancel" (click)="runCatalogTarget = ''; $event.stopPropagation()">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
+        <!-- Delete all taps in catalog -->
+        <button class="catalog-action-btn catalog-delete-btn" *ngIf="deleteCatalogTarget !== group.name && runCatalogTarget !== group.name"
+                (click)="deleteCatalogTarget = group.name; $event.stopPropagation()"
+                title="Delete all taps in this catalog">
+          <span class="material-icons">delete</span>
+        </button>
+        <div class="catalog-action-confirm" *ngIf="deleteCatalogTarget === group.name" (click)="$event.stopPropagation()">
+          <button class="confirm-opt confirm-delete" (click)="deleteCatalogTaps(group); $event.stopPropagation()" [disabled]="group.deleting">
+            <span class="material-icons">{{ group.deleting ? 'hourglass_empty' : 'delete_forever' }}</span> {{ group.deleting ? '...' : 'Delete' }}
+          </button>
+          <button class="confirm-opt confirm-cancel" (click)="deleteCatalogTarget = ''; $event.stopPropagation()">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
+      </div>
+    <table *ngIf="group.expanded">
       <thead>
         <tr>
           <th>Name</th>
@@ -29,7 +64,7 @@
         </tr>
       </thead>
       <tbody>
-        <tr *ngFor="let tap of filteredTaps">
+        <tr *ngFor="let tap of group.taps">
           <td class="tap-name tap-name-link" (click)="startEditName($event, tap)">
             <span *ngIf="editingName !== tap.name">{{ tap.name }}</span>
             <input *ngIf="editingName === tap.name" class="inline-name-input"
@@ -91,6 +126,9 @@
             <button class="action-btn run-btn" (click)="runTap($event, tap.name)" title="Test run now">
               <span class="material-icons">play_arrow</span>
             </button>
+            <button class="action-btn script-btn" (click)="openScriptEditor($event, tap)" title="Edit script">
+              <span class="material-icons">terminal</span>
+            </button>
             <button class="action-btn delete-btn" (click)="promptDelete($event, tap.name)" title="Delete tap"
                     *ngIf="deleteTarget !== tap.name">
               <span class="material-icons">delete</span>
@@ -107,6 +145,7 @@
         </tr>
       </tbody>
     </table>
+    </div>
   </div>
 
   <div class="empty-state" *ngIf="taps.length > 0 && filteredTaps.length === 0">
@@ -206,6 +245,33 @@
       <button class="btn-primary" (click)="saveCron()"
               [disabled]="savingCron || (cronEditValue.trim() && !!cronEditValidationError())">
         {{ savingCron ? 'Saving...' : 'Save' }}
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Script Editor Modal -->
+<div class="modal-overlay" *ngIf="scriptEditorTap" (click)="closeScriptEditor()">
+  <div class="script-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Edit Script: {{ scriptEditorTap.name }}</h2>
+      <button class="modal-close" (click)="closeScriptEditor()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="script-packages-row" *ngIf="scriptEditorPackages.length > 0">
+        <span class="script-packages-label">Packages:</span>
+        <span class="package-chip" *ngFor="let pkg of scriptEditorPackages">{{ pkg }}</span>
+      </div>
+      <textarea class="script-textarea" [(ngModel)]="scriptEditorContent" rows="20"></textarea>
+      <div class="script-error" *ngIf="scriptEditorError">{{ scriptEditorError }}</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" (click)="closeScriptEditor()">Cancel</button>
+      <button class="btn-primary" (click)="saveAndTestScript()" [disabled]="scriptEditorSaving">
+        <span class="material-icons">{{ scriptEditorSaving ? 'hourglass_empty' : 'science' }}</span>
+        {{ scriptEditorSaving ? 'Saving & Testing...' : 'Save & Test' }}
       </button>
     </div>
   </div>

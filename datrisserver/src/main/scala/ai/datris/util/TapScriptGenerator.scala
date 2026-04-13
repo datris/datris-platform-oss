@@ -44,7 +44,7 @@ object TapScriptGenerator {
           |Pandas — IMPORTANT (modern API):
           |- The platform runs pandas 2.x. When parsing HTML you have already fetched (e.g. from `requests.get(...).text`), you MUST wrap the string in `io.StringIO`: `pd.read_html(io.StringIO(resp.text), ...)`. Passing the raw string directly was deprecated in pandas 2.1 and now raises a parser error because lxml treats it as a file path. Add `import io` at the top of the script when you do this.
           |- The same rule applies to `pd.read_csv` and `pd.read_json` when given a string of content rather than a path or URL — wrap in `io.StringIO`.
-          |- When extracting integer columns from a yfinance/pandas DataFrame, be aware that any NaN in a numeric column promotes the entire column to `float64`. If you cast a value with `int(x)`, it will produce a Python int — but if you let JSON serialize a `numpy.float64` directly it will emit `2880264.0`. Always cast numeric values to Python `int`/`float`/`str` before adding to the record dict.
+          |- When extracting integer columns from a pandas DataFrame, be aware that any NaN in a numeric column promotes the entire column to `float64`. If you cast a value with `int(x)`, it will produce a Python int — but if you let JSON serialize a `numpy.float64` directly it will emit `2880264.0`. Always cast numeric values to Python `int`/`float`/`str` before adding to the record dict.
           |
           |Column naming for tabular results:
           |- When returning a list of dicts (CSV-shaped data), prefer snake_case keys composed of [a-z0-9_] only.

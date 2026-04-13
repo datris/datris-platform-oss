@@ -69,6 +69,17 @@ export class McpComponent implements OnInit {
       parameters: [],
       playgroundEnabled: true
     },
+    // --- Discovery ---
+    {
+      name: 'discover_source',
+      description: 'Discover available datasets from any data source. Chat with AI to enumerate datasets from a Python package, API, website, or database. Returns a structured dataset catalog with parameters and tap instruction templates.',
+      category: 'Discovery',
+      parameters: [
+        { name: 'message', type: 'string', description: 'What to discover (e.g., "What datasets are available in yfinance?")', required: true, inputType: 'textarea' },
+        { name: 'messages', type: 'array', description: 'Full conversation history for multi-turn discovery (optional)', required: false, inputType: 'textarea' }
+      ],
+      playgroundEnabled: true
+    },
     // --- Taps ---
     {
       name: 'create_tap',
@@ -541,6 +552,7 @@ export class McpComponent implements OnInit {
   getCategoryIcon(category: string): string {
     const icons: Record<string, string> = {
       'System': 'monitor_heart',
+      'Discovery': 'manage_search',
       'Pipeline Management': 'account_tree',
       'Vector Search': 'search',
       'Database Query': 'storage',

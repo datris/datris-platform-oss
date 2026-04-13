@@ -263,16 +263,16 @@ class TapAPIController {
                   |
                   |CREDENTIALS — Many external data sources need API keys, tokens, or other secrets. The Datris tap runner injects environment variables into the script at runtime. Common ones include:
                   |- DATRIS_POSTGRES_DATABASE, DATRIS_MONGODB_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT (auto-injected for accessing the Datris platform itself)
-                  |- API_KEY, ALPHA_VANTAGE_API_KEY, POLYGON_API_KEY, NEWSAPI_KEY, etc. (must be configured by the user in a "tap secret")
+                  |- Custom API keys and tokens (must be configured by the user in a "tap secret")
                   |
                   |Whenever the data source needs authentication, you MUST:
-                  |1. Tell the user which environment variables the script will need (suggest specific names like ALPHA_VANTAGE_API_KEY)
+                  |1. Tell the user which environment variables the script will need (suggest specific names)
                   |2. Mention that they should create or select a "tap secret" containing those keys in the Credentials section below the chat
                   |3. Include the env var names in the instruction draft so the script generator references them via os.environ.get()
                   |
-                  |For free, no-auth sources (yfinance, Open-Meteo, public RSS feeds), no credentials are needed — say so explicitly.
+                  |For free, no-auth sources, no credentials are needed — say so explicitly.
                   |
-                  |Ask ONE focused clarifying question at a time. Suggest specific data sources when relevant (e.g., yfinance for stocks, Alpha Vantage for fundamentals, Open-Meteo for weather, NewsAPI for news). Be concise — 1-2 sentences per turn. When you have enough information, tell the user the instruction is ready and they can proceed.
+                  |Ask ONE focused clarifying question at a time. Suggest specific data sources when relevant. Be concise — 1-2 sentences per turn. When you have enough information, tell the user the instruction is ready and they can proceed.
                   |
                   |After EACH user message, return JSON with three fields:
                   |{
@@ -286,11 +286,11 @@ class TapAPIController {
                   |Write the description as plain English, the way you'd explain the task to a colleague. NEVER include:
                   |- API URLs or paths (e.g., /api/v1/metadata/postgres/tables)
                   |- HTTP verbs (POST, GET)
-                  |- Python library method names (e.g., ticker.earnings_history)
+                  |- Python library method names
                   |- File paths or environment variable names
-                  |The script generator already knows how to call Datris APIs and which Python libraries to use — your job is to capture intent, not implementation. When the user references a Datris table/collection, name it in plain English (e.g., "Get the ticker list from the consumer_discretionary_earnings table on Datris, then fetch quarterly earnings for each ticker from yfinance."). When the table is unknown, say so plainly (e.g., "Look up the ticker list from a table on Datris, then fetch quarterly earnings for each ticker from yfinance.").
+                  |The script generator already knows how to call Datris APIs and which Python libraries to use — your job is to capture intent, not implementation. When the user references a Datris table/collection, name it in plain English. When the table is unknown, say so plainly.
                   |
-                  |suggestedEnvVars should list any environment variable names the script will need that are NOT auto-injected by Datris (so do NOT include DATRIS_POSTGRES_DATABASE, DATRIS_MONGODB_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT). For example, if the user picks Alpha Vantage, suggest ["ALPHA_VANTAGE_API_KEY"]. For free sources with no auth, return an empty array []. Always return the field, even when empty.
+                  |suggestedEnvVars should list any environment variable names the script will need that are NOT auto-injected by Datris (so do NOT include DATRIS_POSTGRES_DATABASE, DATRIS_MONGODB_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT). For free sources with no auth, return an empty array []. Always return the field, even when empty.
                   |
                   |Return ONLY the JSON object, no markdown fences, no commentary.""".stripMargin
 
@@ -404,12 +404,93 @@ class TapAPIController {
                 """You are a code generator. You will be given a Python script that has a bug, along with the error output and a diagnosis.
                   |Fix the script and return a JSON object with two fields:
                   |- "script": the complete fixed Python 3 script (must define a `fetch()` function)
-                  |- "packages": a list of any pip packages needed beyond the pre-installed set
+                  |- "packages": a list of the EXACT pip install package names needed beyond the pre-installed set
                   |  (requests, beautifulsoup4, pandas, lxml, feedparser). Use an empty list if none needed.
+                  |  Package names must be the pip install names, not Python import names (they are often different).
+                  |
+                  |IMPORTANT fix strategies:
+                  |- If the error says a method or attribute does not exist (AttributeError, 'has no attribute'),
+                  |  the library's API may have changed between versions. If you are unsure of the correct method name,
+                  |  fall back to using the `requests` library to call the API directly via HTTP instead of using the SDK.
+                  |  Direct HTTP calls are more reliable than SDK methods that may be version-dependent.
+                  |- If pip install failed, verify the correct PyPI package name (pip install name != Python import name).
+                  |
                   |Return ONLY the JSON object, no markdown fences or commentary.""".stripMargin
 
+            // Check if error suggests outdated package knowledge
+            val combinedError = error + " " + diagnosis + " " + logs
+            val needsPackageLookup = Seq("has no attribute", "AttributeError", "ModuleNotFoundError",
+                "No module named", "No matching distribution", "ImportError").exists(combinedError.contains)
+
+            val packageContext = if (needsPackageLookup) {
+                // Extract package names from import statements in the script
+                val importPattern = """(?:import|from)\s+(\w+)""".r
+                val imports = importPattern.findAllMatchIn(script).map(_.group(1)).toSet
+                val standardLibs = Set("os", "sys", "json", "datetime", "io", "re", "math", "time", "urllib", "collections", "itertools", "functools")
+                val thirdPartyImports = imports -- standardLibs
+
+                val contextParts = thirdPartyImports.take(3).flatMap { pkg =>
+                    try {
+                        logger.info("Fetching PyPI info for package: " + pkg)
+                        val client = org.apache.http.impl.client.HttpClients.createDefault()
+                        try {
+                            val pypiReq = new org.apache.http.client.methods.HttpGet("https://pypi.org/pypi/" + pkg + "/json")
+                            pypiReq.setHeader("User-Agent", "datris-platform/1.0")
+                            val pypiResp = client.execute(pypiReq)
+                            val pypiBody = org.apache.http.util.EntityUtils.toString(pypiResp.getEntity)
+
+                            if (pypiResp.getStatusLine.getStatusCode == 200) {
+                                val gson3 = new Gson
+                                val pypiData = gson3.fromJson(pypiBody, classOf[java.util.Map[String, Any]])
+                                val info = pypiData.get("info").asInstanceOf[java.util.Map[String, Any]]
+                                val version = Option(info.get("version")).map(_.toString).getOrElse("unknown")
+                                val summary = Option(info.get("summary")).map(_.toString).getOrElse("")
+                                val description = Option(info.get("description")).map(_.toString).getOrElse("")
+                                val homePage = Option(info.get("home_page")).map(_.toString).getOrElse("")
+                                val pipName = Option(info.get("name")).map(_.toString).getOrElse(pkg)
+
+                                // Try to fetch docs page for more detail
+                                val docsUrl = {
+                                    val projectUrls = Option(info.get("project_urls")).map(_.asInstanceOf[java.util.Map[String, Any]]).getOrElse(new java.util.HashMap())
+                                    Option(projectUrls.get("Documentation")).map(_.toString)
+                                        .orElse(Option(projectUrls.get("Docs")).map(_.toString))
+                                        .orElse(Option(projectUrls.get("Homepage")).map(_.toString))
+                                        .orElse(if (homePage.nonEmpty) Some(homePage) else None)
+                                }
+
+                                val docsExcerpt = docsUrl.flatMap { url =>
+                                    try {
+                                        val docsReq = new org.apache.http.client.methods.HttpGet(url)
+                                        docsReq.setHeader("User-Agent", "datris-platform/1.0")
+                                        val docsResp = client.execute(docsReq)
+                                        if (docsResp.getStatusLine.getStatusCode == 200) {
+                                            val html = org.apache.http.util.EntityUtils.toString(docsResp.getEntity)
+                                            // Strip HTML tags and truncate
+                                            val text = html.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim
+                                            Some(text.take(2000))
+                                        } else None
+                                    } catch { case _: Exception => None }
+                                }.getOrElse("")
+
+                                // Use description (README) truncated if no docs page
+                                val contextText = if (docsExcerpt.nonEmpty) docsExcerpt else description.take(2000)
+
+                                Some(s"PACKAGE INFO: $pipName v$version (pip install $pipName)\n$summary\n$contextText")
+                            } else None
+                        } finally {
+                            client.close()
+                        }
+                    } catch {
+                        case e: Exception =>
+                            logger.warn("Failed to fetch PyPI info for " + pkg + ": " + e.getMessage)
+                            None
+                    }
+                }
+                if (contextParts.nonEmpty) contextParts.mkString("\n\n") + "\n\n" else ""
+            } else ""
+
             val userPrompt =
-                s"""Current script:
+                s"""${packageContext}Current script:
                    |$script
                    |
                    |Script output/logs:
@@ -512,7 +593,7 @@ class TapAPIController {
 
             // AI explanation if there's an error, 0 records, or logs contain notable indicators.
             // "deprecat" and "warning" catch cases where the script "succeeded" but the runtime
-            // output is trying to tell us something (e.g. yfinance DeprecationWarning, urllib3
+            // output is trying to tell us something (e.g. DeprecationWarning, urllib3
             // warnings, pandas FutureWarning) — the user shouldn't have to manually ask for a
             // review when the logs are already shouting.
             val logsHaveIssues = result.logs != null && result.logs.nonEmpty && {

@@ -11,9 +11,12 @@ export class TapsComponent implements OnInit, OnDestroy {
   taps: any[] = [];
   filteredTaps: any[] = [];
   searchQuery = '';
+  catalogGroups: Array<{name: string, taps: any[], expanded: boolean, deleting?: boolean, running?: boolean}> = [];
   private refreshInterval: any;
 
   deleteTarget = '';
+  deleteCatalogTarget = '';
+  runCatalogTarget = '';
   runningTap = '';
   pipelines: any[] = [];
   editingPipeline = '';
@@ -49,7 +52,7 @@ export class TapsComponent implements OnInit, OnDestroy {
   loadTaps(): void {
     this.tapService.getTaps().subscribe({
       next: (data) => {
-        this.taps = (data || []).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        this.taps = (data || []).filter(t => !(t.name || '').startsWith('__catalog__')).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
         this.filterTaps();
       },
       error: (err) => console.error('Failed to load taps', err)
@@ -64,8 +67,35 @@ export class TapsComponent implements OnInit, OnDestroy {
       this.filteredTaps = this.taps.filter(t =>
         (t.name || '').toLowerCase().includes(q) ||
         (t.description || '').toLowerCase().includes(q) ||
-        (t.targetPipeline || '').toLowerCase().includes(q)
+        (t.targetPipeline || '').toLowerCase().includes(q) ||
+        (t.catalog || '').toLowerCase().includes(q)
       );
+    }
+    this.buildCatalogGroups();
+  }
+
+  private buildCatalogGroups(): void {
+    const prevExpanded = new Set(this.catalogGroups.filter(g => g.expanded).map(g => g.name));
+    const map = new Map<string, any[]>();
+    for (const tap of this.filteredTaps) {
+      const cat = tap.catalog || 'Uncataloged';
+      if (!map.has(cat)) map.set(cat, []);
+      map.get(cat)!.push(tap);
+    }
+    // Named catalogs first (sorted), Uncataloged last
+    const named = Array.from(map.entries())
+      .filter(([name]) => name !== 'Uncataloged')
+      .sort(([a], [b]) => a.localeCompare(b));
+    const uncataloged = map.get('Uncataloged');
+
+    this.catalogGroups = named.map(([name, taps]) => ({
+      name, taps, expanded: prevExpanded.has(name)
+    }));
+    if (uncataloged && uncataloged.length > 0) {
+      this.catalogGroups.push({
+        name: 'Uncataloged', taps: uncataloged,
+        expanded: prevExpanded.has('Uncataloged')
+      });
     }
   }
 
@@ -74,6 +104,13 @@ export class TapsComponent implements OnInit, OnDestroy {
   logsTap = '';
   logsData: any[] = [];
   logsLoading = false;
+
+  // Script editor modal state
+  scriptEditorTap: any = null;
+  scriptEditorContent = '';
+  scriptEditorPackages: string[] = [];
+  scriptEditorError = '';
+  scriptEditorSaving = false;
 
   // Cron edit modal state
   editingCronTap: any = null;
@@ -114,6 +151,72 @@ export class TapsComponent implements OnInit, OnDestroy {
   closeViewConfig(): void {
     this.viewConfigTap = '';
     this.viewConfigJson = '';
+  }
+
+  openScriptEditor(event: Event, tap: any): void {
+    event.stopPropagation();
+    this.scriptEditorTap = tap;
+    this.scriptEditorContent = '';
+    this.scriptEditorPackages = [];
+    this.scriptEditorError = '';
+    this.scriptEditorSaving = false;
+    // Load the script
+    this.tapService.getTap(tap.name).subscribe({
+      next: (fullTap) => {
+        this.scriptEditorContent = fullTap.script || '';
+        this.scriptEditorPackages = fullTap.packages || [];
+      },
+      error: () => { this.scriptEditorError = 'Failed to load script'; }
+    });
+  }
+
+  closeScriptEditor(): void {
+    this.scriptEditorTap = null;
+    this.scriptEditorContent = '';
+    this.scriptEditorPackages = [];
+    this.scriptEditorError = '';
+    this.scriptEditorSaving = false;
+  }
+
+  saveAndTestScript(): void {
+    if (!this.scriptEditorTap || this.scriptEditorSaving) return;
+    this.scriptEditorSaving = true;
+    this.scriptEditorError = '';
+
+    const tapName = this.scriptEditorTap.name;
+
+    // Save the script
+    this.tapService.storeScript(tapName, this.scriptEditorContent).subscribe({
+      next: () => {
+        // Test the script
+        const config = {
+          name: tapName,
+          description: this.scriptEditorTap.description,
+          scriptPath: this.scriptEditorTap.scriptPath,
+          packages: this.scriptEditorPackages.length > 0 ? this.scriptEditorPackages : null,
+          secretName: this.scriptEditorTap.secretName || null
+        };
+        this.tapService.testTap(config).subscribe({
+          next: (result) => {
+            this.scriptEditorSaving = false;
+            if (result.recordCount > 0 && !result.error) {
+              this.closeScriptEditor();
+              this.loadTaps();
+            } else {
+              this.scriptEditorError = result.error || 'Test returned 0 records';
+            }
+          },
+          error: (err: any) => {
+            this.scriptEditorSaving = false;
+            this.scriptEditorError = 'Test failed: ' + (typeof err.error === 'string' ? err.error : err.message).substring(0, 300);
+          }
+        });
+      },
+      error: (err: any) => {
+        this.scriptEditorSaving = false;
+        this.scriptEditorError = 'Failed to save: ' + (typeof err.error === 'string' ? err.error : err.message).substring(0, 200);
+      }
+    });
   }
 
   editTap(event: Event, name: string): void {
@@ -198,6 +301,39 @@ export class TapsComponent implements OnInit, OnDestroy {
       next: () => { this.deleteTarget = ''; this.loadTaps(); },
       error: (err) => { alert('Failed to delete: ' + (err.error || err.message)); this.deleteTarget = ''; }
     });
+  }
+
+  runCatalogTaps(group: {name: string, taps: any[], running?: boolean}): void {
+    group.running = true;
+    this.runCatalogTarget = '';
+    const tapsWithPipeline = group.taps.filter(t => t.targetPipeline);
+    let completed = 0;
+    const total = tapsWithPipeline.length;
+    if (total === 0) { group.running = false; return; }
+
+    for (const tap of tapsWithPipeline) {
+      this.tapService.runTap(tap.name, true).subscribe({
+        next: () => { completed++; if (completed === total) { group.running = false; this.loadTaps(); } },
+        error: () => { completed++; if (completed === total) { group.running = false; this.loadTaps(); } }
+      });
+    }
+  }
+
+  deleteCatalogTaps(group: {name: string, taps: any[], deleting?: boolean}): void {
+    group.deleting = true;
+    this.deleteCatalogTarget = '';
+    const names = group.taps.map(t => t.name);
+    // Also delete the catalog placeholder if it exists
+    if (group.name !== 'Uncataloged') {
+      names.push('__catalog__' + group.name);
+    }
+    let completed = 0;
+    for (const name of names) {
+      this.tapService.deleteTap(name).subscribe({
+        next: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadTaps(); } },
+        error: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadTaps(); } }
+      });
+    }
   }
 
   getStatusClass(status: string): string {

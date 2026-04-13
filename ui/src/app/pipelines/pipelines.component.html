@@ -17,7 +17,27 @@
   </div>
 
   <div class="table-container" *ngIf="filteredPipelines.length > 0">
-    <table>
+    <div *ngFor="let group of catalogGroups" class="catalog-group">
+      <div class="catalog-group-header" (click)="group.expanded = !group.expanded">
+        <span class="material-icons catalog-expand-icon">{{ group.expanded ? 'expand_more' : 'chevron_right' }}</span>
+        <span class="material-icons catalog-folder-icon">{{ group.name === 'Uncataloged' ? 'folder_off' : 'folder' }}</span>
+        <span class="catalog-group-name">{{ group.name }}</span>
+        <span class="catalog-group-count">{{ group.pipelines.length }}</span>
+        <button class="catalog-delete-btn" *ngIf="deleteCatalogTarget !== group.name"
+                (click)="deleteCatalogTarget = group.name; $event.stopPropagation()"
+                title="Delete all pipelines in this catalog">
+          <span class="material-icons">delete</span>
+        </button>
+        <div class="catalog-delete-confirm" *ngIf="deleteCatalogTarget === group.name" (click)="$event.stopPropagation()">
+          <button class="del-opt del-yes" (click)="deleteCatalogPipelines(group); $event.stopPropagation()" [disabled]="group.deleting">
+            <span class="material-icons">{{ group.deleting ? 'hourglass_empty' : 'delete_forever' }}</span> {{ group.deleting ? '...' : 'Delete' }}
+          </button>
+          <button class="del-opt del-cancel" (click)="deleteCatalogTarget = ''; $event.stopPropagation()">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
+      </div>
+    <table *ngIf="group.expanded">
       <thead>
         <tr>
           <th>Name</th>
@@ -28,7 +48,7 @@
         </tr>
       </thead>
       <tbody>
-        <tr *ngFor="let ds of filteredPipelines" (click)="editPipeline($event, ds.name)">
+        <tr *ngFor="let ds of group.pipelines" (click)="editPipeline($event, ds.name)">
           <td class="dataset-name dataset-name-link" (click)="startEditName($event, ds)">
             <span *ngIf="editingName !== ds.name">{{ ds.name }}</span>
             <input *ngIf="editingName === ds.name" class="inline-name-input"
@@ -67,6 +87,7 @@
         </tr>
       </tbody>
     </table>
+    </div>
   </div>
 
   <div class="empty-state" *ngIf="pipelines.length > 0 && filteredPipelines.length === 0">

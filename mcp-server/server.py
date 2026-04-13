@@ -1076,6 +1076,33 @@ async def list_tools():
             }
         ),
 
+        # --- Discovery ---
+        Tool(
+            name="discover_source",
+            description="Discover available datasets from any data source. Chat with AI to enumerate datasets from a Python package, API, website, or database. Returns a structured dataset catalog with parameters and tap instruction templates. Use the returned tap instructions with create_tap to build taps for selected datasets.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "What to discover (e.g., 'What datasets are available in yfinance?')"
+                    },
+                    "messages": {
+                        "type": "array",
+                        "description": "Full conversation history for multi-turn discovery. Each item has 'role' and 'content'. If omitted, 'message' is used as a single user message.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {"type": "string"},
+                                "content": {"type": "string"}
+                            }
+                        }
+                    }
+                },
+                "required": ["message"]
+            }
+        ),
+
         # --- Taps ---
         Tool(
             name="create_tap",
@@ -1600,6 +1627,13 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps(result)
         except requests.RequestException as e:
             return json.dumps({"error": f"Failed to reach Datris website: {e}"})
+
+    # --- Discovery ---
+    elif name == "discover_source":
+        messages = args.get("messages")
+        if not messages:
+            messages = [{"role": "user", "content": args["message"]}]
+        return _call("post", "/api/v1/discover", json={"messages": messages})
 
     # --- Taps ---
     elif name == "create_tap":

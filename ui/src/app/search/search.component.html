@@ -137,6 +137,8 @@
       <button class="execute-btn" (click)="execute()" [disabled]="loading">
         {{ loading ? 'Executing...' : 'Execute' }}
       </button>
+      <button class="retrieve-all-btn" (click)="retrieveAllPostgres()" [disabled]="!pgSelectedTable || loading"
+              *ngIf="queryType === 'postgres'">Retrieve All</button>
     </div>
   </div>
 

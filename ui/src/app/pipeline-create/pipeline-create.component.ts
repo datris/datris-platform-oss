@@ -26,6 +26,10 @@ export class PipelineCreateComponent implements OnInit {
 
   // Step 1 — Basics + Source
   pipelineName = '';
+  catalog = '';
+  availableCatalogs: string[] = [];
+  showNewCatalog = false;
+  newCatalogName = '';
   pipelineSource = 'file';  // 'file' | 'tap' | 'manual'
   sampleFile: File | null = null;
   sourceType = 'csv';
@@ -137,10 +141,16 @@ export class PipelineCreateComponent implements OnInit {
       }
     });
 
-    // Load taps for "Create from Tap" option
+    // Load taps for "Create from Tap" option + extract catalogs
     this.tapService.getTaps().subscribe({
-      next: (data) => this.taps = (data || []).filter((t: any) => t.lastTestRunDataType || t.lastRunDataType)
-                        .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || '')),
+      next: (data) => {
+        const allTaps = data || [];
+        this.taps = allTaps.filter((t: any) => t.lastTestRunDataType || t.lastRunDataType)
+                        .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+        const cats = new Set<string>();
+        allTaps.forEach((t: any) => { if (t.catalog) cats.add(t.catalog); });
+        this.availableCatalogs = Array.from(cats).sort();
+      },
       error: () => {}
     });
 
@@ -156,6 +166,7 @@ export class PipelineCreateComponent implements OnInit {
 
   loadFromConfig(config: any): void {
     this.pipelineName = config.name || '';
+    this.catalog = config.catalog || '';
     this.sampleFileDetected = true; // skip sample file prompt
 
     // Detect source type
@@ -473,6 +484,34 @@ export class PipelineCreateComponent implements OnInit {
     const names = this.schemaFields.filter(f => f.name).map(f => f.name);
     if (names.length <= 5) return names.join(', ');
     return names.slice(0, 5).join(', ') + ', ...';
+  }
+
+  onCatalogChange(value: string): void {
+    if (value === '__new__') {
+      this.showNewCatalog = true;
+      this.newCatalogName = '';
+      this.catalog = '';
+    } else {
+      this.showNewCatalog = false;
+    }
+  }
+
+  private sanitizeName(name: string): string {
+    return name.toLowerCase().trim()
+      .replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+      .replace(/_+/g, '_').replace(/^_|_$/g, '');
+  }
+
+  confirmNewCatalog(): void {
+    const name = this.sanitizeName(this.newCatalogName);
+    if (!name) return;
+    this.catalog = name;
+    if (!this.availableCatalogs.includes(name)) {
+      this.availableCatalogs.push(name);
+      this.availableCatalogs.sort();
+    }
+    this.showNewCatalog = false;
+    this.newCatalogName = '';
   }
 
   onPipelineSourceChange(): void {
@@ -1025,6 +1064,9 @@ export class PipelineCreateComponent implements OnInit {
       this.creating = false;
       return;
     }
+
+    // Set catalog on the pipeline config
+    config.catalog = this.catalog || null;
 
     this.pipelineService.createPipeline(config).subscribe({
       next: () => {

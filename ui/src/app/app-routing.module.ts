@@ -14,6 +14,8 @@ import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
 import { GettingStartedComponent } from './getting-started/getting-started.component';
+import { DataCatalogComponent } from './data-catalog/data-catalog.component';
+import { DiscoveryComponent } from './discovery/discovery.component';
 
 const routes: Routes = [
   { path: '', redirectTo: 'getting-started', pathMatch: 'full' },
@@ -22,6 +24,8 @@ const routes: Routes = [
   { path: 'pipelines/create', component: PipelineCreateComponent },
   { path: 'pipelines/:name/edit', component: PipelineCreateComponent },
   { path: 'pipelines/:name', component: PipelineViewComponent },
+  { path: 'data-catalog', component: DataCatalogComponent },
+  { path: 'discovery', component: DiscoveryComponent },
   { path: 'taps', component: TapsComponent },
   { path: 'taps/create', component: TapCreateComponent },
   { path: 'taps/:name/edit', component: TapCreateComponent },

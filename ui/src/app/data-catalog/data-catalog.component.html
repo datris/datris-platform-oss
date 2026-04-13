@@ -1,0 +1,70 @@
+<div class="container">
+  <div class="page-header">
+    <h1 class="page-title">Data Catalog</h1>
+    <div class="header-actions">
+      <button class="create-btn" (click)="showCreateModal = true" *ngIf="!showCreateModal">+ Create Catalog</button>
+    </div>
+  </div>
+
+  <div class="create-catalog-row" *ngIf="showCreateModal">
+    <input class="form-input" [(ngModel)]="newCatalogName" placeholder="Catalog name" (keydown.enter)="createCatalog()">
+    <button class="primary-btn" (click)="createCatalog()" [disabled]="!newCatalogName.trim()">Create</button>
+    <button class="secondary-btn" (click)="showCreateModal = false; newCatalogName = ''">Cancel</button>
+  </div>
+  <p class="page-description">
+    A data catalog groups related taps and pipelines created through Discovery.
+    Use the <strong>Discovery</strong> tab to discover data sources and assign them to a catalog.
+    You can also assign individual taps and pipelines to a catalog when creating them.
+  </p>
+
+  <div class="empty-state" *ngIf="!loading && catalogs.length === 0">
+    <span class="material-icons empty-icon">folder_open</span>
+    <p>No data catalogs yet. Create one through the Discovery tab or when creating a tap or pipeline.</p>
+  </div>
+
+  <div class="catalog-list" *ngIf="catalogs.length > 0">
+    <div *ngFor="let cat of catalogs" class="catalog-card">
+      <div class="catalog-card-header" (click)="cat.expanded = !cat.expanded">
+        <span class="material-icons expand-icon">{{ cat.expanded ? 'expand_more' : 'chevron_right' }}</span>
+        <span class="material-icons catalog-icon">{{ cat.name === 'Uncataloged' ? 'folder_off' : 'folder' }}</span>
+        <span class="catalog-name">{{ cat.name }}</span>
+        <div class="catalog-counts">
+          <span class="catalog-count">{{ cat.tapCount }} tap{{ cat.tapCount !== 1 ? 's' : '' }}</span>
+          <span class="catalog-count-sep">&middot;</span>
+          <span class="catalog-count">{{ cat.pipelineCount }} pipeline{{ cat.pipelineCount !== 1 ? 's' : '' }}</span>
+        </div>
+        <button class="delete-catalog-btn" *ngIf="cat.name !== 'Uncataloged' && deleteTarget !== cat.name"
+                (click)="deleteTarget = cat.name; $event.stopPropagation()" title="Delete catalog">
+          <span class="material-icons">delete</span>
+        </button>
+        <div class="delete-confirm" *ngIf="deleteTarget === cat.name" (click)="$event.stopPropagation()">
+          <button class="del-opt del-yes" (click)="deleteCatalog(cat)" [disabled]="cat.deleting">
+            <span class="material-icons">{{ cat.deleting ? 'hourglass_empty' : 'delete_forever' }}</span> {{ cat.deleting ? '...' : 'Delete' }}
+          </button>
+          <button class="del-opt del-cancel" (click)="deleteTarget = ''">
+            <span class="material-icons">close</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="catalog-card-body" *ngIf="cat.expanded">
+        <div class="catalog-section" *ngIf="cat.taps.length > 0">
+          <div class="catalog-section-title">Taps</div>
+          <div class="catalog-item" *ngFor="let tap of cat.taps">
+            <span class="material-icons item-icon">water_drop</span>
+            <a class="item-name" [routerLink]="['/taps', tap.name, 'edit']">{{ tap.name }}</a>
+            <span class="item-meta" *ngIf="tap.lastRunStatus">{{ tap.lastRunStatus }}</span>
+            <span class="item-meta" *ngIf="tap.lastRunRecordCount">{{ tap.lastRunRecordCount }} records</span>
+          </div>
+        </div>
+        <div class="catalog-section" *ngIf="cat.pipelines.length > 0">
+          <div class="catalog-section-title">Pipelines</div>
+          <div class="catalog-item" *ngFor="let pipeline of cat.pipelines">
+            <span class="material-icons item-icon">route</span>
+            <a class="item-name" [routerLink]="['/pipelines', pipeline.name]">{{ pipeline.name }}</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

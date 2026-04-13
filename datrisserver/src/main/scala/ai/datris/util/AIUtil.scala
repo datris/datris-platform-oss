@@ -153,13 +153,25 @@ object AIUtil {
     }
 
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)]): String =
-        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig)
+        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, 8192)
 
-    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig): String = {
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig): String =
+        callAIWithMessages(systemPrompt, messages, aiConfig, 8192)
+
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], maxTokens: Int): String =
+        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, maxTokens, -1.0)
+
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], maxTokens: Int, temperature: Double): String =
+        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, maxTokens, temperature)
+
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int): String =
+        callAIWithMessages(systemPrompt, messages, aiConfig, maxTokens, -1.0)
+
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int, temperature: Double): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
-        logger.info("Calling AI with conversation, " + messages.size + " messages, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model)
+        logger.info("Calling AI with conversation, " + messages.size + " messages, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", maxTokens: " + maxTokens)
 
         val messagesArr = new JsonArray()
 
@@ -180,7 +192,8 @@ object AIUtil {
 
         val requestObj = new JsonObject()
         requestObj.addProperty("model", aiConfig.model)
-        requestObj.addProperty("max_tokens", 8192)
+        requestObj.addProperty("max_tokens", maxTokens)
+        if (temperature >= 0) requestObj.addProperty("temperature", temperature)
         requestObj.add("messages", messagesArr)
 
         // For Anthropic, system instruction goes as a top-level field
