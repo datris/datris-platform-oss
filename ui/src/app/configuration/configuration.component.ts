@@ -98,6 +98,12 @@ export class ConfigurationComponent implements OnInit {
 
   constructor(private http: HttpClient) {}
 
+  /** Trials share the same trial droplet infra as a hosted dedicated instance:
+   *  bundled Ollama for embeddings, no local-Ollama chat option, no Advanced endpoint editing. */
+  get hostedOrTrial(): boolean {
+    return this.isHosted || this.isTrial;
+  }
+
   ngOnInit(): void {
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
@@ -233,8 +239,8 @@ export class ConfigurationComponent implements OnInit {
           this.aiPrimaryEndpoint = fields.endpoint || this.endpointFor(this.aiPrimaryProvider, 'chat');
           this.maybeAddExtraModel('aiPrimary', this.aiPrimaryProvider, this.aiPrimaryModel);
           this.showAdvancedAiPrimary = this.endpointIsCustom(this.aiPrimaryEndpoint, this.aiPrimaryProvider, 'chat');
-          if (!this.isTrial) recordKeyForProvider(this.aiPrimaryProvider, fields.apiKey || '');
-          this.usingDefaultAiPrimary = this.isTrial;  // trials are always "Datris-managed"
+          recordKeyForProvider(this.aiPrimaryProvider, fields.apiKey || '');
+          this.usingDefaultAiPrimary = false;
         } else {
           this.aiPrimaryEndpoint = this.endpointFor(this.aiPrimaryProvider, 'chat');
         }
@@ -253,8 +259,8 @@ export class ConfigurationComponent implements OnInit {
           this.codegenEndpoint = fields.endpoint || this.endpointFor(this.codegenProvider, 'chat');
           this.maybeAddExtraModel('codegen', this.codegenProvider, this.codegenModel);
           this.showAdvancedCodegen = this.endpointIsCustom(this.codegenEndpoint, this.codegenProvider, 'chat');
-          if (!this.isTrial) recordKeyForProvider(this.codegenProvider, fields.apiKey || '');
-          this.usingDefaultCodegen = this.isTrial;  // trials are always "Datris-managed"
+          recordKeyForProvider(this.codegenProvider, fields.apiKey || '');
+          this.usingDefaultCodegen = false;
         } else {
           this.codegenEndpoint = this.endpointFor(this.codegenProvider, 'chat');
         }
@@ -278,8 +284,8 @@ export class ConfigurationComponent implements OnInit {
           this.embeddingEndpoint = fields.endpoint || this.endpointFor(this.embeddingProvider, 'embedding');
           this.maybeAddExtraModel('embedding', this.embeddingProvider, this.embeddingModel);
           this.showAdvancedEmbedding = this.endpointIsCustom(this.embeddingEndpoint, this.embeddingProvider, 'embedding');
-          if (!this.isTrial) recordKeyForProvider(this.embeddingProvider, fields.apiKey || '');
-          this.usingDefaultEmbedding = this.isTrial;  // trials are always "Datris-managed"
+          recordKeyForProvider(this.embeddingProvider, fields.apiKey || '');
+          this.usingDefaultEmbedding = false;
         } else {
           this.embeddingEndpoint = this.endpointFor(this.embeddingProvider, 'embedding');
         }
