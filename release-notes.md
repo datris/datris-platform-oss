@@ -1,5 +1,55 @@
 # Release Notes
 
+## v1.6.1 — April 14, 2026
+
+Discovery wizard, Data Catalog, and trial BYO AI keys.
+
+### Discovery: AI-powered data onboarding wizard
+
+A new six-step wizard that turns a plain-English data request into running taps and pipelines. Pick or create a Data Catalog, chat with the AI to identify a source ("yfinance daily prices for the S&P 500"), select the datasets you want, and Discovery generates every tap script, builds the matching pipelines, and (optionally) schedules and runs them — all in one session.
+
+- New REST endpoints: `POST /api/v1/discover`, `POST /api/v1/discover/build`
+- New MCP tool: `discover_source` — gives external AI agents the same enumeration capability
+- Built on the existing tap codegen + AI-fix loop, so quality of generated scripts scales with your CodeGen model
+
+### Data Catalog: organize related taps and pipelines
+
+Group related taps and pipelines into named catalogs for browsability. The catalog is a metadata field on each tap/pipeline — it doesn't change runtime behavior, just how the platform presents your work. Discovery sessions auto-assign their catalog; you can also assign manually in the Tap or Pipeline editors. A new **Data Catalog** tab in the UI shows every catalog with expandable contents, plus an Uncataloged group for everything else.
+
+### Per-pipeline DQ + transformation editor
+
+The pipeline editor now includes an inline data-quality and transformation editor accessible from the pipeline list. Add or revise AI rules and AI transformations for an existing pipeline without re-running the wizard.
+
+### Trial: bring your own AI keys
+
+Trial signups at `datris.ai/signup` now collect an Anthropic or OpenAI API key (or both) and seed them per-tenant into Vault. Embeddings always use the trial droplet's bundled Ollama `bge-m3` — no OpenAI key required for vector workflows.
+
+- The trial Configuration tab is now unlocked: trial users can rotate keys, swap providers, and change models per service the same way dedicated instances do.
+- Default models are env-configurable on the website: `TRIAL_AI_MODEL_ANTHROPIC`, `TRIAL_AI_MODEL_OPENAI`, `TRIAL_CODEGEN_ANTHROPIC`, `TRIAL_CODEGEN_OPENAI`.
+
+### Documentation
+
+New pages: [Discovery](https://docs.datris.ai/discovery), [Data Catalog](https://docs.datris.ai/data-catalog). Cross-references added from the Quick Start, Taps, and MCP Server pages.
+
+### Upgrading from v1.6.0
+
+No configuration changes required for the server. Pull the new images and restart:
+
+```sh
+docker compose pull datris ui mcp-server
+docker compose up -d datris ui mcp-server
+```
+
+Trial deployments: add the new `TRIAL_AI_MODEL_*` and `TRIAL_CODEGEN_*` env vars to your website env if you want to override the defaults; remove the old `TRIAL_AI_API_KEY`, `TRIAL_AI_MODEL`, `TRIAL_AI_PROVIDER`, `TRIAL_EMBEDDING_API_KEY`, `TRIAL_EMBEDDING_MODEL`, `TRIAL_EMBEDDING_PROVIDER`, and `TRIAL_CODEGEN_MODEL` env vars — none are read anymore.
+
+### Version
+
+- Server: 1.6.1
+- MCP Server: 1.6.1
+- CLI: 1.6.1
+
+---
+
 ## v1.6.0 — April 11, 2026
 
 Dedicated instance support and hosted platform improvements.

@@ -152,7 +152,11 @@ docker restart nginx
 
 ## 10. Publish to MCP Registry
 
-This is now **automated** — the `mcp-registry-publish.yml` GitHub Actions workflow runs on tag push and publishes via OIDC.
+<Warning>
+**Manual step — wait for Todd.** The `mcp-publisher` CLI is tied to Todd's GitHub OIDC login and the `mcp-registry-publish.yml` workflow occasionally needs hand-holding. Pause here and let Todd run this step.
+</Warning>
+
+This is normally **automated** — the `mcp-registry-publish.yml` GitHub Actions workflow runs on tag push and publishes via OIDC.
 
 To publish manually (if the workflow fails or you need to re-publish):
 
