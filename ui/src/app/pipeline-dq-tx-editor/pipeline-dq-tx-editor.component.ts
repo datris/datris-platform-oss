@@ -1,5 +1,6 @@
 import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from '@angular/core';
 import { PipelineService } from '../pipeline.service';
+import { sanitizeIdentifier } from '../shared/sanitize';
 
 export interface DqTxValue {
   dataQuality: any | null;
@@ -115,10 +116,12 @@ export class PipelineDqTxEditorComponent implements OnChanges {
   }
 
   generateValidationSchema(): void {
-    if (!this.dqSchemaName.trim()) {
+    const sanitized = sanitizeIdentifier(this.dqSchemaName);
+    if (!sanitized) {
       this.dqGenerateError = 'Schema name is required';
       return;
     }
+    this.dqSchemaName = sanitized;
     if (!this.dqSampleData.trim()) {
       this.dqGenerateError = 'Sample data is required';
       return;
@@ -126,7 +129,7 @@ export class PipelineDqTxEditorComponent implements OnChanges {
     const schemaType = this.sourceType === 'xml' ? 'xsd' : 'json-schema';
     this.dqGenerating = true;
     this.dqGenerateError = '';
-    this.pipelineService.generateValidationSchema(schemaType, this.dqSchemaName.trim(), this.dqSampleData).subscribe({
+    this.pipelineService.generateValidationSchema(schemaType, sanitized, this.dqSampleData).subscribe({
       next: (resp: any) => {
         this.dqValidationSchema = resp.filename;
         this.dqGenerating = false;

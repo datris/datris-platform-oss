@@ -4,6 +4,7 @@ import { Subscription } from 'rxjs';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { SecretsService } from '../secrets.service';
+import { sanitizeLabel } from '../shared/sanitize';
 
 @Component({
   selector: 'app-tap-create',
@@ -318,14 +319,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     }
   }
 
-  private sanitizeName(name: string): string {
-    return name.toLowerCase().trim()
-      .replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
-      .replace(/_+/g, '_').replace(/^_|_$/g, '');
-  }
-
   confirmNewCatalog(): void {
-    const name = this.sanitizeName(this.newCatalogName);
+    const name = sanitizeLabel(this.newCatalogName);
     if (!name) return;
     this.catalog = name;
     if (!this.availableCatalogs.includes(name)) {

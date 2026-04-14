@@ -62,7 +62,8 @@
 }
 
 .env-version {
-  opacity: 0.6;
+  color: var(--text-primary);
+  opacity: 0.85;
 }
 
 .main-content {

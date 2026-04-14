@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
+import { sanitizeLabel } from '../shared/sanitize';
 
 interface CatalogInfo {
   name: string;
@@ -111,14 +112,8 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     });
   }
 
-  private sanitizeName(name: string): string {
-    return name.toLowerCase().trim()
-      .replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
-      .replace(/_+/g, '_').replace(/^_|_$/g, '');
-  }
-
   createCatalog(): void {
-    const name = this.sanitizeName(this.newCatalogName);
+    const name = sanitizeLabel(this.newCatalogName);
     if (!name) return;
     // Check if catalog already exists
     if (this.catalogs.some(c => c.name === name)) {

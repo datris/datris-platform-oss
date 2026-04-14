@@ -5,6 +5,7 @@ import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
 import { TapService } from '../tap.service';
+import { sanitizeLabel, sanitizeIdentifier } from '../shared/sanitize';
 
 interface SchemaField {
   name: string;
@@ -496,14 +497,8 @@ export class PipelineCreateComponent implements OnInit {
     }
   }
 
-  private sanitizeName(name: string): string {
-    return name.toLowerCase().trim()
-      .replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
-      .replace(/_+/g, '_').replace(/^_|_$/g, '');
-  }
-
   confirmNewCatalog(): void {
-    const name = this.sanitizeName(this.newCatalogName);
+    const name = sanitizeLabel(this.newCatalogName);
     if (!name) return;
     this.catalog = name;
     if (!this.availableCatalogs.includes(name)) {
@@ -993,12 +988,12 @@ export class PipelineCreateComponent implements OnInit {
 
     // Destination
     if (this.destType === 'postgres') {
-      const pgDb: any = { dbName: this.pgDbName, schema: this.pgSchema, table: this.pgTable, usePostgres: true, truncateBeforeWrite: this.dbTruncateBeforeWrite };
+      const pgDb: any = { dbName: sanitizeIdentifier(this.pgDbName), schema: sanitizeIdentifier(this.pgSchema), table: sanitizeIdentifier(this.pgTable), usePostgres: true, truncateBeforeWrite: this.dbTruncateBeforeWrite };
       const pgKeys = this.pgKeyFields.filter(k => k && k.trim());
       if (pgKeys.length > 0) pgDb.keyFields = pgKeys;
       config.destination.database = pgDb;
     } else if (this.destType === 'mongodb') {
-      const mongoDb: any = { dbName: this.mongoDbName, table: this.mongoTable, useMongoDB: true, truncateBeforeWrite: this.dbTruncateBeforeWrite };
+      const mongoDb: any = { dbName: sanitizeIdentifier(this.mongoDbName), table: sanitizeIdentifier(this.mongoTable), useMongoDB: true, truncateBeforeWrite: this.dbTruncateBeforeWrite };
       const mongoKeys = this.mongoKeyFields.filter(k => k && k.trim());
       if (mongoKeys.length > 0) mongoDb.keyFields = mongoKeys;
       config.destination.database = mongoDb;
@@ -1009,9 +1004,9 @@ export class PipelineCreateComponent implements OnInit {
       if (partitions.length > 0) os.partitionBy = partitions;
       config.destination.objectStore = os;
     } else if (this.destType === 'kafka') {
-      config.destination.kafka = { topic: this.kafkaTopic };
+      config.destination.kafka = { topic: sanitizeIdentifier(this.kafkaTopic) };
     } else if (this.destType === 'activemq') {
-      config.destination.activeMQ = { queueName: this.amqQueue };
+      config.destination.activeMQ = { queueName: sanitizeIdentifier(this.amqQueue) };
     } else if (this.destType === 'restendpoint') {
       const re: any = { endpoint: this.restEndpointUrl, async: this.restEndpointAsync, timeoutMs: this.restEndpointTimeout };
       if (this.restEndpointBearerToken) re.bearerToken = this.restEndpointBearerToken;
@@ -1019,7 +1014,7 @@ export class PipelineCreateComponent implements OnInit {
       config.destination.restEndpoint = re;
     } else if (this.destType === 'qdrant') {
       config.destination.qdrant = {
-        collectionName: this.vectorCollection, embeddingSecretName: this.embeddingSecret,
+        collectionName: sanitizeIdentifier(this.vectorCollection), embeddingSecretName: this.embeddingSecret,
         qdrantSecretName: this.vectorSecret,
         chunking: { strategy: this.chunkStrategy, chunkSize: this.chunkSize, chunkOverlap: this.chunkOverlap }
       };
@@ -1031,19 +1026,19 @@ export class PipelineCreateComponent implements OnInit {
       };
     } else if (this.destType === 'milvus') {
       config.destination.milvus = {
-        collectionName: this.vectorCollection, embeddingSecretName: this.embeddingSecret,
+        collectionName: sanitizeIdentifier(this.vectorCollection), embeddingSecretName: this.embeddingSecret,
         milvusSecretName: this.vectorSecret,
         chunking: { strategy: this.chunkStrategy, chunkSize: this.chunkSize, chunkOverlap: this.chunkOverlap }
       };
     } else if (this.destType === 'chroma') {
       config.destination.chroma = {
-        collectionName: this.vectorCollection, embeddingSecretName: this.embeddingSecret,
+        collectionName: sanitizeIdentifier(this.vectorCollection), embeddingSecretName: this.embeddingSecret,
         chromaSecretName: this.vectorSecret,
         chunking: { strategy: this.chunkStrategy, chunkSize: this.chunkSize, chunkOverlap: this.chunkOverlap }
       };
     } else if (this.destType === 'pgvector') {
       config.destination.pgvector = {
-        tableName: this.vectorTable || this.vectorCollection, schemaName: this.vectorSchema,
+        tableName: sanitizeIdentifier(this.vectorTable || this.vectorCollection), schemaName: sanitizeIdentifier(this.vectorSchema),
         embeddingSecretName: this.embeddingSecret, postgresSecretName: this.vectorSecret,
         chunking: { strategy: this.chunkStrategy, chunkSize: this.chunkSize, chunkOverlap: this.chunkOverlap }
       };

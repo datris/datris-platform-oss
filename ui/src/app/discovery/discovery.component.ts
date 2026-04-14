@@ -6,6 +6,7 @@ import { DiscoveryService } from './discovery.service';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { SecretsService } from '../secrets.service';
+import { sanitizeLabel } from '../shared/sanitize';
 
 interface DatasetParam {
   name: string;
@@ -387,19 +388,6 @@ export class DiscoveryComponent {
     return this.datasets.filter(d => d.selected).length;
   }
 
-  // ---------- Name Sanitization ----------
-
-  /** Sanitize a name for use as tap/pipeline/table name: lowercase, alphanumeric + underscores only */
-  sanitizeName(name: string): string {
-    return name
-      .toLowerCase()
-      .trim()
-      .replace(/\s+/g, '_')           // spaces → underscores
-      .replace(/[^a-z0-9_]/g, '')     // remove invalid chars
-      .replace(/_+/g, '_')            // collapse multiple underscores
-      .replace(/^_|_$/g, '');          // trim leading/trailing underscores
-  }
-
   // ---------- Credentials ----------
 
   loadAvailableSecrets(): void {
@@ -523,7 +511,7 @@ export class DiscoveryComponent {
   }
 
   confirmNewCatalog(): void {
-    const name = this.sanitizeName(this.newCatalogName);
+    const name = sanitizeLabel(this.newCatalogName);
     if (!name) return;
     this.selectedCatalog = name;
     if (!this.availableCatalogs.includes(name)) {
@@ -848,7 +836,7 @@ export class DiscoveryComponent {
     this.buildItems = selected.map(ds => ({
       datasetId: ds.id,
       datasetName: ds.name,
-      tapName: this.sanitizeName((this.selectedCatalog || 'discovery') + '_' + ds.id),
+      tapName: sanitizeLabel((this.selectedCatalog || 'discovery') + '_' + ds.id),
       instruction: this.interpolateInstruction(ds),
       status: 'pending' as BuildStatus,
       statusLabel: STATUS_LABELS['pending']
