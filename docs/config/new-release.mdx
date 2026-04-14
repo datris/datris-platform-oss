@@ -95,13 +95,28 @@ The tag push in step 6 triggers the GitHub Actions workflow that builds multi-pl
 gh run list --repo datris/datris-platform-oss --limit 3
 ```
 
-If the build was not triggered (e.g., workflow_dispatch needed), trigger it manually:
+If the build was not triggered (e.g., cancelled + rerun), trigger it manually. **Always pass `-f tag={x.y.z}`** — without it the workflow defaults to `tag=latest`, which pushes only `:latest` images and no `:{x.y.z}` version tags. The MCP Registry publish needs the version-tagged image to exist, so skipping this input breaks step 10.
 
 ```bash
-gh workflow run "Build and Push Docker Images" --repo datris/datris-platform-oss --ref v{x.y.z}
+gh workflow run "Build and Push Docker Images" --repo datris/datris-platform-oss --ref v{x.y.z} -f tag={x.y.z}
 ```
 
+<Warning>
+**arm64 `npm ci` under qemu is flaky.** The `datris-ui` image's arm64 build runs under qemu emulation on amd64 runners and has intermittently hung on `npm ci` (30+ min frozen) or failed with `ETIMEDOUT`. Expect to retry 1-2 times. If the build hangs for more than 25 min on the arm64 step, cancel and rerun via the `gh workflow run` command above.
+</Warning>
+
 **Do NOT** build and push Docker images locally with `docker buildx` — this overwrites the multi-arch `:latest` tags with single-arch images, breaking `docker compose pull` on other platforms.
+
+Before moving on, verify all three `:{x.y.z}` tags landed:
+
+```bash
+for r in datris-server datris-ui datris-mcp-server; do
+  curl -sS "https://hub.docker.com/v2/repositories/datrisai/$r/tags/{x.y.z}/" \
+    | python3 -c "import json,sys;d=json.load(sys.stdin);print(' ',d.get('name','?'),d.get('tag_status','MISSING'))"
+done
+```
+
+All three should report `active`. If any is missing, rerun step 7's manual trigger with `-f tag={x.y.z}`.
 
 ## 8. Update Homebrew Tap
 
