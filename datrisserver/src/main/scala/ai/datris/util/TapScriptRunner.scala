@@ -33,17 +33,10 @@ object TapScriptRunner {
           |sys.stdout = _real_stdout
           |# Detect data type from result
           |if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
-          |    # Scan ALL records — a single nested value anywhere makes this json,
-          |    # not csv. Checking only result[0] would misclassify variable-shape
-          |    # rows where later records contain dicts/lists.
-          |    is_flat = all(
-          |        isinstance(row, dict) and all(
-          |            isinstance(v, (str, int, float, bool, type(None))) for v in row.values()
-          |        )
-          |        for row in result
-          |    )
-          |    data_type = "csv" if is_flat else "json"
-          |    data = json.dumps(result)
+          |    # Normalize dict keys to strings (handles Timestamp, numpy keys)
+          |    result = [{str(k): v for k, v in row.items()} for row in result if isinstance(row, dict)]
+          |    data = json.dumps(result, default=str)
+          |    data_type = "json"
           |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], (list, tuple)):
           |    data_type = "csv"
           |    data = json.dumps(result)
@@ -132,7 +125,7 @@ object TapScriptRunner {
                     val list = gson.fromJson(dataJson, classOf[java.util.List[java.util.Map[String, Any]]])
                     if (list != null && !list.isEmpty) {
                         // Compute the union of keys across ALL records (first-seen order).
-                        // Sources like yfinance emit variable-shape rows; using only the first
+                        // Some sources emit variable-shape rows; using only the first
                         // record's keys silently drops columns that appear in later records and
                         // breaks downstream pipeline schemas built from this list.
                         val seen = scala.collection.mutable.LinkedHashSet[String]()

@@ -45,6 +45,20 @@
         <input class="form-input" [(ngModel)]="pipelineName" placeholder="my_pipeline">
       </div>
 
+      <div class="form-row">
+        <label class="form-label">Data Catalog (optional)</label>
+        <select class="form-select" [(ngModel)]="catalog" (ngModelChange)="onCatalogChange($event)">
+          <option value="">Uncataloged</option>
+          <option *ngFor="let c of availableCatalogs" [value]="c">{{ c }}</option>
+          <option value="__new__">+ Create New Catalog</option>
+        </select>
+        <div *ngIf="showNewCatalog" class="new-catalog-row">
+          <input class="form-input" [(ngModel)]="newCatalogName" placeholder="New catalog name">
+          <button class="secondary-btn" (click)="confirmNewCatalog()" [disabled]="!newCatalogName.trim()">Create</button>
+          <button class="secondary-btn" (click)="showNewCatalog = false; catalog = ''">Cancel</button>
+        </div>
+      </div>
+
       <!-- Source toggle -->
       <div class="source-toggle" *ngIf="!isEditMode">
         <button class="toggle-btn" [class.active]="pipelineSource === 'file'" (click)="pipelineSource = 'file'; onPipelineSourceChange()">

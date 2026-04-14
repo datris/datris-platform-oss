@@ -142,7 +142,7 @@ object TapRunner {
         if (jsonArray.size() == 0) return ""
 
         // Compute the union of keys across ALL records, preserving first-seen order.
-        // Some sources (e.g., yfinance financial data) emit records with variable shape,
+        // Some sources emit records with variable shape,
         // and using only the first record's keys silently drops columns that appear later.
         val seen = scala.collection.mutable.LinkedHashSet[String]()
         (0 until jsonArray.size()).foreach { i =>

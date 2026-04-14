@@ -19,6 +19,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   tapName = '';
   description = '';
   secretName = '';
+  catalog = '';
+  availableCatalogs: string[] = [];
+  showNewCatalog = false;
+  newCatalogName = '';
   availableSecrets: string[] = [];
   showCreateSecret = false;
   editingSecret = false;
@@ -107,11 +111,22 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           }
           this.script = tap.script || '';
           this.secretName = tap.secretName || '';
+          this.catalog = tap.catalog || '';
           this.targetPipeline = tap.targetPipeline || '';
         },
         error: () => { this.error = 'Failed to load tap'; }
       });
     }
+
+    // Load available catalogs
+    this.tapService.getTaps().subscribe({
+      next: (taps) => {
+        const cats = new Set<string>();
+        (taps || []).forEach((t: any) => { if (t.catalog) cats.add(t.catalog); });
+        this.availableCatalogs = Array.from(cats).sort();
+      },
+      error: () => {}
+    });
 
     // Load tap secrets only
     this.secretsService.listSecrets('tap').subscribe({
@@ -291,6 +306,34 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.applyingDiagnosis = false;
       }
     });
+  }
+
+  onCatalogChange(value: string): void {
+    if (value === '__new__') {
+      this.showNewCatalog = true;
+      this.newCatalogName = '';
+      this.catalog = '';
+    } else {
+      this.showNewCatalog = false;
+    }
+  }
+
+  private sanitizeName(name: string): string {
+    return name.toLowerCase().trim()
+      .replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+      .replace(/_+/g, '_').replace(/^_|_$/g, '');
+  }
+
+  confirmNewCatalog(): void {
+    const name = this.sanitizeName(this.newCatalogName);
+    if (!name) return;
+    this.catalog = name;
+    if (!this.availableCatalogs.includes(name)) {
+      this.availableCatalogs.push(name);
+      this.availableCatalogs.sort();
+    }
+    this.showNewCatalog = false;
+    this.newCatalogName = '';
   }
 
   useSuggestedEnvVars(): void {
@@ -540,7 +583,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       enabled: this.enabled,
       lastTestRunDataType: this.testDataType || null,
       lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
-      lastTestRunRecordCount: this.testRecordCount || 0
+      lastTestRunRecordCount: this.testRecordCount || 0,
+      catalog: this.catalog || null
     };
 
     this.tapService.createOrUpdateTap(config).subscribe({

@@ -13,6 +13,7 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   pipelines: any[] = [];
   filteredPipelines: any[] = [];
   searchQuery = '';
+  catalogGroups: Array<{name: string, pipelines: any[], expanded: boolean, deleting?: boolean}> = [];
   showDiagram = false;
   pipelineToTap: { [pipelineName: string]: string } = {};
   editingName = '';
@@ -20,6 +21,8 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   private editingNameOriginal = '';
   @ViewChildren('nameInput') nameInputs?: QueryList<ElementRef<HTMLInputElement>>;
   private refreshInterval: any;
+
+  deleteCatalogTarget = '';
 
   // Upload modal
   showUploadModal = false;
@@ -133,9 +136,35 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     } else {
       this.filteredPipelines = this.pipelines.filter(p =>
         (p.name || '').toLowerCase().includes(q) ||
+        (p.catalog || '').toLowerCase().includes(q) ||
         this.getSourceType(p).toLowerCase().includes(q) ||
         this.getDestinations(p).toLowerCase().includes(q)
       );
+    }
+    this.buildCatalogGroups();
+  }
+
+  private buildCatalogGroups(): void {
+    const prevExpanded = new Set(this.catalogGroups.filter(g => g.expanded).map(g => g.name));
+    const map = new Map<string, any[]>();
+    for (const p of this.filteredPipelines) {
+      const cat = p.catalog || 'Uncataloged';
+      if (!map.has(cat)) map.set(cat, []);
+      map.get(cat)!.push(p);
+    }
+    const named = Array.from(map.entries())
+      .filter(([name]) => name !== 'Uncataloged')
+      .sort(([a], [b]) => a.localeCompare(b));
+    const uncataloged = map.get('Uncataloged');
+
+    this.catalogGroups = named.map(([name, pipelines]) => ({
+      name, pipelines, expanded: prevExpanded.has(name)
+    }));
+    if (uncataloged && uncataloged.length > 0) {
+      this.catalogGroups.push({
+        name: 'Uncataloged', pipelines: uncataloged,
+        expanded: prevExpanded.has('Uncataloged')
+      });
     }
   }
 
@@ -159,6 +188,19 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   cancelDelete(event: Event): void {
     event.stopPropagation();
     this.deleteTarget = '';
+  }
+
+  deleteCatalogPipelines(group: {name: string, pipelines: any[], deleting?: boolean}): void {
+    group.deleting = true;
+    this.deleteCatalogTarget = '';
+    const names = group.pipelines.map(p => p.name);
+    let completed = 0;
+    for (const name of names) {
+      this.pipelineService.deletePipeline(name).subscribe({
+        next: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadPipelines(); } },
+        error: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadPipelines(); } }
+      });
+    }
   }
 
   confirmDelete(event: Event, deleteConfig: boolean): void {

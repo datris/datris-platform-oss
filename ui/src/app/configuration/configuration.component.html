@@ -32,13 +32,12 @@
     </div>
 
     <div class="note-banner" *ngIf="isTrial">
-      <p class="note-title">AI Configuration is locked on the trial.</p>
-      <p>Datris runs on shared Anthropic keys with cost-conscious models (Claude Haiku 4.5 for chat and code generation, a bundled embedding model for vector search) so you can try every feature without bringing your own credentials. To customize providers, models, or paste your own API keys, you'll need a dedicated instance.</p>
-      <p><strong>A dedicated Datris instance unlocks the full platform:</strong> bring your own Anthropic or OpenAI keys for unlimited usage, pick any model (Claude Opus 4.6, Sonnet 4.6, GPT-5.4, text-embedding-3-large), connect to every supported destination with dedicated infrastructure — relational databases (Postgres, MySQL), document stores (MongoDB), vector stores (Qdrant, Weaviate, Milvus, Chroma, pgvector), and object storage (S3, MinIO) — with persistent storage, no shared rate limits, your own custom domain, and a production SLA.</p>
-      <p>Visit your <a href="https://datris.ai/dashboard" target="_blank" rel="noopener">datris.ai dashboard</a> to upgrade.</p>
+      <p class="note-title">Trial instance — you're running with your own AI keys.</p>
+      <p>Rotate, swap providers, or change models below. Embeddings use the bundled Ollama <code>bge-m3</code> model and don't need an API key.</p>
+      <p><strong>Want more?</strong> A dedicated Datris instance adds persistent storage, no shared rate limits, a custom domain, every destination (Postgres, MySQL, MongoDB, Qdrant, Weaviate, Milvus, Chroma, pgvector, S3, MinIO), and a production SLA. Visit your <a href="https://datris.ai/dashboard" target="_blank" rel="noopener">datris.ai dashboard</a> to upgrade.</p>
     </div>
 
-    <div class="config-layout" *ngIf="!isTrial">
+    <div class="config-layout">
       <div class="config-main">
         <div class="config-section">
           <h2 class="section-title">AI Provider</h2>
@@ -49,7 +48,7 @@
             <select class="form-input" [(ngModel)]="aiPrimaryProvider" (ngModelChange)="onAiPrimaryProviderChange()">
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
-              <option value="ollama" *ngIf="!isHosted">Ollama (local)</option>
+              <option value="ollama" *ngIf="!hostedOrTrial">Ollama (local)</option>
             </select>
           </div>
 
@@ -62,7 +61,7 @@
                    placeholder="e.g. llama3.3, qwen3, deepseek-r1" *ngIf="aiPrimaryProvider === 'ollama'" />
           </div>
 
-          <div *ngIf="!isHosted">
+          <div *ngIf="!hostedOrTrial">
             <a class="advanced-toggle" (click)="showAdvancedAiPrimary = !showAdvancedAiPrimary">
               {{ showAdvancedAiPrimary ? '▼' : '▶' }} Advanced
             </a>
@@ -87,7 +86,7 @@
             <select class="form-input" [(ngModel)]="codegenProvider" (ngModelChange)="onCodegenProviderChange()">
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
-              <option value="ollama" *ngIf="!isHosted">Ollama (local)</option>
+              <option value="ollama" *ngIf="!hostedOrTrial">Ollama (local)</option>
             </select>
           </div>
 
@@ -100,7 +99,7 @@
                    placeholder="e.g. qwen3, deepseek-r1, codellama" *ngIf="codegenProvider === 'ollama'" />
           </div>
 
-          <div *ngIf="!isHosted">
+          <div *ngIf="!hostedOrTrial">
             <a class="advanced-toggle" (click)="showAdvancedCodegen = !showAdvancedCodegen">
               {{ showAdvancedCodegen ? '▼' : '▶' }} Advanced
             </a>
@@ -121,7 +120,7 @@
           <p class="section-hint">Used for vector destinations (Qdrant, Weaviate, Milvus, Chroma, pgvector) and semantic search. Must be an OpenAI-compatible embeddings endpoint. Anthropic-only deployments use a bundled local Ollama service running bge-m3 — no OpenAI key required.</p>
 
           <!-- Hosted + Anthropic: locked to bundled Ollama bge-m3 -->
-          <div *ngIf="isHosted && aiPrimaryProvider === 'anthropic'">
+          <div *ngIf="hostedOrTrial && aiPrimaryProvider === 'anthropic'">
             <div class="form-row">
               <label class="form-label">Provider</label>
               <span class="form-value-locked">Ollama bge-m3 (bundled)</span>
@@ -132,7 +131,7 @@
           </div>
 
           <!-- Hosted + OpenAI: OpenAI or bundled Ollama -->
-          <div *ngIf="isHosted && aiPrimaryProvider !== 'anthropic'">
+          <div *ngIf="hostedOrTrial && aiPrimaryProvider !== 'anthropic'">
             <div class="form-row">
               <label class="form-label">Provider</label>
               <select class="form-input" [(ngModel)]="embeddingProvider" (ngModelChange)="onEmbeddingProviderChange()">
@@ -155,7 +154,7 @@
           </div>
 
           <!-- OSS: full flexibility -->
-          <div *ngIf="!isHosted">
+          <div *ngIf="!hostedOrTrial">
             <div class="form-row">
               <label class="form-label">Provider</label>
               <select class="form-input" [(ngModel)]="embeddingProvider" (ngModelChange)="onEmbeddingProviderChange()">

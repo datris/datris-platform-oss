@@ -1,0 +1,132 @@
+.dq-tx-section {
+  margin-bottom: 24px;
+}
+
+.dq-tx-section + .dq-tx-section {
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
+}
+
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+  color: var(--text-primary);
+}
+
+.form-row { margin-bottom: 12px; }
+
+.form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.form-input {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.form-input:focus {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px var(--border-focus);
+}
+
+.form-textarea {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.checkbox-label,
+.radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-right: 16px;
+}
+
+.checkbox-label input,
+.radio-label input {
+  cursor: pointer;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.form-hint.success {
+  color: var(--accent-green);
+}
+
+.file-input {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.divider {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+.secondary-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.secondary-btn:hover:not(:disabled) { border-color: var(--accent-cyan); }
+.secondary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.error-box {
+  padding: 10px 14px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  color: var(--accent-red);
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.error-box pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+.info-box {
+  padding: 10px 14px;
+  background: rgba(0, 180, 255, 0.08);
+  border: 1px solid rgba(0, 180, 255, 0.2);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.info-box p {
+  margin: 0;
+}

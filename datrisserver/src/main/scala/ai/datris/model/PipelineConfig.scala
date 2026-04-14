@@ -13,7 +13,8 @@ case class PipelineConfig(
                             preprocessor: RestEndpoint = null,
                             dataQuality: DataQuality = null,
                             transformation: Transformation = null,
-                            destination: Destination = null
+                            destination: Destination = null,
+                            catalog: String = null
                         )
 
 case class Source(

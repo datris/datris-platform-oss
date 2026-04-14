@@ -36,6 +36,10 @@ export class TapService {
     return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null, secretName: secretName || null });
   }
 
+  storeScript(tapName: string, script: string, oldScriptPath?: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/script', { tapName, script, oldScriptPath: oldScriptPath || null });
+  }
+
   testTap(config: any): Observable<any> {
     return this.http.post<any>('/api/v1/tap/test', config);
   }

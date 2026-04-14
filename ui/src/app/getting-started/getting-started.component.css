@@ -125,3 +125,9 @@
 .next-steps a:hover {
   text-decoration: underline;
 }
+
+.alt-flow {
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+}

@@ -229,6 +229,15 @@ export class SearchComponent implements OnInit, OnDestroy {
   retrieveAllMongo(): void {
     this.mongoFilter = '{}';
     this.mongoProjection = '';
+    this.mongoLimit = 1000;
+    this.execute();
+  }
+
+  retrieveAllPostgres(): void {
+    if (this.pgSelectedSchema && this.pgSelectedTable) {
+      this.pgSql = 'SELECT * FROM "' + this.pgSelectedSchema + '"."' + this.pgSelectedTable + '"';
+    }
+    this.pgLimit = 1000;
     this.execute();
   }
 

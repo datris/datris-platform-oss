@@ -5,6 +5,8 @@ import { AppComponent } from './app.component';
 import { PipelinesComponent } from './pipelines/pipelines.component';
 import { PipelineCreateComponent } from './pipeline-create/pipeline-create.component';
 import { PipelineEditComponent } from './pipeline-edit/pipeline-edit.component';
+import { PipelineConfigFormComponent } from './pipeline-config-form/pipeline-config-form.component';
+import { PipelineDqTxEditorComponent } from './pipeline-dq-tx-editor/pipeline-dq-tx-editor.component';
 import { PipelineViewComponent } from './pipeline-view/pipeline-view.component';
 import { PipelineStatusComponent } from './pipeline-status/pipeline-status.component';
 import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.component';
@@ -17,6 +19,8 @@ import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
 import { GettingStartedComponent } from './getting-started/getting-started.component';
+import { DataCatalogComponent } from './data-catalog/data-catalog.component';
+import { DiscoveryComponent } from './discovery/discovery.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { apiKeyInterceptor } from './api-key.interceptor';
@@ -28,6 +32,8 @@ import { MaterialModule } from './material.module';
     PipelinesComponent,
     PipelineCreateComponent,
     PipelineEditComponent,
+    PipelineConfigFormComponent,
+    PipelineDqTxEditorComponent,
     PipelineViewComponent,
     PipelineStatusComponent,
     PipelineDetailComponent,
@@ -39,7 +45,9 @@ import { MaterialModule } from './material.module';
     TapsComponent,
     TapCreateComponent,
     TapRunComponent,
-    GettingStartedComponent
+    GettingStartedComponent,
+    DataCatalogComponent,
+    DiscoveryComponent
   ],
   imports: [
     BrowserModule,

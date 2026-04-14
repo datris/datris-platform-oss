@@ -45,26 +45,33 @@
         <div class="workflow-step">
           <span class="step-number">1</span>
           <div class="step-content">
+            <span class="step-title">Discover data sources</span>
+            <span class="step-detail">use discover_source to find available datasets from any package, API, or website. Returns a structured catalog with tap instructions ready to build.</span>
+          </div>
+        </div>
+        <div class="workflow-step">
+          <span class="step-number">2</span>
+          <div class="step-content">
             <span class="step-title">Check existing pipelines &amp; taps</span>
             <span class="step-detail">use list_pipelines and list_taps first &mdash; if a pipeline or tap already exists, skip to querying, running, or testing it directly. Use update_secret to configure AI provider keys if not already set.</span>
           </div>
         </div>
         <div class="workflow-step">
-          <span class="step-number">2</span>
+          <span class="step-number">3</span>
           <div class="step-content">
             <span class="step-title">Create a pipeline</span>
             <span class="step-detail">use create_pipeline with sample data &mdash; schema is auto-detected. Only create if one doesn't already exist for this data.</span>
           </div>
         </div>
         <div class="workflow-step">
-          <span class="step-number">3</span>
+          <span class="step-number">4</span>
           <div class="step-content">
             <span class="step-title">Profile data</span>
             <span class="step-detail">use profile_data to get AI-suggested data quality rules</span>
           </div>
         </div>
         <div class="workflow-step">
-          <span class="step-number">4</span>
+          <span class="step-number">5</span>
           <div class="step-content">
             <span class="step-title">Ingest data (choose one)</span>
             <span class="step-detail"><strong>Option A:</strong> use upload_data to push data directly through the pipeline<br/>
@@ -72,56 +79,56 @@
           </div>
         </div>
         <div class="workflow-step step-sub">
-          <span class="step-number">4a</span>
+          <span class="step-number">5a</span>
           <div class="step-content">
             <span class="step-title">Create a tap</span>
             <span class="step-detail">use create_tap with an instruction (AI generates the script &mdash; slower, 1-2 min) or write the Python fetch() function yourself and pass it as the script parameter (faster and more reliable)</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
-          <span class="step-number">4b</span>
+          <span class="step-number">5b</span>
           <div class="step-content">
             <span class="step-title">Test the tap</span>
             <span class="step-detail">use test_tap to validate the script without pushing data</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
-          <span class="step-number">4c</span>
+          <span class="step-number">5c</span>
           <div class="step-content">
             <span class="step-title">Fix &amp; retest</span>
             <span class="step-detail">if test fails, fix the script and call create_tap again &mdash; repeat until test passes</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
-          <span class="step-number">4d</span>
+          <span class="step-number">5d</span>
           <div class="step-content">
             <span class="step-title">Run the tap</span>
             <span class="step-detail">use run_tap to execute and push fetched data to the pipeline</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
-          <span class="step-number">4e</span>
+          <span class="step-number">5e</span>
           <div class="step-content">
             <span class="step-title">Schedule (optional)</span>
             <span class="step-detail">use update_tap with a cron_expression to run automatically &mdash; use get_tap_logs to monitor</span>
           </div>
         </div>
         <div class="workflow-step">
-          <span class="step-number">5</span>
+          <span class="step-number">6</span>
           <div class="step-content">
             <span class="step-title">Monitor</span>
             <span class="step-detail">use get_job_status to track processing</span>
           </div>
         </div>
         <div class="workflow-step">
-          <span class="step-number">6</span>
+          <span class="step-number">7</span>
           <div class="step-content">
             <span class="step-title">Query &amp; search</span>
             <span class="step-detail">use query tools for structured data, search tools for semantic/vector search</span>
           </div>
         </div>
         <div class="workflow-step">
-          <span class="step-number">7</span>
+          <span class="step-number">8</span>
           <div class="step-content">
             <span class="step-title">RAG</span>
             <span class="step-detail">combine search results with ai_answer for AI-powered question answering</span>
