@@ -494,6 +494,7 @@
         </div>
         <div class="pipeline-config-done" *ngIf="item.pipelineStatus === 'done'">
           <span class="material-icons">check_circle</span> Pipeline created
+          <a class="edit-config-link" (click)="$event.stopPropagation(); openConfigEditor(item)">Edit config</a>
         </div>
         <div class="pipeline-config-error" *ngIf="item.pipelineStatus === 'error'">
           <span class="material-icons">error</span> {{ item.pipelineError }}
@@ -513,6 +514,45 @@
           Schedule & Run
           <span class="material-icons">arrow_forward</span>
         </button>
+      </div>
+
+      <!-- Edit Config Modal -->
+      <div class="modal-overlay" *ngIf="editingOpen" (click)="closeConfigEditor()">
+        <div class="config-editor-modal" (click)="$event.stopPropagation()">
+          <div class="modal-header">
+            <h2 class="modal-title" *ngIf="!editingLoading && editingConfigs.length > 0">
+              Edit: {{ editingConfigs[editingIndex].tapName }}
+              <span class="modal-position">{{ editingIndex + 1 }} of {{ editingConfigs.length }}</span>
+            </h2>
+            <h2 class="modal-title" *ngIf="editingLoading">Loading configs...</h2>
+            <button class="modal-close" (click)="closeConfigEditor()" [disabled]="savingConfigs">
+              <span class="material-icons">close</span>
+            </button>
+          </div>
+          <div class="modal-body" *ngIf="!editingLoading && editingConfigs.length > 0">
+            <app-pipeline-dq-tx-editor
+              [sourceType]="currentDqSourceType()"
+              [dataQuality]="editingConfigs[editingIndex].config.dataQuality"
+              [transformation]="editingConfigs[editingIndex].config.transformation"
+              [schemaNameDefault]="editingConfigs[editingIndex].tapName + '_schema'"
+              (change)="onDqTxChange($event)"></app-pipeline-dq-tx-editor>
+            <div class="error-box" *ngIf="editingConfigs[editingIndex].saveError">{{ editingConfigs[editingIndex].saveError }}</div>
+            <div class="dirty-indicator" *ngIf="editingConfigs[editingIndex].dirty">Unsaved changes</div>
+          </div>
+          <div class="modal-footer" *ngIf="!editingLoading && editingConfigs.length > 0">
+            <button class="secondary-btn" (click)="prevConfig()" [disabled]="editingIndex === 0 || savingConfigs">
+              <span class="material-icons">arrow_back</span> Previous
+            </button>
+            <button class="secondary-btn" (click)="nextConfig()" [disabled]="editingIndex === editingConfigs.length - 1 || savingConfigs">
+              Next <span class="material-icons">arrow_forward</span>
+            </button>
+            <div class="spacer"></div>
+            <button class="secondary-btn" (click)="closeConfigEditor()" [disabled]="savingConfigs">Cancel</button>
+            <button class="primary-btn" (click)="saveAllConfigs()" [disabled]="savingConfigs || !hasDirtyConfigs()">
+              {{ savingConfigs ? 'Saving...' : 'Save All' }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

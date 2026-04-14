@@ -20,6 +20,15 @@
   background-clip: text;
 }
 
+.beta-tag {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary, #888);
+  -webkit-text-fill-color: var(--text-secondary, #888);
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
 .page-description {
   font-size: 14px;
   line-height: 1.6;

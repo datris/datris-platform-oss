@@ -1,0 +1,108 @@
+<!-- Step 5: Data Quality -->
+<div class="dq-tx-section">
+  <h3 class="section-title">Data Quality</h3>
+
+  <!-- Header/Schema Validation (JSON/XML only) -->
+  <ng-container *ngIf="sourceType === 'json' || sourceType === 'xml'">
+    <div class="form-row">
+      <label class="checkbox-label">
+        <input type="checkbox" [(ngModel)]="dqValidateHeader" (ngModelChange)="emit()">
+        Validate {{ sourceType.toUpperCase() }} against schema
+      </label>
+    </div>
+    <ng-container *ngIf="dqValidateHeader">
+      <div class="form-row">
+        <label class="radio-label">
+          <input type="radio" name="dqSchemaMode" value="upload" [(ngModel)]="dqSchemaMode"> Upload schema file
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="dqSchemaMode" value="generate" [(ngModel)]="dqSchemaMode"> Generate schema with AI
+        </label>
+      </div>
+
+      <div class="form-row" *ngIf="dqSchemaMode === 'upload'">
+        <label class="form-label">Validation Schema File</label>
+        <input type="file" (change)="onSchemaFileSelected($event)" class="file-input" accept=".json,.xsd,.xml">
+        <div class="form-hint success" *ngIf="dqValidationSchema">Uploaded: {{ dqValidationSchema }}</div>
+      </div>
+
+      <ng-container *ngIf="dqSchemaMode === 'generate'">
+        <div class="form-row">
+          <label class="form-label">Schema Name</label>
+          <input class="form-input" [(ngModel)]="dqSchemaName" placeholder="e.g. stock_prices_schema">
+        </div>
+        <div class="form-row">
+          <label class="form-label">Sample {{ sourceType.toUpperCase() }} Data</label>
+          <textarea class="form-input form-textarea" [(ngModel)]="dqSampleData" rows="6"
+            placeholder="Paste sample {{ sourceType.toUpperCase() }} data..."></textarea>
+        </div>
+        <div class="form-row">
+          <button class="secondary-btn" (click)="generateValidationSchema()" [disabled]="dqGenerating">
+            {{ dqGenerating ? 'Generating...' : 'Generate ' + (sourceType === 'xml' ? 'XSD' : 'JSON Schema') }}
+          </button>
+        </div>
+        <div class="error-box" *ngIf="dqGenerateError">
+          <pre>{{ dqGenerateError }}</pre>
+        </div>
+        <div class="form-hint success" *ngIf="dqValidationSchema">Generated: {{ dqValidationSchema }}</div>
+      </ng-container>
+    </ng-container>
+    <hr class="divider">
+  </ng-container>
+
+  <!-- CSV Header Validation -->
+  <ng-container *ngIf="sourceType === 'csv'">
+    <div class="form-row">
+      <label class="checkbox-label">
+        <input type="checkbox" [(ngModel)]="dqValidateHeader" (ngModelChange)="emit()"> Validate file header against schema
+      </label>
+    </div>
+  </ng-container>
+
+  <!-- AI Rule -->
+  <div class="form-row">
+    <label class="checkbox-label">
+      <input type="checkbox" [(ngModel)]="dqUseAiRule" (ngModelChange)="emit()"> Enable AI Rule (file-level validation)
+    </label>
+  </div>
+  <ng-container *ngIf="dqUseAiRule">
+    <div class="form-row">
+      <label class="form-label">AI Instruction (required)</label>
+      <textarea class="form-input form-textarea" [(ngModel)]="dqAiInstruction" (ngModelChange)="emit()" rows="3"
+        placeholder="all price columns must be positive and not exceed $1,000,000, volume must be positive"></textarea>
+    </div>
+    <div class="form-row">
+      <label class="checkbox-label">
+        <input type="checkbox" [(ngModel)]="dqAiOnFailureIsError" (ngModelChange)="emit()"> Failure is error (abort processing)
+      </label>
+    </div>
+  </ng-container>
+</div>
+
+<!-- Step 6: Transformation -->
+<div class="dq-tx-section">
+  <h3 class="section-title">Transformation</h3>
+
+  <div class="form-row">
+    <label class="form-label">Instruction</label>
+    <textarea class="form-input form-textarea" [(ngModel)]="txAiInstruction" (ngModelChange)="emit()" rows="3"
+      placeholder="convert all date values from YYYY-MM-DD format to MM/DD/YYYY format"></textarea>
+  </div>
+
+  <div *ngIf="sourceType === 'csv'">
+    <div class="form-row">
+      <label class="checkbox-label">
+        <input type="checkbox" [(ngModel)]="txTrimWhitespace" (ngModelChange)="onTxCheckboxChange()"> Trim leading/trailing whitespace from all columns
+      </label>
+    </div>
+    <div class="form-row">
+      <label class="checkbox-label">
+        <input type="checkbox" [(ngModel)]="txDeduplicate" (ngModelChange)="onTxCheckboxChange()"> Remove duplicate rows
+      </label>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <p>Describe how you want each row transformed. Datris generates a Python script from your instruction and runs it locally against all data.</p>
+  </div>
+</div>

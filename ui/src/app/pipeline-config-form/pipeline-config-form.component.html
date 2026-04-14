@@ -1,0 +1,9 @@
+<div class="form-row">
+  <label class="form-label">Pipeline Configuration</label>
+  <textarea
+    class="form-input form-textarea config-editor"
+    [ngModel]="configJson"
+    (ngModelChange)="onChange($event)"
+    [rows]="rows"></textarea>
+</div>
+<div class="error-box" *ngIf="error">{{ error }}</div>

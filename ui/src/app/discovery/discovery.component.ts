@@ -1,7 +1,7 @@
 import { Component, ViewChild, ElementRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
-import { Subscription } from 'rxjs';
+import { Subscription, forkJoin } from 'rxjs';
 import { DiscoveryService } from './discovery.service';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
@@ -171,6 +171,20 @@ export class DiscoveryComponent {
   truncateAll = false;
   creatingPipelines = false;
   pipelinesCreated = false;
+
+  // Phase 4 — Edit config modal (step 5 DQ + step 6 Transformation)
+  editingOpen = false;
+  editingLoading = false;
+  editingConfigs: {
+    tapName: string;
+    config: any;
+    originalDq: any;
+    originalTx: any;
+    dirty: boolean;
+    saveError: string;
+  }[] = [];
+  editingIndex = 0;
+  savingConfigs = false;
 
   // Phase 5 — Schedule
   applyingSchedules = false;
@@ -1392,6 +1406,112 @@ export class DiscoveryComponent {
       }
     });
     this.trackSub(sub);
+  }
+
+  // ---------- Phase 4: Edit Config Modal ----------
+
+  openConfigEditor(item: BuildItem): void {
+    const doneItems = this.runnableItems().filter(i => i.pipelineStatus === 'done');
+    if (doneItems.length === 0) return;
+    const startIdx = Math.max(0, doneItems.findIndex(i => i.tapName === item.tapName));
+
+    this.editingOpen = true;
+    this.editingLoading = true;
+    this.editingConfigs = [];
+    this.editingIndex = startIdx;
+
+    const requests = doneItems.map(di => this.pipelineService.getPipeline(di.tapName));
+    forkJoin(requests).subscribe({
+      next: (configs) => {
+        this.editingConfigs = configs.map((cfg, i) => ({
+          tapName: doneItems[i].tapName,
+          config: cfg,
+          originalDq: JSON.parse(JSON.stringify(cfg.dataQuality || null)),
+          originalTx: JSON.parse(JSON.stringify(cfg.transformation || null)),
+          dirty: false,
+          saveError: ''
+        }));
+        this.editingLoading = false;
+      },
+      error: (err) => {
+        this.editingLoading = false;
+        this.editingOpen = false;
+        this.error = 'Failed to load pipeline configs: ' + (typeof err.error === 'string' ? err.error : err.message || 'Unknown error');
+      }
+    });
+  }
+
+  closeConfigEditor(): void {
+    if (this.savingConfigs) return;
+    this.editingOpen = false;
+    this.editingConfigs = [];
+    this.editingIndex = 0;
+  }
+
+  prevConfig(): void {
+    if (this.editingIndex > 0) this.editingIndex--;
+  }
+
+  nextConfig(): void {
+    if (this.editingIndex < this.editingConfigs.length - 1) this.editingIndex++;
+  }
+
+  onDqTxChange(value: { dataQuality: any | null; transformation: any | null }): void {
+    const entry = this.editingConfigs[this.editingIndex];
+    if (!entry) return;
+    if (value.dataQuality) entry.config.dataQuality = value.dataQuality;
+    else delete entry.config.dataQuality;
+    if (value.transformation) entry.config.transformation = value.transformation;
+    else delete entry.config.transformation;
+    entry.dirty =
+      JSON.stringify(entry.config.dataQuality || null) !== JSON.stringify(entry.originalDq) ||
+      JSON.stringify(entry.config.transformation || null) !== JSON.stringify(entry.originalTx);
+    entry.saveError = '';
+  }
+
+  hasDirtyConfigs(): boolean {
+    return this.editingConfigs.some(e => e.dirty);
+  }
+
+  currentDqSourceType(): string {
+    const entry = this.editingConfigs[this.editingIndex];
+    if (!entry) return 'json';
+    const src = entry.config?.source;
+    if (src?.fileAttributes?.csvAttributes) return 'csv';
+    if (src?.fileAttributes?.xmlAttributes) return 'xml';
+    return 'json';
+  }
+
+  saveAllConfigs(): void {
+    if (this.savingConfigs) return;
+
+    const dirty = this.editingConfigs.filter(e => e.dirty);
+    if (dirty.length === 0) {
+      this.closeConfigEditor();
+      return;
+    }
+
+    this.savingConfigs = true;
+    const saves = dirty.map(e => this.pipelineService.createPipeline(e.config));
+    forkJoin(saves).subscribe({
+      next: () => {
+        dirty.forEach(e => {
+          e.originalDq = JSON.parse(JSON.stringify(e.config.dataQuality || null));
+          e.originalTx = JSON.parse(JSON.stringify(e.config.transformation || null));
+          e.dirty = false;
+        });
+        this.savingConfigs = false;
+        this.editingOpen = false;
+        this.editingConfigs = [];
+        this.editingIndex = 0;
+      },
+      error: (err) => {
+        this.savingConfigs = false;
+        const msg = 'Failed to save: ' + (typeof err.error === 'string' ? err.error : err.message || 'Unknown error');
+        const entry = this.editingConfigs[this.editingIndex];
+        if (entry) entry.saveError = msg;
+      }
+    });
   }
 
   pipelinesCompletedCount(): number {

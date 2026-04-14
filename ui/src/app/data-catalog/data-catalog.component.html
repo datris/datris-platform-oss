@@ -1,6 +1,6 @@
 <div class="container">
   <div class="page-header">
-    <h1 class="page-title">Data Catalog</h1>
+    <h1 class="page-title">Data Catalog <span class="beta-tag">(beta)</span></h1>
     <div class="header-actions">
       <button class="create-btn" (click)="showCreateModal = true" *ngIf="!showCreateModal">+ Create Catalog</button>
     </div>
@@ -61,7 +61,7 @@
           <div class="catalog-section-title">Pipelines</div>
           <div class="catalog-item" *ngFor="let pipeline of cat.pipelines">
             <span class="material-icons item-icon">route</span>
-            <a class="item-name" [routerLink]="['/pipelines', pipeline.name]">{{ pipeline.name }}</a>
+            <a class="item-name" [routerLink]="['/pipelines', pipeline.name, 'edit']">{{ pipeline.name }}</a>
           </div>
         </div>
       </div>

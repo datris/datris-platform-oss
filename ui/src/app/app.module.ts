@@ -5,6 +5,8 @@ import { AppComponent } from './app.component';
 import { PipelinesComponent } from './pipelines/pipelines.component';
 import { PipelineCreateComponent } from './pipeline-create/pipeline-create.component';
 import { PipelineEditComponent } from './pipeline-edit/pipeline-edit.component';
+import { PipelineConfigFormComponent } from './pipeline-config-form/pipeline-config-form.component';
+import { PipelineDqTxEditorComponent } from './pipeline-dq-tx-editor/pipeline-dq-tx-editor.component';
 import { PipelineViewComponent } from './pipeline-view/pipeline-view.component';
 import { PipelineStatusComponent } from './pipeline-status/pipeline-status.component';
 import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.component';
@@ -30,6 +32,8 @@ import { MaterialModule } from './material.module';
     PipelinesComponent,
     PipelineCreateComponent,
     PipelineEditComponent,
+    PipelineConfigFormComponent,
+    PipelineDqTxEditorComponent,
     PipelineViewComponent,
     PipelineStatusComponent,
     PipelineDetailComponent,
