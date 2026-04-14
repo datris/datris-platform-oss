@@ -30,6 +30,7 @@ Intelligence at every stage — from ingestion to delivery, Datris makes data en
   - *"Extract city and state from the address column into separate columns"*
   - *"Standardize company names — remove Inc, LLC, Corp suffixes and trim whitespace"*
   - *"Convert all currency amounts from EUR to USD using a rate of 1.08"*
+- **Discovery** - One wizard, six steps: chat about a source ("yfinance daily prices for the S&P 500"), pick the datasets you want, and Datris generates the tap scripts, builds the pipelines, schedules them, and runs them — all grouped into a [Data Catalog](/data-catalog) for organization. The fastest way to onboard a new external data source
 - **Taps** - AI-generated Python scripts that fetch data from external sources (APIs, web scraping, databases) and push it into pipelines. Describe what data you want in plain English, and Datris generates the script. Includes AI diagnosis when scripts fail, CRON scheduling, and credentials management via Vault secrets
 - **Datris CLI** - Command-line interface for ingesting data, running queries, and managing pipelines. `datris ingest data.csv --ai-validate "prices > 0" --ai-transform "convert dates to YYYY/MM/DD"`
 - **AI schema generation** - Upload any data and receive a complete, ready-to-register pipeline configuration — field names and types inferred automatically
@@ -142,6 +143,8 @@ Query Source
 
 - [Installation](/installation) - Get running with Docker Compose
 - [Quick Start](/quick-start) - End-to-end walkthrough
+- [Discovery](/discovery) - Six-step wizard that goes from "I want this data" to running taps + pipelines
+- [Data Catalog](/data-catalog) - Organize related taps and pipelines into named groups
 - [Datris CLI](/cli) - Command-line interface for ingesting, querying, and managing pipelines
 - [Pipeline Configuration](/pipeline-configuration) - Full JSON configuration reference
 - [Preprocessor](/preprocessor) - External preprocessing via REST endpoints

@@ -1,0 +1,125 @@
+---
+title: "Discovery"
+description: "AI-powered wizard that goes from \"I want this data\" to running taps + pipelines in six steps"
+---
+
+<Note>
+**Beta.** Discovery is the newest way to onboard data into Datris. The flow and prompts may shift as we iterate based on feedback.
+</Note>
+
+**Discovery** is a guided wizard that turns a plain-English data request into one or more working [taps](/taps) and [pipelines](/pipeline-configuration), grouped into a [Data Catalog](/data-catalog). You describe what you want; Datris discovers the available datasets, generates the Python tap scripts, builds the pipelines, and (optionally) schedules and runs them — all in one session.
+
+Discovery is the fastest way to onboard a new external data source. Use it whenever you don't yet know exactly which datasets a source exposes, or when one source has many related datasets you want to ingest together.
+
+## When to use Discovery vs. Taps
+
+| Use Discovery when… | Use the [Tap wizard](/taps) when… |
+| --- | --- |
+| You're exploring a new source ("what's in yfinance?") | You know exactly which dataset you want |
+| You want to build several related taps in one pass | You're building a single one-off tap |
+| You want them grouped under a Data Catalog | You don't need cataloging |
+| You want a pipeline + schedule wired up automatically | You want to wire pipeline/schedule manually |
+
+Both produce the same kind of tap and pipeline objects — Discovery just batches the work.
+
+## The six steps
+
+### Step 1: Discover Data Sources
+
+Pick or create a [Data Catalog](/data-catalog), then chat with the AI about the source you want.
+
+- **Catalog** — choose an existing catalog or click **+ Create New Catalog** to make one (the name is sanitized to lowercase + underscores). All taps and pipelines created in this session inherit this catalog.
+- **Chat** — describe the source in plain English ("I want end-of-day stock prices using yfinance"). The AI's only job here is to converge on a *concrete source* — it won't ask about parameters, filters, or scheduling yet. Examples:
+  - *"daily weather for US cities"* → AI suggests Open-Meteo, NOAA, Visual Crossing
+  - *"company filings"* → AI asks "SEC EDGAR, or commercial provider like FactSet?"
+- **Discover Datasets** — once the AI confirms it has identified a source, the **Discover Datasets** button activates. Click it to enumerate every dataset that source exposes, grouped by category, with parameters and auth requirements.
+
+### Step 2: Select Datasets
+
+Datasets appear in collapsible category groups. Each row shows the dataset name, description, parameters, and whether auth is required. Tick the ones you want to build taps for.
+
+If your selection mixes single-valued and multi-valued parameters (e.g., one dataset takes one ticker, another takes a list), Discovery flags it so you can decide whether to keep them together or split into multiple Discovery sessions.
+
+### Step 3: Configure & Build
+
+Three sub-steps fold into one screen.
+
+**3a. Credentials** — if any selected dataset needs auth, pick an existing tap secret or create a new one. Discovery pre-populates the secret's key names from the dataset metadata (e.g., `ALPHA_VANTAGE_API_KEY`). You only paste in the values.
+
+**3b. Parameters** — Discovery groups parameters that appear in multiple datasets (or that are inherently multi-valued) at the top so you only enter them once. For each shared parameter you choose a source:
+
+- **Manual** — type a value or comma-separated list.
+- **Datris Platform table/collection** — pick a table you already have ingested; Discovery uses its column values at runtime.
+- **CSV upload** — paste in or upload a CSV; Discovery extracts a column.
+- **AI-generated list** — describe what you want ("S&P 500 tickers", "EU country codes") and the AI produces the list.
+
+Date parameters get a **Today** button that inserts the literal `{{TODAY}}` token — Discovery substitutes the actual date at runtime.
+
+**3c. Build** — click **Build All (N)** to generate every tap script in parallel. For each dataset Discovery:
+
+1. Calls the codegen model with the dataset's `tapInstruction` to produce a Python `fetch()` function.
+2. Runs the script immediately as a test.
+3. If the test fails, asks the AI to fix it (up to three attempts).
+4. On success, saves the tap to the catalog with `enabled=false`.
+
+You'll see per-tap status as each one finishes: ✅ ready, ❌ failed, or 🔧 fixing.
+
+### Step 4: Create Pipelines
+
+Discovery shows one card per successful tap with the proposed pipeline config: name, source attributes, MongoDB destination, table name. From here you can:
+
+- Toggle **Truncate before write** per pipeline (or globally) — useful when each tap run replaces the previous snapshot rather than appends.
+- Click **Edit config** to add [data-quality rules](/data-quality/ai-rules) or [transformations](/transformation/ai-transformation) before the pipeline is created.
+
+Click **Create All Pipelines** to persist them and link each tap to its pipeline (`tap.targetPipeline = pipelineName`).
+
+### Step 5: Schedule (optional)
+
+Set a shared schedule for every tap in this session, or override per-tap.
+
+- Pick a preset (Hourly, Daily, Weekdays, Weekly) or write a custom schedule in English ("Every weekday at 4pm ET") and click **Generate** to convert it to a CRON expression.
+- Per-tap override: expand any tap to set its own CRON.
+- The **Schedule is active** checkbox controls whether the cron actually fires; leave it off to schedule taps but keep them paused.
+
+Click **Continue** to apply the schedules (Discovery PATCHes each tap with `cronExpression` + `enabled`).
+
+### Step 6: Run Taps
+
+The summary card shows what you built (taps ready, schedule, destination). Click **Run All** to execute every tap immediately in parallel. Status updates per tap: pending → running → done / error. When a tap completes, its data is in the destination (MongoDB by default) and the linked pipeline has flushed to your final destination.
+
+From here you can jump to the [Taps](/taps) view to manage them or start a fresh Discovery session.
+
+## What gets created
+
+After a successful Discovery run you have:
+
+- **N taps** — Python scripts saved to disk, each with `packages`, `secretName`, `targetPipeline`, `catalog`, optional `cronExpression`, `enabled` flag.
+- **N pipelines** — one per tap, source pre-wired to the tap's output, destination MongoDB by default, same `catalog`.
+- **1 catalog** — a logical grouping visible in the [Data Catalog](/data-catalog) page that bundles those taps and pipelines together.
+- **0 or 1 secret** — only if any selected dataset required auth.
+
+You can edit any of these afterwards via the regular Tap editor, Pipeline editor, or Configuration UI — Discovery is a fast path to creation, not a runtime container.
+
+## API
+
+Discovery is exposed via two REST endpoints under `/api/v1`:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/discover` | Chat with the AI or enumerate datasets. Body: `{messages, mode: "chat" \| "discover", authContext?}`. Returns `{reply, sourceIdentified, datasets?, ready}`. |
+| `POST` | `/discover/build` | Generate Python tap scripts from a list of datasets. Body: `{datasets: [{id, tapInstruction, createPipeline, secretName, packages}], prefix}`. Returns `{results: [...], totalRequested, totalSuccess}`. |
+
+Most users won't call these directly — the wizard handles it. They're documented because the same endpoints power the [`discover_source`](/mcp-server#discover_source) MCP tool, which lets external AI agents drive Discovery programmatically.
+
+## MCP
+
+The [`discover_source`](/mcp-server#discover_source) MCP tool exposes the chat + enumerate flow to AI agents. An agent can ask "what datasets are available in yfinance?" and receive the same structured response the wizard uses, then drive subsequent tap/pipeline creation through the existing MCP tools.
+
+## Configuration
+
+Discovery uses the platform's standard AI configuration:
+
+- **AI Primary** (`{env}/ai-primary` Vault secret) — powers the chat + enumeration prompts.
+- **CodeGen** (`{env}/codegen` Vault secret) — powers Python tap script generation. A stronger model here (Opus, GPT‑5 Codex) produces noticeably better scripts.
+
+Both are configurable in the [Configuration tab](/ai-configuration) per tenant. Trial users bring their own keys at signup; dedicated instances pick providers and models freely.

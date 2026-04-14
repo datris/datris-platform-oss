@@ -11,6 +11,10 @@ A **Tap** is an AI-generated Python script that fetches data from external sourc
 
 Taps can run on a schedule using CRON expressions, or be triggered manually. They support credentials management via Vault secrets and include AI-powered diagnosis when scripts fail, return zero records, or emit deprecation/warning output.
 
+<Tip>
+Building several related taps from the same source? Try **[Discovery](/discovery)** instead — it enumerates every dataset a source exposes, generates all the tap scripts in parallel, builds the matching pipelines, and groups everything in a [Data Catalog](/data-catalog). The Tap wizard below is best when you already know exactly which dataset you want.
+</Tip>
+
 ## Creating a Tap
 
 The Tap creation wizard walks you through 4 steps — or 5, if you link the tap to a pipeline (the optional 5th step lets you run the tap immediately and push data through the pipeline before leaving the wizard).

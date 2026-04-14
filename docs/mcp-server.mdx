@@ -91,6 +91,12 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | `get_tap_logs` | Get run history for a tap (last 50 entries with status, duration, errors) |
 | `delete_tap` | Delete a tap and its stored script |
 
+### Discovery
+
+| Tool | Description |
+|------|-------------|
+| `discover_source` | Discover available datasets from any data source — Python package, API, website, or database. Chat with the AI to identify a source, then enumerate every dataset it exposes with parameters, auth requirements, and `tapInstruction` templates ready to feed into `create_tap`. Powers the same flow as the [Discovery wizard](/discovery) |
+
 ### Configuration
 
 | Tool | Description |
@@ -249,6 +255,14 @@ An AI agent could autonomously:
 3. **Monitor** — `get_job_status` until all documents are processed
 4. **Search** — `search_qdrant` to find relevant chunks
 5. **Answer** — `ai_answer` with the retrieved chunks as context and the user's question
+
+### Onboard a new external data source
+
+1. **Discover** — `discover_source` with a message like *"What datasets are available in yfinance?"* — the AI returns a structured list of datasets with parameters and `tapInstruction` for each
+2. **Create taps** — call `create_tap` once per dataset you want, passing the `tapInstruction` as the instruction (Datris generates the Python script and tests it)
+3. **Create pipelines** — `create_pipeline` for each tap with the destination of your choice
+4. **Schedule** — `update_tap` with `cronExpression` and `enabled: true` to run on a recurring schedule
+5. **Run** — `run_tap` to execute immediately, or wait for the schedule to fire
 
 ### Discover and query data
 

@@ -29,6 +29,13 @@
             ]
           },
           {
+            "group": "Discovery",
+            "pages": [
+              "discovery",
+              "data-catalog"
+            ]
+          },
+          {
             "group": "Taps",
             "pages": [
               "taps"

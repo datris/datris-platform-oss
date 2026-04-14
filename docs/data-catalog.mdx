@@ -1,0 +1,63 @@
+---
+title: "Data Catalog"
+description: "A logical grouping for related taps and pipelines"
+---
+
+<Note>
+**Beta.** Data Catalogs ship alongside [Discovery](/discovery) and may evolve as we add features like sharing and access control.
+</Note>
+
+A **Data Catalog** is a named bucket that groups related [taps](/taps) and [pipelines](/pipeline-configuration). It's pure metadata — assigning a tap to a catalog doesn't change how the tap runs or where its data lands. Catalogs exist to make a busy platform browsable: instead of a flat list of 40 taps, you see "Stock Prices (12)", "Weather (6)", "Earnings (8)" and so on.
+
+## When to use a catalog
+
+Use one whenever you have more than a handful of related taps that should travel together — same source, same domain, same project. Discovery [creates a catalog by default](/discovery#step-1-discover-data-sources) because every Discovery session produces a set of related taps, and they belong together.
+
+You don't have to use catalogs. Anything you create outside a catalog falls into the **Uncataloged** group, which works fine for one-off taps and pipelines.
+
+## How catalogs are stored
+
+Catalogs aren't a separate table or external system. Each tap and pipeline carries a nullable `catalog` string field; the platform groups by that field. Two consequences:
+
+- A catalog "exists" as soon as anything is assigned to it. There's no separate create step required to *use* a name.
+- Renaming a catalog means updating the `catalog` field on every tap and pipeline in it. The Data Catalog UI handles this for you.
+
+When you create a catalog explicitly (via the UI or Discovery), Datris persists the name by writing a placeholder tap named `__catalog__<name>` (description "Catalog placeholder", `enabled=false`). This makes empty catalogs survive across UI reloads. The placeholder is hidden from the Taps list and ignored by the runtime.
+
+## The Data Catalog page
+
+The **Data Catalog** tab in the UI shows one card per catalog plus an **Uncataloged** card.
+
+- Each card shows the catalog name and counts of taps + pipelines.
+- Click a card to expand it. Inside you'll see:
+  - Each tap with its enabled/disabled status, last-run outcome, and record count.
+  - Each pipeline with a quick-jump link to its config.
+- **+ Create Catalog** — make a new empty catalog. The name is sanitized (lowercase, alphanumerics + underscores).
+- **Delete catalog** — confirms then removes the catalog tag from every contained tap and pipeline. The taps and pipelines themselves are *not* deleted; they fall back into Uncataloged. This is reversible — re-tag them by editing each.
+
+## Assigning a catalog
+
+Three ways to put a tap or pipeline into a catalog:
+
+1. **Discovery** — the catalog you pick in Discovery Step 1 is applied to every tap and pipeline produced by that session.
+2. **Tap editor** — when creating or editing a tap manually, set the **Catalog** field.
+3. **Pipeline editor** — same field on the pipeline form.
+
+Leave the field blank to keep the item Uncataloged.
+
+## API and MCP
+
+There are no dedicated `/catalogs` REST endpoints — catalogs are just a field on the Tap and Pipeline configs. You read and write them through the existing endpoints:
+
+- `GET /api/v1/taps` and `GET /api/v1/pipelines` return the `catalog` field on each item.
+- `POST` / `PUT` to those endpoints accept a `catalog` field. To move an item, send a request with the new value.
+
+For programmatic catalog browsing from an MCP agent, list taps or pipelines and group client-side by `catalog`.
+
+## What catalogs don't do
+
+- They don't isolate access — anyone with API access to a tap can see it regardless of catalog.
+- They don't affect tap or pipeline behavior, scheduling, or destination.
+- They aren't permissioned — catalogs are a flat namespace per tenant.
+
+If you need true tenant isolation, that's handled at the Datris environment level, not via catalogs. See [tenant isolation](/configuration-reference) in the configuration reference.
