@@ -840,7 +840,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "sql": {"type": "string", "description": "SQL SELECT query to execute"},
-                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100)"},
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited — no cap, returns every matching row."},
                 },
                 "required": ["sql"]
             }
@@ -854,7 +854,7 @@ async def list_tools():
                     "collection": {"type": "string", "description": "MongoDB collection name"},
                     "filter": {"type": "object", "description": "MongoDB query filter (default: {})"},
                     "projection": {"type": "object", "description": "Fields to include/exclude (default: all fields)"},
-                    "limit": {"type": "integer", "description": "Maximum documents to return (default: 20)"},
+                    "limit": {"type": "integer", "description": "Maximum documents to return (default: 20). Pass -1 for unlimited — no cap, returns every matching document."},
                 },
                 "required": ["collection"]
             }
@@ -869,7 +869,7 @@ async def list_tools():
                     "table": {"type": "string", "description": "PostgreSQL table name to query"},
                     "schema": {"type": "string", "description": "PostgreSQL schema (default: public)"},
                     "database": {"type": "string", "description": "Database name (default: datris)"},
-                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100)"},
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited — no cap, returns every matching row."},
                 },
                 "required": ["question", "table"]
             }
