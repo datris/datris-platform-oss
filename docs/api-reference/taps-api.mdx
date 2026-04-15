@@ -160,11 +160,17 @@ Uses AI to fix a script based on a diagnosis of what went wrong.
 ## Test Tap
 
 ```
-POST /api/v1/tap/test
+POST /api/v1/tap/test?testLimit={N}
 Content-Type: application/json
 ```
 
 Executes the tap script without sending data to a pipeline. Returns results, logs, and AI diagnosis if issues detected.
+
+**Query parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `testLimit` | integer (optional) | When `> 0`, the runner injects `DATRIS_TAP_TEST_LIMIT=<N>` into the script process. Well-written tap scripts honor this env var to cap their source reads and iteration loops, making tests faster and lower-cost. Cron and manual runs (via `/tap/run`) never set this — production runs always read every row. The UI's "Limit test sample to 20 records" checkbox in Create Tap → step 2 sends `testLimit=20`. |
 
 **Body:** A TapConfig JSON object (same as Create).
 

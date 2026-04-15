@@ -33,7 +33,9 @@ The **Data Catalog** tab in the UI shows one card per catalog plus an **Uncatalo
   - Each tap with its enabled/disabled status, last-run outcome, and record count.
   - Each pipeline with a quick-jump link to its config.
 - **+ Create Catalog** — make a new empty catalog. The name is sanitized (lowercase, alphanumerics + underscores).
-- **Delete catalog** — confirms then removes the catalog tag from every contained tap and pipeline. The taps and pipelines themselves are *not* deleted; they fall back into Uncataloged. This is reversible — re-tag them by editing each.
+- **Delete catalog** — confirms, then deletes the catalog's placeholder **plus every tap and pipeline inside it**. This is destructive and not reversible. If you want to keep the items, re-tag them to a different catalog first (or to Uncataloged by clearing the field on each).
+- **Delete Uncataloged** — same delete icon on the Uncataloged group removes every tap and pipeline that isn't in a named catalog. Confirm prompt reads *"Delete ALL uncataloged items?"* to make the scope obvious.
+- **Delete individual tap or pipeline** — expand any catalog (including Uncataloged) and use the trash icon on a specific row to delete just that item.
 
 ## Assigning a catalog
 

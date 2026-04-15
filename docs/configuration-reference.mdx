@@ -127,7 +127,8 @@ ActiveMQ credentials are stored in Vault under `secrets.activeMQSecretName`:
 | Property | Description |
 |----------|-------------|
 | `mongodb.connectionString` | MongoDB connection URI (e.g., `mongodb://localhost:27017`) |
-| `mongodb.database` | Database name for pipeline metadata. Also injected into tap scripts as the `DATRIS_MONGODB_DATABASE` environment variable. In multi-tenant mode the tenant name is used instead of this value. |
+| `mongodb.database` | **User-facing** database name (default: `datris`). Pipelines write here, the UI Search tab reads here, and tap scripts get this as `DATRIS_MONGODB_DATABASE`. In multi-tenant mode the tenant environment name is used instead. |
+| `mongodb.internalDatabase` | **Platform-internal** database name (default: `oss`). Holds pipeline/tap configs, run status, job queues — never surfaced in the UI. Keep this distinct from `mongodb.database` so user data and platform state don't mix. |
 
 ### PostgreSQL
 

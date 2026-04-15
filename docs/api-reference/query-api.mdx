@@ -19,7 +19,7 @@ POST /api/v1/query/postgres
 |-------|------|----------|---------|-------------|
 | `sql` | string | Yes | | SQL SELECT query to execute |
 | `database` | string | No | `datris` | PostgreSQL database name to connect to |
-| `limit` | integer | No | 100 | Maximum rows to return (max 1000) |
+| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited (tap scripts use this to read every row). Omit for the preview default of 100; any positive value is honored with no cap. |
 
 ### Example
 
@@ -57,7 +57,7 @@ The endpoint enforces multiple layers of protection:
 - **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `COPY`, `CALL`, `EXECUTE`, or `EXEC` are rejected
 - **No stacked queries** — semicolons are not allowed
 - **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
-- **LIMIT enforcement** — if no `LIMIT` is present, one is appended automatically (max 1000)
+- **LIMIT enforcement** — if no `LIMIT` is present in the SQL, one is appended automatically using the request's `limit` value (or the default 100). Pass `limit: -1` to bypass the automatic append entirely — the caller's SQL runs as-is.
 
 ---
 
@@ -76,7 +76,7 @@ POST /api/v1/query/mongodb
 | `collection` | string | Yes | | MongoDB collection name |
 | `filter` | object | No | `{}` | MongoDB query filter |
 | `projection` | object | No | all fields | Fields to include/exclude |
-| `limit` | integer | No | 20 | Maximum documents to return (max 1000) |
+| `limit` | integer | No | 20 | Maximum documents to return. Pass `-1` for unlimited (tap scripts use this to read every document). Omit for the preview default of 20; any positive value is honored with no cap. |
 
 ### Example
 

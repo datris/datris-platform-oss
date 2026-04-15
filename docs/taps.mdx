@@ -59,9 +59,12 @@ Review and edit the generated script. You can:
 - Modify the Python code directly
 - Add or remove pip packages
 - Edit the instruction and click **Regenerate** to produce a new script
-- Click **Test Script** to execute and preview results
-- If errors occur, an **AI Diagnosis** explains what went wrong
-- Click **Apply Diagnosis to Script** to auto-fix the issue
+- Copy the script to your clipboard with the **Copy** button next to the editor
+- Click **Test Script** to execute and preview results. Preview renders as JSON (up to 100 records) in a scrollable pane
+- If the script fails, an **AI Diagnosis** explains what went wrong and is **auto-applied** — the platform fixes the script and retests, up to 2 attempts. If both retries fail, the diagnosis stays visible for you to review and apply manually
+- Click **Stop Test** to cancel an in-flight test (also halts the auto-fix chain)
+
+**Limit test sample to 20 records** (checkbox, default on): when enabled, the runner injects `DATRIS_TAP_TEST_LIMIT=20` into the script process. Well-written tap scripts honor this env var to cap both their `/api/v1/query/*` reads and per-item iteration loops, making tests fast and low-cost. Cron and manual runs (via *Run Tap*) never set this env var, so production runs always read every row from every source.
 
 The test must return records successfully before you can proceed to step 3.
 
