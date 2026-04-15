@@ -1,0 +1,174 @@
+---
+title: "Changelog"
+description: "Release history for Datris"
+---
+
+<Update label="v1.6.3" description="April 15, 2026">
+  **Database lockdown, tap script hardening, Create Tap UX.**
+
+  - **Server-controlled database name.** UI no longer edits the Postgres or MongoDB database name — `/api/v1/version` returns `postgresDatabase` and `mongodbDatabase` and the UI submits them unchanged.
+  - **MongoDB internal vs user split.** `mongodb.database` (user-facing, default `datris`) holds pipeline data; `mongodb.internalDatabase` (default `oss`) holds platform state. Existing installs keep `oss` for platform state; new user pipelines land in `datris`.
+  - **Unlimited reads for tap scripts.** `limit: -1` on `/api/v1/query/mongodb` and `/api/v1/query/postgres` returns every matching row. Preview defaults (20 Mongo / 100 Postgres) are unchanged for UI/MCP callers.
+  - **Tap test sampling.** New "Limit test sample to 20 records" checkbox in Create Tap step 2 injects `DATRIS_TAP_TEST_LIMIT=20` into the script. Cron and manual runs read everything.
+  - **Codegen + diagnosis hardening.** Generated scripts treat platform response shapes as contractual (no shape-probing, no candidate-key iteration). Diagnosis quotes the actual traceback and respects in-script guards.
+  - **Create Tap UX.** Ask button, auto-apply diagnosis (capped at 2 attempts), Stop Test, copy-to-clipboard, scrollable-JSON test results, destination collision check on Generate Pipeline, full destination shown on step 5.
+  - **Data Catalog.** One-click delete of the Uncataloged group; per-item trash icon on taps and pipelines inside every catalog.
+</Update>
+
+<Update label="v1.6.2" description="April 14, 2026">
+  **Input sanitization hardening and minor UI polish.**
+
+  - Pipeline creation sanitizes destination identifiers before writing the config — Postgres `dbName`/`schema`/`table`, MongoDB `dbName`/`table`, Kafka `topic`, ActiveMQ `queueName`, vector `collectionName`/`tableName`/`schemaName`, and the DQ schema name.
+  - Four duplicated `sanitizeName` helpers consolidated into `ui/src/app/shared/sanitize.ts` (`sanitizeLabel` and `sanitizeIdentifier`).
+</Update>
+
+<Update label="v1.6.1" description="April 14, 2026">
+  **Discovery wizard, Data Catalog, and trial BYO AI keys.**
+
+  - **Discovery wizard.** Six-step AI-guided onboarding that turns "yfinance daily prices for the S&P 500" into running taps and pipelines. New endpoints `POST /api/v1/discover` and `POST /api/v1/discover/build`, plus `discover_source` MCP tool.
+  - **Data Catalog.** Group related taps and pipelines into named catalogs. New Data Catalog tab with expandable contents and an Uncataloged group.
+  - **Per-pipeline DQ + transformation editor.** Inline editor inside the pipeline view.
+  - **Trial BYO keys.** Trial tenants supply their own Anthropic or OpenAI key at signup; keys land in the tenant's Vault path and override the shared Datris-managed key on the next AI call.
+</Update>
+
+<Update label="v1.6.0" description="April 11, 2026">
+  **Dedicated instance support and hosted platform improvements.**
+
+  - **Hosted-aware Configuration UI.** Hides Ollama for AI Primary/CodeGen on hosted, locks embedding to bundled Ollama `bge-m3` when the provider is Anthropic, and hides the advanced toggle.
+  - Improved multi-user session handling on shared instances.
+</Update>
+
+<Update label="v1.5.9" description="April 11, 2026">
+  **Full tap MCP tool suite and user-supplied tap scripts.**
+
+  - Four new MCP tools: `get_tap`, `test_tap`, `update_tap`, `get_tap_logs`.
+  - `create_tap` accepts an optional `script` parameter for user-supplied Python `fetch()`, plus `secret_name` for Vault-injected credentials.
+  - CLI: `datris tap create --script path/to/script.py` and new `datris tap show`.
+</Update>
+
+<Update label="v1.5.8" description="April 10, 2026">
+  **Ollama for all AI slots and hot-reload on save.**
+
+  - Configuration UI offers Ollama (local) as a provider for AI Primary, CodeGen, and Embedding. Bundled Ollama sidecar option pre-fills `bge-m3` for embedding.
+  - Saving AI configuration takes effect immediately — no container restart required.
+</Update>
+
+<Update label="v1.5.7" description="April 9, 2026">
+  **Trial-instance hardening and Configuration tab polish.**
+
+  - Trial codegen now defaults to `claude-haiku-4-5-20251001` instead of Opus 4.6, dramatically lowering per-trial cost. Self-hosted customers continue to recommend Opus for codegen on their own keys.
+  - Trial banner copy and link styling refinements on the Configuration tab.
+</Update>
+
+<Update label="v1.5.6" description="April 8, 2026">
+  **Breaking: AI configuration restructured into three independent Vault secrets.**
+
+  - `ai.aiSecretName` and `ai.provider` are replaced by three top-level slots — `ai.aiPrimary.secretName`, `ai.codegen.secretName`, `ai.embedding.secretName`.
+  - Each Vault secret is self-describing (`provider`, `endpoint`, `model`, `apiKey`, optionally `version`). No path derivation from YAML.
+  - v1.5.x deployments must update `application.yaml` and re-seed Vault on upgrade.
+</Update>
+
+<Update label="v1.5.5" description="April 8, 2026">
+  **Onboarding, tap scheduling UX, and trial BYO key path.**
+
+  - **Getting Started tab** as the new first-run landing page; Docs ↗ top-nav link.
+  - Inline cron editor on the Taps page: preset buttons, AI prompt field ("Every weekday at 4pm"), Quartz field validation, human-readable description.
+  - Truncate-before-run toggle in the tap wizard (sets `truncateBeforeWrite: true` on the generated destination).
+  - Configuration tab for trial users with BYO Anthropic/OpenAI key banner and "Datris-managed (default)" vs "Your own {provider} key" status.
+  - **Fix:** `TapScheduler` honors the configured `dateTimezone` from `application.yaml`.
+</Update>
+
+<Update label="v1.5.4" description="April 7, 2026">
+  **Taps (Beta).** AI-generated Python scripts that fetch data on a schedule and stream it into a pipeline.
+
+  - 4-step tap creation wizard (Describe → Edit & Test → Schedule → Review) with brainstorm chat and proactive env-var suggestions.
+  - AI script generation with JSON-parse retry and raw-script fallback; AI diagnosis with explicit (a)/(b)/(c) options; "Apply Diagnosis" rewrites the script in place.
+  - Tap secrets stored in Vault tagged `_type=tap`; run history via `TapRunLog` and `GET /tap/logs`.
+  - CRON scheduling (Quartz format), AI-generated from natural language.
+  - JSON-to-CSV pipeline feed (union of keys) with column-name normalization via spell-out table (`%` → `percent`, `#` → `num`, `&` → `and`, …).
+  - Pipelines page shows the feeding tap; pipeline wizard has "Create from Tap".
+</Update>
+
+<Update label="v1.5.3" description="April 3, 2026">
+  **Schema Evolution.**
+
+  - Additive evolution: new CSV columns are auto-added as `string`, `schemaVersion` increments, and `ALTER TABLE` runs on Postgres.
+  - Dropped columns are excluded from the `COPY` command so Postgres defaults them to `NULL` (previously failed on typed columns).
+  - Missing key fields raise a clear error.
+  - Shared `DataUtil.evolveSchema()` now used by both `StreamNotifier` and `FileNotifier`.
+  - Query endpoints use `serializeNulls()` so `NULL` columns appear in results.
+</Update>
+
+<Update label="v1.5.2" description="April 3, 2026">
+  **Remote MCP endpoint and managed service support.**
+
+  - Per-session API key forwarding on the MCP server (header or `api_key` query param); `REQUIRE_API_KEY=true` rejects unauthenticated SSE/streamable-HTTP connections.
+  - New MCP tools for managed service: `signup_trial`, `upgrade_to_dedicated`, `check_upgrade_status`.
+  - Remote SSE registry entry for `https://mcp.trial.datris.ai/sse`.
+  - Website APIs accept `x-api-key` alternative to cookie JWT; `/api/provision/agent-trial` combines signup + provisioning with rate limiting.
+</Update>
+
+<Update label="v1.5.1" description="April 3, 2026">
+  - Pipeline creation wizard hides PostgreSQL and MongoDB database name fields on trial instances — auto-populated from the environment or defaults to `datris`.
+</Update>
+
+<Update label="v1.5.0" description="April 2, 2026">
+  **Multi-tenant hosting on a shared instance.**
+
+  - Per-tenant PostgreSQL databases (auto-created on first use) and per-tenant MongoDB databases scoped via the connection string environment name.
+  - Tenant-scoped metadata and query endpoints; new `TenantInterceptor` sets `DatrisEnvironment.current` per request based on API key.
+  - Vector DB secret isolation across Qdrant, Weaviate, Milvus, Chroma, pgvector.
+  - Batch upload for compressed files (`.zip`, `.gz`, `.tar`, `.jar`) processes contents inline — no MinIO webhook dependency.
+</Update>
+
+<Update label="v1.4.4" description="March 30, 2026">
+  - Default AI provider changed to Anthropic (Claude Sonnet 4.6). Customers can still switch to OpenAI or Ollama via `application.yaml`.
+  - Generated Python scripts for DQ and transformation are logged in full to the server logs for debugging.
+</Update>
+
+<Update label="v1.4.3" description="March 29, 2026">
+  - New unified `datris analyze` command replaces `ask-sql` and `ask`. Auto-picks the right approach based on `--dest` (Postgres → SQL generation, MongoDB → document fetch, vector stores → RAG).
+  - `--ai-analyze` flag on ingest.
+</Update>
+
+<Update label="v1.4.2" description="March 27, 2026">
+  **Mintlify documentation and accuracy pass.**
+
+  - Migrated docs from `.md` to `.mdx` with a two-tab Mintlify layout.
+  - Removed deprecated docs (row rules, column rules, JavaScript row functions, REST transformations, deduplication, column trimming).
+  - Page-by-page accuracy review against the codebase.
+</Update>
+
+<Update label="v1.4.1" description="March 26, 2026">
+  - Server fails fast at startup with a clear error if an AI provider is not configured (CodeGen DQ and transformation require it).
+  - Removed stale NEVER rules and deprecated-feature references from the MCP server instructions.
+</Update>
+
+<Update label="v1.4.0" description="March 26, 2026">
+  **CodeGen DQ and transformation.**
+
+  - `aiRule` replaces the prior AI DQ approach: the LLM generates a self-contained Python validation script from a plain-English instruction, which runs locally. Cost drops from $25–40/file to ~$0.003/rule.
+  - `aiTransformation` uses the same CodeGen approach.
+  - Works for CSV, JSON, and XML.
+  - **Removed:** `columnRules` (regex), JavaScript row rules, REST endpoint row rules, `AIDataQualityUtil`. JavaScript row functions and REST transformations removed from UI and CLI.
+</Update>
+
+<Update label="v1.3.0" description="March 26, 2026">
+  - **Atomic `create_pipeline`.** `generate_schema` is removed; `create_pipeline` accepts base64-encoded sample data, auto-detects schema, and creates the pipeline in one call.
+  - Content-based uploads across `upload_data` (renamed from `upload_file`), `profile_data`, `upload_config`.
+  - `update_secret` MCP tool for AI provider keys only.
+  - All-string schema on MCP pipeline creation; pipeline registration verified by read-back.
+</Update>
+
+<Update label="v1.2.2" description="March 25, 2026">
+  - `update_secret` MCP tool added (scoped to AI secrets: anthropic, openai, ollama, embedding).
+  - Published to the MCP Registry (`io.github.datris/datris`) and PyPI (`datris-mcp-server`).
+</Update>
+
+<Update label="v1.2.0" description="March 24, 2026">
+  **New UI tabs.**
+
+  - **MCP Tab** — agent view, service health for 10 backend services, browsable tool grid, config generator for Claude Desktop/Code and Cursor, and a Tool Playground that executes against the live API.
+  - **Secrets Tab** — full CRUD for Vault secrets with sensitive-field masking.
+  - New REST endpoints for vector store metadata discovery (Qdrant collections and friends).
+</Update>

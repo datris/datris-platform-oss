@@ -42,6 +42,8 @@ Update the version in these files:
 
 2. Write new `release-notes.md` at the project root
 
+3. Prepend a new `<Update label="v{x.y.z}" description="{Month D, YYYY}">…</Update>` block to `docs/changelog.mdx` (newest first). Keep bullets user-facing and terse; for security fixes use vague impact only (no endpoints, attack chains, or implementation symbols).
+
 ## 3. Build the Server JAR (if server code changed)
 
 ```bash
