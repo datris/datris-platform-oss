@@ -561,6 +561,43 @@ class TapAPIController {
         }
     }
 
+    @PostMapping(path = Array("/tap/optimize"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def optimizeScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                       @RequestBody body: java.util.Map[String, Object]): ResponseEntity[String] = {
+        try {
+            val tapName = Option(body.get("tapName")).map(_.toString).getOrElse("tap")
+            val script = Option(body.get("script")).map(_.toString).getOrElse("")
+            val recordCount = Option(body.get("recordCount")).map(_.toString.toDouble.toInt).getOrElse(0)
+            val durationMs = Option(body.get("durationMs")).map(_.toString.toDouble.toLong).getOrElse(0L)
+            val logs = Option(body.get("logs")).map(_.toString).getOrElse("")
+            val oldScriptPath = Option(body.get("oldScriptPath")).map(_.toString).orNull
+            logger.info(s"API endpoint POST /tap/optimize called, tapName: $tapName, recordCount: $recordCount, durationMs: $durationMs")
+            APIKeyValidator.validate(apiKey)
+
+            if (script.isEmpty)
+                throw new DatrisException("Script is required")
+
+            val opt = TapScriptOptimizer.optimize(tapName, script, recordCount, durationMs, logs, oldScriptPath)
+
+            val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+            if (existingTap != null && opt.scriptPath != null && opt.scriptPath != oldScriptPath) {
+                TapConfigIO.write(existingTap.copy(scriptPath = opt.scriptPath))
+            }
+
+            val gson = new Gson
+            val response = new java.util.HashMap[String, Any]()
+            response.put("script", opt.script)
+            response.put("packages", opt.packages)
+            response.put("scriptPath", opt.scriptPath)
+            response.put("changes", opt.changes)
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
     private def cleanAIResponse(response: String): String = {
         var cleaned = response.trim
         if (cleaned.startsWith("```json")) cleaned = cleaned.stripPrefix("```json").trim
@@ -585,7 +622,9 @@ class TapAPIController {
             // well-written tap script caps its source reads. Cron/manual runs
             // never set this.
             val testLimitInt: Int = if (testLimit != null && testLimit.intValue() > 0) testLimit.intValue() else 0
+            val testStartMs = System.currentTimeMillis()
             val result = TapRunner.run(tapConfig, pushToPipeline = false, testLimit = testLimitInt)
+            val testDurationMs = System.currentTimeMillis() - testStartMs
             val gson = new Gson
             val recordsJson = if (result.records != null) JsonParser.parseString(result.records) else null
             val response = new java.util.HashMap[String, Any]()
@@ -595,6 +634,7 @@ class TapAPIController {
             response.put("logs", result.logs)
             response.put("dataType", result.dataType)
             response.put("columns", result.columns)
+            response.put("durationMs", java.lang.Long.valueOf(testDurationMs))
 
             // AI explanation if there's an error, 0 records, or logs contain notable indicators.
             // "deprecat" and "warning" catch cases where the script "succeeded" but the runtime

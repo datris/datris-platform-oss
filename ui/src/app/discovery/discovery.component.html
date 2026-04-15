@@ -46,7 +46,7 @@
         </div>
       </div>
 
-      <div class="chat-area" *ngIf="messages.length > 0">
+      <div class="chat-area" *ngIf="messages.length > 0" #chatArea>
         <div *ngFor="let msg of messages" class="chat-msg" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'">
           <span class="material-icons chat-msg-icon">{{ msg.role === 'user' ? 'person' : 'explore' }}</span>
           <div class="chat-msg-content">{{ msg.content }}</div>
@@ -401,7 +401,25 @@
               <a class="records-link" (click)="showPreview(item); $event.stopPropagation()">{{ item.recordCount }} records</a>
               <span class="datatype-badge">JSON</span>
             </div>
+            <div class="build-item-optimize" *ngIf="item.status === 'done' && item.optimizeChanges && item.optimizeChanges.length > 0">
+              Optimized: {{ formatOptimizeMs(item.optimizeBeforeMs) }} → {{ formatOptimizeMs(item.optimizeAfterMs) }}
+              <span *ngIf="optimizeSpeedup(item) > 1.05">({{ optimizeSpeedup(item) | number:'1.1-1' }}×)</span>
+            </div>
+            <div class="build-item-optimize reverted" *ngIf="item.status === 'done' && item.optimizeRegressionReverted">
+              Optimization reverted (regression or failure)
+            </div>
             <div class="build-item-error" *ngIf="item.error">{{ item.error }}</div>
+            <div class="build-item-ai-fix" *ngIf="item.status === 'error' && item.lastAiExplanation">
+              <div class="ai-fix-header">
+                <span class="material-icons">auto_awesome</span>
+                AI Diagnosis
+              </div>
+              <div class="ai-fix-body">{{ item.lastAiExplanation }}</div>
+              <button class="ai-fix-btn" (click)="requestAiFix(item); $event.stopPropagation()" [disabled]="canStopItem(item)">
+                <span class="material-icons">healing</span>
+                Apply AI Fix
+              </button>
+            </div>
             <!-- Script view/edit -->
             <div class="script-actions" *ngIf="buildComplete && (item.status === 'done' || item.status === 'error')">
               <button class="script-toggle-btn" (click)="toggleScript(item)">
@@ -426,6 +444,9 @@
           </div>
           <button class="retry-item-btn" *ngIf="buildComplete && item.status === 'error'" (click)="retryBuildItem(item)" [disabled]="item.retrying" title="Retry this dataset">
             <span class="material-icons">{{ item.retrying ? 'hourglass_empty' : 'refresh' }}</span>
+          </button>
+          <button class="row-stop-btn" *ngIf="canStopItem(item)" (click)="stopItem(item); $event.stopPropagation()" title="Stop this tap">
+            <span class="material-icons">stop_circle</span>
           </button>
           <button class="delete-item-btn" *ngIf="buildComplete && (item.status === 'done' || item.status === 'error')" (click)="removeBuildItem(item)" title="Remove this dataset">
             <span class="material-icons">delete</span>

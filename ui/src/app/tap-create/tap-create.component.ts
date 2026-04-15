@@ -63,9 +63,32 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   private static readonly MAX_AUTO_FIX_ATTEMPTS = 2;
   autoFixAttempts = 0;
   // Test-only sample cap. Cron/manual runs are always unlimited; this only
-  // affects the test invocation. Fixed at 20 records when enabled.
+  // affects the test invocation. User-editable; defaults to 20.
   limitTestSample = true;
-  private static readonly TEST_SAMPLE_LIMIT = 20;
+  testSampleLimit = 20;
+
+  // Auto-optimize: after a test passes, send the working script back to the
+  // LLM with timing context for a perf rewrite, then re-test. One pass per
+  // successful test; user can Revert. Regression auto-reverts.
+  private static readonly MAX_AUTO_OPTIMIZE_ATTEMPTS = 1;
+  private static readonly OPTIMIZE_REGRESSION_THRESHOLD = 1.2;
+  optimizing = false;
+  optimizeAttempts = 0;
+  optimizingSkipped = false;
+  optimizeChanges: string[] = [];
+  optimizeDurationMs = 0;
+  optimizeRegressionReverted = false;
+  private previousPassingTest: {
+    script: string;
+    scriptPath: string;
+    packages: string[];
+    testRecords: any;
+    testRecordCount: number;
+    testLogs: string;
+    testDataType: string;
+    testColumns: string[];
+    durationMs: number;
+  } | null = null;
 
   // Step 4 — Schedule
   useSchedule = false;
@@ -255,9 +278,15 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.generateScript();
   }
 
-  /** User-initiated test. Resets the auto-fix counter, then delegates. */
+  /** User-initiated test. Resets auto-fix and auto-optimize counters, then delegates. */
   runTest(): void {
     this.autoFixAttempts = 0;
+    this.optimizeAttempts = 0;
+    this.optimizingSkipped = false;
+    this.optimizeChanges = [];
+    this.optimizeDurationMs = 0;
+    this.optimizeRegressionReverted = false;
+    this.previousPassingTest = null;
     this.testScript();
   }
 
@@ -277,8 +306,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       packages: this.packages.length > 0 ? this.packages : null,
       secretName: this.secretName || null
     };
-    if (this.limitTestSample) {
-      config.testLimit = TapCreateComponent.TEST_SAMPLE_LIMIT;
+    if (this.limitTestSample && this.testSampleLimit > 0) {
+      config.testLimit = this.testSampleLimit;
     }
 
     this.activeSub = this.tapService.testTap(config).subscribe({
@@ -293,6 +322,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           : (this.testRecords.length > 0 ? Object.keys(this.testRecords[0]) : []);
         this.aiExplanation = result.aiExplanation || '';
         this.testing = false;
+        const lastDurationMs = result.durationMs || 0;
         if (this.testRecordCount > 0 && !this.testError) {
           this.scriptDirty = false;
         }
@@ -302,6 +332,40 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         if (failed && this.aiExplanation && this.autoFixAttempts < TapCreateComponent.MAX_AUTO_FIX_ATTEMPTS) {
           this.autoFixAttempts++;
           this.applyDiagnosis();
+          return;
+        }
+        // Regression check: if this test was triggered by an auto-optimize, the
+        // previous passing snapshot is stored. If the optimized script is
+        // materially slower, auto-revert.
+        if (!failed && this.previousPassingTest &&
+            lastDurationMs > this.previousPassingTest.durationMs * TapCreateComponent.OPTIMIZE_REGRESSION_THRESHOLD) {
+          this.optimizeDurationMs = lastDurationMs;
+          this.optimizeRegressionReverted = true;
+          this.revertOptimization();
+          return;
+        }
+        // Record the optimized run's duration for the banner
+        if (!failed && this.previousPassingTest) {
+          this.optimizeDurationMs = lastDurationMs;
+        }
+        // Auto-optimize: on a successful test, send the working script back
+        // to the LLM for a perf rewrite, then re-test. One pass only.
+        const succeeded = !failed;
+        if (succeeded && this.optimizeAttempts < TapCreateComponent.MAX_AUTO_OPTIMIZE_ATTEMPTS &&
+            !this.optimizingSkipped && !this.previousPassingTest) {
+          this.previousPassingTest = {
+            script: this.script,
+            scriptPath: this.scriptPath,
+            packages: [...this.packages],
+            testRecords: this.testRecords,
+            testRecordCount: this.testRecordCount,
+            testLogs: this.testLogs,
+            testDataType: this.testDataType,
+            testColumns: [...this.testColumns],
+            durationMs: lastDurationMs
+          };
+          this.optimizeAttempts++;
+          this.optimizeScript(lastDurationMs);
         }
       },
       error: (err) => {
@@ -314,6 +378,87 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.testing = false;
       }
     });
+  }
+
+  optimizeScript(previousDurationMs: number): void {
+    this.optimizing = true;
+    this.optimizeChanges = [];
+    this.activeSub = this.tapService.optimizeScript(
+      this.tapName.trim(),
+      this.script,
+      this.testRecordCount,
+      previousDurationMs,
+      this.testLogs,
+      this.scriptPath
+    ).subscribe({
+      next: (result) => {
+        const newScript = result.script || this.script;
+        const changes: string[] = result.changes || [];
+        // If the AI returned the same script or no changes, skip the re-test.
+        if (changes.length === 0 || newScript === this.script) {
+          this.optimizing = false;
+          this.optimizingSkipped = true;
+          this.previousPassingTest = null;
+          return;
+        }
+        this.script = newScript;
+        this.scriptPath = result.scriptPath || this.scriptPath;
+        this.packages = result.packages || this.packages;
+        this.optimizeChanges = changes;
+        this.scriptDirty = true;
+        this.optimizing = false;
+        // Re-test to measure the new timing. The regression guard in testScript()
+        // will auto-revert if the optimized script is materially slower.
+        this.testScript();
+      },
+      error: (err) => {
+        // Silent failure — user still has the working original script.
+        const msg = typeof err.error === 'string' ? err.error : (err.message || '');
+        console.warn('Optimize failed: ' + msg.substring(0, 300));
+        this.optimizing = false;
+        this.optimizingSkipped = true;
+        this.previousPassingTest = null;
+      }
+    });
+  }
+
+  optimizeBeforeMs(): number {
+    return this.previousPassingTest ? this.previousPassingTest.durationMs : 0;
+  }
+
+  optimizeSpeedup(): number {
+    const before = this.optimizeBeforeMs();
+    if (!before || !this.optimizeDurationMs) return 1;
+    return before / this.optimizeDurationMs;
+  }
+
+  formatMs(ms: number): string {
+    if (!ms) return '0ms';
+    if (ms < 1000) return ms + 'ms';
+    const secs = ms / 1000;
+    if (secs < 60) return secs.toFixed(1) + 's';
+    const mins = Math.floor(secs / 60);
+    const remSecs = Math.round(secs - mins * 60);
+    return mins + 'm ' + remSecs + 's';
+  }
+
+  revertOptimization(): void {
+    if (!this.previousPassingTest) return;
+    const snap = this.previousPassingTest;
+    this.script = snap.script;
+    this.scriptPath = snap.scriptPath;
+    this.packages = [...snap.packages];
+    this.testRecords = snap.testRecords;
+    this.testRecordCount = snap.testRecordCount;
+    this.testLogs = snap.testLogs;
+    this.testDataType = snap.testDataType;
+    this.testColumns = [...snap.testColumns];
+    this.scriptDirty = false;
+    this.testError = '';
+    this.aiExplanation = '';
+    this.previousPassingTest = null;
+    this.optimizingSkipped = true;
+    this.optimizeChanges = [];
   }
 
   applyDiagnosis(): void {

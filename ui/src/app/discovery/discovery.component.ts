@@ -50,7 +50,7 @@ interface Dataset {
   paramValues?: Record<string, string>;
 }
 
-type BuildStatus = 'pending' | 'generating' | 'testing' | 'fixing' | 'retesting' | 'saving' | 'done' | 'error';
+type BuildStatus = 'pending' | 'generating' | 'testing' | 'fixing' | 'retesting' | 'optimizing' | 'retesting_optimized' | 'saving' | 'done' | 'error';
 
 interface BuildItem {
   datasetId: string;
@@ -84,6 +84,16 @@ interface BuildItem {
   pipelineStatus?: 'pending' | 'creating' | 'done' | 'error';
   pipelineError?: string;
   pipelineExpanded?: boolean;
+  optimizeChanges?: string[];
+  optimizeBeforeMs?: number;
+  optimizeAfterMs?: number;
+  optimizeRegressionReverted?: boolean;
+  // Most recent failure context, exposed so the user can manually trigger an AI fix
+  // even after the auto-fix budget is exhausted (or a transport error arrived with
+  // no server-side diagnosis).
+  lastAiExplanation?: string;
+  lastTestLogs?: string;
+  lastTestError?: string;
 }
 
 const STATUS_LABELS: Record<BuildStatus, string> = {
@@ -92,6 +102,8 @@ const STATUS_LABELS: Record<BuildStatus, string> = {
   testing: 'Testing script...',
   fixing: 'Fixing script...',
   retesting: 'Re-testing script...',
+  optimizing: 'Optimizing script for performance...',
+  retesting_optimized: 'Re-testing optimized script...',
   saving: 'Saving tap...',
   done: 'Complete',
   error: 'Failed'
@@ -127,6 +139,29 @@ export class DiscoveryComponent {
   datasets: Dataset[] = [];
   ready = false;
   @ViewChild('chatInputEl') chatInputEl?: ElementRef<HTMLInputElement>;
+  @ViewChild('chatArea') chatAreaEl?: ElementRef<HTMLDivElement>;
+
+  formatOptimizeMs(ms: number | undefined): string {
+    if (!ms) return '0ms';
+    if (ms < 1000) return ms + 'ms';
+    const secs = ms / 1000;
+    if (secs < 60) return secs.toFixed(1) + 's';
+    const mins = Math.floor(secs / 60);
+    const remSecs = Math.round(secs - mins * 60);
+    return mins + 'm ' + remSecs + 's';
+  }
+
+  optimizeSpeedup(item: BuildItem): number {
+    if (!item.optimizeBeforeMs || !item.optimizeAfterMs) return 1;
+    return item.optimizeBeforeMs / item.optimizeAfterMs;
+  }
+
+  private scrollChatToBottom(): void {
+    requestAnimationFrame(() => {
+      const el = this.chatAreaEl?.nativeElement;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }
 
   // Phase 2 — Selection (derived from datasets)
   categories: Array<{name: string, datasets: Dataset[]}> = [];
@@ -216,10 +251,14 @@ export class DiscoveryComponent {
     if (!this.chatInput.trim() || this.chatting || this.discovering) return;
     const userMsg = { role: 'user', content: this.chatInput.trim() };
     this.messages.push(userMsg);
+    this.scrollChatToBottom();
     this.discoveringQuery = this.chatInput.trim();
     this.chatInput = '';
     this.chatting = true;
     this.error = '';
+    // A new user message invalidates any prior discovery — re-show the
+    // Discover Datasets button so the user can re-run with the new context.
+    this.ready = false;
 
     this.activeSub = this.discoveryService.chat(this.messages).subscribe({
       next: (result) => {
@@ -229,6 +268,7 @@ export class DiscoveryComponent {
         }
         const reply = parsed?.reply || '';
         this.messages.push({ role: 'assistant', content: reply });
+        this.scrollChatToBottom();
         this.sourceIdentified = !!parsed?.sourceIdentified;
         this.chatting = false;
         requestAnimationFrame(() => this.chatInputEl?.nativeElement.focus());
@@ -309,6 +349,7 @@ export class DiscoveryComponent {
         const reply = parsed?.reply || '';
         if (reply) {
           this.messages.push({ role: 'assistant', content: reply });
+          this.scrollChatToBottom();
         }
         if (Array.isArray(parsed?.datasets) && parsed.datasets.length > 0) {
           this.datasets = parsed.datasets.map((d: any) => ({
@@ -897,8 +938,45 @@ export class DiscoveryComponent {
     }
   }
 
-  private trackSub(sub: Subscription): void {
+  /** Track a subscription on both the global list and the item, so the user
+   * can stop a single in-flight tap independently of the global Stop Build. */
+  private setItemSub(item: BuildItem, sub: Subscription): void {
+    (item as any)._activeSub = sub;
     this.activeSubs.push(sub);
+  }
+
+  private clearItemSub(item: BuildItem): void {
+    (item as any)._activeSub = undefined;
+  }
+
+  private static readonly ACTIVE_STATUSES: ReadonlySet<BuildStatus> = new Set<BuildStatus>([
+    'generating', 'testing', 'fixing', 'retesting', 'optimizing', 'retesting_optimized', 'saving'
+  ]);
+
+  canStopItem(item: BuildItem): boolean {
+    return DiscoveryComponent.ACTIVE_STATUSES.has(item.status);
+  }
+
+  stopItem(item: BuildItem): void {
+    const sub: Subscription | undefined = (item as any)._activeSub;
+    if (sub) sub.unsubscribe();
+    this.clearItemSub(item);
+    item.status = 'error';
+    item.statusLabel = 'Cancelled';
+    item.error = 'Cancelled by user';
+    this.workerDone();
+  }
+
+  requestAiFix(item: BuildItem): void {
+    if (!item.lastAiExplanation || this.canStopItem(item)) return;
+    item.fixAttempts = 0;
+    item.error = undefined;
+    // Re-enter the build state so the wizard's UI reflects active work even
+    // when all other items had already finished.
+    this.building = true;
+    this.buildComplete = false;
+    this.activeWorkers++;
+    this.fixTap(item, item.lastAiExplanation, item.lastTestLogs ?? '', item.lastTestError ?? '');
   }
 
   private readonly MAX_FIX_ATTEMPTS = 3;
@@ -935,7 +1013,7 @@ export class DiscoveryComponent {
         this.workerDone();
       }
     });
-    this.trackSub(sub);
+    this.setItemSub(item, sub);
   }
 
   private testTap(item: BuildItem): void {
@@ -954,28 +1032,162 @@ export class DiscoveryComponent {
         const recordCount = result.recordCount || 0;
         const testError = result.error || '';
         const aiExplanation = result.aiExplanation || '';
+        const logs = result.logs || '';
 
         if (recordCount > 0 && !testError) {
           item.recordCount = recordCount;
           item.testRecords = result.records || [];
           item.testColumns = result.columns || [];
           item.testDataType = result.dataType || 'json';
-          this.saveTap(item, result);
-        } else if (aiExplanation) {
-          this.fixTap(item, aiExplanation, result.logs || '', testError);
+          item.lastAiExplanation = undefined;
+          item.lastTestLogs = undefined;
+          item.lastTestError = undefined;
+          this.optimizeTap(item, result);
         } else {
-          this.setItemStatus(item, 'error');
-          item.error = testError || 'Test returned 0 records';
-          this.workerDone();
+          item.lastAiExplanation = aiExplanation || (testError ? 'Test failed: ' + testError : 'Test returned 0 records');
+          item.lastTestLogs = logs;
+          item.lastTestError = testError;
+          if (aiExplanation) {
+            this.fixTap(item, aiExplanation, logs, testError);
+          } else {
+            this.setItemStatus(item, 'error');
+            item.error = testError || 'Test returned 0 records';
+            this.workerDone();
+          }
         }
       },
       error: (err) => {
+        const msg = (typeof err.error === 'string' ? err.error : err.message || 'Unknown error').substring(0, 200);
+        item.lastAiExplanation = 'Network/transport error during test: ' + msg + '. Try simplifying or splitting the request.';
+        item.lastTestLogs = '';
+        item.lastTestError = msg;
         this.setItemStatus(item, 'error');
-        item.error = 'Test failed: ' + (typeof err.error === 'string' ? err.error : err.message).substring(0, 200);
+        item.error = 'Test failed: ' + msg;
         this.workerDone();
       }
     });
-    this.trackSub(sub);
+    this.setItemSub(item, sub);
+  }
+
+  /**
+   * After a successful test, ask the LLM to optimize the script for performance.
+   * One pass only. If the optimizer proposes no changes we skip straight to save.
+   * Otherwise we re-test the optimized script via retestOptimizedTap, which will
+   * auto-revert if the optimized run errors or regresses timing >=20%.
+   */
+  private optimizeTap(item: BuildItem, testResult: any): void {
+    this.setItemStatus(item, 'optimizing');
+
+    const script = (item as any)._script || '';
+    const scriptPath = (item as any)._scriptPath || '';
+    const packages = (item as any)._packages || [];
+    const durationMs = testResult.durationMs || 0;
+    const logs = testResult.logs || '';
+
+    // Stash the passing state so we can revert if the optimized run regresses.
+    (item as any)._preOptimizeScript = script;
+    (item as any)._preOptimizeScriptPath = scriptPath;
+    (item as any)._preOptimizePackages = packages;
+    (item as any)._preOptimizeDurationMs = durationMs;
+    (item as any)._preOptimizeTestResult = testResult;
+
+    const sub = this.tapService.optimizeScript(
+      item.tapName,
+      script,
+      item.recordCount || 0,
+      durationMs,
+      logs,
+      scriptPath
+    ).subscribe({
+      next: (result) => {
+        const changes: string[] = result.changes || [];
+        const newScript: string = result.script || script;
+        if (changes.length === 0 || newScript === script) {
+          // No useful optimization — keep the original, save as-is.
+          this.saveTap(item, testResult);
+          return;
+        }
+        (item as any)._script = newScript;
+        (item as any)._scriptPath = result.scriptPath || scriptPath;
+        (item as any)._packages = result.packages || packages;
+        item.optimizeChanges = changes;
+        item.optimizeBeforeMs = durationMs;
+        this.retestOptimizedTap(item);
+      },
+      error: () => {
+        // Optimize is best-effort. On failure, save the original working script.
+        this.saveTap(item, testResult);
+      }
+    });
+    this.setItemSub(item, sub);
+  }
+
+  private retestOptimizedTap(item: BuildItem): void {
+    this.setItemStatus(item, 'retesting_optimized');
+
+    const config = {
+      name: item.tapName,
+      description: item.instruction,
+      scriptPath: (item as any)._scriptPath,
+      packages: (item as any)._packages?.length > 0 ? (item as any)._packages : null,
+      secretName: this.secretName || null
+    };
+
+    const sub = this.tapService.testTap(config).subscribe({
+      next: (result) => {
+        const recordCount = result.recordCount || 0;
+        const testError = result.error || '';
+        const newDurationMs = result.durationMs || 0;
+        const preDurationMs = (item as any)._preOptimizeDurationMs || 0;
+
+        const regressed = preDurationMs > 0 && newDurationMs > preDurationMs * 1.2;
+        const failed = recordCount === 0 || !!testError;
+
+        if (failed || regressed) {
+          (item as any)._script = (item as any)._preOptimizeScript;
+          (item as any)._scriptPath = (item as any)._preOptimizeScriptPath;
+          (item as any)._packages = (item as any)._preOptimizePackages;
+          item.optimizeRegressionReverted = true;
+          item.optimizeAfterMs = newDurationMs;
+          item.optimizeChanges = [];
+          // Re-persist the original scriptPath so MongoDB doesn't still
+          // point at the optimized (regressing) version from /tap/optimize.
+          const origConfig: any = {
+            name: item.tapName,
+            description: item.instruction,
+            scriptPath: (item as any)._scriptPath,
+            packages: (item as any)._packages?.length > 0 ? (item as any)._packages : null,
+            secretName: this.secretName || null,
+            targetPipeline: null,
+            cronExpression: null,
+            enabled: false,
+            catalog: this.selectedCatalog || null
+          };
+          this.tapService.createOrUpdateTap(origConfig).subscribe({
+            next: () => this.saveTap(item, (item as any)._preOptimizeTestResult),
+            error: () => this.saveTap(item, (item as any)._preOptimizeTestResult)
+          });
+          return;
+        }
+
+        item.recordCount = recordCount;
+        item.testRecords = result.records || item.testRecords;
+        item.testColumns = result.columns || item.testColumns;
+        item.testDataType = result.dataType || item.testDataType;
+        item.optimizeAfterMs = newDurationMs;
+        this.saveTap(item, result);
+      },
+      error: () => {
+        // Retest failed — revert to the known-good original.
+        (item as any)._script = (item as any)._preOptimizeScript;
+        (item as any)._scriptPath = (item as any)._preOptimizeScriptPath;
+        (item as any)._packages = (item as any)._preOptimizePackages;
+        item.optimizeRegressionReverted = true;
+        item.optimizeChanges = [];
+        this.saveTap(item, (item as any)._preOptimizeTestResult);
+      }
+    });
+    this.setItemSub(item, sub);
   }
 
   private fixTap(item: BuildItem, diagnosis: string, logs: string, error: string): void {
@@ -1003,7 +1215,7 @@ export class DiscoveryComponent {
         this.workerDone();
       }
     });
-    this.trackSub(sub);
+    this.setItemSub(item, sub);
   }
 
   private retestTap(item: BuildItem): void {
@@ -1021,30 +1233,43 @@ export class DiscoveryComponent {
       next: (result) => {
         const recordCount = result.recordCount || 0;
         const testError = result.error || '';
+        const aiExplanation = result.aiExplanation || '';
+        const logs = result.logs || '';
 
         if (recordCount > 0 && !testError) {
           item.recordCount = recordCount;
           item.testRecords = result.records || [];
           item.testColumns = result.columns || [];
           item.testDataType = result.dataType || 'json';
+          item.lastAiExplanation = undefined;
+          item.lastTestLogs = undefined;
+          item.lastTestError = undefined;
           this.saveTap(item, result);
-        } else if ((item.fixAttempts || 0) < this.MAX_FIX_ATTEMPTS && (testError || result.aiExplanation)) {
-          // Try fixing again
-          const aiExplanation = result.aiExplanation || testError;
-          this.fixTap(item, aiExplanation, result.logs || '', testError);
         } else {
-          this.setItemStatus(item, 'error');
-          item.error = testError || 'Test returned 0 records after ' + (item.fixAttempts || 0) + ' fix attempts';
-          this.workerDone();
+          item.lastAiExplanation = aiExplanation || (testError ? 'Test failed: ' + testError : 'Test returned 0 records');
+          item.lastTestLogs = logs;
+          item.lastTestError = testError;
+          if ((item.fixAttempts || 0) < this.MAX_FIX_ATTEMPTS && (testError || aiExplanation)) {
+            const diagnosis = aiExplanation || testError;
+            this.fixTap(item, diagnosis, logs, testError);
+          } else {
+            this.setItemStatus(item, 'error');
+            item.error = testError || 'Test returned 0 records after ' + (item.fixAttempts || 0) + ' fix attempts';
+            this.workerDone();
+          }
         }
       },
       error: (err) => {
+        const msg = (typeof err.error === 'string' ? err.error : err.message || 'Unknown error').substring(0, 200);
+        item.lastAiExplanation = 'Network/transport error during re-test: ' + msg + '. Try simplifying or splitting the request.';
+        item.lastTestLogs = '';
+        item.lastTestError = msg;
         this.setItemStatus(item, 'error');
-        item.error = 'Re-test failed: ' + (typeof err.error === 'string' ? err.error : err.message).substring(0, 200);
+        item.error = 'Re-test failed: ' + msg;
         this.workerDone();
       }
     });
-    this.trackSub(sub);
+    this.setItemSub(item, sub);
   }
 
   private saveTap(item: BuildItem, testResult: any): void {
@@ -1084,7 +1309,7 @@ export class DiscoveryComponent {
         this.workerDone();
       }
     });
-    this.trackSub(sub);
+    this.setItemSub(item, sub);
   }
 
   // Pipeline creation is now handled in runTap (Step 5)
@@ -1393,7 +1618,7 @@ export class DiscoveryComponent {
         this.pipelineWorkerDone();
       }
     });
-    this.trackSub(sub);
+    this.setItemSub(item, sub);
   }
 
   // ---------- Phase 4: Edit Config Modal ----------
@@ -1643,7 +1868,7 @@ export class DiscoveryComponent {
         this.runWorkerDone();
       }
     });
-    this.trackSub(sub);
+    this.setItemSub(item, sub);
   }
 
   runSuccessCount(): number {

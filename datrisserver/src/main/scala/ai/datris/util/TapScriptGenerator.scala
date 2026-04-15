@@ -41,6 +41,11 @@ object TapScriptGenerator {
           |- Always set a `User-Agent` header on HTTP requests. Many sites (Wikipedia, GitHub raw, etc.) return 403 Forbidden to default Python `requests` user-agents. Use something like `headers={'User-Agent': 'Mozilla/5.0 (compatible; datris-tap/1.0)'}`.
           |- Always check `resp.status_code` or call `resp.raise_for_status()` before parsing the body.
           |
+          |Performance hygiene (low-risk only — do NOT restructure for speed at generation time):
+          |- If the script will make more than one HTTP call to the same host, create a single `session = requests.Session()` at the top of `fetch()` and use `session.get(...)` / `session.post(...)` for every call. Apply default headers via `session.headers.update({...})`. Connection reuse avoids a TCP/TLS handshake per call.
+          |- Do NOT insert defensive `time.sleep(...)` between requests. Only add a sleep when the API's documentation specifies a rate limit AND the script could plausibly hit it. If the script reads an API key from `os.environ.get(...)` (an authenticated/paid-tier call), do NOT add a precautionary sleep — assume normal quotas. If the API returns HTTP 429, honor `Retry-After` instead of pre-throttling.
+          |- Do NOT introduce `concurrent.futures.ThreadPoolExecutor`, `asyncio`, or any other concurrency at generation time. Keep `fetch()` simple and serial. A separate optimization pass runs after a successful test with measured timing data and decides where parallelism is actually warranted.
+          |
           |Pandas — IMPORTANT (modern API):
           |- The platform runs pandas 2.x. When parsing HTML you have already fetched (e.g. from `requests.get(...).text`), you MUST wrap the string in `io.StringIO`: `pd.read_html(io.StringIO(resp.text), ...)`. Passing the raw string directly was deprecated in pandas 2.1 and now raises a parser error because lxml treats it as a file path. Add `import io` at the top of the script when you do this.
           |- The same rule applies to `pd.read_csv` and `pd.read_json` when given a string of content rather than a path or URL — wrap in `io.StringIO`.

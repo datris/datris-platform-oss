@@ -149,8 +149,11 @@ class DiscoveryAPIController {
                   |4. The "parameters" array defines what the user needs to fill in:
                   |   - "string": free text input (use "placeholder" for example values)
                   |   - "select": dropdown with fixed "options" list (include "default" value)
-                  |   - "multiple": true if the API accepts multiple values (e.g., a list of tickers, multiple country codes),
-                  |     false if the API accepts only a single value. This applies to ANY parameter type.
+                  |   - "multiple": true if the parameter represents one of a collection of entities the user
+                  |     typically queries in bulk (identifiers, codes, names, references) — regardless of whether
+                  |     the underlying API accepts one value or many. The generated script will iterate over the list.
+                  |     Set false only for genuinely single-value inputs (a year, a frequency selector, a region toggle).
+                  |     The tapInstruction must describe the iteration pattern: "For each item in {{param_name}}, call ...".
                   |   - Use CONSISTENT parameter names across all datasets from the same source for the same concept.
                   |     If 3 datasets all need the same type of input, use the same "name" for all 3 — do NOT vary it.
                   |   - Use DIFFERENT parameter names for different types of values, even if they seem similar.
@@ -309,12 +312,30 @@ class DiscoveryAPIController {
                     val genResult = TapScriptGenerator.generate(tapInstruction, tapName, null, secretName)
 
                     // Extract packages list
-                    val packages: java.util.List[String] = Option(ds.get("packages")) match {
+                    var packages: java.util.List[String] = Option(ds.get("packages")) match {
                         case Some(list: java.util.List[_]) =>
                             val stringList = new java.util.ArrayList[String]()
                             list.asScala.foreach(p => stringList.add(p.toString))
                             stringList
                         case _ => genResult.packages
+                    }
+
+                    // AI auto-optimize: test the generated script, and if it runs clean,
+                    // hand it back to the LLM for a perf rewrite. Re-test; if the
+                    // rewrite regresses timing by >=20%, keep the original. Mirrors
+                    // the Create Tap wizard's auto-optimize behavior.
+                    var finalScript = genResult.script
+                    var finalScriptPath = genResult.scriptPath
+                    val optimizeOutcome = runAutoOptimize(tapName, tapInstruction, genResult.scriptPath,
+                        genResult.script, packages, secretName)
+                    optimizeOutcome.foreach { oo =>
+                        finalScript = oo.script
+                        finalScriptPath = oo.scriptPath
+                        packages = oo.packages
+                        result.put("optimizeChanges", oo.changes)
+                        result.put("optimizeBeforeMs", java.lang.Long.valueOf(oo.beforeMs))
+                        result.put("optimizeAfterMs", java.lang.Long.valueOf(oo.afterMs))
+                        result.put("optimizeRegressionReverted", java.lang.Boolean.valueOf(oo.regressionReverted))
                     }
 
                     // Create the tap config
@@ -325,7 +346,7 @@ class DiscoveryAPIController {
                     val tapConfig = TapConfig(
                         name = tapName,
                         description = tapInstruction,
-                        scriptPath = genResult.scriptPath,
+                        scriptPath = finalScriptPath,
                         targetPipeline = if (createPipeline) tapName else "",
                         packages = packages,
                         secretName = Option(secretName).getOrElse(""),
@@ -380,7 +401,7 @@ class DiscoveryAPIController {
                     }
 
                     result.put("status", "success")
-                    result.put("script", genResult.script)
+                    result.put("script", finalScript)
                 } catch {
                     case e: Exception =>
                         logger.error("Failed to build tap " + tapName + ": " + Throwables.getStackTraceAsString(e))
@@ -401,6 +422,103 @@ class DiscoveryAPIController {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    private case class AutoOptimizeOutcome(script: String,
+                                           scriptPath: String,
+                                           packages: java.util.List[String],
+                                           changes: java.util.List[String],
+                                           beforeMs: Long,
+                                           afterMs: Long,
+                                           regressionReverted: Boolean)
+
+    /**
+     * Run the generated script, and if it produces records, hand it back to the
+     * LLM for a perf rewrite. Re-test the rewrite; auto-revert if it regresses
+     * timing by >=20%. Returns None when the initial test fails or yields 0
+     * records (caller keeps the original script).
+     *
+     * Mirrors the Create Tap wizard's auto-optimize flow so users who onboard
+     * through Discovery get the same perf benefit as users who build taps one
+     * at a time.
+     */
+    private def runAutoOptimize(tapName: String,
+                                tapInstruction: String,
+                                originalScriptPath: String,
+                                originalScript: String,
+                                packages: java.util.List[String],
+                                secretName: String): Option[AutoOptimizeOutcome] = {
+        val DISCOVERY_TEST_LIMIT = 20
+        val REGRESSION_THRESHOLD = 1.2
+
+        try {
+            val probeConfig = TapConfig(
+                name = tapName,
+                description = tapInstruction,
+                scriptPath = originalScriptPath,
+                targetPipeline = "",
+                packages = packages,
+                secretName = Option(secretName).getOrElse(""),
+                cronExpression = "",
+                enabled = false,
+                lastRunStatus = "",
+                lastRunTime = "",
+                lastRunRecordCount = 0,
+                lastRunError = "",
+                lastRunDataType = "",
+                lastRunColumns = new java.util.ArrayList[String](),
+                lastTestRunStatus = "",
+                lastTestRunTime = "",
+                lastTestRunRecordCount = 0,
+                lastTestRunError = "",
+                lastTestRunDataType = "",
+                lastTestRunColumns = new java.util.ArrayList[String](),
+                createdAt = "",
+                updatedAt = ""
+            )
+
+            val startMs = System.currentTimeMillis()
+            val firstResult = TapRunner.run(probeConfig, pushToPipeline = false, testLimit = DISCOVERY_TEST_LIMIT)
+            val firstDurationMs = System.currentTimeMillis() - startMs
+
+            if (firstResult.error != null || firstResult.recordCount == 0) {
+                logger.info(s"Discovery auto-optimize: initial test failed for $tapName (${Option(firstResult.error).getOrElse("0 records")}), keeping original script")
+                return None
+            }
+
+            val opt = TapScriptOptimizer.optimize(tapName, originalScript, firstResult.recordCount,
+                firstDurationMs, Option(firstResult.logs).getOrElse(""), originalScriptPath)
+
+            if (opt.changes.isEmpty || opt.script == originalScript) {
+                logger.info(s"Discovery auto-optimize: no changes proposed for $tapName")
+                return None
+            }
+
+            val optimizedConfig = probeConfig.copy(scriptPath = opt.scriptPath, packages = opt.packages)
+            val retestStart = System.currentTimeMillis()
+            val retestResult = TapRunner.run(optimizedConfig, pushToPipeline = false, testLimit = DISCOVERY_TEST_LIMIT)
+            val retestDurationMs = System.currentTimeMillis() - retestStart
+
+            if (retestResult.error != null || retestResult.recordCount == 0) {
+                logger.info(s"Discovery auto-optimize: optimized script failed for $tapName, reverting")
+                return Some(AutoOptimizeOutcome(originalScript, originalScriptPath, packages,
+                    new java.util.ArrayList[String](), firstDurationMs, retestDurationMs, regressionReverted = true))
+            }
+
+            if (retestDurationMs > firstDurationMs * REGRESSION_THRESHOLD) {
+                logger.info(s"Discovery auto-optimize: regression for $tapName ($firstDurationMs ms -> $retestDurationMs ms), reverting")
+                return Some(AutoOptimizeOutcome(originalScript, originalScriptPath, packages,
+                    new java.util.ArrayList[String](), firstDurationMs, retestDurationMs, regressionReverted = true))
+            }
+
+            logger.info(s"Discovery auto-optimize: $tapName $firstDurationMs ms -> $retestDurationMs ms")
+            Some(AutoOptimizeOutcome(opt.script, opt.scriptPath, opt.packages, opt.changes,
+                firstDurationMs, retestDurationMs, regressionReverted = false))
+        } catch {
+            case e: Exception =>
+                logger.warn(s"Discovery auto-optimize failed for $tapName: " + e.getMessage)
+                None
         }
     }
 }

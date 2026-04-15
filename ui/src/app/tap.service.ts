@@ -55,6 +55,10 @@ export class TapService {
     return this.http.post<any>('/api/v1/tap/fix', { tapName, script, diagnosis, logs, error, oldScriptPath: oldScriptPath || null });
   }
 
+  optimizeScript(tapName: string, script: string, recordCount: number, durationMs: number, logs: string, oldScriptPath?: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/optimize', { tapName, script, recordCount, durationMs, logs, oldScriptPath: oldScriptPath || null });
+  }
+
   getTapLogs(name: string): Observable<any[]> {
     return this.http.get<any[]>('/api/v1/tap/logs?name=' + encodeURIComponent(name));
   }
