@@ -340,3 +340,127 @@
   text-align: right;
   min-width: 80px;
 }
+
+.moving-indicator {
+  min-width: auto;
+  color: var(--accent-cyan);
+  font-style: italic;
+}
+
+.move-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  color: #f87171;
+  font-size: 13px;
+}
+
+.move-error-banner .material-icons {
+  font-size: 18px;
+}
+
+.move-error-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  opacity: 0.7;
+}
+
+.move-error-close:hover {
+  opacity: 1;
+}
+
+.move-error-close .material-icons {
+  font-size: 16px;
+}
+
+.item-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.menu-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.menu-btn:hover {
+  opacity: 1;
+}
+
+.menu-btn .material-icons {
+  font-size: 18px;
+}
+
+.item-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  background: var(--bg-card, #0f172a);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  min-width: 180px;
+  padding: 4px 0;
+  z-index: 20;
+}
+
+.item-submenu {
+  border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  margin-top: 4px;
+  padding-top: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  position: relative;
+}
+
+.menu-item:hover:not(:disabled):not(.empty) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.menu-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.menu-item.empty {
+  color: var(--text-muted);
+  font-style: italic;
+  cursor: default;
+}
+
+.menu-item .material-icons {
+  font-size: 16px;
+  color: var(--text-muted);
+}
+
+.menu-item-chevron {
+  margin-left: auto;
+}

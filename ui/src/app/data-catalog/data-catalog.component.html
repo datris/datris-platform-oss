@@ -17,6 +17,14 @@
     You can also assign individual taps and pipelines to a catalog when creating them.
   </p>
 
+  <div class="move-error-banner" *ngIf="moveError">
+    <span class="material-icons">error</span>
+    <span>{{ moveError }}</span>
+    <button class="move-error-close" (click)="moveError = ''" title="Dismiss">
+      <span class="material-icons">close</span>
+    </button>
+  </div>
+
   <div class="empty-state" *ngIf="!loading && catalogs.length === 0">
     <span class="material-icons empty-icon">folder_open</span>
     <p>No data catalogs yet. Create one through the Discovery tab or when creating a tap or pipeline.</p>
@@ -69,6 +77,31 @@
                 <span class="material-icons">close</span>
               </button>
             </div>
+            <div class="item-menu-wrap" *ngIf="cat.name === 'Uncataloged' && deleteItemTarget !== 'tap:' + tap.name">
+              <button class="menu-btn" (click)="toggleMenu('tap:' + tap.name, $event)" title="More actions">
+                <span class="material-icons">more_vert</span>
+              </button>
+              <div class="item-menu" *ngIf="menuOpenKey === 'tap:' + tap.name" (click)="$event.stopPropagation()">
+                <button class="menu-item" (click)="editTap(tap.name, $event)">
+                  <span class="material-icons">edit</span> Edit
+                </button>
+                <button class="menu-item" (click)="deleteTapFromMenu(tap.name, $event)">
+                  <span class="material-icons">delete</span> Delete
+                </button>
+                <button class="menu-item" (click)="openMoveSubmenu('tap:' + tap.name, $event)" [disabled]="moveTargets().length === 0">
+                  <span class="material-icons">drive_file_move</span>
+                  Move to catalog
+                  <span class="material-icons menu-item-chevron">chevron_right</span>
+                </button>
+                <div class="item-submenu" *ngIf="moveMenuOpenKey === 'tap:' + tap.name">
+                  <button class="menu-item" *ngFor="let target of moveTargets()" (click)="moveTapToCatalog(tap, target, $event)">
+                    <span class="material-icons">folder</span> {{ target }}
+                  </button>
+                  <div class="menu-item empty" *ngIf="moveTargets().length === 0">No other catalogs</div>
+                </div>
+              </div>
+            </div>
+            <span class="item-meta moving-indicator" *ngIf="movingItem === 'tap:' + tap.name">Moving...</span>
           </div>
         </div>
         <div class="catalog-section" *ngIf="cat.pipelines.length > 0">
@@ -88,6 +121,31 @@
                 <span class="material-icons">close</span>
               </button>
             </div>
+            <div class="item-menu-wrap" *ngIf="cat.name === 'Uncataloged' && deleteItemTarget !== 'pipeline:' + pipeline.name">
+              <button class="menu-btn" (click)="toggleMenu('pipeline:' + pipeline.name, $event)" title="More actions">
+                <span class="material-icons">more_vert</span>
+              </button>
+              <div class="item-menu" *ngIf="menuOpenKey === 'pipeline:' + pipeline.name" (click)="$event.stopPropagation()">
+                <button class="menu-item" (click)="editPipeline(pipeline.name, $event)">
+                  <span class="material-icons">edit</span> Edit
+                </button>
+                <button class="menu-item" (click)="deletePipelineFromMenu(pipeline.name, $event)">
+                  <span class="material-icons">delete</span> Delete
+                </button>
+                <button class="menu-item" (click)="openMoveSubmenu('pipeline:' + pipeline.name, $event)" [disabled]="moveTargets().length === 0">
+                  <span class="material-icons">drive_file_move</span>
+                  Move to catalog
+                  <span class="material-icons menu-item-chevron">chevron_right</span>
+                </button>
+                <div class="item-submenu" *ngIf="moveMenuOpenKey === 'pipeline:' + pipeline.name">
+                  <button class="menu-item" *ngFor="let target of moveTargets()" (click)="movePipelineToCatalog(pipeline, target, $event)">
+                    <span class="material-icons">folder</span> {{ target }}
+                  </button>
+                  <div class="menu-item empty" *ngIf="moveTargets().length === 0">No other catalogs</div>
+                </div>
+              </div>
+            </div>
+            <span class="item-meta moving-indicator" *ngIf="movingItem === 'pipeline:' + pipeline.name">Moving...</span>
           </div>
         </div>
       </div>

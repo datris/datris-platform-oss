@@ -1,4 +1,5 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, HostListener } from '@angular/core';
+import { Router } from '@angular/router';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { sanitizeLabel } from '../shared/sanitize';
@@ -27,9 +28,15 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   // Per-item delete confirm. Key format: "tap:<name>" or "pipeline:<name>".
   deleteItemTarget = '';
   deletingItem = '';
+  // Kebab menu state. Key format: "tap:<name>" or "pipeline:<name>".
+  menuOpenKey = '';
+  moveMenuOpenKey = '';
+  movingItem = '';
+  moveError = '';
+  private moveErrorTimeout: any;
   private refreshInterval: any;
 
-  constructor(private tapService: TapService, private pipelineService: PipelineService) {}
+  constructor(private tapService: TapService, private pipelineService: PipelineService, private router: Router) {}
 
   ngOnInit(): void {
     this.loadCatalogs();
@@ -186,6 +193,120 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.tapService.deleteTap(name).subscribe({
       next: () => { this.deletingItem = ''; this.loadCatalogs(); },
       error: () => { this.deletingItem = ''; this.loadCatalogs(); }
+    });
+  }
+
+  toggleMenu(key: string, event: MouseEvent): void {
+    event.stopPropagation();
+    if (this.menuOpenKey === key) {
+      this.menuOpenKey = '';
+      this.moveMenuOpenKey = '';
+    } else {
+      this.menuOpenKey = key;
+      this.moveMenuOpenKey = '';
+    }
+  }
+
+  openMoveSubmenu(key: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.moveMenuOpenKey = this.moveMenuOpenKey === key ? '' : key;
+  }
+
+  @HostListener('document:click')
+  closeMenus(): void {
+    this.menuOpenKey = '';
+    this.moveMenuOpenKey = '';
+  }
+
+  /** Catalog names that an uncataloged item can be moved into. Excludes 'Uncataloged'. */
+  moveTargets(): string[] {
+    return this.catalogs.filter(c => c.name !== 'Uncataloged').map(c => c.name);
+  }
+
+  editTap(name: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.menuOpenKey = '';
+    this.router.navigate(['/taps', name, 'edit']);
+  }
+
+  editPipeline(name: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.menuOpenKey = '';
+    this.router.navigate(['/pipelines', name, 'edit']);
+  }
+
+  deleteTapFromMenu(name: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.menuOpenKey = '';
+    this.deleteItemTarget = 'tap:' + name;
+  }
+
+  deletePipelineFromMenu(name: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.menuOpenKey = '';
+    this.deleteItemTarget = 'pipeline:' + name;
+  }
+
+  /**
+   * Check whether the target catalog already contains an item (tap or pipeline)
+   * with the given name. Returns a human-readable clash description, or null if
+   * no clash. The UI should block the move on any non-null return.
+   *
+   * Rationale: moving is purely a metadata relabel, so it will never fail at the
+   * database layer — tap names and pipeline names are each globally unique.
+   * But a catalog is a curated grouping the user browses, and having two items
+   * with the same name (whether same type or cross-type) in the same catalog is
+   * confusing. Block the move and force the user to rename first.
+   */
+  private findMoveClash(targetCatalog: string, itemName: string): string | null {
+    const cat = this.catalogs.find(c => c.name === targetCatalog);
+    if (!cat) return null;
+    const tapClash = cat.taps.find(t => t.name === itemName && !(t.name || '').startsWith('__catalog__'));
+    if (tapClash) return 'A tap named "' + itemName + '" already exists in catalog "' + targetCatalog + '".';
+    const pipelineClash = cat.pipelines.find(p => p.name === itemName);
+    if (pipelineClash) return 'A pipeline named "' + itemName + '" already exists in catalog "' + targetCatalog + '".';
+    return null;
+  }
+
+  private showMoveError(msg: string): void {
+    this.moveError = msg;
+    if (this.moveErrorTimeout) clearTimeout(this.moveErrorTimeout);
+    this.moveErrorTimeout = setTimeout(() => { this.moveError = ''; }, 6000);
+  }
+
+  moveTapToCatalog(tap: any, targetCatalog: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.menuOpenKey = '';
+    this.moveMenuOpenKey = '';
+    const clash = this.findMoveClash(targetCatalog, tap.name);
+    if (clash) {
+      this.showMoveError(clash + ' Rename one of them first.');
+      return;
+    }
+    const key = 'tap:' + tap.name;
+    this.movingItem = key;
+    const updated = { ...tap, catalog: targetCatalog };
+    this.tapService.createOrUpdateTap(updated).subscribe({
+      next: () => { this.movingItem = ''; this.loadCatalogs(); },
+      error: () => { this.movingItem = ''; this.loadCatalogs(); }
+    });
+  }
+
+  movePipelineToCatalog(pipeline: any, targetCatalog: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.menuOpenKey = '';
+    this.moveMenuOpenKey = '';
+    const clash = this.findMoveClash(targetCatalog, pipeline.name);
+    if (clash) {
+      this.showMoveError(clash + ' Rename one of them first.');
+      return;
+    }
+    const key = 'pipeline:' + pipeline.name;
+    this.movingItem = key;
+    const updated = { ...pipeline, catalog: targetCatalog };
+    this.pipelineService.createPipeline(updated).subscribe({
+      next: () => { this.movingItem = ''; this.loadCatalogs(); },
+      error: () => { this.movingItem = ''; this.loadCatalogs(); }
     });
   }
 
