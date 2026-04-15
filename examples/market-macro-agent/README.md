@@ -8,32 +8,34 @@ discovers available tools and resources, fetches live market data from public AP
 creates pipelines, ingests data, and answers market questions grounded in actual
 numbers — all visible live in the browser.
 
-GitHub: [datris/datris-agent](https://github.com/datris/datris-agent)
+This example lives in the [datris-platform-oss](https://github.com/datris/datris-platform-oss) repo under `examples/market-macro-agent`.
 
 ## Quick start
 
 ```bash
-# 1. Clone
-git clone https://github.com/datris/datris-agent.git
-cd datris-agent
+# 1. Clone the platform repo (includes this example)
+git clone https://github.com/datris/datris-platform-oss.git
+cd datris-platform-oss
 
-# 2. Create and activate a virtual environment
+# 2. Start the Datris platform
+docker compose up -d
+
+# 3. Switch to the example directory
+cd examples/market-macro-agent
+
+# 4. Create and activate a virtual environment
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 
-# 3. Install dependencies
+# 5. Install dependencies
 pip install -r requirements.txt
 
-# 4. Set your API keys
+# 6. Set your API keys
 cp .env.example .env
 #    → edit .env and paste your ANTHROPIC_API_KEY
 #    → optionally add FRED_API_KEY for macro data
 
-# 5. Start Datris platform (in the datris-platform-oss repo)
-cd ../datris-platform-oss && docker compose up -d
-
-# 6. Run the agent
-cd ../datris-agent
+# 7. Run the agent
 uvicorn main:app --reload --port 8001
 ```
 
@@ -42,7 +44,7 @@ Open **http://localhost:8001** — no build step, no npm.
 ## Project structure
 
 ```
-datris-agent/
+examples/market-macro-agent/
 ├── main.py                  # FastAPI app + browser UI (served as HTML)
 ├── requirements.txt
 ├── .env.example

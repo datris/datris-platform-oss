@@ -23,7 +23,7 @@ object TapRunner {
      * @param pushToPipeline if true, push records to pipeline and update status in DB; if false, just execute and return (test mode)
      * @return TapScriptResult with fetched records
      */
-    def run(tapConfig: TapConfig, pushToPipeline: Boolean = true): TapScriptResult = {
+    def run(tapConfig: TapConfig, pushToPipeline: Boolean = true, testLimit: Int = 0): TapScriptResult = {
         val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
         sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
         val now = sdf.format(new Date())
@@ -36,7 +36,7 @@ object TapRunner {
         }
 
         try {
-            val result = TapScriptRunner.run(tapConfig)
+            val result = TapScriptRunner.run(tapConfig, testLimit)
             val durationMs = System.currentTimeMillis() - startMs
 
             if (result.error != null || result.recordCount == 0) {

@@ -26,7 +26,19 @@ class VersionAPIController {
         try {
             logger.info("API endpoint GET /api/v1/version called")
             APIKeyValidator.validate(apiKey)
-            val map = Map("version" -> BuildInfo.version, "environment" -> DatrisEnvironment.current.environment, "multiTenant" -> DatrisEnvironment.current.multiTenant.toString, "hosted" -> DatrisEnvironment.current.hosted.toString).asJava
+            // postgresDatabase and mongodbDatabase are the canonical, server-configured database names.
+            // UI must treat these as authoritative and not allow users to edit them.
+            val mongodbDatabase =
+                if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
+                else DatrisEnvironment.current.mongoDbConfig.database
+            val map = Map(
+                "version" -> BuildInfo.version,
+                "environment" -> DatrisEnvironment.current.environment,
+                "multiTenant" -> DatrisEnvironment.current.multiTenant.toString,
+                "hosted" -> DatrisEnvironment.current.hosted.toString,
+                "postgresDatabase" -> DatrisEnvironment.current.postgresDatabase,
+                "mongodbDatabase" -> mongodbDatabase
+            ).asJava
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(map), HttpStatus.OK)
         }

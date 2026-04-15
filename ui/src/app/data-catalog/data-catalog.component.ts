@@ -24,6 +24,9 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   showCreateModal = false;
   newCatalogName = '';
   deleteTarget = '';
+  // Per-item delete confirm. Key format: "tap:<name>" or "pipeline:<name>".
+  deleteItemTarget = '';
+  deletingItem = '';
   private refreshInterval: any;
 
   constructor(private tapService: TapService, private pipelineService: PipelineService) {}
@@ -145,9 +148,15 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     catalog.deleting = true;
     this.deleteTarget = '';
 
-    // Always delete the placeholder tap too
-    const placeholderName = '__catalog__' + catalog.name;
-    let remaining = catalog.taps.length + catalog.pipelines.length + 1; // +1 for placeholder
+    // Uncataloged is a pseudo-catalog; it has no placeholder tap to clean up.
+    const hasPlaceholder = catalog.name !== 'Uncataloged';
+    let remaining = catalog.taps.length + catalog.pipelines.length + (hasPlaceholder ? 1 : 0);
+
+    if (remaining === 0) {
+      catalog.deleting = false;
+      this.loadCatalogs();
+      return;
+    }
 
     const done = () => {
       remaining--;
@@ -157,8 +166,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       }
     };
 
-    // Delete placeholder tap
-    this.tapService.deleteTap(placeholderName).subscribe({ next: done, error: done });
+    if (hasPlaceholder) {
+      const placeholderName = '__catalog__' + catalog.name;
+      this.tapService.deleteTap(placeholderName).subscribe({ next: done, error: done });
+    }
 
     for (const tap of catalog.taps) {
       this.tapService.deleteTap(tap.name).subscribe({ next: done, error: done });
@@ -166,5 +177,25 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     for (const pipeline of catalog.pipelines) {
       this.pipelineService.deletePipeline(pipeline.name).subscribe({ next: done, error: done });
     }
+  }
+
+  deleteTap(name: string): void {
+    const key = 'tap:' + name;
+    this.deletingItem = key;
+    this.deleteItemTarget = '';
+    this.tapService.deleteTap(name).subscribe({
+      next: () => { this.deletingItem = ''; this.loadCatalogs(); },
+      error: () => { this.deletingItem = ''; this.loadCatalogs(); }
+    });
+  }
+
+  deletePipelineItem(name: string): void {
+    const key = 'pipeline:' + name;
+    this.deletingItem = key;
+    this.deleteItemTarget = '';
+    this.pipelineService.deletePipeline(name).subscribe({
+      next: () => { this.deletingItem = ''; this.loadCatalogs(); },
+      error: () => { this.deletingItem = ''; this.loadCatalogs(); }
+    });
   }
 }

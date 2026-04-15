@@ -118,10 +118,8 @@ export class PipelineCreateComponent implements OnInit {
   configJson = '';
 
   // Metadata for dropdowns
-  pgDatabases: string[] = [];
   pgSchemas: string[] = [];
   pgTables: string[] = [];
-  mongoDatabases: string[] = [];
   mongoCollections: string[] = [];
 
   fieldTypes = ['string', 'int', 'bigint', 'float', 'double', 'boolean', 'date', 'timestamp'];
@@ -134,9 +132,10 @@ export class PipelineCreateComponent implements OnInit {
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
         this.isTrial = data.multiTenant === 'true';
+        // Canonical db names are server-chosen; UI displays, never edits.
+        this.pgDbName = data.postgresDatabase || 'datris';
+        this.mongoDbName = data.mongodbDatabase || 'datris';
         if (this.isTrial) {
-          this.pgDbName = data.environment || 'datris';
-          this.mongoDbName = data.environment || 'datris';
           this.schemaDbName = data.environment || 'datris';
         }
       }
@@ -309,43 +308,6 @@ export class PipelineCreateComponent implements OnInit {
     this.chunkStrategy = chunking.strategy || 'recursive';
     this.chunkSize = chunking.chunkSize || 500;
     this.chunkOverlap = chunking.chunkOverlap || 50;
-  }
-
-  loadPgDatabases(): void {
-    this.searchService.getPostgresDatabases().subscribe({
-      next: (databases) => {
-        this.pgDatabases = databases;
-        if (databases.length > 0 && !databases.includes(this.pgDbName)) {
-          this.pgDbName = databases[0];
-        }
-        this.loadPgSchemas();
-      },
-      error: () => { this.pgDatabases = []; }
-    });
-  }
-
-  onPgDbChange(): void {
-    this.pgSchema = '';
-    this.pgTable = '';
-    this.loadPgSchemas();
-  }
-
-  loadMongoDatabases(): void {
-    this.searchService.getMongoDatabases().subscribe({
-      next: (databases) => {
-        this.mongoDatabases = databases;
-        if (databases.length > 0 && !databases.includes(this.mongoDbName)) {
-          this.mongoDbName = databases[0];
-        }
-        this.loadMongoCollections();
-      },
-      error: () => { this.mongoDatabases = []; }
-    });
-  }
-
-  onMongoDbChange(): void {
-    this.mongoTable = '';
-    this.loadMongoCollections();
   }
 
   loadPgSchemas(): void {
@@ -819,10 +781,11 @@ export class PipelineCreateComponent implements OnInit {
       this.step = 8;
     }
 
-    // Load metadata when entering destination step (8)
+    // Load metadata when entering destination step (8).
+    // Db name is server-chosen (see /api/v1/version); only schemas/tables need lookup.
     if (this.step === 8) {
-      this.loadPgDatabases();
-      this.loadMongoDatabases();
+      this.loadPgSchemas();
+      this.loadMongoCollections();
     }
 
     // Generate config JSON when entering review step (9)

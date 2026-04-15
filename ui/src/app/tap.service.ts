@@ -41,7 +41,10 @@ export class TapService {
   }
 
   testTap(config: any): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/test', config);
+    const url = config.testLimit
+      ? '/api/v1/tap/test?testLimit=' + encodeURIComponent(config.testLimit)
+      : '/api/v1/tap/test';
+    return this.http.post<any>(url, config);
   }
 
   runTap(name: string, pushToPipeline: boolean = false): Observable<any> {

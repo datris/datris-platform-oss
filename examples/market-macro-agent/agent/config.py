@@ -33,13 +33,6 @@ Rules:
 - Respond conversationally but with Bloomberg-terminal precision
 - When the caller is another agent/system, respond in structured JSON"""
 
-AUTO_MODE_ADDENDUM = """
-
-AUTONOMOUS MODE — You are running in hands-free demo mode.
-Do NOT ask the user for confirmation before fetching data or creating pipelines.
-Immediately proceed with the full workflow: ingest → create → upload → query → answer.
-Never ask "should I...?" or "would you like me to...?" — just do it."""
-
 # Local tool that the agent adds alongside MCP tools
 INGEST_TOOL_DEF = {
     "name": "ingest_data",

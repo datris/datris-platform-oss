@@ -60,23 +60,45 @@ object TapScriptGenerator {
           |- DO NOT provide fallback defaults for DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, or DATRIS_MONGODB_DATABASE — the platform always injects them. Use os.environ['NAME'] or os.environ.get('NAME') with NO second argument.
           |- Base URL: http://{host}:{port}/api/v1
           |
-          |Metadata discovery (GET requests, all return JSON arrays):
-          |- GET /api/v1/metadata/postgres/databases → list of database names
-          |- GET /api/v1/metadata/postgres/schemas?database={pg_db} → list of schema names
-          |- GET /api/v1/metadata/postgres/tables?database={pg_db}&schema=public → list of table names
-          |- GET /api/v1/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE → list of {name, type}
-          |- GET /api/v1/metadata/mongodb/databases → list of database names
-          |- GET /api/v1/metadata/mongodb/collections?database={mongo_db} → list of collection names
+          |Metadata discovery (GET requests). Response shapes are EXACT and STABLE — trust them, do not probe alternate shapes or keys:
+          |- GET /api/v1/metadata/postgres/databases → JSON array of strings (database names)
+          |- GET /api/v1/metadata/postgres/schemas?database={pg_db} → JSON array of strings (schema names)
+          |- GET /api/v1/metadata/postgres/tables?database={pg_db}&schema=public → JSON array of strings (table names)
+          |- GET /api/v1/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE → JSON array of {name, type} objects
+          |- GET /api/v1/metadata/mongodb/databases → JSON array of strings (database names)
+          |- GET /api/v1/metadata/mongodb/collections?database={mongo_db} → JSON array of strings (collection names)
           |
-          |Query endpoints (POST requests):
+          |Query endpoints (POST requests). Response shapes are EXACT:
           |- PostgreSQL: POST /api/v1/query/postgres
-          |  Body: {"sql": "SELECT * FROM public.table_name", "database": "{pg_db}"}
-          |  Response: {"results": [...list of row dicts...], "count": N}
+          |  Body: {"sql": "SELECT * FROM public.table_name", "database": "{pg_db}", "limit": -1}
+          |  Response: object with keys `results` (array of row dicts) and `count` (int)
           |- MongoDB: POST /api/v1/query/mongodb
-          |  Body: {"query": "...", "database": "{mongo_db}", "collection": "collection_name"}
-          |  Response: {"results": [...], "count": N}
+          |  Body: {"query": "...", "database": "{mongo_db}", "collection": "collection_name", "limit": -1}
+          |  Response: object with keys `results` (array of document dicts) and `count` (int)
+          |
+          |Tap scripts MUST always pass `"limit": -1` on both endpoints (but honor the test-sample env var below):
+          |- `-1` tells the server to return every matching row. It is the correct value for real cron/manual runs.
+          |- Omitting `limit` makes the server apply a preview default (20 for Mongo, 100 for Postgres) and the tap will silently read a tiny slice. Do not rely on the default.
+          |- There is no pagination on these endpoints. A single call returns the full result set; design the rest of the script accordingly (if a source is very large, iterate as you go rather than accumulating every intermediate value).
+          |
+          |Test-sample environment variable `DATRIS_TAP_TEST_LIMIT`:
+          |- When the user enables "Limit test sample" in the Create Tap test UI, the runner injects `DATRIS_TAP_TEST_LIMIT` (an integer string, e.g. "20") into the script process. Cron and manual runs never set this variable.
+          |- If `DATRIS_TAP_TEST_LIMIT` is set, the script MUST cap its work at that many records: use it as the `limit` on `/query/*` bodies (instead of -1) AND break out of any per-item iteration (per-ticker, per-user, per-page, etc.) after that many items. If unset or empty, pass `limit: -1` and iterate unbounded.
+          |- Required pattern at the top of `fetch()`:
+          |    _tl = os.environ.get('DATRIS_TAP_TEST_LIMIT')
+          |    sample_cap = int(_tl) if _tl else None            # None = unlimited
+          |    source_limit = sample_cap if sample_cap is not None else -1
+          |  Use `source_limit` in /query/* request bodies. Use `sample_cap` to bound per-item loops (e.g. `for i, x in enumerate(items): if sample_cap is not None and i >= sample_cap: break`).
           |
           |Where {pg_db} = os.environ.get('DATRIS_POSTGRES_DATABASE') and {mongo_db} = os.environ.get('DATRIS_MONGODB_DATABASE').
+          |
+          |Do NOT write defensive shape-probing code for platform endpoints:
+          |- Do NOT branch on `isinstance(resp.json(), list)` vs dict. The shapes above are contractual.
+          |- Do NOT iterate candidate response keys (e.g. trying 'results', then 'data', then 'items'). The documented key is the only key.
+          |- Do NOT probe alternate names for objects the user told you exist. If discovery returns nothing matching, raise a clear error that lists what was searched and what was found.
+          |- Do NOT guess field names across multiple candidate keys in source documents. If the source's document shape is genuinely unknown, fetch one sample, log its keys to stderr with `print(..., file=sys.stderr)`, and raise with that context so the user can adjust. The AI diagnosis tool reads stderr.
+          |- When a response shape surprises you, raise the exception. A clear traceback is better than silent wrong data.
+          |
           |Use metadata endpoints to discover tables and columns dynamically when the user
           |describes data by name rather than providing exact table names.
           |

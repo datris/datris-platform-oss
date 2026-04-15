@@ -23,7 +23,7 @@ from typing import AsyncIterator
 
 import anthropic
 
-from agent.config import MISSION, AUTO_MODE_ADDENDUM, INGEST_TOOL_DEF, MCP_TOOL_ALLOWLIST
+from agent.config import MISSION, INGEST_TOOL_DEF, MCP_TOOL_ALLOWLIST
 from agent.executor import execute_tool
 from agent.mcp_client import get_tools, get_resources_text
 from agent.pipeline_store import store
@@ -43,7 +43,6 @@ async def _build_tools() -> list[dict]:
 async def run(
     user_text: str,
     history: list[dict],
-    auto_mode: bool = False,
 ) -> AsyncIterator[dict]:
     """
     Async generator.  Appends the user turn to history, runs the agentic
@@ -62,8 +61,6 @@ async def run(
     # Append MCP resources (pipeline config reference, etc.) so Claude learns from the server
     resources = await get_resources_text()
     system_prompt = MISSION
-    if auto_mode:
-        system_prompt += AUTO_MODE_ADDENDUM
     if resources:
         system_prompt += "\n\n" + resources
 

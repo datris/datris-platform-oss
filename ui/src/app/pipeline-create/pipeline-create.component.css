@@ -135,6 +135,17 @@
   box-shadow: 0 0 0 3px var(--border-focus);
 }
 
+.form-value-readonly {
+  padding: 10px 16px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
 .form-textarea {
   font-family: var(--font-mono);
   font-size: 13px;

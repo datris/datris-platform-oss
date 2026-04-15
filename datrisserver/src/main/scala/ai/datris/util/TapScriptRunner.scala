@@ -59,7 +59,7 @@ object TapScriptRunner {
           |print(json.dumps(envelope))
           |""".stripMargin
 
-    def run(tapConfig: TapConfig): TapScriptResult = {
+    def run(tapConfig: TapConfig, testLimit: Int = 0): TapScriptResult = {
         logger.info("TapScriptRunner: executing tap: " + tapConfig.name)
 
         // Step 1: Install extra packages if specified
@@ -100,7 +100,12 @@ object TapScriptRunner {
                 "DATRIS_PLATFORM_HOST" -> "localhost",
                 "DATRIS_PLATFORM_PORT" -> "8080"
             )
-            val allEnvVars = platformEnvVars ++ secretEnvVars
+            // Test-only sample cap. Only set when the UI Test Script checkbox is
+            // enabled. Cron/manual runs never get this env var, so the script's
+            // fetch() reads everything.
+            val testLimitEnvVars: Seq[(String, String)] =
+                if (testLimit > 0) Seq("DATRIS_TAP_TEST_LIMIT" -> testLimit.toString) else Seq.empty
+            val allEnvVars = platformEnvVars ++ testLimitEnvVars ++ secretEnvVars
 
             // Step 5: Execute the wrapper
             val secretValues = secretEnvVars.map(_._2)

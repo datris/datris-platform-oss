@@ -15,7 +15,8 @@ import scala.collection.JavaConverters._
 
 object PostgresQueryUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private val MAX_LIMIT = 1000
+    // No MAX cap: callers (tap scripts) may need the full table. Callers that want
+    // a preview-sized result pass an explicit positive limit.
     private val DEFAULT_LIMIT = 100
 
     // Keywords that indicate write operations — checked as whole words (case-insensitive)
@@ -30,8 +31,13 @@ object PostgresQueryUtil {
         val effectiveDb = if (database != null && database.nonEmpty) database
             else DatrisEnvironment.current.postgresDatabase
 
-        val effectiveLimit = math.min(if (limit > 0) limit else DEFAULT_LIMIT, MAX_LIMIT)
-        val finalSql = appendLimitIfNeeded(sql.trim.stripSuffix(";"), effectiveLimit)
+        // `limit < 0` is the "unlimited" sentinel used by tap scripts. `limit == 0`
+        // or missing falls back to the preview default. Unlimited leaves the SQL
+        // untouched (caller's own LIMIT clause, if any, still applies).
+        val unlimited = limit < 0
+        val effectiveLimit = if (unlimited) -1 else if (limit > 0) limit else DEFAULT_LIMIT
+        val finalSql = if (unlimited) sql.trim.stripSuffix(";")
+            else appendLimitIfNeeded(sql.trim.stripSuffix(";"), effectiveLimit)
 
         logger.info("Executing read-only query: " + finalSql)
 

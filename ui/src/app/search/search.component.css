@@ -80,6 +80,16 @@ select.form-input {
   appearance: auto;
 }
 
+.form-value-readonly {
+  padding: 10px 16px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+
 optgroup {
   color: var(--text-muted);
   font-style: normal;
@@ -180,6 +190,24 @@ option {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   box-shadow: 0 4px 24px var(--shadow-blue), 0 0 48px rgba(0, 180, 255, 0.03);
+}
+
+.json-container {
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 4px 24px var(--shadow-blue), 0 0 48px rgba(0, 180, 255, 0.03);
+  max-height: 600px;
+  overflow: auto;
+}
+
+.json-results {
+  margin: 0;
+  padding: 18px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: pre;
 }
 
 table {

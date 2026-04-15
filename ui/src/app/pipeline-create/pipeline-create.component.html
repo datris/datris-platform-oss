@@ -462,10 +462,7 @@
       <ng-container *ngIf="destType === 'postgres'">
         <div class="form-row" *ngIf="!isTrial">
           <label class="form-label">Database</label>
-          <select class="form-input" [(ngModel)]="pgDbName" (ngModelChange)="onPgDbChange()">
-            <option *ngFor="let db of pgDatabases" [value]="db">{{ db }}</option>
-          </select>
-          <input class="form-input override-input" [(ngModel)]="pgDbName" placeholder="or type a new database name">
+          <div class="form-value-readonly">{{ pgDbName }}</div>
         </div>
         <div class="form-row-inline">
           <div class="form-field">
@@ -504,11 +501,7 @@
       <ng-container *ngIf="destType === 'mongodb'">
         <div class="form-row" *ngIf="!isTrial">
           <label class="form-label">Database</label>
-          <select class="form-input" [(ngModel)]="mongoDbName" (ngModelChange)="onMongoDbChange()">
-            <option *ngIf="mongoDbName && !mongoDatabases.includes(mongoDbName)" [value]="mongoDbName">{{ mongoDbName }}</option>
-            <option *ngFor="let db of mongoDatabases" [value]="db">{{ db }}</option>
-          </select>
-          <input class="form-input override-input" [(ngModel)]="mongoDbName" placeholder="or type a new database name">
+          <div class="form-value-readonly">{{ mongoDbName }}</div>
         </div>
         <div class="form-row">
           <label class="form-label">Collection</label>

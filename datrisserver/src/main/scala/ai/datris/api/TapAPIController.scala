@@ -571,16 +571,21 @@ class TapAPIController {
 
     @PostMapping(path = Array("/tap/test"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def testTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                @RequestParam(required = false) testLimit: Integer,
                 @RequestBody tapConfig: TapConfig): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint POST /tap/test called for tap: " + tapConfig.name)
+            logger.info("API endpoint POST /tap/test called for tap: " + tapConfig.name + (if (testLimit != null) s" (testLimit=$testLimit)" else ""))
             APIKeyValidator.validate(apiKey)
 
             if (tapConfig.scriptPath == null || tapConfig.scriptPath.isEmpty)
                 throw new DatrisException("Script path is required for testing")
 
-            // Run in test mode (no push to pipeline)
-            val result = TapRunner.run(tapConfig, pushToPipeline = false)
+            // Run in test mode (no push to pipeline). testLimit > 0 tells the
+            // runner to inject DATRIS_TAP_TEST_LIMIT into the script env so a
+            // well-written tap script caps its source reads. Cron/manual runs
+            // never set this.
+            val testLimitInt: Int = if (testLimit != null && testLimit.intValue() > 0) testLimit.intValue() else 0
+            val result = TapRunner.run(tapConfig, pushToPipeline = false, testLimit = testLimitInt)
             val gson = new Gson
             val recordsJson = if (result.records != null) JsonParser.parseString(result.records) else null
             val response = new java.util.HashMap[String, Any]()
@@ -715,6 +720,14 @@ class TapAPIController {
                    |  (a) If the script failed or returned 0 records, explain what went wrong and suggest a specific fix.
                    |  (b) If the script succeeded but the logs contain deprecation warnings, the result table looks incomplete (e.g. many NULL/None fields), or the approach relies on deprecated APIs, suggest a concrete improvement — for example, migrating to the recommended API, adding missing fields, or handling edge cases. Be specific about WHICH line/function to change.
                    |  (c) If the script is healthy and the output looks clean, respond with exactly "No issues detected." and nothing else.
+                   |
+                   |Diagnostic discipline — read before answering:
+                   |  1. Ground your diagnosis in the actual traceback and stderr logs. Quote the specific exception type, message, and line number from the error. Do not invent causes the traceback already contradicts.
+                   |  2. Respect guards already in the script. If the script would have raised on an earlier condition (e.g. a `raise` when an env var is missing, a `raise_for_status` on a prior request, a guard checking for an empty value), and that earlier exception did NOT fire, do NOT propose that earlier condition as the root cause.
+                   |  3. Prefer data-level explanations when the code ran structurally fine. If a request succeeded (no HTTP error) but returned empty data, the most likely cause is that the upstream has no matching data — not that the code has a bug. Say so plainly, and suggest the user verify the source state (e.g. check the database, check the API's filters) before assuming a code defect.
+                   |  4. Do not hypothesize about response shape mismatches for Datris platform endpoints (`/api/v1/metadata/*`, `/api/v1/query/*`). Their shapes are contractual and documented; if parsing them raised, the cause is elsewhere.
+                   |  5. When you are uncertain, say so and name the one concrete thing the user could check or print to disambiguate — not a laundry list.
+                   |  6. If the script queried `/api/v1/query/mongodb` or `/api/v1/query/postgres` and got exactly 20 (Mongo) or 100 (Postgres) rows back, the cause is the server's preview default limit. The fix is to add `"limit": -1` to the request body so the server returns every row.
                    |
                    |Respond in plain English only — no JSON, no code fences, no markdown formatting.
                    |Keep it to 2-3 concise sentences. Reference the exact line, function, or API that needs to change. Focus on actionable advice the user can apply immediately.""".stripMargin

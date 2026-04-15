@@ -14,7 +14,8 @@ import scala.collection.JavaConverters._
 
 object MongoDBQueryUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private val MAX_LIMIT = 1000
+    // No MAX cap: callers (tap scripts) may need the full collection. Callers that
+    // want a preview-sized result pass an explicit positive limit.
     private val DEFAULT_LIMIT = 20
     private val jsonSettings = JsonWriterSettings.builder().outputMode(JsonMode.RELAXED).build()
 
@@ -30,12 +31,15 @@ object MongoDBQueryUtil {
         if (collection == null || collection.trim.isEmpty)
             throw new DatrisException("MongoDB collection name cannot be empty")
 
-        val effectiveLimit = math.min(if (limit > 0) limit else DEFAULT_LIMIT, MAX_LIMIT)
+        // `limit < 0` is the "unlimited" sentinel used by tap scripts. `limit == 0`
+        // or missing falls back to the preview default.
+        val unlimited = limit < 0
+        val effectiveLimit = if (unlimited) -1 else if (limit > 0) limit else DEFAULT_LIMIT
 
         // Validate filter for dangerous operators
         if (filter != null) validateFilter(filter)
 
-        logger.info("Querying MongoDB collection: " + collection + " with limit: " + effectiveLimit)
+        logger.info("Querying MongoDB collection: " + collection + " with limit: " + (if (unlimited) "unlimited" else effectiveLimit.toString))
 
         val secrets = SecretsRetrieverUtil.mongoDbSecrets()
         val dbUtil = MongoDBUtilBuilder.build(secrets.connectionString, DatrisEnvironment.current.mongoDbConfig.database)
@@ -62,7 +66,9 @@ object MongoDBQueryUtil {
                 cursor = cursor.projection(projDoc)
             }
 
-            val results = cursor.limit(effectiveLimit)
+            if (!unlimited) cursor = cursor.limit(effectiveLimit)
+
+            val results = cursor
                 .asScala
                 .map(doc => doc.toJson(jsonSettings))
                 .toList

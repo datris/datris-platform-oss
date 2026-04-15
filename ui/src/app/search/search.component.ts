@@ -36,7 +36,6 @@ export class SearchComponent implements OnInit, OnDestroy {
 
   // MongoDB fields
   mongoDatabase = '';
-  mongoDatabases: string[] = [];
   mongoCollection = '';
   mongoCollections: string[] = [];
   mongoFilter = '{}';
@@ -62,13 +61,13 @@ export class SearchComponent implements OnInit, OnDestroy {
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
         this.isTrial = data.multiTenant === 'true';
-        if (this.isTrial) {
-          this.pgDatabase = data.environment || 'datris';
-        }
+        // Canonical, server-chosen db names.
+        this.pgDatabase = data.postgresDatabase || 'datris';
+        this.mongoDatabase = data.mongodbDatabase || 'datris';
+        this.loadPgSchemas();
+        this.loadMongoCollections();
       }
     });
-    this.loadPgSchemas();
-    this.loadMongoDatabases();
 
     // Refresh metadata whenever the user navigates back to /search
     this.routerSub = this.router.events.pipe(
@@ -88,8 +87,8 @@ export class SearchComponent implements OnInit, OnDestroy {
   }
 
   refreshMetadata(): void {
-    // Reload postgres schemas/tables and mongo databases/collections so the user
-    // sees any tables created since they last visited the tab.
+    // Reload postgres schemas/tables and mongo collections so the user
+    // sees any objects created since they last visited the tab.
     this.searchService.getPostgresSchemas(this.pgDatabase).subscribe({
       next: (schemas) => {
         this.pgSchemas = schemas;
@@ -100,7 +99,7 @@ export class SearchComponent implements OnInit, OnDestroy {
       },
       error: () => {}
     });
-    this.loadMongoDatabases();
+    this.loadMongoCollections();
   }
 
   loadPgSchemas(): void {
@@ -159,24 +158,6 @@ export class SearchComponent implements OnInit, OnDestroy {
         }
       });
     }
-  }
-
-  loadMongoDatabases(): void {
-    this.searchService.getMongoDatabases().subscribe({
-      next: (databases) => {
-        this.mongoDatabases = databases;
-        if (databases.length > 0 && !this.mongoDatabase) {
-          this.mongoDatabase = databases[0];
-          this.loadMongoCollections();
-        }
-      },
-      error: () => { this.mongoDatabases = []; }
-    });
-  }
-
-  onMongoDatabaseChange(): void {
-    this.mongoCollection = '';
-    this.loadMongoCollections();
   }
 
   loadMongoCollections(): void {

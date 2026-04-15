@@ -8,7 +8,7 @@ spring:
       connection-timeout: "600000"
   data:
     mongodb:
-      uri: mongodb://localhost:27017/oss
+      uri: mongodb://localhost:27017/datris
   management:
     health:
       probes:
@@ -64,7 +64,13 @@ activemq:
 # NoSQL: MongoDB
 mongodb:
   connectionString: mongodb://localhost:27017
-  database: oss
+  # User-facing database: pipelines write here, shown in the UI. Do not rename
+  # after deployment without migrating the data.
+  database: datris
+  # Internal platform database: pipeline/tap configs, run status, etc. Never
+  # surfaced in the UI. Kept on `oss` historically; do not change without
+  # migrating the platform state collections.
+  internalDatabase: oss
 
 # SQL: PostgreSQL
 postgres:

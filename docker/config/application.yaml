@@ -16,7 +16,7 @@ spring:
         enabled: "true"
   data:
     mongodb:
-      uri: mongodb://mongodb:27017/oss
+      uri: mongodb://mongodb:27017/datris
 logging:
   level:
     root: INFO
@@ -55,7 +55,10 @@ activemq:
 # NoSQL: MongoDB (Docker service)
 mongodb:
   connectionString: mongodb://mongodb:27017
-  database: oss
+  # User-facing database: pipelines write here, shown in the UI.
+  database: datris
+  # Internal platform database: pipeline/tap configs, run status, etc.
+  internalDatabase: oss
 
 sendPipelineNotifications: "true"
 ttlFileNotifierQueueMessages: "60"

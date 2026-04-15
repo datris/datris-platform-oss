@@ -258,6 +258,32 @@
   font-size: 16px;
 }
 
+.del-confirm-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
+.delete-item-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  opacity: 0.45;
+  transition: color 0.15s, opacity 0.15s;
+}
+
+.delete-item-btn:hover {
+  color: #f87171;
+  opacity: 1;
+}
+
+.delete-item-btn .material-icons {
+  font-size: 18px;
+}
+
 /* Expanded body */
 .catalog-card-body {
   border-top: 1px solid var(--border-color);
@@ -282,11 +308,15 @@
 }
 
 .catalog-item {
-  display: grid;
-  grid-template-columns: 24px 1fr auto auto;
+  display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 0;
+}
+
+.catalog-item .item-name {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .item-icon {

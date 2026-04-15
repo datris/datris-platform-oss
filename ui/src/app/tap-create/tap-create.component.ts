@@ -4,6 +4,7 @@ import { Subscription } from 'rxjs';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { SecretsService } from '../secrets.service';
+import { SearchService } from '../search.service';
 import { sanitizeLabel } from '../shared/sanitize';
 
 @Component({
@@ -56,6 +57,15 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   applyingDiagnosis = false;
   diagnosisApplied = false;
   scriptDirty = false;
+  // Auto-fix: on a failed test with an AI diagnosis, automatically apply the
+  // fix and re-test, up to MAX_AUTO_FIX_ATTEMPTS. Reset to 0 whenever the user
+  // clicks Test Script themselves; increment each time we auto-apply.
+  private static readonly MAX_AUTO_FIX_ATTEMPTS = 2;
+  autoFixAttempts = 0;
+  // Test-only sample cap. Cron/manual runs are always unlimited; this only
+  // affects the test invocation. Fixed at 20 records when enabled.
+  limitTestSample = true;
+  private static readonly TEST_SAMPLE_LIMIT = 20;
 
   // Step 4 — Schedule
   useSchedule = false;
@@ -79,6 +89,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   generatedFields: Array<{name: string, type: string}> = [];
   generateError = '';
   generatedTruncate = false;
+  generatedDestName = '';
+  existingDestNames: string[] = [];
 
   // Save
   saving = false;
@@ -86,11 +98,12 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // Step 5 — Run (only reachable when targetPipeline is set)
   runningTap = false;
   runError = '';
+  targetPipelineConfig: any = null;
 
   // Active subscription for cancellation
   private activeSub: Subscription | null = null;
 
-  constructor(private tapService: TapService, private pipelineService: PipelineService, private secretsService: SecretsService, private router: Router, private route: ActivatedRoute) { }
+  constructor(private tapService: TapService, private pipelineService: PipelineService, private secretsService: SecretsService, private searchService: SearchService, private router: Router, private route: ActivatedRoute) { }
 
   ngOnInit(): void {
     const name = this.route.snapshot.paramMap.get('name');
@@ -146,6 +159,13 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   testPassed(): boolean {
     return this.testRecordCount > 0 && !this.testError;
+  }
+
+  stopTest(): void {
+    this.cancelActive();
+    // Cap auto-fix so an in-flight fix-and-retry chain doesn't resume.
+    this.autoFixAttempts = TapCreateComponent.MAX_AUTO_FIX_ATTEMPTS;
+    this.testError = 'Test cancelled.';
   }
 
   private cancelActive(): void {
@@ -235,6 +255,12 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.generateScript();
   }
 
+  /** User-initiated test. Resets the auto-fix counter, then delegates. */
+  runTest(): void {
+    this.autoFixAttempts = 0;
+    this.testScript();
+  }
+
   testScript(): void {
     this.testing = true;
     this.testError = '';
@@ -244,13 +270,16 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.testRecords = [];
     this.testRecordCount = 0;
 
-    const config = {
+    const config: any = {
       name: this.tapName.trim(),
       description: this.description,
       scriptPath: this.scriptPath,
       packages: this.packages.length > 0 ? this.packages : null,
       secretName: this.secretName || null
     };
+    if (this.limitTestSample) {
+      config.testLimit = TapCreateComponent.TEST_SAMPLE_LIMIT;
+    }
 
     this.activeSub = this.tapService.testTap(config).subscribe({
       next: (result) => {
@@ -259,11 +288,20 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.testError = result.error || '';
         this.testLogs = result.logs || '';
         this.testDataType = result.dataType || '';
-        this.testColumns = result.columns || [];
+        this.testColumns = (result.columns && result.columns.length > 0)
+          ? result.columns
+          : (this.testRecords.length > 0 ? Object.keys(this.testRecords[0]) : []);
         this.aiExplanation = result.aiExplanation || '';
         this.testing = false;
         if (this.testRecordCount > 0 && !this.testError) {
           this.scriptDirty = false;
+        }
+        // Auto-fix: on a failed test with an actionable diagnosis, apply the
+        // fix and re-test. Capped at MAX_AUTO_FIX_ATTEMPTS to avoid loops.
+        const failed = !!this.testError || this.testRecordCount === 0;
+        if (failed && this.aiExplanation && this.autoFixAttempts < TapCreateComponent.MAX_AUTO_FIX_ATTEMPTS) {
+          this.autoFixAttempts++;
+          this.applyDiagnosis();
         }
       },
       error: (err) => {
@@ -281,10 +319,14 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   applyDiagnosis(): void {
     this.applyingDiagnosis = true;
     this.error = '';
+    const explanation = this.aiExplanation;
+    // Wipe the diagnosis panel immediately so its inline indicator doesn't
+    // duplicate the top-level applyingDiagnosis indicator during the fix call.
+    this.aiExplanation = '';
     this.activeSub = this.tapService.fixScript(
       this.tapName.trim(),
       this.script,
-      this.aiExplanation,
+      explanation,
       this.testLogs,
       this.testError,
       this.scriptPath
@@ -293,7 +335,6 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.script = result.script || this.script;
         this.scriptPath = result.scriptPath || this.scriptPath;
         this.packages = result.packages || this.packages;
-        this.aiExplanation = '';
         this.testError = '';
         this.testLogs = '';
         this.testRecords = null;
@@ -301,6 +342,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.applyingDiagnosis = false;
         this.diagnosisApplied = true;
         this.scriptDirty = true;
+        this.testScript();
       },
       error: (err) => {
         this.error = 'Fix failed: ' + (typeof err.error === 'string' ? err.error : err.message).substring(0, 300);
@@ -560,7 +602,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   getPreviewRows(): any[] {
     if (!this.testRecords || !Array.isArray(this.testRecords)) return [];
-    return this.testRecords.slice(0, 10);
+    return this.testRecords.slice(0, 100);
   }
 
   save(): void {
@@ -590,6 +632,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         // there's nothing meaningful to do on step 5 — go straight to /taps.
         if (this.targetPipeline) {
           this.step = 5;
+          this.loadTargetPipelineConfig();
         } else {
           this.router.navigate(['/taps']);
         }
@@ -621,6 +664,80 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   finishWithoutRun(): void {
     this.router.navigate(['/taps']);
+  }
+
+  scriptCopied = false;
+  copyScript(): void {
+    if (!this.script) return;
+    // navigator.clipboard is async; in non-secure contexts it's undefined.
+    // Fall back to a temp textarea + execCommand for that case.
+    const done = () => {
+      this.scriptCopied = true;
+      setTimeout(() => { this.scriptCopied = false; }, 1500);
+    };
+    try {
+      if (navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(this.script).then(done, () => this.copyScriptFallback(done));
+      } else {
+        this.copyScriptFallback(done);
+      }
+    } catch {
+      this.copyScriptFallback(done);
+    }
+  }
+  private copyScriptFallback(done: () => void): void {
+    const ta = document.createElement('textarea');
+    ta.value = this.script;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch {} finally { document.body.removeChild(ta); }
+  }
+
+  loadTargetPipelineConfig(): void {
+    this.targetPipelineConfig = null;
+    if (!this.targetPipeline) return;
+    this.pipelineService.getPipeline(this.targetPipeline).subscribe({
+      next: (config) => { this.targetPipelineConfig = config; },
+      error: () => { this.targetPipelineConfig = null; }
+    });
+  }
+
+  /** Human-readable destination description for the linked pipeline. */
+  targetPipelineDestination(): string {
+    const dest = this.targetPipelineConfig?.destination;
+    if (!dest) return '';
+    const db = dest.database;
+    if (db?.usePostgres) {
+      const schema = db.schema || 'public';
+      return 'PostgreSQL → ' + (db.dbName || 'datris') + '.' + schema + '.' + (db.table || '?');
+    }
+    if (db?.useMongoDB) {
+      return 'MongoDB → ' + (db.dbName || 'datris') + ' / ' + (db.table || '?');
+    }
+    if (dest.objectStore) {
+      return 'Object Store → ' + (dest.objectStore.prefixKey || '?');
+    }
+    if (dest.kafka) {
+      return 'Kafka → ' + (dest.kafka.topic || '?');
+    }
+    if (dest.activeMQ) {
+      return 'ActiveMQ → ' + (dest.activeMQ.queueName || '?');
+    }
+    if (dest.restEndpoint) {
+      return 'REST → ' + (dest.restEndpoint.url || '?');
+    }
+    if (dest.qdrant) return 'Qdrant → ' + (dest.qdrant.collectionName || '?');
+    if (dest.weaviate) return 'Weaviate → ' + (dest.weaviate.className || '?');
+    if (dest.milvus) return 'Milvus → ' + (dest.milvus.collectionName || '?');
+    if (dest.chroma) return 'Chroma → ' + (dest.chroma.collectionName || '?');
+    if (dest.pgvector) return 'pgvector → ' + (dest.pgvector.schemaName || 'public') + '.' + (dest.pgvector.tableName || '?');
+    return '';
+  }
+
+  targetPipelineTruncate(): boolean {
+    return !!this.targetPipelineConfig?.destination?.database?.truncateBeforeWrite;
   }
 
   // ---------- Pipeline link: Attach to existing ----------
@@ -679,8 +796,37 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.error = '';
     this.generateError = '';
     this.generatedPipelineName = this.derivePipelineName(this.tapName);
+    this.generatedDestName = this.generatedPipelineName.replace(/-/g, '_');
     this.generatedFields = [];
+    this.existingDestNames = [];
+    this.loadExistingDestNames();
     this.showGenerateModal = true;
+  }
+
+  private loadExistingDestNames(): void {
+    const dataType = (this.testDataType || 'json').toLowerCase();
+    if (dataType === 'csv') {
+      this.searchService.getPostgresTables('datris', 'public').subscribe({
+        next: (tables) => { this.existingDestNames = tables || []; },
+        error: () => { this.existingDestNames = []; }
+      });
+    } else {
+      this.searchService.getMongoCollections().subscribe({
+        next: (collections) => { this.existingDestNames = collections || []; },
+        error: () => { this.existingDestNames = []; }
+      });
+    }
+  }
+
+  destNameConflict(): boolean {
+    const name = (this.generatedDestName || '').trim();
+    if (!name) return false;
+    return this.existingDestNames.includes(name);
+  }
+
+  destLabel(): string {
+    const t = (this.testDataType || 'json').toLowerCase();
+    return t === 'csv' ? 'Table name' : 'Collection name';
   }
 
   closeGenerateModal(): void {
@@ -696,6 +842,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   /** Map dataType → destination table name (SQL-safe: dashes → underscores). */
   private derivedTableName(): string {
+    const explicit = (this.generatedDestName || '').trim();
+    if (explicit) return explicit;
     return this.generatedPipelineName.replace(/-/g, '_');
   }
 
@@ -708,6 +856,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   confirmGenerate(): void {
     if (this.generatingPipeline) return;
+    if (this.destNameConflict()) {
+      this.generateError = 'A ' + this.destLabel().toLowerCase() + ' named "' + this.generatedDestName.trim() + '" already exists. Pick a different name.';
+      return;
+    }
     this.generateError = '';
     this.generatingPipeline = true;
 
@@ -738,9 +890,16 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     const dataType = (this.testDataType || 'json').toLowerCase();
     const tableName = this.derivedTableName();
 
+    // For JSON/XML, the validator requires a single `_json`/`_xml` string field
+     // (the document lands as an opaque string and is parsed downstream).
+     // CSV uses the discovered per-column schema.
+    const sourceFields = dataType === 'csv'
+      ? fields
+      : [{ name: dataType === 'xml' ? '_xml' : '_json', type: 'string' }];
+
     const source: any = {
       schemaProperties: {
-        fields: fields
+        fields: sourceFields
       },
       fileAttributes: {} as any
     };

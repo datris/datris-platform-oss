@@ -70,8 +70,8 @@
                  placeholder="e.g., I want stock prices for tech companies"
                  #brainstormInputEl>
           <button class="brainstorm-send-btn" (click)="sendBrainstorm()" [disabled]="brainstorming || !brainstormInput.trim()">
-            <span class="material-icons">send</span>
-            Send
+            <span class="material-icons">auto_awesome</span>
+            Ask
           </button>
         </div>
 
@@ -150,6 +150,9 @@
       </div>
 
       <div class="code-preview script-preview" *ngIf="script">
+        <button class="copy-script-btn" (click)="copyScript()" [title]="scriptCopied ? 'Copied!' : 'Copy script to clipboard'">
+          <span class="material-icons">{{ scriptCopied ? 'check' : 'content_copy' }}</span>
+        </button>
         <pre>{{ script }}</pre>
       </div>
 
@@ -176,7 +179,13 @@
       </div>
 
       <div class="form-group">
-        <label class="form-label">Python Script</label>
+        <div class="script-label-row">
+          <label class="form-label">Python Script</label>
+          <button class="copy-script-btn" (click)="copyScript()" [title]="scriptCopied ? 'Copied!' : 'Copy script to clipboard'">
+            <span class="material-icons">{{ scriptCopied ? 'check' : 'content_copy' }}</span>
+            <span class="copy-script-label">{{ scriptCopied ? 'Copied' : 'Copy' }}</span>
+          </button>
+        </div>
         <textarea class="form-textarea code-editor" [(ngModel)]="script" rows="16"></textarea>
       </div>
 
@@ -196,14 +205,29 @@
         AI diagnosis has been applied to the script. Run the test again to verify the fix.
       </div>
 
-      <button class="test-btn" (click)="testScript()" [disabled]="testing">
-        <span class="material-icons">{{ testing ? 'hourglass_empty' : 'science' }}</span>
-        {{ testing ? 'Testing...' : 'Test Script' }}
+      <label class="checkbox-row test-sample-toggle" *ngIf="!testing">
+        <input type="checkbox" [(ngModel)]="limitTestSample">
+        <span>Limit test sample to 20 records (faster to confirm a test script). Cron and manual runs are never limited, all data is retrieved.</span>
+      </label>
+
+      <button class="test-btn" (click)="runTest()" [disabled]="testing" *ngIf="!testing">
+        <span class="material-icons">science</span>
+        Test Script
+      </button>
+      <button class="test-btn stop-btn" (click)="stopTest()" *ngIf="testing">
+        <span class="material-icons">stop</span>
+        Stop Test
       </button>
 
       <div class="testing-indicator" *ngIf="testing">
         <div class="spinner"></div>
-        <span>Running script — this may take a few minutes for large data fetches...</span>
+        <span *ngIf="autoFixAttempts === 0">Running script — this may take a few minutes for large data fetches...</span>
+        <span *ngIf="autoFixAttempts > 0">Re-running after auto-applied AI fix (attempt {{ autoFixAttempts }} of 2)...</span>
+      </div>
+
+      <div class="testing-indicator" *ngIf="applyingDiagnosis && autoFixAttempts > 0">
+        <div class="spinner"></div>
+        <span>Auto-applying AI fix (attempt {{ autoFixAttempts }} of 2)...</span>
       </div>
 
       <div class="test-logs" *ngIf="testLogs">
@@ -217,27 +241,10 @@
           <span class="datatype-badge" *ngIf="testDataType">{{ testDataType.toUpperCase() }}</span>
         </div>
 
-        <!-- Table view for array of objects -->
-        <div class="preview-table-wrap" *ngIf="getTestColumns().length > 0">
-          <table class="preview-table">
-            <thead>
-              <tr>
-                <th *ngFor="let col of getTestColumns()">{{ col }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let row of getPreviewRows()">
-                <td *ngFor="let col of getTestColumns()">{{ row[col] }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="preview-table-wrap" *ngIf="testRecords">
+          <pre class="preview-json">{{ getPreviewRows() | json }}</pre>
         </div>
-        <div class="preview-note" *ngIf="testRecordCount > 10">Showing first 10 of {{ testRecordCount }} records</div>
-
-        <!-- Raw JSON fallback if records aren't tabular -->
-        <div class="code-preview" *ngIf="getTestColumns().length === 0 && testRecords">
-          <pre>{{ testRecords | json }}</pre>
-        </div>
+        <div class="preview-note" *ngIf="testRecordCount > 100">Showing first 100 of {{ testRecordCount }} records</div>
       </div>
 
       <div class="test-results" *ngIf="testRecordCount === 0 && testError === '' && !testing && testRecords !== null">
@@ -252,6 +259,7 @@
           AI Diagnosis
         </div>
         <div class="ai-explanation-body">{{ aiExplanation }}</div>
+        <div class="generate-help" *ngIf="autoFixAttempts >= 2">Auto-fix exhausted after 2 attempts. Review the diagnosis and apply manually if you want to try the suggested change.</div>
         <div class="ai-explanation-footer">
           <button class="apply-diagnosis-btn" (click)="applyDiagnosis()" [disabled]="applyingDiagnosis">
             <span class="material-icons">{{ applyingDiagnosis ? 'hourglass_empty' : 'healing' }}</span>
@@ -371,6 +379,14 @@
           <span class="review-label">Pipeline</span>
           <span class="review-value">{{ targetPipeline }}</span>
         </div>
+        <div class="review-row" *ngIf="targetPipelineDestination()">
+          <span class="review-label">Destination</span>
+          <span class="review-value">{{ targetPipelineDestination() }}</span>
+        </div>
+        <div class="review-row" *ngIf="targetPipelineTruncate()">
+          <span class="review-label">Write mode</span>
+          <span class="review-value">Truncate before each run (full refresh)</span>
+        </div>
         <div class="review-row">
           <span class="review-label">What happens</span>
           <span class="review-value">The tap script runs, and the records it returns are streamed into the linked pipeline. The pipeline applies any data quality / transformation rules and writes to its destination.</span>
@@ -453,8 +469,10 @@
             <div class="generate-summary">{{ (testDataType || 'json').toUpperCase() }} from tap output</div>
           </div>
           <div class="form-group">
-            <label class="form-label">Destination</label>
+            <label class="form-label">{{ destLabel() }}</label>
+            <input class="form-input" [(ngModel)]="generatedDestName" [disabled]="generatingPipeline">
             <div class="generate-summary">{{ destinationDescription() }}</div>
+            <div class="error-box" *ngIf="destNameConflict()">A {{ destLabel().toLowerCase() }} named "{{ generatedDestName.trim() }}" already exists. Pick a different name.</div>
           </div>
           <div class="form-group">
             <label class="form-label">Columns ({{ testColumns.length }})</label>
@@ -472,7 +490,7 @@
         </div>
         <div class="modal-footer">
           <button class="secondary-btn" (click)="closeGenerateModal()" [disabled]="generatingPipeline">Cancel</button>
-          <button class="primary-btn" (click)="confirmGenerate()" [disabled]="generatingPipeline || !generatedPipelineName.trim()">
+          <button class="primary-btn" (click)="confirmGenerate()" [disabled]="generatingPipeline || !generatedPipelineName.trim() || !generatedDestName.trim() || destNameConflict()">
             {{ generatingPipeline ? 'Generating...' : 'Create Pipeline' }}
           </button>
         </div>

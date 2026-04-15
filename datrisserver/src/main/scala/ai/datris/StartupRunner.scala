@@ -74,8 +74,11 @@ class StartupRunner extends ApplicationRunner {
     @Value("${mongodb.connectionString}")
     var mongoDbConnectionString: String = _
 
-    @Value("${mongodb.database}")
+    @Value("${mongodb.database:datris}")
     var mongoDbDatabase: String = _
+
+    @Value("${mongodb.internalDatabase:oss}")
+    var mongoDbInternalDatabase: String = _
 
     @Value("${postgres.database:datris}")
     var postgresDatabase: String = _
@@ -153,7 +156,8 @@ class StartupRunner extends ApplicationRunner {
 
         val mongoDbConfig = MongoDBConfig(
             mongoDbConnectionString,
-            mongoDbDatabase
+            mongoDbDatabase,
+            mongoDbInternalDatabase
         )
 
         val pipelineEnvironment = DatrisEnvironment(
