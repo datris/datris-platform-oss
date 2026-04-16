@@ -36,6 +36,10 @@ The **Data Catalog** tab in the UI shows one card per catalog plus an **Uncatalo
 - **Delete catalog** — confirms, then deletes the catalog's placeholder **plus every tap and pipeline inside it**. This is destructive and not reversible. If you want to keep the items, re-tag them to a different catalog first (or to Uncataloged by clearing the field on each).
 - **Delete Uncataloged** — same delete icon on the Uncataloged group removes every tap and pipeline that isn't in a named catalog. Confirm prompt reads *"Delete ALL uncataloged items?"* to make the scope obvious.
 - **Delete individual tap or pipeline** — expand any catalog (including Uncataloged) and use the trash icon on a specific row to delete just that item.
+- **Row actions menu (Uncataloged)** — each item in the Uncataloged group has a ⋮ kebab menu after the trash icon with three actions:
+  - **Edit** — opens the tap or pipeline editor.
+  - **Delete** — same as the trash icon (inline confirm).
+  - **Move to catalog** — submenu listing every other catalog. Picking one sets the item's `catalog` field and reloads the view. Before persisting, the UI checks the target catalog for a tap or pipeline of the same name; on a clash the move is blocked and a red banner explains the collision ("A tap named 'foo' already exists in catalog 'reporting'. Rename one of them first.").
 
 ## Assigning a catalog
 

@@ -64,7 +64,16 @@ Review and edit the generated script. You can:
 - If the script fails, an **AI Diagnosis** explains what went wrong and is **auto-applied** — the platform fixes the script and retests, up to 2 attempts. If both retries fail, the diagnosis stays visible for you to review and apply manually
 - Click **Stop Test** to cancel an in-flight test (also halts the auto-fix chain)
 
-**Limit test sample to 20 records** (checkbox, default on): when enabled, the runner injects `DATRIS_TAP_TEST_LIMIT=20` into the script process. Well-written tap scripts honor this env var to cap both their `/api/v1/query/*` reads and per-item iteration loops, making tests fast and low-cost. Cron and manual runs (via *Run Tap*) never set this env var, so production runs always read every row from every source.
+**Limit test sample** (checkbox, default on) with an inline record-count input (default `20`, minimum `1`): when enabled, the runner injects `DATRIS_TAP_TEST_LIMIT=<n>` into the script process. Well-written tap scripts honor this env var to cap both their `/api/v1/query/*` reads and per-item iteration loops, making tests fast and low-cost. Cron and manual runs (via *Run Tap*) never set this env var, so production runs always read every row from every source.
+
+#### Auto-optimize after a successful test
+
+Once the test returns records with no error, the platform sends the working script back to the LLM with the measured duration and record count, asks it to restructure for performance, and re-tests the rewrite:
+
+- One pass per successful test. The optimizer is instructed to preserve `fetch()`, `DATRIS_TAP_TEST_LIMIT` handling, error handling, and Vault env-var reads — it only changes *how* the script fetches, not *what*
+- If the optimized re-test runs ≥20% slower than the original, or fails, the platform **auto-reverts** to the original script with no user action
+- On success, an amber banner shows `"Auto-optimized: 12.4s → 1.1s (11.3×)"` with a list of the changes the AI made (e.g. *Parallelized ticker fetches with ThreadPoolExecutor(10)*, *Removed per-item sleep*) and a **Revert to original** link
+- If you revert or edit the script, the auto-optimize pass won't rerun until you click Generate again
 
 The test must return records successfully before you can proceed to step 3.
 

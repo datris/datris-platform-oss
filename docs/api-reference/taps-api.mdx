@@ -183,13 +183,61 @@ Executes the tap script without sending data to a pipeline. Returns results, log
   "columns": ["ticker", "date", "open", "high", "low", "close", "volume"],
   "logs": "Retrieved 503 tickers...\nBatch 1/11...",
   "error": null,
-  "aiExplanation": null
+  "aiExplanation": null,
+  "durationMs": 12400
 }
 ```
 
-If errors or 0 records are detected, `aiExplanation` contains an AI-generated diagnosis.
+If errors or 0 records are detected, `aiExplanation` contains an AI-generated diagnosis. `durationMs` is the end-to-end test wall time in milliseconds — this is what the [Optimize Script](#optimize-script) endpoint uses as the baseline timing for its perf rewrite.
 
 For `dataType: "csv"`, **column names in `columns` and the keys inside each record in `records` are normalized** by the platform: lowercase, `[a-z0-9_]` only, with `%` rewritten to `percent`. Source data with names like `EPS Estimate` or `Surprise(%)` will appear as `eps_estimate` and `surprise_percent`. JSON/XML results destined for MongoDB are not normalized. See [Schema Definition → Column Naming Rules](/schemas#column-naming-rules).
+
+## Optimize Script
+
+```
+POST /api/v1/tap/optimize
+Content-Type: application/json
+```
+
+After a successful test, asks the LLM to restructure a working script for performance — e.g. swap serial HTTP calls for a `ThreadPoolExecutor`, reuse a `requests.Session()`, or drop unnecessary `time.sleep()` — while preserving correctness (`fetch()` signature, `DATRIS_TAP_TEST_LIMIT` handling, Vault env-var reads, retry/backoff behavior, and `raise_for_status` calls).
+
+The UI invokes this automatically after a green test in both the Create Tap wizard and the Discovery wizard's per-tap build, with a regression guard that auto-reverts if the rewrite runs ≥20% slower. Callers integrating this endpoint directly should implement the same re-test + revert pattern.
+
+**Body:**
+```json
+{
+  "tapName": "stock-prices-tap",
+  "script": "current working script content...",
+  "recordCount": 503,
+  "durationMs": 298000,
+  "logs": "Retrieved 503 tickers...",
+  "oldScriptPath": "tap-scripts/stock-prices-tap_v3.py"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tapName` | string | Tap identifier. Used for script path versioning. |
+| `script` | string | The current working script that passed its test. |
+| `recordCount` | integer | How many records the last test returned. Used in the user prompt so the LLM can reason about per-record timing. |
+| `durationMs` | integer | Wall time of the last test run in ms (from `/tap/test` response). |
+| `logs` | string | Recent script stderr output (last ~40 lines used). |
+| `oldScriptPath` | string | MinIO path of the current script. The optimized script is stored as a new version; the old path is retained so the caller can revert. |
+
+**Response:**
+```json
+{
+  "script": "optimized Python 3 script...",
+  "packages": ["extra-package"],
+  "scriptPath": "tap-scripts/stock-prices-tap_v4.py",
+  "changes": [
+    "Parallelized ticker fetches with ThreadPoolExecutor(10)",
+    "Removed per-item 0.25s sleep"
+  ]
+}
+```
+
+If the LLM concludes the script is already well-optimized, `changes` is an empty array and `script` / `scriptPath` match the input. In that case no re-test is needed.
 
 ## Run Tap
 

@@ -60,9 +60,16 @@ Date parameters get a **Today** button that inserts the literal `{{TODAY}}` toke
 1. Calls the codegen model with the dataset's `tapInstruction` to produce a Python `fetch()` function.
 2. Runs the script immediately as a test.
 3. If the test fails, asks the AI to fix it (up to three attempts).
-4. On success, saves the tap to the catalog with `enabled=false`.
+4. On a successful test, sends the working script back to the LLM for a performance rewrite and re-tests. Auto-reverts if the rewrite regresses timing by ≥20% or fails.
+5. On success, saves the tap to the catalog with `enabled=false`.
 
-You'll see per-tap status as each one finishes: ✅ ready, ❌ failed, or 🔧 fixing.
+You'll see per-tap status as each one finishes: *Waiting → Generating → Testing → Optimizing → Re-testing optimized → Complete* (or *Fixing → Re-testing* on failure). Done rows show the record count and, when optimized, an amber line like `"Optimized: 1m 45s → 1m 13s (1.4×)"`.
+
+**Per-row controls:**
+
+- **Stop button** (red icon on the right) while a row is in an active phase — cancels just that tap without affecting siblings.
+- **AI Diagnosis panel** on failed rows — shows the AI's explanation of what went wrong plus an **Apply AI Fix** button. The panel stays visible even after the auto-fix budget is exhausted, so you can retry manually if the initial attempts missed. For transport-layer errors (504, network resets) the panel shows a fallback diagnosis so you still have a retry path.
+- **Global Stop Build** — cancels everything in progress at once.
 
 ### Step 4: Create Pipelines
 
