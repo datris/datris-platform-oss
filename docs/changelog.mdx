@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.6.4" description="April 16, 2026">
+  **Two-pass AI tap optimization and Data Catalog UX.**
+
+  - **AI optimize pass.** After a tap script passes its initial test, the platform sends it back to the LLM for a performance rewrite and re-tests. Auto-reverts on regression (>=20% slower) or failure. New `POST /api/v1/tap/optimize` endpoint; `/tap/test` now returns `durationMs`.
+  - **Discovery wizard.** Auto-optimize per tap with before/after timing banner, per-row stop button, on-demand AI fix panel for failed items, chat auto-scroll, and re-shown Discover Datasets button after new messages.
+  - **Create Tap.** Configurable test sample size (defaults to 20 records).
+  - **Data Catalog.** Kebab menu on Uncataloged items with Edit, Delete, and Move to Catalog (with name-clash detection).
+</Update>
+
 <Update label="v1.6.3" description="April 15, 2026">
   **Database lockdown, tap script hardening, Create Tap UX.**
 
