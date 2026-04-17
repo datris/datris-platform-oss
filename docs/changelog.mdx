@@ -4,12 +4,9 @@ description: "Release history for Datris"
 ---
 
 <Update label="v1.6.5" description="April 17, 2026">
-  **Release-free AI model catalog.**
-
-  - **Remote model catalog.** Configuration tab dropdowns (AI Provider, CodeGen, Embedding) now load from `GET /api/v1/ai/model-catalog`, a backend proxy for a JSON catalog hosted at `datris.ai/models.json`. Adding a new model becomes an edit to the website's JSON plus a push — no SBT build, no Docker release, no customer upgrade.
-  - **Silent fallback.** If the proxy is unreachable, the UI renders a baked-in default list; custom model names can still be typed manually.
-  - **Trial signup.** Trial provisioning seeds Vault with the recommended model from the same catalog; `TRIAL_AI_MODEL_*` env vars still override.
-  - **Claude Opus 4.7** added as the recommended Anthropic CodeGen model.
+  - New AI models from OpenAI and Anthropic now appear in the Configuration dropdowns automatically, without a Datris upgrade.
+  - **Claude Opus 4.7** is the recommended Anthropic model for CodeGen (tap script generation, AI data quality rules, AI transformations, JSON Schema / XSD generation, and natural-language → SQL).
+  - New trial signups are seeded with the latest recommended models by default.
 </Update>
 
 <Update label="v1.6.4" description="April 16, 2026">
