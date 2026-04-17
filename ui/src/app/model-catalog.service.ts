@@ -1,4 +1,6 @@
 import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom, timeout } from 'rxjs';
 
 export interface ModelOption {
   value: string;
@@ -12,7 +14,10 @@ export interface ModelCatalog {
   embedding: Record<string, ModelOption[]>;
 }
 
-const CATALOG_URL = 'https://docs.datris.ai/models.json';
+// Same-origin backend proxy that server-side fetches docs.datris.ai/models.json.
+// Going through the backend avoids the CORS gap on Mintlify's static assets and
+// lets the auth interceptor attach the user's API key.
+const CATALOG_URL = '/api/v1/ai/model-catalog';
 const CACHE_KEY = 'datris.modelCatalog';
 const FETCH_TIMEOUT_MS = 5000;
 
@@ -61,6 +66,8 @@ const FALLBACK: ModelCatalog = {
 export class ModelCatalogService {
   private inFlight: Promise<ModelCatalog> | null = null;
 
+  constructor(private http: HttpClient) {}
+
   async fetch(): Promise<ModelCatalog> {
     if (this.inFlight) return this.inFlight;
     this.inFlight = this.doFetch();
@@ -68,24 +75,17 @@ export class ModelCatalogService {
   }
 
   private async doFetch(): Promise<ModelCatalog> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-      const res = await window.fetch(CATALOG_URL, {
-        signal: controller.signal,
-        cache: 'no-cache',
-      });
-      if (!res.ok) return this.cachedOrFallback();
-      const data = await res.json();
+      const data = await firstValueFrom(
+        this.http.get<ModelCatalog>(CATALOG_URL).pipe(timeout(FETCH_TIMEOUT_MS))
+      );
       if (!this.looksValid(data)) return this.cachedOrFallback();
       try {
         localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), catalog: data }));
       } catch { /* storage quota / disabled — ignore */ }
-      return data as ModelCatalog;
+      return data;
     } catch {
       return this.cachedOrFallback();
-    } finally {
-      clearTimeout(timer);
     }
   }
 
