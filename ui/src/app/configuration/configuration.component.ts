@@ -1,5 +1,6 @@
 import { Component, OnInit } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 
 @Component({
   selector: 'app-configuration',
@@ -46,45 +47,11 @@ export class ConfigurationComponent implements OnInit {
   private prevCodegenProvider = 'anthropic';
   private prevEmbeddingProvider = 'openai';
 
-  models: Record<string, { value: string; label: string }[]> = {
-    anthropic: [
-      { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (recommended)' },
-      { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-      { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-    ],
-    openai: [
-      { value: 'gpt-5.4', label: 'GPT-5.4 (recommended)' },
-      { value: 'gpt-5.4-pro', label: 'GPT-5.4 Pro' },
-      { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
-      { value: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
-    ],
-  };
-
-  // CodeGen tasks benefit from a stronger model — recommendations differ from the main list.
-  codegenModelsList: Record<string, { value: string; label: string }[]> = {
-    anthropic: [
-      { value: 'claude-opus-4-6', label: 'Claude Opus 4.6 (recommended)' },
-      { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-      { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-    ],
-    openai: [
-      { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex (recommended)' },
-      { value: 'gpt-5.4', label: 'GPT-5.4' },
-      { value: 'gpt-5.4-pro', label: 'GPT-5.4 Pro' },
-      { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
-      { value: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
-    ],
-  };
-
-  embeddingModels: Record<string, { value: string; label: string }[]> = {
-    openai: [
-      { value: 'text-embedding-3-small', label: 'text-embedding-3-small (recommended)' },
-      { value: 'text-embedding-3-large', label: 'text-embedding-3-large' },
-    ],
-    ollama: [
-      { value: 'bge-m3', label: 'bge-m3 (1024-dim, bundled)' },
-    ],
-  };
+  // Populated from ModelCatalogService before loadConfig() runs. Remote fetch falls back
+  // to the service's baked-in defaults if docs.datris.ai is unreachable.
+  models: Record<string, ModelOption[]> = {};
+  codegenModelsList: Record<string, ModelOption[]> = {};
+  embeddingModels: Record<string, ModelOption[]> = {};
 
   environment = '';
   version = '';
@@ -96,7 +63,7 @@ export class ConfigurationComponent implements OnInit {
   error = '';
   loading = true;
 
-  constructor(private http: HttpClient) {}
+  constructor(private http: HttpClient, private modelCatalog: ModelCatalogService) {}
 
   /** Trials share the same trial droplet infra as a hosted dedicated instance:
    *  bundled Ollama for embeddings, no local-Ollama chat option, no Advanced endpoint editing. */
@@ -112,7 +79,14 @@ export class ConfigurationComponent implements OnInit {
         this.isTrial = this.environment.startsWith('trial-');
         this.isHosted = String(data.hosted) === 'true';
         this.multiTenant = String(data.multiTenant) === 'true';
-        this.loadConfig();
+        // Load the model catalog before reading secrets so maybeAddExtraModel compares
+        // loaded model names against the freshest dropdown list.
+        this.modelCatalog.fetch().then(catalog => {
+          this.models = catalog.aiPrimary;
+          this.codegenModelsList = catalog.codegen;
+          this.embeddingModels = catalog.embedding;
+          this.loadConfig();
+        });
       },
       error: () => { this.loading = false; }
     });

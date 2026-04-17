@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-17",
+  "aiPrimary": {
+    "anthropic": [
+      { "value": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (recommended)", "recommended": true },
+      { "value": "claude-opus-4-6", "label": "Claude Opus 4.6" },
+      { "value": "claude-haiku-4-5", "label": "Claude Haiku 4.5" }
+    ],
+    "openai": [
+      { "value": "gpt-5.4", "label": "GPT-5.4 (recommended)", "recommended": true },
+      { "value": "gpt-5.4-pro", "label": "GPT-5.4 Pro" },
+      { "value": "gpt-5.4-mini", "label": "GPT-5.4 mini" },
+      { "value": "gpt-5.4-nano", "label": "GPT-5.4 nano" }
+    ]
+  },
+  "codegen": {
+    "anthropic": [
+      { "value": "claude-opus-4-6", "label": "Claude Opus 4.6 (recommended)", "recommended": true },
+      { "value": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6" },
+      { "value": "claude-haiku-4-5", "label": "Claude Haiku 4.5" }
+    ],
+    "openai": [
+      { "value": "gpt-5.3-codex", "label": "GPT-5.3-Codex (recommended)", "recommended": true },
+      { "value": "gpt-5.4", "label": "GPT-5.4" },
+      { "value": "gpt-5.4-pro", "label": "GPT-5.4 Pro" },
+      { "value": "gpt-5.4-mini", "label": "GPT-5.4 mini" },
+      { "value": "gpt-5.4-nano", "label": "GPT-5.4 nano" }
+    ]
+  },
+  "embedding": {
+    "openai": [
+      { "value": "text-embedding-3-small", "label": "text-embedding-3-small (recommended)", "recommended": true },
+      { "value": "text-embedding-3-large", "label": "text-embedding-3-large" }
+    ],
+    "ollama": [
+      { "value": "bge-m3", "label": "bge-m3 (1024-dim, bundled)" }
+    ]
+  }
+}
