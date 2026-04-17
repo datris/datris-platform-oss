@@ -13,19 +13,19 @@ import org.springframework.web.bind.annotation._
 
 import java.util.concurrent.atomic.AtomicReference
 
-/** Server-side proxy for the remote model catalog at docs.datris.ai/models.json.
- *  Browsers can't fetch docs.datris.ai directly (no CORS headers), so the UI
- *  fetches from this same-origin endpoint instead.
+/** Server-side proxy for the remote model catalog at datris.ai/models.json.
+ *  The UI fetches through this same-origin endpoint so the api-key interceptor
+ *  attaches the tenant key and we don't depend on cross-origin CORS headers.
  *
  *  A successful fetch is cached for CACHE_TTL_MS so that rapid reloads don't
- *  hammer the docs host; on fetch failure the endpoint returns 502 and the UI
- *  falls back to its baked-in default list. */
+ *  hammer the website; on fetch failure the endpoint returns the stale cache
+ *  (if any) or 502 so the UI falls back to its baked-in default list. */
 @RestController
 @RequestMapping(Array("/api/v1"))
 class ModelCatalogAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[ModelCatalogAPIController])
 
-    private val CATALOG_URL = "https://docs.datris.ai/models.json"
+    private val CATALOG_URL = "https://datris.ai/models.json"
     private val CACHE_TTL_MS = 5L * 60L * 1000L
     private val FETCH_TIMEOUT_MS = 3000
 
