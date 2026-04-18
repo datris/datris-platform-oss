@@ -16,6 +16,7 @@ import { TapRunComponent } from './tap-run/tap-run.component';
 import { GettingStartedComponent } from './getting-started/getting-started.component';
 import { DataCatalogComponent } from './data-catalog/data-catalog.component';
 import { DiscoveryComponent } from './discovery/discovery.component';
+import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
 
 const routes: Routes = [
   { path: '', redirectTo: 'getting-started', pathMatch: 'full' },
@@ -34,6 +35,7 @@ const routes: Routes = [
   { path: 'pipeline/:pipelineToken/:pipeline', component: PipelineDetailComponent },
   { path: 'search', component: SearchComponent },
   { path: 'mcp', component: McpComponent },
+  { path: 'agent-monitor', component: AgentMonitorComponent },
   { path: 'configuration', component: ConfigurationComponent },
   { path: 'secrets', component: SecretsComponent }
 ];

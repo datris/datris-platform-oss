@@ -1,0 +1,128 @@
+<div class="container">
+  <h1 class="page-title">Agent Monitor</h1>
+  <p class="page-subtitle">
+    Live view of AI agents connected to the Datris MCP server. Each active session appears as an
+    agent on the right; lines pulse as tools are invoked. The activity log below streams every
+    tool call with its status and latency.
+  </p>
+
+  <div class="section-card viz-card">
+    <div class="section-header">
+      <span class="material-icons section-icon">hub</span>
+      <h2 class="section-title">Connections</h2>
+      <span class="conn-status" [class.conn-ok]="connected" [class.conn-bad]="!connected">
+        <span class="dot"></span>
+        {{ connected ? 'connected' : 'mcp-server unreachable' }}
+      </span>
+    </div>
+
+    <div class="viz-wrapper">
+      <svg class="viz" [attr.viewBox]="'0 0 ' + canvasWidth + ' ' + canvasHeight"
+           preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <radialGradient id="serverGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#00b4ff" stop-opacity="0.35"/>
+            <stop offset="100%" stop-color="#00b4ff" stop-opacity="0"/>
+          </radialGradient>
+          <radialGradient id="agentGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#00e5a0" stop-opacity="0.35"/>
+            <stop offset="100%" stop-color="#00e5a0" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <line *ngFor="let a of agents; trackBy: trackAgent"
+              class="conn-line"
+              [class.active]="a.active"
+              [attr.x1]="serverX + 36" [attr.y1]="serverY"
+              [attr.x2]="a.x - 28" [attr.y2]="a.y"/>
+
+        <g [attr.transform]="'translate(' + serverX + ',' + serverY + ')'">
+          <circle r="58" fill="url(#serverGlow)"/>
+          <circle r="38" class="server-node"/>
+          <foreignObject x="-18" y="-18" width="36" height="36">
+            <span xmlns="http://www.w3.org/1999/xhtml" class="material-icons server-icon">dns</span>
+          </foreignObject>
+          <text y="64" class="node-label">MCP Server</text>
+        </g>
+
+        <g *ngFor="let a of agents; trackBy: trackAgent"
+           [attr.transform]="'translate(' + a.x + ',' + a.y + ')'">
+          <circle r="38" fill="url(#agentGlow)" [class.pulse-bg]="a.active"/>
+          <circle r="24" class="agent-node" [class.active]="a.active"/>
+          <foreignObject x="-12" y="-12" width="24" height="24">
+            <span xmlns="http://www.w3.org/1999/xhtml" class="material-icons agent-icon">smart_toy</span>
+          </foreignObject>
+          <text y="46" class="node-label">{{ agentLabel(a.session) }}</text>
+          <text y="60" class="node-sublabel">{{ a.session.call_count }} calls</text>
+        </g>
+
+        <text *ngIf="agents.length === 0"
+              [attr.x]="agentX" [attr.y]="serverY"
+              class="empty-label">No agents connected</text>
+      </svg>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <div class="section-header">
+      <span class="material-icons section-icon">terminal</span>
+      <h2 class="section-title">Activity Log</h2>
+      <span class="log-count">{{ log.length }} events</span>
+      <button class="log-action" type="button"
+              [disabled]="log.length === 0"
+              [title]="copyLabel"
+              (click)="copyLog()">
+        <span class="material-icons">{{ copied ? 'check' : 'content_copy' }}</span>
+      </button>
+      <button class="log-action" type="button"
+              [disabled]="log.length === 0"
+              title="Clear log"
+              (click)="clearLog()">
+        <span class="material-icons">delete_sweep</span>
+      </button>
+    </div>
+
+    <div class="log-scroll" #logScroll>
+      <div *ngIf="log.length === 0" class="log-empty">
+        Waiting for agent activity…
+      </div>
+      <div *ngFor="let row of log; trackBy: trackLog" class="log-entry">
+        <div class="log-row"
+             [class.error]="row.status === 'error'"
+             [class.expanded]="row.expanded"
+             (click)="toggleRow(row)">
+          <span class="log-caret material-icons">{{ row.expanded ? 'expand_more' : 'chevron_right' }}</span>
+          <span class="log-time">[{{ row.timeLabel }}]</span>
+          <span class="log-agent">{{ row.agentLabel }}</span>
+          <span class="log-arrow">→</span>
+          <span class="log-tool">{{ row.tool }}</span>
+          <span *ngIf="row.argsPreview" class="log-args">({{ row.argsPreview }})</span>
+          <span class="log-meta">
+            <span *ngIf="row.recordCount !== null" class="log-count-tag">{{ row.recordCount }} rec</span>
+            <span *ngIf="row.responseSizeLabel" class="log-size">{{ row.responseSizeLabel }}</span>
+            <span class="log-status" [class.ok]="row.status === 'ok'" [class.err]="row.status !== 'ok'">{{ row.status }}</span>
+            <span class="log-latency">{{ row.latencyMs }}ms</span>
+          </span>
+        </div>
+        <div *ngIf="row.status === 'error' && row.error && !row.expanded" class="log-error-inline">
+          <span class="material-icons">error_outline</span>
+          <span>{{ row.error }}</span>
+        </div>
+        <div *ngIf="row.expanded" class="log-detail">
+          <div class="detail-block" *ngIf="row.error">
+            <div class="detail-label">error</div>
+            <pre class="detail-body detail-error">{{ row.error }}</pre>
+          </div>
+          <div class="detail-block" *ngIf="row.argsFull">
+            <div class="detail-label">arguments</div>
+            <pre class="detail-body">{{ formatJson(row.argsFull) }}</pre>
+          </div>
+          <div class="detail-block" *ngIf="row.responsePreview">
+            <div class="detail-label">response</div>
+            <pre class="detail-body">{{ formatJson(row.responsePreview) }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

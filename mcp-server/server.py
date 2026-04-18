@@ -25,6 +25,10 @@ import argparse
 import contextvars
 import json
 import os
+import threading
+import time
+import uuid
+from collections import deque
 from typing import Any
 
 import requests
@@ -41,6 +45,200 @@ WEBSITE_URL = os.getenv("WEBSITE_URL", "https://datris.ai")
 
 # Per-session API key for multi-tenant SSE/HTTP connections
 _session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("_session_api_key", default="")
+# Per-session id used for agent-monitor attribution
+_session_id: contextvars.ContextVar[str] = contextvars.ContextVar("_session_id", default="")
+
+# Agent-monitor: in-process activity buffer + session tracker.
+# Ephemeral; cleared on restart. Safe to read via a plain lock.
+_activity_buffer: deque = deque(maxlen=200)
+_activity_sessions: dict[str, dict[str, Any]] = {}
+_activity_lock = threading.Lock()
+SESSION_IDLE_SECS = 30  # sessions with no activity for this many seconds are considered gone
+
+
+_PREVIEW_ARG_KEYS = [
+    "pipeline", "tap", "name", "collection", "query", "question",
+    "text", "limit", "top_k", "page", "file", "filename",
+]
+_PREVIEW_VALUE_MAX = 40
+_PREVIEW_MAX = 140
+_BLOB_MAX = 2000
+
+
+def _build_args_preview(args: Any) -> str:
+    if not isinstance(args, dict):
+        return ""
+    parts: list[str] = []
+    for key in _PREVIEW_ARG_KEYS:
+        if key not in args:
+            continue
+        val = args[key]
+        if isinstance(val, (dict, list)):
+            s = "…"
+        else:
+            s = str(val).replace("\n", " ").strip()
+            if len(s) > _PREVIEW_VALUE_MAX:
+                s = s[:_PREVIEW_VALUE_MAX - 1] + "…"
+        parts.append(f"{key}={s}")
+        if len(parts) == 3:
+            break
+    preview = ", ".join(parts)
+    if len(preview) > _PREVIEW_MAX:
+        preview = preview[:_PREVIEW_MAX - 1] + "…"
+    return preview
+
+
+def _pretty_json(value: Any, max_chars: int) -> str:
+    """Pretty-print a Python object as indented JSON, truncated to max_chars."""
+    try:
+        s = json.dumps(value, indent=2, default=str)
+    except Exception:
+        s = str(value)
+    if len(s) > max_chars:
+        s = s[:max_chars] + "\n…"
+    return s
+
+
+def _pretty_json_text(text: str, max_chars: int) -> str:
+    """Pretty-print a string that may or may not already be JSON.
+    Falls back to the raw string (truncated) if parsing fails."""
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+        s = json.dumps(parsed, indent=2, default=str)
+    except Exception:
+        s = text
+    if len(s) > max_chars:
+        s = s[:max_chars] + "\n…"
+    return s
+
+
+def _record_count_from_result(result_text: str) -> int | None:
+    try:
+        parsed = json.loads(result_text)
+    except Exception:
+        return None
+    if isinstance(parsed, list):
+        return len(parsed)
+    if isinstance(parsed, dict):
+        for key in ("pipelines", "taps", "results", "items", "records", "data", "rows"):
+            val = parsed.get(key)
+            if isinstance(val, list):
+                return len(val)
+    return None
+
+
+def _read_client_info() -> tuple[str, str]:
+    """Read MCP clientInfo (name, version) from the current request context.
+    Returns ("", "") when unavailable (e.g. stdio-only bootstrap, or SDK internals changed)."""
+    try:
+        ctx = server.request_context
+        if ctx is None:
+            return ("", "")
+        session = getattr(ctx, "session", None)
+        if session is None:
+            return ("", "")
+        # Try common attribute names across MCP SDK versions.
+        params = getattr(session, "client_params", None) or getattr(session, "_client_params", None)
+        if params is None:
+            return ("", "")
+        ci = getattr(params, "clientInfo", None)
+        if ci is None:
+            return ("", "")
+        name = getattr(ci, "name", "") or ""
+        version = getattr(ci, "version", "") or ""
+        return (name, version)
+    except Exception:
+        return ("", "")
+
+
+def _activity_record(session_id: str, tool: str, status: str, latency_ms: int, api_key: str,
+                     args: Any, result_text: str, error_msg: str) -> None:
+    now = time.time()
+    api_key_hint = api_key[:6] if api_key else ""
+    client_name, client_version = _read_client_info()
+    args_preview = _build_args_preview(args)
+    args_full = _pretty_json(args, _BLOB_MAX) if args else ""
+    response_preview = ""
+    response_size = 0
+    if result_text:
+        response_size = len(result_text)
+        response_preview = _pretty_json_text(result_text, _BLOB_MAX)
+    record_count = _record_count_from_result(result_text) if status == "ok" else None
+    error = ""
+    if error_msg:
+        error = error_msg if len(error_msg) <= 300 else error_msg[:300] + "…"
+
+    with _activity_lock:
+        _activity_buffer.append({
+            "ts": now,
+            "session_id": session_id,
+            "tool": tool,
+            "status": status,
+            "latency_ms": latency_ms,
+            "api_key_hint": api_key_hint,
+            "client_name": client_name,
+            "client_version": client_version,
+            "args_preview": args_preview,
+            "args_full": args_full,
+            "response_preview": response_preview,
+            "response_size": response_size,
+            "record_count": record_count,
+            "error": error,
+        })
+        sess = _activity_sessions.get(session_id)
+        if sess is None:
+            _activity_sessions[session_id] = {
+                "session_id": session_id,
+                "first_seen": now,
+                "last_seen": now,
+                "call_count": 1,
+                "api_key_hint": api_key_hint,
+                "client_name": client_name,
+                "client_version": client_version,
+            }
+        else:
+            sess["last_seen"] = now
+            sess["call_count"] += 1
+            if api_key_hint:
+                sess["api_key_hint"] = api_key_hint
+            if client_name and not sess.get("client_name"):
+                sess["client_name"] = client_name
+                sess["client_version"] = client_version
+
+
+def _activity_session_open(session_id: str, api_key: str) -> None:
+    now = time.time()
+    api_key_hint = api_key[:6] if api_key else ""
+    with _activity_lock:
+        _activity_sessions[session_id] = {
+            "session_id": session_id,
+            "first_seen": now,
+            "last_seen": now,
+            "call_count": 0,
+            "api_key_hint": api_key_hint,
+        }
+
+
+def _activity_session_close(session_id: str) -> None:
+    with _activity_lock:
+        _activity_sessions.pop(session_id, None)
+
+
+def _activity_snapshot(since: float) -> dict[str, Any]:
+    now = time.time()
+    with _activity_lock:
+        active_sessions = [
+            s for s in _activity_sessions.values()
+            if (now - s["last_seen"]) < SESSION_IDLE_SECS
+        ]
+        calls = [c for c in _activity_buffer if c["ts"] > since]
+        return {
+            "server_time": now,
+            "sessions": sorted(active_sessions, key=lambda s: s["first_seen"]),
+            "calls": calls,
+        }
 
 server = Server("datris", instructions="""\
 Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, and vector stores — all driven by pipeline configurations that AI agents can create and manage programmatically.
@@ -1251,11 +1449,24 @@ async def list_tools():
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    started = time.time()
+    session_id = _session_id.get() or "stdio"
+    api_key = _session_api_key.get()
+    status = "ok"
+    result_text = ""
+    error_msg = ""
     try:
-        result = _dispatch(name, arguments)
-        return [TextContent(type="text", text=result)]
+        result_text = _dispatch(name, arguments)
+        return [TextContent(type="text", text=result_text)]
     except Exception as e:
-        return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+        status = "error"
+        error_msg = str(e)
+        result_text = json.dumps({"error": error_msg})
+        return [TextContent(type="text", text=result_text)]
+    finally:
+        latency_ms = int((time.time() - started) * 1000)
+        _activity_record(session_id, name, status, latency_ms, api_key,
+                         arguments, result_text, error_msg)
 
 
 def _dispatch(name: str, args: dict) -> str:
@@ -1803,6 +2014,21 @@ def _extract_api_key(scope) -> str:
     return ""
 
 
+async def _handle_activity(scope, send) -> None:
+    qs = scope.get("query_string", b"").decode("utf-8")
+    since = 0.0
+    for part in qs.split("&"):
+        if part.startswith("since="):
+            try:
+                since = float(part[6:])
+            except ValueError:
+                since = 0.0
+    body = json.dumps(_activity_snapshot(since)).encode("utf-8")
+    await send({"type": "http.response.start", "status": 200,
+                "headers": [[b"content-type", b"application/json"]]})
+    await send({"type": "http.response.body", "body": body})
+
+
 async def run_sse(port: int):
     from mcp.server.sse import SseServerTransport
     import uvicorn
@@ -1821,11 +2047,20 @@ async def run_sse(port: int):
                                 "body": b'{"error":"x-api-key header required. Use the signup_trial tool or sign up at datris.ai to get an API key."}'})
                     return
                 _session_api_key.set(api_key)
-                async with sse.connect_sse(scope, receive, send) as streams:
-                    await server.run(streams[0], streams[1], server.create_initialization_options())
+                sess_id = uuid.uuid4().hex
+                _session_id.set(sess_id)
+                _activity_session_open(sess_id, api_key)
+                try:
+                    async with sse.connect_sse(scope, receive, send) as streams:
+                        await server.run(streams[0], streams[1], server.create_initialization_options())
+                finally:
+                    _activity_session_close(sess_id)
                 return
             elif path == "/messages":
                 await sse.handle_post_message(scope, receive, send)
+                return
+            elif path == "/activity":
+                await _handle_activity(scope, send)
                 return
         # 404 for anything else
         await send({"type": "http.response.start", "status": 404, "headers": []})
@@ -1865,7 +2100,16 @@ async def run_streamable_http(port: int):
                                 "body": b'{"error":"x-api-key header required. Use the signup_trial tool or sign up at datris.ai to get an API key."}'})
                     return
                 _session_api_key.set(api_key)
-                await session_manager.handle_request(scope, receive, send)
+                sess_id = uuid.uuid4().hex
+                _session_id.set(sess_id)
+                _activity_session_open(sess_id, api_key)
+                try:
+                    await session_manager.handle_request(scope, receive, send)
+                finally:
+                    _activity_session_close(sess_id)
+                return
+            elif path == "/activity":
+                await _handle_activity(scope, send)
                 return
         await send({"type": "http.response.start", "status": 404, "headers": []})
         await send({"type": "http.response.body", "body": b"Not Found"})
