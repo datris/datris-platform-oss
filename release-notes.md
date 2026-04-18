@@ -1,10 +1,10 @@
 # Release Notes
 
-## v1.6.5 — April 17, 2026
+## v1.6.6 — April 18, 2026
 
-- New AI models from OpenAI and Anthropic now appear in the Configuration dropdowns automatically, without a Datris upgrade.
-- Claude Opus 4.7 is the recommended Anthropic model for CodeGen (tap script generation, AI data quality rules, AI transformations, JSON Schema / XSD generation, and natural-language → SQL).
-- New trial signups are seeded with the latest recommended models by default.
+- **Agents tab** — new live view of connected MCP agents. See every tool call as it happens, with agent name, arguments, record count, response size, status, and latency. Click any row to expand the full request and response.
+- **Pipeline status** now self-heals when a job completes but the summary gets stuck showing "processing" — completed, warned, and errored jobs resolve to their correct final state.
+- **Example agent** (market-macro-agent) automatically reconnects with backoff if the MCP connection drops, and degrades gracefully while offline instead of crashing.
 
 ---
 
