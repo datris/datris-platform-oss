@@ -22,25 +22,63 @@ object PipelineStatusUtil {
         tableList.map(json => {
             val pipelineStatusSummaryTable = gson.fromJson(json, classOf[PipelineStatusSummaryTable])
 
-            // If status is 'processing', calculate the actual time elapsed
+            // If summary says 'processing', the raw events are the ground truth — the summary
+            // write path is racey and can leave a row stuck on 'processing' even after JobRunner
+            // emits its end event.
             val pipelineStatusSummary = pipelineStatusSummaryTable.json
             if(pipelineStatusSummary.status.compareToIgnoreCase("processing") == 0) {
-                val nowInMillis = new Timestamp(new Date().getTime).getTime
-                val (elapsed, timedout) = ElapsedTimeUtil.getElapsedTime(nowInMillis - pipelineStatusSummary.createdAt)
-                val totalTime = {
-                    if(timedout)
-                        "timed out"
-                    else
-                        elapsed
+                deriveStatusFromEvents(pipelineStatusSummary.pipelineToken) match {
+                    case Some((terminalStatus, latestEventMillis)) =>
+                        val (elapsed, _) = ElapsedTimeUtil.getElapsedTime(latestEventMillis - pipelineStatusSummary.createdAt)
+                        pipelineStatusSummary.copy(totalTime = elapsed, status = terminalStatus)
+                    case None =>
+                        val nowInMillis = new Timestamp(new Date().getTime).getTime
+                        val (elapsed, timedout) = ElapsedTimeUtil.getElapsedTime(nowInMillis - pipelineStatusSummary.createdAt)
+                        val totalTime = {
+                            if(timedout)
+                                "timed out"
+                            else
+                                elapsed
+                        }
+                        if(timedout)
+                            pipelineStatusSummary.copy(totalTime = totalTime, status = "error")
+                        else
+                            pipelineStatusSummary.copy(totalTime = totalTime)
                 }
-                if(timedout)
-                    pipelineStatusSummary.copy(totalTime = totalTime, status = "error")
-                else
-                    pipelineStatusSummary.copy(totalTime = totalTime)
             }
             else
                 pipelineStatusSummary
         }).sortWith(_.createdAt > _.createdAt).asJava
+    }
+
+    private def deriveStatusFromEvents(pipelineToken: String): Option[(String, Long)] = {
+        if(pipelineToken == null || pipelineToken.isEmpty)
+            return None
+
+        val tableList = NoSQLDbUtil.queryJSONItemsByKey(DatrisEnvironment.current.pipelineStatusTableName, "pipeline_token", pipelineToken)
+        if(tableList == null || tableList.isEmpty)
+            return None
+
+        val gson = new Gson
+        val events = tableList.map(gson.fromJson(_, classOf[PipelineStatusTable]))
+        val parsed = events.map(_.json)
+
+        val hasEnd = parsed.exists(e =>
+            e.processName != null && e.processName.compareToIgnoreCase("JobRunner") == 0 &&
+            e.state != null && e.state.compareToIgnoreCase("end") == 0)
+        val hasError = parsed.exists(e => e.code != null && e.code.compareToIgnoreCase("error") == 0)
+        val hasWarning = parsed.exists(e => e.code != null && e.code.compareToIgnoreCase("warning") == 0)
+
+        val latestEventMillis = events.map(_.created_at).max
+
+        if(hasError)
+            Some(("error", latestEventMillis))
+        else if(hasEnd && hasWarning)
+            Some(("warning", latestEventMillis))
+        else if(hasEnd)
+            Some(("success", latestEventMillis))
+        else
+            None
     }
 
     def getPipelineStatus(pipelineToken: String): java.util.List[PipelineStatus] = {

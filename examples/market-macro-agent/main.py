@@ -42,7 +42,7 @@ _sessions: dict[str, list[dict]] = {}
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    from agent.mcp_client import connect, disconnect, is_connected
+    from agent.mcp_client import start, stop
     from agent.scheduler import start_scheduler, stop_scheduler
 
     mcp_url = os.environ.get("MCP_SERVER_URL", "http://localhost:3000/sse")
@@ -53,22 +53,16 @@ async def lifespan(_app: FastAPI):
         f"[datris] MCP server: {mcp_url}"
     )
 
-    try:
-        await connect(mcp_url)
-        print(f"[datris] MCP: ✓ connected")
-    except Exception as e:
-        print(f"[datris] MCP: ✗ failed to connect — {e}")
-        print("[datris] Agent will run without MCP (tools unavailable)")
-
-    if is_connected():
-        start_scheduler()
+    # Supervisor runs in background and reconnects automatically
+    await start(mcp_url)
+    start_scheduler()
 
     print(f"[datris] Open http://localhost:{port} in your browser")
 
     yield
 
     stop_scheduler()
-    await disconnect()
+    await stop()
 
 
 app = FastAPI(title="Datris Market Intelligence Agent", lifespan=lifespan)

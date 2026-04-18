@@ -12,7 +12,7 @@ All other tools are forwarded directly to the MCP server.
 import logging
 
 from agent.data_fetcher import fetch_source
-from agent.mcp_client import call_tool as mcp_call
+from agent.mcp_client import call_tool as mcp_call, is_connected
 from agent.pipeline_store import store
 
 log = logging.getLogger("datris.executor")
@@ -99,6 +99,9 @@ async def _ingest_data(input_: dict) -> dict:
 
 async def _mcp_passthrough(name: str, input_: dict) -> dict:
     """Forward a tool call directly to the MCP server, resolving data_id references."""
+    if not is_connected():
+        return {"error": "Datris MCP server is unavailable. Retrying in the background — try again shortly."}
+
     resolved = _resolve_content(input_)
 
     # Validate data source matches pipeline before uploading

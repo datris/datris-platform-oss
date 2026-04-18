@@ -1,17 +1,21 @@
 """
 agent/mcp_client.py
 
-Persistent MCP client connection over SSE.
+Persistent MCP client connection over SSE with automatic reconnection.
 
 Uses a custom SSE transport instead of the built-in sse_client to avoid
 a connection-pool issue where the SSE read stream and POST writer share
 the same httpx client and interfere with each other.
 
 Lifecycle:
-    await connect("http://localhost:3000/sse")   # call once at startup
-    tools = await get_tools()                     # Anthropic-formatted tool defs
+    await start("http://localhost:3000/sse")  # call once at startup (non-blocking)
+    tools = await get_tools()                  # returns [] until connected
     result = await call_tool("list_pipelines", {})
-    await disconnect()                            # call once at shutdown
+    await stop()                               # call once at shutdown
+
+A supervisor task owns the connection and reconnects automatically with
+exponential backoff (2s → 30s cap) whenever the SSE stream drops or the
+initial handshake fails.
 """
 
 import asyncio
@@ -28,11 +32,14 @@ _sse_client: httpx.AsyncClient | None = None
 _post_client: httpx.AsyncClient | None = None
 _endpoint: str | None = None
 _reader_task: asyncio.Task | None = None
+_supervisor_task: asyncio.Task | None = None
 _pending: dict[int, asyncio.Future] = {}
 _tools_cache: list[dict] | None = None
 _resources_cache: dict[str, str] = {}
 _msg_id: int = 0
 _sse_cm: Any = None  # context manager for SSE connection
+_connected: bool = False
+_stopping: bool = False
 
 
 def _next_id() -> int:
@@ -61,31 +68,30 @@ async def _send_and_wait(method: str, params: dict, timeout: float = 10.0) -> di
         _pending.pop(call_id, None)
 
 
-async def connect(url: str, timeout: float = 15.0) -> None:
-    """Open an SSE connection to the Datris MCP server and discover tools."""
-    global _sse_client, _post_client, _endpoint, _reader_task, _pending, _tools_cache, _sse_cm
+async def _connect_once(url: str, timeout: float = 15.0) -> None:
+    """
+    Single connection attempt. Opens SSE, performs handshake, lists tools
+    and resources. Raises on any failure; caller is the supervisor.
+    """
+    global _sse_client, _post_client, _endpoint, _reader_task, _tools_cache, _sse_cm, _connected
 
     _sse_client = httpx.AsyncClient(timeout=httpx.Timeout(5, read=300))
     _post_client = httpx.AsyncClient(
         timeout=30,
         limits=httpx.Limits(max_keepalive_connections=0),
     )
-    _pending = {}
 
     try:
         async with asyncio.timeout(timeout):
-            # Open SSE stream
             _sse_cm = aconnect_sse(_sse_client, "GET", url)
             sse = await _sse_cm.__aenter__()
 
-            # Read events in background
             async def _read_sse():
                 global _endpoint
                 try:
                     async for event in sse.aiter_sse():
                         if event.event == "endpoint":
-                            # Build full URL from relative endpoint
-                            base = url.rsplit("/", 1)[0]  # e.g. http://localhost:3000
+                            base = url.rsplit("/", 1)[0]
                             _endpoint = base + event.data
                             log.debug("MCP endpoint: %s", _endpoint)
                         elif event.event == "message":
@@ -95,15 +101,15 @@ async def connect(url: str, timeout: float = 15.0) -> None:
                             if fut and not fut.done():
                                 fut.set_result(data)
                             else:
-                                log.debug("Unmatched response id=%s (no pending future)", rid)
+                                log.debug("Unmatched response id=%s", rid)
                 except asyncio.CancelledError:
-                    pass
+                    raise
                 except Exception as e:
-                    log.debug("SSE reader stopped: %s", e)
+                    log.warning("SSE reader exited: %s", e)
 
             _reader_task = asyncio.create_task(_read_sse())
 
-            # Wait for endpoint
+            # Wait for endpoint announcement
             for _ in range(50):
                 if _endpoint:
                     break
@@ -111,7 +117,6 @@ async def connect(url: str, timeout: float = 15.0) -> None:
             if not _endpoint:
                 raise ConnectionError("No endpoint received from MCP SSE stream")
 
-            # Initialize
             resp = await _send_and_wait("initialize", {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
@@ -119,13 +124,11 @@ async def connect(url: str, timeout: float = 15.0) -> None:
             }, timeout=10)
             log.debug("MCP initialized: %s", list(resp.get("result", {}).get("capabilities", {}).keys()))
 
-            # Send initialized notification (no response expected)
             await _post_client.post(_endpoint, json={
                 "jsonrpc": "2.0",
                 "method": "notifications/initialized",
             })
 
-            # List tools
             resp = await _send_and_wait("tools/list", {}, timeout=10)
             tools = resp.get("result", {}).get("tools", [])
 
@@ -137,14 +140,97 @@ async def connect(url: str, timeout: float = 15.0) -> None:
                 }
                 for t in tools
             ]
-            log.info("MCP connected — %d tools available", len(_tools_cache))
 
-            # Read all MCP resources
             await _read_resources()
 
     except Exception:
-        await disconnect()
+        await _teardown()
         raise
+
+    _connected = True
+    print(f"[datris] MCP: ✓ connected — {len(_tools_cache)} tools available")
+
+
+async def _teardown() -> None:
+    """Close SSE + POST clients, cancel reader, clear state. Does not cancel supervisor."""
+    global _sse_client, _post_client, _endpoint, _reader_task, _tools_cache, _sse_cm, _connected
+
+    _connected = False
+
+    # Cancel any pending futures so in-flight callers fail fast
+    for fut in list(_pending.values()):
+        if not fut.done():
+            fut.set_exception(ConnectionError("MCP connection lost"))
+    _pending.clear()
+
+    if _reader_task and not _reader_task.done():
+        _reader_task.cancel()
+        try:
+            await _reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    _reader_task = None
+
+    if _sse_cm:
+        try:
+            await _sse_cm.__aexit__(None, None, None)
+        except Exception:
+            pass
+    _sse_cm = None
+
+    if _sse_client:
+        try:
+            await _sse_client.aclose()
+        except Exception:
+            pass
+    _sse_client = None
+
+    if _post_client:
+        try:
+            await _post_client.aclose()
+        except Exception:
+            pass
+    _post_client = None
+
+    _endpoint = None
+    _tools_cache = None
+
+
+async def _supervisor(url: str) -> None:
+    """
+    Owns the connection lifecycle. Loops: connect → wait for reader to exit
+    → tear down → backoff → retry. Exits only when _stopping is set.
+    """
+    backoff = 2.0
+    while not _stopping:
+        try:
+            await _connect_once(url)
+            backoff = 2.0  # reset after successful connect
+        except Exception as e:
+            print(f"[datris] MCP: ✗ connect failed ({e}), retrying in {backoff:.0f}s")
+            try:
+                await asyncio.sleep(backoff)
+            except asyncio.CancelledError:
+                return
+            backoff = min(backoff * 2, 30.0)
+            continue
+
+        # Connected — wait for reader task to exit (disconnect or cancellation)
+        try:
+            await _reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+        if _stopping:
+            break
+
+        print(f"[datris] MCP: ✗ SSE reader exited, reconnecting in {backoff:.0f}s")
+        await _teardown()
+        try:
+            await asyncio.sleep(backoff)
+        except asyncio.CancelledError:
+            return
+        backoff = min(backoff * 2, 30.0)
 
 
 async def _read_resources() -> None:
@@ -156,6 +242,7 @@ async def _read_resources() -> None:
         return
 
     resources = resp.get("result", {}).get("resources", [])
+    _resources_cache.clear()
 
     for r in resources:
         try:
@@ -164,7 +251,6 @@ async def _read_resources() -> None:
             continue
         contents = resp2.get("result", {}).get("contents", [])
         text = "\n".join(c.get("text", "") for c in contents)
-        # Cap resource size to keep system prompt reasonable
         if len(text) > 4000:
             text = text[:4000] + "\n\n[... truncated for brevity]"
         _resources_cache[r["name"]] = text
@@ -181,52 +267,44 @@ async def get_resources_text() -> str:
     return "\n\n".join(parts)
 
 
-async def disconnect() -> None:
-    """Cleanly shut down the MCP connection."""
-    global _sse_client, _post_client, _endpoint, _reader_task, _pending, _tools_cache, _sse_cm
+async def start(url: str) -> None:
+    """
+    Launch the connection supervisor. Returns immediately — the supervisor
+    runs in the background and reconnects forever until stop() is called.
+    """
+    global _supervisor_task, _stopping
+    _stopping = False
+    _supervisor_task = asyncio.create_task(_supervisor(url))
 
-    # Cancel any pending futures
-    for fut in _pending.values():
-        if not fut.done():
-            fut.cancel()
-    _pending = {}
 
-    if _reader_task:
-        _reader_task.cancel()
+async def stop() -> None:
+    """Shut down the supervisor and close the connection."""
+    global _supervisor_task, _stopping
+    _stopping = True
+
+    if _supervisor_task and not _supervisor_task.done():
+        _supervisor_task.cancel()
         try:
-            await _reader_task
+            await _supervisor_task
         except (asyncio.CancelledError, Exception):
             pass
-    if _sse_cm:
-        try:
-            await _sse_cm.__aexit__(None, None, None)
-        except Exception:
-            pass
-    if _sse_client:
-        await _sse_client.aclose()
-    if _post_client:
-        await _post_client.aclose()
+    _supervisor_task = None
 
-    _sse_client = None
-    _post_client = None
-    _endpoint = None
-    _reader_task = None
-    _tools_cache = None
-    _sse_cm = None
-    log.info("MCP disconnected")
+    await _teardown()
+    log.info("MCP stopped")
 
 
 async def get_tools() -> list[dict]:
-    """Return tool definitions in Anthropic format (name, description, input_schema)."""
+    """Return tool definitions in Anthropic format. Empty list if not connected."""
     if _tools_cache is None:
-        raise RuntimeError("MCP client not connected — call connect() first")
+        return []
     return list(_tools_cache)
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> dict:
     """Execute a tool on the MCP server and return the result as a dict."""
-    if _post_client is None or _endpoint is None:
-        raise RuntimeError("MCP client not connected — call connect() first")
+    if not _connected or _post_client is None or _endpoint is None:
+        return {"error": "Datris MCP server is unavailable. Retrying in the background — try again shortly."}
 
     call_id = _next_id()
     print(f"[mcp] call_tool: {name} (id={call_id}) args={str(arguments)}")
@@ -235,25 +313,30 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict:
     fut: asyncio.Future = loop.create_future()
     _pending[call_id] = fut
 
-    r = await _post_client.post(_endpoint, json={
-        "jsonrpc": "2.0",
-        "id": call_id,
-        "method": "tools/call",
-        "params": {"name": name, "arguments": arguments},
-    })
-    print(f"[mcp] POST status: {r.status_code}")
+    try:
+        r = await _post_client.post(_endpoint, json={
+            "jsonrpc": "2.0",
+            "id": call_id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        })
+        print(f"[mcp] POST status: {r.status_code}")
+    except Exception as e:
+        _pending.pop(call_id, None)
+        return {"error": f"MCP POST failed: {e}"}
 
     try:
         resp = await asyncio.wait_for(fut, 120)
     except asyncio.TimeoutError:
         print(f"[mcp] TIMEOUT waiting for response: {name} (id={call_id})")
         return {"error": f"MCP tool call timed out: {name}"}
+    except ConnectionError as e:
+        return {"error": f"MCP connection lost during tool call: {e}"}
     finally:
         _pending.pop(call_id, None)
 
-    print(f"[mcp] response id={resp.get('id')} (waiting for {call_id}): {str(resp)}")
+    print(f"[mcp] response id={resp.get('id')} (waiting for {call_id})")
 
-    # Handle JSON-RPC error responses
     if "error" in resp:
         err = resp["error"]
         print(f"[mcp] tool error: {name} — {err}")
@@ -262,13 +345,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict:
     result = resp.get("result", {})
     content = result.get("content", [])
 
-    # Combine text blocks
     texts = [block["text"] for block in content if block.get("type") == "text"]
     combined = "\n".join(texts)
 
     print(f"[mcp] result: {name} → {combined}")
 
-    # Try to parse as JSON; fall back to raw text
     try:
         return json.loads(combined)
     except (json.JSONDecodeError, TypeError):
@@ -276,5 +357,5 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict:
 
 
 def is_connected() -> bool:
-    """Check whether the MCP client has an active connection."""
-    return _endpoint is not None and _post_client is not None
+    """Return True only when the SSE stream is live and handshake complete."""
+    return _connected
