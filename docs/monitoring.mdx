@@ -125,7 +125,25 @@ Job statuses are stored in MongoDB in the `{environment}-pipeline-status` collec
 
 ## Datris UI
 
-The [Datris UI](http://localhost:4200) provides a visual interface for managing your entire Datris platform. It includes tabs for MCP server status and tools, pipeline management, ingestion monitoring with job history and error details, semantic search across vector databases, and secrets management — all without needing to use the API directly.
+The [Datris UI](http://localhost:4200) provides a visual interface for managing your entire Datris platform. It includes tabs for MCP server status and tools, the Agents tab for live AI agent activity, pipeline management, ingestion monitoring with job history and error details, semantic search across vector databases, and secrets management — all without needing to use the API directly.
+
+## Agent Monitor
+
+The **Agents** tab shows a live view of every AI agent currently connected to the platform's MCP server, along with a streaming log of the tool calls each agent is making.
+
+The visualization pane draws one icon per active MCP session on the right of the MCP server icon, connected by a line that pulses whenever a call is in flight. Idle sessions fade out automatically once they disconnect.
+
+Each agent label uses the most descriptive identifier available, in this order:
+
+1. The MCP `clientInfo.name` supplied during the client's handshake (e.g. `claude-ai`, `claude-code`, `cursor`)
+2. The tenant name (multi-tenant deployments)
+3. The API-key name from the `api-keys` secret (single-tenant deployments with named keys)
+4. The API-key prefix
+5. The session short-id (last-resort fallback)
+
+The activity log below the visualization lists every tool call as it happens — timestamped per the platform's configured [date format and timezone](/configuration-reference), with the calling agent, tool name, argument preview, record count, response size, status, and latency. Clicking a row expands it to reveal the full arguments and response bodies as pretty-printed JSON (capped at 2 KB per blob). A header toolbar lets you copy the full log (with per-row detail) to the clipboard or clear the on-screen history.
+
+Activity is held in an in-memory ring buffer on the MCP server (the most recent 200 calls) and served via the UI's internal `/api/v1/mcp/activity` proxy. It is not persisted — restarts clear the history.
 
 ## CLI
 
