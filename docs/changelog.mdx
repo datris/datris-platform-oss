@@ -4,11 +4,15 @@ description: "Release history for Datris"
 ---
 
 <Update label="v1.6.7" description="April 19, 2026">
-  **Document tap improvements, faster embeddings, more pre-installed Python libraries.**
+  **Document Taps — a new tap type for feeding vector stores with unstructured files.**
 
-  - **Document tap improvements** — document taps now track which files have already been ingested, so re-running a tap against the same source won't re-embed the same documents. Taps are validated up front to catch incompatible pipeline shapes (e.g. pointing a document tap at a relational destination) before the run starts.
-  - **Faster embeddings** — the bundled Ollama sidecar now handles concurrent embedding requests in parallel and keeps the embedding model warm between pipeline runs, eliminating cold-start delays when a pipeline resumes after an idle period.
-  - **More Python libraries pre-installed for taps** — AWS S3, Google Cloud Storage, Azure Blob, Excel, YAML, and date/timezone helpers are now baked into the image. Common taps no longer need a per-run `pip install` — they just work.
+  - **Document Taps (new).** A purpose-built tap for ingesting PDFs, Word docs, HTML, and other unstructured files into a vector-store pipeline. Describe the source in plain English ("ingest all PDFs from our SharePoint legal folder", "pull every DOCX from `legal-contracts/2026/` in S3") and the generated tap discovers the files and hands their raw bytes to the pipeline. Text extraction, chunking, embedding, and loading are all handled downstream — you don't configure any of that on the tap.
+  - **Tap type toggle in Create Tap.** Choose *Document Ingestion* or *Structured/Semi-Structured* on the first step of the wizard; the prompts, placeholders, and example instructions adapt to the choice.
+  - **Ingestion ledger.** Every discovered file is tracked by URI and content hash. Re-running the tap skips files that are already up to date — no re-embedding, no duplicates. Changed files flow through normally.
+  - **Pre-flight validation.** Document taps linked to a pipeline are checked at save time to confirm the pipeline is shaped for document ingestion (unstructured source, vector-store destination). Misconfigurations surface as an actionable error instead of a cryptic mid-run failure.
+  - **Safe defaults for local paths.** Document taps refuse to silently walk arbitrary host directories if a requested path isn't mounted into the container — they fail loudly instead of ingesting unintended files.
+  - **Faster embeddings.** The bundled Ollama sidecar now handles concurrent embedding requests in parallel and keeps the embedding model warm between pipeline runs, eliminating cold-start delays when a pipeline resumes after an idle period.
+  - **More Python libraries pre-installed for taps.** AWS S3, Google Cloud Storage, Azure Blob, Excel, YAML, and date/timezone helpers are now baked into the image. Taps that fetch from these sources no longer need a per-run `pip install`.
 </Update>
 
 <Update label="v1.6.6" description="April 18, 2026">
