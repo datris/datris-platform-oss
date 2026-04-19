@@ -263,7 +263,7 @@ datris taps
 Create a tap from a plain-English description.
 
 ```bash
-datris tap create "<description>" --pipeline <name> [--name <tap-name>] [--cron "<expression>"]
+datris tap create "<description>" --pipeline <name> [--name <tap-name>] [--cron "<expression>"] [--type structured|document]
 ```
 
 | Option | Description |
@@ -271,12 +271,22 @@ datris tap create "<description>" --pipeline <name> [--name <tap-name>] [--cron 
 | `--pipeline`, `-p` | Target pipeline name (required) |
 | `--name`, `-n` | Tap name (default: derived from pipeline name) |
 | `--cron` | CRON expression for scheduling (Quartz format) |
+| `--secret` | Vault secret name for credentials injected as env vars |
+| `--script` | Path to a Python script file with a `fetch()` function (skips AI generation) |
+| `--type` | `structured` (default) returns rows of records; `document` returns `{uri, filename, content}` dicts destined for a vector-store pipeline. See [Document Taps](/taps#document-taps) |
 
 **Examples:**
 ```bash
+# Structured: rows into a Postgres/Mongo pipeline
 datris tap create "Fetch daily stock prices for S&P 500 from yfinance" --pipeline stocks --cron "0 0 0 * * ?"
 datris tap create "Get weather data from Open-Meteo API" --pipeline weather --name weather-tap
+
+# Document: raw file bytes into a vector-store pipeline
+datris tap create "Discover all PDFs in the S3 bucket 'contracts' under prefix 2026/" \
+  --pipeline contracts-vec --type document --secret aws-creds
 ```
+
+Document taps require a target pipeline whose source is `unstructuredAttributes` and whose destination is a vector store (qdrant, pgvector, weaviate, milvus, or chroma). The server rejects `tap create --type document` against a structured pipeline with HTTP 400.
 
 ---
 

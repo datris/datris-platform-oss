@@ -64,7 +64,8 @@ async def run(
     if resources:
         system_prompt += "\n\n" + resources
 
-    max_iters = 12
+    max_iters = 25
+    hit_max_iters = True
     for _ in range(max_iters):
 
         await store.increment_api_calls()
@@ -104,6 +105,7 @@ async def run(
                 yield {"event": "answer", "data": {"text": text.strip()}}
             else:
                 yield {"event": "answer", "data": {"text": "Response was too long — please try a more specific question."}}
+            hit_max_iters = False
             break
 
         history.append({"role": "assistant", "content": response.content})
@@ -116,6 +118,7 @@ async def run(
             print(f"[loop] answer text length={len(text.strip())}")
             if text.strip():
                 yield {"event": "answer", "data": {"text": text.strip()}}
+            hit_max_iters = False
             break
 
         # ── Tool-use turn ──────────────────────────────────────────────────
@@ -147,8 +150,8 @@ async def run(
                 # Truncate large results (e.g. base64 content from ingest_data)
                 # to prevent conversation history from growing too large
                 if len(result_str) > 2000:
-                    truncated = result_str[:1500]
-                    result_str = truncated + f'... [truncated, {len(result_str)} chars total]"'
+                    total_len = len(result_str)
+                    result_str = result_str[:1500] + f"\n\n[... result truncated — {total_len} chars total]"
 
                 tool_results.append({
                     "type":        "tool_result",
@@ -158,6 +161,12 @@ async def run(
 
             if tool_results:
                 history.append({"role": "user", "content": tool_results})
+
+    if hit_max_iters:
+        yield {"event": "answer", "data": {"text": (
+            f"I had to stop after {max_iters} steps without reaching a final answer. "
+            "Try a more specific question, or ask me to focus on one data source at a time."
+        )}}
 
     # Surface the final history so the caller can persist it
     yield {"event": "history", "data": {"history": history}}

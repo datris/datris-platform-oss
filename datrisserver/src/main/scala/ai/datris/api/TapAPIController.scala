@@ -102,6 +102,20 @@ class TapAPIController {
             if (tapConfig.name == null || tapConfig.name.isEmpty)
                 throw new DatrisException("Tap name is required")
 
+            // Document-tap pipeline compatibility guard: document taps push raw bytes,
+            // so the target pipeline must be unstructured + vector-store or the bytes
+            // will crash the destination loader (e.g. PDF into MongoDBLoader).
+            if (tapConfig.tapType == "document" && tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty) {
+                val pipeline = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tapConfig.targetPipeline)
+                DocumentTapValidator.incompatibilityReason(pipeline) match {
+                    case Some(reason) =>
+                        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                            "{\"error\": \"Document tap '" + tapConfig.name + "' cannot target pipeline '" +
+                                tapConfig.targetPipeline + "': " + reason.replace("\"", "'") + "\"}")
+                    case None => // compatible
+                }
+            }
+
             // Set timestamps
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
             val sdf2 = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
@@ -134,6 +148,24 @@ class TapAPIController {
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
             if (existing != null) {
                 TapScriptGenerator.deleteScript(existing.scriptPath)
+            }
+
+            // Document taps: also clean up staged files and ledger entries
+            if (existing != null && existing.tapType == "document") {
+                try {
+                    val ledgerTable = DatrisEnvironment.current.tapLedgerTableName
+                    val bucket = DatrisEnvironment.current.environment + "-config"
+                    val entries = TapDocumentLedgerIO.readByTap(ledgerTable, name)
+                    entries.foreach { e =>
+                        if (e.stagedPath != null && e.stagedPath.nonEmpty) {
+                            try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
+                            catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
+                        }
+                    }
+                    TapDocumentLedgerIO.deleteByTap(ledgerTable, name)
+                } catch {
+                    case ex: Exception => logger.warn("Tap ledger cleanup failed for " + name + ": " + ex.getMessage)
+                }
             }
 
             TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)
@@ -226,6 +258,7 @@ class TapAPIController {
 
             val messagesRaw = body.get("messages").asInstanceOf[java.util.List[java.util.Map[String, String]]]
             val currentDescription = Option(body.get("currentDescription")).map(_.toString).getOrElse("")
+            val tapType = Option(body.get("tapType")).map(_.toString).getOrElse("structured")
 
             if (messagesRaw == null || messagesRaw.isEmpty)
                 throw new DatrisException("messages array is required")
@@ -234,7 +267,45 @@ class TapAPIController {
                 (m.get("role"), m.get("content"))
             }.toSeq
 
-            val systemPrompt =
+            val documentSystemPrompt =
+                """You are a data engineering assistant helping a user describe a DOCUMENT TAP — a Python script whose only job is to DISCOVER source documents (PDFs, Word docs, HTML pages, contracts, manuals, etc.) and hand the raw file bytes to the platform.
+                  |
+                  |Scope of the tap — critical:
+                  |- The tap DISCOVERS and DOWNLOADS documents. That's it.
+                  |- The tap does NOT chunk documents, NOT generate embeddings, NOT pick an embedding model, NOT choose a vector store, NOT create tables, NOT run SQL. All of that is handled by the downstream PIPELINE the tap feeds into.
+                  |- Do NOT ask the user about chunk size, chunk overlap, embedding model, vector store type (Qdrant / pgvector / Weaviate / Milvus / Chroma), destination table, or collection name. Those are pipeline configuration — the user sets them up when they create or attach the pipeline, not here.
+                  |- If the user volunteers details about chunking/embedding/vector store, acknowledge briefly that those are pipeline-level decisions and redirect the conversation to the tap's job: where the documents live and how to list + fetch them.
+                  |
+                  |What you DO ask about:
+                  |1. WHERE the documents live (a web URL listing, a specific site, an S3 bucket, a SharePoint site, an RSS feed, a GitHub repo, etc.).
+                  |2. HOW to enumerate them (does the source have an index page, a sitemap, an API that returns a list, a folder listing?).
+                  |3. WHICH documents to include (file type filters, date ranges, folder filters, naming patterns).
+                  |4. AUTHENTICATION needs (API keys, cookies, tokens) — tell the user the env var names and mention they should configure a tap secret.
+                  |
+                  |Local paths: if the user gives a local filesystem path, remind them that the tap runs inside the Datris container and that path must be mounted in — otherwise suggest the documents be served over HTTP/S3/etc. Do NOT encourage fallback-search-the-filesystem logic.
+                  |
+                  |Credentials — same as structured taps:
+                  |- The platform auto-injects DATRIS_POSTGRES_DATABASE, DATRIS_MONGODB_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT. The user does NOT need to configure those.
+                  |- Any other credential (source API key, SharePoint token, etc.) needs a tap secret with specific env var names. Tell the user which ones and suggest they create/select a tap secret in the Credentials section.
+                  |
+                  |Ask ONE focused clarifying question at a time. Be concise — 1-2 sentences per turn. When you have enough information, tell the user the instruction is ready.
+                  |
+                  |After EACH user message, return JSON with three fields:
+                  |{
+                  |  "reply": "your next message or question",
+                  |  "description": "a plain-English statement of what documents the user wants and where they come from — for the user to read, NOT for code generation. No URLs, no code, no implementation detail. Never mention chunking/embeddings/vector store — those belong on the pipeline.",
+                  |  "suggestedEnvVars": ["ENV_VAR_NAME_1"]
+                  |}
+                  |
+                  |The description should always reflect everything known so far. Never leave description empty after the first user message.
+                  |
+                  |Write the description as plain English capturing intent. NEVER include API URLs, HTTP verbs, library names, file paths, or env var names in the description. The script generator already knows HOW to fetch; your job is WHAT.
+                  |
+                  |suggestedEnvVars lists env var names the script will need that are NOT auto-injected by Datris. For open/public sources return []. Always return the field, even when empty.
+                  |
+                  |Return ONLY the JSON object, no markdown fences, no commentary.""".stripMargin
+
+            val structuredSystemPrompt =
                 """You are a data engineering assistant helping users describe a "tap" — a Python script that fetches data from an external source and returns a list of records.
                   |
                   |Your job is to converse with the user to understand:
@@ -293,6 +364,8 @@ class TapAPIController {
                   |suggestedEnvVars should list any environment variable names the script will need that are NOT auto-injected by Datris (so do NOT include DATRIS_POSTGRES_DATABASE, DATRIS_MONGODB_DATABASE, DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT). For free sources with no auth, return an empty array []. Always return the field, even when empty.
                   |
                   |Return ONLY the JSON object, no markdown fences, no commentary.""".stripMargin
+
+            val systemPrompt = if (tapType == "document") documentSystemPrompt else structuredSystemPrompt
 
             // Prepend a system-style note about current description if present
             val messagesWithContext: Seq[(String, String)] = if (currentDescription.nonEmpty) {
@@ -355,13 +428,14 @@ class TapAPIController {
             val tapName = Option(body.get("tapName")).getOrElse("tap-" + System.currentTimeMillis())
             val oldScriptPath = body.get("oldScriptPath")
             val secretName = body.get("secretName")
-            logger.info("API endpoint POST /tap/generate called, tapName: " + tapName)
+            val tapType = Option(body.get("tapType")).getOrElse("structured")
+            logger.info("API endpoint POST /tap/generate called, tapName: " + tapName + ", tapType: " + tapType)
             APIKeyValidator.validate(apiKey)
 
             if (description == null || description.isEmpty)
                 throw new DatrisException("Description is required")
 
-            val result = TapScriptGenerator.generate(description, tapName, oldScriptPath, secretName)
+            val result = TapScriptGenerator.generate(description, tapName, oldScriptPath, secretName, tapType)
 
             // Update scriptPath in MongoDB if tap already exists
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
@@ -405,7 +479,8 @@ class TapAPIController {
                   |Fix the script and return a JSON object with two fields:
                   |- "script": the complete fixed Python 3 script (must define a `fetch()` function)
                   |- "packages": a list of the EXACT pip install package names needed beyond the pre-installed set
-                  |  (requests, beautifulsoup4, pandas, lxml, feedparser). Use an empty list if none needed.
+                  |  (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, pyyaml, openpyxl,
+                  |  python-dateutil, pytz, google-cloud-storage, azure-storage-blob). Use an empty list if none needed.
                   |  Package names must be the pip install names, not Python import names (they are often different).
                   |
                   |IMPORTANT fix strategies:
@@ -718,6 +793,62 @@ class TapAPIController {
             response.put("dataType", result.dataType)
             response.put("columns", result.columns)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @GetMapping(path = Array("/tap/ledger"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getTapLedger(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                     @RequestParam name: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /tap/ledger called for tap: " + name)
+            APIKeyValidator.validate(apiKey)
+
+            val entries = TapDocumentLedgerIO.readByTap(DatrisEnvironment.current.tapLedgerTableName, name).asJava
+            val gson = new Gson
+            new ResponseEntity[String](gson.toJson(entries), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @DeleteMapping(path = Array("/tap/ledger"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def deleteTapLedger(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                        @RequestParam name: String,
+                        @RequestParam(required = false) uri: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint DELETE /tap/ledger called for tap: " + name + (if (uri != null) ", uri: " + uri else ""))
+            APIKeyValidator.validate(apiKey)
+
+            val ledgerTable = DatrisEnvironment.current.tapLedgerTableName
+            val bucket = DatrisEnvironment.current.environment + "-config"
+
+            if (uri != null && uri.nonEmpty) {
+                // Delete one entry, plus its staged file
+                val entry = TapDocumentLedgerIO.read(ledgerTable, name, uri)
+                if (entry != null && entry.stagedPath != null && entry.stagedPath.nonEmpty) {
+                    try { ObjectStoreUtil.deleteBucketObject(bucket, entry.stagedPath) }
+                    catch { case ex: Exception => logger.warn("Failed to delete staged doc " + entry.stagedPath + ": " + ex.getMessage) }
+                }
+                TapDocumentLedgerIO.delete(ledgerTable, name, uri)
+                new ResponseEntity[String]("{\"message\": \"Ledger entry deleted\"}", HttpStatus.OK)
+            } else {
+                // Clear the entire ledger for this tap + all staged files
+                val entries = TapDocumentLedgerIO.readByTap(ledgerTable, name)
+                entries.foreach { e =>
+                    if (e.stagedPath != null && e.stagedPath.nonEmpty) {
+                        try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
+                        catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
+                    }
+                }
+                TapDocumentLedgerIO.deleteByTap(ledgerTable, name)
+                new ResponseEntity[String]("{\"message\": \"Ledger cleared: " + entries.size + " entries\"}", HttpStatus.OK)
+            }
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

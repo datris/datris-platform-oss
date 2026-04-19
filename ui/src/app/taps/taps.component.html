@@ -120,6 +120,10 @@
             <button class="action-btn history-btn" (click)="viewLogs($event, tap.name)" title="Run history">
               <span class="material-icons">history</span>
             </button>
+            <button class="action-btn ledger-btn" *ngIf="tap.tapType === 'document'"
+                    (click)="viewLedger($event, tap.name)" title="Document ledger">
+              <span class="material-icons">description</span>
+            </button>
             <button class="action-btn edit-btn" (click)="editTap($event, tap.name)" title="Edit tap">
               <span class="material-icons">edit</span>
             </button>
@@ -273,6 +277,59 @@
         <span class="material-icons">{{ scriptEditorSaving ? 'hourglass_empty' : 'science' }}</span>
         {{ scriptEditorSaving ? 'Saving & Testing...' : 'Save & Test' }}
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- Document Ledger Modal -->
+<div class="modal-overlay" *ngIf="ledgerTap" (click)="closeLedger()">
+  <div class="logs-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Document Ledger: {{ ledgerTap }}</h2>
+      <button class="modal-close" (click)="closeLedger()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="logs-loading" *ngIf="ledgerLoading">Loading...</div>
+      <div class="logs-empty" *ngIf="!ledgerLoading && ledgerEntries.length === 0">
+        No documents tracked yet. Run the tap to discover and stage documents.
+      </div>
+      <div *ngIf="!ledgerLoading && ledgerEntries.length > 0">
+        <div class="ledger-header">
+          <span class="ledger-header-title">{{ ledgerEntries.length }} documents</span>
+          <button class="btn-secondary" (click)="clearLedger()" [disabled]="ledgerClearing">
+            <span class="material-icons">refresh</span>
+            {{ ledgerClearing ? 'Clearing...' : 'Clear All (force re-scan)' }}
+          </button>
+        </div>
+        <table class="ledger-table">
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>URI</th>
+              <th>Status</th>
+              <th>First Seen</th>
+              <th>Last Seen</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let e of ledgerEntries">
+              <td>{{ e.filename }}</td>
+              <td class="log-output" style="max-width: 320px; word-break: break-all;">{{ e.uri }}</td>
+              <td [ngClass]="'ledger-status-' + e.status">{{ e.status }}</td>
+              <td>{{ formatTime(e.firstSeenAt) }}</td>
+              <td>{{ formatTime(e.lastSeenAt) }}</td>
+              <td>
+                <button class="action-btn delete-btn" (click)="deleteLedgerEntry(e.uri)" title="Force re-process on next run">
+                  <span class="material-icons">delete</span>
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>

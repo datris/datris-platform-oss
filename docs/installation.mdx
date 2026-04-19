@@ -85,7 +85,7 @@ docker compose up -d
 - **MongoDB destination data**
 - **Queued messages and offsets** in Kafka, Zookeeper, ActiveMQ
 - **The bundled `bge-m3` embedding model** in the `ollama-data` volume (will re-download ~1.2 GB on first start)
-- **Cached pip wheels and tap-installed Python packages** in the `pip-cache` and `pip-packages` volumes (taps that need extras like `yfinance` will re-install on first run)
+- **Cached pip wheels** in the `pip-cache` volume (taps that need extras like `yfinance` will re-download on first run)
 
 Only run `down -v` if you are certain none of the above matters, e.g. on a brand-new dev machine, after exporting anything you needed, or on a CI runner. **Never run `down -v` on a production or shared instance.**
 
@@ -95,14 +95,13 @@ After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secr
 
 ## Volumes
 
-The `datris` service uses two named Docker volumes that are created automatically by `docker compose up` — no user action required:
+The `datris` service uses one named Docker volume that is created automatically by `docker compose up` — no user action required:
 
 | Volume | Mounted at | Purpose |
 |---|---|---|
 | `pip-cache` | `/root/.cache/pip` | Caches downloaded pip wheel files so tap-installed packages don't have to be re-downloaded |
-| `pip-packages` | `/usr/local/lib/python3.12/dist-packages` | Persists installed Python packages across container restarts so taps that need extra packages (e.g., `yfinance`) install once and stay installed |
 
-The first time a tap installs a new package, pip downloads it normally (~30 seconds for `yfinance`). Subsequent runs of the same or another tap that needs that package are near-instant — pip reports "Requirement already satisfied" and proceeds.
+Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`, `boto3`, `google-cloud-storage`, `azure-storage-blob`, `openpyxl`, `pyyaml`, `python-dateutil`, `pytz`) are baked into the image. When a tap needs something extra (e.g. `yfinance`), pip downloads it on first run (~30 seconds) and caches the wheel in `pip-cache`. Subsequent container restarts re-run `pip install` for those extras, but the install is near-instant because the wheel is already cached locally.
 
 ## Services
 

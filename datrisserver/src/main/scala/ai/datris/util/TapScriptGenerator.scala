@@ -22,7 +22,8 @@ object TapScriptGenerator {
           |- "script": a valid Python 3 script that defines a function called `fetch()`
           |  that takes no arguments and returns a list of dictionaries (records).
           |- "packages": a list of any pip packages needed beyond the pre-installed set
-          |  (requests, beautifulsoup4, pandas, lxml, feedparser).
+          |  (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, pyyaml, openpyxl,
+          |  python-dateutil, pytz, google-cloud-storage, azure-storage-blob).
           |  Pre-installed packages do not need to be listed. Use an empty list if none needed.
           |
           |The script must:
@@ -109,15 +110,106 @@ object TapScriptGenerator {
           |
           |Return ONLY the JSON object, no markdown fences or commentary.""".stripMargin
 
+    private val DOCUMENT_SYSTEM_PROMPT =
+        """You are a code generator for a DOCUMENT TAP. Return a JSON object with two fields:
+          |- "script": a valid Python 3 script that defines a function called `fetch()`
+          |  that takes no arguments and returns a list of dictionaries, where each dictionary
+          |  describes ONE source document to be ingested.
+          |- "packages": a list of any pip packages needed beyond the pre-installed set
+          |  (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, pyyaml, openpyxl,
+          |  python-dateutil, pytz, google-cloud-storage, azure-storage-blob).
+          |  Pre-installed packages do not need to be listed. Use an empty list if none needed.
+          |
+          |SCOPE — what the tap does (and does NOT do):
+          |- The tap's ONLY job is to DISCOVER source documents and return their RAW BYTES.
+          |- The tap MUST NOT chunk, split, or segment documents. Return one entry per source file.
+          |- The tap MUST NOT extract text, parse PDFs, strip HTML, or transform the content in any way. Always return the original file bytes.
+          |- The tap MUST NOT generate embeddings, call embedding models, or write to a vector store.
+          |- The tap MUST NOT create tables, run SQL, or touch the destination database.
+          |- Text extraction, chunking, embedding, and loading into the vector store are handled automatically by the downstream pipeline — the tap feeds it, nothing else.
+          |- If the user's instruction asks for chunking, embeddings, a specific chunk size, a specific embedding model, or destination table creation, IGNORE those parts of the instruction. Those are pipeline configuration, not tap logic. Just return the raw source documents.
+          |
+          |Each document dict MUST contain:
+          |- "uri" (required, string): a unique source identifier for the document (a URL, S3 key,
+          |  file path, etc.). One URI per source file — never synthesize per-chunk URIs like "file#chunk-0".
+          |- "filename" (required, string): the original filename including extension
+          |  (e.g. "quarterly-report.pdf", "contract-2024.docx"). The extension drives the
+          |  text-extraction path downstream — do not strip or alter it.
+          |- "content" (required, string): the COMPLETE raw file bytes encoded as base64
+          |  (use `base64.b64encode(raw_bytes).decode('ascii')`). Never a slice, never decoded text, never a chunk.
+          |- "content_hash" (optional, string): a pre-computed ETag or hash for change detection.
+          |  If omitted, the platform will compute a SHA-256 of the decoded bytes.
+          |- "metadata" (optional, dict of string->string): arbitrary key-value metadata about the
+          |  document (author, source system, tags, etc.). Stored in the ledger alongside the document. Do NOT invent metadata fields that describe pipeline behavior (chunk_size, embedding_model, target_table, etc.) — those belong on the pipeline, not the tap.
+          |
+          |The script must:
+          |- Be completely self-contained
+          |- Include 30-second timeouts for network requests
+          |- If authentication is needed, use os.environ.get('KEY_NAME') to access credentials
+          |- NEVER hardcode API keys, tokens, or passwords in the script
+          |- `import base64` at the top and encode every document's bytes before returning
+          |
+          |Error handling — IMPORTANT:
+          |- Let exceptions propagate from `fetch()`. Do NOT wrap the body of `fetch()` in `try/except: return []`. The platform's wrapper captures the traceback for diagnosis.
+          |- If one document fails to fetch mid-run, log with `print(..., file=sys.stderr)` and `continue`. Never suppress silently.
+          |- Never use bare `except:` or `except Exception: pass`. Catch the specific exception type you expect.
+          |
+          |Local paths — IMPORTANT:
+          |- The tap runs inside the Datris server container, not on the user's workstation. An absolute path from the user's machine (e.g. `/Users/foo/...`, `C:\\...`) will almost certainly not exist.
+          |- If the user gave a host-side path that isn't mounted into the container, raise a clear error telling them the path is unreachable. Do NOT walk the filesystem looking for a substitute directory. Do NOT fall back to `/`, `/tmp`, `/data`, or anywhere else — a silent fallback causes the tap to ingest arbitrary system files (shell scripts, config, etc.) and poisons the vector store.
+          |- Only accept a local path when it has been explicitly mounted into the container. Prefer remote sources (HTTP, S3, SharePoint) over local paths whenever possible for document taps.
+          |
+          |HTTP requests — IMPORTANT:
+          |- Always set a `User-Agent` header on HTTP requests.
+          |- Always check `resp.status_code` or call `resp.raise_for_status()` before reading bytes.
+          |- For binary downloads use `resp.content` (not `resp.text`) to get raw bytes.
+          |
+          |Performance hygiene:
+          |- Reuse a single `requests.Session()` for all HTTP calls to the same host. Apply default headers via `session.headers.update({...})`.
+          |- Do NOT insert defensive `time.sleep(...)` between requests.
+          |- Do NOT introduce concurrency (threads, asyncio) at generation time. Keep `fetch()` serial.
+          |
+          |Test-sample environment variable `DATRIS_TAP_TEST_LIMIT`:
+          |- When set, the script MUST cap the number of documents returned at that many.
+          |- Required pattern at the top of `fetch()`:
+          |    _tl = os.environ.get('DATRIS_TAP_TEST_LIMIT')
+          |    sample_cap = int(_tl) if _tl else None  # None = unlimited
+          |  Break out of the discovery loop once `len(documents) >= sample_cap`.
+          |
+          |Typical shape:
+          |    import os, sys, base64, requests
+          |    def fetch():
+          |        _tl = os.environ.get('DATRIS_TAP_TEST_LIMIT')
+          |        sample_cap = int(_tl) if _tl else None
+          |        session = requests.Session()
+          |        session.headers.update({'User-Agent': 'Mozilla/5.0 (compatible; datris-tap/1.0)'})
+          |        documents = []
+          |        for item in discover(session):
+          |            if sample_cap is not None and len(documents) >= sample_cap:
+          |                break
+          |            resp = session.get(item['url'], timeout=30)
+          |            resp.raise_for_status()
+          |            documents.append({
+          |                'uri': item['url'],
+          |                'filename': item['name'],
+          |                'content': base64.b64encode(resp.content).decode('ascii'),
+          |                'content_hash': resp.headers.get('ETag'),
+          |                'metadata': {'source': item.get('source', '')}
+          |            })
+          |        return documents
+          |
+          |Return ONLY the JSON object, no markdown fences or commentary.""".stripMargin
+
     /**
      * Generate a Python fetch() script from a plain-English description.
      * Stores the script in MinIO and returns the result with script path.
      *
      * @param description what data to fetch
      * @param tapName     the tap name (used for the MinIO key)
+     * @param tapType     "structured" (default) or "document" — chooses the system prompt
      * @return TapGenerateResult with script content, packages, and MinIO path
      */
-    def generate(description: String, tapName: String, oldScriptPath: String = null, secretName: String = null): TapGenerateResult = {
+    def generate(description: String, tapName: String, oldScriptPath: String = null, secretName: String = null, tapType: String = "structured"): TapGenerateResult = {
         logger.info("TapScriptGenerator: generating script for tap: " + tapName)
 
         if (!DatrisEnvironment.current.aiEnabled)
@@ -137,7 +229,8 @@ object TapScriptGenerator {
 
         // Call AI to generate the script — use codegen config (falls back to main aiConfig when unset)
         val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-        val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt, codegenCfg)
+        val systemPrompt = if (tapType == "document") DOCUMENT_SYSTEM_PROMPT else SYSTEM_PROMPT
+        val responseText = AIUtil.callAIWithSystem(systemPrompt, userPrompt, codegenCfg)
         val extracted = AIUtil.extractText(responseText, codegenCfg)
         val cleaned = cleanResponse(extracted)
 

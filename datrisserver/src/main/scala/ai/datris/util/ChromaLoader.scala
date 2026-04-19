@@ -135,22 +135,17 @@ class ChromaLoader(jobContext: JobContext) {
 
     private def ensureCollection(client: org.apache.http.impl.client.CloseableHttpClient, collectionsPath: String, collectionName: String): String = {
         // Try to get collection first
-        val get = new HttpGet(collectionsPath + "/" + collectionName)
-        val getResponse = client.execute(get)
-        try {
-            if (getResponse.getStatusLine.getStatusCode == 200) {
-                val body = EntityUtils.toString(getResponse.getEntity)
-                val json = JsonParser.parseString(body).getAsJsonObject
-                return json.get("id").getAsString
-            }
-        } finally {
-            getResponse.close()
-        }
+        getCollectionId(client, collectionsPath, collectionName).foreach(id => return id)
 
-        // Create collection
-        statusUtil.info("processing", "Creating Chroma collection: " + collectionName)
+        // Create collection. Use get_or_create=true so Chroma servers that support
+        // the flag return the existing collection's id when another concurrent
+        // JobRunner (document taps fire many docs in parallel) already created it.
+        // Older Chroma servers ignore the flag, so we also fall back to a re-GET
+        // on any non-2xx response to cover the race.
+        statusUtil.info("processing", "Ensuring Chroma collection: " + collectionName)
         val payload = new JsonObject()
         payload.addProperty("name", collectionName)
+        payload.addProperty("get_or_create", true)
 
         val metadataObj = new JsonObject()
         metadataObj.addProperty("hnsw:space", "cosine")
@@ -164,13 +159,31 @@ class ChromaLoader(jobContext: JobContext) {
         try {
             val statusCode = response.getStatusLine.getStatusCode
             val body = EntityUtils.toString(response.getEntity)
-            if (statusCode < 200 || statusCode >= 300)
-                throw new DatrisException("Failed to create Chroma collection: " + body)
-            val json = JsonParser.parseString(body).getAsJsonObject
-            json.get("id").getAsString
+            if (statusCode >= 200 && statusCode < 300) {
+                val json = JsonParser.parseString(body).getAsJsonObject
+                return json.get("id").getAsString
+            }
+            // Create failed — another runner may have raced us in. Re-check before erroring.
+            getCollectionId(client, collectionsPath, collectionName) match {
+                case Some(id) => id
+                case None     => throw new DatrisException("Failed to create Chroma collection: " + body)
+            }
         } finally {
             response.close()
         }
+    }
+
+    private def getCollectionId(client: org.apache.http.impl.client.CloseableHttpClient, collectionsPath: String, collectionName: String): Option[String] = {
+        val get = new HttpGet(collectionsPath + "/" + collectionName)
+        val response = client.execute(get)
+        try {
+            if (response.getStatusLine.getStatusCode == 200) {
+                val body = EntityUtils.toString(response.getEntity)
+                val json = JsonParser.parseString(body).getAsJsonObject
+                Some(json.get("id").getAsString)
+            } else None
+        } catch { case _: Exception => None }
+        finally { response.close() }
     }
 
     private def sendNotification(): Unit = {

@@ -20,6 +20,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // Step 1 — Describe
   tapName = '';
   description = '';
+  tapType: 'structured' | 'document' = 'structured';
   secretName = '';
   catalog = '';
   availableCatalogs: string[] = [];
@@ -115,6 +116,15 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   generatedDestName = '';
   existingDestNames: string[] = [];
 
+  // Document-tap generate modal state
+  availableVectorStores: string[] = [];
+  loadingVectorStores = false;
+  selectedVectorStore: string = '';
+  pgvectorSchema = 'public';
+  chunkStrategy: 'recursive' | 'fixed' | 'sentence' | 'paragraph' | 'none' = 'recursive';
+  chunkSize = 500;
+  chunkOverlap = 50;
+
   // Save
   saving = false;
 
@@ -150,6 +160,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.secretName = tap.secretName || '';
           this.catalog = tap.catalog || '';
           this.targetPipeline = tap.targetPipeline || '';
+          this.tapType = (tap.tapType === 'document') ? 'document' : 'structured';
         },
         error: () => { this.error = 'Failed to load tap'; }
       });
@@ -185,10 +196,43 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   }
 
   stopTest(): void {
+    this.stopActive();
+  }
+
+  /**
+   * Cancel whatever async operation is currently in flight from any of the
+   * inline spinner banners. Reads which operations were active first so we
+   * can attach operation-specific cleanup (e.g. capping auto-fix for a
+   * cancelled test) after the flags are cleared. No-ops when nothing is
+   * running.
+   */
+  stopActive(): void {
+    const wasTesting = this.testing;
+    const wasApplyingDiagnosis = this.applyingDiagnosis;
+    const wasRunningTap = this.runningTap;
+    const wasOptimizing = this.optimizing;
+
     this.cancelActive();
-    // Cap auto-fix so an in-flight fix-and-retry chain doesn't resume.
-    this.autoFixAttempts = TapCreateComponent.MAX_AUTO_FIX_ATTEMPTS;
-    this.testError = 'Test cancelled.';
+    // cancelActive doesn't touch these — clear them here too.
+    this.runningTap = false;
+    this.optimizing = false;
+
+    // Cap the auto-fix chain so a cancelled test/fix doesn't silently resume
+    // with another attempt when the next subscription fires.
+    if (wasTesting || wasApplyingDiagnosis) {
+      this.autoFixAttempts = TapCreateComponent.MAX_AUTO_FIX_ATTEMPTS;
+    }
+    if (wasTesting) {
+      this.testError = 'Test cancelled.';
+    }
+    if (wasRunningTap) {
+      this.runError = 'Run cancelled.';
+    }
+    if (wasOptimizing) {
+      // Prevent the next successful test from re-triggering optimize.
+      this.optimizingSkipped = true;
+      this.previousPassingTest = null;
+    }
   }
 
   private cancelActive(): void {
@@ -233,7 +277,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.brainstormInput = '';
     this.brainstorming = true;
     this.error = '';
-    this.activeSub = this.tapService.brainstorm(this.brainstormMessages, this.description).subscribe({
+    this.activeSub = this.tapService.brainstorm(this.brainstormMessages, this.description, this.tapType).subscribe({
       next: (result) => {
         this.brainstormMessages.push({ role: 'assistant', content: result.reply || '' });
         if (result.description) this.description = result.description;
@@ -254,7 +298,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   generateScript(): void {
     this.generating = true;
     this.error = '';
-    this.activeSub = this.tapService.generateScript(this.description, this.tapName.trim(), this.scriptPath, this.secretName).subscribe({
+    this.activeSub = this.tapService.generateScript(this.description, this.tapName.trim(), this.scriptPath, this.secretName, this.tapType).subscribe({
       next: (result) => {
         this.script = result.script || '';
         this.scriptPath = result.scriptPath || '';
@@ -745,6 +789,28 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     return Object.keys(this.testRecords[0]);
   }
 
+  getDocumentPreview(): Array<{filename: string, uri: string, sizeLabel: string}> {
+    if (!this.testRecords || !Array.isArray(this.testRecords)) return [];
+    return this.testRecords.slice(0, 100).map((d: any) => {
+      const b64 = typeof d?.content === 'string' ? d.content : '';
+      // base64 length × 3/4 approximates decoded byte size; strip trailing "="
+      const bytes = b64 ? Math.floor((b64.replace(/=+$/, '').length * 3) / 4) : 0;
+      return {
+        filename: d?.filename || '(no filename)',
+        uri: d?.uri || '',
+        sizeLabel: this.formatBytes(bytes)
+      };
+    });
+  }
+
+  private formatBytes(bytes: number): string {
+    if (!bytes) return '—';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+  }
+
   getPreviewRows(): any[] {
     if (!this.testRecords || !Array.isArray(this.testRecords)) return [];
     return this.testRecords.slice(0, 100);
@@ -763,6 +829,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       targetPipeline: this.targetPipeline || null,
       cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
       enabled: this.enabled,
+      tapType: this.tapType,
       lastTestRunDataType: this.testDataType || null,
       lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
       lastTestRunRecordCount: this.testRecordCount || 0,
@@ -887,15 +954,25 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   // ---------- Pipeline link: Attach to existing ----------
 
+  // For document taps only: once a compatible pipeline is selected in the attach
+  // modal, we show a destination card instead of column-match output. Keeps the
+  // selection informative (e.g. "pgvector → public.10q_collection") without
+  // pretending the tap's synthetic columns need to line up with schema fields.
+  selectedPipelineDestination: string = '';
+
   openAttachModal(): void {
     this.error = '';
     this.selectedPipelineName = '';
     this.columnMatchResult = null;
+    this.selectedPipelineDestination = '';
     this.showAttachModal = true;
     this.loadingPipelines = true;
     this.pipelineService.getPipelines().subscribe({
       next: (pipelines) => {
-        this.availablePipelines = pipelines || [];
+        const all = pipelines || [];
+        this.availablePipelines = this.tapType === 'document'
+          ? all.filter(p => this.isDocumentCompatiblePipeline(p))
+          : all;
         this.loadingPipelines = false;
       },
       error: () => {
@@ -911,7 +988,18 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   onPipelineSelected(): void {
     const pipeline = this.availablePipelines.find(p => p.name === this.selectedPipelineName);
-    if (!pipeline) { this.columnMatchResult = null; return; }
+    if (!pipeline) {
+      this.columnMatchResult = null;
+      this.selectedPipelineDestination = '';
+      return;
+    }
+
+    if (this.tapType === 'document') {
+      // Document taps: skip column matching, show destination summary
+      this.columnMatchResult = { match: true, missing: [], extra: [] };
+      this.selectedPipelineDestination = this.describeVectorDestination(pipeline);
+      return;
+    }
 
     const pipelineFields: string[] = (pipeline.source && pipeline.source.schemaProperties && pipeline.source.schemaProperties.fields || [])
       .map((f: any) => f.name);
@@ -931,6 +1019,28 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.showAttachModal = false;
   }
 
+  /**
+   * True when a pipeline can accept the output of a document tap:
+   * unstructured source + at least one vector-store destination.
+   * Mirrors the server-side DocumentTapValidator predicate.
+   */
+  private isDocumentCompatiblePipeline(p: any): boolean {
+    const hasUnstructuredSource = !!p?.source?.fileAttributes?.unstructuredAttributes;
+    const d = p?.destination || {};
+    const hasVectorDest = !!(d.qdrant || d.weaviate || d.pgvector || d.milvus || d.chroma);
+    return hasUnstructuredSource && hasVectorDest;
+  }
+
+  private describeVectorDestination(p: any): string {
+    const d = p?.destination || {};
+    if (d.qdrant) return 'Qdrant → ' + (d.qdrant.collectionName || '?');
+    if (d.weaviate) return 'Weaviate → ' + (d.weaviate.className || '?');
+    if (d.milvus) return 'Milvus → ' + (d.milvus.collectionName || '?');
+    if (d.chroma) return 'Chroma → ' + (d.chroma.collectionName || '?');
+    if (d.pgvector) return 'pgvector → ' + (d.pgvector.schemaName || 'public') + '.' + (d.pgvector.tableName || '?');
+    return '';
+  }
+
   detachPipeline(): void {
     this.targetPipeline = '';
   }
@@ -944,8 +1054,56 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.generatedDestName = this.generatedPipelineName.replace(/-/g, '_');
     this.generatedFields = [];
     this.existingDestNames = [];
-    this.loadExistingDestNames();
+    if (this.tapType === 'document') {
+      this.availableVectorStores = [];
+      this.selectedVectorStore = '';
+      this.pgvectorSchema = 'public';
+      this.chunkStrategy = 'recursive';
+      this.chunkSize = 500;
+      this.chunkOverlap = 50;
+      this.loadingVectorStores = true;
+      this.tapService.getAvailableVectorStores().subscribe({
+        next: (stores) => {
+          this.availableVectorStores = stores || [];
+          // Preselect when exactly one; otherwise let the user pick.
+          if (this.availableVectorStores.length === 1) {
+            this.selectedVectorStore = this.availableVectorStores[0];
+          } else if (this.availableVectorStores.includes('pgvector')) {
+            this.selectedVectorStore = 'pgvector';
+          } else if (this.availableVectorStores.length > 0) {
+            this.selectedVectorStore = this.availableVectorStores[0];
+          }
+          this.loadingVectorStores = false;
+        },
+        error: () => {
+          this.availableVectorStores = [];
+          this.loadingVectorStores = false;
+        }
+      });
+    } else {
+      this.loadExistingDestNames();
+    }
     this.showGenerateModal = true;
+  }
+
+  /** Label for the destination-name field on the document-tap generate modal. */
+  vectorDestLabel(): string {
+    switch (this.selectedVectorStore) {
+      case 'pgvector': return 'Table name';
+      case 'weaviate': return 'Class name';
+      default: return 'Collection name';
+    }
+  }
+
+  chunkStrategyHint(): string {
+    switch (this.chunkStrategy) {
+      case 'recursive': return 'Splits on paragraphs, then lines, then sentences, then spaces — preserves context best. Recommended default.';
+      case 'fixed': return 'Fixed-size sliding window over characters. Fastest, least context-aware.';
+      case 'sentence': return 'Breaks on sentence boundaries, merged up to chunk size.';
+      case 'paragraph': return 'Breaks on paragraph boundaries, merged up to chunk size.';
+      case 'none': return 'No chunking — each document becomes one vector. Only use with short docs.';
+      default: return '';
+    }
   }
 
   private loadExistingDestNames(): void {
@@ -1001,7 +1159,22 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   confirmGenerate(): void {
     if (this.generatingPipeline) return;
-    if (this.destNameConflict()) {
+
+    if (this.tapType === 'document') {
+      if (!this.selectedVectorStore) {
+        this.generateError = 'Pick a vector store to continue.';
+        return;
+      }
+      const name = (this.generatedDestName || '').trim();
+      if (!name) {
+        this.generateError = this.vectorDestLabel() + ' is required.';
+        return;
+      }
+      if (this.chunkSize <= 0 || this.chunkOverlap < 0 || this.chunkOverlap >= this.chunkSize) {
+        this.generateError = 'Chunk overlap must be >= 0 and strictly less than chunk size.';
+        return;
+      }
+    } else if (this.destNameConflict()) {
       this.generateError = 'A ' + this.destLabel().toLowerCase() + ' named "' + this.generatedDestName.trim() + '" already exists. Pick a different name.';
       return;
     }
@@ -1017,7 +1190,9 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     // pipeline editor once they're confident about the data shape.
     const fields = (this.testColumns || []).map(name => ({ name, type: 'string' }));
     this.generatedFields = fields;
-    const config = this.buildPipelineConfigFromTap(fields);
+    const config = this.tapType === 'document'
+      ? this.buildDocumentPipelineConfig()
+      : this.buildPipelineConfigFromTap(fields);
     this.pipelineService.createPipeline(config).subscribe({
       next: () => {
         this.targetPipeline = this.generatedPipelineName;
@@ -1029,6 +1204,58 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.generatingPipeline = false;
       }
     });
+  }
+
+  /**
+   * Build an unstructured + vector-store pipeline config for a document tap.
+   * fileExtension is set to "*" because document taps deliver mixed filetypes
+   * (PDF, DOCX, HTML, etc.); the platform's TextExtractorUtil picks the
+   * extractor from each document's actual filename at runtime. The value just
+   * needs to be non-null to satisfy PipelineValidatorUtil.
+   * embeddingSecretName is left null so the server fills it with the env
+   * default at pipeline-read time via EmbeddingUtil.
+   */
+  private buildDocumentPipelineConfig(): any {
+    const destName = (this.generatedDestName || '').trim();
+    const chunking = {
+      strategy: this.chunkStrategy,
+      chunkSize: this.chunkSize,
+      chunkOverlap: this.chunkOverlap
+    };
+    const destination: any = {};
+    switch (this.selectedVectorStore) {
+      case 'pgvector':
+        destination.pgvector = {
+          tableName: destName,
+          schemaName: (this.pgvectorSchema || 'public').trim() || 'public',
+          chunking
+        };
+        break;
+      case 'weaviate':
+        destination.weaviate = { className: destName, chunking };
+        break;
+      case 'qdrant':
+        destination.qdrant = { collectionName: destName, chunking };
+        break;
+      case 'milvus':
+        destination.milvus = { collectionName: destName, chunking };
+        break;
+      case 'chroma':
+        destination.chroma = { collectionName: destName, chunking };
+        break;
+    }
+    return {
+      name: this.generatedPipelineName,
+      source: {
+        fileAttributes: {
+          unstructuredAttributes: {
+            fileExtension: '*',
+            preserveFilename: true
+          }
+        }
+      },
+      destination
+    };
   }
 
   private buildPipelineConfigFromTap(fields: Array<{name: string, type: string}>): any {

@@ -5,13 +5,15 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, TapConfig, TapRunLog}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, TapConfig, TapDocumentLedger, TapRunLog}
 import ai.datris.controller.{JobRunner, StreamNotifier}
-import com.google.gson.Gson
+import com.google.gson.{Gson, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.io.ByteArrayInputStream
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
-import java.util.{Date, TimeZone}
+import java.util.{Date, TimeZone, UUID}
 
 object TapRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -56,16 +58,16 @@ object TapRunner {
             }
 
             // Push to pipeline if requested, records exist, and a target pipeline is configured
-            if (pushToPipeline && result.records != null && result.recordCount > 0 &&
+            val processedCount = if (pushToPipeline && result.records != null && result.recordCount > 0 &&
                 tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty) {
                 feedPipeline(tapConfig, result)
-            }
+            } else result.recordCount
 
             if (pushToPipeline) {
                 val successConfig = tapConfig.copy(
                     lastRunStatus = "success",
                     lastRunTime = now,
-                    lastRunRecordCount = result.recordCount,
+                    lastRunRecordCount = processedCount,
                     lastRunError = null,
                     lastRunDataType = result.dataType,
                     lastRunColumns = result.columns
@@ -73,7 +75,7 @@ object TapRunner {
                 TapConfigIO.write(successConfig)
             }
 
-            writeRunLog(tapConfig.name, now, "success", result.recordCount, result.dataType, result.logs, null, pushToPipeline, durationMs)
+            writeRunLog(tapConfig.name, now, "success", processedCount, result.dataType, result.logs, null, pushToPipeline, durationMs)
             result
         } catch {
             case e: Exception =>
@@ -106,7 +108,11 @@ object TapRunner {
         }
     }
 
-    private def feedPipeline(tapConfig: TapConfig, result: TapScriptResult): Unit = {
+    private def feedPipeline(tapConfig: TapConfig, result: TapScriptResult): Int = {
+        if (result.dataType == "document") {
+            return feedDocumentPipeline(tapConfig, result)
+        }
+
         logger.info("TapRunner: feeding " + result.recordCount + " records to pipeline: " + tapConfig.targetPipeline)
 
         // Check what format the pipeline expects
@@ -134,6 +140,164 @@ object TapRunner {
         val jobContext = new StreamNotifier().process(bytes, filename, tapConfig.targetPipeline, null)
         GlobalJobContext.addJobContext(jobContext)
         logger.info("TapRunner: submitted job for pipeline: " + tapConfig.targetPipeline + ", token: " + jobContext.pipelineToken)
+        result.recordCount
+    }
+
+    /**
+     * Route a document-tap result through the unstructured pipeline path.
+     *
+     * Each record is a document dict with {uri, filename, content (base64), content_hash?, metadata?}.
+     * For each document we:
+     *   1. Decode base64 → raw bytes
+     *   2. Compute SHA-256 when the script didn't provide a content_hash
+     *   3. Skip if the ledger already has this uri at the same hash (already processed)
+     *   4. Stage the bytes to MinIO under {env}-config/tap-docs/{tapName}/{uuid}_{filename}
+     *   5. Record a "staged" ledger entry
+     *   6. Submit bytes to the target pipeline (routes through StreamNotifier's
+     *      unstructuredAttributes branch into the vector store loader)
+     *   7. Mark the ledger entry "processed" (or "failed" with the error)
+     *
+     * Returns the number of documents actually submitted to the pipeline (skipped docs
+     * and failed docs are not counted).
+     */
+    private def feedDocumentPipeline(tapConfig: TapConfig, result: TapScriptResult): Int = {
+        import scala.collection.JavaConverters._
+        logger.info("TapRunner: document tap '" + tapConfig.name + "' returned " + result.recordCount + " documents")
+
+        val env = DatrisEnvironment.current
+
+        // Belt-and-suspenders compatibility check: the save-time guard in TapAPIController
+        // already rejects incompatible combinations, but the pipeline config could have
+        // been reshaped after the tap was saved. Re-check before feeding.
+        val pipelineConfig = PipelineConfigIO.read(env.pipelineTableName, tapConfig.targetPipeline)
+        DocumentTapValidator.incompatibilityReason(pipelineConfig) match {
+            case Some(reason) =>
+                val msg = "Target pipeline '" + tapConfig.targetPipeline + "' is not compatible with document tap: " + reason
+                logger.error("TapRunner: " + msg)
+                throw new DatrisException(msg)
+            case None => // compatible, proceed
+        }
+
+        val bucket = env.environment + "-config"
+        val ledgerTable = env.tapLedgerTableName
+        val known = TapDocumentLedgerIO.getKnownHashes(ledgerTable, tapConfig.name)
+
+        val sdf = new SimpleDateFormat(env.dateFormat)
+        sdf.setTimeZone(TimeZone.getTimeZone(env.dateTimezone))
+
+        val gson = new Gson
+        val array = JsonParser.parseString(result.records).getAsJsonArray
+
+        var processed = 0
+        var skipped = 0
+        var failed = 0
+
+        val it = array.iterator()
+        while (it.hasNext) {
+            val obj = it.next().getAsJsonObject
+            val uri = Option(obj.get("uri")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("")
+            val filename = Option(obj.get("filename")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("document.bin")
+            val contentB64 = Option(obj.get("content")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("")
+
+            if (uri.isEmpty || contentB64.isEmpty) {
+                logger.warn("TapRunner: document missing uri or content, skipping")
+                failed += 1
+            } else {
+                try {
+                    val rawBytes = java.util.Base64.getDecoder.decode(contentB64)
+                    val providedHash = Option(obj.get("content_hash")).filter(!_.isJsonNull).map(_.getAsString).orNull
+                    val contentHash = if (providedHash != null && providedHash.nonEmpty) providedHash else sha256(rawBytes)
+
+                    val metadata: java.util.Map[String, String] = Option(obj.get("metadata"))
+                        .filter(e => !e.isJsonNull && e.isJsonObject)
+                        .map { elem =>
+                            val m = new java.util.LinkedHashMap[String, String]()
+                            elem.getAsJsonObject.entrySet().asScala.foreach { e =>
+                                val v = e.getValue
+                                m.put(e.getKey, if (v.isJsonNull) null else if (v.isJsonPrimitive) v.getAsString else v.toString)
+                            }
+                            m
+                        }.orNull
+
+                    val now = sdf.format(new Date())
+
+                    if (known.get(uri).contains(contentHash)) {
+                        skipped += 1
+                        // Refresh lastSeenAt so operators can see the tap is still finding the doc
+                        val existing = TapDocumentLedgerIO.read(ledgerTable, tapConfig.name, uri)
+                        if (existing != null) {
+                            TapDocumentLedgerIO.write(ledgerTable, existing.copy(lastSeenAt = now))
+                        }
+                    } else {
+                        val stagedKey = "tap-docs/" + tapConfig.name + "/" +
+                            UUID.randomUUID().toString.substring(0, 8) + "_" + filename
+                        ObjectStoreUtil.writeBucketObjectFromStream(bucket, stagedKey, new ByteArrayInputStream(rawBytes), rawBytes.length.toLong)
+
+                        val firstSeen = TapDocumentLedgerIO.read(ledgerTable, tapConfig.name, uri) match {
+                            case null => now
+                            case prev => prev.firstSeenAt
+                        }
+
+                        TapDocumentLedgerIO.write(ledgerTable, TapDocumentLedger(
+                            uri = uri,
+                            tapName = tapConfig.name,
+                            stagedPath = stagedKey,
+                            filename = filename,
+                            contentHash = contentHash,
+                            firstSeenAt = firstSeen,
+                            lastSeenAt = now,
+                            status = "staged",
+                            metadata = metadata
+                        ))
+
+                        try {
+                            val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, null)
+                            GlobalJobContext.addJobContext(jobContext)
+                            TapDocumentLedgerIO.write(ledgerTable, TapDocumentLedger(
+                                uri = uri,
+                                tapName = tapConfig.name,
+                                stagedPath = stagedKey,
+                                filename = filename,
+                                contentHash = contentHash,
+                                firstSeenAt = firstSeen,
+                                lastSeenAt = now,
+                                status = "processed",
+                                metadata = metadata
+                            ))
+                            processed += 1
+                        } catch {
+                            case e: Exception =>
+                                logger.warn("TapRunner: pipeline submission failed for uri=" + uri + ": " + e.getMessage)
+                                TapDocumentLedgerIO.write(ledgerTable, TapDocumentLedger(
+                                    uri = uri,
+                                    tapName = tapConfig.name,
+                                    stagedPath = stagedKey,
+                                    filename = filename,
+                                    contentHash = contentHash,
+                                    firstSeenAt = firstSeen,
+                                    lastSeenAt = now,
+                                    status = "failed",
+                                    metadata = metadata
+                                ))
+                                failed += 1
+                        }
+                    }
+                } catch {
+                    case e: Exception =>
+                        logger.warn("TapRunner: document handling failed for uri=" + uri + ": " + e.getMessage)
+                        failed += 1
+                }
+            }
+        }
+
+        logger.info("TapRunner: document tap '" + tapConfig.name + "' processed=" + processed +
+            ", skipped=" + skipped + ", failed=" + failed)
+        processed
+    }
+
+    private def sha256(bytes: Array[Byte]): String = {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        digest.map("%02x".format(_)).mkString
     }
 
     private def jsonToCsv(json: String, delimiter: String = ","): String = {

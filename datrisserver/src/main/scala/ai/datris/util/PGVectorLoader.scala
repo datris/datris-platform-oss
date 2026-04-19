@@ -145,35 +145,41 @@ class PGVectorLoader(jobContext: JobContext) {
             // Create schema if needed
             stmt.execute("CREATE SCHEMA IF NOT EXISTS \"" + schemaName + "\"")
 
-            // Check if table already exists
-            val rs = stmt.executeQuery(
-                "SELECT 1 FROM information_schema.tables WHERE table_schema = '" + schemaName.replace("'", "''") +
-                "' AND table_name = '" + tableName.replace("'", "''") + "'"
-            )
-            val tableExists = rs.next()
-            rs.close()
-
-            if (!tableExists) {
-                // Build CREATE TABLE with metadata columns
-                val metadataColumns = if (pgvectorConfig.metadata != null) {
-                    pgvectorConfig.metadata.asScala.keys.map(key => "\"" + key + "\" TEXT").mkString(", ", ", ", "")
-                } else ""
-
-                val createSql =
-                    s"""CREATE TABLE "$schemaName"."$tableName" (
-                       |    id UUID PRIMARY KEY,
-                       |    text TEXT,
-                       |    chunk_index INTEGER,
-                       |    source_pipeline TEXT,
-                       |    filename TEXT$metadataColumns,
-                       |    embedding vector($dimension)
-                       |)""".stripMargin
-
-                statusUtil.info("processing", "Creating table: " + schemaName + "." + tableName + " with vector dimension: " + dimension)
-                stmt.execute(createSql)
-            } else {
-                statusUtil.info("processing", "Table already exists: " + schemaName + "." + tableName)
+            // Serialize concurrent ensureTable calls on this specific table.
+            // CREATE TABLE IF NOT EXISTS alone is NOT race-safe: concurrent
+            // sessions (document taps fire many StreamNotifier.process calls at
+            // once) can each pass the relation-exists check, then race on the
+            // implicit composite type Postgres builds for the table's row type,
+            // and the loser hits "duplicate key ... pg_type_typname_nsp_index".
+            // A transactional advisory lock keyed on schema.table forces the
+            // second session to wait, see the table exists on its turn, and
+            // no-op. The lock releases at commit/rollback automatically.
+            val lockKey = schemaName + "." + tableName
+            val lockStmt = conn.prepareStatement("SELECT pg_advisory_xact_lock(hashtext(?))")
+            try {
+                lockStmt.setString(1, lockKey)
+                val rs = lockStmt.executeQuery()
+                rs.close()
+            } finally {
+                lockStmt.close()
             }
+
+            val metadataColumns = if (pgvectorConfig.metadata != null) {
+                pgvectorConfig.metadata.asScala.keys.map(key => "\"" + key + "\" TEXT").mkString(", ", ", ", "")
+            } else ""
+
+            val createSql =
+                s"""CREATE TABLE IF NOT EXISTS "$schemaName"."$tableName" (
+                   |    id UUID PRIMARY KEY,
+                   |    text TEXT,
+                   |    chunk_index INTEGER,
+                   |    source_pipeline TEXT,
+                   |    filename TEXT$metadataColumns,
+                   |    embedding vector($dimension)
+                   |)""".stripMargin
+
+            statusUtil.info("processing", "Ensuring table: " + schemaName + "." + tableName + " with vector dimension: " + dimension)
+            stmt.execute(createSql)
             conn.commit()
         } finally {
             stmt.close()

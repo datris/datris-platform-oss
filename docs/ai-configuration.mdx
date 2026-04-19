@@ -75,7 +75,7 @@ When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
 | `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-sonnet-4-6` |
-| `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-4-6` |
+| `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-4-7` |
 | `oss/embedding` | ollama | `http://ollama:11434/v1/embeddings` | `bge-m3` |
 
 The `ollama` service is part of `docker-compose.yml`. On first start it pulls `bge-m3` (~1.2 GB) into a persistent volume; subsequent restarts use the cached model.
@@ -101,7 +101,7 @@ Override the seeded models by setting these in `.env`:
 ```bash
 ANTHROPIC_MODEL=claude-sonnet-4-6
 OPENAI_MODEL=gpt-4.1
-CODEGEN_MODEL=claude-opus-4-6   # or gpt-5 if using OpenAI
+CODEGEN_MODEL=claude-opus-4-7   # or gpt-5 if using OpenAI
 ```
 
 ## Hot Reload
@@ -146,7 +146,7 @@ The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, and Ollama. Ollam
 
 ## Stronger Model for Code Generation
 
-CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot precisely so you can point them at a stronger model than the chatty default. With OpenAI the default is `gpt-5` for codegen vs `gpt-4.1` for general; with Anthropic the default is `claude-opus-4-6` for codegen vs `claude-sonnet-4-6` for general. Cheap chatty paths stay on the cheaper model so you only pay the upgrade on the calls that benefit.
+CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot precisely so you can point them at a stronger model than the chatty default. With OpenAI the default is `gpt-5` for codegen vs `gpt-4.1` for general; with Anthropic the default is `claude-opus-4-7` for codegen vs `claude-sonnet-4-6` for general. Cheap chatty paths stay on the cheaper model so you only pay the upgrade on the calls that benefit.
 
 | Feature | Uses codegen slot? |
 |---|---|

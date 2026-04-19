@@ -49,7 +49,7 @@ elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   vault kv put secret/oss/codegen \
     provider="anthropic" \
     endpoint="https://api.anthropic.com/v1/messages" \
-    model="${CODEGEN_MODEL:-claude-opus-4-6}" \
+    model="${CODEGEN_MODEL:-claude-opus-4-7}" \
     apiKey="${ANTHROPIC_API_KEY}" \
     version="2023-06-01"
   vault kv put secret/oss/embedding \

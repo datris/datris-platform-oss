@@ -28,12 +28,12 @@ export class TapService {
     return this.http.post<any>('/api/v1/tap/cron', { description });
   }
 
-  brainstorm(messages: Array<{role: string, content: string}>, currentDescription: string): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/brainstorm', { messages, currentDescription });
+  brainstorm(messages: Array<{role: string, content: string}>, currentDescription: string, tapType?: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/brainstorm', { messages, currentDescription, tapType: tapType || 'structured' });
   }
 
-  generateScript(description: string, tapName: string, oldScriptPath?: string, secretName?: string): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null, secretName: secretName || null });
+  generateScript(description: string, tapName: string, oldScriptPath?: string, secretName?: string, tapType?: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null, secretName: secretName || null, tapType: tapType || 'structured' });
   }
 
   storeScript(tapName: string, script: string, oldScriptPath?: string): Observable<any> {
@@ -63,7 +63,23 @@ export class TapService {
     return this.http.get<any[]>('/api/v1/tap/logs?name=' + encodeURIComponent(name));
   }
 
+  getTapLedger(name: string): Observable<any[]> {
+    return this.http.get<any[]>('/api/v1/tap/ledger?name=' + encodeURIComponent(name));
+  }
+
+  deleteLedgerEntry(name: string, uri: string): Observable<any> {
+    return this.http.delete<any>('/api/v1/tap/ledger?name=' + encodeURIComponent(name) + '&uri=' + encodeURIComponent(uri));
+  }
+
+  clearLedger(name: string): Observable<any> {
+    return this.http.delete<any>('/api/v1/tap/ledger?name=' + encodeURIComponent(name));
+  }
+
   getPipelines(): Observable<any[]> {
     return this.http.get<any[]>('/api/v1/pipelines');
+  }
+
+  getAvailableVectorStores(): Observable<string[]> {
+    return this.http.get<string[]>('/api/v1/vector-stores/available');
   }
 }

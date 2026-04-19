@@ -1332,6 +1332,11 @@ async def list_tools():
                         "type": "string",
                         "description": "Vault secret name containing API keys/credentials the script needs"
                     },
+                    "tap_type": {
+                        "type": "string",
+                        "enum": ["structured", "document"],
+                        "description": "Tap type. 'structured' (default) returns rows of records. 'document' returns a list of {uri, filename, content (base64)} dicts; the platform stages each document and uses a ledger to skip files it has already processed. A document tap's target_pipeline MUST have an unstructuredAttributes source and a vector-store destination (qdrant, pgvector, weaviate, milvus, or chroma) — the server rejects save attempts that violate this."
+                    },
                 },
                 "required": ["name"]
             }
@@ -1396,6 +1401,28 @@ async def list_tools():
                         "type": "string",
                         "description": "Name of the tap to get logs for"
                     },
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="get_tap_ledger",
+            description="For a document tap: return the ledger of discovered documents (URI, filename, status, hashes, first/last seen timestamps). The ledger is what tells the platform which documents have already been processed so re-runs skip unchanged files. Pass 'clear_uri' to delete one entry (forces that document to be re-processed on the next run) or 'clear_all=true' to wipe the entire ledger (forces a full re-scan).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the document tap"
+                    },
+                    "clear_uri": {
+                        "type": "string",
+                        "description": "Optional. If set, deletes the ledger entry for this URI so the document is re-processed on the next run."
+                    },
+                    "clear_all": {
+                        "type": "boolean",
+                        "description": "Optional. If true, deletes the entire ledger for this tap, forcing every document to be re-processed on the next run."
+                    }
                 },
                 "required": ["name"]
             }
@@ -1854,6 +1881,7 @@ def _dispatch(name: str, args: dict) -> str:
         target_pipeline = args.get("target_pipeline")
         cron_expression = args.get("cron_expression")
         secret_name = args.get("secret_name")
+        tap_type = args.get("tap_type", "structured")
 
         script_path = None
         packages = None
@@ -1871,7 +1899,7 @@ def _dispatch(name: str, args: dict) -> str:
 
         # Mode 2: AI-generated script from instruction
         elif instruction:
-            gen_payload = {"description": instruction, "tapName": tap_name}
+            gen_payload = {"description": instruction, "tapName": tap_name, "tapType": tap_type}
             if secret_name:
                 gen_payload["secretName"] = secret_name
             gen_result = _call("post", "/api/v1/tap/generate", json=gen_payload)
@@ -1890,6 +1918,7 @@ def _dispatch(name: str, args: dict) -> str:
         tap_config = {
             "name": tap_name,
             "enabled": True,
+            "tapType": tap_type,
         }
         if instruction:
             tap_config["description"] = instruction
@@ -1923,6 +1952,7 @@ def _dispatch(name: str, args: dict) -> str:
                     summary.append({
                         "name": t.get("name"),
                         "description": t.get("description"),
+                        "tapType": t.get("tapType") or "structured",
                         "targetPipeline": t.get("targetPipeline"),
                         "cronExpression": t.get("cronExpression"),
                         "enabled": t.get("enabled"),
@@ -1949,6 +1979,17 @@ def _dispatch(name: str, args: dict) -> str:
 
     elif name == "get_tap_logs":
         return _call("get", f"/api/v1/tap/logs?name={args['name']}")
+
+    elif name == "get_tap_ledger":
+        tap_name = args["name"]
+        clear_uri = args.get("clear_uri")
+        clear_all = args.get("clear_all")
+        if clear_uri:
+            from urllib.parse import quote
+            return _call("delete", f"/api/v1/tap/ledger?name={quote(tap_name)}&uri={quote(clear_uri)}")
+        if clear_all:
+            return _call("delete", f"/api/v1/tap/ledger?name={tap_name}")
+        return _call("get", f"/api/v1/tap/ledger?name={tap_name}")
 
     elif name == "test_tap":
         return _call("post", "/api/v1/tap/run", json={"name": args["name"], "pushToPipeline": "false"})

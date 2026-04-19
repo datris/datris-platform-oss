@@ -123,7 +123,7 @@ class MilvusLoader(jobContext: JobContext) {
         val collectionsResp = client.listCollections()
         if (collectionsResp.getCollectionNames.contains(collectionName)) return
 
-        statusUtil.info("processing", "Creating Milvus collection: " + collectionName + " with dimension: " + dimension)
+        statusUtil.info("processing", "Ensuring Milvus collection: " + collectionName + " with dimension: " + dimension)
 
         val schema = client.createSchema()
         schema.addField(AddFieldReq.builder().fieldName("id").dataType(DataType.VarChar).isPrimaryKey(true).maxLength(36).build())
@@ -150,7 +150,19 @@ class MilvusLoader(jobContext: JobContext) {
             .indexParams(indexParams)
             .build()
 
-        client.createCollection(createReq)
+        try {
+            client.createCollection(createReq)
+        } catch {
+            case e: Exception =>
+                // Race: a concurrent JobRunner (document taps feed many docs
+                // simultaneously) may have created the collection between our
+                // listCollections check and our createCollection call. Re-check
+                // and swallow if it's there now.
+                val racedIn = try {
+                    client.listCollections().getCollectionNames.contains(collectionName)
+                } catch { case _: Exception => false }
+                if (!racedIn) throw e
+        }
     }
 
     private def sendNotification(): Unit = {
