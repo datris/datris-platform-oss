@@ -106,16 +106,28 @@ class PipelineAPIController {
             if(config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
-            if(deleteConfig.equalsIgnoreCase("true") && config.source.databaseAttributes != null)
+            // Deleting the config without also deleting the data is disallowed.
+            // Leaving orphaned rows/collections/tables behind with no pipeline to
+            // own them creates hard-to-debug ghost state; any caller asking for
+            // config-only gets data-delete folded in implicitly.
+            val deleteConfigBool = deleteConfig.equalsIgnoreCase("true")
+            val deleteDataBool = deleteData.equalsIgnoreCase("true") || deleteConfigBool
+
+            if(deleteConfigBool && config.source.databaseAttributes != null)
                 PipelinePullTableUtil.deleteEntryIfExists(config.name)
 
             // Clean up destination data
-            if(deleteData.equalsIgnoreCase("true") && config.destination != null) {
+            if(deleteDataBool && config.destination != null) {
                 cleanupDestinationData(config)
+                // Wipe document-tap ledgers/staged files for any tap targeting this
+                // pipeline. The ledger records "already-processed URIs"; leaving it
+                // intact after the destination is emptied would cause the next tap
+                // run to skip every doc and land nothing in the now-empty pipeline.
+                cleanupDocumentTapLedgers(pipeline)
             }
 
             // Delete the json configuration
-            if(deleteConfig.equalsIgnoreCase("true"))
+            if(deleteConfigBool)
                 NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
 
             new ResponseEntity[String](HttpStatus.OK)
@@ -124,6 +136,41 @@ class PipelineAPIController {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    /**
+     * Clear tap-ledger entries and MinIO-staged files for every document tap
+     * targeting this pipeline. Called when the pipeline's destination data is
+     * wiped so the next tap run re-ingests every document from source.
+     * Swallows individual MinIO delete errors — the ledger row is authoritative,
+     * so a missing staged file shouldn't block the rest of the cleanup.
+     */
+    private def cleanupDocumentTapLedgers(pipelineName: String): Unit = {
+        try {
+            val env = DatrisEnvironment.current
+            val ledgerTable = env.tapLedgerTableName
+            val bucket = env.environment + "-config"
+            val taps = TapConfigIO.readAll(env.tapTableName)
+            val affected = taps.filter(t =>
+                t != null && "document" == t.tapType &&
+                t.targetPipeline != null && t.targetPipeline == pipelineName
+            )
+            if (affected.isEmpty) return
+            affected.foreach { tap =>
+                val entries = TapDocumentLedgerIO.readByTap(ledgerTable, tap.name)
+                entries.foreach { e =>
+                    if (e.stagedPath != null && e.stagedPath.nonEmpty) {
+                        try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
+                        catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
+                    }
+                }
+                TapDocumentLedgerIO.deleteByTap(ledgerTable, tap.name)
+                logger.info("Cleared document tap ledger for tap '" + tap.name + "' (" + entries.size + " entries) after pipeline data delete: " + pipelineName)
+            }
+        } catch {
+            case e: Exception =>
+                logger.warn("Failed to clean up document tap ledgers for pipeline '" + pipelineName + "': " + e.getMessage)
         }
     }
 

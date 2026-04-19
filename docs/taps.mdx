@@ -7,9 +7,23 @@ description: "AI-generated Python scripts that fetch data from external sources"
 **Beta.** Taps are a new feature and the API and UI may evolve based on user feedback. Core functionality is stable and production-ready, but we may add fields, rename properties, or adjust workflow steps in upcoming releases.
 </Note>
 
-A **Tap** is an AI-generated Python script that fetches data from external sources — APIs, web scraping, databases — and pushes it into a Datris pipeline. Describe what data you want in plain English, and Datris generates the script for you.
+A **Tap** is an AI-generated Python script that fetches data from external sources — APIs, web scraping, databases, document repositories — and pushes it into a Datris pipeline. Describe what data you want in plain English, and Datris generates the script for you.
 
 Taps can run on a schedule using CRON expressions, or be triggered manually. They support credentials management via Vault secrets and include AI-powered diagnosis when scripts fail, return zero records, or emit deprecation/warning output.
+
+## Tap Types
+
+Every tap is either **Structured** or **Document**. Choose the type when you create the tap; it can't be changed later because the target pipeline shape differs.
+
+| | Structured/Semi-Structured | Document |
+|---|---|---|
+| **Returns** | A list of records (rows or semi-structured dicts) | A list of `{uri, filename, content, ...}` dicts — raw file bytes base64-encoded |
+| **Target pipeline** | CSV / JSON / XML source → Postgres, MongoDB, object store, Kafka, vector store, etc. | `unstructuredAttributes` source → vector store (Qdrant, pgvector, Weaviate, Milvus, Chroma) |
+| **What the pipeline does** | Validates schema, applies data-quality/transformation rules, writes records | Extracts text from each document, chunks it, embeds it, upserts vectors |
+| **Deduplication** | Pipeline-level (truncate-before-write, upserts) | Per-document **ledger** — each `uri` + content-hash is processed once. See [Document Taps](#document-taps) |
+| **Chunking / embedding** | N/A | Configured on the **pipeline**, not the tap |
+
+Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DOCX, HTML, etc.) and you want retrieval over its text. Pick Structured for everything else.
 
 <Tip>
 Building several related taps from the same source? Try **[Discovery](/discovery)** instead — it enumerates every dataset a source exposes, generates all the tap scripts in parallel, builds the matching pipelines, and groups everything in a [Data Catalog](/data-catalog). The Tap wizard below is best when you already know exactly which dataset you want.
@@ -23,7 +37,14 @@ The Tap creation wizard walks you through 4 steps — or 5, if you link the tap 
 
 Step 1 is where everything except testing happens — you name the tap, describe what you want, attach credentials, and generate the script.
 
-**Tap Name** — A short identifier for the tap (e.g., `weather-data`).
+**Tap Name** — A short identifier for the tap (e.g., `weather-data` or `contracts-sharepoint`).
+
+**Tap Type** — Two radio options:
+
+- **Structured/Semi-Structured** (default) — the script returns records that flow into a structured pipeline destination.
+- **Document Ingestion** — the script returns `{uri, filename, content}` dicts for each file; the pipeline handles text extraction, chunking, and embedding.
+
+Pick this first — the brainstorm prompts, the suggested env vars, and the Step 4 pipeline wizard all branch on this choice. The selector is locked in edit mode (change the type by creating a new tap).
 
 **Brainstorm with AI (Optional)** — Not sure how to describe what you want? Use the chat panel above the instruction box. Type a rough idea and the AI will:
 
@@ -45,6 +66,8 @@ You can stop chatting at any time and edit the Instruction box directly, or skip
 
 The generated script can use these pre-installed packages:
 - `requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`
+- `boto3` (AWS S3), `google-cloud-storage` (GCS), `azure-storage-blob` (Azure Blob)
+- `openpyxl` (Excel), `pyyaml` (YAML), `python-dateutil`, `pytz`
 - Additional packages can be specified and are installed at runtime via pip. Datris caches installed packages in Docker volumes so subsequent runs reuse them instantly.
 
 **Example instructions:**
@@ -89,10 +112,23 @@ The **Schedule is active** checkbox controls whether the cron actually fires. Un
 
 Review all settings (including a human-readable description of the CRON schedule, e.g. `0 0 16 ? * MON-FRI — at 4:00 PM, on MON-FRI`).
 
-From step 4 you can also link the tap to a pipeline so its output flows through validation, transformation, and into your destination automatically. Two options:
+From step 4 you can also link the tap to a pipeline so its output flows through validation, transformation, and into your destination automatically. Two options — both branches change shape based on the tap's type:
+
+**Structured taps**
 
 - **Attach to Pipeline** — pick an existing pipeline whose source columns match the tap's test output exactly. If columns don't match, you'll see exactly which columns are missing or extra so you can fix the mismatch before attaching.
 - **Generate Pipeline** — create a new pipeline pre-wired to the tap's output. The new pipeline's destination is Postgres (`public.<tap_name>`) for tabular data, or MongoDB for nested/document data. **All columns are created as `string`** for safe ingestion — tap output shape can vary across runs, and string columns ingest reliably regardless of what the script returns. You can promote individual columns to richer types in the pipeline editor once you're confident about the data shape.
+
+**Document taps**
+
+- **Attach to Pipeline** — the picker is filtered to only compatible pipelines: those whose source is `unstructuredAttributes` and whose destination is a vector store (Qdrant, pgvector, Weaviate, Milvus, Chroma). Column matching doesn't apply — every document has the same `{uri, filename, content}` shape. The selection card shows the destination (e.g. `pgvector → public.contracts`).
+- **Generate Pipeline** — creates an unstructured → vector-store pipeline. You pick:
+  - **Vector store** — only stores whose secret is configured *and* the service is reachable are listed (server probes each on modal open via `/api/v1/vector-stores/available`). If exactly one is available it's preselected; if none are, the modal blocks with a link to Configuration.
+  - **Destination name** — collection name (Qdrant / Milvus / Chroma), class name (Weaviate), or table + schema (pgvector).
+  - **Chunking strategy** — recursive (default), fixed, sentence, paragraph, or none. Plus chunk size (default 500 chars) and overlap (default 50). These live on the pipeline, not the tap.
+  - **Embedding** is inherited from the environment's default embedding secret — no picker this pass.
+
+The server rejects any save attempt that points a document tap at an incompatible pipeline (HTTP 400), regardless of where the save came from (UI, CLI, MCP, or raw API).
 
 If a pipeline is linked when you click save, the wizard advances to step 5; otherwise it returns to the Taps list.
 
@@ -200,11 +236,14 @@ The system automatically detects the data type from what `fetch()` returns:
 
 | Return Value | Detected Type |
 |---|---|
+| List of dicts with `uri` and `content` keys | **Document** (triggers the document-tap path) |
 | List of flat dicts (all scalar values) | **CSV** |
 | List of dicts with nested objects | **JSON** |
 | List of lists/tuples | **CSV** |
 | XML string | **XML** |
 | Other string | **Text** |
+
+The `uri` + `content` detection takes priority — if your script returns records with those keys, the runner routes every element through the document pipeline path even if the tap's type is `structured`. In practice the type radio and the return shape should always agree; this rule just makes misconfigurations fail loudly rather than silently corrupt a structured destination.
 
 ## Pipelines and Taps
 
@@ -281,6 +320,71 @@ datris tap delete my-tap
 | `schedule.checkTapSchedules` | `application.yaml` | `30000` | CRON scheduler poll interval in milliseconds |
 | `dateFormat` | `application.yaml` | `yyyy-MM-dd HH:mm:ss z` | SimpleDateFormat pattern used for tap run timestamps |
 | `dateTimezone` | `application.yaml` | `UTC` | IANA timezone (e.g., `America/New_York`) for displayed timestamps |
+
+## Document Taps
+
+Document taps feed files (PDFs, DOCX, HTML, Markdown, etc.) into a vector-store pipeline. The pipeline owns text extraction, chunking, and embedding — the tap's only job is **discovery and retrieval**.
+
+### Return shape
+
+Each element of the list `fetch()` returns is a dict describing one document:
+
+| Field | Required | Description |
+|---|---|---|
+| `uri` | ✓ | Unique source identifier (URL, S3 key, file path). Primary key for change detection. |
+| `filename` | ✓ | Original filename **with extension** — the extension drives `TextExtractorUtil`'s parser choice (`.pdf` → PDFBox, `.docx` → POI, etc.). |
+| `content` | ✓ | Raw file bytes, **base64-encoded**: `base64.b64encode(raw_bytes).decode('ascii')`. Must be the complete file, not a chunk. |
+| `content_hash` | optional | Precomputed ETag or hash for change detection. If omitted, the platform computes SHA-256 of the decoded bytes. |
+| `metadata` | optional | Arbitrary `dict[str, str]` attached to the ledger entry (e.g., `{"author": "ACME", "region": "EU"}`). |
+
+**Rules the generator and users must follow:**
+
+- Return one entry per source file. Never chunk, split, or segment. Never decode the bytes.
+- Don't generate embeddings, pick embedding models, choose a vector store, or create tables — those are pipeline concerns.
+- Don't invent metadata fields that describe pipeline behavior (`chunk_size`, `embedding_model`, `target_table`); those belong on the pipeline.
+
+The AI brainstorm chat and script generator both enforce these rules: if you ask for chunking or embedding choices, the assistant redirects you to pipeline configuration.
+
+### The Document Ledger
+
+Every document the tap successfully stages is recorded in a **ledger** — a MongoDB collection keyed by `{tapName}|{uri}`. On each run, the tap:
+
+1. Loads `uri → contentHash` for every existing ledger entry owned by this tap.
+2. For each document returned by `fetch()`, computes (or reads) its content hash.
+3. **Skips** the document if the ledger already has an entry with the same hash (just refreshes `lastSeenAt` for operator visibility).
+4. Otherwise, stages the bytes to MinIO, writes a ledger entry (`status: staged`), submits to the pipeline, and marks the entry `processed` (or `failed` on error).
+
+This is what makes document taps safe to run on a schedule: re-runs only process new or changed files.
+
+**Ledger fields:** `uri`, `tapName`, `stagedPath` (MinIO key), `filename`, `contentHash`, `firstSeenAt`, `lastSeenAt`, `status` (`staged`/`processed`/`failed`), `metadata`.
+
+**Managing the ledger:**
+
+- **UI** — the document-ledger button (page icon) next to a document tap in the Taps list opens a modal listing every entry. Actions: **Clear All** (force full re-scan on next run), or delete a single entry (force that one file to re-process).
+- **REST** — `GET /api/v1/tap/ledger?name={tap}`, `DELETE /api/v1/tap/ledger?name={tap}&uri={uri}` for a single entry, `DELETE /api/v1/tap/ledger?name={tap}` to clear all.
+- **MCP** — `get_tap_ledger` with optional `clear_uri` / `clear_all`.
+
+**Automatic cleanup:**
+
+- Deleting a tap clears its ledger entries and deletes all staged MinIO objects.
+- Deleting a pipeline's data (from the Pipelines page → Delete Data Only, or `DELETE /api/v1/pipeline?pipeline=X&deleteData=true`) clears the ledger for every document tap pointed at that pipeline — so the next run re-ingests every file into the now-empty destination. Without this, taps would skip docs they already "processed" and the pipeline would stay empty.
+
+### Pipeline compatibility
+
+The server validates at two points:
+
+1. **On save** (`POST /tap`) — if `tapType == "document"` and `targetPipeline` is set, it checks the pipeline's shape. Rejects with HTTP 400 if the source isn't `unstructuredAttributes` or the destination isn't a vector store.
+2. **On feed** (`TapRunner.feedDocumentPipeline`) — re-checks before submitting bytes, so a pipeline that was reshaped after the tap was saved fails the run with a clear error instead of silently corrupting a destination.
+
+### Concurrency
+
+Document taps feed many documents through `StreamNotifier.process` in rapid succession. Each becomes its own `JobRunner`, and all five vector-store loaders are now **race-safe** when multiple runners hit `ensureCollection` / `ensureTable` at the same time on a fresh pipeline:
+
+- **pgvector** — transactional advisory lock plus `CREATE TABLE IF NOT EXISTS`; serializes concurrent sessions at the schema-qualified table name.
+- **Qdrant / Milvus / Weaviate** — try-create; on error, re-check existence and swallow if a concurrent runner won the race.
+- **Chroma** — sends `get_or_create: true` plus a re-GET fallback for older servers.
+
+---
 
 ## Script Requirements
 

@@ -122,7 +122,7 @@ class WeaviateLoader(jobContext: JobContext) {
             return
         }
 
-        statusUtil.info("processing", "Creating Weaviate class: " + className + " with dimension: " + dimension)
+        statusUtil.info("processing", "Ensuring Weaviate class: " + className + " with dimension: " + dimension)
 
         val properties = new java.util.ArrayList[Property]()
         properties.add(Property.builder().name("text").dataType(java.util.Arrays.asList(DataType.TEXT)).build())
@@ -144,8 +144,17 @@ class WeaviateLoader(jobContext: JobContext) {
             .build()
 
         val createResult = client.schema().classCreator().withClass(weaviateClass).run()
-        if (createResult.hasErrors)
-            throw new DatrisException("Failed to create Weaviate class: " + createResult.getError.getMessages.toString)
+        if (createResult.hasErrors) {
+            // Race: a concurrent JobRunner (document taps feed many docs
+            // simultaneously) may have created the class between our classGetter
+            // check and our classCreator call. Re-check and swallow if it's there now.
+            val racedIn = try {
+                val recheck = client.schema().classGetter().withClassName(className).run()
+                !recheck.hasErrors && recheck.getResult != null
+            } catch { case _: Exception => false }
+            if (!racedIn)
+                throw new DatrisException("Failed to create Weaviate class: " + createResult.getError.getMessages.toString)
+        }
     }
 
     private def sendNotification(): Unit = {

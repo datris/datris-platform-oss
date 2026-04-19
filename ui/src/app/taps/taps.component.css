@@ -473,11 +473,11 @@ tbody tr:last-child td {
 }
 
 .actions-cell {
-  width: 100px;
   text-align: right;
   display: flex;
   gap: 4px;
   justify-content: flex-end;
+  white-space: nowrap;
 }
 
 .action-btn {

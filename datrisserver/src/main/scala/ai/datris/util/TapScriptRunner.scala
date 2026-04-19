@@ -32,7 +32,11 @@ object TapScriptRunner {
           |result = mod.fetch()
           |sys.stdout = _real_stdout
           |# Detect data type from result
-          |if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
+          |if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict) and 'uri' in result[0] and 'content' in result[0]:
+          |    # Document tap: list of {uri, filename, content (base64), ...}
+          |    data_type = "document"
+          |    data = json.dumps(result, default=str)
+          |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
           |    # Normalize dict keys to strings (handles Timestamp, numpy keys)
           |    result = [{str(k): v for k, v in row.items()} for row in result if isinstance(row, dict)]
           |    data = json.dumps(result, default=str)
@@ -55,7 +59,7 @@ object TapScriptRunner {
           |else:
           |    data_type = "json"
           |    data = json.dumps(result)
-          |envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv") else data}
+          |envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
           |print(json.dumps(envelope))
           |""".stripMargin
 
@@ -119,7 +123,7 @@ object TapScriptRunner {
             val dataType = Option(envelope.get("type")).map(_.toString).getOrElse("json")
             val data = envelope.get("data")
             val dataJson = gson.toJson(data)
-            val recordCount = if (dataType == "json" || dataType == "csv") countRecords(dataJson) else 1
+            val recordCount = if (dataType == "json" || dataType == "csv" || dataType == "document") countRecords(dataJson) else 1
 
             // For CSV-shaped data: normalize column names so they pass PipelineValidatorUtil
             // (which only allows [A-Za-z0-9_]+) and so downstream SQL doesn't need quoting.

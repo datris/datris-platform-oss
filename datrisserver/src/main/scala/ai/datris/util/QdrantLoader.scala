@@ -117,13 +117,25 @@ class QdrantLoader(jobContext: JobContext) {
         val exists = collections.asScala.exists(_ == collectionName)
 
         if (!exists) {
-            statusUtil.info("processing", "Creating Qdrant collection: " + collectionName + " with dimension: " + dimension)
-            client.createCollectionAsync(collectionName,
-                VectorParams.newBuilder()
-                    .setDistance(Distance.Cosine)
-                    .setSize(dimension)
-                    .build()
-            ).get()
+            statusUtil.info("processing", "Ensuring Qdrant collection: " + collectionName + " with dimension: " + dimension)
+            try {
+                client.createCollectionAsync(collectionName,
+                    VectorParams.newBuilder()
+                        .setDistance(Distance.Cosine)
+                        .setSize(dimension)
+                        .build()
+                ).get()
+            } catch {
+                case e: Exception =>
+                    // Race: a concurrent JobRunner (document taps feed many docs
+                    // simultaneously) may have created the collection between our
+                    // listCollections check and our createCollection call. Re-check
+                    // and swallow the error if so; otherwise rethrow the real problem.
+                    val racedIn = try {
+                        client.listCollectionsAsync().get().asScala.exists(_ == collectionName)
+                    } catch { case _: Exception => false }
+                    if (!racedIn) throw e
+            }
         }
     }
 

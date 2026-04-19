@@ -159,7 +159,7 @@ class DiscoveryAPIController {
                   |   - Use DIFFERENT parameter names for different types of values, even if they seem similar.
                   |     Parameters that accept different categories of input must have distinct names so they
                   |     are not confused with each other when shared across datasets.
-                  |5. "packages" lists the EXACT pip install package names — these must be the names used with `pip install`, NOT the Python import names (they are often different). Verify the correct PyPI package name for each package. Pre-installed packages that do NOT need to be listed: requests, beautifulsoup4, pandas, lxml, feedparser.
+                  |5. "packages" lists the EXACT pip install package names — these must be the names used with `pip install`, NOT the Python import names (they are often different). Verify the correct PyPI package name for each package. Pre-installed packages that do NOT need to be listed: requests, beautifulsoup4, pandas, lxml, feedparser, boto3, pyyaml, openpyxl, python-dateutil, pytz, google-cloud-storage, azure-storage-blob.
                   |6. "requiresAuth": true if the source needs API keys/tokens. Include "suggestedEnvVars" with env var names.
                   |7. "ready" should be true when you have a complete dataset list. Set false if you need more info from the user.
                   |

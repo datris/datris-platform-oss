@@ -23,11 +23,34 @@
     <!-- Step 1: Describe -->
     <div *ngIf="step === 1">
       <h2 class="step-title">Describe Your Data Source</h2>
-      <p class="step-desc">Give your tap a name and describe in plain English what data you want to fetch.</p>
+      <p class="step-desc" *ngIf="tapType !== 'document'">Give your tap a name and describe in plain English what data you want to fetch.</p>
+      <p class="step-desc" *ngIf="tapType === 'document'">Give your tap a name and describe in plain English which documents you want to discover and where they live.</p>
 
       <div class="form-group">
         <label class="form-label">Tap Name</label>
-        <input class="form-input" [(ngModel)]="tapName" placeholder="e.g., weather-data" [readonly]="isEditMode">
+        <input class="form-input" [(ngModel)]="tapName"
+               [placeholder]="tapType === 'document' ? 'e.g., contracts-sharepoint' : 'e.g., weather-data'"
+               [readonly]="isEditMode">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Tap Type</label>
+        <div class="tap-type-toggle">
+          <label class="tap-type-option" [class.selected]="tapType === 'structured'">
+            <input type="radio" name="tapType" value="structured" [(ngModel)]="tapType" [disabled]="isEditMode">
+            <div class="tap-type-label">
+              <span class="tap-type-name">Structured/Semi-Structured</span>
+              <span class="tap-type-hint">Records that flow into a structured pipeline destination.</span>
+            </div>
+          </label>
+          <label class="tap-type-option" [class.selected]="tapType === 'document'">
+            <input type="radio" name="tapType" value="document" [(ngModel)]="tapType" [disabled]="isEditMode">
+            <div class="tap-type-label">
+              <span class="tap-type-name">Document Ingestion</span>
+              <span class="tap-type-hint">Discover and stage files for a vector-store pipeline. Uses a ledger so each file is processed once.</span>
+            </div>
+          </label>
+        </div>
       </div>
 
       <div class="form-group">
@@ -61,21 +84,32 @@
         <div class="testing-indicator" *ngIf="brainstorming">
           <div class="spinner"></div>
           <span>Thinking...</span>
+          <button class="indicator-stop-btn" (click)="stopActive()" title="Stop">
+            <span class="material-icons">stop</span>
+          </button>
         </div>
 
         <div class="brainstorm-input-row">
           <input class="form-input" [(ngModel)]="brainstormInput"
                  (keyup.enter)="sendBrainstorm()"
                  [disabled]="brainstorming"
-                 placeholder="e.g., I want stock prices for tech companies"
+                 [placeholder]="tapType === 'document' ? 'e.g., I want to ingest all PDFs from our SharePoint legal folder' : 'e.g., I want stock prices for tech companies'"
                  #brainstormInputEl>
           <button class="brainstorm-send-btn" (click)="sendBrainstorm()" [disabled]="brainstorming || !brainstormInput.trim()">
             <span class="material-icons">auto_awesome</span>
             Ask
           </button>
         </div>
+      </div>
 
-        <div class="suggested-envvars" *ngIf="suggestedEnvVars.length > 0">
+      <div class="form-group">
+        <label class="form-label">Instruction</label>
+        <textarea class="form-textarea" [(ngModel)]="description" rows="5"
+                  [placeholder]="tapType === 'document' ? 'e.g., Discover and download all PDF and DOCX files in the S3 bucket \'legal-contracts\' under the 2026/ prefix' : 'e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed'"></textarea>
+      </div>
+
+      <div class="form-group" *ngIf="suggestedEnvVars.length > 0">
+        <div class="suggested-envvars">
           <div class="suggested-envvars-header">
             <span class="material-icons">key</span>
             Suggested environment variables for this tap:
@@ -85,12 +119,6 @@
           </div>
           <button class="add-btn" (click)="useSuggestedEnvVars()">+ Create tap secret with these keys</button>
         </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Instruction</label>
-        <textarea class="form-textarea" [(ngModel)]="description" rows="5"
-                  placeholder="e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed"></textarea>
       </div>
 
       <!-- Credentials -->
@@ -147,6 +175,9 @@
       <div class="testing-indicator" *ngIf="generating">
         <div class="spinner"></div>
         <span>Generating script — this may take a minute...</span>
+        <button class="indicator-stop-btn" (click)="stopActive()" title="Stop">
+          <span class="material-icons">stop</span>
+        </button>
       </div>
 
       <div class="code-preview script-preview" *ngIf="script">
@@ -214,29 +245,35 @@
         </span>
       </label>
 
-      <button class="test-btn" (click)="runTest()" [disabled]="testing" *ngIf="!testing">
+      <button class="test-btn" (click)="runTest()" [disabled]="testing"
+              *ngIf="!testing && !applyingDiagnosis && !optimizing">
         <span class="material-icons">science</span>
         Test Script
-      </button>
-      <button class="test-btn stop-btn" (click)="stopTest()" *ngIf="testing">
-        <span class="material-icons">stop</span>
-        Stop Test
       </button>
 
       <div class="testing-indicator" *ngIf="testing">
         <div class="spinner"></div>
         <span *ngIf="autoFixAttempts === 0">Running script — this may take a few minutes for large data fetches...</span>
         <span *ngIf="autoFixAttempts > 0">Re-running after auto-applied AI fix (attempt {{ autoFixAttempts }} of 2)...</span>
+        <button class="indicator-stop-btn" (click)="stopActive()" title="Stop test">
+          <span class="material-icons">stop</span>
+        </button>
       </div>
 
-      <div class="testing-indicator" *ngIf="applyingDiagnosis && autoFixAttempts > 0">
+      <div class="testing-indicator" *ngIf="applyingDiagnosis && autoFixAttempts > 0 && !optimizing && !testing">
         <div class="spinner"></div>
         <span>Auto-applying AI fix (attempt {{ autoFixAttempts }} of 2)...</span>
+        <button class="indicator-stop-btn" (click)="stopActive()" title="Stop">
+          <span class="material-icons">stop</span>
+        </button>
       </div>
 
-      <div class="testing-indicator" *ngIf="optimizing">
+      <div class="testing-indicator" *ngIf="optimizing && !testing">
         <div class="spinner"></div>
         <span>Test passed — asking AI to optimize the script for performance...</span>
+        <button class="indicator-stop-btn" (click)="stopActive()" title="Skip optimization">
+          <span class="material-icons">stop</span>
+        </button>
       </div>
 
       <div class="test-logs" *ngIf="testLogs">
@@ -246,11 +283,33 @@
 
       <div class="test-results" *ngIf="testRecordCount > 0">
         <div class="test-success">
-          Fetched {{ testRecordCount }} records
+          <ng-container *ngIf="testDataType === 'document'; else recordsLabel">
+            Discovered {{ testRecordCount }} documents
+          </ng-container>
+          <ng-template #recordsLabel>Fetched {{ testRecordCount }} records</ng-template>
           <span class="datatype-badge" *ngIf="testDataType">{{ testDataType.toUpperCase() }}</span>
         </div>
 
-        <div class="preview-table-wrap" *ngIf="testRecords">
+        <div class="preview-table-wrap" *ngIf="testRecords && testDataType === 'document'">
+          <table class="doc-preview-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>URI</th>
+                <th>Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let d of getDocumentPreview()">
+                <td>{{ d.filename }}</td>
+                <td class="doc-uri">{{ d.uri }}</td>
+                <td>{{ d.sizeLabel }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="preview-table-wrap" *ngIf="testRecords && testDataType !== 'document'">
           <pre class="preview-json">{{ getPreviewRows() | json }}</pre>
         </div>
         <div class="preview-note" *ngIf="testRecordCount > 100">Showing first 100 of {{ testRecordCount }} records</div>
@@ -296,6 +355,9 @@
           <div class="testing-indicator" *ngIf="applyingDiagnosis">
             <div class="spinner"></div>
             <span>Applying AI diagnosis — regenerating script...</span>
+            <button class="indicator-stop-btn" (click)="stopActive()" title="Stop">
+              <span class="material-icons">stop</span>
+            </button>
           </div>
         </div>
       </div>
@@ -424,6 +486,9 @@
       <div class="testing-indicator" *ngIf="runningTap">
         <div class="spinner"></div>
         <span>Running the tap and pushing data to the pipeline...</span>
+        <button class="indicator-stop-btn" (click)="stopActive()" title="Stop run">
+          <span class="material-icons">stop</span>
+        </button>
       </div>
 
       <div class="error-box" *ngIf="runError">{{ runError }}</div>
@@ -438,7 +503,14 @@
         </div>
         <div class="modal-body">
           <div *ngIf="loadingPipelines" class="modal-loading">Loading pipelines...</div>
-          <div *ngIf="!loadingPipelines && availablePipelines.length === 0" class="modal-empty">No pipelines found. Create one with the Generate Pipeline button instead.</div>
+          <div *ngIf="!loadingPipelines && availablePipelines.length === 0" class="modal-empty">
+            <ng-container *ngIf="tapType === 'document'; else noStructuredPipelines">
+              No vector-store pipelines found. Use "Generate Pipeline" to create one for this document tap, or create one in the Pipelines tab first.
+            </ng-container>
+            <ng-template #noStructuredPipelines>
+              No pipelines found. Create one with the Generate Pipeline button instead.
+            </ng-template>
+          </div>
           <div *ngIf="!loadingPipelines && availablePipelines.length > 0">
             <label class="form-label">Pick a pipeline</label>
             <select class="form-input" [(ngModel)]="selectedPipelineName" (change)="onPipelineSelected()">
@@ -446,7 +518,16 @@
               <option *ngFor="let p of availablePipelines" [value]="p.name">{{ p.name }}</option>
             </select>
 
-            <div *ngIf="columnMatchResult" class="column-match-block">
+            <!-- Document taps: destination card (no column matching) -->
+            <div *ngIf="tapType === 'document' && selectedPipelineDestination" class="column-match-block">
+              <div class="column-match">
+                <span class="material-icons">check_circle</span>
+                Documents will be embedded and loaded into: <strong>{{ selectedPipelineDestination }}</strong>
+              </div>
+            </div>
+
+            <!-- Structured taps: existing column-match logic -->
+            <div *ngIf="tapType !== 'document' && columnMatchResult" class="column-match-block">
               <div *ngIf="columnMatchResult.match" class="column-match">
                 <span class="material-icons">check_circle</span>
                 Columns match exactly. Ready to attach.
@@ -492,33 +573,103 @@
             <label class="form-label">Pipeline name</label>
             <input class="form-input" [(ngModel)]="generatedPipelineName" [disabled]="generatingPipeline">
           </div>
-          <div class="form-group">
-            <label class="form-label">Source</label>
-            <div class="generate-summary">{{ (testDataType || 'json').toUpperCase() }} from tap output</div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">{{ destLabel() }}</label>
-            <input class="form-input" [(ngModel)]="generatedDestName" [disabled]="generatingPipeline">
-            <div class="generate-summary">{{ destinationDescription() }}</div>
-            <div class="error-box" *ngIf="destNameConflict()">A {{ destLabel().toLowerCase() }} named "{{ generatedDestName.trim() }}" already exists. Pick a different name.</div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Columns ({{ testColumns.length }})</label>
-            <div class="generate-summary generate-columns">{{ testColumns.join(', ') }}</div>
-            <div class="generate-help">All columns will be created as <code>string</code> for safe ingestion. You can promote individual columns to richer types in the pipeline editor once you're confident about the data shape.</div>
-          </div>
-          <div class="form-group">
-            <label class="toggle-row">
-              <input type="checkbox" [(ngModel)]="generatedTruncate" [disabled]="generatingPipeline">
-              <span>Truncate destination before each tap run (full refresh)</span>
-            </label>
-            <div class="generate-help">When enabled, the destination table is cleared before every tap run, so it always reflects the latest tap output. Leave unchecked to append/upsert.</div>
-          </div>
+
+          <!-- Structured taps: CSV→Postgres / JSON→Mongo flow -->
+          <ng-container *ngIf="tapType !== 'document'">
+            <div class="form-group">
+              <label class="form-label">Source</label>
+              <div class="generate-summary">{{ (testDataType || 'json').toUpperCase() }} from tap output</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">{{ destLabel() }}</label>
+              <input class="form-input" [(ngModel)]="generatedDestName" [disabled]="generatingPipeline">
+              <div class="generate-summary">{{ destinationDescription() }}</div>
+              <div class="error-box" *ngIf="destNameConflict()">A {{ destLabel().toLowerCase() }} named "{{ generatedDestName.trim() }}" already exists. Pick a different name.</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Columns ({{ testColumns.length }})</label>
+              <div class="generate-summary generate-columns">{{ testColumns.join(', ') }}</div>
+              <div class="generate-help">All columns will be created as <code>string</code> for safe ingestion. You can promote individual columns to richer types in the pipeline editor once you're confident about the data shape.</div>
+            </div>
+            <div class="form-group">
+              <label class="toggle-row">
+                <input type="checkbox" [(ngModel)]="generatedTruncate" [disabled]="generatingPipeline">
+                <span>Truncate destination before each tap run (full refresh)</span>
+              </label>
+              <div class="generate-help">When enabled, the destination table is cleared before every tap run, so it always reflects the latest tap output. Leave unchecked to append/upsert.</div>
+            </div>
+          </ng-container>
+
+          <!-- Document taps: unstructured → vector-store flow -->
+          <ng-container *ngIf="tapType === 'document'">
+            <div class="form-group">
+              <label class="form-label">Source</label>
+              <div class="generate-summary">Documents (unstructured) from tap output — text extraction, chunking, and embedding happen in the pipeline.</div>
+            </div>
+
+            <div *ngIf="loadingVectorStores" class="modal-loading">Loading vector stores...</div>
+
+            <div *ngIf="!loadingVectorStores && availableVectorStores.length === 0" class="modal-empty">
+              No vector stores configured. Add a Qdrant / Weaviate / pgvector / Milvus / Chroma secret in the Configuration tab first.
+            </div>
+
+            <ng-container *ngIf="!loadingVectorStores && availableVectorStores.length > 0">
+              <div class="form-group" *ngIf="availableVectorStores.length > 1">
+                <label class="form-label">Vector store</label>
+                <select class="form-input" [(ngModel)]="selectedVectorStore" [disabled]="generatingPipeline">
+                  <option *ngFor="let s of availableVectorStores" [value]="s">{{ s }}</option>
+                </select>
+              </div>
+              <div class="form-group" *ngIf="availableVectorStores.length === 1">
+                <label class="form-label">Vector store</label>
+                <div class="generate-summary">{{ selectedVectorStore }}</div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">{{ vectorDestLabel() }}</label>
+                <input class="form-input" [(ngModel)]="generatedDestName" [disabled]="generatingPipeline">
+              </div>
+
+              <div class="form-group" *ngIf="selectedVectorStore === 'pgvector'">
+                <label class="form-label">Schema</label>
+                <input class="form-input" [(ngModel)]="pgvectorSchema" [disabled]="generatingPipeline">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Chunking strategy</label>
+                <select class="form-input" [(ngModel)]="chunkStrategy" [disabled]="generatingPipeline">
+                  <option value="recursive">Recursive (recommended)</option>
+                  <option value="fixed">Fixed-size</option>
+                  <option value="sentence">Sentence-aware</option>
+                  <option value="paragraph">Paragraph-aware</option>
+                  <option value="none">No chunking</option>
+                </select>
+                <div class="generate-help">{{ chunkStrategyHint() }}</div>
+              </div>
+
+              <div class="form-group chunk-size-row" *ngIf="chunkStrategy !== 'none'">
+                <div>
+                  <label class="form-label">Chunk size (chars)</label>
+                  <input class="form-input" type="number" min="1" [(ngModel)]="chunkSize" [disabled]="generatingPipeline">
+                </div>
+                <div>
+                  <label class="form-label">Chunk overlap (chars)</label>
+                  <input class="form-input" type="number" min="0" [(ngModel)]="chunkOverlap" [disabled]="generatingPipeline">
+                </div>
+              </div>
+            </ng-container>
+          </ng-container>
+
           <div class="error-box" *ngIf="generateError">{{ generateError }}</div>
         </div>
         <div class="modal-footer">
           <button class="secondary-btn" (click)="closeGenerateModal()" [disabled]="generatingPipeline">Cancel</button>
-          <button class="primary-btn" (click)="confirmGenerate()" [disabled]="generatingPipeline || !generatedPipelineName.trim() || !generatedDestName.trim() || destNameConflict()">
+          <button class="primary-btn" *ngIf="tapType !== 'document'" (click)="confirmGenerate()"
+                  [disabled]="generatingPipeline || !generatedPipelineName.trim() || !generatedDestName.trim() || destNameConflict()">
+            {{ generatingPipeline ? 'Generating...' : 'Create Pipeline' }}
+          </button>
+          <button class="primary-btn" *ngIf="tapType === 'document'" (click)="confirmGenerate()"
+                  [disabled]="generatingPipeline || !generatedPipelineName.trim() || !generatedDestName.trim() || !selectedVectorStore || availableVectorStores.length === 0">
             {{ generatingPipeline ? 'Generating...' : 'Create Pipeline' }}
           </button>
         </div>

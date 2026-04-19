@@ -22,6 +22,43 @@ import scala.collection.JavaConverters._
 class HealthCheckAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[HealthCheckAPIController])
 
+    /**
+     * Vector stores that are live and reachable. Drives the document-tap
+     * pipeline wizard's store picker. We must actually probe the service here
+     * — the dev docker-compose seeds placeholder Vault secrets for every
+     * store even though only pgvector is running, so "secret is present" is
+     * not a reliable signal of availability. Reuses the same checkVectorDB
+     * logic as /health/services; returns only stores whose status is "up".
+     */
+    @GetMapping(path = Array("/vector-stores/available"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def listAvailableVectorStores(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /vector-stores/available called")
+            APIKeyValidator.validate(apiKey)
+
+            val env = DatrisEnvironment.current
+            val candidates = Seq(
+                ("qdrant",   env.qdrantSecretName),
+                ("weaviate", env.weaviateSecretName),
+                ("pgvector", env.pgvectorSecretName),
+                ("milvus",   env.milvusSecretName),
+                ("chroma",   env.chromaSecretName)
+            )
+            val available = new java.util.ArrayList[String]()
+            candidates.foreach { case (name, secretName) =>
+                val status = checkVectorDB(name, secretName)
+                if ("up" == status.get("status")) available.add(name)
+            }
+
+            val gson = new Gson
+            new ResponseEntity[String](gson.toJson(available), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @GetMapping(path = Array("/health/services"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def checkServiceHealth(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {

@@ -47,9 +47,21 @@ Content-Type: application/json
   "packages": ["yfinance"],
   "secretName": "my-api-creds",
   "cronExpression": "0 0 0 * * ?",
-  "enabled": true
+  "enabled": true,
+  "tapType": "structured"
 }
 ```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `tapType` | string | `"structured"` | `"structured"` or `"document"`. Document taps return `{uri, filename, content}` dicts and require a `targetPipeline` with an `unstructuredAttributes` source and a vector-store destination. Cannot be changed once set. |
+
+**Document-tap compatibility rule.** When `tapType == "document"` and `targetPipeline` is non-empty, the server validates that the pipeline has:
+
+- `source.fileAttributes.unstructuredAttributes != null`
+- A vector-store destination (one of `qdrant`, `pgvector`, `weaviate`, `milvus`, `chroma`)
+
+Mismatches return **HTTP 400** with a message naming the violation. Also enforced at run time in `TapRunner.feedDocumentPipeline` in case the pipeline is reshaped after the tap is saved.
 
 ## Delete Tap
 
@@ -57,7 +69,7 @@ Content-Type: application/json
 DELETE /api/v1/tap?name={tapName}
 ```
 
-Deletes the tap configuration and its script from MinIO.
+Deletes the tap configuration and its script from MinIO. For document taps, also clears the ledger entries and deletes all staged MinIO objects for that tap.
 
 ## Brainstorm (AI Chat)
 
@@ -82,9 +94,14 @@ Multi-turn conversational endpoint that helps the user refine a vague tap idea i
     {"role": "assistant", "content": "Which companies?..."},
     {"role": "user", "content": "Tickers from the consumer_discretionary_earnings table on Datris"}
   ],
-  "currentDescription": "Optional: the current draft instruction so the AI has context"
+  "currentDescription": "Optional: the current draft instruction so the AI has context",
+  "tapType": "structured"
 }
 ```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `tapType` | string | `"structured"` | Selects the system prompt. `"document"` uses a document-tap-aware prompt that asks about document sources (SharePoint, S3, URL listings, etc.) and never asks about chunking, embedding, or vector-store details (those are pipeline concerns). |
 
 **Response:**
 ```json
@@ -113,17 +130,22 @@ POST /api/v1/tap/generate
 Content-Type: application/json
 ```
 
-Uses AI to generate a Python `fetch()` script from a plain-English description.
+Uses AI to generate a Python `fetch()` script from a plain-English description. The system prompt branches on `tapType` — document taps get instructions to return `{uri, filename, content}` dicts and a different set of rules (no chunking, no embedding, no local-filesystem fallback).
 
 **Body:**
 ```json
 {
-  "description": "Fetch daily stock prices for S&P 500 from yfinance",
-  "tapName": "stock-prices-tap",
+  "description": "Discover all PDFs in the S3 bucket 'contracts' under prefix 2026/",
+  "tapName": "contracts-tap",
   "oldScriptPath": "tap-scripts/old_script.py",
-  "secretName": "my-api-creds"
+  "secretName": "aws-creds",
+  "tapType": "document"
 }
 ```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `tapType` | string | `"structured"` | Selects the system prompt. Set to `"document"` when generating a document-tap script. |
 
 **Response:**
 ```json
@@ -174,7 +196,7 @@ Executes the tap script without sending data to a pipeline. Returns results, log
 
 **Body:** A TapConfig JSON object (same as Create).
 
-**Response:**
+**Structured response** (`dataType: "csv"` shown):
 ```json
 {
   "records": [{"ticker": "AAPL", "close": 255.92}, ...],
@@ -188,9 +210,30 @@ Executes the tap script without sending data to a pipeline. Returns results, log
 }
 ```
 
+**Document-tap response** (`dataType: "document"`):
+```json
+{
+  "records": [
+    {
+      "uri": "s3://contracts/2026/acme-msa.pdf",
+      "filename": "acme-msa.pdf",
+      "content": "JVBERi0xLjQKJe…",
+      "content_hash": "2f1c…",
+      "metadata": {"source": "s3"}
+    }
+  ],
+  "recordCount": 1,
+  "dataType": "document",
+  "columns": null,
+  "logs": "Listed 1 object in s3://contracts/2026/",
+  "error": null,
+  "durationMs": 3100
+}
+```
+
 If errors or 0 records are detected, `aiExplanation` contains an AI-generated diagnosis. `durationMs` is the end-to-end test wall time in milliseconds — this is what the [Optimize Script](#optimize-script) endpoint uses as the baseline timing for its perf rewrite.
 
-For `dataType: "csv"`, **column names in `columns` and the keys inside each record in `records` are normalized** by the platform: lowercase, `[a-z0-9_]` only, with `%` rewritten to `percent`. Source data with names like `EPS Estimate` or `Surprise(%)` will appear as `eps_estimate` and `surprise_percent`. JSON/XML results destined for MongoDB are not normalized. See [Schema Definition → Column Naming Rules](/schemas#column-naming-rules).
+For `dataType: "csv"`, **column names in `columns` and the keys inside each record in `records` are normalized** by the platform: lowercase, `[a-z0-9_]` only, with `%` rewritten to `percent`. Source data with names like `EPS Estimate` or `Surprise(%)` will appear as `eps_estimate` and `surprise_percent`. JSON/XML results destined for MongoDB are not normalized. See [Schema Definition → Column Naming Rules](/schemas#column-naming-rules). Document-tap records pass through unchanged — the platform never rewrites URI, filename, content, or metadata keys.
 
 ## Optimize Script
 
@@ -317,6 +360,70 @@ Returns the last 50 run log entries for a tap, sorted by most recent first.
   }
 ]
 ```
+
+## Document Ledger
+
+Document taps track which files they've already processed in a **ledger** — a MongoDB collection keyed by `{tapName}|{uri}`. See [Document Taps → The Document Ledger](/taps#the-document-ledger) for the concept; these endpoints manage it.
+
+### Read ledger
+
+```
+GET /api/v1/tap/ledger?name={tapName}
+```
+
+Returns every ledger entry owned by the tap.
+
+**Response:**
+```json
+[
+  {
+    "uri": "s3://contracts/2026/acme-msa.pdf",
+    "tapName": "contracts-tap",
+    "stagedPath": "tap-docs/contracts-tap/a1b2c3d4_acme-msa.pdf",
+    "filename": "acme-msa.pdf",
+    "contentHash": "2f1c…",
+    "firstSeenAt": "2026-04-18 13:42:38 EDT",
+    "lastSeenAt": "2026-04-19 07:00:11 EDT",
+    "status": "processed",
+    "metadata": {"source": "s3", "region": "EU"}
+  }
+]
+```
+
+### Delete one entry (force re-process)
+
+```
+DELETE /api/v1/tap/ledger?name={tapName}&uri={uri}
+```
+
+Removes a single entry and its staged MinIO object. The next tap run will re-ingest that specific document from source.
+
+### Clear the entire ledger (force full re-scan)
+
+```
+DELETE /api/v1/tap/ledger?name={tapName}
+```
+
+Removes every entry for the tap plus all staged MinIO objects. The next run re-ingests every document the source exposes.
+
+Also triggered automatically when:
+- The tap is deleted (`DELETE /api/v1/tap`).
+- The target pipeline's data is cleared (`DELETE /api/v1/pipeline?pipeline=X&deleteData=true`). Without this, the tap would skip docs it already "processed" and the pipeline would stay empty.
+
+## Available Vector Stores
+
+```
+GET /api/v1/vector-stores/available
+```
+
+Returns the subset of `[qdrant, weaviate, pgvector, milvus, chroma]` whose Vault secret is present **and** whose service is currently reachable. Used by the document-tap pipeline wizard to drive the store picker. Secret presence alone isn't sufficient — the dev stack seeds placeholder secrets for every store, so the endpoint actually probes each service.
+
+**Response:**
+```json
+["pgvector"]
+```
+
+Probes use the same logic as `/api/v1/health/services`, with a 2-second timeout per store (~10 s worst case if everything is unreachable).
 
 ## Authentication
 

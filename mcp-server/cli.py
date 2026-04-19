@@ -540,8 +540,10 @@ def tap():
 @click.option("--script", "script_path", default=None, type=click.Path(exists=True), help="Path to a Python script file with a fetch() function")
 @click.option("--cron", default=None, help="CRON expression for scheduling (Quartz format)")
 @click.option("--secret", default=None, help="Vault secret name for credentials")
+@click.option("--type", "tap_type", type=click.Choice(["structured", "document"]), default="structured",
+              help="Tap type: 'structured' returns rows of records (default); 'document' returns file bytes for a vector-store pipeline")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
-def tap_create(instruction, pipeline, name, script_path, cron, secret, json_output):
+def tap_create(instruction, pipeline, name, script_path, cron, secret, tap_type, json_output):
     """Create a tap from an instruction (AI generates script), script file, or config only."""
     # Derive tap name if not provided
     if name:
@@ -554,7 +556,7 @@ def tap_create(instruction, pipeline, name, script_path, cron, secret, json_outp
         click.echo("  Error: provide at least a --name, --pipeline, or instruction")
         sys.exit(1)
 
-    args = {"name": tap_name}
+    args = {"name": tap_name, "tap_type": tap_type}
 
     if script_path:
         with open(script_path, "r") as f:

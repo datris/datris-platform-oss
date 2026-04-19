@@ -132,6 +132,51 @@ export class TapsComponent implements OnInit, OnDestroy {
     });
   }
 
+  // Document ledger modal
+  ledgerTap = '';
+  ledgerEntries: any[] = [];
+  ledgerLoading = false;
+  ledgerClearing = false;
+
+  viewLedger(event: Event, name: string): void {
+    event.stopPropagation();
+    this.ledgerTap = name;
+    this.ledgerEntries = [];
+    this.ledgerLoading = true;
+    this.tapService.getTapLedger(name).subscribe({
+      next: (entries) => {
+        this.ledgerEntries = (entries || []).sort((a: any, b: any) =>
+          (b.lastSeenAt || '').localeCompare(a.lastSeenAt || '')
+        );
+        this.ledgerLoading = false;
+      },
+      error: () => { this.ledgerLoading = false; alert('Failed to load ledger'); }
+    });
+  }
+
+  closeLedger(): void {
+    this.ledgerTap = '';
+    this.ledgerEntries = [];
+  }
+
+  deleteLedgerEntry(uri: string): void {
+    if (!this.ledgerTap || !uri) return;
+    this.tapService.deleteLedgerEntry(this.ledgerTap, uri).subscribe({
+      next: () => this.ledgerEntries = this.ledgerEntries.filter(e => e.uri !== uri),
+      error: () => alert('Failed to delete entry')
+    });
+  }
+
+  clearLedger(): void {
+    if (!this.ledgerTap || this.ledgerClearing) return;
+    if (!confirm('Clear the entire ledger for ' + this.ledgerTap + '? The next run will re-process every document.')) return;
+    this.ledgerClearing = true;
+    this.tapService.clearLedger(this.ledgerTap).subscribe({
+      next: () => { this.ledgerEntries = []; this.ledgerClearing = false; },
+      error: () => { this.ledgerClearing = false; alert('Failed to clear ledger'); }
+    });
+  }
+
   viewLogs(event: Event, name: string): void {
     event.stopPropagation();
     this.logsTap = name;

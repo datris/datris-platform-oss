@@ -143,6 +143,19 @@ components:
         enabled:
           type: boolean
           default: true
+        tapType:
+          type: string
+          enum: [structured, document]
+          default: structured
+          description: >-
+            `structured` (default) — the script returns records that flow into a
+            structured pipeline destination.
+            `document` — the script returns `{uri, filename, content}` dicts
+            destined for a vector-store pipeline (unstructured source +
+            qdrant/pgvector/weaviate/milvus/chroma destination). The server
+            rejects a document tap pointed at an incompatible pipeline with
+            HTTP 400. Document taps also use a per-URI ledger so each file is
+            processed once across re-runs.
         lastRunStatus:
           type: string
           enum: [success, failure]
@@ -154,7 +167,7 @@ components:
           type: string
         lastRunDataType:
           type: string
-          enum: [csv, json, xml, text]
+          enum: [csv, json, xml, text, document]
         lastRunColumns:
           type: array
           items:
@@ -248,6 +261,38 @@ components:
         currentDescription:
           type: string
           description: Current draft instruction (optional context for the AI)
+        tapType:
+          type: string
+          enum: [structured, document]
+          default: structured
+          description: Selects the system prompt. `document` keeps the brainstorm focused on document discovery (where files live, how to enumerate) and stops it asking about chunking, embedding, or vector-store choices.
+
+    TapDocumentLedgerEntry:
+      type: object
+      properties:
+        uri:
+          type: string
+          description: Unique source identifier for the document
+        tapName:
+          type: string
+        stagedPath:
+          type: string
+          description: MinIO key where the raw bytes were staged
+        filename:
+          type: string
+        contentHash:
+          type: string
+        firstSeenAt:
+          type: string
+        lastSeenAt:
+          type: string
+        status:
+          type: string
+          enum: [staged, processed, failed]
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
 
     TapBrainstormResponse:
       type: object
@@ -1392,7 +1437,12 @@ paths:
     post:
       tags: [Taps]
       summary: Generate tap script (AI)
-      description: Uses AI to generate a Python `fetch()` script from a plain-English description.
+      description: >-
+        Uses AI to generate a Python `fetch()` script from a plain-English
+        description. The system prompt branches on `tapType` — document taps
+        get a prompt that instructs the LLM to return `{uri, filename, content}`
+        dicts, never chunk or embed, and never fall back to scanning the local
+        filesystem.
       requestBody:
         required: true
         content:
@@ -1411,6 +1461,11 @@ paths:
                 secretName:
                   type: string
                   description: Tap secret name — env var keys are passed to the AI as context
+                tapType:
+                  type: string
+                  enum: [structured, document]
+                  default: structured
+                  description: Selects the system prompt for the generated script.
       responses:
         '200':
           description: Generated script
@@ -1551,3 +1606,73 @@ paths:
                   cronExpression:
                     type: string
                     example: 0 0 16 ? * MON-FRI
+
+  /api/v1/tap/ledger:
+    get:
+      tags: [Taps]
+      summary: Read a document tap's ledger
+      description: >-
+        Returns every ledger entry owned by the tap. The ledger records which
+        documents the tap has already staged so re-runs skip unchanged files.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Ledger entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TapDocumentLedgerEntry'
+    delete:
+      tags: [Taps]
+      summary: Clear the ledger (force re-scan) or delete one entry (force re-process)
+      description: >-
+        With only `name`, clears the entire ledger for the tap and deletes every
+        staged MinIO object — the next run re-ingests every document from source.
+        With `name` and `uri`, deletes one entry and its staged object so that
+        specific document is re-processed on the next run.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+        - name: uri
+          in: query
+          required: false
+          schema: { type: string }
+          description: Single-entry URI. Omit to clear the whole ledger.
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+
+  /api/v1/vector-stores/available:
+    get:
+      tags: [Health]
+      summary: List live, reachable vector stores
+      description: >-
+        Returns the subset of `[qdrant, weaviate, pgvector, milvus, chroma]`
+        whose Vault secret is present AND whose service responds to a probe.
+        Drives the document-tap pipeline wizard's store picker. Secret presence
+        alone isn't sufficient — the dev stack seeds placeholder secrets for
+        every store, so this endpoint must actually probe each one (2s timeout
+        per store, ~10s worst case if everything is unreachable).
+      responses:
+        '200':
+          description: Available vector stores
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+                example: [pgvector]

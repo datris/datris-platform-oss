@@ -191,6 +191,7 @@ class StartupRunner extends ApplicationRunner {
             multiTenant,
             tapTableName = environment + "-tap",
             tapLogTableName = environment + "-tap-log",
+            tapLedgerTableName = environment + "-tap-ledger",
             tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
             dateFormat = dateFormat,
             dateTimezone = dateTimezone,
