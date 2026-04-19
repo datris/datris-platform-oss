@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "datris-mcp-server"
-version = "1.6.6"
+version = "1.6.7"
 description = "MCP server for AI-driven data pipeline operations — ingest, validate, transform, analyze, and query data. 32 tools covering ETL, AI data quality, vector search, PostgreSQL, MongoDB, Kafka, S3/MinIO, HashiCorp Vault, Qdrant, Weaviate, Milvus, Chroma, pgvector."
 readme = "README.md"
 license = {text = "Apache-2.0"}
