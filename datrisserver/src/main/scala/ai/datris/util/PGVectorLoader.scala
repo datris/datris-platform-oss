@@ -164,6 +164,39 @@ class PGVectorLoader(jobContext: JobContext) {
                 lockStmt.close()
             }
 
+            // If the table already exists with a different vector dimension, fail
+            // fast with a clear error — otherwise the batch INSERT blows up with
+            // a cryptic "expected N dimensions" from Postgres. pgvector stores
+            // the declared dimension directly in pg_attribute.atttypmod (-1 means
+            // unspecified, which we treat as "can't verify, proceed").
+            val dimCheckSql =
+                """SELECT a.atttypmod
+                  |FROM pg_attribute a
+                  |JOIN pg_class c ON c.oid = a.attrelid
+                  |JOIN pg_namespace n ON n.oid = c.relnamespace
+                  |WHERE n.nspname = ? AND c.relname = ?
+                  |  AND a.attname = 'embedding' AND NOT a.attisdropped""".stripMargin
+            val dimCheck = conn.prepareStatement(dimCheckSql)
+            try {
+                dimCheck.setString(1, schemaName)
+                dimCheck.setString(2, tableName)
+                val rs = dimCheck.executeQuery()
+                if (rs.next()) {
+                    val existing = rs.getInt(1)
+                    if (existing > 0 && existing != dimension) {
+                        throw new DatrisException(
+                            "Embedding dimension mismatch on table \"" + schemaName + "." + tableName +
+                            "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                            "). The stored vectors are incompatible with the new provider. Either drop table \"" +
+                            schemaName + "." + tableName + "\" and re-ingest, or point this pipeline at a new table."
+                        )
+                    }
+                }
+                rs.close()
+            } finally {
+                dimCheck.close()
+            }
+
             val metadataColumns = if (pgvectorConfig.metadata != null) {
                 pgvectorConfig.metadata.asScala.keys.map(key => "\"" + key + "\" TEXT").mkString(", ", ", ", "")
             } else ""

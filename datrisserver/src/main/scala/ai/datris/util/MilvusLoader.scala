@@ -9,7 +9,7 @@ import com.google.gson.{Gson, JsonObject}
 import io.milvus.v2.client.{ConnectConfig, MilvusClientV2}
 import io.milvus.v2.common.DataType
 import io.milvus.v2.common.IndexParam.MetricType
-import io.milvus.v2.service.collection.request.{AddFieldReq, CreateCollectionReq}
+import io.milvus.v2.service.collection.request.{AddFieldReq, CreateCollectionReq, DescribeCollectionReq}
 import io.milvus.v2.service.vector.request.InsertReq
 import ai.datris.model.{JobContext, DatrisEnvironment, DatrisException}
 import org.slf4j.{Logger, LoggerFactory}
@@ -121,7 +121,10 @@ class MilvusLoader(jobContext: JobContext) {
 
     private def ensureCollection(client: MilvusClientV2, collectionName: String, dimension: Int): Unit = {
         val collectionsResp = client.listCollections()
-        if (collectionsResp.getCollectionNames.contains(collectionName)) return
+        if (collectionsResp.getCollectionNames.contains(collectionName)) {
+            verifyCollectionDimension(client, collectionName, dimension)
+            return
+        }
 
         statusUtil.info("processing", "Ensuring Milvus collection: " + collectionName + " with dimension: " + dimension)
 
@@ -162,6 +165,28 @@ class MilvusLoader(jobContext: JobContext) {
                     client.listCollections().getCollectionNames.contains(collectionName)
                 } catch { case _: Exception => false }
                 if (!racedIn) throw e
+                // If a racing session won, still verify its embedding dim matches ours.
+                verifyCollectionDimension(client, collectionName, dimension)
+        }
+    }
+
+    private def verifyCollectionDimension(client: MilvusClientV2, collectionName: String, dimension: Int): Unit = {
+        val describeResp = try {
+            client.describeCollection(DescribeCollectionReq.builder().collectionName(collectionName).build())
+        } catch {
+            case _: Exception => return  // can't read schema — let insert surface the real error
+        }
+        val fields = describeResp.getCollectionSchema.getFieldSchemaList.asScala
+        val embeddingField = fields.find(_.getName == "embedding")
+        embeddingField.flatMap(f => Option(f.getDimension)).foreach { existing =>
+            if (existing.intValue() != dimension) {
+                throw new DatrisException(
+                    "Embedding dimension mismatch on collection \"" + collectionName +
+                    "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                    "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
+                    collectionName + "\" and re-ingest, or point this pipeline at a new collection."
+                )
+            }
         }
     }
 

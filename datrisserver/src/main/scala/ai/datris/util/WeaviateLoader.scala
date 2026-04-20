@@ -119,6 +119,7 @@ class WeaviateLoader(jobContext: JobContext) {
     private def ensureClass(client: WeaviateClient, className: String, dimension: Int): Unit = {
         val schemaResult = client.schema().classGetter().withClassName(className).run()
         if (!schemaResult.hasErrors && schemaResult.getResult != null) {
+            verifyClassDimension(client, className, dimension)
             return
         }
 
@@ -154,6 +155,37 @@ class WeaviateLoader(jobContext: JobContext) {
             } catch { case _: Exception => false }
             if (!racedIn)
                 throw new DatrisException("Failed to create Weaviate class: " + createResult.getError.getMessages.toString)
+            // If a racing session won, still verify its existing vector dim matches ours.
+            verifyClassDimension(client, className, dimension)
+        }
+    }
+
+    // Weaviate's class schema doesn't expose a fixed vector dim — the dim is
+    // set implicitly by the first object written. Probe one object for its
+    // vector length. If the class is empty (no objects yet) we can't verify,
+    // so we proceed and let the first write set the dim naturally.
+    private def verifyClassDimension(client: WeaviateClient, className: String, dimension: Int): Unit = {
+        val probe = try {
+            client.data().objectsGetter()
+                .withClassName(className)
+                .withLimit(1)
+                .withVector()
+                .run()
+        } catch {
+            case _: Exception => return
+        }
+        if (probe.hasErrors || probe.getResult == null) return
+        val objects = probe.getResult.asScala
+        objects.headOption.flatMap(o => Option(o.getVector)).foreach { vector =>
+            val existing = vector.length
+            if (existing > 0 && existing != dimension) {
+                throw new DatrisException(
+                    "Embedding dimension mismatch on class \"" + className +
+                    "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                    "). The stored vectors are incompatible with the new provider. Either drop class \"" +
+                    className + "\" and re-ingest, or point this pipeline at a new class."
+                )
+            }
         }
     }
 

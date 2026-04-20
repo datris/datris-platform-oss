@@ -365,6 +365,26 @@ export class ConfigurationComponent implements OnInit {
       return;
     }
 
+    // Catch the silent-skip case: user picked a non-Ollama provider + model but
+    // hasn't supplied that provider's key. Without this, the section's PUT is
+    // silently dropped and the success banner lies about what was saved.
+    const missing = new Set<string>();
+    const flagIfMissingKey = (provider: string, model: string) => {
+      if (!model || !model.trim()) return;
+      if (this.isOllama(provider)) return;
+      if (!this.keyForProvider(provider)) missing.add(provider);
+    };
+    flagIfMissingKey(this.aiPrimaryProvider, this.aiPrimaryModel);
+    flagIfMissingKey(this.codegenProvider, this.codegenModel);
+    flagIfMissingKey(this.embeddingProvider, this.embeddingModel);
+    if (missing.size > 0) {
+      const label = (p: string) => p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : p;
+      const names = Array.from(missing).map(label).join(' and ');
+      this.error = `Enter the ${names} API key on the right — it's required by a section you've selected.`;
+      this.success = '';
+      return;
+    }
+
     this.saving = true;
     this.success = '';
     this.error = '';

@@ -73,10 +73,12 @@ object AIUtil {
 
     /**
      * Build an HttpPost with provider-specific auth headers and content-type.
-     * Pulled out so all three callAI* methods can share the same logic.
+     * Pulled out so all three callAI* methods can share the same logic. The
+     * endpoint is passed explicitly so Responses-API callers can override the
+     * stored chat-completions URL without mutating AIConfig.
      */
-    private def buildHttpPost(aiConfig: AIConfig, jsonBody: String): HttpPost = {
-        val httpPost = new HttpPost(aiConfig.endpoint)
+    private def buildHttpPost(aiConfig: AIConfig, jsonBody: String, endpoint: String): HttpPost = {
+        val httpPost = new HttpPost(endpoint)
         aiConfig.provider.toLowerCase match {
             case "openai" =>
                 httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
@@ -91,6 +93,57 @@ object AIUtil {
         httpPost.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
         httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8))
         httpPost
+    }
+
+    // OpenAI's Responses API (POST /v1/responses) is used by the codex family
+    // and is also valid for newer reasoning models. We auto-route when the
+    // model name contains "codex" or the configured endpoint already points at
+    // /v1/responses. Request/response shapes are different from chat/completions
+    // (input + instructions + max_output_tokens; output[].content[].text).
+    private def usesResponsesApi(aiConfig: AIConfig): Boolean = {
+        if (aiConfig == null || !aiConfig.provider.toLowerCase.equals("openai")) return false
+        val model = Option(aiConfig.model).map(_.toLowerCase).getOrElse("")
+        val endpoint = Option(aiConfig.endpoint).map(_.toLowerCase).getOrElse("")
+        model.contains("codex") || endpoint.contains("/v1/responses")
+    }
+
+    private def responsesEndpointFor(aiConfig: AIConfig): String = {
+        val ep = aiConfig.endpoint
+        if (ep == null || ep.isEmpty) "https://api.openai.com/v1/responses"
+        else if (ep.toLowerCase.contains("/v1/responses")) ep
+        else ep.replaceFirst("/v1/chat/completions$", "/v1/responses")
+               .replaceFirst("/v1/completions$", "/v1/responses")
+    }
+
+    private def callResponsesApi(
+        systemPrompt: String,
+        messages: Seq[(String, String)],
+        aiConfig: AIConfig,
+        maxTokens: Int,
+        temperature: Double
+    ): String = {
+        val endpoint = responsesEndpointFor(aiConfig)
+        logger.info("Calling OpenAI Responses API, endpoint: " + endpoint + ", model: " + aiConfig.model + ", messages: " + messages.size + ", maxTokens: " + maxTokens)
+
+        val inputArr = new JsonArray()
+        messages.foreach { case (role, content) =>
+            val msg = new JsonObject()
+            msg.addProperty("role", role)
+            msg.addProperty("content", content)
+            inputArr.add(msg)
+        }
+
+        val requestObj = new JsonObject()
+        requestObj.addProperty("model", aiConfig.model)
+        if (systemPrompt != null && systemPrompt.nonEmpty)
+            requestObj.addProperty("instructions", systemPrompt)
+        requestObj.add("input", inputArr)
+        requestObj.addProperty("max_output_tokens", maxTokens)
+        if (temperature >= 0) requestObj.addProperty("temperature", temperature)
+
+        val jsonBody = requestObj.toString
+        val client = getClient(aiConfig.provider)
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, endpoint))
     }
 
     // OpenAI reasoning / GPT-5 family models reject `max_tokens` and require
@@ -137,6 +190,9 @@ object AIUtil {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
+        if (usesResponsesApi(aiConfig))
+            return callResponsesApi(systemPrompt, Seq("user" -> userPrompt), aiConfig, 8192, -1.0)
+
         logger.info("Calling AI with custom system prompt, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model)
 
         val messagesArr = new JsonArray()
@@ -164,7 +220,7 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
-        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
     }
 
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)]): String =
@@ -185,6 +241,9 @@ object AIUtil {
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int, temperature: Double): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
+
+        if (usesResponsesApi(aiConfig))
+            return callResponsesApi(systemPrompt, messages, aiConfig, maxTokens, temperature)
 
         logger.info("Calling AI with conversation, " + messages.size + " messages, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", maxTokens: " + maxTokens)
 
@@ -218,7 +277,7 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
-        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
     }
 
     def callAI(prompt: String): String =
@@ -228,9 +287,12 @@ object AIUtil {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
-        logger.info("Calling AI endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", prompt length: " + prompt.length + " chars")
-
         val systemInstruction = "You are a data validation engine. Output ONLY valid JSON arrays. Never describe, summarize, or ask questions about the data."
+
+        if (usesResponsesApi(aiConfig))
+            return callResponsesApi(systemInstruction, Seq("user" -> prompt), aiConfig, 8192, -1.0)
+
+        logger.info("Calling AI endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", prompt length: " + prompt.length + " chars")
 
         val messagesArr = new JsonArray()
 
@@ -259,7 +321,7 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
-        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody))
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
     }
 
     def extractText(apiResponse: String): String =
@@ -269,25 +331,47 @@ object AIUtil {
         val gson = new Gson()
         val responseMap = gson.fromJson(apiResponse, classOf[java.util.Map[String, Any]])
 
-        val text = aiConfig.provider.toLowerCase match {
-            case "openai" | "ollama" =>
-                val choices = responseMap.get("choices").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
-                if (choices == null || choices.isEmpty)
-                    throw new DatrisException("OpenAI/Ollama response contained no choices")
-                val message = choices.get(0).get("message").asInstanceOf[java.util.Map[String, Any]]
-                if (message == null)
-                    throw new DatrisException("OpenAI/Ollama response choice had no message")
-                message.get("content").asInstanceOf[String]
-            case _ =>
-                val contentList = responseMap.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
-                if (contentList == null || contentList.isEmpty)
-                    throw new DatrisException("Anthropic response contained no content")
-                contentList.get(0).get("text").asInstanceOf[String]
-        }
+        val text =
+            if (usesResponsesApi(aiConfig)) extractResponsesApiText(responseMap)
+            else aiConfig.provider.toLowerCase match {
+                case "openai" | "ollama" =>
+                    val choices = responseMap.get("choices").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+                    if (choices == null || choices.isEmpty)
+                        throw new DatrisException("OpenAI/Ollama response contained no choices")
+                    val message = choices.get(0).get("message").asInstanceOf[java.util.Map[String, Any]]
+                    if (message == null)
+                        throw new DatrisException("OpenAI/Ollama response choice had no message")
+                    message.get("content").asInstanceOf[String]
+                case _ =>
+                    val contentList = responseMap.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+                    if (contentList == null || contentList.isEmpty)
+                        throw new DatrisException("Anthropic response contained no content")
+                    contentList.get(0).get("text").asInstanceOf[String]
+            }
 
         if (text == null || text.trim.isEmpty)
             throw new DatrisException("AI response text was empty")
 
         text.trim
+    }
+
+    // Responses API shape: { output: [ { type: "message", content: [ { type: "output_text", text: "..." } ] }, ... ] }.
+    // Reasoning models may also include "reasoning" items in output — we want the first message's first output_text.
+    private def extractResponsesApiText(responseMap: java.util.Map[String, Any]): String = {
+        val output = responseMap.get("output").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+        if (output == null || output.isEmpty)
+            throw new DatrisException("OpenAI Responses API response contained no output")
+        val message = output.asScala.find { item =>
+            val t = Option(item.get("type")).map(_.toString).getOrElse("")
+            t == "message"
+        }.getOrElse(throw new DatrisException("OpenAI Responses API output contained no message item"))
+        val contentList = message.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+        if (contentList == null || contentList.isEmpty)
+            throw new DatrisException("OpenAI Responses API message had no content")
+        val textItem = contentList.asScala.find { c =>
+            val t = Option(c.get("type")).map(_.toString).getOrElse("")
+            t == "output_text" || t == "text"
+        }.getOrElse(throw new DatrisException("OpenAI Responses API content had no output_text"))
+        textItem.get("text").asInstanceOf[String]
     }
 }

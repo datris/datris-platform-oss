@@ -64,6 +64,13 @@ class ChromaLoader(jobContext: JobContext) {
             // Ensure collection exists
             val collectionId = ensureCollection(client, collectionsPath, chromaConfig.collectionName)
 
+            // Verify embedding dim matches any vectors already in the collection.
+            // Chroma doesn't expose a fixed dim in metadata — it's inferred from
+            // the first upsert. Probe one object and compare. Empty collection =>
+            // skip (first write will set the dim naturally).
+            val dimension = EmbeddingUtil.embeddingDimension(embeddingConfig)
+            verifyCollectionDimension(client, collectionsPath, collectionId, chromaConfig.collectionName, dimension)
+
             // Batch: embed + upsert
             var totalUpserted = 0
             chunks.zipWithIndex.grouped(UPSERT_BATCH_SIZE).foreach { batch =>
@@ -167,6 +174,47 @@ class ChromaLoader(jobContext: JobContext) {
             getCollectionId(client, collectionsPath, collectionName) match {
                 case Some(id) => id
                 case None     => throw new DatrisException("Failed to create Chroma collection: " + body)
+            }
+        } finally {
+            response.close()
+        }
+    }
+
+    private def verifyCollectionDimension(
+        client: org.apache.http.impl.client.CloseableHttpClient,
+        collectionsPath: String,
+        collectionId: String,
+        collectionName: String,
+        dimension: Int
+    ): Unit = {
+        val payload = new JsonObject()
+        payload.addProperty("limit", 1)
+        val include = new JsonArray()
+        include.add("embeddings")
+        payload.add("include", include)
+
+        val post = new HttpPost(collectionsPath + "/" + collectionId + "/get")
+        post.setHeader("Content-Type", "application/json")
+        post.setEntity(new StringEntity(payload.toString, "UTF-8"))
+        val response = try client.execute(post) catch { case _: Exception => return }
+        try {
+            if (response.getStatusLine.getStatusCode != 200) return
+            val body = EntityUtils.toString(response.getEntity)
+            val json = JsonParser.parseString(body).getAsJsonObject
+            val embeddings = Option(json.get("embeddings")).filter(_.isJsonArray).map(_.getAsJsonArray)
+            embeddings.filter(_.size > 0).foreach { arr =>
+                val first = arr.get(0)
+                if (first.isJsonArray) {
+                    val existing = first.getAsJsonArray.size
+                    if (existing > 0 && existing != dimension) {
+                        throw new DatrisException(
+                            "Embedding dimension mismatch on collection \"" + collectionName +
+                            "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                            "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
+                            collectionName + "\" and re-ingest, or point this pipeline at a new collection."
+                        )
+                    }
+                }
             }
         } finally {
             response.close()

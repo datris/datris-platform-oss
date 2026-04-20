@@ -279,8 +279,10 @@ class TapAPIController {
                   |What you DO ask about:
                   |1. WHERE the documents live (a web URL listing, a specific site, an S3 bucket, a SharePoint site, an RSS feed, a GitHub repo, etc.).
                   |2. HOW to enumerate them (does the source have an index page, a sitemap, an API that returns a list, a folder listing?).
-                  |3. WHICH documents to include (file type filters, date ranges, folder filters, naming patterns).
+                  |3. WHICH documents to include (file type filters, folder filters, naming patterns). Do NOT ask about date ranges or "since date" — the tap ledger already dedupes by content hash, so each file is processed once regardless of when it was added.
                   |4. AUTHENTICATION needs (API keys, cookies, tokens) — tell the user the env var names and mention they should configure a tap secret.
+                  |
+                  |Know when to stop asking. Once you have (a) the source location, (b) auth handled or confirmed public, and (c) a scope answer (even a broad one like "all files"), finalize the instruction. Don't keep drilling for optional filters the user hasn't asked for — broad is fine, the ledger handles dedup.
                   |
                   |Local paths: if the user gives a local filesystem path, remind them that the tap runs inside the Datris container and that path must be mounted in — otherwise suggest the documents be served over HTTP/S3/etc. Do NOT encourage fallback-search-the-filesystem logic.
                   |

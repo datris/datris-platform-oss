@@ -116,7 +116,11 @@ class QdrantLoader(jobContext: JobContext) {
         val collections = client.listCollectionsAsync().get()
         val exists = collections.asScala.exists(_ == collectionName)
 
-        if (!exists) {
+        if (exists) {
+            // Existing collection — verify the vector size matches. Otherwise the
+            // first upsert fails with a cryptic Qdrant "wrong vector size" error.
+            verifyCollectionDimension(client, collectionName, dimension)
+        } else {
             statusUtil.info("processing", "Ensuring Qdrant collection: " + collectionName + " with dimension: " + dimension)
             try {
                 client.createCollectionAsync(collectionName,
@@ -135,7 +139,29 @@ class QdrantLoader(jobContext: JobContext) {
                         client.listCollectionsAsync().get().asScala.exists(_ == collectionName)
                     } catch { case _: Exception => false }
                     if (!racedIn) throw e
+                    // If a racing session won, still verify its dimension matches ours.
+                    verifyCollectionDimension(client, collectionName, dimension)
             }
+        }
+    }
+
+    private def verifyCollectionDimension(client: QdrantClient, collectionName: String, dimension: Int): Unit = {
+        val info = try {
+            client.getCollectionInfoAsync(collectionName).get()
+        } catch {
+            case _: Exception => return  // can't read config — let the upsert surface the real error
+        }
+        val vectorsConfig = info.getConfig.getParams.getVectorsConfig
+        val existing: Long =
+            if (vectorsConfig.hasParams) vectorsConfig.getParams.getSize
+            else -1L  // named-vector config — skip check
+        if (existing > 0 && existing != dimension.toLong) {
+            throw new DatrisException(
+                "Embedding dimension mismatch on collection \"" + collectionName +
+                "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
+                collectionName + "\" and re-ingest, or point this pipeline at a new collection."
+            )
         }
     }
 
