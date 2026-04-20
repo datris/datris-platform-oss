@@ -93,6 +93,21 @@ object AIUtil {
         httpPost
     }
 
+    // OpenAI reasoning / GPT-5 family models reject `max_tokens` and require
+    // `max_completion_tokens`. Detect by model-name prefix so we stay compatible
+    // with both the legacy (gpt-4*, gpt-3.5*) and newer parameter contracts.
+    private def openAiTokenField(model: String): String = {
+        val m = if (model == null) "" else model.toLowerCase
+        if (m.startsWith("gpt-5") || m.startsWith("o1") || m.startsWith("o3") ||
+            m.startsWith("o4") || m.startsWith("o5")) "max_completion_tokens"
+        else "max_tokens"
+    }
+
+    private def addTokenLimit(requestObj: JsonObject, provider: String, model: String, maxTokens: Int): Unit = {
+        val field = if (provider.toLowerCase == "openai") openAiTokenField(model) else "max_tokens"
+        requestObj.addProperty(field, maxTokens)
+    }
+
     def maxInputChars(): Int = {
         val aiConfig = DatrisEnvironment.current.aiConfig
         val maxInputTokens = aiConfig.provider.toLowerCase match {
@@ -140,7 +155,7 @@ object AIUtil {
 
         val requestObj = new JsonObject()
         requestObj.addProperty("model", aiConfig.model)
-        requestObj.addProperty("max_tokens", 8192)
+        addTokenLimit(requestObj, aiConfig.provider, aiConfig.model, 8192)
         requestObj.add("messages", messagesArr)
 
         if (aiConfig.provider.toLowerCase.equals("anthropic")) {
@@ -192,7 +207,7 @@ object AIUtil {
 
         val requestObj = new JsonObject()
         requestObj.addProperty("model", aiConfig.model)
-        requestObj.addProperty("max_tokens", maxTokens)
+        addTokenLimit(requestObj, aiConfig.provider, aiConfig.model, maxTokens)
         if (temperature >= 0) requestObj.addProperty("temperature", temperature)
         requestObj.add("messages", messagesArr)
 
@@ -234,7 +249,7 @@ object AIUtil {
 
         val requestObj = new JsonObject()
         requestObj.addProperty("model", aiConfig.model)
-        requestObj.addProperty("max_tokens", 8192)
+        addTokenLimit(requestObj, aiConfig.provider, aiConfig.model, 8192)
         requestObj.add("messages", messagesArr)
 
         // For Anthropic, system instruction goes as a top-level field
