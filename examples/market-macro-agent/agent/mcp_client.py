@@ -36,6 +36,7 @@ _supervisor_task: asyncio.Task | None = None
 _pending: dict[int, asyncio.Future] = {}
 _tools_cache: list[dict] | None = None
 _resources_cache: dict[str, str] = {}
+_server_instructions: str = ""
 _msg_id: int = 0
 _sse_cm: Any = None  # context manager for SSE connection
 _connected: bool = False
@@ -122,7 +123,13 @@ async def _connect_once(url: str, timeout: float = 15.0) -> None:
                 "capabilities": {},
                 "clientInfo": {"name": "datris-agent", "version": "1.0"},
             }, timeout=10)
-            log.debug("MCP initialized: %s", list(resp.get("result", {}).get("capabilities", {}).keys()))
+            init_result = resp.get("result", {})
+            log.debug("MCP initialized: %s", list(init_result.get("capabilities", {}).keys()))
+
+            global _server_instructions
+            _server_instructions = init_result.get("instructions", "") or ""
+            if _server_instructions:
+                print(f"[mcp] Loaded server instructions ({len(_server_instructions)} chars)")
 
             await _post_client.post(_endpoint, json={
                 "jsonrpc": "2.0",
@@ -265,6 +272,11 @@ async def get_resources_text() -> str:
     for name, text in _resources_cache.items():
         parts.append(f"--- {name} ---\n{text}")
     return "\n\n".join(parts)
+
+
+def get_server_instructions() -> str:
+    """Return the `instructions` field from the MCP server's initialize response."""
+    return _server_instructions
 
 
 async def start(url: str) -> None:

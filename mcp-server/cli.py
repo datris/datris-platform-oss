@@ -606,6 +606,15 @@ def tap_run(name, json_output):
         status = result.get("status", "unknown")
         records = result.get("recordCount", 0)
         click.echo(f"  ✓ {status} — {records} records fetched")
+        if result.get("persisted") is True:
+            target = result.get("targetPipeline") or "pipeline"
+            pub = result.get("publisherToken")
+            click.echo(f"    → persisted to {target}")
+            if pub:
+                click.echo(f"    → watch: datris pipeline status --publisher {pub}")
+        elif result.get("persisted") is False:
+            reason = result.get("persistedReason", "unknown")
+            click.echo(f"    → not persisted ({reason})")
     else:
         click.echo(f"  {result}")
 
@@ -689,10 +698,10 @@ def tap_logs(name, json_output):
             time = entry.get("runTime", "")
             records = entry.get("recordCount", 0)
             duration = entry.get("durationMs", 0)
-            pushed = entry.get("pushToPipeline", True)
+            mode = entry.get("mode") or ("run" if entry.get("pushToPipeline", True) else "test")
             icon = "✓" if status == "success" else "✗"
-            mode = " (test)" if not pushed else ""
-            click.echo(f"  {icon} {time} — {status}{mode}, {records} records, {duration}ms")
+            mode_label = " (test)" if mode != "run" else ""
+            click.echo(f"  {icon} {time} — {status}{mode_label}, {records} records, {duration}ms")
             if entry.get("error"):
                 click.echo(f"    Error: {entry['error'][:150]}")
     else:

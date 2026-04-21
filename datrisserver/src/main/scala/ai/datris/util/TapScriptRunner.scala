@@ -15,7 +15,7 @@ import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.sys.process._
 
-case class TapScriptResult(records: String, recordCount: Int, error: String, logs: String = null, dataType: String = "json", columns: java.util.List[String] = null)
+case class TapScriptResult(records: String, recordCount: Int, error: String, logs: String = null, dataType: String = "json", columns: java.util.List[String] = null, publisherToken: String = null, pipelineTokens: java.util.List[String] = null)
 
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)

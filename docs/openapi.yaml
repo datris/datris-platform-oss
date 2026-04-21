@@ -209,8 +209,10 @@ components:
           type: string
         error:
           type: string
-        pushToPipeline:
-          type: boolean
+        mode:
+          type: string
+          enum: [run, test]
+          description: "'run' = results persisted to the target pipeline; 'test' = script executed, results discarded"
         durationMs:
           type: integer
           format: int64
@@ -225,6 +227,29 @@ components:
         status:
           type: string
           enum: [success, failure]
+        mode:
+          type: string
+          enum: [run, test]
+          description: The mode this invocation ran in
+        targetPipeline:
+          type: string
+          nullable: true
+          description: The pipeline configured on the tap (null if none — records will not persist)
+        persisted:
+          type: boolean
+          description: True iff records were fed into the target pipeline
+        persistedReason:
+          type: string
+          enum: [test_mode, run_error, no_records, no_target_pipeline]
+          description: Present when persisted is false; explains why records did not land in a pipeline
+        publisherToken:
+          type: string
+          description: UUID grouping every ingestion job this run submitted. Pass to GET /pipeline/status?publishertoken= to watch load progress. Only present on persisted runs.
+        pipelineTokens:
+          type: array
+          items:
+            type: string
+          description: UUIDs for each StreamNotifier job submitted. Length 1 for structured taps, N for document taps (one per document). Only present on persisted runs.
         records:
           type: array
           items:
@@ -529,6 +554,11 @@ paths:
       summary: Get job status
       description: Query job status by pipeline token or pipeline name. Returns detailed status when queried by token, or paginated summary when queried by pipeline name.
       parameters:
+        - name: publishertoken
+          in: query
+          schema:
+            type: string
+          description: Publisher token — returns status rows for every ingestion job sharing this token. Use this to watch a tap run (structured = 1 job, document = N jobs, all covered by one call). Wins over pipelinetoken if both supplied.
         - name: pipelinetoken
           in: query
           schema:
@@ -1567,10 +1597,11 @@ paths:
               properties:
                 name:
                   type: string
-                pushToPipeline:
+                mode:
                   type: string
-                  enum: ['true', 'false']
-                  description: Whether to feed records into the configured target pipeline
+                  enum: [run, test]
+                  default: test
+                  description: "'run' feeds records into the configured target pipeline; 'test' executes the script and returns results without persisting"
       responses:
         '200':
           description: Run result

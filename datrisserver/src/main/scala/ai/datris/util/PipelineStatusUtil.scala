@@ -88,4 +88,16 @@ object PipelineStatusUtil {
             gson.fromJson(json, classOf[PipelineStatusTable])
         }).sortWith(_.created_at.longValue() < _.created_at.longValue()).map(_.json).asJava
     }
+
+    // Query every status row whose embedded publisherToken matches — used to watch
+    // all jobs a single tap run submitted (document taps fan out to many pipelineTokens
+    // but share one publisherToken). Dotted path works because MongoDBUtil.putItemJSON
+    // stores the value as a nested BSON doc via Document.parse, not a string.
+    def getPipelineStatusByPublisher(publisherToken: String): java.util.List[PipelineStatus] = {
+        val tableList = NoSQLDbUtil.queryJSONItemsByKey(DatrisEnvironment.current.pipelineStatusTableName, "json.publisherToken", publisherToken)
+        val gson = new Gson
+        tableList.map(json => {
+            gson.fromJson(json, classOf[PipelineStatusTable])
+        }).sortWith(_.created_at.longValue() < _.created_at.longValue()).map(_.json).asJava
+    }
 }

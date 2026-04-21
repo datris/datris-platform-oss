@@ -3,8 +3,9 @@ agent/scheduler.py
 
 Background refresh scheduler.
 
-Periodically re-fetches data from all active sources and re-uploads
-to existing Datris pipelines via MCP upload_data.
+Periodically calls MCP `run_tap` on each provisioned tap so platform-side
+data fetches stay fresh. Data sourcing itself happens inside the tap's
+Docker sandbox on the Datris platform — the agent just pulls the trigger.
 
     from agent.scheduler import start_scheduler, stop_scheduler, refresh_now
 """
@@ -13,9 +14,10 @@ import asyncio
 import logging
 import os
 
-from agent.data_fetcher import fetch_source
+from agent.executor import _extract_row_count, _interpret_run_tap
 from agent.mcp_client import call_tool as mcp_call, is_connected
 from agent.pipeline_store import store
+from agent.tap_definitions import PIPELINE_TO_TAP, TAPS
 
 log = logging.getLogger("datris.scheduler")
 
@@ -53,7 +55,7 @@ async def _loop() -> None:
 
 
 async def _refresh_all() -> None:
-    """Re-fetch and re-upload data for every pipeline that has been used."""
+    """Trigger run_tap for every pipeline that's been exercised at least once."""
     if not is_connected():
         log.warning("MCP not connected — skipping refresh")
         return
@@ -62,74 +64,64 @@ async def _refresh_all() -> None:
     pipelines = snap["pipelines"]
 
     for key, p in pipelines.items():
-        # Only refresh pipelines that have been used (status != idle)
         if p["status"] == "idle":
             continue
 
-        source = p.get("source", key)
         pipeline_name = p.get("id", key)
+        tap_name = PIPELINE_TO_TAP.get(pipeline_name)
+        if not tap_name:
+            continue
 
         try:
-            await _refresh_one(key, pipeline_name, source)
+            await _refresh_one(key, pipeline_name, tap_name)
         except Exception as e:
             log.error("Refresh failed for %s: %s", key, e)
             await store.update_pipeline(key, {"status": "error"})
             await store.add_activity("error", f"Refresh failed for {pipeline_name}: {e}")
 
 
-async def _refresh_one(key: str, pipeline_name: str, source: str) -> None:
-    """Re-fetch and re-upload data for a single pipeline."""
+async def _refresh_one(key: str, pipeline_name: str, tap_name: str) -> None:
+    """Run a single tap and reflect status on the pipeline tile."""
     await store.update_pipeline(key, {"status": "ingesting"})
-    await store.add_activity("ingest", f"Auto-refresh: fetching {source.upper()}...")
+    await store.add_activity("ingest", f"Auto-refresh: running tap {tap_name}...")
 
-    try:
-        base64_content, filename = await fetch_source(source)
-    except ValueError:
-        log.warning("Unknown source '%s' for pipeline %s — skipping", source, pipeline_name)
-        await store.update_pipeline(key, {"status": "ready"})
-        return
+    result = await mcp_call("run_tap", {"name": tap_name})
 
-    if not base64_content:
-        await store.update_pipeline(key, {"status": "ready"})
-        await store.add_activity("info", f"No data from {source} — skipping")
-        return
-
-    result = await mcp_call("upload_data", {
-        "content": base64_content,
-        "filename": filename,
-        "pipeline": pipeline_name,
-    })
-
-    token = result.get("pipeline_token") or result.get("pipelineToken", "")
-    await store.update_pipeline(key, {"status": "ready", "_pipeline_token": token})
-    await store.add_activity("success", f"Auto-refresh complete: {pipeline_name}")
+    status, msg = _interpret_run_tap(tap_name, result)
+    updates: dict = {"status": status}
+    rows = _extract_row_count(result)
+    if rows is not None:
+        updates["rows"] = rows
+    await store.update_pipeline(key, updates)
+    await store.add_activity(
+        "error" if status == "error" else "success",
+        f"Auto-refresh: {msg}",
+    )
 
 
 async def refresh_now(source: str | None = None) -> dict:
     """
     Trigger an immediate refresh.
 
-    If source is None, refresh all active pipelines.
-    If source is given, refresh only matching pipelines.
+    If source is None, refresh every tap registered in tap_definitions.
+    If source is given, match it against a tap name or pipeline name.
     """
     if not is_connected():
         return {"error": "MCP not connected"}
 
-    snap = await store.snapshot()
-    refreshed = []
+    refreshed: list[str] = []
 
-    for key, p in snap["pipelines"].items():
-        if p["status"] == "idle":
-            continue
-        if source and p.get("source", key) != source and key != source:
+    for tap in TAPS:
+        tap_name = tap["name"]
+        pipeline = tap["pipeline"]
+        if source and source not in (tap_name, pipeline):
             continue
 
-        pipeline_name = p.get("id", key)
-        src = p.get("source", key)
+        key = pipeline.lower().replace(" ", "_")
         try:
-            await _refresh_one(key, pipeline_name, src)
-            refreshed.append(pipeline_name)
+            await _refresh_one(key, pipeline, tap_name)
+            refreshed.append(tap_name)
         except Exception as e:
-            log.error("Refresh failed for %s: %s", key, e)
+            log.error("Refresh failed for %s: %s", tap_name, e)
 
     return {"refreshed": refreshed, "count": len(refreshed)}

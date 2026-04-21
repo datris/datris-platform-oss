@@ -13,6 +13,6 @@ case class TapRunLog(
     dataType: String = null,
     logs: String = null,
     error: String = null,
-    pushToPipeline: Boolean = false,
+    mode: String = "test",
     durationMs: Long = 0
 )

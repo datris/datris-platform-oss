@@ -15,7 +15,10 @@ export class TapRunComponent implements OnInit, OnDestroy {
   loading = true;
   running = false;
   hasRun = false;
-  pushToPipeline = false;
+  mode: 'run' | 'test' = 'test';
+
+  get pushToPipeline(): boolean { return this.mode === 'run'; }
+  set pushToPipeline(v: boolean) { this.mode = v ? 'run' : 'test'; }
 
   status = '';
   recordCount = 0;
@@ -67,7 +70,7 @@ export class TapRunComponent implements OnInit, OnDestroy {
     this.records = null;
     this.recordCount = 0;
 
-    this.runSub = this.tapService.runTap(this.tapName, this.pushToPipeline).subscribe({
+    this.runSub = this.tapService.runTap(this.tapName, this.mode).subscribe({
       next: (result) => {
         this.status = result.status || 'unknown';
         this.recordCount = result.recordCount || 0;

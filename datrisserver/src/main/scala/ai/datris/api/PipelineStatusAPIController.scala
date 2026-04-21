@@ -22,14 +22,19 @@ PipelineStatusAPIController {
     @GetMapping(path = Array("/pipeline/status"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getPipelineStatus(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                          @RequestParam(required = false) pipelinetoken: String,
+                         @RequestParam(required = false) publishertoken: String,
                          @RequestParam(required=false) pipelinename: String,
                          @RequestParam(required = false) page: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /pipeline/status called with pipelinetoken: " + pipelinetoken + ", pipelinename: " + pipelinename + ", page: " + page)
+            logger.info("API endpoint GET /pipeline/status called with pipelinetoken: " + pipelinetoken + ", publishertoken: " + publishertoken + ", pipelinename: " + pipelinename + ", page: " + page)
             APIKeyValidator.validate(apiKey)
 
+            // publishertoken wins when both are sent — it's the broader query and a
+            // single pipelineToken's rows are a strict subset of its publisherToken's rows.
             val data = {
-                if(pipelinetoken == null) {
+                if(publishertoken != null)
+                    PipelineStatusUtil.getPipelineStatusByPublisher(publishertoken)
+                else if(pipelinetoken == null) {
                     val pageNbr = {
                         if(page == null)
                             1

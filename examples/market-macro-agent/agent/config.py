@@ -1,78 +1,62 @@
 """
 agent/config.py
 
-Central configuration: mission prompt, pipeline seed, and UI colour maps.
+Central configuration: mission prompt, tool allowlist, and UI colour maps.
 
 Tool definitions are discovered dynamically from the MCP server at startup
 via tools/list — no hardcoded TOOL_DEFS needed.
 """
 
 MISSION = """You are the Datris Market Intelligence Agent — a real-time financial data
-pipeline operator and analyst powered by the Datris data platform.
+analyst powered by the Datris data platform.
 
-You have access to tools discovered from the Datris MCP server. These tools let you
-create pipelines, upload data, monitor jobs, and query results.
+Four taps are pre-provisioned on startup and wired to matching pipelines:
+  - fred_tap      → fred_data       (macro indicators: 10Y, VIX, CPI, spreads, fed funds, unemployment)
+  - equities_tap  → equities        (SPY, QQQ, TLT, GLD, XLE, IWM OHLCV via yfinance)
+  - crypto_tap    → crypto          (BTC, ETH, SOL prices from CoinGecko)
+  - sec_tap       → sec_filings     (recent 10-K / 10-Q filings for AAPL, MSFT, GOOGL, JPM, XOM)
 
-You also have a local tool called "ingest_data" that fetches live market data from
-public APIs and uploads it to Datris automatically.
+The Datris Platform Workflow above is authoritative — follow its rules on
+run_tap / get_pipeline_status polling and persisted / persistedReason handling.
 
-Use the MCP tools to manage Datris pipelines. The tool descriptions and MCP resources
-explain how to create pipelines, upload data, monitor jobs, and query results.
-Always check get_job_status after uploading data to verify ingestion completed.
+Agent-specific behaviour:
+- Only work with FINANCIAL data. Refuse non-financial data requests.
+- Don't ask for confirmation before refreshing a tap — if the user's question
+  needs fresh data from one of the four families, just run it.
+- Narrate briefly what you're doing ("Refreshing the FRED tap…"), then follow
+  the platform workflow to completion before answering.
 
-IMPORTANT — Intelligent data acquisition:
-- When a user asks a financial question that requires data you don't have yet,
-  immediately fetch and ingest it. Do NOT ask for confirmation — just do it.
-- Briefly mention what you're fetching (e.g. "Pulling crypto prices from CoinGecko...")
-  then proceed with the full workflow: create → ingest → query → answer.
-- Only acquire FINANCIAL data. Do not attempt to fetch non-financial data.
+Response style:
+- Always cite actual values, dates, and percentage changes from query results.
+- Flag anything analytically interesting you spot in the data.
+- Respond conversationally but with Bloomberg-terminal precision.
+- When the caller is another agent/system, respond in structured JSON."""
 
-Rules:
-- Always cite actual values, dates, and percentage changes from query results
-- Flag anything analytically interesting you spot in the data
-- Respond conversationally but with Bloomberg-terminal precision
-- When the caller is another agent/system, respond in structured JSON"""
-
-# Local tool that the agent adds alongside MCP tools
-INGEST_TOOL_DEF = {
-    "name": "ingest_data",
-    "description": (
-        "Fetch live market data from a public API source. Returns a data_id reference "
-        "and filename. Pass data_id to create_pipeline, generate_schema, and upload_data — "
-        "the actual content is resolved server-side automatically.\n\n"
-        "VALID SOURCE NAMES (use exactly one of these):\n"
-        "- 'equities' or 'yfinance': Fetches OHLCV data for SPY, QQQ, TLT, GLD, XLE, IWM via yfinance\n"
-        "- 'crypto' or 'coingecko': Fetches current prices for bitcoin, ethereum, solana via CoinGecko\n"
-        "- 'fred': Fetches macro indicators (10Y yield, VIX, CPI, credit spreads, fed funds, unemployment) from FRED\n"
-        "- 'sec' or 'sec_edgar': Fetches recent SEC filings (10-K, 10-Q) for AAPL, MSFT, GOOGL, JPM, XOM\n\n"
-        "Do NOT invent source names. Use ONLY the names listed above."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "source": {
-                "type": "string",
-                "enum": ["equities", "yfinance", "crypto", "coingecko", "fred", "sec", "sec_edgar"],
-                "description": "Data source name: 'equities', 'crypto', 'fred', or 'sec'",
-            },
-        },
-        "required": ["source"],
-    },
-}
 
 # MCP tools to include (None = all tools). Schemas come from MCP, this just filters.
 MCP_TOOL_ALLOWLIST = {
+    # Pipelines + queries
     "list_pipelines",
     "get_pipeline",
     "create_pipeline",
     "delete_pipeline",
-    "upload_data",
-    "generate_schema",
     "get_job_status",
     "check_service_health",
+    "get_pipeline_status",
     "query_postgres",
     "list_postgres_tables",
     "list_postgres_columns",
+    # Taps (data sourcing now lives on the platform)
+    "create_tap_secret",
+    "delete_tap_secret",
+    "create_tap",
+    "list_taps",
+    "get_tap",
+    "run_tap",
+    "test_tap",
+    "update_tap",
+    "delete_tap",
+    "get_tap_logs",
 }
 
 SUGGESTIONS = [
@@ -82,7 +66,8 @@ SUGGESTIONS = [
     "Is the yield curve inverted?",
     "Compare crypto vs SPY performance",
     "Which pipeline is most stale?",
-    "Refresh all pipelines",
+    "Refresh all taps",
+    "Show me the last few tap runs",
     "What are the latest SEC filings from big tech?",
     "Show me VIX vs credit spreads",
     "How is gold performing relative to equities?",

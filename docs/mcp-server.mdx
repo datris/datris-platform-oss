@@ -85,11 +85,14 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | `create_tap` | Create a tap from an instruction (AI generates script), a user-provided script, or config only. Optionally set target pipeline, CRON schedule, secret name, and `tap_type` (`structured` or `document`) |
 | `list_taps` | List all taps with status, `tapType`, target pipeline, schedule, and last run info |
 | `get_tap` | Get full details of a single tap including its Python script source |
-| `run_tap` | Execute a tap and push fetched data to the target pipeline |
+| `run_tap` | Execute a tap. Response carries `persisted` + `persistedReason` so the agent can confirm records landed, plus `publisherToken` + `pipelineTokens` for watching async loads |
 | `test_tap` | Test-run a tap without pushing data to the pipeline |
 | `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
+| `get_pipeline_status` | Watch ingestion progress after `run_tap`. Pass the response's `publisherToken` (covers every job the run submitted — structured = 1, document = N) or a single `pipelineToken` |
 | `get_tap_logs` | Get run history for a tap (last 50 entries with status, duration, errors) |
 | `get_tap_ledger` | Document taps only: read the ledger of discovered documents (URI, filename, status, hashes, timestamps). Pass `clear_uri` to force-reprocess one file, or `clear_all=true` to force a full re-scan |
+| `create_tap_secret` | Create or update a Vault secret for a tap to read as env vars (tagged `_type=tap`). Fails on collision unless `overwrite=true`. Reserved AI-provider names are blocked |
+| `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be removed — human-owned secrets must be deleted from the Secrets tab |
 | `delete_tap` | Delete a tap and its stored script (also clears the ledger and staged MinIO objects for document taps) |
 
 For a document tap, `create_tap` **requires** the `target_pipeline` to have an `unstructuredAttributes` source and a vector-store destination (qdrant, pgvector, weaviate, milvus, or chroma). The server rejects mismatched pairings with HTTP 400.

@@ -47,8 +47,8 @@ export class TapService {
     return this.http.post<any>(url, config);
   }
 
-  runTap(name: string, pushToPipeline: boolean = false): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/run', { name, pushToPipeline: String(pushToPipeline) });
+  runTap(name: string, mode: 'run' | 'test' = 'test'): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/run', { name, mode });
   }
 
   fixScript(tapName: string, script: string, diagnosis: string, logs: string, error: string, oldScriptPath?: string): Observable<any> {

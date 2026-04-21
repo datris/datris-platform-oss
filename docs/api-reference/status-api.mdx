@@ -3,7 +3,33 @@ title: "Pipeline Status API"
 description: "Pipeline status endpoints"
 ---
 
-Query job processing status by pipeline token or pipeline name.
+Query job processing status by publisher token, pipeline token, or pipeline name.
+
+## Get Status by Publisher Token
+
+```
+GET /api/v1/pipeline/status?publishertoken={token}
+```
+
+Use this to watch every ingestion job a single caller submitted. Tap runs set a `publisherToken` on every job they spawn, so one query covers:
+- Structured taps → the single job that ingested the fetched records.
+- Document taps → every per-document job (one per file in a run).
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `publishertoken` | query | Yes | Publisher token returned from `/tap/run` (`publisherToken` field) or `upload_data` |
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/pipeline/status?publishertoken=pub-abc12345-..."
+```
+
+**Response:** `200 OK` — status entries from every job whose `publisherToken` matches, sorted oldest-first. Each job has its own `pipelineToken`; group rows by `pipelineToken` to see one job at a time.
+
+If both `publishertoken` and `pipelinetoken` are supplied, `publishertoken` wins.
+
+---
 
 ## Get Status by Pipeline Token
 
@@ -92,7 +118,7 @@ curl "http://localhost:8080/api/v1/pipeline/status?pipelinename=sales_data&page=
 
 ---
 
-*Use either `pipelinetoken` or `pipelinename`, not both.
+*Use one of `publishertoken`, `pipelinetoken`, or `pipelinename`. When multiple are supplied, `publishertoken` wins over `pipelinetoken` wins over `pipelinename`.
 
 ## Status Fields
 

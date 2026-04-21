@@ -4,8 +4,8 @@ agent/loop.py
 The agentic loop.  Calls the Anthropic API repeatedly until
 stop_reason == "end_turn", executing tool calls in between.
 
-Tool definitions are loaded dynamically from the MCP server at startup,
-plus the local ingest_data tool defined in config.py.
+Tool definitions are loaded dynamically from the MCP server at startup.
+Data sourcing lives on the platform as taps; the agent has no local tools.
 
 Yields server-sent event dicts so the FastAPI endpoint can stream
 updates to the browser in real time:
@@ -23,21 +23,21 @@ from typing import AsyncIterator
 
 import anthropic
 
-from agent.config import MISSION, INGEST_TOOL_DEF, MCP_TOOL_ALLOWLIST
+from agent.config import MISSION, MCP_TOOL_ALLOWLIST
 from agent.executor import execute_tool
-from agent.mcp_client import get_tools, get_resources_text
+from agent.mcp_client import get_tools, get_resources_text, get_server_instructions
 from agent.pipeline_store import store
 
 _client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-MODEL = os.environ.get("MODEL", "claude-sonnet-4-20250514")
+MODEL = os.environ.get("MODEL", "claude-sonnet-4-6")
 
 
 async def _build_tools() -> list[dict]:
-    """Combine filtered MCP tools with the local ingest_data tool."""
+    """Return the filtered MCP tool list — no local tools."""
     mcp_tools = await get_tools()
     if MCP_TOOL_ALLOWLIST:
         mcp_tools = [t for t in mcp_tools if t["name"] in MCP_TOOL_ALLOWLIST]
-    return mcp_tools + [INGEST_TOOL_DEF]
+    return mcp_tools
 
 
 async def run(
@@ -58,11 +58,21 @@ async def run(
 
     tools = await _build_tools()
 
-    # Append MCP resources (pipeline config reference, etc.) so Claude learns from the server
+    # Assemble the system prompt from three sources, in order of authority:
+    #   1. MCP server instructions (the platform's own workflow rules — poll
+    #      get_pipeline_status, persisted/persistedReason handling, etc.)
+    #   2. Agent-specific mission (identity, financial-only scope, response style)
+    #   3. MCP resources (pipeline config reference, etc.)
+    server_instructions = get_server_instructions()
     resources = await get_resources_text()
-    system_prompt = MISSION
+
+    parts: list[str] = []
+    if server_instructions:
+        parts.append("--- Datris Platform Workflow ---\n" + server_instructions)
+    parts.append(MISSION)
     if resources:
-        system_prompt += "\n\n" + resources
+        parts.append(resources)
+    system_prompt = "\n\n".join(parts)
 
     max_iters = 25
     hit_max_iters = True
@@ -147,8 +157,6 @@ async def run(
                 if not result_str or result_str == '""':
                     result_str = '{"status": "ok"}'
 
-                # Truncate large results (e.g. base64 content from ingest_data)
-                # to prevent conversation history from growing too large
                 if len(result_str) > 2000:
                     total_len = len(result_str)
                     result_str = result_str[:1500] + f"\n\n[... result truncated — {total_len} chars total]"

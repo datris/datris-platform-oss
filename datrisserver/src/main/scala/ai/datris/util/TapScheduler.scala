@@ -42,7 +42,7 @@ object TapScheduler {
                         // Run on a background thread to avoid blocking the scheduler
                         val thread = new Thread(() => {
                             try {
-                                TapRunner.run(tap, pushToPipeline = true)
+                                TapRunner.run(tap, mode = "run")
                             } catch {
                                 case e: Exception =>
                                     logger.error("TapScheduler: error running tap: " + tap.name, e)
