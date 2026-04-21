@@ -1,0 +1,86 @@
+---
+title: "Tap Prompt Fragments"
+description: "Inject source-specific context into the LLM when you create a tap"
+---
+
+<Note>
+**Beta.** Prompt fragments are a new feature and the API and UI may evolve based on user feedback. The storage model and injection points are stable.
+</Note>
+
+Prompt fragments let you teach the tap generator about a specific data source — its conventions, rate limits, preferred libraries, required env vars — without having to re-type the same hints into every tap description. Once a fragment is configured, its content is **automatically appended to the LLM system prompt** whenever the user's text mentions the fragment's key or any of its aliases (case-insensitive, word-boundary match).
+
+Fragments are per-tenant, stored in MongoDB (`{env}-tap-prompt`), and cached in memory with write-invalidation. No new dependencies and no schema changes — they piggyback on the same infrastructure as tap configs.
+
+## Where they apply
+
+A matching fragment is injected into every AI flow that touches a tap or discovery:
+
+| Flow | Matched against |
+|---|---|
+| Tap script generation (`/tap/generate`) | The plain-English description |
+| Tap script fix (`/tap/fix`) | The diagnosis + error + current script |
+| Post-run script review (`/tap/review`) | The current script |
+| Auto-optimize (`/tap/optimize`) | The current script |
+| Tap brainstorm chat (`/tap/brainstorm`) | The rolling description + full chat history |
+| Data discovery chat and discover modes (`/discover`) | The full chat history |
+
+If a key appears in any of those texts, the fragment's `content` is appended to a `## User-provided context` block at the end of the system prompt.
+
+## Managing fragments
+
+Fragments live under **Configuration → Taps**. The Configuration page itself has three sub-tabs:
+
+1. **Environment** — tenant name, version, trial/hosted status, current AI provider summary.
+2. **AI Providers** — AI Primary, CodeGen, and Embedding provider settings plus shared API keys.
+3. **Taps** — the Prompt Fragments list.
+
+### Each fragment has
+
+- **Key** (required, unique) — the primary match keyword, e.g. `AWS`, `Polygon`, `Stripe`. Matched case-insensitively with `\b` boundaries so `AI` won't accidentally match `email` or `Gmail`.
+- **Aliases** (optional, comma-separated) — additional match keywords. A single `AWS` fragment can also match `S3`, `EC2`, `Lambda`, `boto3`, etc.
+- **Content** (required) — the extra system-prompt text. Typically 2-6 sentences covering library choice, env-var names, rate limits, pagination style, and gotchas.
+- **Enabled** (default on) — unchecking keeps the fragment in storage but stops it from matching.
+
+### Top-of-page actions
+
+- **Create Fragment** — opens an inline form. A **Suggest** button on the Content field asks the LLM to draft a fragment from the key + aliases you've entered (useful as a starting point; edit before saving).
+- **Load Examples** — seeds a starter set of 4 fragments (AWS, Polygon, Stripe, SEC EDGAR). Keys that already exist are skipped. Confirm / Cancel inline — no browser popup.
+- **Export** — downloads the fragment list as a pretty-printed JSON file (`datris-tap-prompts-{YYYY-MM-DD}.json`).
+- **Import** — upload a JSON file in the same shape. Each fragment is POSTed individually; invalid entries are skipped. Existing keys are overwritten (create-or-update).
+
+### Writing good fragments
+
+Keep them dense and actionable:
+
+- Lead with the **preferred library** and the exact **env var names** the generator should use. Example: `Use the stripe Python SDK (pip install stripe). Set stripe.api_key = os.environ.get("STRIPE_API_KEY")`.
+- State **rate limits** explicitly so the generator can add throttling up front. Example: `Polygon.io free tier is 5 requests per second. Throttle with time.sleep(0.25) or a ThreadPoolExecutor with max_workers=3.`
+- Note **required headers** or auth quirks. Example: `SEC EDGAR requires a User-Agent header identifying the requester (e.g. "CompanyName contact@email"). Rate limit: 10 requests per second.`
+- Never include secrets or long examples. A fragment over ~2000 characters triggers a soft warning — multiple matching fragments can crowd the LLM context.
+
+## Injection preview in the tap wizard
+
+After **Generate Script** or a **Brainstorm** reply, any matching fragment keys appear as chips under the description:
+
+> Extra context applied: `AWS` `Polygon`
+
+Click a chip to jump to the Taps sub-tab for that fragment. This makes it easy to see what the LLM saw, and catch cases where a fragment matched when it shouldn't have (or failed to match when it should have).
+
+## HTTP API
+
+The same storage is exposed via REST for scripting and tenant migrations. See [Taps API](/api-reference/taps-api) for field-by-field request/response shapes.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/v1/tap-prompts` | List all fragments |
+| `GET` | `/api/v1/tap-prompts/{key}` | Get a single fragment |
+| `POST` | `/api/v1/tap-prompts` | Create or update a fragment (keyed on `key`) |
+| `DELETE` | `/api/v1/tap-prompts/{key}` | Delete a fragment |
+| `POST` | `/api/v1/tap-prompts/suggest` | Ask the LLM to draft a fragment content body from `{ key, aliases, content }` |
+
+## Performance
+
+The injector caches matched fragments in a per-tenant `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so UI edits take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap/discovery flows pay no measurable cost.
+
+## Multi-tenant
+
+Fragments are fully tenant-scoped. Each tenant's fragments live in their own `{env}-tap-prompt` MongoDB collection and their own injector cache entry. A fragment configured on one tenant never leaks into another's prompts.
