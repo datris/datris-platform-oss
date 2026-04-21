@@ -33,6 +33,10 @@
         <input class="form-input" [(ngModel)]="tapName"
                [placeholder]="tapType === 'document' ? 'e.g., contracts-sharepoint' : 'e.g., weather-data'"
                [readonly]="isEditMode">
+        <div class="tap-name-warning" *ngIf="tapNameCollides">
+          <span class="material-icons">warning</span>
+          A tap named <strong>{{ tapName.trim() }}</strong> already exists. Continuing will overwrite its configuration and script.
+        </div>
       </div>
 
       <div class="form-group">
@@ -187,12 +191,16 @@
 
       <div *ngIf="bringYourOwnCode" class="form-group">
         <label class="form-label">Your Python Script</label>
-        <textarea class="form-textarea byo-textarea" [(ngModel)]="userScript" rows="14"
+        <textarea class="form-textarea byo-textarea" [(ngModel)]="userScript" (ngModelChange)="onUserScriptChange()" rows="14"
                   placeholder="def fetch():&#10;    # Your code here — must return a list of dicts&#10;    return []"></textarea>
-        <button class="generate-btn" (click)="useMyCode()" [disabled]="storingUserScript || !userScript.trim() || !tapName.trim()">
+        <button class="generate-btn" (click)="useMyCode()" [disabled]="storingUserScript || !userScript.trim()">
           <span class="material-icons">{{ storingUserScript ? 'hourglass_empty' : 'upload' }}</span>
-          {{ storingUserScript ? 'Uploading...' : script && !scriptDirty ? 'Update My Code' : 'Use My Code' }}
+          {{ storingUserScript ? 'Uploading...' : (script && script === userScript ? 'Re-upload My Code' : 'Use My Code') }}
         </button>
+        <div class="use-my-code-success" *ngIf="useMyCodeSuccess">
+          <span class="material-icons">check_circle</span>
+          {{ useMyCodeSuccess }}
+        </div>
       </div>
 
       <div class="injected-prompts-row" *ngIf="!bringYourOwnCode && injectedPrompts.length > 0">
@@ -230,9 +238,10 @@
     <!-- Step 2: Edit & Test -->
     <div *ngIf="step === 2">
       <h2 class="step-title">Edit & Test</h2>
-      <p class="step-desc">Review and edit the generated script, manage packages, then test it.</p>
+      <p class="step-desc" *ngIf="!bringYourOwnCode">Review and edit the generated script, manage packages, then test it.</p>
+      <p class="step-desc" *ngIf="bringYourOwnCode">Review and edit your script, manage packages, then test it.</p>
 
-      <div class="form-group">
+      <div class="form-group" *ngIf="!bringYourOwnCode">
         <label class="form-label">Instruction</label>
         <div class="instruction-row">
           <textarea class="form-textarea" [(ngModel)]="description" rows="5"></textarea>
@@ -736,7 +745,7 @@
       <button class="secondary-btn" *ngIf="step > 1 && step < 5" (click)="prevStep()" [disabled]="isBusy()">Back</button>
       <button class="secondary-btn" routerLink="/taps" *ngIf="step === 1">Cancel</button>
       <div class="spacer"></div>
-      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
+      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 1 && bringYourOwnCode && (!script || script !== userScript)) || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
       <button class="primary-btn" *ngIf="step === 4" (click)="save()" [disabled]="saving || isBusy()">
         {{ saving ? 'Saving...' : (targetPipeline ? 'Save Tap & Continue' : 'Save Tap') }}
       </button>

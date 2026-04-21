@@ -27,6 +27,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   showNewCatalog = false;
   newCatalogName = '';
   availableSecrets: string[] = [];
+  existingTapNames: string[] = [];
   showCreateSecret = false;
   editingSecret = false;
   newSecretName = '';
@@ -51,6 +52,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   bringYourOwnCode = false;
   userScript = '';
   storingUserScript = false;
+  useMyCodeSuccess = '';
 
   // Step 3 — Edit & Test
   testing = false;
@@ -183,12 +185,13 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       });
     }
 
-    // Load available catalogs
+    // Load available catalogs + existing tap names (for the overwrite warning)
     this.tapService.getTaps().subscribe({
       next: (taps) => {
         const cats = new Set<string>();
         (taps || []).forEach((t: any) => { if (t.catalog) cats.add(t.catalog); });
         this.availableCatalogs = Array.from(cats).sort();
+        this.existingTapNames = (taps || []).map((t: any) => (t.name || '')).filter((n: string) => n.length > 0);
       },
       error: () => {}
     });
@@ -267,8 +270,13 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.error = '';
     if (this.step === 1) {
       if (!this.tapName.trim()) { this.error = 'Tap name is required'; return; }
-      if (!this.description.trim()) { this.error = 'Instruction is required'; return; }
-      if (!this.script) { this.error = 'Generate a script first'; return; }
+      if (this.bringYourOwnCode) {
+        if (!this.userScript.trim()) { this.error = 'Paste your Python script first'; return; }
+        if (!this.script) { this.error = 'Click Use My Code to upload the script before continuing'; return; }
+      } else {
+        if (!this.description.trim()) { this.error = 'Instruction is required'; return; }
+        if (!this.script) { this.error = 'Generate a script first'; return; }
+      }
     }
     if (this.step === 2 && this.scriptDirty && !this.testPassed()) {
       this.error = 'Test the script successfully before continuing';
@@ -354,6 +362,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       this.bringYourOwnCode = false;
       this.tapType = mode;
       this.userScript = '';
+      this.useMyCodeSuccess = '';
     }
     this.error = '';
   }
@@ -364,6 +373,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     if (!this.tapName.trim()) { this.error = 'Tap name is required before uploading a script.'; return; }
     this.storingUserScript = true;
     this.error = '';
+    this.useMyCodeSuccess = '';
     this.activeSub = this.tapService.storeScript(this.tapName.trim(), this.userScript, this.scriptPath).subscribe({
       next: (result) => {
         this.script = this.userScript;
@@ -372,12 +382,29 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.scriptDirty = true;
         this.storingUserScript = false;
         if (!this.description.trim()) this.description = 'User-provided tap script.';
+        this.useMyCodeSuccess = 'Script uploaded to MinIO' + (this.scriptPath ? ` (${this.scriptPath})` : '') + '. You can continue to the next step.';
       },
       error: (err) => {
         this.storingUserScript = false;
         this.error = 'Failed to upload script: ' + (err.error || err.message);
       }
     });
+  }
+
+  /** True when the entered Tap Name matches an existing tap and we're not in edit mode.
+   *  Used to surface an overwrite warning before the user commits the create flow. */
+  get tapNameCollides(): boolean {
+    if (this.isEditMode) return false;
+    const name = this.tapName.trim();
+    if (!name) return false;
+    return this.existingTapNames.includes(name);
+  }
+
+  /** Invalidate the uploaded copy when the user edits the textarea after a Use My Code.
+   *  Forces another upload so step 2 tests the exact script they see. */
+  onUserScriptChange(): void {
+    if (this.useMyCodeSuccess) this.useMyCodeSuccess = '';
+    if (this.script && this.script !== this.userScript) this.script = '';
   }
 
   /** User-initiated test. Resets auto-fix, review, and auto-optimize counters, then delegates. */
