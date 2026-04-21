@@ -235,6 +235,54 @@ If errors or 0 records are detected, `aiExplanation` contains an AI-generated di
 
 For `dataType: "csv"`, **column names in `columns` and the keys inside each record in `records` are normalized** by the platform: lowercase, `[a-z0-9_]` only, with `%` rewritten to `percent`. Source data with names like `EPS Estimate` or `Surprise(%)` will appear as `eps_estimate` and `surprise_percent`. JSON/XML results destined for MongoDB are not normalized. See [Schema Definition → Column Naming Rules](/schemas#column-naming-rules). Document-tap records pass through unchanged — the platform never rewrites URI, filename, content, or metadata keys.
 
+## Review Script (Post-Run)
+
+```
+POST /api/v1/tap/review
+Content-Type: application/json
+```
+
+After a successful test, asks the LLM to scan the script's captured stderr/stdout for signals that the script *itself* should change — not for performance. The reviewer looks for rate-limit / throttle / burst warnings, deprecation hints, pagination / partial-response cues, and schema-drift / auth warnings. When a signal is found, the script is regenerated with the appropriate fix (add `time.sleep`, switch to the recommended endpoint, add pagination, update parsing for renamed fields) and persisted to MinIO as a new version. When no signal is found, the script is returned unchanged.
+
+The UI invokes this automatically **before** [Optimize Script](#optimize-script) — if the reviewer rewrites the script, the optimizer is skipped on that pass (correctness from output outranks speed). Callers integrating directly should follow the same order: call `/tap/review` first, re-test on `rewritten=true`, and only call `/tap/optimize` when `rewritten=false`.
+
+**Body:**
+```json
+{
+  "tapName": "stock-prices-tap",
+  "script": "current working script content...",
+  "recordCount": 503,
+  "durationMs": 298000,
+  "logs": "Retrieved 503 tickers...\nSource warning: Burst pattern detected...",
+  "oldScriptPath": "tap-scripts/stock-prices-tap_v3.py"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tapName` | string | Tap identifier. Used for script path versioning. |
+| `script` | string | The current working script that passed its test. |
+| `recordCount` | integer | How many records the last test returned. |
+| `durationMs` | integer | Wall time of the last test run in ms (from `/tap/test` response). |
+| `logs` | string | Captured script stderr/stdout — the reviewer matches signals liberally against this text. |
+| `oldScriptPath` | string | MinIO path of the current script. If rewritten, the new script is stored as a new version and the old path is retained for rollback. |
+
+**Response:**
+```json
+{
+  "script": "regenerated Python 3 script...",
+  "packages": ["extra-package"],
+  "scriptPath": "tap-scripts/stock-prices-tap_v4.py",
+  "changes": [
+    "Added 0.25s sleep between API calls — source reported burst pattern (5 rps limit)",
+    "Lowered max_workers from 10 to 3"
+  ],
+  "rewritten": true
+}
+```
+
+When `rewritten` is `false`, `script` / `scriptPath` match the input and `changes` is empty — the reviewer found nothing in the output worth acting on. Prompt fragments configured via [Tap Prompt Fragments](#tap-prompt-fragments) are auto-injected into the reviewer's system prompt when their key or any alias appears in the script.
+
 ## Optimize Script
 
 ```
@@ -424,6 +472,104 @@ Returns the subset of `[qdrant, weaviate, pgvector, milvus, chroma]` whose Vault
 ```
 
 Probes use the same logic as `/api/v1/health/services`, with a 2-second timeout per store (~10 s worst case if everything is unreachable).
+
+## Tap Prompt Fragments
+
+User-configured system prompt fragments that auto-inject into tap and discovery AI flows when the user's text matches the fragment's key or any alias. See [Tap Prompt Fragments](/tap-prompts) for the full concept; this section covers the REST endpoints.
+
+Fragments are per-tenant, stored in MongoDB at `{env}-tap-prompt`, and matched case-insensitively with word boundaries.
+
+### List Fragments
+
+```
+GET /api/v1/tap-prompts
+```
+
+**Response:** Array of `TapPromptFragment` objects.
+
+```json
+[
+  {
+    "key": "AWS",
+    "aliases": ["S3", "EC2", "Lambda", "boto3"],
+    "content": "When fetching data from AWS services, prefer boto3 with IAM credentials...",
+    "enabled": true,
+    "createdAt": "2026-04-20 14:05:00 UTC",
+    "updatedAt": "2026-04-20 14:05:00 UTC"
+  }
+]
+```
+
+### Get Fragment
+
+```
+GET /api/v1/tap-prompts/{key}
+```
+
+Returns a single fragment or HTTP 404 if `{key}` is not found. `{key}` should be URL-encoded.
+
+### Create or Update Fragment
+
+```
+POST /api/v1/tap-prompts
+Content-Type: application/json
+```
+
+Create-or-update semantics — if a fragment with the same `key` already exists, it is overwritten. `createdAt` is preserved across updates; `updatedAt` is refreshed on every write. Writing through this endpoint invalidates the in-process fragment cache immediately, so the next tap generation / fix / optimize / brainstorm / discovery call sees the change without restart.
+
+**Body:**
+```json
+{
+  "key": "Polygon",
+  "aliases": ["polygon.io"],
+  "content": "Use the requests library with os.environ.get(\"POLYGON_API_KEY\") and pass auth via the Authorization: Bearer {key} header (query param ?apiKey= also works but prefer the header).",
+  "enabled": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | string | Yes | Primary match keyword. Unique per tenant. Matched case-insensitively with `\b` word boundaries. |
+| `aliases` | string[] | No | Additional match keywords. Same matching rules as `key`. |
+| `content` | string | Yes | System-prompt text appended under a `## User-provided context` block when a match fires. |
+| `enabled` | boolean | No (default `true`) | When `false`, the fragment stays in storage but is excluded from matching. |
+
+**Response:** `{"status": "ok"}` on success.
+
+### Delete Fragment
+
+```
+DELETE /api/v1/tap-prompts/{key}
+```
+
+Deletes the fragment and invalidates the cache. URL-encode `{key}`. Returns `{"status": "ok"}`.
+
+### Suggest Fragment Content
+
+```
+POST /api/v1/tap-prompts/suggest
+Content-Type: application/json
+```
+
+Asks the LLM to draft a content body from the fragment's key and aliases. Useful as a starting point when creating a fragment — the UI exposes this via the **Suggest** button next to the Content field. If `content` is non-empty in the request, the LLM is instructed to refine/expand it rather than replace.
+
+**Body:**
+```json
+{
+  "key": "Stripe",
+  "aliases": ["stripe.com"],
+  "content": ""
+}
+```
+
+**Response:**
+```json
+{
+  "content": "Use the stripe Python SDK (pip install stripe). Set stripe.api_key = os.environ.get(\"STRIPE_API_KEY\"). Use auto_paging_iter() for list endpoints to transparently handle pagination..."
+}
+```
+
+The response is plain text — the UI drops it into the Content textarea for the user to review before saving.
 
 ## Authentication
 

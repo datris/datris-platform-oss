@@ -13,7 +13,13 @@ Taps can run on a schedule using CRON expressions, or be triggered manually. The
 
 ## Tap Types
 
-Every tap is either **Structured** or **Document**. Choose the type when you create the tap; it can't be changed later because the target pipeline shape differs.
+Every tap is one of three types. Choose the type when you create the tap; it can't be changed later because the target pipeline shape differs.
+
+- **Structured/Semi-Structured** — the script returns records that flow into a structured pipeline destination.
+- **Document Ingestion** — the script returns `{uri, filename, content}` dicts for each file; the pipeline handles text extraction, chunking, and embedding.
+- **I Have My Own Code** — skip the AI and paste your own Python `fetch()` script directly. The script still runs through the same test / auto-fix / post-run review / auto-optimize flow and can use any of the pre-installed packages or bring its own.
+
+Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DOCX, HTML, etc.) and you want retrieval over its text. Pick Structured for everything else AI-generated. Pick **I Have My Own Code** when you already have a working Python script you want to schedule and feed a pipeline with.
 
 | | Structured/Semi-Structured | Document |
 |---|---|---|
@@ -23,7 +29,7 @@ Every tap is either **Structured** or **Document**. Choose the type when you cre
 | **Deduplication** | Pipeline-level (truncate-before-write, upserts) | Per-document **ledger** — each `uri` + content-hash is processed once. See [Document Taps](#document-taps) |
 | **Chunking / embedding** | N/A | Configured on the **pipeline**, not the tap |
 
-Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DOCX, HTML, etc.) and you want retrieval over its text. Pick Structured for everything else.
+**I Have My Own Code** produces either Structured or Document output depending on what the pasted `fetch()` returns — the shape rules in [Data Types](#data-types) are what determine downstream routing, not the radio button. In practice pick this when you already have Python code you trust; if you change your mind and want AI help later, create a new tap.
 
 <Tip>
 Building several related taps from the same source? Try **[Discovery](/discovery)** instead — it enumerates every dataset a source exposes, generates all the tap scripts in parallel, builds the matching pipelines, and groups everything in a [Data Catalog](/data-catalog). The Tap wizard below is best when you already know exactly which dataset you want.
@@ -35,14 +41,15 @@ The Tap creation wizard walks you through 4 steps — or 5, if you link the tap 
 
 ### Step 1: Describe
 
-Step 1 is where everything except testing happens — you name the tap, describe what you want, attach credentials, and generate the script.
+Step 1 is where everything except testing happens — you name the tap, describe what you want, attach credentials, and generate or paste the script.
 
-**Tap Name** — A short identifier for the tap (e.g., `weather-data` or `contracts-sharepoint`).
+**Tap Name** — A short identifier for the tap (e.g., `weather-data` or `contracts-sharepoint`). If the name matches an existing tap (and you're not in edit mode), an amber warning appears under the field letting you know that continuing will overwrite the existing tap's configuration and script. The warning is non-blocking — overwriting is allowed if that's what you intend.
 
-**Tap Type** — Two radio options:
+**Tap Type** — Three radio options:
 
-- **Structured/Semi-Structured** (default) — the script returns records that flow into a structured pipeline destination.
-- **Document Ingestion** — the script returns `{uri, filename, content}` dicts for each file; the pipeline handles text extraction, chunking, and embedding.
+- **Structured/Semi-Structured** (default) — AI generates a script that returns records flowing into a structured pipeline destination.
+- **Document Ingestion** — AI generates a script that returns `{uri, filename, content}` dicts for each file; the pipeline handles text extraction, chunking, and embedding.
+- **I Have My Own Code** — skip the AI and paste your own Python `fetch()` script. The AI brainstorm, Instruction textarea, and Generate Script button are all hidden; you see a full-width code textarea and a **Use My Code** button that uploads the pasted script to MinIO. Once uploaded, Next is enabled and the rest of the wizard (Edit & Test, Schedule, Review & Save) behaves identically to an AI-authored tap. Editing the textarea after upload invalidates the upload — you'll see the button flip to **Re-upload My Code** and Next will be disabled until you re-click it.
 
 Pick this first — the brainstorm prompts, the suggested env vars, and the Step 4 pipeline wizard all branch on this choice. The selector is locked in edit mode (change the type by creating a new tap).
 
@@ -84,14 +91,27 @@ Review and edit the generated script. You can:
 - Edit the instruction and click **Regenerate** to produce a new script
 - Copy the script to your clipboard with the **Copy** button next to the editor
 - Click **Test Script** to execute and preview results. Preview renders as JSON (up to 100 records) in a scrollable pane
-- If the script fails, an **AI Diagnosis** explains what went wrong and is **auto-applied** — the platform fixes the script and retests, up to 2 attempts. If both retries fail, the diagnosis stays visible for you to review and apply manually
+- If the script fails, an **AI Diagnosis** explains what went wrong and is **auto-applied** — the platform fixes the script and retests, up to 3 attempts. If all retries fail, the diagnosis stays visible for you to review and apply manually
 - Click **Stop Test** to cancel an in-flight test (also halts the auto-fix chain)
 
 **Limit test sample** (checkbox, default on) with an inline record-count input (default `20`, minimum `1`): when enabled, the runner injects `DATRIS_TAP_TEST_LIMIT=<n>` into the script process. Well-written tap scripts honor this env var to cap both their `/api/v1/query/*` reads and per-item iteration loops, making tests fast and low-cost. Cron and manual runs (via *Run Tap*) never set this env var, so production runs always read every row from every source.
 
+#### Post-run script review
+
+When a test passes, the platform first sends the working script and its captured stderr/stdout to the LLM for a **functional review** — not a performance pass. The reviewer looks for signals in the script's own output that the script should behave differently:
+
+- **Rate-limit / throttle / burst warnings** — add `time.sleep`, lower `max_workers`, add adaptive backoff on HTTP 429
+- **Deprecation / migration hints** — switch to the recommended replacement endpoint, method, or field
+- **Pagination / partial-response hints** ("truncated", "page 1 of 5", "next_cursor=…") — add pagination so the tap keeps fetching until the source says no more
+- **Schema-drift / auth warnings** — update parsing for renamed fields; for auth errors, add a clear stderr note naming the suspect env var
+
+If the reviewer finds a signal, it regenerates the script with the fix applied, the UI swaps it in, and the test auto-reruns. An amber banner then lists what the reviewer changed (e.g. *Added 0.25s sleep between API calls — source reported burst pattern*). **When the reviewer rewrites the script, the perf optimizer below is skipped** — correctness-from-output outranks speed on that pass. If the reviewer finds nothing worth changing, the flow falls through to the auto-optimizer.
+
+This review step runs once per successful test, so the reviewer won't loop on its own output. If you edit the script yourself and click Test again, the reviewer gets a fresh look at the new output.
+
 #### Auto-optimize after a successful test
 
-Once the test returns records with no error, the platform sends the working script back to the LLM with the measured duration and record count, asks it to restructure for performance, and re-tests the rewrite:
+If the post-run review left the script unchanged, the platform sends the working script back to the LLM with the measured duration and record count, asks it to restructure for performance, and re-tests the rewrite:
 
 - One pass per successful test. The optimizer is instructed to preserve `fetch()`, `DATRIS_TAP_TEST_LIMIT` handling, error handling, and Vault env-var reads — it only changes *how* the script fetches, not *what*
 - If the optimized re-test runs ≥20% slower than the original, or fails, the platform **auto-reverts** to the original script with no user action

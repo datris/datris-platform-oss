@@ -38,7 +38,8 @@
           {
             "group": "Taps",
             "pages": [
-              "taps"
+              "taps",
+              "tap-prompts"
             ]
           },
           {

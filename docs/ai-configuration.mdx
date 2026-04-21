@@ -146,6 +146,10 @@ The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, and Ollama. Ollam
 
 ## Stronger Model for Code Generation
 
+<Tip>
+**Highly recommended: Anthropic with the latest coding model for CodeGen.** Tap script generation, AI data quality rules, AI transformations, and NL→SQL all depend heavily on the model's coding ability — Claude produces dramatically better results than smaller or cheaper models. The same recommendation appears in the Configuration UI's CodeGen section and in `.env.example`.
+</Tip>
+
 CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot precisely so you can point them at a stronger model than the chatty default. With OpenAI the default is `gpt-5` for codegen vs `gpt-4.1` for general; with Anthropic the default is `claude-opus-4-7` for codegen vs `claude-sonnet-4-6` for general. Cheap chatty paths stay on the cheaper model so you only pay the upgrade on the calls that benefit.
 
 | Feature | Uses codegen slot? |
@@ -177,14 +181,18 @@ A per-tenant secret takes effect on the next AI call — no restart needed. The 
 
 ### Setting your key from the UI
 
-Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI:
+Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI. The Configuration page is organized into three sub-tabs:
 
-1. Open the **Configuration** tab.
+- **Environment** — tenant name, version, trial/hosted flags, and a status block showing which AI slots are using Datris-managed defaults vs your own keys.
+- **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right. This is where you enter your Anthropic / OpenAI key and pick models.
+- **Taps** — [Prompt Fragments](/tap-prompts): source-specific context the LLM sees when you create a tap or use Discovery.
+
+To set your AI keys:
+
+1. Open the **Configuration** tab, then the **AI Providers** sub-tab.
 2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, and Ollama (local).
 3. For Anthropic/OpenAI, enter your API key in the right-hand panel and pick a model from the dropdown. For Ollama, type the model name directly — no API key needed.
 4. Click **Save Configuration**. Changes take effect immediately — no restart required.
-
-The status block at the top shows which slots are using Datris-managed defaults vs your own keys.
 
 To revert to defaults, click **Reset to Datris-managed**. This deletes all three per-tenant secrets and falls the tenant back to the global defaults.
 

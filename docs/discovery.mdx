@@ -130,3 +130,7 @@ Discovery uses the platform's standard AI configuration:
 - **CodeGen** (`{env}/codegen` Vault secret) — powers Python tap script generation. A stronger model here (Opus, GPT‑5 Codex) produces noticeably better scripts.
 
 Both are configurable in the [Configuration tab](/ai-configuration) per tenant. Trial users bring their own keys at signup; dedicated instances pick providers and models freely.
+
+### Prompt fragments apply here too
+
+Any configured [Prompt Fragments](/tap-prompts) also inject into Discovery's chat and enumeration system prompts. If the user's text in either mode mentions a fragment's key or any alias (case-insensitive, word-boundary), that fragment's content is appended to the system prompt for the call — so the same source-specific conventions the tap generator knows about are also available to Discovery when it's scoping a source and writing `tapInstruction` strings. Configure fragments under **Configuration → Taps**.
