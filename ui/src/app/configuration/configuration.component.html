@@ -1,7 +1,16 @@
 <div class="container">
   <h1 class="page-title">Configuration</h1>
 
-  <div class="config-card" *ngIf="!loading">
+  <div class="sub-tab-bar">
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'environment'"
+            (click)="activeTab = 'environment'">Environment</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'ai-providers'"
+            (click)="activeTab = 'ai-providers'">AI Providers</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'taps'"
+            (click)="activeTab = 'taps'">Taps</button>
+  </div>
+
+  <div class="config-card" *ngIf="!loading && activeTab === 'environment'">
     <div class="info-grid">
       <div class="info-row">
         <span class="info-label">Environment</span>
@@ -33,10 +42,12 @@
 
     <div class="note-banner" *ngIf="isTrial">
       <p class="note-title">Trial instance — you're running with your own AI keys.</p>
-      <p>Rotate, swap providers, or change models below. Embeddings use the bundled Ollama <code>bge-m3</code> model and don't need an API key.</p>
+      <p>Rotate, swap providers, or change models in the AI Providers tab. Embeddings use the bundled Ollama <code>bge-m3</code> model and don't need an API key.</p>
       <p><strong>Want more?</strong> A dedicated Datris instance adds persistent storage, no shared rate limits, a custom domain, every destination (Postgres, MySQL, MongoDB, Qdrant, Weaviate, Milvus, Chroma, pgvector, S3, MinIO), and a production SLA. Visit your <a href="https://datris.ai/dashboard" target="_blank" rel="noopener">datris.ai dashboard</a> to upgrade.</p>
     </div>
+  </div>
 
+  <div class="config-card" *ngIf="!loading && activeTab === 'ai-providers'">
     <div class="config-layout">
       <div class="config-main">
         <div class="config-section">
@@ -80,6 +91,7 @@
         <div class="config-section">
           <h2 class="section-title">CodeGen Provider</h2>
           <p class="section-hint">Used for tasks that generate executable code: tap script generation, AI data quality rules, AI transformations, JSON Schema / XSD generation, and natural-language → SQL. Quality is directly tied to the model's coding ability — picking a stronger model here often produces dramatically better results.</p>
+          <p class="section-tip"><strong>Highly recommended:</strong> Anthropic with the latest coding model for the best results.</p>
 
           <div class="form-row">
             <label class="form-label">Provider</label>
@@ -218,5 +230,9 @@
     </div>
   </div>
 
-  <div class="loading" *ngIf="loading">Loading configuration...</div>
+  <div class="config-card" *ngIf="activeTab === 'taps'">
+    <app-tap-prompt-list></app-tap-prompt-list>
+  </div>
+
+  <div class="loading" *ngIf="loading && activeTab !== 'taps'">Loading configuration...</div>
 </div>

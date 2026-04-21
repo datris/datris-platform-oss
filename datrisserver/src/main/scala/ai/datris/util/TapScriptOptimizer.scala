@@ -18,12 +18,24 @@ object TapScriptOptimizer {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     private val SYSTEM_PROMPT =
-        """You are a Python performance tuner. You will receive a WORKING Python tap script that successfully fetched data, along with its runtime metrics. Your job is to restructure the script so it runs faster while producing IDENTICAL output.
+        """You are a Python performance tuner. You will receive a WORKING Python tap script that successfully fetched data, along with its runtime metrics and captured script output. Your job is to restructure the script so it runs faster while producing IDENTICAL output.
+          |
+          |STEP 1 — READ THE SCRIPT OUTPUT FIRST.
+          |Before touching the code, scan "Recent script output" for signals that constrain what optimizations are safe:
+          |- Rate-limit warnings ("rate limit", "burst pattern", "too many requests", "please spread requests", "429", "quota", "throttle") → the upstream is already complaining; do NOT add parallelism. Instead ADD throttling (time.sleep between calls, lower concurrency, or request pacing) and note it in "changes".
+          |- Retry-After / backoff messages → honor them explicitly with a sleep; never ignore.
+          |- Deprecation warnings → replace the deprecated call with the current one.
+          |- Auth/permission warnings → leave auth logic alone and note the issue in "changes" rather than working around it.
+          |- Pagination/next-page hints → prefer fewer, larger requests over many small ones.
+          |- Any "retrying", "timeout", "connection reset" → the API is stressed; err on slower/safer, not faster.
+          |If the logs show a source explicitly asking the client to slow down, your optimization MUST reduce request pressure, even if that means the script runs longer. Correctness and politeness beat speed.
+          |
+          |STEP 2 — decide on a safe optimization consistent with step 1, then output.
           |
           |Return a JSON object with three fields:
           |- "script": the complete optimized Python 3 script (must still define a `fetch()` function)
           |- "packages": list of EXACT pip install package names needed beyond the pre-installed set (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, pyyaml, openpyxl, python-dateutil, pytz, google-cloud-storage, azure-storage-blob). Empty list if none.
-          |- "changes": array of 1-5 short bullets describing what you changed (e.g. "Parallelized ticker fetches with ThreadPoolExecutor(10)", "Removed 0.25s per-item sleep"). If no useful optimization is possible, return an empty array and the script unchanged.
+          |- "changes": array of 1-5 short bullets describing what you changed (e.g. "Parallelized ticker fetches with ThreadPoolExecutor(10)", "Removed 0.25s per-item sleep", "Added 0.25s sleep between calls — source reported burst-pattern warning"). If the logs make optimization unsafe or the script is already well-tuned, return an empty array and the script unchanged.
           |
           |HARD PRESERVATION RULES (must not change):
           |- Keep the `fetch()` function signature and its return shape.
@@ -35,14 +47,16 @@ object TapScriptOptimizer {
           |- Do NOT rely on response-shape probing for Datris platform endpoints (`/api/v1/metadata/*`, `/api/v1/query/*`) — their shapes are contractual.
           |- Do NOT introduce async/await. Use thread-based concurrency only (the runner is subprocess-based).
           |- Do NOT add new external dependencies outside the pre-installed set unless you list them in the "packages" field.
+          |- Do NOT suppress or strip the warning/log lines the source emits — they're useful diagnostics.
           |
-          |ALLOWED OPTIMIZATION MOVES:
-          |- Parallelize independent HTTP calls with `concurrent.futures.ThreadPoolExecutor(max_workers=10)` (cap at 10 to stay polite to upstream APIs).
+          |ALLOWED OPTIMIZATION MOVES (only when the log output doesn't forbid them):
+          |- Parallelize independent HTTP calls with `concurrent.futures.ThreadPoolExecutor(max_workers=N)`. Default cap is 10, but LOWER it if the logs show rate-limit or burst warnings (e.g. 3 workers + a small sleep). NEVER raise concurrency past what the source has tolerated in this run.
           |- Reuse a single `requests.Session()` across calls if the script doesn't already.
-          |- Drop per-item `time.sleep()` calls that are not protecting against a specific documented rate limit.
+          |- Drop per-item `time.sleep()` calls that are not protecting against a specific documented rate limit AND the logs show no rate-limit warnings.
           |- Replace serial per-item calls with a bulk/batch endpoint when the target API obviously exposes one.
           |- Cache repeated lookups within a single `fetch()` invocation.
           |- Use `pandas` vectorized operations instead of Python for-loops over DataFrames.
+          |- ADD throttling (small sleep, lower max_workers, adaptive backoff) when the logs indicate the source is being stressed.
           |
           |Return ONLY the JSON object, no markdown fences or commentary.""".stripMargin
 
@@ -64,24 +78,30 @@ object TapScriptOptimizer {
             s" (~${durationMs / recordCount} ms/record)"
         else ""
 
-        val logsTail = {
+        // Keep head + tail so early warnings (e.g. "using deprecated endpoint",
+        // "burst pattern detected") survive truncation alongside the recent lines.
+        val logsSection = {
             val trimmed = Option(logs).getOrElse("").trim
-            if (trimmed.isEmpty) ""
+            if (trimmed.isEmpty) "Recent script output:\n(no output captured)\n"
             else {
                 val lines = trimmed.split("\n")
-                val tail = if (lines.length > 40) lines.takeRight(40).mkString("\n") else trimmed
-                s"\nRecent script output:\n$tail\n"
+                val combined =
+                    if (lines.length <= 80) trimmed
+                    else (lines.take(20).mkString("\n") + "\n...\n" + lines.takeRight(60).mkString("\n"))
+                s"Recent script output (SCAN THIS FIRST for rate-limit / burst / deprecation / retry warnings):\n$combined\n"
             }
         }
 
         val userPrompt =
-            s"""Current tap script (working — returned $recordCount records in $durationMs ms$rateStats):
+            s"""$logsSection
+               |Current tap script (working — returned $recordCount records in $durationMs ms$rateStats):
                |$script
-               |$logsTail
-               |Produce an optimized version. If the script is already well-optimized for its workload, return it unchanged with an empty "changes" array.""".stripMargin
+               |
+               |Produce an optimization that is consistent with any warnings in the script output above. If the logs show the source asking to slow down, ADD throttling rather than parallelism. If the script is already well-tuned for its workload, return it unchanged with an empty "changes" array.""".stripMargin
 
         val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-        val responseText = AIUtil.callAIWithSystem(SYSTEM_PROMPT, userPrompt, codegenCfg)
+        val augmentedSystemPrompt = TapPromptInjector.augment(SYSTEM_PROMPT, script)
+        val responseText = AIUtil.callAIWithSystem(augmentedSystemPrompt, userPrompt, codegenCfg)
         val extracted = AIUtil.extractText(responseText, codegenCfg)
         val cleaned = cleanAIResponse(extracted)
 

@@ -15,6 +15,7 @@ import { McpComponent } from './mcp/mcp.component';
 import { SecretsComponent } from './secrets/secrets.component';
 import { ApiKeyPromptComponent } from './api-key-prompt/api-key-prompt.component';
 import { ConfigurationComponent } from './configuration/configuration.component';
+import { TapPromptListComponent } from './configuration/tap-prompts/tap-prompt-list.component';
 import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
@@ -43,6 +44,7 @@ import { MaterialModule } from './material.module';
     SecretsComponent,
     ApiKeyPromptComponent,
     ConfigurationComponent,
+    TapPromptListComponent,
     TapsComponent,
     TapCreateComponent,
     TapRunComponent,

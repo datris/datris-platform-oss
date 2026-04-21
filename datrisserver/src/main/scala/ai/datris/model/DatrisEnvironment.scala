@@ -67,6 +67,7 @@ object DatrisEnvironment {
             tapTableName = env + "-tap",
             tapLogTableName = env + "-tap-log",
             tapLedgerTableName = env + "-tap-ledger",
+            tapPromptTableName = env + "-tap-prompt",
             postgresDatabase = env
         )
     }
@@ -135,6 +136,7 @@ case class DatrisEnvironment(
                                   tapTableName: String = null,
                                   tapLogTableName: String = null,
                                   tapLedgerTableName: String = null,
+                                  tapPromptTableName: String = null,
                                   tapScriptTimeoutSeconds: Int = 300,
                                   dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
                                   dateTimezone: String = "UTC",

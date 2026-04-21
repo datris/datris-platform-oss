@@ -68,7 +68,9 @@ class DiscoveryAPIController {
                       |Be concise — 1-3 sentences per turn. Ask ONE focused question at a time.
                       |Return ONLY the JSON object, no markdown fences.""".stripMargin
 
-                val responseText = AIUtil.callAIWithMessages(chatPrompt, messages)
+                val scanText = messages.map(_._2).mkString("\n")
+                val augmentedChatPrompt = TapPromptInjector.augment(chatPrompt, scanText)
+                val responseText = AIUtil.callAIWithMessages(augmentedChatPrompt, messages)
                 val rawText = AIUtil.extractText(responseText).trim
 
                 var cleaned = rawText
@@ -175,7 +177,9 @@ class DiscoveryAPIController {
                 "Include these exact instructions in EVERY tapInstruction for datasets that require auth:\n" + authContext
             } else systemPrompt
 
-            val responseText = AIUtil.callAIWithMessages(finalPrompt, messages, 32768, 0.0)
+            val scanText = messages.map(_._2).mkString("\n")
+            val augmentedFinalPrompt = TapPromptInjector.augment(finalPrompt, scanText)
+            val responseText = AIUtil.callAIWithMessages(augmentedFinalPrompt, messages, 32768, 0.0)
             val rawText = AIUtil.extractText(responseText).trim
 
             // Strip markdown code fences if present

@@ -12,7 +12,7 @@ import org.slf4j.{Logger, LoggerFactory}
 import java.util.UUID
 import scala.collection.JavaConverters._
 
-case class TapGenerateResult(script: String, packages: java.util.List[String], scriptPath: String)
+case class TapGenerateResult(script: String, packages: java.util.List[String], scriptPath: String, injectedPrompts: java.util.List[String] = new java.util.ArrayList[String]())
 
 object TapScriptGenerator {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -229,7 +229,8 @@ object TapScriptGenerator {
 
         // Call AI to generate the script — use codegen config (falls back to main aiConfig when unset)
         val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-        val systemPrompt = if (tapType == "document") DOCUMENT_SYSTEM_PROMPT else SYSTEM_PROMPT
+        val baseSystemPrompt = if (tapType == "document") DOCUMENT_SYSTEM_PROMPT else SYSTEM_PROMPT
+        val systemPrompt = TapPromptInjector.augment(baseSystemPrompt, description)
         val responseText = AIUtil.callAIWithSystem(systemPrompt, userPrompt, codegenCfg)
         val extracted = AIUtil.extractText(responseText, codegenCfg)
         val cleaned = cleanResponse(extracted)
@@ -320,7 +321,7 @@ object TapScriptGenerator {
         val scriptPath = storeScript(tapName, script, oldScriptPath)
 
         logger.info("TapScriptGenerator: script stored at: " + scriptPath + ", packages: " + packages)
-        TapGenerateResult(script, packages, scriptPath)
+        TapGenerateResult(script, packages, scriptPath, TapPromptInjector.matchKeys(description))
     }
 
     /**

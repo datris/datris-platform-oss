@@ -236,7 +236,13 @@ class TapAPIController {
                    |Schedule: "$description"""".stripMargin
 
             val responseText = AIUtil.callAI(prompt)
-            val cron = AIUtil.extractText(responseText).trim.replaceAll("[\"'`]", "")
+            // LLMs occasionally wrap the cron in quotes, backticks, brackets, or
+            // markdown fences. Strip them all before handing the value back.
+            val cron = AIUtil.extractText(responseText).trim
+                .replaceAll("(?s)^```(?:\\w+)?\\s*", "")
+                .replaceAll("(?s)\\s*```$", "")
+                .replaceAll("[\"'`\\[\\]]", "")
+                .trim
 
             val gson = new Gson
             val response = new java.util.HashMap[String, String]()
@@ -367,7 +373,7 @@ class TapAPIController {
                   |
                   |Return ONLY the JSON object, no markdown fences, no commentary.""".stripMargin
 
-            val systemPrompt = if (tapType == "document") documentSystemPrompt else structuredSystemPrompt
+            val baseSystemPrompt = if (tapType == "document") documentSystemPrompt else structuredSystemPrompt
 
             // Prepend a system-style note about current description if present
             val messagesWithContext: Seq[(String, String)] = if (currentDescription.nonEmpty) {
@@ -376,6 +382,10 @@ class TapAPIController {
             } else {
                 messages
             }
+
+            val scanText = currentDescription + "\n" + messages.map(_._2).mkString("\n")
+            val systemPrompt = TapPromptInjector.augment(baseSystemPrompt, scanText)
+            val injectedPrompts = TapPromptInjector.matchKeys(scanText)
 
             val responseText = AIUtil.callAIWithMessages(systemPrompt, messagesWithContext)
             val rawText = AIUtil.extractText(responseText).trim
@@ -413,6 +423,7 @@ class TapAPIController {
                     response.put("description", currentDescription)
                     response.put("suggestedEnvVars", new java.util.ArrayList[String]())
             }
+            response.put("injectedPrompts", injectedPrompts)
 
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
@@ -450,6 +461,7 @@ class TapAPIController {
             response.put("script", result.script)
             response.put("packages", result.packages)
             response.put("scriptPath", result.scriptPath)
+            response.put("injectedPrompts", result.injectedPrompts)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -580,7 +592,8 @@ class TapAPIController {
                    |Fix the script based on the diagnosis. Return the complete corrected script.""".stripMargin
 
             val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-            val responseText = AIUtil.callAIWithSystem(systemPrompt, userPrompt, codegenCfg)
+            val augmentedSystemPrompt = TapPromptInjector.augment(systemPrompt, diagnosis + "\n" + error + "\n" + script)
+            val responseText = AIUtil.callAIWithSystem(augmentedSystemPrompt, userPrompt, codegenCfg)
             val extracted = AIUtil.extractText(responseText, codegenCfg)
             val cleaned = cleanAIResponse(extracted)
 
@@ -630,6 +643,47 @@ class TapAPIController {
             response.put("script", fixedScript)
             response.put("packages", packages)
             response.put("scriptPath", scriptPath)
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @PostMapping(path = Array("/tap/review"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def reviewScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                     @RequestBody body: java.util.Map[String, Object]): ResponseEntity[String] = {
+        try {
+            val tapName = Option(body.get("tapName")).map(_.toString).getOrElse("tap")
+            val script = Option(body.get("script")).map(_.toString).getOrElse("")
+            val recordCount = Option(body.get("recordCount")).map(_.toString.toDouble.toInt).getOrElse(0)
+            val durationMs = Option(body.get("durationMs")).map(_.toString.toDouble.toLong).getOrElse(0L)
+            val logs = Option(body.get("logs")).map(_.toString).getOrElse("")
+            val oldScriptPath = Option(body.get("oldScriptPath")).map(_.toString).orNull
+            logger.info(s"API endpoint POST /tap/review called, tapName: $tapName, recordCount: $recordCount")
+            APIKeyValidator.validate(apiKey)
+
+            if (script.isEmpty)
+                throw new DatrisException("Script is required")
+
+            val result = TapScriptReviewer.review(tapName, script, recordCount, durationMs, logs, oldScriptPath)
+
+            // Persist the new scriptPath onto the TapConfig if the tap already exists.
+            if (result.rewritten) {
+                val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+                if (existingTap != null && result.scriptPath != null && result.scriptPath != oldScriptPath) {
+                    TapConfigIO.write(existingTap.copy(scriptPath = result.scriptPath))
+                }
+            }
+
+            val gson = new Gson
+            val response = new java.util.HashMap[String, Any]()
+            response.put("script", result.script)
+            response.put("packages", result.packages)
+            response.put("scriptPath", result.scriptPath)
+            response.put("changes", result.changes)
+            response.put("rewritten", Boolean.box(result.rewritten))
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>

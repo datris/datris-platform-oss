@@ -192,6 +192,7 @@ class StartupRunner extends ApplicationRunner {
             tapTableName = environment + "-tap",
             tapLogTableName = environment + "-tap-log",
             tapLedgerTableName = environment + "-tap-ledger",
+            tapPromptTableName = environment + "-tap-prompt",
             tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
             dateFormat = dateFormat,
             dateTimezone = dateTimezone,

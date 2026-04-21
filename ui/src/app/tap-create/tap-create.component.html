@@ -22,9 +22,11 @@
   <div class="form-card">
     <!-- Step 1: Describe -->
     <div *ngIf="step === 1">
-      <h2 class="step-title">Describe Your Data Source</h2>
-      <p class="step-desc" *ngIf="tapType !== 'document'">Give your tap a name and describe in plain English what data you want to fetch.</p>
-      <p class="step-desc" *ngIf="tapType === 'document'">Give your tap a name and describe in plain English which documents you want to discover and where they live.</p>
+      <h2 class="step-title" *ngIf="!bringYourOwnCode">Describe Your Data Source</h2>
+      <h2 class="step-title" *ngIf="bringYourOwnCode">Provide Your Tap Script</h2>
+      <p class="step-desc" *ngIf="!bringYourOwnCode && tapType !== 'document'">Give your tap a name and describe in plain English what data you want to fetch.</p>
+      <p class="step-desc" *ngIf="!bringYourOwnCode && tapType === 'document'">Give your tap a name and describe in plain English which documents you want to discover and where they live.</p>
+      <p class="step-desc" *ngIf="bringYourOwnCode">Give your tap a name and paste your Python <code>fetch()</code> script below.</p>
 
       <div class="form-group">
         <label class="form-label">Tap Name</label>
@@ -36,18 +38,34 @@
       <div class="form-group">
         <label class="form-label">Tap Type</label>
         <div class="tap-type-toggle">
-          <label class="tap-type-option" [class.selected]="tapType === 'structured'">
-            <input type="radio" name="tapType" value="structured" [(ngModel)]="tapType" [disabled]="isEditMode">
+          <label class="tap-type-option" [class.selected]="tapType === 'structured' && !bringYourOwnCode">
+            <input type="radio" name="tapMode"
+                   [checked]="tapType === 'structured' && !bringYourOwnCode"
+                   (change)="selectMode('structured')"
+                   [disabled]="isEditMode">
             <div class="tap-type-label">
               <span class="tap-type-name">Structured/Semi-Structured</span>
               <span class="tap-type-hint">Records that flow into a structured pipeline destination.</span>
             </div>
           </label>
-          <label class="tap-type-option" [class.selected]="tapType === 'document'">
-            <input type="radio" name="tapType" value="document" [(ngModel)]="tapType" [disabled]="isEditMode">
+          <label class="tap-type-option" [class.selected]="tapType === 'document' && !bringYourOwnCode">
+            <input type="radio" name="tapMode"
+                   [checked]="tapType === 'document' && !bringYourOwnCode"
+                   (change)="selectMode('document')"
+                   [disabled]="isEditMode">
             <div class="tap-type-label">
               <span class="tap-type-name">Document Ingestion</span>
               <span class="tap-type-hint">Discover and stage files for a vector-store pipeline. Uses a ledger so each file is processed once.</span>
+            </div>
+          </label>
+          <label class="tap-type-option" [class.selected]="bringYourOwnCode">
+            <input type="radio" name="tapMode"
+                   [checked]="bringYourOwnCode"
+                   (change)="selectMode('custom')"
+                   [disabled]="isEditMode">
+            <div class="tap-type-label">
+              <span class="tap-type-name">I Have My Own Code</span>
+              <span class="tap-type-hint">Skip AI generation and paste your own Python <code>fetch()</code> script.</span>
             </div>
           </label>
         </div>
@@ -67,7 +85,7 @@
         </div>
       </div>
 
-      <div class="form-group">
+      <div class="form-group" *ngIf="!bringYourOwnCode">
         <label class="form-label">
           <span class="material-icons brainstorm-icon">auto_awesome</span>
           Brainstorm with AI (Optional)
@@ -102,7 +120,7 @@
         </div>
       </div>
 
-      <div class="form-group">
+      <div class="form-group" *ngIf="!bringYourOwnCode">
         <label class="form-label">Instruction</label>
         <textarea class="form-textarea" [(ngModel)]="description" rows="5"
                   [placeholder]="tapType === 'document' ? 'e.g., Discover and download all PDF and DOCX files in the S3 bucket \'legal-contracts\' under the 2026/ prefix' : 'e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed'"></textarea>
@@ -167,7 +185,23 @@
         </div>
       </div>
 
-      <button class="generate-btn" (click)="generateScript()" [disabled]="generating || !description.trim()">
+      <div *ngIf="bringYourOwnCode" class="form-group">
+        <label class="form-label">Your Python Script</label>
+        <textarea class="form-textarea byo-textarea" [(ngModel)]="userScript" rows="14"
+                  placeholder="def fetch():&#10;    # Your code here — must return a list of dicts&#10;    return []"></textarea>
+        <button class="generate-btn" (click)="useMyCode()" [disabled]="storingUserScript || !userScript.trim() || !tapName.trim()">
+          <span class="material-icons">{{ storingUserScript ? 'hourglass_empty' : 'upload' }}</span>
+          {{ storingUserScript ? 'Uploading...' : script && !scriptDirty ? 'Update My Code' : 'Use My Code' }}
+        </button>
+      </div>
+
+      <div class="injected-prompts-row" *ngIf="!bringYourOwnCode && injectedPrompts.length > 0">
+        <span class="injected-prompts-label">Extra context applied:</span>
+        <a class="injected-prompt-chip" *ngFor="let k of injectedPrompts"
+           routerLink="/configuration" title="Open Configuration → Taps to review">{{ k }}</a>
+      </div>
+
+      <button *ngIf="!bringYourOwnCode" class="generate-btn" (click)="generateScript()" [disabled]="generating || !description.trim()">
         <span class="material-icons">{{ generating ? 'hourglass_empty' : 'auto_awesome' }}</span>
         {{ generating ? 'Generating...' : script ? 'Regenerate Script' : 'Generate Script' }}
       </button>
@@ -180,14 +214,14 @@
         </button>
       </div>
 
-      <div class="code-preview script-preview" *ngIf="script">
+      <div class="code-preview script-preview" *ngIf="script && !bringYourOwnCode">
         <button class="copy-script-btn" (click)="copyScript()" [title]="scriptCopied ? 'Copied!' : 'Copy script to clipboard'">
           <span class="material-icons">{{ scriptCopied ? 'check' : 'content_copy' }}</span>
         </button>
         <pre>{{ script }}</pre>
       </div>
 
-      <div class="packages-info" *ngIf="packages.length > 0">
+      <div class="packages-info" *ngIf="packages.length > 0 && !bringYourOwnCode">
         <span class="packages-label">Required packages:</span>
         <span class="package-chip" *ngFor="let pkg of packages">{{ pkg }}</span>
       </div>
@@ -246,7 +280,7 @@
       </label>
 
       <button class="test-btn" (click)="runTest()" [disabled]="testing"
-              *ngIf="!testing && !applyingDiagnosis && !optimizing">
+              *ngIf="!testing && !applyingDiagnosis && !optimizing && !reviewing">
         <span class="material-icons">science</span>
         Test Script
       </button>
@@ -254,7 +288,7 @@
       <div class="testing-indicator" *ngIf="testing">
         <div class="spinner"></div>
         <span *ngIf="autoFixAttempts === 0">Running script — this may take a few minutes for large data fetches...</span>
-        <span *ngIf="autoFixAttempts > 0">Re-running after auto-applied AI fix (attempt {{ autoFixAttempts }} of 2)...</span>
+        <span *ngIf="autoFixAttempts > 0">Re-running after auto-applied AI fix (attempt {{ autoFixAttempts }} of 3)...</span>
         <button class="indicator-stop-btn" (click)="stopActive()" title="Stop test">
           <span class="material-icons">stop</span>
         </button>
@@ -262,8 +296,16 @@
 
       <div class="testing-indicator" *ngIf="applyingDiagnosis && autoFixAttempts > 0 && !optimizing && !testing">
         <div class="spinner"></div>
-        <span>Auto-applying AI fix (attempt {{ autoFixAttempts }} of 2)...</span>
+        <span>Auto-applying AI fix (attempt {{ autoFixAttempts }} of 3)...</span>
         <button class="indicator-stop-btn" (click)="stopActive()" title="Stop">
+          <span class="material-icons">stop</span>
+        </button>
+      </div>
+
+      <div class="testing-indicator" *ngIf="reviewing && !testing">
+        <div class="spinner"></div>
+        <span>Test passed — reviewing script output for signals the script should change...</span>
+        <button class="indicator-stop-btn" (click)="stopActive()" title="Skip review">
           <span class="material-icons">stop</span>
         </button>
       </div>
@@ -319,6 +361,16 @@
         <div class="test-success">Test completed — 0 records returned</div>
       </div>
 
+      <div class="diagnosis-applied optimize-banner" *ngIf="reviewChanges.length > 0 && !reviewing && !testing">
+        <span class="material-icons">auto_awesome</span>
+        <div class="optimize-banner-body">
+          <div class="optimize-banner-title">Applied from script output:</div>
+          <ul class="optimize-changes-list">
+            <li *ngFor="let change of reviewChanges">{{ change }}</li>
+          </ul>
+        </div>
+      </div>
+
       <div class="diagnosis-applied optimize-banner" *ngIf="optimizeChanges.length > 0 && !optimizing && !testing">
         <span class="material-icons">bolt</span>
         <div class="optimize-banner-body">
@@ -346,7 +398,7 @@
           AI Diagnosis
         </div>
         <div class="ai-explanation-body">{{ aiExplanation }}</div>
-        <div class="generate-help" *ngIf="autoFixAttempts >= 2">Auto-fix exhausted after 2 attempts. Review the diagnosis and apply manually if you want to try the suggested change.</div>
+        <div class="generate-help" *ngIf="autoFixAttempts >= 3">Auto-fix exhausted after 3 attempts. Review the diagnosis and apply manually if you want to try the suggested change.</div>
         <div class="ai-explanation-footer">
           <button class="apply-diagnosis-btn" (click)="applyDiagnosis()" [disabled]="applyingDiagnosis">
             <span class="material-icons">{{ applyingDiagnosis ? 'hourglass_empty' : 'healing' }}</span>

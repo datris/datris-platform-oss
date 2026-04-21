@@ -38,6 +38,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   brainstormInput = '';
   brainstorming = false;
   suggestedEnvVars: string[] = [];
+  injectedPrompts: string[] = [];
   @ViewChild('brainstormInputEl') brainstormInputEl?: ElementRef<HTMLInputElement>;
 
   // Step 2 — Generate
@@ -45,6 +46,11 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   script = '';
   scriptPath = '';
   packages: string[] = [];
+
+  // BYO: user pastes their own Python script instead of having the LLM generate one.
+  bringYourOwnCode = false;
+  userScript = '';
+  storingUserScript = false;
 
   // Step 3 — Edit & Test
   testing = false;
@@ -61,7 +67,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // Auto-fix: on a failed test with an AI diagnosis, automatically apply the
   // fix and re-test, up to MAX_AUTO_FIX_ATTEMPTS. Reset to 0 whenever the user
   // clicks Test Script themselves; increment each time we auto-apply.
-  private static readonly MAX_AUTO_FIX_ATTEMPTS = 2;
+  private static readonly MAX_AUTO_FIX_ATTEMPTS = 3;
   autoFixAttempts = 0;
   // Test-only sample cap. Cron/manual runs are always unlimited; this only
   // affects the test invocation. User-editable; defaults to 20.
@@ -79,6 +85,17 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   optimizeChanges: string[] = [];
   optimizeDurationMs = 0;
   optimizeRegressionReverted = false;
+
+  // Post-run review: after a test passes, ask the LLM whether the script output
+  // contains signals that the script itself should change (rate-limit / burst
+  // warnings, deprecations, pagination hints, schema/auth warnings). If so,
+  // the reviewer regenerates the script; the UI swaps it in and auto-retests.
+  // Runs before the perf optimizer. If the reviewer rewrites the script, the
+  // optimizer is skipped (correctness beats perf).
+  private static readonly MAX_REVIEW_ATTEMPTS = 1;
+  reviewing = false;
+  reviewAttempts = 0;
+  reviewChanges: string[] = [];
   private previousPassingTest: {
     script: string;
     scriptPath: string;
@@ -282,6 +299,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.brainstormMessages.push({ role: 'assistant', content: result.reply || '' });
         if (result.description) this.description = result.description;
         if (Array.isArray(result.suggestedEnvVars)) this.suggestedEnvVars = result.suggestedEnvVars;
+        if (Array.isArray(result.injectedPrompts)) this.injectedPrompts = result.injectedPrompts;
         this.brainstorming = false;
         // Return focus to the input so the user can keep chatting without grabbing the mouse.
         // Use requestAnimationFrame so Angular has time to flip [disabled]="brainstorming"
@@ -303,6 +321,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.script = result.script || '';
         this.scriptPath = result.scriptPath || '';
         this.packages = result.packages || [];
+        if (Array.isArray(result.injectedPrompts)) this.injectedPrompts = result.injectedPrompts;
         this.generating = false;
         this.scriptDirty = true;
       },
@@ -322,7 +341,46 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.generateScript();
   }
 
-  /** User-initiated test. Resets auto-fix and auto-optimize counters, then delegates. */
+  selectMode(mode: 'structured' | 'document' | 'custom'): void {
+    if (mode === 'custom') {
+      this.bringYourOwnCode = true;
+      // Leave tapType as-is so the backend still knows whether this tap feeds a
+      // structured pipeline or a document one. Default to structured when nothing
+      // meaningful has been set yet.
+      if (this.tapType !== 'structured' && this.tapType !== 'document') {
+        this.tapType = 'structured';
+      }
+    } else {
+      this.bringYourOwnCode = false;
+      this.tapType = mode;
+      this.userScript = '';
+    }
+    this.error = '';
+  }
+
+  useMyCode(): void {
+    const src = (this.userScript || '').trim();
+    if (!src) { this.error = 'Paste your Python script first.'; return; }
+    if (!this.tapName.trim()) { this.error = 'Tap name is required before uploading a script.'; return; }
+    this.storingUserScript = true;
+    this.error = '';
+    this.activeSub = this.tapService.storeScript(this.tapName.trim(), this.userScript, this.scriptPath).subscribe({
+      next: (result) => {
+        this.script = this.userScript;
+        this.scriptPath = result.scriptPath || '';
+        this.packages = [];
+        this.scriptDirty = true;
+        this.storingUserScript = false;
+        if (!this.description.trim()) this.description = 'User-provided tap script.';
+      },
+      error: (err) => {
+        this.storingUserScript = false;
+        this.error = 'Failed to upload script: ' + (err.error || err.message);
+      }
+    });
+  }
+
+  /** User-initiated test. Resets auto-fix, review, and auto-optimize counters, then delegates. */
   runTest(): void {
     this.autoFixAttempts = 0;
     this.optimizeAttempts = 0;
@@ -331,6 +389,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.optimizeDurationMs = 0;
     this.optimizeRegressionReverted = false;
     this.previousPassingTest = null;
+    this.reviewAttempts = 0;
+    this.reviewChanges = [];
     this.testScript();
   }
 
@@ -392,10 +452,14 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         if (!failed && this.previousPassingTest) {
           this.optimizeDurationMs = lastDurationMs;
         }
-        // Auto-optimize: on a successful test, send the working script back
-        // to the LLM for a perf rewrite, then re-test. One pass only.
+        // Post-test flow: review first (functional signals in script output),
+        // then optimize (perf). If the reviewer rewrites the script we re-test
+        // and stop — correctness-from-output beats speed.
         const succeeded = !failed;
-        if (succeeded && this.optimizeAttempts < TapCreateComponent.MAX_AUTO_OPTIMIZE_ATTEMPTS &&
+        if (succeeded && this.reviewAttempts < TapCreateComponent.MAX_REVIEW_ATTEMPTS) {
+          this.reviewAttempts++;
+          this.reviewScript(lastDurationMs);
+        } else if (succeeded && this.optimizeAttempts < TapCreateComponent.MAX_AUTO_OPTIMIZE_ATTEMPTS &&
             !this.optimizingSkipped && !this.previousPassingTest) {
           this.previousPassingTest = {
             script: this.script,
@@ -468,6 +532,68 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   optimizeBeforeMs(): number {
     return this.previousPassingTest ? this.previousPassingTest.durationMs : 0;
+  }
+
+  /** Review script output for functional signals (rate limits, deprecations,
+   *  pagination, schema/auth warnings). If the reviewer regenerates the script,
+   *  swap it in and auto-retest. Falls back to the perf optimizer when the
+   *  reviewer returns unchanged. */
+  reviewScript(previousDurationMs: number): void {
+    this.reviewing = true;
+    this.reviewChanges = [];
+    this.activeSub = this.tapService.reviewScript(
+      this.tapName.trim(),
+      this.script,
+      this.testRecordCount,
+      previousDurationMs,
+      this.testLogs,
+      this.scriptPath
+    ).subscribe({
+      next: (result) => {
+        const rewritten = !!result?.rewritten;
+        const newScript = result?.script || this.script;
+        const changes: string[] = result?.changes || [];
+        this.reviewing = false;
+        if (!rewritten || newScript === this.script) {
+          // Output was clean — hand off to the perf optimizer.
+          if (this.optimizeAttempts < TapCreateComponent.MAX_AUTO_OPTIMIZE_ATTEMPTS &&
+              !this.optimizingSkipped && !this.previousPassingTest) {
+            this.previousPassingTest = {
+              script: this.script,
+              scriptPath: this.scriptPath,
+              packages: [...this.packages],
+              testRecords: this.testRecords,
+              testRecordCount: this.testRecordCount,
+              testLogs: this.testLogs,
+              testDataType: this.testDataType,
+              testColumns: [...this.testColumns],
+              durationMs: previousDurationMs
+            };
+            this.optimizeAttempts++;
+            this.optimizeScript(previousDurationMs);
+          }
+          return;
+        }
+        // Reviewer regenerated the script based on output signals. Swap it
+        // in, record the changes, and auto-retest. Do NOT also run the
+        // optimizer — correctness-from-output outranks perf on this pass.
+        // optimizingSkipped=true makes the post-retest branch in testScript()
+        // fall through without invoking optimize.
+        this.script = newScript;
+        this.scriptPath = result.scriptPath || this.scriptPath;
+        this.packages = result.packages || this.packages;
+        this.reviewChanges = changes;
+        this.scriptDirty = true;
+        this.optimizingSkipped = true;
+        this.testScript();
+      },
+      error: (err) => {
+        // Silent failure — user still has the working original script.
+        const msg = typeof err.error === 'string' ? err.error : (err.message || '');
+        console.warn('Review failed: ' + msg.substring(0, 300));
+        this.reviewing = false;
+      }
+    });
   }
 
   optimizeSpeedup(): number {

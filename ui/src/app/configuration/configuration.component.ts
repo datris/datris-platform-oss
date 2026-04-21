@@ -8,6 +8,8 @@ import { ModelCatalogService, ModelOption } from '../model-catalog.service';
   styleUrls: ['./configuration.component.css']
 })
 export class ConfigurationComponent implements OnInit {
+  activeTab: 'environment' | 'ai-providers' | 'taps' = 'ai-providers';
+
   // Shared API keys (entered once in the right-hand panel)
   anthropicApiKey = '';
   openaiApiKey = '';
