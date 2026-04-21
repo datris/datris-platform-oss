@@ -24,18 +24,22 @@ object TapScheduler {
                 try {
                     val cron = new CronExpression(tap.cronExpression)
                     cron.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
-                    val shouldRun = {
-                        if (tap.lastRunTime == null) {
-                            // Never run before — wait for the first scheduled time
-                            false
-                        } else {
-                            val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
-                            sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
-                            val lastRun = sdf.parse(tap.lastRunTime)
-                            val nextRun = cron.getNextValidTimeAfter(lastRun)
-                            now.after(nextRun)
-                        }
+                    val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+                    sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+                    // Anchor for "next valid cron time". Prefer lastRunTime; fall back to
+                    // updatedAt then createdAt so a tap with a cron but no prior run still
+                    // fires on its next scheduled slot after creation. Epoch as a final
+                    // fallback means "fire on the next valid cron time from now".
+                    val anchor: Date = {
+                        def parseOpt(s: String): Option[Date] =
+                            Option(s).filter(_.nonEmpty).flatMap(v => try Some(sdf.parse(v)) catch { case _: Exception => None })
+                        parseOpt(tap.lastRunTime)
+                            .orElse(parseOpt(tap.updatedAt))
+                            .orElse(parseOpt(tap.createdAt))
+                            .getOrElse(new Date(0L))
                     }
+                    val nextRun = cron.getNextValidTimeAfter(anchor)
+                    val shouldRun = nextRun != null && now.after(nextRun)
 
                     if (shouldRun) {
                         logger.info("TapScheduler: triggering scheduled tap: " + tap.name)

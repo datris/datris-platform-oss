@@ -242,7 +242,7 @@ Click the play button on the taps list to open the Run page:
 - **Run Again** button for re-execution
 
 ### CRON Schedule
-Taps with a `cronExpression` run automatically. The scheduler checks every 30 seconds for taps that are due. A tap won't run if it's already running or has never been run before (first run must be manual).
+Taps with a `cronExpression` run automatically. The scheduler checks every 30 seconds for taps that are due. A tap won't fire if it's already running. For a tap that has never run before, the scheduler anchors the "next valid cron time" to `updatedAt` or `createdAt`, so the first scheduled slot after the tap was saved fires on its own — no manual bootstrap run needed.
 
 ### Sending Data to Pipelines
 When "Send to pipeline" is checked:
