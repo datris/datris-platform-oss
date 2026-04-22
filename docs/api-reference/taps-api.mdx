@@ -23,12 +23,39 @@ Returns all registered taps.
 GET /api/v1/tap?name={tapName}
 ```
 
-Returns a single tap configuration, including the script content from MinIO.
+Returns a single tap configuration plus the Python script body from MinIO.
 
 **Parameters:**
 | Parameter | Type | Description |
 |---|---|---|
 | `name` | query | Tap name (required) |
+
+**Response (success):**
+```json
+{
+  "name": "stock-prices-tap",
+  "description": "Fetch daily stock prices from yfinance",
+  "scriptPath": "tap-scripts/stock-prices-tap_a1b2c3d4.py",
+  "targetPipeline": "stock-prices-pipeline",
+  "script": "def fetch():\n    ...",
+  "packages": ["yfinance"],
+  "enabled": true,
+  "tapType": "structured"
+}
+```
+
+**Response when the stored script is missing from object storage:**
+```json
+{
+  "name": "stock-prices-tap",
+  "scriptPath": "tap-scripts/stock-prices-tap_a1b2c3d4.py",
+  "script": null,
+  "scriptMissing": true,
+  ...
+}
+```
+
+`scriptMissing` only appears when `scriptPath` is set but the object is absent — typically after an interrupted edit or re-generation wiped the old script before the new one landed. Distinguish from "never generated" (`scriptPath` null, `script` null, no `scriptMissing` key). The Edit Tap UI uses this flag to render a recoverable-state banner instead of the generic "Generate a script first" validation.
 
 ## Create or Update Tap
 

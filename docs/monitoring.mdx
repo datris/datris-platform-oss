@@ -65,6 +65,16 @@ Returns an array of status entries for the job, one per processing stage:
 ]
 ```
 
+### Query by Publisher Token
+
+```bash
+curl "http://localhost:8080/api/v1/pipeline/status?publishertoken=pub-abc12345-..."
+```
+
+Returns every status row whose `publisherToken` matches — covers all ingestion jobs a single caller submitted. Tap runs set a publisherToken on every job they spawn, so one query covers a structured tap (1 job) or a document tap (N jobs, one per file) in a single call. Use `publisherToken` when you need to watch "this entire run," `pipelineToken` when you need the detail of one specific job.
+
+Agents can call the same query via the MCP `get_pipeline_status` tool — pass `publisher_token` from a `run_tap` response and poll until every job's latest row is `end` or `error`.
+
 ### Query by Pipeline Name
 
 ```bash

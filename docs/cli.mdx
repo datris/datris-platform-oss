@@ -292,11 +292,24 @@ Document taps require a target pipeline whose source is `unstructuredAttributes`
 
 ### `datris tap run`
 
-Run a tap manually.
+Run a tap manually. Output reflects whether the fetched records actually landed in the target pipeline:
 
 ```bash
-datris tap run <name>
+$ datris tap run stock-prices
+  Running tap 'stock-prices'...
+  ✓ success — 33 records fetched
+    → persisted to stock-prices
+    → watch: datris pipeline status --publisher 5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e
 ```
+
+Or if the run succeeded but records weren't persisted (missing target pipeline, test mode, script error, zero records), the CLI tells you exactly why:
+
+```bash
+  ✓ success — 33 records fetched
+    → not persisted (no_target_pipeline)
+```
+
+Pass `--json` to get the full response including `mode`, `persisted`, `persistedReason`, `publisherToken`, and `pipelineTokens`.
 
 ---
 

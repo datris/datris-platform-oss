@@ -113,6 +113,26 @@ components:
         path:
           type: string
 
+    TapDetail:
+      description: >-
+        Response shape of `GET /api/v1/tap?name=...`. Extends `TapConfig` with
+        the script content fetched from MinIO and a `scriptMissing` flag set
+        when the tap has a `scriptPath` but the object is absent from storage
+        (e.g. deleted during an interrupted edit or re-generation). Use this
+        flag in UIs to distinguish "never generated" (script null, flag absent)
+        from "object vanished" (script null, `scriptMissing: true`).
+      allOf:
+        - $ref: '#/components/schemas/TapConfig'
+        - type: object
+          properties:
+            script:
+              type: string
+              nullable: true
+              description: Python script body fetched from MinIO. Null when the tap has no script yet or when the script object is missing.
+            scriptMissing:
+              type: boolean
+              description: Present and `true` only when `scriptPath` is set but the storage read returned no object. Omitted otherwise.
+
     TapConfig:
       type: object
       required: [name, description, targetPipeline]
@@ -1382,7 +1402,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TapConfig'
+                $ref: '#/components/schemas/TapDetail'
         '404':
           description: Tap not found
     post:
