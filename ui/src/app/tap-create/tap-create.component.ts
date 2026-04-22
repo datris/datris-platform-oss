@@ -1015,7 +1015,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     if (this.runningTap) return;
     this.runError = '';
     this.runningTap = true;
-    this.tapService.runTap(this.tapName.trim(), true).subscribe({
+    this.tapService.runTap(this.tapName.trim(), 'run').subscribe({
       next: () => {
         this.runningTap = false;
         this.router.navigate(['/taps']);

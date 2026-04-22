@@ -44,7 +44,9 @@
     <div class="status-text">
       <div class="status-title">{{ status === 'success' ? 'Tap completed successfully' : 'Tap execution failed' }}</div>
       <div class="status-detail" *ngIf="status === 'success'">
-        Fetched {{ recordCount }} records{{ pushToPipeline && targetPipeline ? ' — sent to pipeline: ' + targetPipeline : '' }}
+        Fetched {{ recordCount }} records
+        <ng-container *ngIf="persisted === true"> — sent to pipeline: {{ targetPipeline }}</ng-container>
+        <ng-container *ngIf="persisted === false"> — <strong>not persisted</strong> ({{ persistedReason || 'unknown' }})</ng-container>
       </div>
     </div>
   </div>

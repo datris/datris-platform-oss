@@ -25,6 +25,9 @@ export class TapRunComponent implements OnInit, OnDestroy {
   records: any = null;
   logs = '';
   error = '';
+  persisted: boolean | null = null;
+  persistedReason = '';
+  publisherToken = '';
 
   private runSub: Subscription | null = null;
 
@@ -77,6 +80,9 @@ export class TapRunComponent implements OnInit, OnDestroy {
         this.records = result.records || [];
         this.logs = result.logs || '';
         this.error = result.error || '';
+        this.persisted = typeof result.persisted === 'boolean' ? result.persisted : null;
+        this.persistedReason = result.persistedReason || '';
+        this.publisherToken = result.publisherToken || '';
         this.running = false;
         this.hasRun = true;
       },

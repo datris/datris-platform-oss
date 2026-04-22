@@ -1854,7 +1854,7 @@ export class DiscoveryComponent {
     item.runStatus = 'running';
     item.runStatusLabel = 'Running and pushing to pipeline...';
 
-    const sub = this.tapService.runTap(item.tapName, true).subscribe({
+    const sub = this.tapService.runTap(item.tapName, 'run').subscribe({
       next: (result) => {
         item.runStatus = 'done';
         item.runStatusLabel = 'Complete';
