@@ -1,16 +1,17 @@
 # Release Notes
 
-## v1.6.10 — April 21, 2026
+## v1.6.11 — April 22, 2026
 
-**Tap prompt fragments, post-run script review, BYO code, and Configuration page reorg.**
+**Agent-native tap observability, scheduler fix, and agent-owned tap secrets.**
 
-- **Tap prompt fragments (new).** A new Configuration → Taps sub-tab lets you save reusable, per-tenant context snippets — things like API conventions, required headers, rate limits, and preferred libraries for a given source. When the key or any of its aliases appears in a Create Tap description, brainstorm, auto-fix, optimize, or Discovery chat, the fragment's content is automatically added to the system prompt. Includes an AI Suggest button, a Load Examples catalog (AWS, Polygon, Stripe, SEC EDGAR), JSON import/export, and an "Extra context applied" chip row in the tap wizard showing which fragments hit.
-- **Post-run script review.** After a tap's first successful test, the AI now scans the captured stderr/stdout for signals that the *script* should change — rate-limit or burst warnings, deprecation hints, pagination cues, schema drift, auth warnings — and regenerates the script if needed. On a rewrite the wizard auto-retests; the performance optimizer runs only when the logs are clean. The optimizer's prompt was also tightened so rate-limit markers push it toward throttling instead of more concurrency.
-- **I Have My Own Code (new).** A third Tap Type on the Create Tap wizard lets you paste a fetch() script directly instead of having AI generate one. Step 1 switches to a code textarea with a Use My Code button; after upload the button flips to Re-upload My Code and Step 2 gates on the text matching what's on disk, so edits force a fresh upload before running the test.
-- **Configuration page reorganized into three sub-tabs** — Environment, AI Providers, and Taps — with a prominent "Highly recommended: Anthropic with the latest coding model" tip on the CodeGen Provider section.
-- **Tap Name collision warning.** If the name you type in the Create Tap wizard matches an existing tap, an amber banner appears under the field warning that continuing will overwrite the existing tap's configuration and script.
-- **Auto-fix retries bumped to 3.** When a tap script fails its first test, the AI now gets up to three repair attempts (was two) before giving up.
-- **Cron Custom preset no longer blocked by AI formatting.** AI-generated cron expressions wrapped in code fences, brackets, or quotes are now cleaned automatically, so the Next button is enabled on valid output.
+- **Agents can watch a tap load to completion.** Running a tap now reports back whether the data was actually persisted — and names the reason when it wasn't (test mode, no target pipeline, no records, run error). Every persisted run returns a single *publisher token* covering the whole run, even for document taps that spawn many ingestion jobs. A new `get_pipeline_status` MCP tool lets an agent poll that one token until the entire load reaches its final state, so it can report "done" with real numbers instead of guessing from a response body.
+- **Scheduled taps no longer need a manual kickoff.** Taps saved with a cron schedule now fire on their next scheduled time automatically. Previously, a newly saved scheduled tap would wait indefinitely until you ran it once by hand.
+- **Self-diagnosing tap scripts.** If a tap's generated script goes missing from object storage, the Edit Tap page now shows an amber banner explaining the state and pointing you to Regenerate, instead of a cryptic mid-run "key does not exist" error. Test Tap surfaces the same state with actionable wording.
+- **Agents can manage their own tap secrets.** Via MCP, agents can now create and delete the secrets their taps need (API keys, tokens). Scope is strictly tap-owned — agents cannot create, overwrite, or delete human-owned Platform secrets (DB creds, AI keys, vector-store creds).
+- **Secrets page split into Platform and Taps sub-tabs.** Platform lists the built-in Datris secret slots; Taps lists agent-authored tap secrets. Creating a secret from the Taps sub-tab auto-tags it so it stays agent-editable, and Tap secrets are fully manageable on trial tenants.
+- **Honest Test Tap banner.** The run-result banner on Test Tap now reflects what actually happened on the server — "sent to pipeline" only when the run was truly persisted, otherwise "not persisted" with the reason — rather than whatever the pre-request checkbox said.
+- **BYO-code taps can declare pip dependencies.** If you paste your own fetch script into Create Tap, you can now list the Python packages it needs. Previously only AI-generated taps could declare dependencies.
+- **Example agent refactored onto taps.** The bundled market-macro-agent example now drives ingestion through taps instead of ad-hoc fetch scripts, demonstrating the full agent-native tap flow (provisioning, secrets, publisher-token watching).
 
 ---
 
