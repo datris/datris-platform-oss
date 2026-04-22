@@ -1653,3 +1653,45 @@
 .chunk-size-row > div {
   flex: 1 1 0;
 }
+
+/* Script-missing banner: distinct amber treatment so it reads as a recoverable
+   state, not a fatal error (red) or a neutral hint (blue). */
+.script-missing-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  border-radius: 8px;
+  background: rgba(237, 137, 54, 0.08);
+  border: 1px solid rgba(237, 137, 54, 0.45);
+  color: var(--text-primary, #f0f4ff);
+}
+
+.script-missing-banner .material-icons {
+  color: #ed8936;
+  font-size: 22px;
+  margin-top: 2px;
+}
+
+.script-missing-banner .banner-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #ed8936;
+  margin-bottom: 4px;
+}
+
+.script-missing-banner .banner-body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary, #a0aec0);
+}
+
+.script-missing-banner .banner-body strong {
+  color: var(--text-primary, #f0f4ff);
+}
+
+.script-missing-banner .banner-body em {
+  font-style: italic;
+  color: var(--text-primary, #f0f4ff);
+}

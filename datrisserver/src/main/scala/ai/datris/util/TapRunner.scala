@@ -22,17 +22,19 @@ object TapRunner {
      * Execute a tap: run the script, feed results to the target pipeline.
      *
      * @param tapConfig the tap to run
-     * @param pushToPipeline if true, push records to pipeline and update status in DB; if false, just execute and return (test mode)
+     * @param mode "run" persists to the pipeline and updates tap status; "test" just executes and returns without persisting
      * @return TapScriptResult with fetched records
      */
-    def run(tapConfig: TapConfig, pushToPipeline: Boolean = true, testLimit: Int = 0): TapScriptResult = {
+    def run(tapConfig: TapConfig, mode: String = "run", testLimit: Int = 0): TapScriptResult = {
+        val push = mode == "run"
+        val publisherToken = if (push) UUID.randomUUID().toString else null
         val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
         sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
         val now = sdf.format(new Date())
         val startMs = System.currentTimeMillis()
 
         // Only update status in DB for real runs, not tests
-        if (pushToPipeline) {
+        if (push) {
             val runningConfig = tapConfig.copy(lastRunStatus = "running", lastRunTime = now, lastRunError = null)
             TapConfigIO.write(runningConfig)
         }
@@ -44,7 +46,7 @@ object TapRunner {
             if (result.error != null || result.recordCount == 0) {
                 val errorMsg = if (result.error != null) result.error
                     else "Script returned 0 records"
-                if (pushToPipeline) {
+                if (push) {
                     val failedConfig = tapConfig.copy(
                         lastRunStatus = "failure",
                         lastRunTime = now,
@@ -53,17 +55,17 @@ object TapRunner {
                     )
                     TapConfigIO.write(failedConfig)
                 }
-                writeRunLog(tapConfig.name, now, "failure", result.recordCount, result.dataType, result.logs, errorMsg, pushToPipeline, durationMs)
+                writeRunLog(tapConfig.name, now, "failure", result.recordCount, result.dataType, result.logs, errorMsg, mode, durationMs)
                 return result.copy(error = errorMsg)
             }
 
             // Push to pipeline if requested, records exist, and a target pipeline is configured
-            val processedCount = if (pushToPipeline && result.records != null && result.recordCount > 0 &&
+            val (processedCount, pipelineTokens) = if (push && result.records != null && result.recordCount > 0 &&
                 tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty) {
-                feedPipeline(tapConfig, result)
-            } else result.recordCount
+                feedPipeline(tapConfig, result, publisherToken)
+            } else (result.recordCount, new java.util.ArrayList[String]())
 
-            if (pushToPipeline) {
+            if (push) {
                 val successConfig = tapConfig.copy(
                     lastRunStatus = "success",
                     lastRunTime = now,
@@ -75,13 +77,15 @@ object TapRunner {
                 TapConfigIO.write(successConfig)
             }
 
-            writeRunLog(tapConfig.name, now, "success", processedCount, result.dataType, result.logs, null, pushToPipeline, durationMs)
-            result
+            writeRunLog(tapConfig.name, now, "success", processedCount, result.dataType, result.logs, null, mode, durationMs)
+            val tokensOut = if (pipelineTokens.isEmpty) null else pipelineTokens
+            val pubOut = if (tokensOut == null) null else publisherToken
+            result.copy(publisherToken = pubOut, pipelineTokens = tokensOut)
         } catch {
             case e: Exception =>
                 val durationMs = System.currentTimeMillis() - startMs
                 logger.error("TapRunner failed for tap: " + tapConfig.name, e)
-                if (pushToPipeline) {
+                if (push) {
                     val failedConfig = tapConfig.copy(
                         lastRunStatus = "failure",
                         lastRunTime = now,
@@ -90,15 +94,15 @@ object TapRunner {
                     )
                     TapConfigIO.write(failedConfig)
                 }
-                writeRunLog(tapConfig.name, now, "failure", 0, null, null, e.getMessage, pushToPipeline, durationMs)
+                writeRunLog(tapConfig.name, now, "failure", 0, null, null, e.getMessage, mode, durationMs)
                 TapScriptResult(null, 0, e.getMessage)
         }
     }
 
     private def writeRunLog(tapName: String, runTime: String, status: String, recordCount: Int,
-                            dataType: String, logs: String, error: String, pushToPipeline: Boolean, durationMs: Long): Unit = {
+                            dataType: String, logs: String, error: String, mode: String, durationMs: Long): Unit = {
         try {
-            val log = TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, pushToPipeline, durationMs)
+            val log = TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, mode, durationMs)
             val gson = new Gson
             val key = tapName + "|" + runTime
             NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", gson.toJson(log))
@@ -108,9 +112,9 @@ object TapRunner {
         }
     }
 
-    private def feedPipeline(tapConfig: TapConfig, result: TapScriptResult): Int = {
+    private def feedPipeline(tapConfig: TapConfig, result: TapScriptResult, publisherToken: String): (Int, java.util.List[String]) = {
         if (result.dataType == "document") {
-            return feedDocumentPipeline(tapConfig, result)
+            return feedDocumentPipeline(tapConfig, result, publisherToken)
         }
 
         logger.info("TapRunner: feeding " + result.recordCount + " records to pipeline: " + tapConfig.targetPipeline)
@@ -137,10 +141,12 @@ object TapRunner {
             (result.records.getBytes("UTF-8"), "tap-" + tapConfig.name + ".json")
         }
 
-        val jobContext = new StreamNotifier().process(bytes, filename, tapConfig.targetPipeline, null)
+        val jobContext = new StreamNotifier().process(bytes, filename, tapConfig.targetPipeline, publisherToken)
         GlobalJobContext.addJobContext(jobContext)
         logger.info("TapRunner: submitted job for pipeline: " + tapConfig.targetPipeline + ", token: " + jobContext.pipelineToken)
-        result.recordCount
+        val tokens = new java.util.ArrayList[String]()
+        tokens.add(jobContext.pipelineToken)
+        (result.recordCount, tokens)
     }
 
     /**
@@ -160,9 +166,10 @@ object TapRunner {
      * Returns the number of documents actually submitted to the pipeline (skipped docs
      * and failed docs are not counted).
      */
-    private def feedDocumentPipeline(tapConfig: TapConfig, result: TapScriptResult): Int = {
+    private def feedDocumentPipeline(tapConfig: TapConfig, result: TapScriptResult, publisherToken: String): (Int, java.util.List[String]) = {
         import scala.collection.JavaConverters._
         logger.info("TapRunner: document tap '" + tapConfig.name + "' returned " + result.recordCount + " documents")
+        val tokens = new java.util.ArrayList[String]()
 
         val env = DatrisEnvironment.current
 
@@ -251,8 +258,9 @@ object TapRunner {
                         ))
 
                         try {
-                            val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, null)
+                            val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, publisherToken)
                             GlobalJobContext.addJobContext(jobContext)
+                            tokens.add(jobContext.pipelineToken)
                             TapDocumentLedgerIO.write(ledgerTable, TapDocumentLedger(
                                 uri = uri,
                                 tapName = tapConfig.name,
@@ -292,7 +300,7 @@ object TapRunner {
 
         logger.info("TapRunner: document tap '" + tapConfig.name + "' processed=" + processed +
             ", skipped=" + skipped + ", failed=" + failed)
-        processed
+        (processed, tokens)
     }
 
     private def sha256(bytes: Array[Byte]): String = {

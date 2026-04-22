@@ -357,7 +357,7 @@ export class TapsComponent implements OnInit, OnDestroy {
     if (total === 0) { group.running = false; return; }
 
     for (const tap of tapsWithPipeline) {
-      this.tapService.runTap(tap.name, true).subscribe({
+      this.tapService.runTap(tap.name, 'run').subscribe({
         next: () => { completed++; if (completed === total) { group.running = false; this.loadTaps(); } },
         error: () => { completed++; if (completed === total) { group.running = false; this.loadTaps(); } }
       });

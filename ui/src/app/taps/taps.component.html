@@ -180,7 +180,7 @@
             <span class="log-time">{{ formatTime(log.runTime) }}</span>
             <span class="log-records" *ngIf="log.recordCount">{{ log.recordCount }} records</span>
             <span class="log-duration" *ngIf="log.durationMs">{{ (log.durationMs / 1000).toFixed(1) }}s</span>
-            <span class="log-pipeline-flag" *ngIf="log.pushToPipeline">pipeline</span>
+            <span class="log-pipeline-flag" *ngIf="(log.mode || (log.pushToPipeline ? 'run' : 'test')) === 'run'">pipeline</span>
             <span class="log-error-hint" *ngIf="log.error">error</span>
             <span class="material-icons log-expand">{{ log._expanded ? 'expand_less' : 'expand_more' }}</span>
           </div>

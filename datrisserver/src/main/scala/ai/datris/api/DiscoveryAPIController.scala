@@ -483,7 +483,7 @@ class DiscoveryAPIController {
             )
 
             val startMs = System.currentTimeMillis()
-            val firstResult = TapRunner.run(probeConfig, pushToPipeline = false, testLimit = DISCOVERY_TEST_LIMIT)
+            val firstResult = TapRunner.run(probeConfig, mode = "test", testLimit = DISCOVERY_TEST_LIMIT)
             val firstDurationMs = System.currentTimeMillis() - startMs
 
             if (firstResult.error != null || firstResult.recordCount == 0) {
@@ -501,7 +501,7 @@ class DiscoveryAPIController {
 
             val optimizedConfig = probeConfig.copy(scriptPath = opt.scriptPath, packages = opt.packages)
             val retestStart = System.currentTimeMillis()
-            val retestResult = TapRunner.run(optimizedConfig, pushToPipeline = false, testLimit = DISCOVERY_TEST_LIMIT)
+            val retestResult = TapRunner.run(optimizedConfig, mode = "test", testLimit = DISCOVERY_TEST_LIMIT)
             val retestDurationMs = System.currentTimeMillis() - retestStart
 
             if (retestResult.error != null || retestResult.recordCount == 0) {

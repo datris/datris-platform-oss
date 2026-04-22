@@ -49,15 +49,30 @@ class TapAPIController {
             if (config == null)
                 throw new DatrisException("Tap: " + name + " not found")
             val gson = new Gson
-            // Include script content from MinIO
-            val scriptContent = if (config.scriptPath != null) {
+            // Include script content from MinIO. Track "missing" separately from
+            // "never generated" so the UI can tell the user the script was deleted
+            // vs. not yet created.
+            var scriptMissing = false
+            val scriptContent: String = if (config.scriptPath != null && config.scriptPath.nonEmpty) {
                 try {
                     val env = DatrisEnvironment.current.environment
-                    ObjectStoreUtil.readBucketObject(env + "-config", config.scriptPath).getOrElse(null)
-                } catch { case _: Exception => null }
+                    ObjectStoreUtil.readBucketObject(env + "-config", config.scriptPath) match {
+                        case Some(content) => content
+                        case None =>
+                            scriptMissing = true
+                            logger.warn("Tap '" + name + "' has scriptPath=" + config.scriptPath + " but object is missing from storage")
+                            null
+                    }
+                } catch {
+                    case e: Exception =>
+                        scriptMissing = true
+                        logger.warn("Tap '" + name + "' script read failed: " + e.getMessage)
+                        null
+                }
             } else null
             val response = gson.fromJson(gson.toJson(config), classOf[java.util.Map[String, Any]])
             response.put("script", scriptContent)
+            if (scriptMissing) response.put("scriptMissing", java.lang.Boolean.TRUE)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -754,7 +769,7 @@ class TapAPIController {
             // never set this.
             val testLimitInt: Int = if (testLimit != null && testLimit.intValue() > 0) testLimit.intValue() else 0
             val testStartMs = System.currentTimeMillis()
-            val result = TapRunner.run(tapConfig, pushToPipeline = false, testLimit = testLimitInt)
+            val result = TapRunner.run(tapConfig, mode = "test", testLimit = testLimitInt)
             val testDurationMs = System.currentTimeMillis() - testStartMs
             val gson = new Gson
             val recordsJson = if (result.records != null) JsonParser.parseString(result.records) else null
@@ -817,11 +832,11 @@ class TapAPIController {
             if (tapConfig == null)
                 throw new DatrisException("Tap: " + name + " not found")
 
-            val pushToPipeline = Option(body.get("pushToPipeline")).exists(_.equalsIgnoreCase("true"))
-            val result = TapRunner.run(tapConfig, pushToPipeline = pushToPipeline)
+            val mode = Option(body.get("mode")).map(_.toLowerCase).getOrElse("test")
+            val result = TapRunner.run(tapConfig, mode = mode)
 
             // Save test run status when not pushing to pipeline
-            if (!pushToPipeline) {
+            if (mode != "run") {
                 val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
                 sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
                 val now = sdf.format(new java.util.Date())
@@ -838,10 +853,25 @@ class TapAPIController {
 
             val gson = new Gson
             val recordsJson = if (result.records != null) JsonParser.parseString(result.records) else null
+            val hasTargetPipeline = tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
+            val persisted = mode == "run" && hasTargetPipeline && result.error == null && result.recordCount > 0
+            val persistedReason: String =
+                if (persisted) null
+                else if (mode != "run") "test_mode"
+                else if (result.error != null) "run_error"
+                else if (result.recordCount == 0) "no_records"
+                else if (!hasTargetPipeline) "no_target_pipeline"
+                else "unknown"
             val response = new java.util.HashMap[String, Any]()
             response.put("tap", name)
             response.put("description", tapConfig.description)
             response.put("status", if (result.error == null) "success" else "failure")
+            response.put("mode", mode)
+            response.put("targetPipeline", tapConfig.targetPipeline)
+            response.put("persisted", java.lang.Boolean.valueOf(persisted))
+            if (persistedReason != null) response.put("persistedReason", persistedReason)
+            if (result.publisherToken != null) response.put("publisherToken", result.publisherToken)
+            if (result.pipelineTokens != null && !result.pipelineTokens.isEmpty) response.put("pipelineTokens", result.pipelineTokens)
             response.put("records", recordsJson)
             response.put("recordCount", Integer.valueOf(result.recordCount))
             response.put("error", result.error)

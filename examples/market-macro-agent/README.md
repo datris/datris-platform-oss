@@ -3,10 +3,11 @@
 A real-time financial data pipeline agent powered by the [Datris](https://datris.ai) data platform.
 **100% Python** — FastAPI backend, vanilla JS frontend, no Node.js required.
 
-Claude acts as an agentic pipeline operator: it connects to your Datris MCP server,
-discovers available tools and resources, fetches live market data from public APIs,
-creates pipelines, ingests data, and answers market questions grounded in actual
-numbers — all visible live in the browser.
+The agent acts as a pipeline orchestrator: it connects to your Datris MCP server,
+provisions four platform-owned **taps** (FRED, equities, crypto, SEC filings),
+triggers them to refresh data, and answers market questions grounded in actual
+numbers — all visible live in the browser. The Datris platform itself does the
+fetching; the agent just decides when and what to refresh.
 
 This example lives in the [datris-platform-oss](https://github.com/datris/datris-platform-oss) repo under `examples/market-macro-agent`.
 
@@ -33,7 +34,7 @@ pip install -r requirements.txt
 # 6. Set your API keys
 cp .env.example .env
 #    → edit .env and paste your ANTHROPIC_API_KEY
-#    → optionally add FRED_API_KEY for macro data
+#    → add FRED_API_KEY for macro data
 
 # 7. Run the agent
 uvicorn main:app --reload --port 8001
@@ -51,13 +52,14 @@ examples/market-macro-agent/
 │
 └── agent/
     ├── __init__.py
-    ├── config.py            # Mission prompt, tool allowlist, suggestions, colours
+    ├── config.py            # Mission prompt, MCP tool allowlist, suggestions, colours
     ├── mcp_client.py        # MCP SSE client — connect, discover tools + resources, call tools
-    ├── data_fetcher.py      # Live data from FRED, yfinance, CoinGecko, SEC EDGAR
+    ├── tap_definitions.py   # The 4 tap scripts (BYO Python) pushed to the platform on startup
+    ├── tap_provisioning.py  # Idempotent startup routine: create_tap_secret + create_tap
     ├── pipeline_store.py    # Thread-safe registry + SSE broadcast
-    ├── executor.py          # Routes tool calls to MCP server + data fetcher
+    ├── executor.py          # Routes tool calls to MCP server, reflects tap activity in UI
     ├── loop.py              # Agentic loop — yields SSE events
-    └── scheduler.py         # Background refresh scheduler
+    └── scheduler.py         # Background refresh — calls run_tap on an interval
 ```
 
 ## Architecture
@@ -77,24 +79,53 @@ Browser (vanilla JS)
                     │     ↕ tool_use / end_turn
                     │
                     ├── agent/executor.py
-                    │     ├── MCP tools → Datris MCP Server (port 3000)
-                    │     └── ingest_data → data_fetcher.py (cached server-side)
+                    │     └── MCP tools → Datris MCP Server (port 3000)
+                    │           (run_tap, get_pipeline_status, query_postgres,
+                    │            list_taps, get_tap_logs, …)
                     │
-                    └── agent/scheduler.py (background refresh)
+                    └── agent/scheduler.py → run_tap every N minutes
+
+              ┌──────────────────────────────────────┐
+              │ Datris Platform                      │
+              │                                      │
+              │  Tap runner (Docker sandbox)         │
+              │    fred_tap → FRED API               │
+              │    equities_tap → yfinance           │
+              │    crypto_tap → CoinGecko            │
+              │    sec_tap → SEC EDGAR               │
+              │           │                          │
+              │           ▼                          │
+              │   Pipelines (Postgres destinations)  │
+              └──────────────────────────────────────┘
 ```
 
 ## How it works
 
-1. **On startup**: Connects to Datris MCP server via SSE, discovers tools via `tools/list`,
-   reads MCP resources (Pipeline Configuration Reference) via `resources/read`
-2. **User asks a question**: Claude determines which data sources are needed
-3. **Data acquisition**: Agent fetches live data from public APIs, caches it server-side,
-   and uses MCP tools (`generate_schema` → `create_pipeline` → `upload_data`) to ingest
-4. **Pipeline management**: Claude monitors jobs via `get_job_status`, queries results via
-   `query_postgres` — all through MCP tools discovered dynamically
-5. **Intelligent acquisition**: If the user asks about data the agent doesn't have,
-   the agent automatically fetches and ingests it — no confirmation needed
-6. **Background refresh**: Active pipelines are automatically refreshed on a configurable timer
+1. **On startup**:
+   - Connects to the Datris MCP server via SSE.
+   - Pushes `FRED_API_KEY` from `.env` into Datris as a tap secret (`create_tap_secret`).
+     The tap script reads it as an env var at runtime — the agent never keeps secrets
+     around after handoff.
+   - Provisions four taps (`fred_tap`, `equities_tap`, `crypto_tap`, `sec_tap`), each
+     wired to its own pipeline. Idempotent: re-running against an existing install
+     is a no-op.
+   - Taps are created with scheduling disabled — the agent's internal loop drives
+     refreshes so we don't double-fire.
+2. **User asks a question**: the agent decides which data family is relevant.
+3. **Refresh**: the agent calls `run_tap`. The platform runs the Python `fetch()`
+   inside a Docker sandbox and submits records into the pipeline. The response
+   carries a `publisherToken` and `persisted: true` on success.
+4. **Wait for ingestion**: ingestion is async. The agent polls `get_pipeline_status`
+   with the `publisherToken` until every row's `state` is `end` or `error`. This
+   rule — plus `persisted` / `persistedReason` handling — comes from the MCP
+   server's `instructions` payload, which the agent loads at connect time and
+   feeds into the LLM's system prompt.
+5. **Query**: the agent queries the pipeline via `query_postgres` and answers
+   grounded in actual numbers.
+6. **Background refresh**: every `REFRESH_INTERVAL_MINUTES` the scheduler triggers
+   `run_tap` for every pipeline that's been exercised at least once.
+7. **Tap health**: ask about failures and the agent will call `get_tap_logs` to
+   report the last runs and any errors.
 
 ## Free data sources
 
@@ -107,17 +138,17 @@ Browser (vanilla JS)
 
 ## Suggested demo queries
 
-1. `"What's the current macro picture?"` — creates pipelines, fetches live FRED + equity data
-2. `"Refresh all pipelines"` — re-fetches all active data sources
+1. `"What's the current macro picture?"` — runs the FRED + equities taps, then queries
+2. `"Refresh all taps"` — triggers `run_tap` across all four data families
 3. `"Is crypto confirming the risk-on trade in equities?"` — cross-pipeline query
-4. `"Which pipeline is most stale?"` — exercises `list_pipelines` live
+4. `"Show me the last few tap runs"` — exercises `get_tap_logs` live
 
 ## Environment variables
 
 | Variable                   | Default                        | Description              |
 |----------------------------|--------------------------------|--------------------------|
 | `ANTHROPIC_API_KEY`        | —                              | **Required**             |
-| `MODEL`                    | `claude-haiku-4-5-20251001`    | Claude model             |
+| `MODEL`                    | `claude-sonnet-4-6`            | Claude model             |
 | `PORT`                     | `8001`                         | uvicorn port             |
 | `MCP_SERVER_URL`           | `http://localhost:3000/sse`    | Datris MCP server SSE    |
 | `FRED_API_KEY`             | —                              | [Get one free](https://fred.stlouisfed.org/docs/api/api_key.html) |

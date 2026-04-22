@@ -42,8 +42,11 @@ _sessions: dict[str, list[dict]] = {}
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    from agent.mcp_client import start, stop
+    import asyncio
+
+    from agent.mcp_client import start, stop, is_connected
     from agent.scheduler import start_scheduler, stop_scheduler
+    from agent.tap_provisioning import provision_taps
 
     mcp_url = os.environ.get("MCP_SERVER_URL", "http://localhost:3000/sse")
     port = os.environ.get("PORT", "8001")
@@ -55,6 +58,18 @@ async def lifespan(_app: FastAPI):
 
     # Supervisor runs in background and reconnects automatically
     await start(mcp_url)
+
+    # Kick off tap provisioning in the background — it waits for the MCP
+    # supervisor to connect, then creates any missing taps + secrets.
+    async def _deferred_provision():
+        for _ in range(60):
+            if is_connected():
+                break
+            await asyncio.sleep(1)
+        await provision_taps()
+
+    asyncio.create_task(_deferred_provision())
+
     start_scheduler()
 
     print(f"[datris] Open http://localhost:{port} in your browser")
@@ -78,7 +93,7 @@ async def health():
     from agent.mcp_client import is_connected
     return {
         "status": "ok",
-        "model": os.environ.get("MODEL", "claude-sonnet-4-20250514"),
+        "model": os.environ.get("MODEL", "claude-sonnet-4-6"),
         "mcp_connected": is_connected(),
     }
 

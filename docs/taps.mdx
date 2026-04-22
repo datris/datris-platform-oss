@@ -242,13 +242,23 @@ Click the play button on the taps list to open the Run page:
 - **Run Again** button for re-execution
 
 ### CRON Schedule
-Taps with a `cronExpression` run automatically. The scheduler checks every 30 seconds for taps that are due. A tap won't run if it's already running or has never been run before (first run must be manual).
+Taps with a `cronExpression` run automatically. The scheduler checks every 30 seconds for taps that are due. A tap won't fire if it's already running. For a tap that has never run before, the scheduler anchors the "next valid cron time" to `updatedAt` or `createdAt`, so the first scheduled slot after the tap was saved fires on its own — no manual bootstrap run needed.
 
 ### Sending Data to Pipelines
 When "Send to pipeline" is checked:
 1. The tap executes the script
 2. Records are converted to the pipeline's expected format (CSV or JSON)
 3. Data is fed through the pipeline's processing chain (data quality, transformation, destinations)
+
+### Watching a Run
+
+`run_tap` returns as soon as records are handed off — the pipeline load runs async after that. The response carries:
+
+- `persisted: true/false` with `persistedReason` when false (`no_target_pipeline`, `test_mode`, `no_records`, `run_error`) so callers know whether the data actually landed.
+- `publisherToken` — a single ID covering every ingestion job this run submitted. Document taps fan out to many jobs per run; one `publisherToken` covers them all.
+- `pipelineTokens` — the per-job IDs (length 1 for structured, N for document).
+
+Poll `GET /api/v1/pipeline/status?publishertoken=...` (or the MCP `get_pipeline_status` tool) until every job's latest row is `end` or `error` before treating the destination as loaded.
 
 ## Data Types
 
@@ -287,13 +297,23 @@ AI agents can manage taps via MCP:
 | Tool | Description |
 |---|---|
 | `create_tap` | Create a tap from a plain-English instruction (AI generates the script), a user-provided script, or config only |
+| `create_tap_secret` | Create a tap secret the agent can then reference via `secret_name` on `create_tap`. Fails on name collision unless `overwrite=true`. Reserved AI-slot names are blocked. Agents can only overwrite secrets tagged `_type=tap` — human-owned secrets are refused. |
+| `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be deleted by an agent; human-owned secrets must be removed from the Secrets tab. |
 | `list_taps` | List all taps with status, schedule, and last run info |
 | `get_tap` | Get full details of a single tap including its Python script |
-| `run_tap` | Execute a tap and push fetched data to the target pipeline |
+| `run_tap` | Execute a tap and push fetched data to the target pipeline. Response carries `persisted`, `persistedReason`, `publisherToken`, `pipelineTokens` so the agent can confirm what landed. |
 | `test_tap` | Test-run a tap without pushing data to the pipeline |
+| `get_pipeline_status` | Watch ingestion progress after a `run_tap`. Pass the response's `publisherToken` to get status rows for every job this run submitted (one for structured taps, N for document taps). |
 | `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
 | `get_tap_logs` | Get run history for a tap (last 50 entries) |
 | `delete_tap` | Delete a tap and its stored script |
+
+End-to-end agent flow when a tap needs credentials:
+
+```
+create_tap_secret(name="stripe-key", fields={"apiKey": "sk_..."})
+create_tap(name="stripe-charges", script="...", secret_name="stripe-key")
+```
 
 ## CLI Commands
 

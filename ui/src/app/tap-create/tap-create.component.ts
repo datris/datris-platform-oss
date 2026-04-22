@@ -45,6 +45,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // Step 2 — Generate
   generating = false;
   script = '';
+  scriptMissing = false;   // set when getTap returns scriptMissing=true — the script object is gone from MinIO even though scriptPath is set
   scriptPath = '';
   packages: string[] = [];
 
@@ -176,6 +177,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             }
           }
           this.script = tap.script || '';
+          this.scriptMissing = tap.scriptMissing === true;
           this.secretName = tap.secretName || '';
           this.catalog = tap.catalog || '';
           this.targetPipeline = tap.targetPipeline || '';
@@ -1015,7 +1017,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     if (this.runningTap) return;
     this.runError = '';
     this.runningTap = true;
-    this.tapService.runTap(this.tapName.trim(), true).subscribe({
+    this.tapService.runTap(this.tapName.trim(), 'run').subscribe({
       next: () => {
         this.runningTap = false;
         this.router.navigate(['/taps']);

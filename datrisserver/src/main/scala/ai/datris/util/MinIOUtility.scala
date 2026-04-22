@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import io.minio._
+import io.minio.errors.ErrorResponseException
 import io.minio.messages.DeleteObject
 import ai.datris.model.DatrisEnvironment
 
@@ -42,27 +43,43 @@ class MinIOUtility(val client: MinioClient) extends ObjectStoreUtility {
     }
 
     override def readBucketObject(bucketName: String, key: String): Option[String] = {
-        val stream = getInputStream(bucketName, key)
         try {
-            val reader = new BufferedReader(new InputStreamReader(stream))
-            val data = Some(Stream.continually(reader.readLine()).takeWhile(_ != null).mkString("\n"))
-            reader.close()
-            data
-        } finally {
-            stream.close()
+            val stream = getInputStream(bucketName, key)
+            try {
+                val reader = new BufferedReader(new InputStreamReader(stream))
+                val data = Some(Stream.continually(reader.readLine()).takeWhile(_ != null).mkString("\n"))
+                reader.close()
+                data
+            } finally {
+                stream.close()
+            }
+        } catch {
+            case e: ErrorResponseException if isMissingKey(e) => None
         }
     }
 
     override def readBucketObjectFirstRow(bucketName: String, key: String): Option[String] = {
-        val stream = getInputStream(bucketName, key)
         try {
-            val reader = new BufferedReader(new InputStreamReader(stream))
-            val firstRow = Some(reader.readLine())
-            reader.close()
-            firstRow
-        } finally {
-            stream.close()
+            val stream = getInputStream(bucketName, key)
+            try {
+                val reader = new BufferedReader(new InputStreamReader(stream))
+                val firstRow = Some(reader.readLine())
+                reader.close()
+                firstRow
+            } finally {
+                stream.close()
+            }
+        } catch {
+            case e: ErrorResponseException if isMissingKey(e) => None
         }
+    }
+
+    // Honor the Option[String] return type: when MinIO reports NoSuchKey / NoSuchBucket,
+    // return None. All other errors (auth, connection, etc.) continue to throw so
+    // callers don't swallow genuine failures.
+    private def isMissingKey(e: ErrorResponseException): Boolean = {
+        val code = Option(e.errorResponse()).map(_.code()).orNull
+        code == "NoSuchKey" || code == "NoSuchBucket"
     }
 
     override def getBufferedReader(bucketName: String, key: String): BufferedReader = {

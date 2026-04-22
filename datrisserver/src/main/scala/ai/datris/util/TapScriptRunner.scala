@@ -15,7 +15,7 @@ import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.sys.process._
 
-case class TapScriptResult(records: String, recordCount: Int, error: String, logs: String = null, dataType: String = "json", columns: java.util.List[String] = null)
+case class TapScriptResult(records: String, recordCount: Int, error: String, logs: String = null, dataType: String = "json", columns: java.util.List[String] = null, publisherToken: String = null, pipelineTokens: java.util.List[String] = null)
 
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -73,7 +73,7 @@ object TapScriptRunner {
         val env = DatrisEnvironment.current.environment
         val bucketName = env + "-config"
         val scriptContent = ObjectStoreUtil.readBucketObject(bucketName, tapConfig.scriptPath).getOrElse(
-            throw new DatrisException("Tap script not found in object store: " + tapConfig.scriptPath)
+            throw new DatrisException("Tap script is missing from object storage (path: " + tapConfig.scriptPath + "). Open Edit Tap and regenerate the script, or paste a new one.")
         )
 
         // Step 3: Write script and wrapper to temp files

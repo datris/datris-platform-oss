@@ -271,7 +271,10 @@ Tap workflow (for step 3 Option B):
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
   2. Test: call test_tap to validate the script without pushing data
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
-  4. Run: call run_tap to execute and push data to the pipeline
+  4. Run: call run_tap to execute and push data to the pipeline.
+     After `run_tap` returns, READ the response's `persisted` field BEFORE doing anything else:
+       - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until every row's `state` is `end` or `error`. Only THEN query the destination or report completion to the user. Reporting success before the poll finishes is a bug — the destination will appear empty.
+       - `persisted: false` → records did NOT land in the destination. Read `persistedReason` and tell the user exactly why: `no_target_pipeline` (call update_tap to set one, then re-run), `test_mode` (you ran it in test mode — or mcp-server/datris are out of sync; flag it and stop), `run_error` (show the `error` string), `no_records` (source returned nothing). DO NOT query the destination table and report made-up numbers based on the records in the response body — that misleads the user about what's actually stored.
   5. Schedule (optional): call update_tap with a cron_expression to run the tap on a schedule
   6. Monitor: call get_tap_logs to check run history
   7. Manage: call update_tap to enable/disable, change schedule, or retarget pipeline; call get_tap to view details and script
@@ -1222,6 +1225,57 @@ async def list_tools():
                 "required": ["name", "fields"]
             }
         ),
+        Tool(
+            name="create_tap_secret",
+            description=(
+                "Create or update a secret for a tap to use. The secret's fields are "
+                "injected as environment variables into the tap's Python script at runtime. "
+                "Use this before create_tap when the tap needs credentials (API key, DB "
+                "password, etc.). Reference the secret by passing its name as secret_name "
+                "to create_tap. By default, fails if a secret with this name already exists — "
+                "pass overwrite=true to replace it (ask the user first). Agents can only "
+                "overwrite secrets that were also created by an agent (tagged _type=tap); "
+                "secrets owned by a human user must be updated via the UI."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Secret name. Must not use reserved AI-slot names (anthropic, openai, ollama, embedding, ai-primary, codegen). Convention: lowercase, hyphenated, e.g. 'stripe-api-key'."
+                    },
+                    "fields": {
+                        "type": "object",
+                        "description": "Key-value fields. Each key becomes an env var name in the tap script; e.g., {\"apiKey\": \"sk_...\"} is read as os.environ['apiKey']."
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "If true, replace an existing secret with the same name. Default false (fails on collision). Only tap-typed secrets can be overwritten by an agent.",
+                        "default": False
+                    },
+                },
+                "required": ["name", "fields"]
+            }
+        ),
+        Tool(
+            name="delete_tap_secret",
+            description=(
+                "Delete a tap secret. Only secrets created by an agent (tagged _type=tap) "
+                "can be deleted via this tool; secrets owned by a human user must be "
+                "removed from the Secrets tab. Use this to clean up after a tap is no "
+                "longer needed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap secret to delete."
+                    },
+                },
+                "required": ["name"]
+            }
+        ),
         # --- Managed Service ---
         Tool(
             name="signup_trial",
@@ -1304,7 +1358,10 @@ async def list_tools():
         # --- Taps ---
         Tool(
             name="create_tap",
-            description="Create a tap — a Python script that fetches data from an external source and pushes it into a pipeline. Provide a plain-English instruction to have AI generate the script, or supply your own script directly. The target pipeline and schedule can be set now or later via update_tap.",
+            description=(
+                "Create a tap — a Python script that fetches data from an external source and pushes it into a pipeline. Provide a plain-English instruction to have AI generate the script, or supply your own script directly. "
+                "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. Only skip target_pipeline if the user explicitly wants a fetch-only tap."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1337,6 +1394,11 @@ async def list_tools():
                         "enum": ["structured", "document"],
                         "description": "Tap type. 'structured' (default) returns rows of records. 'document' returns a list of {uri, filename, content (base64)} dicts; the platform stages each document and uses a ledger to skip files it has already processed. A document tap's target_pipeline MUST have an unstructuredAttributes source and a vector-store destination (qdrant, pgvector, weaviate, milvus, or chroma) — the server rejects save attempts that violate this."
                     },
+                    "packages": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Extra pip packages the script imports that aren't pre-installed. Required when `script` imports non-stdlib modules beyond the pre-installed set (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, google-cloud-storage, azure-storage-blob, openpyxl, pyyaml, python-dateutil, pytz). Example: ['yfinance', 'alpha_vantage']. When `instruction` is used instead of `script`, the AI populates this automatically — if you pass it anyway, your value wins."
+                    },
                 },
                 "required": ["name"]
             }
@@ -1351,7 +1413,18 @@ async def list_tools():
         ),
         Tool(
             name="run_tap",
-            description="Manually trigger a tap to run immediately. The tap's script will execute and push fetched data to the target pipeline.",
+            description=(
+                "Manually trigger a tap. Executes the script; when a target pipeline is configured, hands records to the pipeline async. "
+                "REQUIRED next steps based on the response:\n"
+                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until every row's `state` is `end` or `error`. Do not report completion or query the destination before that.\n"
+                "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
+                "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
+                "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
+                "      - `run_error`: show the `error` string.\n"
+                "      - `no_records`: source returned nothing.\n"
+                "    Do NOT query the destination table or fabricate numbers from the response's `records` array — nothing was stored.\n"
+                "The response's `publisherToken` covers every ingestion job this run submitted (structured taps = 1, document taps = N). One `get_pipeline_status` call with the publisherToken sees them all."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1361,6 +1434,29 @@ async def list_tools():
                     },
                 },
                 "required": ["name"]
+            }
+        ),
+        Tool(
+            name="get_pipeline_status",
+            description=(
+                "Read pipeline ingestion status rows. Use this after `run_tap` to watch a tap-submitted load progress. "
+                "Pass `publisher_token` to see every job the tap run submitted (the recommended option — works for both structured and document taps). "
+                "Pass `pipeline_token` for a single ingestion job's detail rows. Exactly one of the two must be supplied. "
+                "Each row has `state` (`begin`/`info`/`end`/`error`) and `dateTime`; a job is done when its last row is `end` or `error`. Poll every few seconds; the pipeline is async to the tap run."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "publisher_token": {
+                        "type": "string",
+                        "description": "UUID returned from run_tap response. Returns status rows for ALL jobs this tap run submitted."
+                    },
+                    "pipeline_token": {
+                        "type": "string",
+                        "description": "UUID for a single ingestion job. Returns status rows for that one job."
+                    },
+                },
+                "required": []
             }
         ),
         Tool(
@@ -1790,6 +1886,41 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps({"error": f"Only these secrets can be updated: {', '.join(sorted(allowed))}"})
         return _call("put", f"/api/v1/secrets/{secret_name}", json=args["fields"])
 
+    elif name == "create_tap_secret":
+        reserved = {"anthropic", "openai", "ollama", "embedding", "ai-primary", "codegen"}
+        secret_name = args["name"]
+        if secret_name in reserved:
+            return json.dumps({"error": f"'{secret_name}' is a reserved AI-provider slot. Use update_secret for those, or pick a different name for your tap secret."})
+        overwrite = args.get("overwrite", False)
+        existing_fields = None
+        try:
+            existing_data = json.loads(_call("get", f"/api/v1/secrets/{secret_name}"))
+            if isinstance(existing_data, dict) and "error" not in existing_data:
+                existing_fields = existing_data.get("fields") or {}
+        except (json.JSONDecodeError, TypeError):
+            existing_fields = None
+        if existing_fields is not None:
+            if not overwrite:
+                return json.dumps({"error": f"Secret '{secret_name}' already exists. Pass overwrite=true to replace it (confirm with the user first)."})
+            if existing_fields.get("_type") != "tap":
+                return json.dumps({"error": f"Secret '{secret_name}' is not a tap secret and was not created by an agent. Agents can only modify tap secrets — have the user update this one in the Secrets tab."})
+        fields = dict(args["fields"])
+        fields.setdefault("_type", "tap")
+        return _call("put", f"/api/v1/secrets/{secret_name}", json=fields)
+
+    elif name == "delete_tap_secret":
+        secret_name = args["name"]
+        try:
+            existing_data = json.loads(_call("get", f"/api/v1/secrets/{secret_name}"))
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"error": f"Could not look up secret '{secret_name}'."})
+        if not isinstance(existing_data, dict) or "error" in existing_data:
+            return json.dumps({"error": f"Secret '{secret_name}' not found."})
+        existing_fields = existing_data.get("fields") or {}
+        if existing_fields.get("_type") != "tap":
+            return json.dumps({"error": f"Secret '{secret_name}' is not a tap secret. Agents can only delete tap secrets."})
+        return _call("delete", f"/api/v1/secrets/{secret_name}")
+
     # --- Managed Service ---
     elif name == "signup_trial":
         payload = {
@@ -1882,9 +2013,10 @@ def _dispatch(name: str, args: dict) -> str:
         cron_expression = args.get("cron_expression")
         secret_name = args.get("secret_name")
         tap_type = args.get("tap_type", "structured")
+        caller_packages = args.get("packages")
 
         script_path = None
-        packages = None
+        packages = caller_packages
 
         # Mode 1: User-provided script — store directly
         if script:
@@ -1908,7 +2040,8 @@ def _dispatch(name: str, args: dict) -> str:
                 if "error" in gen_data:
                     return gen_result
                 script_path = gen_data.get("scriptPath")
-                packages = gen_data.get("packages")
+                if caller_packages is None:
+                    packages = gen_data.get("packages")
             except (json.JSONDecodeError, TypeError):
                 return json.dumps({"error": f"Script generation failed: {gen_result[:200]}"})
 
@@ -1969,7 +2102,19 @@ def _dispatch(name: str, args: dict) -> str:
         return result
 
     elif name == "run_tap":
-        return _call("post", "/api/v1/tap/run", json={"name": args["name"]})
+        return _call("post", "/api/v1/tap/run", json={"name": args["name"], "mode": "run"})
+
+    elif name == "get_pipeline_status":
+        publisher = args.get("publisher_token")
+        pipeline = args.get("pipeline_token")
+        if not publisher and not pipeline:
+            return json.dumps({"error": "Pass publisher_token (preferred) or pipeline_token."})
+        params = {}
+        if publisher:
+            params["publishertoken"] = publisher
+        elif pipeline:
+            params["pipelinetoken"] = pipeline
+        return _call("get", "/api/v1/pipeline/status", params=params)
 
     elif name == "delete_tap":
         return _call("delete", f"/api/v1/tap?name={args['name']}")
@@ -1992,7 +2137,7 @@ def _dispatch(name: str, args: dict) -> str:
         return _call("get", f"/api/v1/tap/ledger?name={tap_name}")
 
     elif name == "test_tap":
-        return _call("post", "/api/v1/tap/run", json={"name": args["name"], "pushToPipeline": "false"})
+        return _call("post", "/api/v1/tap/run", json={"name": args["name"], "mode": "test"})
 
     elif name == "update_tap":
         # Fetch existing config
