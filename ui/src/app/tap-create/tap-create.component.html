@@ -3,6 +3,21 @@
     <h1 class="page-title">{{ isEditMode ? 'Edit Tap' : 'Create Tap' }}</h1>
   </div>
 
+  <!-- Script-missing banner — shown when editing a tap whose scriptPath is set
+       but the object was deleted from storage. Distinct from the "never generated"
+       empty state (handled by the existing validation text). -->
+  <div class="script-missing-banner" *ngIf="scriptMissing">
+    <span class="material-icons">report_problem</span>
+    <div>
+      <div class="banner-title">This tap's script is missing from object storage.</div>
+      <div class="banner-body">
+        The tap configuration is intact, but the Python file was deleted (likely during a failed edit or re-generation).
+        Click <strong>Generate Script</strong> below to recreate it from the instruction, or switch to
+        <em>I Have My Own Code</em> and paste a script.
+      </div>
+    </div>
+  </div>
+
   <!-- Step indicator. The 5th dot only exists once a pipeline is linked,
        since step 5 (Run the tap) is only meaningful in that case. -->
   <div class="steps">

@@ -49,15 +49,30 @@ class TapAPIController {
             if (config == null)
                 throw new DatrisException("Tap: " + name + " not found")
             val gson = new Gson
-            // Include script content from MinIO
-            val scriptContent = if (config.scriptPath != null) {
+            // Include script content from MinIO. Track "missing" separately from
+            // "never generated" so the UI can tell the user the script was deleted
+            // vs. not yet created.
+            var scriptMissing = false
+            val scriptContent: String = if (config.scriptPath != null && config.scriptPath.nonEmpty) {
                 try {
                     val env = DatrisEnvironment.current.environment
-                    ObjectStoreUtil.readBucketObject(env + "-config", config.scriptPath).getOrElse(null)
-                } catch { case _: Exception => null }
+                    ObjectStoreUtil.readBucketObject(env + "-config", config.scriptPath) match {
+                        case Some(content) => content
+                        case None =>
+                            scriptMissing = true
+                            logger.warn("Tap '" + name + "' has scriptPath=" + config.scriptPath + " but object is missing from storage")
+                            null
+                    }
+                } catch {
+                    case e: Exception =>
+                        scriptMissing = true
+                        logger.warn("Tap '" + name + "' script read failed: " + e.getMessage)
+                        null
+                }
             } else null
             val response = gson.fromJson(gson.toJson(config), classOf[java.util.Map[String, Any]])
             response.put("script", scriptContent)
+            if (scriptMissing) response.put("scriptMissing", java.lang.Boolean.TRUE)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
