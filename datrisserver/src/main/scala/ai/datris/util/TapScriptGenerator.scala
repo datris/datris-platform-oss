@@ -328,9 +328,14 @@ object TapScriptGenerator {
      * Store a script (user-provided or AI-generated) in MinIO.
      */
     def storeScript(tapName: String, script: String, oldScriptPath: String = null): String = {
-        // Delete old script first
-        deleteScript(oldScriptPath)
-
+        // Do NOT delete oldScriptPath. The UI's auto-revert (regression detect
+        // or user-initiated "Revert to original") restores the prior scriptPath
+        // and expects the file to still exist in MinIO. Deleting on every
+        // storeScript silently breaks revert — the tap saves with a path that
+        // points at a missing file, run_tap fails with "scriptMissing", and the
+        // user has no way to recover without regenerating. Cleanup happens on
+        // tap delete (deleteTap → deleteScript on the current scriptPath);
+        // orphaned older versions are tiny .py files and accumulate slowly.
         val env = DatrisEnvironment.current.environment
         val bucketName = env + "-config"
         val uuid = UUID.randomUUID().toString.substring(0, 8)

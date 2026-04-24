@@ -131,6 +131,22 @@ class TapAPIController {
                 }
             }
 
+            // Script-existence guard: a tap save with a scriptPath that points at
+            // a missing file in MinIO would silently succeed here and then fail at
+            // run_tap with "scriptMissing". Reject the save with a clear error so
+            // the UI can prompt the user to push the script before retrying.
+            if (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) {
+                val bucket = DatrisEnvironment.current.environment + "-config"
+                val exists = try {
+                    ObjectStoreUtil.readBucketObject(bucket, tapConfig.scriptPath).isDefined
+                } catch { case _: Exception => false }
+                if (!exists) {
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                        "{\"error\": \"Tap script not found in object storage at '" + tapConfig.scriptPath +
+                        "'. The script must be uploaded (via the tap wizard's script-store endpoints) before saving the tap config.\"}")
+                }
+            }
+
             // Set timestamps
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
             val sdf2 = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
@@ -495,7 +511,10 @@ class TapAPIController {
             val logs = Option(body.get("logs")).getOrElse("")
             val error = Option(body.get("error")).getOrElse("")
             val oldScriptPath = body.get("oldScriptPath")
-            logger.info("API endpoint POST /tap/fix called, tapName: " + tapName)
+            val priorIterationsJson = Option(body.get("priorIterations")).getOrElse("[]")
+            val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
+            logger.info("API endpoint POST /tap/fix called, tapName: " + tapName +
+                ", priorIterations: " + priorIterations.size)
             APIKeyValidator.validate(apiKey)
 
             if (script == null || script.isEmpty)
@@ -607,7 +626,8 @@ class TapAPIController {
                    |Fix the script based on the diagnosis. Return the complete corrected script.""".stripMargin
 
             val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-            val augmentedSystemPrompt = TapPromptInjector.augment(systemPrompt, diagnosis + "\n" + error + "\n" + script)
+            val historyBlock = IterationHistoryPromptBuilder.build(priorIterations)
+            val augmentedSystemPrompt = historyBlock + TapPromptInjector.augment(systemPrompt, diagnosis + "\n" + error + "\n" + script)
             val responseText = AIUtil.callAIWithSystem(augmentedSystemPrompt, userPrompt, codegenCfg)
             val extracted = AIUtil.extractText(responseText, codegenCfg)
             val cleaned = cleanAIResponse(extracted)
@@ -676,13 +696,16 @@ class TapAPIController {
             val durationMs = Option(body.get("durationMs")).map(_.toString.toDouble.toLong).getOrElse(0L)
             val logs = Option(body.get("logs")).map(_.toString).getOrElse("")
             val oldScriptPath = Option(body.get("oldScriptPath")).map(_.toString).orNull
-            logger.info(s"API endpoint POST /tap/review called, tapName: $tapName, recordCount: $recordCount")
+            val priorIterationsJson = Option(body.get("priorIterations")).map(_.toString).getOrElse("[]")
+            val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
+            logger.info(s"API endpoint POST /tap/review called, tapName: $tapName, recordCount: $recordCount, " +
+                s"priorIterations: ${priorIterations.size}")
             APIKeyValidator.validate(apiKey)
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
 
-            val result = TapScriptReviewer.review(tapName, script, recordCount, durationMs, logs, oldScriptPath)
+            val result = TapScriptReviewer.review(tapName, script, recordCount, durationMs, logs, oldScriptPath, priorIterations)
 
             // Persist the new scriptPath onto the TapConfig if the tap already exists.
             if (result.rewritten) {
@@ -717,13 +740,16 @@ class TapAPIController {
             val durationMs = Option(body.get("durationMs")).map(_.toString.toDouble.toLong).getOrElse(0L)
             val logs = Option(body.get("logs")).map(_.toString).getOrElse("")
             val oldScriptPath = Option(body.get("oldScriptPath")).map(_.toString).orNull
-            logger.info(s"API endpoint POST /tap/optimize called, tapName: $tapName, recordCount: $recordCount, durationMs: $durationMs")
+            val priorIterationsJson = Option(body.get("priorIterations")).map(_.toString).getOrElse("[]")
+            val priorIterations = IterationHistoryPromptBuilder.parseFromJson(priorIterationsJson)
+            logger.info(s"API endpoint POST /tap/optimize called, tapName: $tapName, recordCount: $recordCount, " +
+                s"durationMs: $durationMs, priorIterations: ${priorIterations.size}")
             APIKeyValidator.validate(apiKey)
 
             if (script.isEmpty)
                 throw new DatrisException("Script is required")
 
-            val opt = TapScriptOptimizer.optimize(tapName, script, recordCount, durationMs, logs, oldScriptPath)
+            val opt = TapScriptOptimizer.optimize(tapName, script, recordCount, durationMs, logs, oldScriptPath, priorIterations)
 
             val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
             if (existingTap != null && opt.scriptPath != null && opt.scriptPath != oldScriptPath) {

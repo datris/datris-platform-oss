@@ -276,7 +276,7 @@ Tap workflow (for step 3 Option B):
        - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until every row's `state` is `end` or `error`. Only THEN query the destination or report completion to the user. Reporting success before the poll finishes is a bug — the destination will appear empty.
        - `persisted: false` → records did NOT land in the destination. Read `persistedReason` and tell the user exactly why: `no_target_pipeline` (call update_tap to set one, then re-run), `test_mode` (you ran it in test mode — or mcp-server/datris are out of sync; flag it and stop), `run_error` (show the `error` string), `no_records` (source returned nothing). DO NOT query the destination table and report made-up numbers based on the records in the response body — that misleads the user about what's actually stored.
   5. Schedule (optional): call update_tap with a cron_expression to run the tap on a schedule
-  6. Monitor: call get_tap_logs to check run history
+  6. Verify ingestion outcome — the same check works for any run, manual or scheduled. The `publisherToken` is your handle on whether the data actually landed in the destination. After a manual `run_tap` you already have it in the response; for a scheduled (cron) run, call `get_tap_logs` and pick the relevant entry — every log entry that submitted records includes its `publisherToken`. Either way, call `get_pipeline_status(publisher_token=...)` and poll until every row's `state` is `end` or `error`. The tap log only tells you the script ran; the publisher token is how you trace it through to whether the destination actually has the data. Prefer `get_tap_logs` over holding the token in your own context across many turns — if the conversation is compressed or you reconnect, you can always re-derive the token from the log.
   7. Manage: call update_tap to enable/disable, change schedule, or retarget pipeline; call get_tap to view details and script
 
 Do NOT call check_service_health as part of the normal workflow — it is slow. Only use it for diagnostics if something fails.
@@ -1489,7 +1489,12 @@ async def list_tools():
         ),
         Tool(
             name="get_tap_logs",
-            description="Get the run history for a tap. Returns the last 50 run log entries sorted by most recent first, including status, record count, duration, errors, and logs.",
+            description=(
+                "Get the run history for a tap. Returns the last 50 run log entries sorted by most recent first, including status, record count, duration, errors, logs, and `publisherToken` for each run that submitted records to a pipeline. "
+                "Works for both manual runs (triggered by `run_tap`) and scheduled runs (triggered by the platform's cron scheduler) — they share the same log. "
+                "Use this to verify whether a scheduled run fired, whether any recent run's script succeeded, and to recover the `publisherToken` for any run if you didn't keep the original `run_tap` response in context. "
+                "To verify the actual destination ingestion outcome — not just that the script ran — pick the relevant entry and call `get_pipeline_status(publisher_token=entry.publisherToken)`. The tap log only records what the script did; the publisher token is how you trace a run through to whether the data actually landed in the destination."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {

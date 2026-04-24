@@ -77,9 +77,9 @@ object TapRunner {
                 TapConfigIO.write(successConfig)
             }
 
-            writeRunLog(tapConfig.name, now, "success", processedCount, result.dataType, result.logs, null, mode, durationMs)
             val tokensOut = if (pipelineTokens.isEmpty) null else pipelineTokens
             val pubOut = if (tokensOut == null) null else publisherToken
+            writeRunLog(tapConfig.name, now, "success", processedCount, result.dataType, result.logs, null, mode, durationMs, pubOut)
             result.copy(publisherToken = pubOut, pipelineTokens = tokensOut)
         } catch {
             case e: Exception =>
@@ -100,9 +100,10 @@ object TapRunner {
     }
 
     private def writeRunLog(tapName: String, runTime: String, status: String, recordCount: Int,
-                            dataType: String, logs: String, error: String, mode: String, durationMs: Long): Unit = {
+                            dataType: String, logs: String, error: String, mode: String, durationMs: Long,
+                            publisherToken: String = null): Unit = {
         try {
-            val log = TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, mode, durationMs)
+            val log = TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, mode, durationMs, publisherToken)
             val gson = new Gson
             val key = tapName + "|" + runTime
             NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", gson.toJson(log))

@@ -51,16 +51,16 @@ export class TapService {
     return this.http.post<any>('/api/v1/tap/run', { name, mode });
   }
 
-  fixScript(tapName: string, script: string, diagnosis: string, logs: string, error: string, oldScriptPath?: string): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/fix', { tapName, script, diagnosis, logs, error, oldScriptPath: oldScriptPath || null });
+  fixScript(tapName: string, script: string, diagnosis: string, logs: string, error: string, oldScriptPath?: string, priorIterations?: any[]): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/fix', { tapName, script, diagnosis, logs, error, oldScriptPath: oldScriptPath || null, priorIterations: JSON.stringify(priorIterations || []) });
   }
 
-  optimizeScript(tapName: string, script: string, recordCount: number, durationMs: number, logs: string, oldScriptPath?: string): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/optimize', { tapName, script, recordCount, durationMs, logs, oldScriptPath: oldScriptPath || null });
+  optimizeScript(tapName: string, script: string, recordCount: number, durationMs: number, logs: string, oldScriptPath?: string, priorIterations?: any[]): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/optimize', { tapName, script, recordCount, durationMs, logs, oldScriptPath: oldScriptPath || null, priorIterations: JSON.stringify(priorIterations || []) });
   }
 
-  reviewScript(tapName: string, script: string, recordCount: number, durationMs: number, logs: string, oldScriptPath?: string): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/review', { tapName, script, recordCount, durationMs, logs, oldScriptPath: oldScriptPath || null });
+  reviewScript(tapName: string, script: string, recordCount: number, durationMs: number, logs: string, oldScriptPath?: string, priorIterations?: any[]): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/review', { tapName, script, recordCount, durationMs, logs, oldScriptPath: oldScriptPath || null, priorIterations: JSON.stringify(priorIterations || []) });
   }
 
   getTapLogs(name: string): Observable<any[]> {

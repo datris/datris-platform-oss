@@ -16,10 +16,30 @@ vault kv put secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 usernam
 vault kv put secret/oss/kafka-producer bootstrapServers=kafka:9092
 
 # AI configuration — three independent, self-describing secrets.
-# Branch on which key the user supplied in .env. Each Vault secret carries
-# provider/endpoint/model/apiKey/version inline so the resolver never derives
-# the path from a YAML provider field.
-if [ -n "${OPENAI_API_KEY:-}" ]; then
+# Each Vault secret carries provider/endpoint/model/apiKey/version inline so
+# the resolver never derives the path from a YAML provider field.
+#
+# Provider selection:
+#   1. AI_PROVIDER (anthropic|openai) is the explicit override — always wins.
+#      Use this in .env to pin a choice when shell env vars (e.g. a global
+#      OPENAI_API_KEY exported from your shell rc) would otherwise leak in
+#      and silently flip the default on every rebuild.
+#   2. If AI_PROVIDER is unset, fall back to "whichever key is present",
+#      with OpenAI winning ties — preserves the historical default.
+PROVIDER="${AI_PROVIDER:-}"
+if [ -z "$PROVIDER" ]; then
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    PROVIDER="openai"
+  elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    PROVIDER="anthropic"
+  fi
+fi
+
+if [ "$PROVIDER" = "openai" ]; then
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "ERROR: AI_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
+    exit 1
+  fi
   # OpenAI handles main AI, codegen, and embedding from a single key.
   vault kv put secret/oss/ai-primary \
     provider="openai" \
@@ -36,7 +56,11 @@ if [ -n "${OPENAI_API_KEY:-}" ]; then
     endpoint="https://api.openai.com/v1/embeddings" \
     model="text-embedding-3-small" \
     apiKey="${OPENAI_API_KEY}"
-elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+elif [ "$PROVIDER" = "anthropic" ]; then
+  if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "ERROR: AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set." >&2
+    exit 1
+  fi
   # Anthropic handles main AI and codegen. Anthropic has no embeddings API,
   # so embedding falls back to the local ollama sidecar serving bge-m3
   # (1024-dim, strong open-source embedding model). No OpenAI key needed.
@@ -58,7 +82,7 @@ elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     model="bge-m3" \
     apiKey=""
 else
-  echo "ERROR: No AI API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env." >&2
+  echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2
   exit 1
 fi
 

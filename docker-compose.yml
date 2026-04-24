@@ -5,6 +5,9 @@ networks:
 volumes:
   pip-cache:
   ollama-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-log:
 
 services:
   minio:
@@ -89,7 +92,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
-      AI_PROVIDER: ${AI_PROVIDER:-anthropic}
+      AI_PROVIDER: ${AI_PROVIDER:-}
       CODEGEN_MODEL: ${CODEGEN_MODEL:-}
     volumes:
       - ./docker/vault-init.sh:/vault-init.sh
@@ -106,6 +109,24 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      # Allow the `ruok` 4-letter word so the healthcheck can probe protocol
+      # readiness (not just TCP socket open). Confluent's env-var convention
+      # can't encode the dots in `zookeeper.4lw.commands.whitelist`, so we
+      # set it as a JVM system property via KAFKA_OPTS (which the cp-zookeeper
+      # entrypoint passes through to the JVM).
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      # `ruok` returns "imok" only after the request processor is up. A bare
+      # TCP probe (nc -z) returns "ready" the instant the listener binds —
+      # that's the exact race that left kafka stranded waiting on a session
+      # that never landed.
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - datris-net
 
@@ -115,12 +136,15 @@ services:
     ports:
       - "9092:9092"
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
     networks:
       - datris-net
 
@@ -159,8 +183,8 @@ services:
       start_period: 60s
 
   datris:
-    image: datrisai/datris-server:latest
-    #build: .  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-server:latest
+    build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
     ports:
       - "8080:8080"
@@ -189,8 +213,8 @@ services:
       - datris-net
 
   ui:
-    image: datrisai/datris-ui:latest
-    #build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-ui:latest
+    build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: ui
     ports:
       - "4200:8080"
@@ -213,8 +237,8 @@ services:
       - datris-net
 
   mcp-server:
-    image: datrisai/datris-mcp-server:latest
-    #build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-mcp-server:latest
+    build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: mcp-server
     ports:
       - "3000:3000"

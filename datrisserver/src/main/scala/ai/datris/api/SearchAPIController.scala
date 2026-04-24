@@ -37,6 +37,22 @@ class SearchAPIController {
             buildResponse(results)
         }
         catch {
+            case e: DatrisException =>
+                // User-actionable platform errors (e.g. dim mismatch from the
+                // pre-flight check). Return the message cleanly with 400 so
+                // the UI surfaces "fix this" instead of a JVM stack trace.
+                logger.warn("Search rejected: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](e.getMessage)
+            case e: Exception if dimensionMismatchMessage(e).isDefined =>
+                // Stores other than pgvector don't have a pre-flight dim check
+                // yet; if their underlying client throws something that looks
+                // like a dim error, surface it cleanly too.
+                val storeMsg = dimensionMismatchMessage(e).get
+                val friendly = "Vector dimension mismatch from store: " + storeMsg +
+                    ". This usually means the embedding provider was changed between ingest and query. " +
+                    "Switch the embedding provider in Configuration to match the collection's dim, or re-ingest under the current provider."
+                logger.warn("Search rejected (vector store dim error): " + storeMsg)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](friendly)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -60,6 +76,22 @@ class SearchAPIController {
             buildResponse(results)
         }
         catch {
+            case e: DatrisException =>
+                // User-actionable platform errors (e.g. dim mismatch from the
+                // pre-flight check). Return the message cleanly with 400 so
+                // the UI surfaces "fix this" instead of a JVM stack trace.
+                logger.warn("Search rejected: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](e.getMessage)
+            case e: Exception if dimensionMismatchMessage(e).isDefined =>
+                // Stores other than pgvector don't have a pre-flight dim check
+                // yet; if their underlying client throws something that looks
+                // like a dim error, surface it cleanly too.
+                val storeMsg = dimensionMismatchMessage(e).get
+                val friendly = "Vector dimension mismatch from store: " + storeMsg +
+                    ". This usually means the embedding provider was changed between ingest and query. " +
+                    "Switch the embedding provider in Configuration to match the collection's dim, or re-ingest under the current provider."
+                logger.warn("Search rejected (vector store dim error): " + storeMsg)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](friendly)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -83,6 +115,22 @@ class SearchAPIController {
             buildResponse(results)
         }
         catch {
+            case e: DatrisException =>
+                // User-actionable platform errors (e.g. dim mismatch from the
+                // pre-flight check). Return the message cleanly with 400 so
+                // the UI surfaces "fix this" instead of a JVM stack trace.
+                logger.warn("Search rejected: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](e.getMessage)
+            case e: Exception if dimensionMismatchMessage(e).isDefined =>
+                // Stores other than pgvector don't have a pre-flight dim check
+                // yet; if their underlying client throws something that looks
+                // like a dim error, surface it cleanly too.
+                val storeMsg = dimensionMismatchMessage(e).get
+                val friendly = "Vector dimension mismatch from store: " + storeMsg +
+                    ". This usually means the embedding provider was changed between ingest and query. " +
+                    "Switch the embedding provider in Configuration to match the collection's dim, or re-ingest under the current provider."
+                logger.warn("Search rejected (vector store dim error): " + storeMsg)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](friendly)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -106,6 +154,22 @@ class SearchAPIController {
             buildResponse(results)
         }
         catch {
+            case e: DatrisException =>
+                // User-actionable platform errors (e.g. dim mismatch from the
+                // pre-flight check). Return the message cleanly with 400 so
+                // the UI surfaces "fix this" instead of a JVM stack trace.
+                logger.warn("Search rejected: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](e.getMessage)
+            case e: Exception if dimensionMismatchMessage(e).isDefined =>
+                // Stores other than pgvector don't have a pre-flight dim check
+                // yet; if their underlying client throws something that looks
+                // like a dim error, surface it cleanly too.
+                val storeMsg = dimensionMismatchMessage(e).get
+                val friendly = "Vector dimension mismatch from store: " + storeMsg +
+                    ". This usually means the embedding provider was changed between ingest and query. " +
+                    "Switch the embedding provider in Configuration to match the collection's dim, or re-ingest under the current provider."
+                logger.warn("Search rejected (vector store dim error): " + storeMsg)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](friendly)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -130,6 +194,22 @@ class SearchAPIController {
             buildResponse(results)
         }
         catch {
+            case e: DatrisException =>
+                // User-actionable platform errors (e.g. dim mismatch from the
+                // pre-flight check). Return the message cleanly with 400 so
+                // the UI surfaces "fix this" instead of a JVM stack trace.
+                logger.warn("Search rejected: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](e.getMessage)
+            case e: Exception if dimensionMismatchMessage(e).isDefined =>
+                // Stores other than pgvector don't have a pre-flight dim check
+                // yet; if their underlying client throws something that looks
+                // like a dim error, surface it cleanly too.
+                val storeMsg = dimensionMismatchMessage(e).get
+                val friendly = "Vector dimension mismatch from store: " + storeMsg +
+                    ". This usually means the embedding provider was changed between ingest and query. " +
+                    "Switch the embedding provider in Configuration to match the collection's dim, or re-ingest under the current provider."
+                logger.warn("Search rejected (vector store dim error): " + storeMsg)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](friendly)
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -166,4 +246,26 @@ class SearchAPIController {
             case other => other.toString.toInt
         }.getOrElse(default)
     }
+
+    /** Walk the cause chain looking for a vector-dimension-mismatch signature.
+      * Different stores phrase it differently — pgvector's exact string is
+      * "different vector dimensions"; Qdrant/Weaviate/Milvus/Chroma all mention
+      * "dimension" in their dim-error messages. The pre-flight check in
+      * PGVectorSearchUtil will short-circuit pgvector before we get here, so
+      * this is mostly a safety net for the other four stores. */
+    private def dimensionMismatchMessage(e: Throwable): Option[String] = {
+        var cur: Throwable = e
+        while (cur != null) {
+            val msg = Option(cur.getMessage).getOrElse("")
+            val lower = msg.toLowerCase
+            if (lower.contains("different vector dimensions") ||
+                lower.contains("vector dimension") ||
+                (lower.contains("dimension") && (lower.contains("mismatch") || lower.contains("does not match")))) {
+                return Some(msg)
+            }
+            cur = cur.getCause
+        }
+        None
+    }
+
 }

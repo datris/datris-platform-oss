@@ -47,6 +47,32 @@ object PGVectorSearchUtil {
             conn = DriverManager.getConnection(jdbcUrl, props)
             conn.setReadOnly(true)
 
+            // Dim guard: switching the embedding provider between ingest and
+            // query (e.g. Ollama bge-m3 1024-dim → OpenAI text-embedding-3-small
+            // 1536-dim) leaves the collection's stored vectors at the old dim.
+            // Without this check, Postgres throws a raw "different vector
+            // dimensions X and Y" exception that surfaces as a stack trace.
+            val storedDimStmt = conn.prepareStatement(
+                "SELECT atttypmod FROM pg_attribute " +
+                "WHERE attrelid = (?::regclass) AND attname = 'embedding' AND NOT attisdropped"
+            )
+            storedDimStmt.setString(1, "\"" + schema + "\".\"" + table + "\"")
+            val storedDim: Option[Int] = try {
+                val rs = storedDimStmt.executeQuery()
+                val v = if (rs.next()) Some(rs.getInt(1)) else None
+                rs.close()
+                v.filter(_ > 0)
+            } finally storedDimStmt.close()
+
+            storedDim.foreach { dim =>
+                if (dim != queryEmbedding.length)
+                    throw new DatrisException(
+                        s"Vector dimension mismatch on $schema.$table: collection stores $dim-dim vectors but the current embedding model " +
+                        s"('${embeddingConfig.model}' at ${embeddingConfig.endpoint}) produces ${queryEmbedding.length}-dim vectors. " +
+                        s"Switch the embedding provider in Configuration to one that produces $dim-dim vectors, or re-ingest the collection under the current provider."
+                    )
+            }
+
             // Discover columns (exclude id and embedding)
             val metaStmt = conn.createStatement()
             val metaRs = metaStmt.executeQuery(
