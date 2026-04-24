@@ -1,17 +1,15 @@
 # Release Notes
 
-## v1.6.11 — April 22, 2026
+## v1.6.12 — April 24, 2026
 
-**Agent-native tap observability, scheduler fix, and agent-owned tap secrets.**
+**Tap wizard reliability, iteration history, and cleaner vector-search errors.**
 
-- **Agents can watch a tap load to completion.** Running a tap now reports back whether the data was actually persisted — and names the reason when it wasn't (test mode, no target pipeline, no records, run error). Every persisted run returns a single *publisher token* covering the whole run, even for document taps that spawn many ingestion jobs. A new `get_pipeline_status` MCP tool lets an agent poll that one token until the entire load reaches its final state, so it can report "done" with real numbers instead of guessing from a response body.
-- **Scheduled taps no longer need a manual kickoff.** Taps saved with a cron schedule now fire on their next scheduled time automatically. Previously, a newly saved scheduled tap would wait indefinitely until you ran it once by hand.
-- **Self-diagnosing tap scripts.** If a tap's generated script goes missing from object storage, the Edit Tap page now shows an amber banner explaining the state and pointing you to Regenerate, instead of a cryptic mid-run "key does not exist" error. Test Tap surfaces the same state with actionable wording.
-- **Agents can manage their own tap secrets.** Via MCP, agents can now create and delete the secrets their taps need (API keys, tokens). Scope is strictly tap-owned — agents cannot create, overwrite, or delete human-owned Platform secrets (DB creds, AI keys, vector-store creds).
-- **Secrets page split into Platform and Taps sub-tabs.** Platform lists the built-in Datris secret slots; Taps lists agent-authored tap secrets. Creating a secret from the Taps sub-tab auto-tags it so it stays agent-editable, and Tap secrets are fully manageable on trial tenants.
-- **Honest Test Tap banner.** The run-result banner on Test Tap now reflects what actually happened on the server — "sent to pipeline" only when the run was truly persisted, otherwise "not persisted" with the reason — rather than whatever the pre-request checkbox said.
-- **BYO-code taps can declare pip dependencies.** If you paste your own fetch script into Create Tap, you can now list the Python packages it needs. Previously only AI-generated taps could declare dependencies.
-- **Example agent refactored onto taps.** The bundled market-macro-agent example now drives ingestion through taps instead of ad-hoc fetch scripts, demonstrating the full agent-native tap flow (provisioning, secrets, publisher-token watching).
+- **Tap wizards learn from their own retries.** When the AI fixes, optimizes, or reviews a tap script, it now carries forward up to the last three attempts — what was tried, what went wrong, and what changed — into the next call. The wizard stops cycling through the same failed approaches.
+- **Saved tap scripts always match the tap.** Saving a tap now pushes the in-memory script to object storage before writing the tap config, and the create/update call verifies the stored script is actually there. No more "missing script" banners from an interrupted save, and auto-revert no longer strands a tap with a deleted script.
+- **Run Tap stays on the page when nothing was ingested.** If a manual run finishes without persisting records, the wizard keeps you on the run step and shows an inline reason (test mode, no records, run error) instead of navigating away and hiding the diagnostic.
+- **Tap logs now carry the publisher token.** Every tap run that submitted records records its publisher token in the log. Agents reading `get_tap_logs` can pivot directly to `get_pipeline_status` to confirm a scheduled run actually landed in the destination — not just that the script ran.
+- **Vector search fails cleanly when the embedding dimension doesn't match the collection.** If you change embedding providers on a pipeline whose vector collection already has vectors of a different dimension, search queries now return a clear 400 with a user-actionable message instead of leaking a JVM stack trace.
+- **Sturdier local-dev startup.** Kafka and Zookeeper now use named volumes (no more corruption races on rebuild), Kafka waits for Zookeeper's request processor to actually be ready (not just its listener bound), and Vault init picks up an explicit AI-provider override so a stray shell env var can't silently flip providers.
 
 ---
 
