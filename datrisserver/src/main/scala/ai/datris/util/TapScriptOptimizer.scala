@@ -73,7 +73,8 @@ object TapScriptOptimizer {
                  recordCount: Int,
                  durationMs: Long,
                  logs: String,
-                 oldScriptPath: String): TapOptimizeResult = {
+                 oldScriptPath: String,
+                 priorIterations: List[ai.datris.model.IterationRecord] = Nil): TapOptimizeResult = {
         val rateStats = if (recordCount > 0 && durationMs > 0)
             s" (~${durationMs / recordCount} ms/record)"
         else ""
@@ -100,7 +101,8 @@ object TapScriptOptimizer {
                |Produce an optimization that is consistent with any warnings in the script output above. If the logs show the source asking to slow down, ADD throttling rather than parallelism. If the script is already well-tuned for its workload, return it unchanged with an empty "changes" array.""".stripMargin
 
         val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-        val augmentedSystemPrompt = TapPromptInjector.augment(SYSTEM_PROMPT, script)
+        val historyBlock = IterationHistoryPromptBuilder.build(priorIterations)
+        val augmentedSystemPrompt = historyBlock + TapPromptInjector.augment(SYSTEM_PROMPT, script)
         val responseText = AIUtil.callAIWithSystem(augmentedSystemPrompt, userPrompt, codegenCfg)
         val extracted = AIUtil.extractText(responseText, codegenCfg)
         val cleaned = cleanAIResponse(extracted)

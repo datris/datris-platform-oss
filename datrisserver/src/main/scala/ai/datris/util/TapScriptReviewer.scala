@@ -65,7 +65,8 @@ object TapScriptReviewer {
                recordCount: Int,
                durationMs: Long,
                logs: String,
-               oldScriptPath: String): TapReviewResult = {
+               oldScriptPath: String,
+               priorIterations: List[ai.datris.model.IterationRecord] = Nil): TapReviewResult = {
 
         val logsSection = {
             val trimmed = Option(logs).getOrElse("").trim
@@ -87,7 +88,8 @@ object TapScriptReviewer {
                |Review the output for signals the script should change. If none, return rewritten=false and the script unchanged.""".stripMargin
 
         val codegenCfg = DatrisEnvironment.aiConfigForCodegen
-        val augmentedSystemPrompt = TapPromptInjector.augment(SYSTEM_PROMPT, script)
+        val historyBlock = IterationHistoryPromptBuilder.build(priorIterations)
+        val augmentedSystemPrompt = historyBlock + TapPromptInjector.augment(SYSTEM_PROMPT, script)
         logger.info(s"TapScriptReviewer: reviewing tap '$tapName' (${Option(logs).map(_.length).getOrElse(0)} chars of log output)")
         val responseText = AIUtil.callAIWithSystem(augmentedSystemPrompt, userPrompt, codegenCfg)
         val extracted = AIUtil.extractText(responseText, codegenCfg)

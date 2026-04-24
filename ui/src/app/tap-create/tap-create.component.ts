@@ -111,6 +111,29 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     durationMs: number;
   } | null = null;
 
+  // Iteration history: carry prior fix/optimize/review attempts into the next
+  // AI call so the model has continuity within a single wizard session. Without
+  // this, each fix is stateless — the model can chase its tail across
+  // iterations, re-trying strategies that already failed or unwinding constraints
+  // it just introduced. Capped at MAX_HISTORY_DEPTH; older entries fall off.
+  private static readonly MAX_HISTORY_DEPTH = 3;
+  iterationHistory: Array<{
+    attempt: number;
+    trigger: string;
+    scriptDigest: string;
+    outcome: string;
+    recordCount: number;
+    durationMs: number;
+    error?: string;
+    diagnosis?: string;
+    appliedChange?: string;
+  }> = [];
+  // What kicked off the next test we're about to record. Set when fix/optimize/
+  // review fires; consumed by testScript()'s next: handler to attribute the
+  // outcome correctly. Defaults to 'user-test' for direct user-triggered tests.
+  private lastTrigger: string = 'user-test';
+  private lastAppliedChange: string | undefined = undefined;
+
   // Step 4 — Schedule
   useSchedule = false;
   cronExpression = '';
@@ -420,7 +443,35 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.previousPassingTest = null;
     this.reviewAttempts = 0;
     this.reviewChanges = [];
+    // Fresh user-driven session: clear the iteration history so the next AI
+    // calls aren't influenced by attempts from a prior debugging arc.
+    this.iterationHistory = [];
+    this.lastTrigger = 'user-test';
+    this.lastAppliedChange = undefined;
     this.testScript();
+  }
+
+  /** Append an iteration outcome to history with depth capping. Called from
+   *  testScript()'s next: handler after each test result is in. */
+  private recordIteration(outcome: 'passed' | 'failed' | 'regressed', durationMs: number): void {
+    this.iterationHistory.push({
+      attempt: this.iterationHistory.length + 1,
+      trigger: this.lastTrigger,
+      scriptDigest: (this.script || '').substring(0, 1500),
+      outcome,
+      recordCount: this.testRecordCount || 0,
+      durationMs,
+      error: (this.testError || '').substring(0, 800),
+      diagnosis: (this.aiExplanation || '').substring(0, 800),
+      appliedChange: this.lastAppliedChange
+    });
+    if (this.iterationHistory.length > TapCreateComponent.MAX_HISTORY_DEPTH) {
+      this.iterationHistory = this.iterationHistory.slice(-TapCreateComponent.MAX_HISTORY_DEPTH);
+    }
+    // Reset the "what brought us here" markers so the NEXT iteration only
+    // attributes a trigger if a fix/optimize/review fires before then.
+    this.lastTrigger = 'user-test';
+    this.lastAppliedChange = undefined;
   }
 
   testScript(): void {
@@ -459,9 +510,14 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         if (this.testRecordCount > 0 && !this.testError) {
           this.scriptDirty = false;
         }
+        // Record this iteration's outcome in history BEFORE deciding whether
+        // to auto-fix/optimize/review — the next AI call needs to see this
+        // attempt in its context. Outcome may be upgraded to 'regressed'
+        // below if the regression-revert branch fires.
+        const failed = !!this.testError || this.testRecordCount === 0;
+        this.recordIteration(failed ? 'failed' : 'passed', lastDurationMs);
         // Auto-fix: on a failed test with an actionable diagnosis, apply the
         // fix and re-test. Capped at MAX_AUTO_FIX_ATTEMPTS to avoid loops.
-        const failed = !!this.testError || this.testRecordCount === 0;
         if (failed && this.aiExplanation && this.autoFixAttempts < TapCreateComponent.MAX_AUTO_FIX_ATTEMPTS) {
           this.autoFixAttempts++;
           this.applyDiagnosis();
@@ -474,6 +530,12 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             lastDurationMs > this.previousPassingTest.durationMs * TapCreateComponent.OPTIMIZE_REGRESSION_THRESHOLD) {
           this.optimizeDurationMs = lastDurationMs;
           this.optimizeRegressionReverted = true;
+          // Mark the just-recorded iteration as a regression so the next AI
+          // call understands "passed but reverted" and doesn't repeat the
+          // optimization that lost too much speed.
+          if (this.iterationHistory.length > 0) {
+            this.iterationHistory[this.iterationHistory.length - 1].outcome = 'regressed';
+          }
           this.revertOptimization();
           return;
         }
@@ -526,7 +588,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       this.testRecordCount,
       previousDurationMs,
       this.testLogs,
-      this.scriptPath
+      this.scriptPath,
+      this.iterationHistory
     ).subscribe({
       next: (result) => {
         const newScript = result.script || this.script;
@@ -544,6 +607,11 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.optimizeChanges = changes;
         this.scriptDirty = true;
         this.optimizing = false;
+        // Mark what triggered the next test, summarizing the optimizer's
+        // claimed changes so the next AI call (if it runs) knows what was
+        // tried.
+        this.lastTrigger = 'auto-optimize';
+        this.lastAppliedChange = 'Optimize: ' + (changes.length > 0 ? changes.join('; ').substring(0, 200) : 'perf rewrite');
         // Re-test to measure the new timing. The regression guard in testScript()
         // will auto-revert if the optimized script is materially slower.
         this.testScript();
@@ -576,7 +644,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       this.testRecordCount,
       previousDurationMs,
       this.testLogs,
-      this.scriptPath
+      this.scriptPath,
+      this.iterationHistory
     ).subscribe({
       next: (result) => {
         const rewritten = !!result?.rewritten;
@@ -614,6 +683,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.reviewChanges = changes;
         this.scriptDirty = true;
         this.optimizingSkipped = true;
+        // Mark what triggered the next test so the iteration history captures
+        // "this attempt was a reviewer rewrite addressing <changes>".
+        this.lastTrigger = 'auto-review';
+        this.lastAppliedChange = 'Review rewrite: ' + (changes.length > 0 ? changes.join('; ').substring(0, 200) : 'output-signal-based regen');
         this.testScript();
       },
       error: (err) => {
@@ -667,13 +740,18 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     // Wipe the diagnosis panel immediately so its inline indicator doesn't
     // duplicate the top-level applyingDiagnosis indicator during the fix call.
     this.aiExplanation = '';
+    // Mark what triggered the next test so its iteration record reflects
+    // "this attempt was an auto-fix applying <diagnosis>".
+    this.lastTrigger = 'auto-fix';
+    this.lastAppliedChange = 'Apply fix for diagnosis: ' + (explanation || '').substring(0, 200);
     this.activeSub = this.tapService.fixScript(
       this.tapName.trim(),
       this.script,
       explanation,
       this.testLogs,
       this.testError,
-      this.scriptPath
+      this.scriptPath,
+      this.iterationHistory
     ).subscribe({
       next: (result) => {
         this.script = result.script || this.script;
@@ -975,40 +1053,63 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.saving = true;
     this.error = '';
 
-    const config: any = {
-      name: this.tapName.trim(),
-      description: this.description,
-      scriptPath: this.scriptPath,
-      packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
-      secretName: this.secretName || null,
-      targetPipeline: this.targetPipeline || null,
-      cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
-      enabled: this.enabled,
-      tapType: this.tapType,
-      lastTestRunDataType: this.testDataType || null,
-      lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
-      lastTestRunRecordCount: this.testRecordCount || 0,
-      catalog: this.catalog || null
+    const writeTapConfig = (scriptPathToUse: string) => {
+      const config: any = {
+        name: this.tapName.trim(),
+        description: this.description,
+        scriptPath: scriptPathToUse,
+        packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
+        secretName: this.secretName || null,
+        targetPipeline: this.targetPipeline || null,
+        cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
+        enabled: this.enabled,
+        tapType: this.tapType,
+        lastTestRunDataType: this.testDataType || null,
+        lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
+        lastTestRunRecordCount: this.testRecordCount || 0,
+        catalog: this.catalog || null
+      };
+
+      this.tapService.createOrUpdateTap(config).subscribe({
+        next: () => {
+          this.saving = false;
+          // If a pipeline is linked, advance to step 5 so the user can optionally
+          // run the tap and push data to the pipeline before leaving. Otherwise
+          // there's nothing meaningful to do on step 5 — go straight to /taps.
+          if (this.targetPipeline) {
+            this.step = 5;
+            this.loadTargetPipelineConfig();
+          } else {
+            this.router.navigate(['/taps']);
+          }
+        },
+        error: (err) => {
+          this.error = 'Save failed: ' + (err.error || err.message);
+          this.saving = false;
+        }
+      });
     };
 
-    this.tapService.createOrUpdateTap(config).subscribe({
-      next: () => {
-        this.saving = false;
-        // If a pipeline is linked, advance to step 5 so the user can optionally
-        // run the tap and push data to the pipeline before leaving. Otherwise
-        // there's nothing meaningful to do on step 5 — go straight to /taps.
-        if (this.targetPipeline) {
-          this.step = 5;
-          this.loadTargetPipelineConfig();
-        } else {
-          this.router.navigate(['/taps']);
+    // Always push the in-memory script to MinIO before saving the tap config.
+    // The script textarea has no change handler, so user edits live only in
+    // browser memory until something pushes them. Without this, save can
+    // commit a scriptPath whose file in MinIO doesn't match what the user
+    // sees (or doesn't exist at all, after a regression auto-revert).
+    if (this.script && this.script.trim()) {
+      this.tapService.storeScript(this.tapName.trim(), this.script, this.scriptPath).subscribe({
+        next: (result) => {
+          this.scriptPath = result.scriptPath || this.scriptPath;
+          this.scriptDirty = false;
+          writeTapConfig(this.scriptPath);
+        },
+        error: (err) => {
+          this.error = 'Save failed (could not store script): ' + (err.error || err.message);
+          this.saving = false;
         }
-      },
-      error: (err) => {
-        this.error = 'Save failed: ' + (err.error || err.message);
-        this.saving = false;
-      }
-    });
+      });
+    } else {
+      writeTapConfig(this.scriptPath);
+    }
   }
 
   // ---------- Step 5 — Run the tap ----------
@@ -1018,8 +1119,33 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.runError = '';
     this.runningTap = true;
     this.tapService.runTap(this.tapName.trim(), 'run').subscribe({
-      next: () => {
+      next: (resp: any) => {
         this.runningTap = false;
+        // /tap/run returns HTTP 200 even when the script failed or no records
+        // landed — the outcome is in the response body via `persisted` /
+        // `persistedReason` / `error`. Navigating away on raw HTTP success
+        // throws away the diagnostic and leaves the user with "screen
+        // disappeared, no ingestion, no idea why."
+        if (resp && resp.persisted === false) {
+          const reason = resp.persistedReason;
+          const errMsg = resp.error;
+          let msg = 'Run did not persist any records.';
+          if (errMsg) {
+            msg = errMsg;
+          } else if (reason === 'no_target_pipeline') {
+            msg = 'Run did not persist: no target pipeline configured. Set one in the previous step and re-run.';
+          } else if (reason === 'no_records') {
+            msg = 'Run did not persist: the script returned 0 records.';
+          } else if (reason === 'run_error') {
+            msg = 'Run failed during script execution. Check the script and try again.';
+          } else if (reason === 'test_mode') {
+            msg = 'Run was rejected as test mode — try again or reload.';
+          } else if (reason) {
+            msg = 'Run did not persist: ' + reason;
+          }
+          this.runError = msg;
+          return;
+        }
         this.router.navigate(['/taps']);
       },
       error: (err) => {

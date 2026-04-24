@@ -14,5 +14,6 @@ case class TapRunLog(
     logs: String = null,
     error: String = null,
     mode: String = "test",
-    durationMs: Long = 0
+    durationMs: Long = 0,
+    publisherToken: String = null
 )
