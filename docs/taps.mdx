@@ -306,6 +306,7 @@ AI agents can manage taps via MCP:
 | `get_pipeline_status` | Watch ingestion progress after a `run_tap`. Pass the response's `publisherToken` to get status rows for every job this run submitted (one for structured taps, N for document taps). |
 | `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
 | `get_tap_logs` | Get run history for a tap (last 50 entries). Each entry that submitted records includes its `publisherToken`, so an agent can pivot from a scheduled-run log entry to `get_pipeline_status(publisher_token=...)` and verify the run actually landed in the destination — not just that the script ran. |
+| `get_tap_ledger` | Document taps only: read the ledger of discovered documents (URI, filename, status, hashes, first/last seen timestamps). Pass `clear_uri` to force one file to be re-processed on the next run, or `clear_all=true` to force a full re-scan. |
 | `delete_tap` | Delete a tap and its stored script |
 
 End-to-end agent flow when a tap needs credentials:

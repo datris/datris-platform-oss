@@ -248,58 +248,62 @@ All database connections, vector search, and embedding are handled by the pipeli
 
 ## Example Agent Workflows
 
-### Profile and ingest a CSV file
+<Note>
+  The platform's canonical workflow is delivered to every connected agent through the MCP `instructions` field — agents don't need to memorize it. These examples show the same flow applied to common tasks.
 
-An AI agent could autonomously:
+  Core rules the agent receives on connect: **check what exists before creating** (`list_pipelines`, `list_taps`); **keep pipeline configs simple** (source + destination only — never pass `profile_data` output into a pipeline config); **after `run_tap`, read `persisted` and `persistedReason` before doing anything else**; and **verify real completion via `get_pipeline_status(publisher_token=...)`, not by the response body**.
+</Note>
 
-1. **Profile the data** — `profile_data` with the CSV file
-2. **Review suggested rules** — agent reads the AI-suggested DQ rules
-3. **Create the pipeline** — `create_pipeline` with the profiled config
-4. **Upload the file** — `upload_data` to trigger processing
-5. **Monitor status** — `get_job_status` to track completion
+### Ingest a CSV file directly
 
-### Build and query a RAG knowledge base
+1. **Check for an existing pipeline** — `list_pipelines`. If one already fits the data, skip to step 3.
+2. **Create a pipeline** — `create_pipeline` with the CSV as sample data. Schema is auto-detected. Keep the config simple; only pass `codegen_rule` / `codegen_transform` if the user explicitly asks for validation or transformation.
+3. **Upload** — `upload_data` with the CSV content (base64).
+4. **Verify it landed** — `get_job_status` and poll until status is `COMPLETED` (or `FAILED`, in which case read the error and fix).
 
-1. **Create pipeline** — `create_pipeline` with Qdrant/Weaviate/Milvus/pgvector destination
-2. **Upload documents** — `upload_data` for each PDF/document
-3. **Monitor** — `get_job_status` until all documents are processed
-4. **Search** — `search_qdrant` to find relevant chunks
-5. **Answer** — `ai_answer` with the retrieved chunks as context and the user's question
+### Onboard a new external data source via a tap
 
-### Onboard a new external data source
+1. **Check existing taps** — `list_taps`. If a tap already covers this source, run or test it directly.
+2. **Discover (optional)** — `discover_source` with a natural-language question like *"what datasets are available in yfinance?"*. Returns a structured catalog with a `tapInstruction` template per dataset.
+3. **Create credentials** — if the source needs an API key, call `create_tap_secret` with the credential fields (they become env vars inside the script).
+4. **Create the tap** — `create_tap` with an instruction (AI generates the script) or with your own Python `fetch()` function (faster and more reliable). Pass `secret_name` to bind the credentials from step 3. For PDFs/Word/HTML into a vector-store pipeline, pass `tap_type="document"`.
+5. **Test** — `test_tap`. If it fails, read the error, fix the script, and call `create_tap` again. Repeat until the test passes.
+6. **Run** — `run_tap`. Read the response's `persisted` field first:
+   - `persisted: true` → capture `publisherToken` and continue to step 7.
+   - `persisted: false` → read `persistedReason` (`no_target_pipeline`, `test_mode`, `run_error`, `no_records`), tell the user exactly why, and stop. Do NOT query the destination and report record counts from the response body.
+7. **Verify it landed** — `get_pipeline_status(publisher_token=...)` and poll until every row's `state` is `end` or `error`. The tap log only tells you the script ran; the publisher token is how you confirm records actually reached the destination.
+8. **Schedule (optional)** — `update_tap` with a `cron_expression`. For each scheduled run, pick the corresponding entry from `get_tap_logs` to get its `publisherToken`, then verify with step 7.
 
-1. **Discover** — `discover_source` with a message like *"What datasets are available in yfinance?"* — the AI returns a structured list of datasets with parameters and `tapInstruction` for each
-2. **Create taps** — call `create_tap` once per dataset you want, passing the `tapInstruction` as the instruction (Datris generates the Python script and tests it)
-3. **Create pipelines** — `create_pipeline` for each tap with the destination of your choice
-4. **Schedule** — `update_tap` with `cronExpression` and `enabled: true` to run on a recurring schedule
-5. **Run** — `run_tap` to execute immediately, or wait for the schedule to fire
+### Build and query a RAG knowledge base from external documents
 
-### Discover and query data
+1. **Create a vector-store pipeline** — `create_pipeline` with a Qdrant / Weaviate / Milvus / pgvector / Chroma destination and an `unstructuredAttributes` source.
+2. **Create a document tap** — `create_tap` with `tap_type="document"` and an instruction describing the document source (e.g., *"ingest every PDF under legal-contracts/2026/ in S3"*). If the source needs credentials, call `create_tap_secret` first.
+3. **Test and run** — `test_tap`, then `run_tap`. Read `persisted` / `persistedReason` exactly as above.
+4. **Verify every document landed** — `get_pipeline_status(publisher_token=...)`. Document taps fan out to N jobs (one per file) under one publisher token; poll until all rows are `end` or `error`.
+5. **Inspect the ledger (optional)** — `get_tap_ledger` shows which files were discovered and processed. On subsequent runs, unchanged files are skipped automatically; pass `clear_uri` or `clear_all=true` to force a re-scan.
+6. **Search** — `search_qdrant` (or the matching tool for your destination) to retrieve relevant chunks.
+7. **Answer** — `ai_answer` with the retrieved chunks as context and the user's question.
 
-1. **List databases** — `list_postgres_databases` to see available databases
-2. **List schemas** — `list_postgres_schemas` to explore a database
-3. **List tables** — `list_postgres_tables` to find relevant tables
-4. **Inspect columns** — `list_postgres_columns` to understand table structure
-5. **Query** — `query_postgres` with a well-formed SELECT query
+### Discover and query existing data
 
-### Cross-database analysis
+1. **List databases** — `list_postgres_databases`.
+2. **List schemas** — `list_postgres_schemas` for the target database.
+3. **List tables** — `list_postgres_tables` (supports a vector-only filter).
+4. **Inspect columns** — `list_postgres_columns` to understand structure.
+5. **Query** — `query_postgres` with a SELECT, or `query_natural` to ask a plain-English question and have the AI generate + run the SQL.
 
-1. **Search documents** — `search_pgvector` for relevant financial document chunks
-2. **Query structured data** — `query_postgres` to get related financial metrics
-3. **Combine** — agent merges unstructured + structured data in its response
+### Cross-modal analysis (structured + vector)
 
-### AI validation and transformation
+1. **Vector search** — `search_pgvector` (or another vector tool) for relevant document chunks.
+2. **Structured query** — `query_postgres` or `query_natural` for related metrics.
+3. **Combine** — merge the two result sets in the response.
 
-1. **Create pipeline with AI rules** — `create_pipeline` with `codegen_rule` for validation and/or `codegen_transform` for transformation
-2. **Upload data** — `upload_data` to process data through the AI-powered pipeline
-3. Datris generates Python scripts from your instructions and runs them in the container
+### Automated quality monitoring of scheduled taps
 
-### Automated data quality monitoring
-
-1. **List pipelines** — `list_pipelines` to discover all registered pipelines
-2. **Upload new data** — `upload_data` with latest data files
-3. **Check results** — `get_job_status` to see DQ failures
-4. **Diagnose** — AI reads error explanations and suggests fixes
+1. **List taps** — `list_taps` to find the tap of interest.
+2. **Read recent runs** — `get_tap_logs` returns the last 50 entries with status, record count, duration, errors, and `publisherToken` for each run that submitted records.
+3. **Verify completion** — for any run of interest, call `get_pipeline_status(publisher_token=...)` to confirm records actually landed in the destination. The tap log tells you the script ran; the publisher token tells you the load finished.
+4. **Diagnose failures** — on an errored row, read the `description` and either fix the tap (`create_tap` again with a corrected script) or retarget the pipeline (`update_tap`).
 
 ## CLI Examples
 

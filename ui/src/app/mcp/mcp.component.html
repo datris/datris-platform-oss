@@ -36,102 +36,102 @@
       <h3 class="discovery-subtitle">Recommended Agent Workflow</h3>
       <div class="workflow-steps">
         <div class="workflow-step">
-          <span class="step-number">0</span>
-          <div class="step-content">
-            <span class="step-title">Connect to Datris</span>
-            <span class="step-detail">the agent connects via MCP and receives the platform instructions, available tools, and capabilities automatically</span>
-          </div>
-        </div>
-        <div class="workflow-step">
           <span class="step-number">1</span>
           <div class="step-content">
-            <span class="step-title">Discover data sources</span>
-            <span class="step-detail">use discover_source to find available datasets from any package, API, or website. Returns a structured catalog with tap instructions ready to build.</span>
+            <span class="step-title">Check what already exists</span>
+            <span class="step-detail">call list_pipelines and list_taps first. If a pipeline already exists for this data, query it directly; if a tap exists, run or test it directly &mdash; don't re-create.</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">2</span>
           <div class="step-content">
-            <span class="step-title">Check existing pipelines &amp; taps</span>
-            <span class="step-detail">use list_pipelines and list_taps first &mdash; if a pipeline or tap already exists, skip to querying, running, or testing it directly. Use update_secret to configure AI provider keys if not already set.</span>
+            <span class="step-title">Discover the source (optional)</span>
+            <span class="step-detail">if you don't know what's available, call discover_source with a natural-language question (e.g. "what datasets are in yfinance?"). Returns a structured catalog with tap instructions ready to build.</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">3</span>
           <div class="step-content">
-            <span class="step-title">Create a pipeline</span>
-            <span class="step-detail">use create_pipeline with sample data &mdash; schema is auto-detected. Only create if one doesn't already exist for this data.</span>
+            <span class="step-title">Create a pipeline (if needed)</span>
+            <span class="step-detail">call create_pipeline with sample data &mdash; schema is auto-detected. Keep the config simple: source + destination only. Do not add dataQuality or transformation sections unless explicitly requested (use codegen_rule / codegen_transform for plain-English rules).</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">4</span>
           <div class="step-content">
-            <span class="step-title">Profile data</span>
-            <span class="step-detail">use profile_data to get AI-suggested data quality rules</span>
+            <span class="step-title">Ingest data — Option A: direct upload</span>
+            <span class="step-detail">call upload_data with base64-encoded content and the pipeline name. Then go to step 6 (verify).</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">5</span>
           <div class="step-content">
-            <span class="step-title">Ingest data (choose one)</span>
-            <span class="step-detail"><strong>Option A:</strong> use upload_data to push data directly through the pipeline<br/>
-            <strong>Option B:</strong> create a tap to fetch data automatically from an external source (see Tap steps below)</span>
+            <span class="step-title">Ingest data — Option B: create a tap</span>
+            <span class="step-detail">taps pull data from external APIs, websites, or databases on demand or on a schedule. Five sub-steps:</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
           <span class="step-number">5a</span>
           <div class="step-content">
-            <span class="step-title">Create a tap</span>
-            <span class="step-detail">use create_tap with an instruction (AI generates the script &mdash; slower, 1-2 min) or write the Python fetch() function yourself and pass it as the script parameter (faster and more reliable)</span>
+            <span class="step-title">Create secrets (if needed)</span>
+            <span class="step-detail">if the tap needs credentials (API keys, tokens), call create_tap_secret first. Each field becomes an env var inside the script.</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
           <span class="step-number">5b</span>
           <div class="step-content">
-            <span class="step-title">Test the tap</span>
-            <span class="step-detail">use test_tap to validate the script without pushing data</span>
+            <span class="step-title">Create the tap</span>
+            <span class="step-detail">call create_tap with an instruction (AI generates the script &mdash; slower, 1-2 min) or with your own Python fetch() function (faster and more reliable). Pass secret_name to bind credentials from step 5a. Pass tap_type=document for PDFs/Word/HTML into a vector-store pipeline.</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
           <span class="step-number">5c</span>
           <div class="step-content">
-            <span class="step-title">Fix &amp; retest</span>
-            <span class="step-detail">if test fails, fix the script and call create_tap again &mdash; repeat until test passes</span>
+            <span class="step-title">Test the tap</span>
+            <span class="step-detail">call test_tap to validate the script without pushing data. If it fails, fix the script and call create_tap again &mdash; repeat until test passes.</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
           <span class="step-number">5d</span>
           <div class="step-content">
             <span class="step-title">Run the tap</span>
-            <span class="step-detail">use run_tap to execute and push fetched data to the pipeline</span>
+            <span class="step-detail">call run_tap and READ the response's <code>persisted</code> field before doing anything else. <code>persisted: true</code> &rarr; capture <code>publisherToken</code> and go to step 6. <code>persisted: false</code> &rarr; check <code>persistedReason</code> and act on it (no_target_pipeline, test_mode, run_error, no_records). Do NOT query the destination and report record counts from the response body &mdash; those records haven't landed yet.</span>
           </div>
         </div>
         <div class="workflow-step step-sub">
           <span class="step-number">5e</span>
           <div class="step-content">
             <span class="step-title">Schedule (optional)</span>
-            <span class="step-detail">use update_tap with a cron_expression to run automatically &mdash; use get_tap_logs to monitor</span>
+            <span class="step-detail">call update_tap with a cron_expression to run on a schedule. For each scheduled run, call get_tap_logs to pick up its publisherToken, then verify via step 6.</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">6</span>
           <div class="step-content">
-            <span class="step-title">Monitor</span>
-            <span class="step-detail">use get_job_status to track processing</span>
+            <span class="step-title">Verify ingestion landed</span>
+            <span class="step-detail">Direct uploads (from step 4): call get_job_status and poll until COMPLETED or FAILED.<br/>
+            Tap runs (from step 5d or 5e): call get_pipeline_status(publisher_token=...) and poll until every row's state is <code>end</code> or <code>error</code>. The tap log only tells you the script ran; the publisher token is how you confirm records actually landed in the destination.</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">7</span>
           <div class="step-content">
             <span class="step-title">Query &amp; search</span>
-            <span class="step-detail">use query tools for structured data, search tools for semantic/vector search</span>
+            <span class="step-detail">structured data: query_postgres, query_mongodb, or query_natural (plain-English → SQL). Vector/semantic: search_qdrant, search_pgvector, search_weaviate, search_milvus, search_chroma.</span>
           </div>
         </div>
         <div class="workflow-step">
           <span class="step-number">8</span>
           <div class="step-content">
             <span class="step-title">RAG</span>
-            <span class="step-detail">combine search results with ai_answer for AI-powered question answering</span>
+            <span class="step-detail">combine search results with ai_answer for AI-powered question answering.</span>
+          </div>
+        </div>
+        <div class="workflow-step">
+          <span class="step-number">9</span>
+          <div class="step-content">
+            <span class="step-title">Manage</span>
+            <span class="step-detail">call update_tap to enable/disable, change schedule, or retarget pipeline. Use get_tap to inspect details and the stored script. For document taps, get_tap_ledger shows which files have been processed (pass clear_uri or clear_all to force re-ingestion).</span>
           </div>
         </div>
       </div>

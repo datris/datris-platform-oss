@@ -82,6 +82,26 @@ export class McpComponent implements OnInit {
     },
     // --- Taps ---
     {
+      name: 'create_tap_secret',
+      description: 'Create or update a tap secret. Fields are injected as env vars into the tap script. Call before create_tap when credentials are needed. Agents can only overwrite secrets tagged _type=tap.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Secret name (lowercase, hyphenated, e.g. stripe-api-key). Reserved AI-slot names are blocked.', required: true, inputType: 'text' },
+        { name: 'fields', type: 'object', description: 'Key-value object. Each key becomes an env var name, e.g. {"apiKey": "sk_..."}', required: true, inputType: 'textarea' },
+        { name: 'overwrite', type: 'boolean', description: 'Replace existing secret with the same name (default false). Only _type=tap secrets can be overwritten.', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'delete_tap_secret',
+      description: 'Delete a tap secret. Only secrets tagged _type=tap (agent-created) can be deleted via this tool.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap secret to delete', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'create_tap',
       description: 'Create a tap from an instruction (AI generates script), a user-provided script, or config only.',
       category: 'Taps',
@@ -91,7 +111,8 @@ export class McpComponent implements OnInit {
         { name: 'script', type: 'string', description: 'Python source code with a fetch() function', required: false, inputType: 'textarea' },
         { name: 'target_pipeline', type: 'string', description: 'Pipeline to push fetched data into', required: false, inputType: 'text' },
         { name: 'cron_expression', type: 'string', description: 'Quartz CRON schedule (e.g., 0 0 * * * ?)', required: false, inputType: 'text' },
-        { name: 'secret_name', type: 'string', description: 'Vault secret name for credentials', required: false, inputType: 'text' }
+        { name: 'secret_name', type: 'string', description: 'Vault secret name for credentials', required: false, inputType: 'text' },
+        { name: 'tap_type', type: 'string', description: 'structured (default) or document (for PDFs/Word/HTML into vector-store pipelines)', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -113,10 +134,20 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'run_tap',
-      description: 'Execute a tap and push fetched data to the target pipeline.',
+      description: 'Execute a tap and push fetched data to the target pipeline. Response carries persisted, persistedReason, publisherToken, and pipelineTokens so the caller can confirm what actually landed.',
       category: 'Taps',
       parameters: [
         { name: 'name', type: 'string', description: 'Name of the tap to run', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_pipeline_status',
+      description: 'Poll pipeline ingestion status after run_tap. Pass publisher_token (covers every job the run submitted — recommended) or pipeline_token (one job). A job is done when its last row state is end or error.',
+      category: 'Taps',
+      parameters: [
+        { name: 'publisher_token', type: 'string', description: 'UUID from run_tap response — returns status rows for every job the run submitted', required: false, inputType: 'text' },
+        { name: 'pipeline_token', type: 'string', description: 'UUID for a single ingestion job', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -144,10 +175,21 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'get_tap_logs',
-      description: 'Get run history for a tap (last 50 entries).',
+      description: 'Get run history for a tap (last 50 entries). Each entry that submitted records includes its publisherToken — pivot to get_pipeline_status to verify a run actually landed in the destination.',
       category: 'Taps',
       parameters: [
         { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_tap_ledger',
+      description: 'Document taps only: return the ledger of discovered documents (URI, filename, status, hashes, timestamps). Pass clear_uri to force-reprocess one file, or clear_all=true to wipe the ledger for a full re-scan.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the document tap', required: true, inputType: 'text' },
+        { name: 'clear_uri', type: 'string', description: 'Optional — URI whose ledger entry to delete, forcing re-processing on next run', required: false, inputType: 'text' },
+        { name: 'clear_all', type: 'boolean', description: 'Optional — if true, wipes the entire ledger for this tap', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -318,6 +360,19 @@ export class McpComponent implements OnInit {
         { name: 'filter', type: 'object', description: 'MongoDB query filter JSON (default: {})', required: false, inputType: 'textarea' },
         { name: 'projection', type: 'object', description: 'Fields to include/exclude JSON', required: false, inputType: 'textarea' },
         { name: 'limit', type: 'integer', description: 'Maximum documents (default: 20)', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'query_natural',
+      description: 'Ask a natural-language question about a PostgreSQL table. The AI generates the SQL from the question and table schema, executes it, and returns results.',
+      category: 'Database Query',
+      parameters: [
+        { name: 'question', type: 'string', description: 'Natural language question about the data', required: true, inputType: 'textarea' },
+        { name: 'table', type: 'string', description: 'PostgreSQL table name to query', required: true, inputType: 'text' },
+        { name: 'schema', type: 'string', description: 'PostgreSQL schema (default: public)', required: false, inputType: 'text' },
+        { name: 'database', type: 'string', description: 'Database name (default: datris)', required: false, inputType: 'text' },
+        { name: 'limit', type: 'integer', description: 'Max rows (default: 100). Pass -1 for unlimited.', required: false, inputType: 'number' }
       ],
       playgroundEnabled: true
     },
