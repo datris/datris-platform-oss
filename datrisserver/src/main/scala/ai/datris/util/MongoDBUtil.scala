@@ -181,6 +181,34 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         collection.replaceOne(session, filter, doc, new ReplaceOptions().upsert(true))
     }
 
+    /** Create a TTL index on a BSON Date field. Mongo auto-deletes documents whose
+      * field value is older than `expireAfterSeconds` past now. Idempotent — Mongo
+      * accepts re-creation of an identical index. The field MUST be a BSON Date
+      * (java.util.Date) — strings and numbers are silently ignored by the TTL monitor. */
+    def ensureTtlIndex(tableName: String, fieldName: String, expireAfterSeconds: Long): Unit = {
+        val collection = database.getCollection(tableName)
+        val options = new com.mongodb.client.model.IndexOptions().expireAfter(expireAfterSeconds, java.util.concurrent.TimeUnit.SECONDS)
+        collection.createIndex(new Document(fieldName, 1), options)
+    }
+
+    /** Insert a session-style document with a BSON Date field (`expiresAt`) so the
+      * TTL index on the same field can purge it. Used by SessionStore. */
+    def insertWithDateField(tableName: String, json: String, dateFieldName: String, dateValueEpochMillis: Long): Unit = {
+        val collection = database.getCollection(tableName)
+        val doc = Document.parse(json)
+        doc.put(dateFieldName, new java.util.Date(dateValueEpochMillis))
+        collection.insertOne(doc)
+    }
+
+    /** Upsert a session-style document with a BSON Date field. Used to slide TTL on session renew. */
+    def upsertWithDateField(tableName: String, keyName: String, key: String, json: String,
+                            dateFieldName: String, dateValueEpochMillis: Long): Unit = {
+        val collection = database.getCollection(tableName)
+        val doc = Document.parse(json)
+        doc.put(dateFieldName, new java.util.Date(dateValueEpochMillis))
+        collection.replaceOne(Filters.eq(keyName, key), doc, new ReplaceOptions().upsert(true))
+    }
+
     private def buildKeyFilter(keyName: String, key: String, sortKeyName: String, sortKeyValue: Number): org.bson.conversions.Bson = {
         if (sortKeyName != null) {
             val concreteValue: java.lang.Long = sortKeyValue.longValue()

@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, ElementRef, ViewChildren, QueryList } from '@angular/core';
 import { Router } from '@angular/router';
 import { TapService } from '../tap.service';
+import { AuthService } from '../auth.service';
 
 @Component({
   selector: 'app-taps',
@@ -26,7 +27,7 @@ export class TapsComponent implements OnInit, OnDestroy {
 
   @ViewChildren('nameInput') nameInputs!: QueryList<ElementRef>;
 
-  constructor(private tapService: TapService, private router: Router) { }
+  constructor(private tapService: TapService, private router: Router, public auth: AuthService) { }
 
   ngOnInit(): void {
     this.loadTaps();

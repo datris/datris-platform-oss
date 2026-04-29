@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 import { PipelineStatusService } from '../pipeline-status.service';
 import { TapService } from '../tap.service';
+import { AuthService } from '../auth.service';
 
 @Component({
   selector: 'app-pipelines',
@@ -33,7 +34,7 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   uploadResult = '';
   uploadError = '';
 
-  constructor(private pipelineService: PipelineService, private pipelineStatusService: PipelineStatusService, private tapService: TapService, private router: Router) { }
+  constructor(private pipelineService: PipelineService, private pipelineStatusService: PipelineStatusService, private tapService: TapService, private router: Router, public auth: AuthService) { }
 
   ngOnInit(): void {
     this.loadPipelines();

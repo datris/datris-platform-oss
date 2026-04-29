@@ -1,0 +1,31 @@
+<div class="overlay">
+  <div class="prompt-card">
+    <img src="datris-full-logo.png" alt="Datris" class="logo">
+    <h2>Sign in</h2>
+    <p class="subtitle">Use your Datris account to access this instance.</p>
+
+    <form (ngSubmit)="submit()">
+      <input
+        type="text"
+        [(ngModel)]="username"
+        name="username"
+        placeholder="Username"
+        autocomplete="username"
+        autofocus
+      />
+      <input
+        type="password"
+        [(ngModel)]="password"
+        name="password"
+        placeholder="Password (leave blank if first login)"
+        autocomplete="current-password"
+      />
+      <button type="submit" class="connect-btn" [disabled]="loading">
+        {{ loading ? 'Signing in…' : 'Sign in' }}
+      </button>
+    </form>
+
+    <p class="error" *ngIf="error">{{ error }}</p>
+    <p class="hint">Default account is <code>admin</code> with no password — you'll be asked to set one on first login.</p>
+  </div>
+</div>

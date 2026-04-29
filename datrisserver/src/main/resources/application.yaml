@@ -32,6 +32,7 @@ dateFormat: "yyyy-MM-dd HH:mm:ss z"
 dateTimezone: "America/New_York"
 environment: oss
 useApiKeys: "false"
+useUserAuth: "true"
 multiTenant: "false"
 
 # CORS allowed origins (comma-separated). Use "*" for any origin (dev only).

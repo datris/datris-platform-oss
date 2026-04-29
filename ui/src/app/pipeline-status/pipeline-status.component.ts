@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy } from '@angular/core';
 import { Router } from '@angular/router';
 import { PipelineStatusService, PipelineStatus } from '../pipeline-status.service';
 import { PipelineService } from '../pipeline.service';
+import { AuthService } from '../auth.service';
 
 @Component({
   selector: 'app-pipeline-status',
@@ -30,7 +31,8 @@ export class PipelineStatusComponent implements OnInit, OnDestroy {
   constructor(
     private pipelineStatusService: PipelineStatusService,
     private pipelineService: PipelineService,
-    private router: Router
+    private router: Router,
+    public auth: AuthService
   ) { }
 
   ngOnInit(): void {

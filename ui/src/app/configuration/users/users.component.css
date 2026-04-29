@@ -1,0 +1,139 @@
+.users-pane {
+  padding: 24px;
+  color: #f0f4ff;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.add-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #0a0e1a;
+  border: 1px solid rgba(99, 179, 237, 0.15);
+  border-radius: 8px;
+}
+
+.add-form input,
+.add-form select {
+  padding: 8px 10px;
+  background: #141a2e;
+  border: 1px solid rgba(99, 179, 237, 0.15);
+  border-radius: 4px;
+  color: #f0f4ff;
+  font-size: 0.85rem;
+}
+
+.add-form input { flex: 1; }
+
+.users-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.users-table th,
+.users-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(99, 179, 237, 0.1);
+  font-size: 0.85rem;
+}
+
+.users-table th {
+  color: #8b9dc3;
+  font-weight: 600;
+}
+
+.users-table td.actions {
+  display: flex;
+  gap: 6px;
+}
+
+.users-table select {
+  padding: 4px 8px;
+  background: #141a2e;
+  border: 1px solid rgba(99, 179, 237, 0.15);
+  border-radius: 4px;
+  color: #f0f4ff;
+  font-size: 0.8rem;
+}
+
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #00b4ff, #00e5a0);
+  color: #000;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: #8b9dc3;
+  border: 1px solid rgba(139, 157, 195, 0.2);
+}
+
+.btn-danger {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+
+.btn-danger:disabled,
+.users-table select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lock-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  background: rgba(99, 179, 237, 0.12);
+  color: #8b9dc3;
+  border: 1px solid rgba(99, 179, 237, 0.2);
+  border-radius: 10px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: rgba(255, 191, 0, 0.15);
+  color: #ffbf00;
+  border: 1px solid rgba(255, 191, 0, 0.3);
+  border-radius: 12px;
+  font-size: 0.7rem;
+}
+
+.empty {
+  text-align: center;
+  color: #5a6b8a;
+  font-style: italic;
+}
+
+.error {
+  color: #f87171;
+  font-size: 0.85rem;
+  margin-bottom: 12px;
+}

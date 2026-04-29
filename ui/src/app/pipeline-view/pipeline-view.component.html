@@ -8,18 +8,18 @@
         <span class="material-icons">{{ copySuccess ? 'check' : 'content_copy' }}</span>
         {{ copySuccess ? 'Copied!' : 'Copy' }}
       </button>
-      <button class="action-btn" (click)="editPipeline()" title="Edit pipeline">
+      <button class="action-btn" (click)="editPipeline()" title="Edit pipeline" *ngIf="auth.canWrite()">
         <span class="material-icons">edit</span>
         Edit
       </button>
-      <button class="action-btn danger" (click)="promptDelete()" *ngIf="!confirmDelete" title="Delete pipeline">
+      <button class="action-btn danger" (click)="promptDelete()" *ngIf="auth.canWrite() && !confirmDelete" title="Delete pipeline">
         <span class="material-icons">delete</span>
         Delete
       </button>
     </div>
   </div>
 
-  <div class="confirm-delete" *ngIf="confirmDelete">
+  <div class="confirm-delete" *ngIf="confirmDelete && auth.canWrite()">
     <span class="confirm-text">Delete pipeline "{{ name }}"?</span>
     <div class="delete-options">
       <button class="confirm-btn" (click)="deletePipeline(true)" [disabled]="deleteLoading">

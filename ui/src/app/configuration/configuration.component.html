@@ -8,7 +8,11 @@
             (click)="activeTab = 'ai-providers'">AI Providers</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'taps'"
             (click)="activeTab = 'taps'">Taps</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'users'"
+            (click)="activeTab = 'users'">Users</button>
   </div>
+
+  <app-users *ngIf="activeTab === 'users'"></app-users>
 
   <div class="config-card" *ngIf="!loading && activeTab === 'environment'">
     <div class="info-grid">

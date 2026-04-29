@@ -68,6 +68,8 @@ object DatrisEnvironment {
             tapLogTableName = env + "-tap-log",
             tapLedgerTableName = env + "-tap-ledger",
             tapPromptTableName = env + "-tap-prompt",
+            userTableName = env + "-user",
+            userSessionTableName = env + "-user-session",
             postgresDatabase = env
         )
     }
@@ -142,7 +144,10 @@ case class DatrisEnvironment(
                                   dateTimezone: String = "UTC",
                                   postgresDatabase: String = "datris",
                                   codegenAiConfig: Option[AIConfig] = None,
-                              hosted: Boolean = false
+                              hosted: Boolean = false,
+                              useUserAuth: Boolean = false,
+                              userTableName: String = null,
+                              userSessionTableName: String = null
                               ) {
     /** True for trial-droplet tenants. Trials have AI configuration locked at the
       * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention

@@ -36,6 +36,7 @@ class VersionAPIController {
                 "environment" -> DatrisEnvironment.current.environment,
                 "multiTenant" -> DatrisEnvironment.current.multiTenant.toString,
                 "hosted" -> DatrisEnvironment.current.hosted.toString,
+                "useUserAuth" -> DatrisEnvironment.values.useUserAuth.toString,
                 "postgresDatabase" -> DatrisEnvironment.current.postgresDatabase,
                 "mongodbDatabase" -> mongodbDatabase
             ).asJava

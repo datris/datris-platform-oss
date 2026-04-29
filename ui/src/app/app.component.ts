@@ -1,71 +1,140 @@
 import { Component, OnInit } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Router, NavigationEnd } from '@angular/router';
+import { filter } from 'rxjs/operators';
 import { HealthService } from './health.service';
+import { AuthService, CurrentUser } from './auth.service';
 
 @Component({
   selector: 'app-root',
   templateUrl: './app.component.html',
-  styleUrl: './app.component.css'
+  styleUrl: './app.component.css',
+  host: { '(document:click)': 'closeUserMenu()' }
 })
 export class AppComponent implements OnInit {
   title = 'pipeline-ui';
   hasApiKey = !!localStorage.getItem('datris-api-key');
-  requiresApiKey = true; // assume true until server tells us otherwise
+  requiresApiKey = false;
   isTrial = false;
   environment = '';
   version = '';
 
-  constructor(private healthService: HealthService, private http: HttpClient) {}
+  // user-auth
+  useUserAuth = false;
+  currentUser: CurrentUser | null = null;
+  showSetPassword = false;
+  isLoginRoute = false;
+  bootstrapped = false;
+  userMenuOpen = false;
+
+  constructor(
+    private healthService: HealthService,
+    private http: HttpClient,
+    private auth: AuthService,
+    private router: Router
+  ) {}
 
   ngOnInit(): void {
+    // Track whether we're on the login route so the chrome can hide.
+    this.router.events.pipe(filter(e => e instanceof NavigationEnd))
+      .subscribe(() => { this.isLoginRoute = this.router.url.startsWith('/login'); });
+
     // Accept API key from URL query param (set by dashboard link)
     const urlKey = new URLSearchParams(window.location.search).get('key');
     if (urlKey) {
       localStorage.setItem('datris-api-key', urlKey);
       this.hasApiKey = true;
-      // Clean the URL
       window.history.replaceState({}, '', window.location.pathname);
     }
 
-    if (this.hasApiKey) {
-      // Validate the stored API key is still valid
-      this.http.get<any>('/api/v1/version').subscribe({
-        next: () => {
-          this.healthService.loadHealth();
-          this.loadEnvironment();
-        },
-        error: () => {
-          // Stored key is invalid — clear it and show the prompt
-          localStorage.removeItem('datris-api-key');
-          this.hasApiKey = false;
-          this.requiresApiKey = true;
-        }
-      });
-    } else {
-      // Check if server requires API keys — self-hosted with useApiKeys=false won't
-      this.http.get<any>('/api/v1/version').subscribe({
-        next: (data) => {
-          if (data.multiTenant !== 'true') {
-            // Self-hosted mode — skip API key prompt
-            this.requiresApiKey = false;
+    // Probe /version to figure out which auth mode the server is in.
+    this.http.get<any>('/api/v1/version').subscribe({
+      next: (data) => {
+        this.environment = data.environment || '';
+        this.version = data.version || '';
+        this.isTrial = data.multiTenant === 'true';
+        this.useUserAuth = data.useUserAuth === 'true';
+        this.auth.userAuthEnabled = this.useUserAuth;
+
+        if (this.useUserAuth) {
+          // User-auth mode: probe /me, redirect to /login on 401.
+          this.auth.refreshMe().subscribe(user => {
+            this.currentUser = user;
+            this.bootstrapped = true;
+            if (!user) {
+              this.router.navigate(['/login']);
+            } else {
+              if (user.mustSetPassword) this.showSetPassword = true;
+              this.healthService.loadHealth();
+            }
+          });
+          // Keep currentUser in sync for header/logout.
+          this.auth.user().subscribe(u => {
+            this.currentUser = u;
+            this.showSetPassword = !!u?.mustSetPassword;
+          });
+        } else {
+          // Legacy x-api-key mode (or self-hosted with no auth).
+          this.bootstrapped = true;
+          if (this.hasApiKey) {
+            this.healthService.loadHealth();
+          } else if (this.isTrial) {
+            // Trial = multi-tenant; api key is required to identify the tenant.
+            this.requiresApiKey = true;
+          } else {
+            // Self-hosted, no auth: skip the api-key prompt and show the app.
+            // Preserves the legacy bypass that existed before user-auth was added.
             this.hasApiKey = true;
-            this.environment = data.environment || '';
-            this.version = data.version || '';
             this.healthService.loadHealth();
           }
-        },
-        error: () => {
-          // Server rejected — needs API key
-          this.requiresApiKey = true;
         }
-      });
-    }
+      },
+      error: () => {
+        // /version failed → server requires an x-api-key (legacy mode with useApiKeys=true).
+        this.bootstrapped = true;
+        this.requiresApiKey = true;
+      }
+    });
   }
 
   onApiKeySet(): void {
     this.hasApiKey = true;
+    this.requiresApiKey = false;
     this.healthService.loadHealth();
     this.loadEnvironment();
+  }
+
+  onPasswordSet(): void {
+    this.showSetPassword = false;
+    this.healthService.loadHealth();
+  }
+
+  logout(): void {
+    this.userMenuOpen = false;
+    this.auth.logout().subscribe(() => {
+      this.currentUser = null;
+      this.router.navigate(['/login']);
+    });
+  }
+
+  toggleUserMenu(event: Event): void {
+    event.stopPropagation();
+    this.userMenuOpen = !this.userMenuOpen;
+  }
+
+  closeUserMenu(): void {
+    this.userMenuOpen = false;
+  }
+
+  isAdmin(): boolean {
+    return this.currentUser?.role === 'admin';
+  }
+
+  /** True when the main app chrome should be visible. */
+  showChrome(): boolean {
+    if (this.isLoginRoute) return false;
+    if (this.useUserAuth) return !!this.currentUser;
+    return this.hasApiKey;
   }
 
   private loadEnvironment(): void {

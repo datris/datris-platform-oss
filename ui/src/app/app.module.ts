@@ -23,6 +23,9 @@ import { GettingStartedComponent } from './getting-started/getting-started.compo
 import { DataCatalogComponent } from './data-catalog/data-catalog.component';
 import { DiscoveryComponent } from './discovery/discovery.component';
 import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
+import { LoginComponent } from './login/login.component';
+import { ChangePasswordModalComponent } from './change-password-modal/change-password-modal.component';
+import { UsersComponent } from './configuration/users/users.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { apiKeyInterceptor } from './api-key.interceptor';
@@ -51,7 +54,10 @@ import { MaterialModule } from './material.module';
     GettingStartedComponent,
     DataCatalogComponent,
     DiscoveryComponent,
-    AgentMonitorComponent
+    AgentMonitorComponent,
+    LoginComponent,
+    ChangePasswordModalComponent,
+    UsersComponent
   ],
   imports: [
     BrowserModule,

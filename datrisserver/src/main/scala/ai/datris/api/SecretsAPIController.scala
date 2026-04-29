@@ -7,6 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonParser}
+import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
 import ai.datris.util.{APIKeyValidator, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
@@ -17,6 +18,7 @@ import scala.collection.JavaConverters._
 
 @RestController
 @RequestMapping(Array("/api/v1"))
+@RequiresRole(Array("admin"))
 class SecretsAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
     private val SENSITIVE_FIELDS = Set("password", "apikey", "secretkey", "token", "secret")

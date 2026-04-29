@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { sanitizeLabel } from '../shared/sanitize';
+import { AuthService } from '../auth.service';
 
 interface CatalogInfo {
   name: string;
@@ -36,7 +37,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   private moveErrorTimeout: any;
   private refreshInterval: any;
 
-  constructor(private tapService: TapService, private pipelineService: PipelineService, private router: Router) {}
+  constructor(private tapService: TapService, private pipelineService: PipelineService, private router: Router, public auth: AuthService) {}
 
   ngOnInit(): void {
     this.loadCatalogs();

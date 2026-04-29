@@ -2,11 +2,11 @@
   <div class="page-header">
     <h1 class="page-title">Data Catalog <span class="beta-tag">(beta)</span></h1>
     <div class="header-actions">
-      <button class="create-btn" (click)="showCreateModal = true" *ngIf="!showCreateModal">+ Create Catalog</button>
+      <button class="create-btn" (click)="showCreateModal = true" *ngIf="!showCreateModal && auth.canWrite()">+ Create Catalog</button>
     </div>
   </div>
 
-  <div class="create-catalog-row" *ngIf="showCreateModal">
+  <div class="create-catalog-row" *ngIf="showCreateModal && auth.canWrite()">
     <input class="form-input" [(ngModel)]="newCatalogName" placeholder="Catalog name" (keydown.enter)="createCatalog()">
     <button class="primary-btn" (click)="createCatalog()" [disabled]="!newCatalogName.trim()">Create</button>
     <button class="secondary-btn" (click)="showCreateModal = false; newCatalogName = ''">Cancel</button>
@@ -41,7 +41,7 @@
           <span class="catalog-count-sep">&middot;</span>
           <span class="catalog-count">{{ cat.pipelineCount }} pipeline{{ cat.pipelineCount !== 1 ? 's' : '' }}</span>
         </div>
-        <button class="delete-catalog-btn" *ngIf="deleteTarget !== cat.name"
+        <button class="delete-catalog-btn" *ngIf="auth.canWrite() && deleteTarget !== cat.name"
                 (click)="deleteTarget = cat.name; $event.stopPropagation()"
                 [title]="cat.name === 'Uncataloged' ? 'Delete all uncataloged taps and pipelines' : 'Delete catalog'">
           <span class="material-icons">delete</span>
@@ -65,7 +65,7 @@
             <a class="item-name" [routerLink]="['/taps', tap.name, 'edit']">{{ tap.name }}</a>
             <span class="item-meta" *ngIf="tap.lastRunStatus">{{ tap.lastRunStatus }}</span>
             <span class="item-meta" *ngIf="tap.lastRunRecordCount">{{ tap.lastRunRecordCount }} records</span>
-            <button class="delete-item-btn" *ngIf="deleteItemTarget !== 'tap:' + tap.name && deletingItem !== 'tap:' + tap.name"
+            <button class="delete-item-btn" *ngIf="auth.canWrite() && deleteItemTarget !== 'tap:' + tap.name && deletingItem !== 'tap:' + tap.name"
                     (click)="deleteItemTarget = 'tap:' + tap.name" title="Delete tap">
               <span class="material-icons">delete</span>
             </button>
@@ -77,7 +77,7 @@
                 <span class="material-icons">close</span>
               </button>
             </div>
-            <div class="item-menu-wrap" *ngIf="cat.name === 'Uncataloged' && deleteItemTarget !== 'tap:' + tap.name">
+            <div class="item-menu-wrap" *ngIf="auth.canWrite() && cat.name === 'Uncataloged' && deleteItemTarget !== 'tap:' + tap.name">
               <button class="menu-btn" (click)="toggleMenu('tap:' + tap.name, $event)" title="More actions">
                 <span class="material-icons">more_vert</span>
               </button>
@@ -109,7 +109,7 @@
           <div class="catalog-item" *ngFor="let pipeline of cat.pipelines">
             <span class="material-icons item-icon">route</span>
             <a class="item-name" [routerLink]="['/pipelines', pipeline.name, 'edit']">{{ pipeline.name }}</a>
-            <button class="delete-item-btn" *ngIf="deleteItemTarget !== 'pipeline:' + pipeline.name && deletingItem !== 'pipeline:' + pipeline.name"
+            <button class="delete-item-btn" *ngIf="auth.canWrite() && deleteItemTarget !== 'pipeline:' + pipeline.name && deletingItem !== 'pipeline:' + pipeline.name"
                     (click)="deleteItemTarget = 'pipeline:' + pipeline.name" title="Delete pipeline">
               <span class="material-icons">delete</span>
             </button>
@@ -121,7 +121,7 @@
                 <span class="material-icons">close</span>
               </button>
             </div>
-            <div class="item-menu-wrap" *ngIf="cat.name === 'Uncataloged' && deleteItemTarget !== 'pipeline:' + pipeline.name">
+            <div class="item-menu-wrap" *ngIf="auth.canWrite() && cat.name === 'Uncataloged' && deleteItemTarget !== 'pipeline:' + pipeline.name">
               <button class="menu-btn" (click)="toggleMenu('pipeline:' + pipeline.name, $event)" title="More actions">
                 <span class="material-icons">more_vert</span>
               </button>

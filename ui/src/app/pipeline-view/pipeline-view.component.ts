@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
+import { AuthService } from '../auth.service';
 
 @Component({
   selector: 'app-pipeline-view',
@@ -17,7 +18,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
   deleteLoading = false;
   private refreshInterval: any = null;
 
-  constructor(private route: ActivatedRoute, private router: Router, private pipelineService: PipelineService) { }
+  constructor(private route: ActivatedRoute, private router: Router, private pipelineService: PipelineService, public auth: AuthService) { }
 
   ngOnInit(): void {
     this.name = this.route.snapshot.paramMap.get('name') || '';

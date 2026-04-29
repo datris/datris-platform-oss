@@ -1,0 +1,57 @@
+<div class="users-pane">
+  <div class="header">
+    <h3>Users</h3>
+    <button class="btn-primary" (click)="showAdd = !showAdd">{{ showAdd ? 'Cancel' : '+ Add user' }}</button>
+  </div>
+
+  <div class="add-form" *ngIf="showAdd">
+    <input type="text" placeholder="Username" [(ngModel)]="newUsername" name="newUsername" />
+    <select [(ngModel)]="newRole" name="newRole">
+      <option value="admin">admin</option>
+      <option value="editor">editor</option>
+      <option value="viewer">viewer</option>
+    </select>
+    <input type="password" placeholder="Initial password (optional)" [(ngModel)]="newPassword" name="newPassword" />
+    <button class="btn-primary" (click)="addUser()">Create</button>
+  </div>
+
+  <p class="error" *ngIf="error">{{ error }}</p>
+
+  <table class="users-table">
+    <thead>
+      <tr>
+        <th>Username</th>
+        <th>Role</th>
+        <th>Last login</th>
+        <th>Status</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr *ngFor="let u of users">
+        <td>
+          {{ u.username }}
+          <span class="lock-badge" *ngIf="u.username === 'admin'" title="Built-in admin account — cannot be deleted or demoted">Built-in</span>
+        </td>
+        <td>
+          <select [value]="u.role" (change)="setRole(u, $any($event.target).value)" [disabled]="u.username === 'admin'">
+            <option value="admin">admin</option>
+            <option value="editor">editor</option>
+            <option value="viewer">viewer</option>
+          </select>
+        </td>
+        <td>{{ u.lastLoginAt || '—' }}</td>
+        <td>
+          <span class="badge" *ngIf="u.mustSetPassword">Must set password</span>
+        </td>
+        <td class="actions">
+          <button class="btn-secondary" (click)="resetPassword(u)" title="Reset password">Reset</button>
+          <button class="btn-danger" (click)="deleteUser(u)" title="Delete user" [disabled]="u.username === 'admin'">Delete</button>
+        </td>
+      </tr>
+      <tr *ngIf="!loading && users.length === 0">
+        <td colspan="5" class="empty">No users.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>

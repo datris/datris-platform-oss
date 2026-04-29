@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import ai.datris.model._
-import ai.datris.util.{PipelineConfigIO, NotificationUtil, SecretsUtil}
+import ai.datris.util.{PipelineConfigIO, NotificationUtil, SecretsUtil, SessionStore, UserStore}
 import ai.datris.controller.KafkaConsumerRunner
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.beans.factory.annotation.Value
@@ -22,6 +22,9 @@ class StartupRunner extends ApplicationRunner {
 
     @Value("${useApiKeys}")
     var useApiKeys: Boolean = _
+
+    @Value("${useUserAuth:false}")
+    var useUserAuth: Boolean = _
 
     @Value("${multiTenant:false}")
     var multiTenant: Boolean = _
@@ -127,8 +130,33 @@ class StartupRunner extends ApplicationRunner {
     @Override
     def run(args: ApplicationArguments): Unit =  {
         initDatrisEnvironment()
+        initUserAuth()
         if(kafkaConsumerEnabled)
             initKafkaConsumerRunner()
+    }
+
+    /** Idempotent: ensure the user-session TTL index exists and seed a default admin
+      * if no users are present. Runs regardless of `useUserAuth` so flipping the flag
+      * later is a clean toggle — no provisioning step needed. */
+    private def initUserAuth(): Unit = {
+        try {
+            SessionStore.ensureIndex()
+            if (UserStore.list().isEmpty) {
+                val now = java.time.Instant.now().toString
+                UserStore.insert(User(
+                    username = "admin",
+                    passwordHash = null, // null = forces set-password on first login
+                    role = User.RoleAdmin,
+                    createdAt = now,
+                    updatedAt = now,
+                    lastLoginAt = null
+                ))
+                logger.info("Seeded default admin user (no password set — first login will prompt)")
+            }
+        } catch {
+            case e: Exception =>
+                logger.warn("User-auth init failed (continuing): " + e.getMessage)
+        }
     }
 
     private def initDatrisEnvironment(): Unit = {
@@ -197,7 +225,10 @@ class StartupRunner extends ApplicationRunner {
             dateFormat = dateFormat,
             dateTimezone = dateTimezone,
             postgresDatabase = postgresDatabase,
-            hosted = hosted
+            hosted = hosted,
+            useUserAuth = useUserAuth,
+            userTableName = environment + "-user",
+            userSessionTableName = environment + "-user-session"
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

@@ -3,6 +3,10 @@ ThisBuild / organization := "ai.datris"
 ThisBuild / scalaVersion := "2.12.21"
 ThisBuild / version := "1.6.13"
 
+// Match the Docker runtime (eclipse-temurin:17-jre). Without this, javac uses the
+// build host's JDK (e.g. 25), producing class files the runtime can't load.
+ThisBuild / javacOptions ++= Seq("--release", "17")
+
 lazy val global = project
     .in(file("."))
     .disablePlugins(AssemblyPlugin)
@@ -55,6 +59,9 @@ lazy val allDependencies = Seq(
     // Spring Boot
     "org.springframework.boot" % "spring-boot-starter" % "3.2.12",
     "org.springframework.boot" % "spring-boot-starter-web" % "3.2.12",
+
+    // Password hashing for UI user auth (BCrypt)
+    "org.springframework.security" % "spring-security-crypto" % "6.2.7",
 
     // Spark
     "org.apache.spark" %% "spark-core" % "3.5.4",

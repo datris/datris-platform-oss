@@ -1,27 +1,48 @@
-<app-api-key-prompt *ngIf="!hasApiKey && requiresApiKey" (keySet)="onApiKeySet()"></app-api-key-prompt>
-<ng-container *ngIf="hasApiKey">
-  <nav class="top-nav">
-    <a routerLink="/"><img src="datris-full-logo.png" alt="Datris logo" class="logo"></a>
-    <div class="tab-bar">
-      <a class="tab" routerLink="/getting-started" routerLinkActive="tab-active">Getting Started</a>
-      <a class="tab" routerLink="/mcp" routerLinkActive="tab-active">MCP</a>
-      <a class="tab" routerLink="/agent-monitor" routerLinkActive="tab-active">Agents</a>
-      <a class="tab" routerLink="/data-catalog" routerLinkActive="tab-active">Data Catalog</a>
-      <a class="tab" routerLink="/discovery" routerLinkActive="tab-active">Discovery</a>
-      <a class="tab" routerLink="/taps" routerLinkActive="tab-active">Taps</a>
-      <a class="tab" routerLink="/pipelines" routerLinkActive="tab-active">Pipelines</a>
-      <a class="tab" routerLink="/ingestion" routerLinkActive="tab-active">Ingestion</a>
-      <a class="tab" routerLink="/search" routerLinkActive="tab-active">Search</a>
-      <a class="tab" routerLink="/secrets" routerLinkActive="tab-active" *ngIf="!isTrial">Secrets</a>
-      <a class="tab" routerLink="/configuration" routerLinkActive="tab-active">Configuration</a>
-      <a class="tab" href="https://docs.datris.ai" target="_blank" rel="noopener">Docs ↗</a>
+<app-api-key-prompt *ngIf="!hasApiKey && requiresApiKey && !useUserAuth" (keySet)="onApiKeySet()"></app-api-key-prompt>
+
+<app-change-password-modal
+  *ngIf="showSetPassword"
+  [forced]="true"
+  (done)="onPasswordSet()"
+></app-change-password-modal>
+
+<nav class="top-nav" *ngIf="showChrome()">
+  <a routerLink="/"><img src="datris-full-logo.png" alt="Datris logo" class="logo"></a>
+  <div class="tab-bar">
+    <a class="tab" routerLink="/getting-started" routerLinkActive="tab-active">Getting Started</a>
+    <a class="tab" routerLink="/mcp" routerLinkActive="tab-active">MCP</a>
+    <a class="tab" routerLink="/agent-monitor" routerLinkActive="tab-active">Agents</a>
+    <a class="tab" routerLink="/data-catalog" routerLinkActive="tab-active">Data Catalog</a>
+    <a class="tab" routerLink="/discovery" routerLinkActive="tab-active">Discovery</a>
+    <a class="tab" routerLink="/taps" routerLinkActive="tab-active">Taps</a>
+    <a class="tab" routerLink="/pipelines" routerLinkActive="tab-active">Pipelines</a>
+    <a class="tab" routerLink="/ingestion" routerLinkActive="tab-active">Ingestion</a>
+    <a class="tab" routerLink="/search" routerLinkActive="tab-active">Search</a>
+    <a class="tab" routerLink="/secrets" routerLinkActive="tab-active" *ngIf="!isTrial && (!useUserAuth || isAdmin())">Secrets</a>
+    <a class="tab" routerLink="/configuration" routerLinkActive="tab-active" *ngIf="!useUserAuth || isAdmin()">Configuration</a>
+    <a class="tab" href="https://docs.datris.ai" target="_blank" rel="noopener">Docs ↗</a>
+  </div>
+  <div class="env-info" *ngIf="environment">
+    <div class="user-menu" *ngIf="useUserAuth && currentUser">
+      <button class="user-icon-btn" (click)="toggleUserMenu($event)" title="Account">
+        <mat-icon>person</mat-icon>
+      </button>
+      <div class="user-dropdown" *ngIf="userMenuOpen" (click)="$event.stopPropagation()">
+        <div class="user-dropdown-header">
+          <div class="user-dropdown-name">{{ currentUser.username }}</div>
+          <div class="user-dropdown-role">{{ currentUser.role }}</div>
+        </div>
+        <button class="user-dropdown-item" (click)="logout()">
+          <mat-icon>logout</mat-icon>
+          <span>Sign out</span>
+        </button>
+      </div>
     </div>
-    <div class="env-info" *ngIf="environment">
-      <span class="env-label">{{ environment }}</span>
-      <span class="env-version">v{{ version }}</span>
-    </div>
-  </nav>
-  <main class="main-content">
-    <router-outlet />
-  </main>
-</ng-container>
+    <span class="env-label">{{ environment }}</span>
+    <span class="env-version">v{{ version }}</span>
+  </div>
+</nav>
+
+<main class="main-content" [class.no-chrome]="!showChrome()">
+  <router-outlet />
+</main>

@@ -2,8 +2,8 @@
   <div class="page-header">
     <h1 class="page-title">Data Ingestion</h1>
     <div class="header-actions">
-      <button class="clear-btn" (click)="promptClear()" *ngIf="!confirmClear && pipelines.length > 0">Clear All</button>
-      <button class="create-btn" (click)="openUploadModal()">+ Upload File</button>
+      <button class="clear-btn" (click)="promptClear()" *ngIf="auth.canWrite() && !confirmClear && pipelines.length > 0">Clear All</button>
+      <button class="create-btn" (click)="openUploadModal()" *ngIf="auth.canWrite()">+ Upload File</button>
     </div>
   </div>
   <p class="page-description">

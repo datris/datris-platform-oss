@@ -17,27 +17,30 @@ import { GettingStartedComponent } from './getting-started/getting-started.compo
 import { DataCatalogComponent } from './data-catalog/data-catalog.component';
 import { DiscoveryComponent } from './discovery/discovery.component';
 import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
+import { LoginComponent } from './login/login.component';
+import { authGuard } from './auth.guard';
 
 const routes: Routes = [
+  { path: 'login', component: LoginComponent },
   { path: '', redirectTo: 'getting-started', pathMatch: 'full' },
-  { path: 'getting-started', component: GettingStartedComponent },
-  { path: 'pipelines', component: PipelinesComponent },
-  { path: 'pipelines/create', component: PipelineCreateComponent },
-  { path: 'pipelines/:name/edit', component: PipelineCreateComponent },
-  { path: 'pipelines/:name', component: PipelineViewComponent },
-  { path: 'data-catalog', component: DataCatalogComponent },
-  { path: 'discovery', component: DiscoveryComponent },
-  { path: 'taps', component: TapsComponent },
-  { path: 'taps/create', component: TapCreateComponent },
-  { path: 'taps/:name/edit', component: TapCreateComponent },
-  { path: 'taps/:name/run', component: TapRunComponent },
-  { path: 'ingestion', component: PipelineStatusComponent },
-  { path: 'pipeline/:pipelineToken/:pipeline', component: PipelineDetailComponent },
-  { path: 'search', component: SearchComponent },
-  { path: 'mcp', component: McpComponent },
-  { path: 'agent-monitor', component: AgentMonitorComponent },
-  { path: 'configuration', component: ConfigurationComponent },
-  { path: 'secrets', component: SecretsComponent }
+  { path: 'getting-started', component: GettingStartedComponent, canActivate: [authGuard] },
+  { path: 'pipelines', component: PipelinesComponent, canActivate: [authGuard] },
+  { path: 'pipelines/create', component: PipelineCreateComponent, canActivate: [authGuard] },
+  { path: 'pipelines/:name/edit', component: PipelineCreateComponent, canActivate: [authGuard] },
+  { path: 'pipelines/:name', component: PipelineViewComponent, canActivate: [authGuard] },
+  { path: 'data-catalog', component: DataCatalogComponent, canActivate: [authGuard] },
+  { path: 'discovery', component: DiscoveryComponent, canActivate: [authGuard] },
+  { path: 'taps', component: TapsComponent, canActivate: [authGuard] },
+  { path: 'taps/create', component: TapCreateComponent, canActivate: [authGuard] },
+  { path: 'taps/:name/edit', component: TapCreateComponent, canActivate: [authGuard] },
+  { path: 'taps/:name/run', component: TapRunComponent, canActivate: [authGuard] },
+  { path: 'ingestion', component: PipelineStatusComponent, canActivate: [authGuard] },
+  { path: 'pipeline/:pipelineToken/:pipeline', component: PipelineDetailComponent, canActivate: [authGuard] },
+  { path: 'search', component: SearchComponent, canActivate: [authGuard] },
+  { path: 'mcp', component: McpComponent, canActivate: [authGuard] },
+  { path: 'agent-monitor', component: AgentMonitorComponent, canActivate: [authGuard] },
+  { path: 'configuration', component: ConfigurationComponent, canActivate: [authGuard] },
+  { path: 'secrets', component: SecretsComponent, canActivate: [authGuard] }
 ];
 
 @NgModule({
