@@ -90,7 +90,7 @@ case "$AI_PROVIDER" in
         ;;
     openai)
         AI_ENDPOINT="https://api.openai.com/v1/chat/completions"
-        AI_MODEL="gpt-4.1"
+        AI_MODEL="gpt-5.5"
         EMBEDDING_ENDPOINT="https://api.openai.com/v1/embeddings"
         EMBEDDING_MODEL="text-embedding-3-small"
         EMBEDDING_API_KEY="$AI_API_KEY"

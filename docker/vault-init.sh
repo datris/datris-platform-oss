@@ -44,12 +44,12 @@ if [ "$PROVIDER" = "openai" ]; then
   vault kv put secret/oss/ai-primary \
     provider="openai" \
     endpoint="https://api.openai.com/v1/chat/completions" \
-    model="${OPENAI_MODEL:-gpt-5.4}" \
+    model="${OPENAI_MODEL:-gpt-5.5}" \
     apiKey="${OPENAI_API_KEY}"
   vault kv put secret/oss/codegen \
     provider="openai" \
     endpoint="https://api.openai.com/v1/chat/completions" \
-    model="${CODEGEN_MODEL:-gpt-5.3-codex}" \
+    model="${CODEGEN_MODEL:-gpt-5.5}" \
     apiKey="${OPENAI_API_KEY}"
   vault kv put secret/oss/embedding \
     provider="openai" \
