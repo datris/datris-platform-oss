@@ -384,8 +384,7 @@ Executes a saved tap. Optionally sends data to the configured pipeline.
   "targetPipeline": "stock-prices",
   "persisted": true,
   "publisherToken": "5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e",
-  "pipelineTokens": ["a1b2c3d4-..."] ,
-  "records": [...],
+  "pipelineTokens": ["a1b2c3d4-..."],
   "recordCount": 503,
   "dataType": "csv",
   "logs": "...",
@@ -393,17 +392,23 @@ Executes a saved tap. Optionally sends data to the configured pipeline.
 }
 ```
 
-`persisted: true` means the records were submitted to `targetPipeline`. When `persisted: false`, a `persistedReason` field names the cause — one of `test_mode`, `run_error`, `no_records`, `no_target_pipeline`. On persisted runs, `publisherToken` groups every ingestion job this run submitted; `pipelineTokens` lists each. Document taps fan out to many `pipelineTokens` but share one `publisherToken`.
+**`mode=run` does not return the records themselves** — the data is in transit to `targetPipeline`, and the agent / caller should verify completion via `get_pipeline_status`, not read from the response body. `recordCount` summarizes how many records were submitted. To preview what a script produces, call the same endpoint with `mode=test`, which returns up to 20 sample rows in a `records` array (with `recordsTruncated: true` set when the script produced more than that).
+
+`persisted: true` means the records were submitted to `targetPipeline`. When `persisted: false`, a `persistedReason` field names the cause — one of `test_mode`, `run_error`, `no_records`, `no_target_pipeline`, or `debounced`. On persisted runs, `publisherToken` groups every ingestion job this run submitted; `pipelineTokens` lists each. Document taps fan out to many `pipelineTokens` but share one `publisherToken`.
+
+### Run debounce (mode=run only)
+
+`/tap/run` debounces `mode=run` requests per tap on a 5-second window to suppress accidental duplicates — agents that emit parallel `tool_use` blocks, UI buttons that get double-clicked, or transport-level retries. If a second run hits within the window, the response is HTTP 200 with `status: "skipped"`, `persisted: false`, `persistedReason: "debounced"`, and an `error` string explaining how long ago the previous run started. The previous run keeps executing — pivot via `get_tap_logs` and `get_pipeline_status` to track its outcome. `mode=test` is read-only and is never debounced.
 
 ### Watching a tap run
 
 A `/tap/run` response comes back as soon as records are handed off to the async ingestion pipeline — the actual load is still in progress. Use `publisherToken` to poll:
 
 ```
-GET /api/v1/pipeline/status?publishertoken={publisherToken}
+GET /api/v1/pipeline/status?publishertoken={publisherToken}&withrollup=true
 ```
 
-Returns status rows for every ingestion job this tap run submitted (for structured taps that's one job; for document taps it's one per submitted document). Each row has a `state` — poll until every job's latest row is `end` (or `error`).
+Returns a `{rollup, events}` wrapper covering every ingestion job this tap run submitted (for structured taps that's one job; for document taps it's one per submitted document). Poll until `rollup.allDone` is `true`, then read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failure. See the [Pipeline Status API → Rollup Response](/api-reference/status-api#rollup-response) for the full shape.
 
 ## Generate CRON Expression (AI)
 

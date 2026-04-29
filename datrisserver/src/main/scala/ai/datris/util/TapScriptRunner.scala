@@ -22,14 +22,20 @@ object TapScriptRunner {
     private def scriptTimeoutSeconds: Int = DatrisEnvironment.current.tapScriptTimeoutSeconds
 
     private val WRAPPER_TEMPLATE =
-        """import json, sys, os, importlib.util
-          |# Redirect script's print() output to stderr so only JSON goes to stdout
+        """import json, sys, os, time, importlib.util
+          |# Redirect script's print() output to stderr so only JSON goes to stdout.
+          |# Wrapper-emitted lifecycle lines (prefixed [wrapper]) also go to stderr so
+          |# every run has some log content even when the user's script is silent.
           |_real_stdout = sys.stdout
           |sys.stdout = sys.stderr
+          |print("[wrapper] loading tap script", flush=True)
           |spec = importlib.util.spec_from_file_location("tap", sys.argv[1])
           |mod = importlib.util.module_from_spec(spec)
           |spec.loader.exec_module(mod)
+          |print("[wrapper] calling fetch()", flush=True)
+          |_t0 = time.time()
           |result = mod.fetch()
+          |_elapsed = time.time() - _t0
           |sys.stdout = _real_stdout
           |# Detect data type from result
           |if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict) and 'uri' in result[0] and 'content' in result[0]:
@@ -59,6 +65,13 @@ object TapScriptRunner {
           |else:
           |    data_type = "json"
           |    data = json.dumps(result)
+          |# Lifecycle summary on stderr — visible in tap-run logs whether the script
+          |# printed anything or not.
+          |if data_type in ("json", "csv", "document") and isinstance(json.loads(data), list):
+          |    _count = len(json.loads(data))
+          |    print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |else:
+          |    print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
           |print(json.dumps(envelope))
           |""".stripMargin
@@ -79,6 +92,11 @@ object TapScriptRunner {
         // Step 3: Write script and wrapper to temp files
         val scriptFile: Path = Files.createTempFile("tap_script_", ".py")
         val wrapperFile: Path = Files.createTempFile("tap_wrapper_", ".py")
+
+        // Tracks secret values across the try block so the catch handler can mask
+        // them out of any exception message before storing it on TapScriptResult.
+        // Populated once secretEnvVars is computed inside the try.
+        var secretValuesForMasking: Seq[String] = Seq.empty
 
         try {
             Files.write(scriptFile, scriptContent.getBytes("UTF-8"))
@@ -113,9 +131,15 @@ object TapScriptRunner {
 
             // Step 5: Execute the wrapper
             val secretValues = secretEnvVars.map(_._2)
-            val (rawOutput, logs) = executeWithTimeout(wrapperFile.toString, scriptFile.toString, scriptTimeoutSeconds, allEnvVars, secretValues)
+            secretValuesForMasking = secretValues
+            val (rawOutput, rawLogs) = executeWithTimeout(wrapperFile.toString, scriptFile.toString, scriptTimeoutSeconds, allEnvVars, secretValues)
+            // Mask secret values in logs before they're persisted (TapRunLog), surfaced via
+            // get_tap_logs / the run-history UI, or echoed to the platform's own logger.
+            // A script's print() that incidentally includes an API key would otherwise leak
+            // through the run history to anyone with tap access.
+            val logs = if (rawLogs.nonEmpty) maskSecrets(rawLogs, secretValues) else rawLogs
             logger.info("TapScriptRunner: script executed, output length: " + rawOutput.length + " chars")
-            if (logs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + maskSecrets(logs, secretValues))
+            if (logs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + logs)
 
             // Step 5: Parse envelope to extract data type and records
             val gson = new com.google.gson.Gson
@@ -165,11 +189,17 @@ object TapScriptRunner {
             TapScriptResult(normalizedDataJson, recordCount, null, if (logs.nonEmpty) logs else null, dataType, columns)
         } catch {
             case e: DatrisException =>
-                logger.error("TapScriptRunner failed: " + e.getMessage)
-                TapScriptResult(null, 0, e.getMessage)
+                // DatrisException messages constructed inside this method are already
+                // masked at throw time (executeWithTimeout). Re-mask defensively in case a
+                // future code path forgets — maskSecrets is a no-op when the input has no
+                // secret substrings.
+                val masked = if (secretValuesForMasking.nonEmpty) maskSecrets(e.getMessage, secretValuesForMasking) else e.getMessage
+                logger.error("TapScriptRunner failed: " + masked)
+                TapScriptResult(null, 0, masked)
             case e: Exception =>
                 logger.error("TapScriptRunner failed", e)
-                TapScriptResult(null, 0, e.getMessage)
+                val masked = if (secretValuesForMasking.nonEmpty) maskSecrets(e.getMessage, secretValuesForMasking) else e.getMessage
+                TapScriptResult(null, 0, masked)
         } finally {
             Files.deleteIfExists(scriptFile)
             Files.deleteIfExists(wrapperFile)

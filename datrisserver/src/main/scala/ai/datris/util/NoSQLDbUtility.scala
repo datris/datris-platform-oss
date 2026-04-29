@@ -14,7 +14,7 @@ trait NoSQLDbUtility {
 
     def getItemJSON(tableName: String, keyName: String, key: String, valueName: String): Option[String]
 
-    def putItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null): Unit
+    def putItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null, extraFields: java.util.Map[String, AnyRef] = null): Unit
 
     def updateItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null): Unit
 
