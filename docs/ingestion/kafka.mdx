@@ -5,6 +5,10 @@ description: "Consume data from Kafka topics"
 
 The pipeline can consume data from Kafka topics in real time. Configure the Kafka consumer in `application.yaml`, and the pipeline subscribes to topics based on registered pipeline configurations with `streamAttributes.type: "kafka"`.
 
+<Note>
+**Kafka is opt-in.** The bundled `kafka`, `zookeeper`, and `kafka-ui` services are commented out in `docker-compose.yml` by default. To use the bundled broker, uncomment all three service blocks and the `kafka-data`, `zookeeper-data`, and `zookeeper-log` volumes. The `kafka-clients` library is included in the assembly JAR, so pipelines that point at any external Kafka broker work without enabling the bundled one.
+</Note>
+
 ## Enabling the Kafka Consumer
 
 Set the `kafkaConsumer` block in `application.yaml`:

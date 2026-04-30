@@ -84,12 +84,12 @@ docker compose up -d
 - **All MinIO object storage** — raw uploads, configs, temp files, processed outputs
 - **MongoDB destination data**
 - **Queued messages and offsets** in Kafka, Zookeeper, ActiveMQ
-- **The bundled `bge-m3` embedding model** in the `ollama-data` volume (will re-download ~1.2 GB on first start)
+- **The bundled `bge-m3` embedding model** in the `tei-data` volume (will re-download ~2.2 GB on first start)
 - **Cached pip wheels** in the `pip-cache` volume (taps that need extras like `yfinance` will re-download on first run)
 
 Only run `down -v` if you are certain none of the above matters, e.g. on a brand-new dev machine, after exporting anything you needed, or on a CI runner. **Never run `down -v` on a production or shared instance.**
 
-After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secrets from your `.env`, MinIO buckets are recreated, Postgres starts empty, and Ollama re-downloads `bge-m3` (a few minutes one-time).
+After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secrets from your `.env`, MinIO buckets are recreated, Postgres starts empty, and the bundled embedding service re-downloads `bge-m3` (a few minutes one-time).
 
 > **Note for production deployments:** the `deploy/docker-compose.prod.yml` file used by managed/dedicated installs uses bind mounts to host directories under `/data/*` instead of Docker volumes, so `docker compose -f docker-compose.prod.yml down -v` does **not** wipe the data — the host directories survive. To reset a prod install, you'd need to also delete the relevant `/data/*` directories on the host, which is a much riskier operation and not recommended outside of disaster recovery.
 
