@@ -89,11 +89,18 @@ else
   exit 1
 fi
 
-# Vector store secrets
-vault kv put secret/oss/qdrant host="host.docker.internal" port="6334" apiKey=""
-vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
+# Vector store secrets.
+# Only pgvector is seeded by default — it rides on the bundled Postgres so
+# it's always available. The other vector stores (qdrant, weaviate, milvus,
+# chroma) are opt-in via the optional service blocks in docker-compose.yml.
+# Seeding their secrets unconditionally would make the Configuration tab's
+# Service Health card show them as "Down" instead of "Not Configured" when
+# the user hasn't enabled them. Users who turn on an optional vector store
+# can write its secret via the Configuration tab or by hand:
+#   vault kv put secret/oss/qdrant   host="host.docker.internal" port="6334" apiKey=""
+#   vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
+#   vault kv put secret/oss/milvus   host="host.docker.internal" port="19530" apiKey=""
+#   vault kv put secret/oss/chroma   host="host.docker.internal" port="8000"
 vault kv put secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/datris" username="postgres" password="postgres"
-vault kv put secret/oss/milvus host="host.docker.internal" port="19530" apiKey=""
-vault kv put secret/oss/chroma host="host.docker.internal" port="8000"
 
 echo "Vault secrets seeded successfully."
