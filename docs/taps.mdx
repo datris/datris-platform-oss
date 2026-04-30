@@ -254,11 +254,14 @@ When "Send to pipeline" is checked:
 
 `run_tap` returns as soon as records are handed off — the pipeline load runs async after that. The response carries:
 
-- `persisted: true/false` with `persistedReason` when false (`no_target_pipeline`, `test_mode`, `no_records`, `run_error`) so callers know whether the data actually landed.
+- `persisted: true/false` with `persistedReason` when false (`no_target_pipeline`, `test_mode`, `no_records`, `run_error`, `debounced`) so callers know whether the data actually landed. `debounced` means another run for this same tap was triggered within the last 5 seconds — that earlier run is still executing; do not retry, just track it via `get_tap_logs` / `get_pipeline_status`.
 - `publisherToken` — a single ID covering every ingestion job this run submitted. Document taps fan out to many jobs per run; one `publisherToken` covers them all.
 - `pipelineTokens` — the per-job IDs (length 1 for structured, N for document).
+- `recordCount` — how many records the script produced.
 
-Poll `GET /api/v1/pipeline/status?publishertoken=...` (or the MCP `get_pipeline_status` tool) until every job's latest row is `end` or `error` before treating the destination as loaded.
+`run_tap` does **not** return the records themselves. Use `test_tap` (or the **Test Script** button in the UI) when you need to preview what a script produces before pushing it — `test_tap` returns a sample of up to 20 rows with a `recordsTruncated` flag when trimmed.
+
+Poll `GET /api/v1/pipeline/status?publishertoken=...&withrollup=true` (or the MCP `get_pipeline_status` tool, which sets `withrollup=true` automatically) until `rollup.allDone` is `true`, then read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failure detail.
 
 ## Data Types
 
@@ -301,7 +304,7 @@ AI agents can manage taps via MCP:
 | `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be deleted by an agent; human-owned secrets must be removed from the Secrets tab. |
 | `list_taps` | List all taps with status, schedule, and last run info |
 | `get_tap` | Get full details of a single tap including its Python script |
-| `run_tap` | Execute a tap and push fetched data to the target pipeline. Response carries `persisted`, `persistedReason`, `publisherToken`, `pipelineTokens` so the agent can confirm what landed. |
+| `run_tap` | Execute a tap and push fetched data to the target pipeline. Response carries `persisted`, `persistedReason`, `recordCount`, `publisherToken`, `pipelineTokens` so the agent can confirm what landed. Records themselves are not returned — use `test_tap` to preview a script. |
 | `test_tap` | Test-run a tap without pushing data to the pipeline |
 | `get_pipeline_status` | Watch ingestion progress after a `run_tap`. Pass the response's `publisherToken` to get status rows for every job this run submitted (one for structured taps, N for document taps). |
 | `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |

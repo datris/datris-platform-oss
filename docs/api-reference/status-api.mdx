@@ -19,6 +19,7 @@ Use this to watch every ingestion job a single caller submitted. Tap runs set a 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `publishertoken` | query | Yes | Publisher token returned from `/tap/run` (`publisherToken` field) or `upload_data` |
+| `withrollup` | query | No | When `true`, wraps the response in a rollup object that classifies each job — see [Rollup Response](#rollup-response) below. Recommended for agents that need a single boolean to poll on. |
 
 **Example:**
 ```bash
@@ -41,6 +42,7 @@ GET /api/v1/pipeline/status?pipelinetoken={token}
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `pipelinetoken` | query | Yes* | Pipeline token from upload response |
+| `withrollup` | query | No | When `true`, wraps the response in a rollup object — see [Rollup Response](#rollup-response). |
 
 **Example:**
 ```bash
@@ -115,6 +117,57 @@ curl "http://localhost:8080/api/v1/pipeline/status?pipelinename=sales_data&page=
   }
 ]
 ```
+
+---
+
+## Rollup Response
+
+Add `&withrollup=true` to a `publishertoken` or `pipelinetoken` query and the response is wrapped:
+
+```json
+{
+  "rollup": {
+    "allDone": false,
+    "status": "processing",
+    "jobs": [
+      {
+        "pipelineToken": "pt-abc12345-...",
+        "pipeline": "sales_data",
+        "filename": "sales_data.csv",
+        "status": "success",
+        "startedAt": "2026-04-29 14:32:11.123",
+        "lastEventAt": "2026-04-29 14:32:47.901",
+        "elapsed": "36.78 sec",
+        "lastError": null
+      },
+      {
+        "pipelineToken": "pt-def67890-...",
+        "pipeline": "sales_data",
+        "filename": "orders.csv",
+        "status": "error",
+        "startedAt": "2026-04-29 14:32:11.140",
+        "lastEventAt": "2026-04-29 14:33:02.512",
+        "elapsed": "51.37 sec",
+        "lastError": {
+          "processName": "PostgresLoader",
+          "description": "duplicate key value violates unique constraint \"customers_pkey\""
+        }
+      }
+    ]
+  },
+  "events": [ /* the same raw status entries as without withrollup */ ]
+}
+```
+
+`rollup.allDone` flips to `true` when every job has reached a terminal state. `rollup.status` is the aggregate outcome — `success`, `warning`, `error`, or `processing`. Per-job `status` values are `success`, `warning`, `error`, `processing`, or `timed_out` (no terminal event within 8 hours of the first event). When a job's `status` is `error`, `lastError` carries the failing process and its message.
+
+Polling pattern (agents and clients):
+
+1. Call with `withrollup=true`.
+2. Re-call every few seconds until `rollup.allDone` is `true`.
+3. Read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failures.
+
+Without `withrollup=true`, all three queries return their original array shapes (no wrapper) — backward compatible.
 
 ---
 

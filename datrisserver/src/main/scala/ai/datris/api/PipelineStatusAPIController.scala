@@ -24,16 +24,23 @@ PipelineStatusAPIController {
                          @RequestParam(required = false) pipelinetoken: String,
                          @RequestParam(required = false) publishertoken: String,
                          @RequestParam(required=false) pipelinename: String,
-                         @RequestParam(required = false) page: String): ResponseEntity[String] = {
+                         @RequestParam(required = false) page: String,
+                         @RequestParam(required = false) withrollup: String): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint GET /pipeline/status called with pipelinetoken: " + pipelinetoken + ", publishertoken: " + publishertoken + ", pipelinename: " + pipelinename + ", page: " + page)
+            logger.info("API endpoint GET /pipeline/status called with pipelinetoken: " + pipelinetoken + ", publishertoken: " + publishertoken + ", pipelinename: " + pipelinename + ", page: " + page + ", withrollup: " + withrollup)
             APIKeyValidator.validate(apiKey)
+
+            val rollup = withrollup != null && withrollup.equalsIgnoreCase("true")
 
             // publishertoken wins when both are sent — it's the broader query and a
             // single pipelineToken's rows are a strict subset of its publisherToken's rows.
-            val data = {
-                if(publishertoken != null)
-                    PipelineStatusUtil.getPipelineStatusByPublisher(publishertoken)
+            // withrollup=true is only meaningful for token queries (publisher/pipeline);
+            // the paginated summary path returns its own rollup-equivalent shape.
+            val data: AnyRef = {
+                if(publishertoken != null) {
+                    if(rollup) PipelineStatusUtil.getPipelineStatusByPublisherWithRollup(publishertoken)
+                    else PipelineStatusUtil.getPipelineStatusByPublisher(publishertoken)
+                }
                 else if(pipelinetoken == null) {
                     val pageNbr = {
                         if(page == null)
@@ -43,8 +50,10 @@ PipelineStatusAPIController {
                     }
                     PipelineStatusUtil.getPipelineStatusSummary(pipelinename, pageNbr)
                 }
-                else
-                    PipelineStatusUtil.getPipelineStatus(pipelinetoken)
+                else {
+                    if(rollup) PipelineStatusUtil.getPipelineStatusWithRollup(pipelinetoken)
+                    else PipelineStatusUtil.getPipelineStatus(pipelinetoken)
+                }
             }
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(data), HttpStatus.OK)

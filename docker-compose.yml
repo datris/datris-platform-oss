@@ -4,10 +4,11 @@ networks:
 
 volumes:
   pip-cache:
-  ollama-data:
-  kafka-data:
-  zookeeper-data:
-  zookeeper-log:
+  tei-data:
+  # kafka-data:        # uncomment if re-enabling the optional Kafka service below
+  # zookeeper-data:    # uncomment if re-enabling the optional Kafka service below
+  # zookeeper-log:     # uncomment if re-enabling the optional Kafka service below
+  # ollama-data:       # uncomment if re-enabling the optional Ollama service below
 
 services:
   minio:
@@ -101,86 +102,31 @@ services:
     networks:
       - datris-net
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
-    container_name: zookeeper
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    platform: linux/amd64   # TEI publishes amd64 only; arm64 hosts run under Docker's QEMU translation
+    container_name: tei
     ports:
-      - "2181:2181"
+      - "11434:80"   # external port preserved so any prior EMBEDDING_ENDPOINT overrides keep working
+    command: --model-id BAAI/bge-m3 --max-batch-tokens 16384
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-      # Allow the `ruok` 4-letter word so the healthcheck can probe protocol
-      # readiness (not just TCP socket open). Confluent's env-var convention
-      # can't encode the dots in `zookeeper.4lw.commands.whitelist`, so we
-      # set it as a JVM system property via KAFKA_OPTS (which the cp-zookeeper
-      # entrypoint passes through to the JVM).
-      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
+      HUGGINGFACE_HUB_CACHE: /data
     volumes:
-      - zookeeper-data:/var/lib/zookeeper/data
-      - zookeeper-log:/var/lib/zookeeper/log
+      - tei-data:/data
+    # TEI's Rust HTTP client under amd64-emulation on arm64 hosts can fail to resolve
+    # huggingface.co via Docker's embedded DNS (127.0.0.11) on user-defined bridges.
+    # Pin to public resolvers so the first-run model download succeeds.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     healthcheck:
-      # `ruok` returns "imok" only after the request processor is up. A bare
-      # TCP probe (nc -z) returns "ready" the instant the listener binds —
-      # that's the exact race that left kafka stranded waiting on a session
-      # that never landed.
-      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - datris-net
-
-  kafka:
-    image: confluentinc/cp-kafka:7.6.0
-    container_name: kafka
-    ports:
-      - "9092:9092"
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-    volumes:
-      - kafka-data:/var/lib/kafka/data
-    networks:
-      - datris-net
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    environment:
-      OLLAMA_NUM_PARALLEL: 4
-      OLLAMA_KEEP_ALIVE: 30m
-      OLLAMA_MAX_LOADED_MODELS: 2
-    volumes:
-      - ollama-data:/root/.ollama
-    networks:
-      - datris-net
-    # Pull bge-m3 (1024-dim embedding model) on first start, then keep serving.
-    # Subsequent restarts find the model in the persistent volume — no re-download.
-    # The ollama image has no curl; we wait for `ollama list` to succeed instead.
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        ollama serve &
-        SERVE_PID=$$!
-        echo "Waiting for ollama server to come up..."
-        until ollama list >/dev/null 2>&1; do sleep 1; done
-        echo "Pulling bge-m3 (this may take a few minutes on first run)..."
-        ollama pull bge-m3 || echo "WARNING: bge-m3 pull failed; embedding requests will error until it succeeds."
-        wait $$SERVE_PID
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q bge-m3"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 90
-      start_period: 60s
+      retries: 30
+      start_period: 120s   # first-run model download (~2.2 GB)
+    networks:
+      - datris-net
 
   datris:
     #image: datrisai/datris-server:latest
@@ -199,9 +145,7 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
-      kafka:
-        condition: service_started
-      ollama:
+      tei:
         condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
@@ -220,19 +164,6 @@ services:
       - "4200:8080"
     depends_on:
       - datris
-    networks:
-      - datris-net
-
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: kafka-ui
-    ports:
-      - "8085:8080"
-    depends_on:
-      - kafka
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
     networks:
       - datris-net
 
@@ -308,6 +239,93 @@ services:
   # Recommended: use the standalone embed script instead:
   #   curl -sfL https://raw.githubusercontent.com/milvus-io/milvus/master/scripts/standalone_embed.sh -o standalone_embed.sh
   #   bash standalone_embed.sh start
+
+  # ================================================================
+  # Optional: Ollama (local chat / CodeGen models)
+  # The bundled embedding model has moved to the `tei` service above.
+  # Re-enable this block (and the `ollama-data` volume at the top of
+  # the file) only if you want to run local chat models like llama3
+  # or qwen instead of using BYO Anthropic/OpenAI keys.
+  # After uncommenting + `docker compose up -d ollama`, point Datris
+  # at it via the AI Provider / CodeGen Provider dropdown in the
+  # Configuration tab (provider: ollama).
+  # NOTE: TEI takes host port 11434, so Ollama is mapped to 11435 here
+  # to avoid a conflict.
+  # ================================================================
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   ports:
+  #     - "11435:11434"
+  #   environment:
+  #     OLLAMA_NUM_PARALLEL: 4
+  #     OLLAMA_KEEP_ALIVE: 30m
+  #     OLLAMA_MAX_LOADED_MODELS: 2
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   networks:
+  #     - datris-net
+
+  # ================================================================
+  # Optional: Kafka + Zookeeper + kafka-ui
+  # Datris ships with kafka-clients in the assembly, so pipelines that
+  # use a Kafka source/destination can point at any external broker
+  # via the pipeline's Kafka secret. This bundled local broker is only
+  # needed if you want to test Kafka pipelines without spinning up a
+  # broker elsewhere.
+  # Re-enable all three services AND the volumes at the top of the file
+  # (kafka-data, zookeeper-data, zookeeper-log) to use locally.
+  # ================================================================
+  # zookeeper:
+  #   image: confluentinc/cp-zookeeper:7.6.0
+  #   container_name: zookeeper
+  #   ports:
+  #     - "2181:2181"
+  #   environment:
+  #     ZOOKEEPER_CLIENT_PORT: 2181
+  #     ZOOKEEPER_TICK_TIME: 2000
+  #     KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
+  #   volumes:
+  #     - zookeeper-data:/var/lib/zookeeper/data
+  #     - zookeeper-log:/var/lib/zookeeper/log
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+  #   networks:
+  #     - datris-net
+  #
+  # kafka:
+  #   image: confluentinc/cp-kafka:7.6.0
+  #   container_name: kafka
+  #   ports:
+  #     - "9092:9092"
+  #   depends_on:
+  #     zookeeper:
+  #       condition: service_healthy
+  #   environment:
+  #     KAFKA_BROKER_ID: 1
+  #     KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  #   volumes:
+  #     - kafka-data:/var/lib/kafka/data
+  #   networks:
+  #     - datris-net
+  #
+  # kafka-ui:
+  #   image: provectuslabs/kafka-ui:latest
+  #   container_name: kafka-ui
+  #   ports:
+  #     - "8085:8080"
+  #   depends_on:
+  #     - kafka
+  #   environment:
+  #     KAFKA_CLUSTERS_0_NAME: local
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+  #   networks:
+  #     - datris-net
 
   minio-init:
     image: minio/mc:latest

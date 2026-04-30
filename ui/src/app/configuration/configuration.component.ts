@@ -139,11 +139,11 @@ export class ConfigurationComponent implements OnInit {
     // On hosted instances, auto-set embedding based on the AI provider.
     if (this.isHosted) {
       if (this.aiPrimaryProvider === 'anthropic') {
-        this.embeddingProvider = 'ollama';
-        this.embeddingModel = 'bge-m3';
-        this.embeddingEndpoint = this.endpointFor('ollama', 'embedding');
-      } else if (this.aiPrimaryProvider === 'openai' && this.embeddingProvider === 'ollama') {
-        // Switching from Anthropic→OpenAI: default to OpenAI embeddings (user can switch back to Ollama)
+        this.embeddingProvider = 'tei';
+        this.embeddingModel = 'BAAI/bge-m3';
+        this.embeddingEndpoint = this.endpointFor('tei', 'embedding');
+      } else if (this.aiPrimaryProvider === 'openai' && this.isBundledEmbedding(this.embeddingProvider)) {
+        // Switching from Anthropic→OpenAI: default to OpenAI embeddings (user can switch back to bundled)
         this.embeddingProvider = 'openai';
         this.embeddingModel = 'text-embedding-3-small';
         this.embeddingEndpoint = this.endpointFor('openai', 'embedding');
@@ -178,6 +178,8 @@ export class ConfigurationComponent implements OnInit {
     const remembered = this.embeddingModelMemory[this.embeddingProvider];
     if (remembered) {
       this.embeddingModel = remembered;
+    } else if (this.embeddingProvider === 'tei') {
+      this.embeddingModel = 'BAAI/bge-m3';
     } else if (this.embeddingProvider === 'ollama') {
       this.embeddingModel = 'bge-m3';
     } else if (this.embeddingProvider === 'ollama-local') {
@@ -248,8 +250,10 @@ export class ConfigurationComponent implements OnInit {
     this.http.get<any>('/api/v1/secrets/embedding').subscribe({
       next: (data) => {
         const fields = data && data.fields;
-        if (fields && (fields.apiKey || (fields.provider || '').toLowerCase() === 'ollama')) {
-          let ep = (fields.provider || 'openai').toLowerCase();
+        const loadedProvider = (fields && fields.provider || '').toLowerCase();
+        const isBundledNoKey = loadedProvider === 'ollama' || loadedProvider === 'tei';
+        if (fields && (fields.apiKey || isBundledNoKey)) {
+          let ep = loadedProvider || 'openai';
           // Distinguish bundled vs unbundled Ollama by endpoint — bundled uses docker hostname.
           if (ep === 'ollama' && fields.endpoint && !fields.endpoint.includes('ollama:')) {
             ep = 'ollama-local';
@@ -312,11 +316,11 @@ export class ConfigurationComponent implements OnInit {
     this.usingDefaultEmbedding = true;
   }
 
-  /** Look up the shared API key for a given provider. Returns empty string for ollama. */
+  /** Look up the shared API key for a given provider. Returns empty string for local/bundled providers. */
   private keyForProvider(provider: string): string {
     if (provider === 'anthropic') return this.anthropicApiKey;
     if (provider === 'openai') return this.openaiApiKey;
-    return '';  // ollama / ollama-local need no key
+    return '';  // ollama / ollama-local / tei need no key
   }
 
   /** A field still showing only the masked placeholder hasn't been edited. */
@@ -330,10 +334,21 @@ export class ConfigurationComponent implements OnInit {
     return provider === 'ollama' || provider === 'ollama-local';
   }
 
+  /** Returns true if the provider is a bundled (no-key-required) embedding service. */
+  private isBundledEmbedding(provider: string): boolean {
+    return provider === 'tei' || provider === 'ollama';
+  }
+
+  /** Returns true if the provider doesn't require an API key (local Ollama variants or bundled TEI). */
+  private noKeyRequired(provider: string): boolean {
+    return this.isOllama(provider) || provider === 'tei';
+  }
+
   private endpointFor(provider: string, kind: 'chat' | 'embedding'): string {
     const p = provider.toLowerCase();
     if (kind === 'embedding') {
       if (p === 'openai') return 'https://api.openai.com/v1/embeddings';
+      if (p === 'tei') return 'http://tei:80/v1/embeddings';
       if (p === 'ollama') return 'http://ollama:11434/v1/embeddings';
       if (p === 'ollama-local') return 'http://host.docker.internal:11434/v1/embeddings';
       return '';
@@ -352,7 +367,7 @@ export class ConfigurationComponent implements OnInit {
     // masked-preservation logic keeps the existing apiKey at that path.
     const sectionReady = (provider: string, model: string): boolean => {
       if (!model || !model.trim()) return false;
-      if (this.isOllama(provider)) return true;
+      if (this.noKeyRequired(provider)) return true;
       const key = this.keyForProvider(provider);
       return !!(key && key.length > 0);
     };
@@ -373,7 +388,7 @@ export class ConfigurationComponent implements OnInit {
     const missing = new Set<string>();
     const flagIfMissingKey = (provider: string, model: string) => {
       if (!model || !model.trim()) return;
-      if (this.isOllama(provider)) return;
+      if (this.noKeyRequired(provider)) return;
       if (!this.keyForProvider(provider)) missing.add(provider);
     };
     flagIfMissingKey(this.aiPrimaryProvider, this.aiPrimaryModel);

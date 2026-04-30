@@ -59,6 +59,9 @@ const FALLBACK: ModelCatalog = {
       { value: 'text-embedding-3-small', label: 'text-embedding-3-small (recommended)', recommended: true },
       { value: 'text-embedding-3-large', label: 'text-embedding-3-large' },
     ],
+    tei: [
+      { value: 'BAAI/bge-m3', label: 'bge-m3 (1024-dim, bundled)' },
+    ],
     ollama: [
       { value: 'bge-m3', label: 'bge-m3 (1024-dim, bundled)' },
     ],

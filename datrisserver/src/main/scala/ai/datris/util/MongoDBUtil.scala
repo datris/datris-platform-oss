@@ -63,7 +63,7 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         }
     }
 
-    override def putItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null): Unit = {
+    override def putItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null, extraFields: java.util.Map[String, AnyRef] = null): Unit = {
         val collection = database.getCollection(tableName)
         val valueDoc = Document.parse(value)
 
@@ -72,6 +72,10 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
 
         if (sortKeyName != null)
             doc.append(sortKeyName, sortKeyValue.longValue(): java.lang.Long)
+
+        if (extraFields != null) {
+            extraFields.asScala.foreach { case (k, v) => if (v != null) doc.append(k, v) }
+        }
 
         collection.replaceOne(
             buildKeyFilter(keyName, key, sortKeyName, sortKeyValue),

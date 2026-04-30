@@ -16,6 +16,21 @@ import org.springframework.web.bind.annotation._
 import java.time.Instant
 import scala.collection.JavaConverters._
 
+object TapAPIController {
+    // mode=test response caps `records` to this many rows. The UI's preview already
+    // slices to 20 (tap-run.component.ts), so this matches without losing display
+    // fidelity, and prevents large taps from bloating agent context.
+    private val testRecordSampleSize = 20
+
+    // Server-side debounce for /tap/run with mode=run. Prevents duplicate pushes when
+    // an agent emits parallel tool_use blocks, when a UI button is rapidly clicked,
+    // or when MCP transport retries fire concurrent requests. Keyed by tenant + tap
+    // name; mode=test bypasses the debounce since previewing has no side-effects.
+    private val runDebounceWindowMs: Long = 5000L
+    private val recentRunStarts: java.util.concurrent.ConcurrentHashMap[String, java.lang.Long] =
+        new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
+}
+
 @RestController
 @RequestMapping(Array("/api/v1"))
 class TapAPIController {
@@ -197,6 +212,21 @@ class TapAPIController {
                 } catch {
                     case ex: Exception => logger.warn("Tap ledger cleanup failed for " + name + ": " + ex.getMessage)
                 }
+            }
+
+            // Run history: every TapRunner.writeRunLog inserts a row keyed by
+            // "<tapName>|<runTime>" into {env}-tap-log. Without this cleanup, deleting
+            // and recreating a tap with the same name would silently surface the old
+            // tap's run history under the new tap.
+            try {
+                val tapLogTable = DatrisEnvironment.current.tapLogTableName
+                val prefix = name + "|"
+                val allKeys = NoSQLDbUtil.getItemsKeysByKeyName(tapLogTable, "key")
+                allKeys.filter(_.startsWith(prefix)).foreach { k =>
+                    NoSQLDbUtil.deleteItemJSON(tapLogTable, "key", k)
+                }
+            } catch {
+                case ex: Exception => logger.warn("Tap run-log cleanup failed for " + name + ": " + ex.getMessage)
             }
 
             TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)
@@ -859,6 +889,35 @@ class TapAPIController {
                 throw new DatrisException("Tap: " + name + " not found")
 
             val mode = Option(body.get("mode")).map(_.toLowerCase).getOrElse("test")
+
+            // Debounce push runs to suppress accidental duplicates (parallel tool calls,
+            // double-clicks, transport retries). mode=test is read-only, no need to debounce.
+            // checkAndAcceptRunDebounce returns Some(ageMs) when the request should be
+            // rejected (a recent run is still inside the window), or None to proceed.
+            val debouncedAgeMs: Option[Long] =
+                if (mode == "run") checkAndAcceptRunDebounce(name) else None
+
+            if (debouncedAgeMs.isDefined) {
+                val ageMs = debouncedAgeMs.get
+                logger.info("Debounced /tap/run for tap: " + name + " — last run started " + ageMs + "ms ago (window=" + TapAPIController.runDebounceWindowMs + "ms)")
+                val gson = new Gson
+                val response = new java.util.HashMap[String, Any]()
+                response.put("tap", name)
+                response.put("description", tapConfig.description)
+                response.put("status", "skipped")
+                response.put("mode", mode)
+                response.put("targetPipeline", tapConfig.targetPipeline)
+                response.put("persisted", java.lang.Boolean.FALSE)
+                response.put("persistedReason", "debounced")
+                response.put("error",
+                    "Tap '" + name + "' was triggered " + ageMs + " ms ago; ignoring this duplicate request " +
+                    "(debounce window: " + TapAPIController.runDebounceWindowMs + " ms). Wait for the in-flight " +
+                    "run to finish, then check `get_pipeline_status` or `get_tap_logs` for the outcome.")
+                response.put("recordCount", Integer.valueOf(0))
+                new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+            }
+            else {
+
             val result = TapRunner.run(tapConfig, mode = mode)
 
             // Save test run status when not pushing to pipeline
@@ -878,7 +937,28 @@ class TapAPIController {
             }
 
             val gson = new Gson
-            val recordsJson = if (result.records != null) JsonParser.parseString(result.records) else null
+            val rawRecords = if (result.records != null) JsonParser.parseString(result.records) else null
+
+            // Records policy:
+            //   - mode=run: omit records entirely. They are in transit to the destination;
+            //     the agent must verify via get_pipeline_status, not from this body.
+            //     `recordCount` is enough to summarize what was submitted.
+            //   - mode=test: include records as a preview, capped at TapAPIController.testRecordSampleSize.
+            //     Set `recordsTruncated=true` when we trimmed it.
+            val (recordsToReturn, recordsTruncated) =
+                if (mode == "run") (null, false)
+                else if (rawRecords != null && rawRecords.isJsonArray) {
+                    val arr = rawRecords.getAsJsonArray
+                    if (arr.size > TapAPIController.testRecordSampleSize) {
+                        val sample = new com.google.gson.JsonArray
+                        var i = 0
+                        while (i < TapAPIController.testRecordSampleSize) { sample.add(arr.get(i)); i += 1 }
+                        (sample: com.google.gson.JsonElement, true)
+                    }
+                    else (rawRecords: com.google.gson.JsonElement, false)
+                }
+                else (rawRecords: com.google.gson.JsonElement, false)
+
             val hasTargetPipeline = tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
             val persisted = mode == "run" && hasTargetPipeline && result.error == null && result.recordCount > 0
             val persistedReason: String =
@@ -898,18 +978,40 @@ class TapAPIController {
             if (persistedReason != null) response.put("persistedReason", persistedReason)
             if (result.publisherToken != null) response.put("publisherToken", result.publisherToken)
             if (result.pipelineTokens != null && !result.pipelineTokens.isEmpty) response.put("pipelineTokens", result.pipelineTokens)
-            response.put("records", recordsJson)
+            if (recordsToReturn != null) response.put("records", recordsToReturn)
+            if (recordsTruncated) response.put("recordsTruncated", java.lang.Boolean.TRUE)
             response.put("recordCount", Integer.valueOf(result.recordCount))
             response.put("error", result.error)
             response.put("logs", result.logs)
             response.put("dataType", result.dataType)
             response.put("columns", result.columns)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+            }  // end else (non-debounced path)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
         }
+    }
+
+    /** Atomically check + accept the run-debounce window for a tap. Returns Some(ageMs)
+     *  when a recent run is still inside the window (caller should reject), or None when
+     *  the slot is now reserved for the caller to proceed. */
+    private def checkAndAcceptRunDebounce(tapName: String): Option[Long] = {
+        val tenant = if (DatrisEnvironment.values.multiTenant) DatrisEnvironment.current.environment else "global"
+        val dedupKey = tenant + "::" + tapName
+        val now = System.currentTimeMillis()
+        val accepted = new java.util.concurrent.atomic.AtomicBoolean(false)
+        TapAPIController.recentRunStarts.compute(dedupKey, (_, existing) => {
+            if (existing != null && (now - existing.longValue()) < TapAPIController.runDebounceWindowMs)
+                existing
+            else {
+                accepted.set(true)
+                java.lang.Long.valueOf(now)
+            }
+        })
+        if (accepted.get()) None
+        else Some(now - TapAPIController.recentRunStarts.get(dedupKey).longValue())
     }
 
     @GetMapping(path = Array("/tap/ledger"), produces = Array(MediaType.APPLICATION_JSON_VALUE))

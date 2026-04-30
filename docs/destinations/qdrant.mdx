@@ -103,9 +103,9 @@ vault kv put secret/oss/embedding \
 |----------|----------|-------|------------|
 | OpenAI | `https://api.openai.com/v1/embeddings` | `text-embedding-3-small` | 1536 |
 | OpenAI | `https://api.openai.com/v1/embeddings` | `text-embedding-3-large` | 3072 |
-| Ollama (bundled sidecar) | `http://ollama:11434/v1/embeddings` | `bge-m3` | 1024 |
+| TEI (bundled sidecar) | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` | 1024 |
 
-For Anthropic-only deployments, the bundled Ollama sidecar serves `bge-m3` and `vault-init.sh` seeds the embedding secret to point at it — no OpenAI key required.
+For Anthropic-only deployments, the bundled TEI sidecar serves `bge-m3` and `vault-init.sh` seeds the embedding secret to point at it — no OpenAI key required.
 
 ## Chunking Strategies
 

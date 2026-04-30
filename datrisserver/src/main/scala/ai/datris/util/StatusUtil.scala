@@ -219,12 +219,25 @@ class StatusUtil {
             nowInMillis
         )
 
+        // Top-level `publisher_token` is the indexed read path used by
+        // PipelineStatusUtil.getPipelineStatusByPublisher. The same value also lives
+        // inside the embedded `json` doc (PipelineStatus.publisherToken) for backward
+        // compatibility with older readers; new readers should prefer the top-level field.
+        val extra: java.util.Map[String, AnyRef] = {
+            if (status.publisherToken != null && status.publisherToken.nonEmpty) {
+                val m = new java.util.HashMap[String, AnyRef]()
+                m.put("publisher_token", status.publisherToken)
+                m
+            } else null
+        }
+
         NoSQLDbUtil.putItemJSON(tableName,
             "pipeline_token", pipelineToken.orNull,
             "json",
             gson.toJson(pipelineStatus),
             "created_at",
-            nowInMillis
+            nowInMillis,
+            extra
         )
     }
 

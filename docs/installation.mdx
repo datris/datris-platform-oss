@@ -53,10 +53,14 @@ If you already have Datris installed and want to upgrade to the latest version:
 cd datris-platform-oss
 git pull origin main
 docker compose pull
-docker compose up -d
+docker compose up -d --remove-orphans
 ```
 
 This pulls the latest pre-built images from Docker Hub and restarts the services. No build tools required.
+
+<Note>
+**Always pass `--remove-orphans` when upgrading.** Releases occasionally rename, remove, or repurpose service blocks in `docker-compose.yml` (e.g. v1.6.15 replaced the bundled Ollama service with TEI on the same host port `11434`). Without `--remove-orphans`, the previous version's container keeps running and holding the port, causing the new container to fail with `Bind for 0.0.0.0:<port> failed: port is already allocated`. The flag is safe — it only removes containers that are no longer defined in your current compose file. Volumes (and your data) are untouched.
+</Note>
 
 Your data is preserved across upgrades — Postgres pipelines, Vault secrets, MinIO buckets, MongoDB collections, and Kafka state all live in Docker volumes that survive `docker compose pull` and `docker compose up -d`.
 
@@ -84,12 +88,12 @@ docker compose up -d
 - **All MinIO object storage** — raw uploads, configs, temp files, processed outputs
 - **MongoDB destination data**
 - **Queued messages and offsets** in Kafka, Zookeeper, ActiveMQ
-- **The bundled `bge-m3` embedding model** in the `ollama-data` volume (will re-download ~1.2 GB on first start)
+- **The bundled `bge-m3` embedding model** in the `tei-data` volume (will re-download ~2.2 GB on first start)
 - **Cached pip wheels** in the `pip-cache` volume (taps that need extras like `yfinance` will re-download on first run)
 
 Only run `down -v` if you are certain none of the above matters, e.g. on a brand-new dev machine, after exporting anything you needed, or on a CI runner. **Never run `down -v` on a production or shared instance.**
 
-After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secrets from your `.env`, MinIO buckets are recreated, Postgres starts empty, and Ollama re-downloads `bge-m3` (a few minutes one-time).
+After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secrets from your `.env`, MinIO buckets are recreated, Postgres starts empty, and the bundled embedding service re-downloads `bge-m3` (a few minutes one-time).
 
 > **Note for production deployments:** the `deploy/docker-compose.prod.yml` file used by managed/dedicated installs uses bind mounts to host directories under `/data/*` instead of Docker volumes, so `docker compose -f docker-compose.prod.yml down -v` does **not** wipe the data — the host directories survive. To reset a prod install, you'd need to also delete the relevant `/data/*` directories on the host, which is a much riskier operation and not recommended outside of disaster recovery.
 

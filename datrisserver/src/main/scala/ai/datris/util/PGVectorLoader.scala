@@ -139,7 +139,21 @@ class PGVectorLoader(jobContext: JobContext) {
     private def ensureTable(conn: Connection, schemaName: String, tableName: String, dimension: Int): Unit = {
         val stmt = conn.createStatement()
         try {
-            // Enable pgvector extension
+            // Enable pgvector extension. CREATE EXTENSION IF NOT EXISTS is NOT
+            // race-safe: two concurrent sessions can both pass the existence
+            // check and race on the pg_extension insert, with the loser hitting
+            // "duplicate key ... pg_extension_name_index". Document taps fire
+            // many concurrent loaders, so this race surfaces in practice. Take
+            // a transaction-scoped advisory lock on a constant so the second
+            // session waits, sees the extension exists, and no-ops.
+            val extLockStmt = conn.prepareStatement("SELECT pg_advisory_xact_lock(hashtext(?))")
+            try {
+                extLockStmt.setString(1, "datris.create_extension.vector")
+                val rs = extLockStmt.executeQuery()
+                rs.close()
+            } finally {
+                extLockStmt.close()
+            }
             stmt.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
             // Create schema if needed

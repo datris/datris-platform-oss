@@ -3,6 +3,33 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.6.15" description="April 30, 2026">
+  **Smaller, faster default install. Lighter download, opt-in Kafka, vector ingestion fixes.**
+
+  - **~58% smaller `docker compose pull`.** The bundled platform now downloads roughly 11 GB less out of the box. Fresh installs come up dramatically faster.
+  - **Bundled embeddings are faster on the same `bge-m3` model.** No configuration changes needed; existing vector collections built with the previous bundled embedder continue to work without re-embedding.
+  - **Kafka is now opt-in.** Most local installs don't need it, so Kafka, Zookeeper, and the Kafka UI ship commented out in `docker-compose.yml`. Uncomment the bundled blocks (and the related volumes at the top of the file) to enable them. Pipelines that point at external Kafka brokers are unaffected.
+  - **Vector ingestion no longer fails with a "duplicate key" error when many documents land at once.** Concurrent document loaders previously raced on creating the `pgvector` extension; the race is now serialized.
+  - **Vector ingestion no longer fails on embedding providers that limit batch size.** The chunk batch size is now configurable per embedding secret (`batchSize`), with a cross-provider-safe default. OpenAI users who want to maximize throughput can set this higher.
+  - **Configuration tab clarifies optional providers.** The bundled embedding option is labeled `bge-m3 (bundled)`. The AI Provider, CodeGen Provider, and Embedding Provider dropdowns each indicate that local Ollama is opt-in.
+  - **Service Health no longer shows "Down" for optional services that were never enabled.** Kafka and the optional vector databases (Qdrant, Weaviate, Milvus, Chroma) now correctly report "Not Configured" until you turn them on. Existing installs may still show "Down" until their stale Vault secrets are removed.
+
+  **Upgrading from earlier versions:** the bundled embedding service moved off Ollama on the same host port `11434`, so existing installs must pass `--remove-orphans` to release the port: `docker compose pull && docker compose up -d --remove-orphans`. Without it the upgrade fails with `Bind for 0.0.0.0:11434 failed: port is already allocated`. Your data and the cached Ollama model are preserved.
+</Update>
+
+<Update label="v1.6.14" description="April 29, 2026">
+  **Reliable run-completion signals, smarter agent calls, cleaner run history.**
+
+  - **Agents get a single "are we done?" signal when watching a pipeline load.** Polling a publisher token returns a rollup with a clear `allDone` boolean and a per-job outcome (success / warning / error / processing / timed out), so agents no longer have to interpret the raw event stream to figure out whether a run is complete.
+  - **Pipeline status by publisher token works reliably for completed runs.** A storage path that occasionally hid completed runs from the publisher-token query is fixed; the query is now backed by an indexed top-level field, with a fallback for older rows so existing data resolves without a migration.
+  - **`run_tap` no longer ships the records array back to the agent.** A push run returns `recordCount`, `publisherToken`, and the `persisted` / `persistedReason` flags — enough to verify ingestion via `get_pipeline_status` without bloating the agent's context. Use `test_tap` to preview a script's output (capped at 20 sample rows with a `recordsTruncated` flag).
+  - **Duplicate `run_tap` calls are suppressed.** The agent skips a `run_tap` for a tap that's already in flight in the same session, and the platform debounces push runs to one per tap per 5 seconds. Prevents accidental duplicate ingestion from parallel tool calls, double-clicks, and transport retries (`persistedReason: already_running` or `debounced`).
+  - **Every tap run now produces visible logs.** The script wrapper emits start / fetch / record-count lifecycle lines on every run, so run history shows useful output even when the user's script never calls `print()`.
+  - **Secret values are masked in stored tap logs and exception messages.** A tap script that incidentally printed an API key or Vault-loaded credential would previously have surfaced the raw value in run history; those values are now redacted in the persisted log and the error string.
+  - **Deleting a tap now cleans up its run history.** Previously, run-history rows accumulated indefinitely and could resurface under a recreated tap with the same name.
+  - **Agent activity log shows full requests and responses.** The expanded view in the agent monitor no longer truncates request arguments or response bodies.
+</Update>
+
 <Update label="v1.6.13" description="April 24, 2026">
   **MCP tab and documentation sync.**
 

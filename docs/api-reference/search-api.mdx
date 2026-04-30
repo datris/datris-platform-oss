@@ -232,7 +232,7 @@ Self-describing — the resolver reads `provider`, `endpoint`, `model`, `apiKey`
 }
 ```
 
-For Anthropic-only deployments, the bundled Ollama sidecar serves `bge-m3` and `vault-init.sh` seeds the embedding secret to point at it (`provider: "ollama"`, `endpoint: "http://ollama:11434/v1/embeddings"`, `model: "bge-m3"`).
+For Anthropic-only deployments, the bundled TEI sidecar serves `bge-m3` and `vault-init.sh` seeds the embedding secret to point at it (`provider: "tei"`, `endpoint: "http://tei:80/v1/embeddings"`, `model: "BAAI/bge-m3"`).
 
 ### Vector Database Secrets
 

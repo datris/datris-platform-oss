@@ -73,7 +73,9 @@ curl "http://localhost:8080/api/v1/pipeline/status?publishertoken=pub-abc12345-.
 
 Returns every status row whose `publisherToken` matches — covers all ingestion jobs a single caller submitted. Tap runs set a publisherToken on every job they spawn, so one query covers a structured tap (1 job) or a document tap (N jobs, one per file) in a single call. Use `publisherToken` when you need to watch "this entire run," `pipelineToken` when you need the detail of one specific job.
 
-Agents can call the same query via the MCP `get_pipeline_status` tool — pass `publisher_token` from a `run_tap` response and poll until every job's latest row is `end` or `error`.
+Add `&withrollup=true` to wrap the response in a `{rollup, events}` object that classifies each job (`success`, `warning`, `error`, `processing`, `timed_out`) and exposes `rollup.allDone` for a single boolean to poll on. See the [status API reference](/api-reference/status-api#rollup-response) for the full shape.
+
+Agents call the same query via the MCP `get_pipeline_status` tool — pass `publisher_token` from a `run_tap` response and poll until `rollup.allDone` is `true`. The MCP tool sets `withrollup=true` automatically.
 
 ### Query by Pipeline Name
 

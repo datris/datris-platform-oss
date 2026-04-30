@@ -62,7 +62,6 @@ _PREVIEW_ARG_KEYS = [
 ]
 _PREVIEW_VALUE_MAX = 40
 _PREVIEW_MAX = 140
-_BLOB_MAX = 2000
 
 
 def _build_args_preview(args: Any) -> str:
@@ -88,20 +87,22 @@ def _build_args_preview(args: Any) -> str:
     return preview
 
 
-def _pretty_json(value: Any, max_chars: int) -> str:
-    """Pretty-print a Python object as indented JSON, truncated to max_chars."""
+def _pretty_json(value: Any, max_chars: int | None = None) -> str:
+    """Pretty-print a Python object as indented JSON. When max_chars is set,
+    truncate with an ellipsis; pass None to keep the full string."""
     try:
         s = json.dumps(value, indent=2, default=str)
     except Exception:
         s = str(value)
-    if len(s) > max_chars:
+    if max_chars is not None and len(s) > max_chars:
         s = s[:max_chars] + "\n…"
     return s
 
 
-def _pretty_json_text(text: str, max_chars: int) -> str:
+def _pretty_json_text(text: str, max_chars: int | None = None) -> str:
     """Pretty-print a string that may or may not already be JSON.
-    Falls back to the raw string (truncated) if parsing fails."""
+    Falls back to the raw string if parsing fails. When max_chars is set,
+    truncate with an ellipsis; pass None to keep the full string."""
     if not text:
         return ""
     try:
@@ -109,7 +110,7 @@ def _pretty_json_text(text: str, max_chars: int) -> str:
         s = json.dumps(parsed, indent=2, default=str)
     except Exception:
         s = text
-    if len(s) > max_chars:
+    if max_chars is not None and len(s) > max_chars:
         s = s[:max_chars] + "\n…"
     return s
 
@@ -159,12 +160,12 @@ def _activity_record(session_id: str, tool: str, status: str, latency_ms: int, a
     api_key_hint = api_key[:6] if api_key else ""
     client_name, client_version = _read_client_info()
     args_preview = _build_args_preview(args)
-    args_full = _pretty_json(args, _BLOB_MAX) if args else ""
+    args_full = _pretty_json(args) if args else ""
     response_preview = ""
     response_size = 0
     if result_text:
         response_size = len(result_text)
-        response_preview = _pretty_json_text(result_text, _BLOB_MAX)
+        response_preview = _pretty_json_text(result_text)
     record_count = _record_count_from_result(result_text) if status == "ok" else None
     error = ""
     if error_msg:
@@ -273,10 +274,11 @@ Tap workflow (for step 3 Option B):
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
   4. Run: call run_tap to execute and push data to the pipeline.
      After `run_tap` returns, READ the response's `persisted` field BEFORE doing anything else:
-       - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until every row's `state` is `end` or `error`. Only THEN query the destination or report completion to the user. Reporting success before the poll finishes is a bug — the destination will appear empty.
-       - `persisted: false` → records did NOT land in the destination. Read `persistedReason` and tell the user exactly why: `no_target_pipeline` (call update_tap to set one, then re-run), `test_mode` (you ran it in test mode — or mcp-server/datris are out of sync; flag it and stop), `run_error` (show the `error` string), `no_records` (source returned nothing). DO NOT query the destination table and report made-up numbers based on the records in the response body — that misleads the user about what's actually stored.
+       - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until `rollup.allDone` is true. Only THEN query the destination or report completion to the user. Reporting success before the poll finishes is a bug — the destination will appear empty. Read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failures.
+       - `persisted: false` → records did NOT land in the destination. Read `persistedReason` and tell the user exactly why: `no_target_pipeline` (call update_tap to set one, then re-run), `test_mode` (you ran it in test mode — or mcp-server/datris are out of sync; flag it and stop), `run_error` (show the `error` string), `no_records` (source returned nothing).
+     Note: `run_tap` does NOT return the records themselves (only `recordCount`). If you need to preview what the script produces, use `test_tap`.
   5. Schedule (optional): call update_tap with a cron_expression to run the tap on a schedule
-  6. Verify ingestion outcome — the same check works for any run, manual or scheduled. The `publisherToken` is your handle on whether the data actually landed in the destination. After a manual `run_tap` you already have it in the response; for a scheduled (cron) run, call `get_tap_logs` and pick the relevant entry — every log entry that submitted records includes its `publisherToken`. Either way, call `get_pipeline_status(publisher_token=...)` and poll until every row's `state` is `end` or `error`. The tap log only tells you the script ran; the publisher token is how you trace it through to whether the destination actually has the data. Prefer `get_tap_logs` over holding the token in your own context across many turns — if the conversation is compressed or you reconnect, you can always re-derive the token from the log.
+  6. Verify ingestion outcome — the same check works for any run, manual or scheduled. The `publisherToken` is your handle on whether the data actually landed in the destination. After a manual `run_tap` you already have it in the response; for a scheduled (cron) run, call `get_tap_logs` and pick the relevant entry — every log entry that submitted records includes its `publisherToken`. Either way, call `get_pipeline_status(publisher_token=...)` and poll until `rollup.allDone` is true; then `rollup.status` tells you success/warning/error and `rollup.jobs[].lastError` tells you which file failed and why. The tap log only tells you the script ran; the publisher token is how you trace it through to whether the destination actually has the data. Prefer `get_tap_logs` over holding the token in your own context across many turns — if the conversation is compressed or you reconnect, you can always re-derive the token from the log.
   7. Manage: call update_tap to enable/disable, change schedule, or retarget pipeline; call get_tap to view details and script
 
 Do NOT call check_service_health as part of the normal workflow — it is slow. Only use it for diagnostics if something fails.
@@ -1415,14 +1417,17 @@ async def list_tools():
             name="run_tap",
             description=(
                 "Manually trigger a tap. Executes the script; when a target pipeline is configured, hands records to the pipeline async. "
+                "The response carries `recordCount`, `publisherToken`, `pipelineTokens`, `persisted`, `persistedReason`, and the script's `logs` — but NOT the records themselves. "
+                "If you need to preview what the script produces, call `test_tap` instead. "
                 "REQUIRED next steps based on the response:\n"
-                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until every row's `state` is `end` or `error`. Do not report completion or query the destination before that.\n"
+                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true. Then read `rollup.status` (`success`/`warning`/`error`) and `rollup.jobs[].lastError`. Do not report completion or query the destination before that.\n"
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
                 "      - `run_error`: show the `error` string.\n"
                 "      - `no_records`: source returned nothing.\n"
-                "    Do NOT query the destination table or fabricate numbers from the response's `records` array — nothing was stored.\n"
+                "      - `debounced`: this tap was triggered server-side within the last 5 seconds. Do NOT retry — your previous call is still running. Use `get_tap_logs` to find the live run's `publisherToken`, then poll `get_pipeline_status`.\n"
+                "      - `already_running` (response `status: skipped`): another run_tap for this tap is already in flight in this agent session. Same handling as `debounced`: wait, then look up the live run in `get_tap_logs`.\n"
                 "The response's `publisherToken` covers every ingestion job this run submitted (structured taps = 1, document taps = N). One `get_pipeline_status` call with the publisherToken sees them all."
             ),
             inputSchema={
@@ -1439,10 +1444,13 @@ async def list_tools():
         Tool(
             name="get_pipeline_status",
             description=(
-                "Read pipeline ingestion status rows. Use this after `run_tap` to watch a tap-submitted load progress. "
+                "Read pipeline ingestion status. Use this after `run_tap` to watch a tap-submitted load progress. "
                 "Pass `publisher_token` to see every job the tap run submitted (the recommended option — works for both structured and document taps). "
-                "Pass `pipeline_token` for a single ingestion job's detail rows. Exactly one of the two must be supplied. "
-                "Each row has `state` (`begin`/`info`/`end`/`error`) and `dateTime`; a job is done when its last row is `end` or `error`. Poll every few seconds; the pipeline is async to the tap run."
+                "Pass `pipeline_token` for a single ingestion job. Exactly one of the two must be supplied. "
+                "Response shape: `{rollup: {allDone, status, jobs: [...]}, events: [...]}`. "
+                "Poll every few seconds until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`) for the outcome. "
+                "Per-job detail is in `rollup.jobs[]` — each entry has `pipelineToken`, `pipeline`, `filename`, `status`, `startedAt`, `lastEventAt`, `elapsed`, and `lastError` (populated on failure with `processName` and `description`). "
+                "`events[]` is the raw begin/info/end audit trail if you need it; the rollup is the source of truth for completion."
             ),
             inputSchema={
                 "type": "object",
@@ -2114,7 +2122,7 @@ def _dispatch(name: str, args: dict) -> str:
         pipeline = args.get("pipeline_token")
         if not publisher and not pipeline:
             return json.dumps({"error": "Pass publisher_token (preferred) or pipeline_token."})
-        params = {}
+        params = {"withrollup": "true"}
         if publisher:
             params["publishertoken"] = publisher
         elif pipeline:

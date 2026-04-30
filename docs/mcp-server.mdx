@@ -85,10 +85,10 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | `create_tap` | Create a tap from an instruction (AI generates script), a user-provided script, or config only. Optionally set target pipeline, CRON schedule, secret name, and `tap_type` (`structured` or `document`) |
 | `list_taps` | List all taps with status, `tapType`, target pipeline, schedule, and last run info |
 | `get_tap` | Get full details of a single tap including its Python script source |
-| `run_tap` | Execute a tap. Response carries `persisted` + `persistedReason` so the agent can confirm records landed, plus `publisherToken` + `pipelineTokens` for watching async loads |
+| `run_tap` | Execute a tap and push to the target pipeline. Response carries `persisted` + `persistedReason`, `recordCount`, `publisherToken`, and `pipelineTokens` for watching async loads. Records themselves are not returned — use `test_tap` to preview what a script produces |
 | `test_tap` | Test-run a tap without pushing data to the pipeline |
 | `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
-| `get_pipeline_status` | Watch ingestion progress after `run_tap`. Pass the response's `publisherToken` (covers every job the run submitted — structured = 1, document = N) or a single `pipelineToken` |
+| `get_pipeline_status` | Watch ingestion progress after `run_tap`. Pass the response's `publisherToken` (covers every job the run submitted — structured = 1, document = N) or a single `pipelineToken`. Returns a `rollup` (with `allDone`, `status`, per-job `lastError`) plus the raw `events`; poll until `rollup.allDone` is `true` |
 | `get_tap_logs` | Get run history for a tap (last 50 entries with status, duration, errors, and `publisherToken` for each run that submitted records). Pivot from a scheduled-run entry to `get_pipeline_status(publisher_token=...)` to confirm the run actually landed in the destination |
 | `get_tap_ledger` | Document taps only: read the ledger of discovered documents (URI, filename, status, hashes, timestamps). Pass `clear_uri` to force-reprocess one file, or `clear_all=true` to force a full re-scan |
 | `create_tap_secret` | Create or update a Vault secret for a tap to read as env vars (tagged `_type=tap`). Fails on collision unless `overwrite=true`. Reserved AI-provider names are blocked |
@@ -270,8 +270,8 @@ All database connections, vector search, and embedding are handled by the pipeli
 5. **Test** — `test_tap`. If it fails, read the error, fix the script, and call `create_tap` again. Repeat until the test passes.
 6. **Run** — `run_tap`. Read the response's `persisted` field first:
    - `persisted: true` → capture `publisherToken` and continue to step 7.
-   - `persisted: false` → read `persistedReason` (`no_target_pipeline`, `test_mode`, `run_error`, `no_records`), tell the user exactly why, and stop. Do NOT query the destination and report record counts from the response body.
-7. **Verify it landed** — `get_pipeline_status(publisher_token=...)` and poll until every row's `state` is `end` or `error`. The tap log only tells you the script ran; the publisher token is how you confirm records actually reached the destination.
+   - `persisted: false` → read `persistedReason` (`no_target_pipeline`, `test_mode`, `run_error`, `no_records`, `debounced`), tell the user exactly why, and stop. (`run_tap` does not return records — call `test_tap` if you need to preview what the script produces.) `debounced` means the same tap was triggered within the last 5 seconds; the earlier run is still executing — do not retry, look it up via `get_tap_logs` and poll `get_pipeline_status` instead.
+7. **Verify it landed** — `get_pipeline_status(publisher_token=...)` and poll until `rollup.allDone` is `true`. Then `rollup.status` is the outcome (`success`, `warning`, `error`) and `rollup.jobs[].lastError` carries any failure detail. The tap log only tells you the script ran; the publisher token is how you confirm records actually reached the destination.
 8. **Schedule (optional)** — `update_tap` with a `cron_expression`. For each scheduled run, pick the corresponding entry from `get_tap_logs` to get its `publisherToken`, then verify with step 7.
 
 ### Build and query a RAG knowledge base from external documents
@@ -279,7 +279,7 @@ All database connections, vector search, and embedding are handled by the pipeli
 1. **Create a vector-store pipeline** — `create_pipeline` with a Qdrant / Weaviate / Milvus / pgvector / Chroma destination and an `unstructuredAttributes` source.
 2. **Create a document tap** — `create_tap` with `tap_type="document"` and an instruction describing the document source (e.g., *"ingest every PDF under legal-contracts/2026/ in S3"*). If the source needs credentials, call `create_tap_secret` first.
 3. **Test and run** — `test_tap`, then `run_tap`. Read `persisted` / `persistedReason` exactly as above.
-4. **Verify every document landed** — `get_pipeline_status(publisher_token=...)`. Document taps fan out to N jobs (one per file) under one publisher token; poll until all rows are `end` or `error`.
+4. **Verify every document landed** — `get_pipeline_status(publisher_token=...)`. Document taps fan out to N jobs (one per file) under one publisher token; poll until `rollup.allDone` is `true`. `rollup.jobs[]` has one entry per file with its own `status` and `lastError`.
 5. **Inspect the ledger (optional)** — `get_tap_ledger` shows which files were discovered and processed. On subsequent runs, unchanged files are skipped automatically; pass `clear_uri` or `clear_all=true` to force a re-scan.
 6. **Search** — `search_qdrant` (or the matching tool for your destination) to retrieve relevant chunks.
 7. **Answer** — `ai_answer` with the retrieved chunks as context and the user's question.
@@ -302,8 +302,8 @@ All database connections, vector search, and embedding are handled by the pipeli
 
 1. **List taps** — `list_taps` to find the tap of interest.
 2. **Read recent runs** — `get_tap_logs` returns the last 50 entries with status, record count, duration, errors, and `publisherToken` for each run that submitted records.
-3. **Verify completion** — for any run of interest, call `get_pipeline_status(publisher_token=...)` to confirm records actually landed in the destination. The tap log tells you the script ran; the publisher token tells you the load finished.
-4. **Diagnose failures** — on an errored row, read the `description` and either fix the tap (`create_tap` again with a corrected script) or retarget the pipeline (`update_tap`).
+3. **Verify completion** — for any run of interest, call `get_pipeline_status(publisher_token=...)` and read `rollup.status` to confirm records actually landed in the destination. The tap log tells you the script ran; the publisher token tells you the load finished.
+4. **Diagnose failures** — on an errored job, read `rollup.jobs[].lastError` (`processName` + `description`) and either fix the tap (`create_tap` again with a corrected script) or retarget the pipeline (`update_tap`).
 
 ## CLI Examples
 

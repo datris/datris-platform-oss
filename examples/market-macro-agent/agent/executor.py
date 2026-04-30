@@ -21,6 +21,13 @@ log = logging.getLogger("datris.executor")
 # MCP call and want to reflect status on the UI tile.
 _TAP_TO_PIPELINE: dict[str, str] = {v: k for k, v in PIPELINE_TO_TAP.items()}
 
+# Tap names with a run_tap currently in flight in this agent process. Used to
+# short-circuit duplicate run_tap calls — e.g. when the model emits the same
+# tool_use twice in one turn, or when the scheduler and a user-initiated refresh
+# fire simultaneously. Each run_tap takes seconds to minutes; pushing the same
+# data twice would just create duplicate rows in the destination.
+_inflight_run_taps: set[str] = set()
+
 
 async def execute_tool(name: str, input_: dict) -> dict:
     """Forward a tool call to the MCP server, with UI bookkeeping side-effects."""
@@ -28,6 +35,32 @@ async def execute_tool(name: str, input_: dict) -> dict:
         return {"error": "Datris MCP server is unavailable. Retrying in the background — try again shortly."}
 
     await store.add_activity("tool", f"MCP call: {name}")
+
+    # In-flight dedup for run_tap. Check before kicking off MCP so duplicate
+    # calls return immediately instead of spawning parallel script runs.
+    if name == "run_tap":
+        tap_name = input_.get("name", "")
+        if tap_name and tap_name in _inflight_run_taps:
+            log.info("run_tap dedup: '%s' already in flight, skipping", tap_name)
+            await store.add_activity(
+                "info",
+                f"Skipped duplicate run_tap for '{tap_name}' — a run is already in progress.",
+            )
+            return {
+                "tap": tap_name,
+                "status": "skipped",
+                "mode": "run",
+                "persisted": False,
+                "persistedReason": "already_running",
+                "error": (
+                    f"A run_tap for '{tap_name}' is already in progress in this agent "
+                    "session. Wait for it to finish, then check `get_pipeline_status` or "
+                    "`get_tap_logs` for the result."
+                ),
+                "recordCount": 0,
+            }
+        if tap_name:
+            _inflight_run_taps.add(tap_name)
 
     # Mark a pipeline "ingesting" as soon as the run is kicked off, so the
     # UI tile flips amber while the tap executes.
@@ -37,7 +70,13 @@ async def execute_tool(name: str, input_: dict) -> dict:
         if pkey:
             await store.update_pipeline(pkey, {"status": "ingesting"})
 
-    result = await mcp_call(name, input_)
+    try:
+        result = await mcp_call(name, input_)
+    finally:
+        if name == "run_tap":
+            tap_name = input_.get("name", "")
+            if tap_name:
+                _inflight_run_taps.discard(tap_name)
 
     if name == "run_tap":
         tap_name = input_.get("name", "")

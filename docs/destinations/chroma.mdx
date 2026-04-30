@@ -92,7 +92,7 @@ vault kv put secret/oss/embedding \
   apiKey="sk-..."
 ```
 
-For Anthropic-only deployments, the bundled Ollama sidecar serves `bge-m3` (1024-dim) and `vault-init.sh` seeds the embedding secret to point at it — no OpenAI key required.
+For Anthropic-only deployments, the bundled TEI sidecar serves `bge-m3` (1024-dim) and `vault-init.sh` seeds the embedding secret to point at it — no OpenAI key required.
 
 ## Chunking Strategies
 

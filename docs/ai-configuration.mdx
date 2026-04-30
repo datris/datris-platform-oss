@@ -68,31 +68,31 @@ When `OPENAI_API_KEY` is set, all three slots are seeded against OpenAI:
 | `oss/codegen` | openai | `https://api.openai.com/v1/chat/completions` | `gpt-5` |
 | `oss/embedding` | openai | `https://api.openai.com/v1/embeddings` | `text-embedding-3-small` |
 
-### Anthropic path (with bundled Ollama for embeddings)
+### Anthropic path (with bundled embedding service)
 
-When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic has no embeddings API, so `embedding` falls back to a **bundled local Ollama service** running `bge-m3` (a strong open-source 1024-dimension embedding model). No OpenAI key required, vector destinations work out of the box.
+When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic has no embeddings API, so `embedding` falls back to a **bundled embedding service** running `bge-m3` (a strong open-source 1024-dimension embedding model). No OpenAI key required, vector destinations work out of the box.
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
 | `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-sonnet-4-6` |
 | `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-4-7` |
-| `oss/embedding` | ollama | `http://ollama:11434/v1/embeddings` | `bge-m3` |
+| `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
-The `ollama` service is part of `docker-compose.yml`. On first start it pulls `bge-m3` (~1.2 GB) into a persistent volume; subsequent restarts use the cached model.
+The `tei` service (HuggingFace Text Embeddings Inference) is part of `docker-compose.yml`. On first start it downloads `bge-m3` (~2.2 GB ONNX weights) into a persistent volume; subsequent restarts use the cached model.
 
 ### Fully local with Ollama
 
-You can run all three slots on a local Ollama instance — no cloud API keys needed. Ollama must be reachable from inside the Docker network. If Ollama runs on your host machine, use `host.docker.internal` as the hostname:
+You can run all three slots on a local Ollama instance — no cloud API keys needed. Ollama is opt-in: uncomment the optional `ollama` service block in `docker-compose.yml` (and the `ollama-data` volume), then `docker compose up -d ollama` and pull the models you want (e.g. `docker exec ollama ollama pull qwen3:14b`). Alternatively, point at an Ollama instance on your host machine using `host.docker.internal`:
 
 | Slot | Provider | Endpoint | Model (example) |
 |------|----------|----------|-----------------|
-| `oss/ai-primary` | ollama | `http://host.docker.internal:11434/v1/chat/completions` | `qwen3:14b` |
-| `oss/codegen` | ollama | `http://host.docker.internal:11434/v1/chat/completions` | `qwen2.5-coder:7b-instruct` |
-| `oss/embedding` | ollama | `http://ollama:11434/v1/embeddings` | `bge-m3` |
+| `oss/ai-primary` | ollama | `http://ollama:11434/v1/chat/completions` (bundled) or `http://host.docker.internal:11434/v1/chat/completions` (host) | `qwen3:14b` |
+| `oss/codegen` | ollama | same as above | `qwen2.5-coder:7b-instruct` |
+| `oss/embedding` | ollama | same as above | `bge-m3` |
 
-The embedding slot can use the bundled Ollama sidecar (`ollama:11434`) which auto-pulls `bge-m3`. For AI Primary and CodeGen, you must have the models available at your Ollama endpoint (e.g. `ollama pull qwen3:14b`).
+If you only need local **chat** but want to keep the bundled embedding service (TEI), leave `oss/embedding` pointed at `http://tei:80/v1/embeddings` with `model="BAAI/bge-m3"` and only switch the AI Primary and CodeGen slots to Ollama.
 
-The Configuration UI makes this easy — select **Ollama (local)** as the provider, type your model name, and the endpoint defaults to `host.docker.internal:11434`. No API key is required.
+The Configuration UI makes this easy — select **Ollama (if optional service enabled)** as the provider, type your model name, and the endpoint defaults to `ollama:11434`. No API key is required.
 
 ### Optional model overrides
 
@@ -134,8 +134,9 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 The embedding endpoint must speak the **OpenAI embeddings API** (`POST /v1/embeddings` with `{model, input}` body returning `{data: [{embedding: [...]}]}`). That contract is implemented by:
 
 - **OpenAI** — `https://api.openai.com/v1/embeddings`
-- **Ollama (bundled)** — `http://ollama:11434/v1/embeddings` (the bundled sidecar serves `bge-m3` out of the box)
-- **Ollama (local)** — `http://host.docker.internal:11434/v1/embeddings` (your own Ollama with any embedding model)
+- **TEI (bundled)** — `http://tei:80/v1/embeddings` (the bundled HuggingFace Text Embeddings Inference sidecar serves `BAAI/bge-m3` out of the box)
+- **Ollama** — `http://ollama:11434/v1/embeddings` (only when the optional Ollama service is enabled and `bge-m3` has been pulled there)
+- **Ollama (external)** — `http://host.docker.internal:11434/v1/embeddings` (your own Ollama with any embedding model)
 - **Self-hosted vLLM, LM Studio, etc.** — anything implementing the same contract
 
 Anthropic has no embeddings API, so `provider: "anthropic"` is not valid for the `embedding` slot.

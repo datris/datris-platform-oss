@@ -13,7 +13,10 @@ vault kv put secret/oss/activemq username=admin password=admin
 vault kv put secret/oss/mongodb connectionString=mongodb://mongodb:27017 database=oss
 vault kv put secret/oss/api-keys key=default-api-key
 vault kv put secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 username=postgres password=postgres
-vault kv put secret/oss/kafka-producer bootstrapServers=kafka:9092
+# kafka-producer is intentionally not seeded — the bundled Kafka service is
+# now opt-in (see optional Kafka block in docker-compose.yml). Users who
+# enable it can configure this secret via the Configuration tab or by hand:
+#   vault kv put secret/oss/kafka-producer bootstrapServers=kafka:9092
 
 # AI configuration — three independent, self-describing secrets.
 # Each Vault secret carries provider/endpoint/model/apiKey/version inline so
@@ -62,7 +65,7 @@ elif [ "$PROVIDER" = "anthropic" ]; then
     exit 1
   fi
   # Anthropic handles main AI and codegen. Anthropic has no embeddings API,
-  # so embedding falls back to the local ollama sidecar serving bge-m3
+  # so embedding falls back to the bundled TEI sidecar serving bge-m3
   # (1024-dim, strong open-source embedding model). No OpenAI key needed.
   vault kv put secret/oss/ai-primary \
     provider="anthropic" \
@@ -77,20 +80,27 @@ elif [ "$PROVIDER" = "anthropic" ]; then
     apiKey="${ANTHROPIC_API_KEY}" \
     version="2023-06-01"
   vault kv put secret/oss/embedding \
-    provider="ollama" \
-    endpoint="http://ollama:11434/v1/embeddings" \
-    model="bge-m3" \
+    provider="tei" \
+    endpoint="http://tei:80/v1/embeddings" \
+    model="BAAI/bge-m3" \
     apiKey=""
 else
   echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2
   exit 1
 fi
 
-# Vector store secrets
-vault kv put secret/oss/qdrant host="host.docker.internal" port="6334" apiKey=""
-vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
+# Vector store secrets.
+# Only pgvector is seeded by default — it rides on the bundled Postgres so
+# it's always available. The other vector stores (qdrant, weaviate, milvus,
+# chroma) are opt-in via the optional service blocks in docker-compose.yml.
+# Seeding their secrets unconditionally would make the Configuration tab's
+# Service Health card show them as "Down" instead of "Not Configured" when
+# the user hasn't enabled them. Users who turn on an optional vector store
+# can write its secret via the Configuration tab or by hand:
+#   vault kv put secret/oss/qdrant   host="host.docker.internal" port="6334" apiKey=""
+#   vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
+#   vault kv put secret/oss/milvus   host="host.docker.internal" port="19530" apiKey=""
+#   vault kv put secret/oss/chroma   host="host.docker.internal" port="8000"
 vault kv put secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/datris" username="postgres" password="postgres"
-vault kv put secret/oss/milvus host="host.docker.internal" port="19530" apiKey=""
-vault kv put secret/oss/chroma host="host.docker.internal" port="8000"
 
 echo "Vault secrets seeded successfully."
