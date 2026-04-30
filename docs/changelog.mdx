@@ -13,6 +13,8 @@ description: "Release history for Datris"
   - **Vector ingestion no longer fails on embedding providers that limit batch size.** The chunk batch size is now configurable per embedding secret (`batchSize`), with a cross-provider-safe default. OpenAI users who want to maximize throughput can set this higher.
   - **Configuration tab clarifies optional providers.** The bundled embedding option is labeled `bge-m3 (bundled)`. The AI Provider, CodeGen Provider, and Embedding Provider dropdowns each indicate that local Ollama is opt-in.
   - **Service Health no longer shows "Down" for optional services that were never enabled.** Kafka and the optional vector databases (Qdrant, Weaviate, Milvus, Chroma) now correctly report "Not Configured" until you turn them on. Existing installs may still show "Down" until their stale Vault secrets are removed.
+
+  **Upgrading from earlier versions:** the bundled embedding service moved off Ollama on the same host port `11434`, so existing installs must pass `--remove-orphans` to release the port: `docker compose pull && docker compose up -d --remove-orphans`. Without it the upgrade fails with `Bind for 0.0.0.0:11434 failed: port is already allocated`. Your data and the cached Ollama model are preserved.
 </Update>
 
 <Update label="v1.6.14" description="April 29, 2026">

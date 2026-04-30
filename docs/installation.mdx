@@ -53,10 +53,14 @@ If you already have Datris installed and want to upgrade to the latest version:
 cd datris-platform-oss
 git pull origin main
 docker compose pull
-docker compose up -d
+docker compose up -d --remove-orphans
 ```
 
 This pulls the latest pre-built images from Docker Hub and restarts the services. No build tools required.
+
+<Note>
+**Always pass `--remove-orphans` when upgrading.** Releases occasionally rename, remove, or repurpose service blocks in `docker-compose.yml` (e.g. v1.6.15 replaced the bundled Ollama service with TEI on the same host port `11434`). Without `--remove-orphans`, the previous version's container keeps running and holding the port, causing the new container to fail with `Bind for 0.0.0.0:<port> failed: port is already allocated`. The flag is safe — it only removes containers that are no longer defined in your current compose file. Volumes (and your data) are untouched.
+</Note>
 
 Your data is preserved across upgrades — Postgres pipelines, Vault secrets, MinIO buckets, MongoDB collections, and Kafka state all live in Docker volumes that survive `docker compose pull` and `docker compose up -d`.
 

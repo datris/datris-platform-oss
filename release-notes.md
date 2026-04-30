@@ -15,7 +15,8 @@
 **Upgrading**
 
 - New installs: nothing to do.
-- Existing installs: pull the new images and re-run `docker compose up -d`. Vault is auto-seeded on first start.
+- Existing installs: pull the new images and re-run with the `--remove-orphans` flag — `docker compose pull && docker compose up -d --remove-orphans`. The flag is required because the bundled embedding service moved off Ollama and onto the same host port; without it the previous Ollama container keeps holding port 11434 and the upgrade fails with `Bind for 0.0.0.0:11434 failed: port is already allocated`. Your data and the Ollama model are preserved (the Ollama image's named volume is untouched).
+- Vault is auto-seeded on first start.
 - If you were relying on the bundled local Kafka broker for a pipeline, uncomment the Kafka services in your `docker-compose.yml` after upgrading.
 
 ---
