@@ -13,7 +13,10 @@ vault kv put secret/oss/activemq username=admin password=admin
 vault kv put secret/oss/mongodb connectionString=mongodb://mongodb:27017 database=oss
 vault kv put secret/oss/api-keys key=default-api-key
 vault kv put secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 username=postgres password=postgres
-vault kv put secret/oss/kafka-producer bootstrapServers=kafka:9092
+# kafka-producer is intentionally not seeded — the bundled Kafka service is
+# now opt-in (see optional Kafka block in docker-compose.yml). Users who
+# enable it can configure this secret via the Configuration tab or by hand:
+#   vault kv put secret/oss/kafka-producer bootstrapServers=kafka:9092
 
 # AI configuration — three independent, self-describing secrets.
 # Each Vault secret carries provider/endpoint/model/apiKey/version inline so
@@ -62,7 +65,7 @@ elif [ "$PROVIDER" = "anthropic" ]; then
     exit 1
   fi
   # Anthropic handles main AI and codegen. Anthropic has no embeddings API,
-  # so embedding falls back to the local ollama sidecar serving bge-m3
+  # so embedding falls back to the bundled TEI sidecar serving bge-m3
   # (1024-dim, strong open-source embedding model). No OpenAI key needed.
   vault kv put secret/oss/ai-primary \
     provider="anthropic" \
@@ -77,9 +80,9 @@ elif [ "$PROVIDER" = "anthropic" ]; then
     apiKey="${ANTHROPIC_API_KEY}" \
     version="2023-06-01"
   vault kv put secret/oss/embedding \
-    provider="ollama" \
-    endpoint="http://ollama:11434/v1/embeddings" \
-    model="bge-m3" \
+    provider="tei" \
+    endpoint="http://tei:80/v1/embeddings" \
+    model="BAAI/bge-m3" \
     apiKey=""
 else
   echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2

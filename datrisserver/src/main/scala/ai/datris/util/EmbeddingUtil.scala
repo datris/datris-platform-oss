@@ -19,9 +19,16 @@ import scala.collection.JavaConverters._
 
 object EmbeddingUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private val BATCH_SIZE = 100
 
-    case class EmbeddingConfig(endpoint: String, model: String, apiKey: String)
+    // Inputs per /v1/embeddings POST. 32 is safe across providers we support:
+    // - OpenAI accepts up to 2048
+    // - HuggingFace TEI defaults to 32 (--max-client-batch-size)
+    // - Ollama accepts large batches but doesn't benefit from them
+    // Override per-secret with `batchSize` in the embedding Vault entry when
+    // a provider supports more (e.g. OpenAI users can crank to 2048 for throughput).
+    private val DEFAULT_BATCH_SIZE = 32
+
+    case class EmbeddingConfig(endpoint: String, model: String, apiKey: String, batchSize: Int)
 
     def getConfig(secretName: String): EmbeddingConfig = {
         val secret = SecretsUtil.getSecretMap(secretName)
@@ -31,13 +38,18 @@ object EmbeddingUtil {
         val model = secret.get("model")
         if (model == null) throw new DatrisException("'model' not found in embedding secret: " + secretName)
         val apiKey = Option(secret.get("apiKey")).getOrElse("")
-        EmbeddingConfig(endpoint, model, apiKey)
+        val batchSize = Option(secret.get("batchSize"))
+            .filter(_.nonEmpty)
+            .flatMap(s => scala.util.Try(s.toInt).toOption)
+            .filter(_ > 0)
+            .getOrElse(DEFAULT_BATCH_SIZE)
+        EmbeddingConfig(endpoint, model, apiKey, batchSize)
     }
 
     def generateEmbeddings(texts: List[String], config: EmbeddingConfig): List[Array[Float]] = {
-        logger.info("Generating embeddings for " + texts.size + " texts using model: " + config.model)
+        logger.info("Generating embeddings for " + texts.size + " texts using model: " + config.model + " (batchSize=" + config.batchSize + ")")
 
-        texts.grouped(BATCH_SIZE).flatMap { batch =>
+        texts.grouped(config.batchSize).flatMap { batch =>
             callEmbeddingAPI(batch, config)
         }.toList
     }
