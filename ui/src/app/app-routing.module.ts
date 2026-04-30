@@ -1,5 +1,6 @@
 import { NgModule } from '@angular/core';
-import { RouterModule, Routes } from '@angular/router';
+import { RouterModule, Routes, Router, UrlTree } from '@angular/router';
+import { inject } from '@angular/core';
 import { PipelinesComponent } from './pipelines/pipelines.component';
 import { PipelineCreateComponent } from './pipeline-create/pipeline-create.component';
 import { PipelineEditComponent } from './pipeline-edit/pipeline-edit.component';
@@ -8,7 +9,6 @@ import { PipelineStatusComponent } from './pipeline-status/pipeline-status.compo
 import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.component';
 import { SearchComponent } from './search/search.component';
 import { McpComponent } from './mcp/mcp.component';
-import { SecretsComponent } from './secrets/secrets.component';
 import { ConfigurationComponent } from './configuration/configuration.component';
 import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
@@ -40,7 +40,16 @@ const routes: Routes = [
   { path: 'mcp', component: McpComponent, canActivate: [authGuard] },
   { path: 'agent-monitor', component: AgentMonitorComponent, canActivate: [authGuard] },
   { path: 'configuration', component: ConfigurationComponent, canActivate: [authGuard] },
-  { path: 'secrets', component: SecretsComponent, canActivate: [authGuard] }
+  // Secrets moved into Configuration as a sub-tab (v1.6.16+). Preserve the
+  // legacy /secrets URL for bookmarks, getting-started links, and external docs.
+  // Use a UrlTree-returning function so the ?tab=secrets query param survives
+  // the redirect (Angular's string redirectTo URL-encodes the '?').
+  {
+    path: 'secrets',
+    canActivate: [authGuard],
+    redirectTo: (): UrlTree =>
+      inject(Router).createUrlTree(['/configuration'], { queryParams: { tab: 'secrets' } })
+  }
 ];
 
 @NgModule({

@@ -32,7 +32,7 @@ dateFormat: "yyyy-MM-dd HH:mm:ss z"
 dateTimezone: "America/New_York"
 environment: oss
 useApiKeys: "false"
-useUserAuth: "true"
+useUserAuth: "false"
 multiTenant: "false"
 
 # CORS allowed origins (comma-separated). Use "*" for any origin (dev only).
@@ -88,7 +88,7 @@ ttlFileNotifierQueueMessages: "60"
 # vault-init.sh seeds all three based on which API key is set in .env:
 #   - OPENAI_API_KEY    → all three point at OpenAI
 #   - ANTHROPIC_API_KEY → ai-primary + codegen point at Anthropic; embedding falls back
-#                          to the local ollama sidecar (bge-m3) so vector destinations
+#                          to the bundled embedding service (bge-m3) so vector destinations
 #                          work out of the box without an OpenAI key.
 hosted: "false"
 
@@ -101,9 +101,12 @@ ai:
   embedding:
     secretName: "oss/embedding"
 
-# Kafka consumer
+# Kafka consumer.
+# Disabled by default since v1.6.15 — the bundled Kafka service is opt-in
+# (commented out in docker-compose.yml). Flip enabled to "true" if you
+# uncomment the Kafka block or point bootstrapServers at an external broker.
 kafkaConsumer:
-  enabled: "true"
+  enabled: "false"
   bootstrapServers: localhost:9092
   groupId: oss-group
   topicPollingInterval: "500"

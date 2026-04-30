@@ -1,6 +1,10 @@
 import { Component, OnInit } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { ActivatedRoute } from '@angular/router';
 import { ModelCatalogService, ModelOption } from '../model-catalog.service';
+import { AuthService } from '../auth.service';
+
+type ConfigTab = 'environment' | 'ai-providers' | 'taps' | 'users' | 'secrets';
 
 @Component({
   selector: 'app-configuration',
@@ -8,7 +12,8 @@ import { ModelCatalogService, ModelOption } from '../model-catalog.service';
   styleUrls: ['./configuration.component.css']
 })
 export class ConfigurationComponent implements OnInit {
-  activeTab: 'environment' | 'ai-providers' | 'taps' | 'users' = 'ai-providers';
+  activeTab: ConfigTab = 'ai-providers';
+  useUserAuth = false;
 
   // Shared API keys (entered once in the right-hand panel)
   anthropicApiKey = '';
@@ -65,7 +70,12 @@ export class ConfigurationComponent implements OnInit {
   error = '';
   loading = true;
 
-  constructor(private http: HttpClient, private modelCatalog: ModelCatalogService) {}
+  constructor(
+    private http: HttpClient,
+    private modelCatalog: ModelCatalogService,
+    private route: ActivatedRoute,
+    private auth: AuthService
+  ) {}
 
   /** Trials share the same trial droplet infra as a hosted dedicated instance:
    *  bundled Ollama for embeddings, no local-Ollama chat option, no Advanced endpoint editing. */
@@ -73,7 +83,25 @@ export class ConfigurationComponent implements OnInit {
     return this.isHosted || this.isTrial;
   }
 
+  isAdmin(): boolean {
+    return this.auth.current()?.role === 'admin';
+  }
+
+  /** Match the visibility rule that used to gate the top-nav Secrets link. */
+  get canSeeSecrets(): boolean {
+    return !this.isTrial && (!this.useUserAuth || this.isAdmin());
+  }
+
   ngOnInit(): void {
+    // Honor ?tab=<name> for deep-links (e.g. the redirect from /secrets).
+    this.route.queryParamMap.subscribe(p => {
+      const t = p.get('tab');
+      if (t === 'environment' || t === 'ai-providers' || t === 'taps' ||
+          t === 'users' || t === 'secrets') {
+        this.activeTab = t;
+      }
+    });
+
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
         this.environment = data.environment || '';
@@ -81,6 +109,13 @@ export class ConfigurationComponent implements OnInit {
         this.isTrial = this.environment.startsWith('trial-');
         this.isHosted = String(data.hosted) === 'true';
         this.multiTenant = String(data.multiTenant) === 'true';
+        this.useUserAuth = String(data.useUserAuth) === 'true';
+        // The Users sub-tab only exists when user-auth is on. If a deep-link
+        // (or stale URL) put us on activeTab='users' before we knew that,
+        // bounce back to the default so the page isn't blank.
+        if (this.activeTab === 'users' && !this.useUserAuth) {
+          this.activeTab = 'ai-providers';
+        }
         // Load the model catalog before reading secrets so maybeAddExtraModel compares
         // loaded model names against the freshest dropdown list.
         this.modelCatalog.fetch().then(catalog => {

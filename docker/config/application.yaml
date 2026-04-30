@@ -28,6 +28,9 @@ schedule:
   checkDatabaseSourceQueries: "30000"
 environment: oss
 useApiKeys: "false"
+useUserAuth: "false"
+multiTenant: "false"
+hosted: "false"
 
 # Object store: MinIO (Docker service)
 minio:
@@ -63,11 +66,18 @@ mongodb:
 sendPipelineNotifications: "true"
 ttlFileNotifierQueueMessages: "60"
 
-# AI provider (required)
+# AI configuration — three independent, self-describing Vault secrets
+# (ai-primary for general AI, codegen for code-generation, embedding for
+# vector destinations + semantic search). vault-init.sh seeds all three
+# from .env on first start.
 ai:
   enabled: "true"
-  provider: "anthropic"
-  aiSecretName: "oss/anthropic"
+  aiPrimary:
+    secretName: "oss/ai-primary"
+  codegen:
+    secretName: "oss/codegen"
+  embedding:
+    secretName: "oss/embedding"
 
 # Kafka consumer
 kafkaConsumer:

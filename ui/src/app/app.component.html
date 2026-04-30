@@ -18,7 +18,6 @@
     <a class="tab" routerLink="/pipelines" routerLinkActive="tab-active">Pipelines</a>
     <a class="tab" routerLink="/ingestion" routerLinkActive="tab-active">Ingestion</a>
     <a class="tab" routerLink="/search" routerLinkActive="tab-active">Search</a>
-    <a class="tab" routerLink="/secrets" routerLinkActive="tab-active" *ngIf="!isTrial && (!useUserAuth || isAdmin())">Secrets</a>
     <a class="tab" routerLink="/configuration" routerLinkActive="tab-active" *ngIf="!useUserAuth || isAdmin()">Configuration</a>
     <a class="tab" href="https://docs.datris.ai" target="_blank" rel="noopener">Docs ↗</a>
   </div>

@@ -5,6 +5,7 @@ import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { SecretsService } from '../secrets.service';
 import { SearchService } from '../search.service';
+import { AuthService } from '../auth.service';
 import { sanitizeLabel } from '../shared/sanitize';
 
 @Component({
@@ -179,7 +180,14 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // Active subscription for cancellation
   private activeSub: Subscription | null = null;
 
-  constructor(private tapService: TapService, private pipelineService: PipelineService, private secretsService: SecretsService, private searchService: SearchService, private router: Router, private route: ActivatedRoute) { }
+  constructor(private tapService: TapService, private pipelineService: PipelineService, private secretsService: SecretsService, private searchService: SearchService, private router: Router, private route: ActivatedRoute, private auth: AuthService) { }
+
+  /** Whether the current user can navigate to /configuration. Mirrors the
+   *  top-nav Configuration link gate so the prompt-fragment chips don't
+   *  offer a link that would just bounce the user. */
+  get canSeeConfig(): boolean {
+    return !this.auth.userAuthEnabled || this.auth.current()?.role === 'admin';
+  }
 
   ngOnInit(): void {
     const name = this.route.snapshot.paramMap.get('name');

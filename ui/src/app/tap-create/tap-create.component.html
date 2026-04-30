@@ -220,8 +220,11 @@
 
       <div class="injected-prompts-row" *ngIf="!bringYourOwnCode && injectedPrompts.length > 0">
         <span class="injected-prompts-label">Extra context applied:</span>
-        <a class="injected-prompt-chip" *ngFor="let k of injectedPrompts"
-           routerLink="/configuration" title="Open Configuration → Taps to review">{{ k }}</a>
+        <ng-container *ngFor="let k of injectedPrompts">
+          <a class="injected-prompt-chip" *ngIf="canSeeConfig"
+             routerLink="/configuration" title="Open Configuration → Taps to review">{{ k }}</a>
+          <span class="injected-prompt-chip" *ngIf="!canSeeConfig">{{ k }}</span>
+        </ng-container>
       </div>
 
       <button *ngIf="!bringYourOwnCode" class="generate-btn" (click)="generateScript()" [disabled]="generating || !description.trim()">
