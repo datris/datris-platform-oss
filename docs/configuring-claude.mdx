@@ -83,7 +83,7 @@ Add to `.mcp.json` in your project root. The same two options apply.
 
 ## Talking to Claude
 
-Once the MCP server is configured, just talk to Claude naturally. Claude sees all 30+ Datris tools and picks the right one based on your request.
+Once the MCP server is configured, just talk to Claude naturally. Claude sees all 47 Datris tools and picks the right one based on your request.
 
 ### First prompts (empty Datris)
 
@@ -115,19 +115,32 @@ This exercises the AI/CodeGen path — Claude writes Python validators, Datris r
 
 Confirms Claude can pull MCP resources (not just tools) — useful to verify your client supports both.
 
-If you have a PDF handy, also try the RAG path:
+For the RAG path, ingest the document **outside** the chat (see the warning below), then ask Claude to search it:
 
-> "Ingest this PDF into pgvector so I can search it." *(drag the PDF into the chat)*
->
-> Then: "Search the documents for [topic from the PDF]."
+```bash
+# from your terminal
+datris ingest annual-report.pdf --dest pgvector --pipeline reports
+```
+
+> "Search the `reports` pipeline for [topic from the PDF]."
 
 ### Ingest data
 
 > "Create a pipeline called stock_prices and ingest this CSV into PostgreSQL"
 
-> "Upload this PDF to pgvector so I can search it later"
-
 > "Ingest this sales data into PostgreSQL and validate that all prices are positive"
+
+<Warning>
+**Don't drag large local files into the chat to ingest them.** When you say "ingest this PDF" with a file attached, Claude has to base64-encode the bytes and pass them as a string argument to the `upload_data` tool — that string traverses the conversation context, and a 300KB PDF alone consumes ~90K tokens before any work happens. Conversations hit "too long to continue" almost immediately.
+
+Use the right tool for each shape of input:
+
+- **Local files** of any size — use the CLI: `datris ingest <file> --dest <destination>`. No LLM, no context cost.
+- **Files at a URL** (S3, MinIO, HTTPS) — ask Claude to create a Datris **tap** that fetches them. Bytes are pulled server-side; the agent only handles the URL.
+- **Small inline data** (a few rows of CSV, a JSON snippet, generated sample data) — fine to drop into the chat.
+
+The chat path is for *natural-language operations* (querying, profiling, pipeline management, search), not for funneling local-disk files through a remote conversation.
+</Warning>
 
 ### Query data
 
@@ -171,4 +184,4 @@ If you have a PDF handy, also try the RAG path:
 
 > "Check the health of the platform"
 
-You can also drag and drop files directly into the Claude chat to upload them for ingestion or profiling.
+You can drag small inline files (a CSV with tens of rows, a short JSON snippet) directly into the chat for ingestion or profiling. For larger or binary files, use the CLI or a tap (see the warning above).
