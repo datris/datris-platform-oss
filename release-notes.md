@@ -1,14 +1,13 @@
 # Release Notes
 
-## v1.6.16 — May 4, 2026
+## v1.6.17 — May 4, 2026
 
-**UI cleanup, friendlier Help menu, and a more reliable bundled embedding service.**
+**AI-agent RAG ingestion no longer burns through the conversation context.**
 
-- **Bundled embedding handles large ingest batches without errors.** The bundled embedding service no longer rejects large batches submitted by the platform, which previously surfaced as ingestion failures on long documents.
-- **Secrets is now a tab inside Configuration.** Instead of a separate top-level tab, Secrets lives under Configuration alongside AI Providers, Taps, and Environment. Existing `/secrets` links continue to work — they redirect to the new location.
-- **Help menu in the top bar.** The Docs link is replaced with a Help dropdown that exposes both the docs and a direct link to file an issue on GitHub.
-- **Easier setup with Claude.** A new "Configuring Claude" page in the docs walks through Claude Desktop and Claude Code setup end-to-end, including a first-prompts walkthrough for an empty install.
-- **Structured issue reporting.** GitHub issues now use forms that capture version, component, deployment mode, and reproduction steps, making bug reports easier to triage and faster to fix.
+- **Creating a vector-store pipeline no longer requires sample content.** Asking an agent to ingest a PDF into pgvector previously forced it to base64-encode the entire document just to register the pipeline — wasting tens of thousands of tokens before any work began. Vector pipelines now register from a name plus destination alone, freeing budget for the actual upload.
+- **Agents are guided to send each document in a single upload.** The MCP server now makes explicit that vector destinations chunk server-side, preventing agents from needlessly splitting documents into many small uploads.
+- **Clearer Claude setup docs.** The "Configuring Claude" guide shows the recommended SSE / mcp-remote setup first, and steers large-file ingestion to the CLI rather than dragging files directly into the chat — which can overflow the conversation context on sizable PDFs.
+- **README accuracy pass.** Corrected tool counts, AI-provider model defaults, and license badge.
 
 **Upgrading**
 
