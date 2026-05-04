@@ -1,5 +1,5 @@
-import { NgModule } from '@angular/core';
-import { RouterModule, Routes } from '@angular/router';
+import { inject, NgModule } from '@angular/core';
+import { Router, RouterModule, Routes } from '@angular/router';
 import { PipelinesComponent } from './pipelines/pipelines.component';
 import { PipelineCreateComponent } from './pipeline-create/pipeline-create.component';
 import { PipelineEditComponent } from './pipeline-edit/pipeline-edit.component';
@@ -8,7 +8,6 @@ import { PipelineStatusComponent } from './pipeline-status/pipeline-status.compo
 import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.component';
 import { SearchComponent } from './search/search.component';
 import { McpComponent } from './mcp/mcp.component';
-import { SecretsComponent } from './secrets/secrets.component';
 import { ConfigurationComponent } from './configuration/configuration.component';
 import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
@@ -37,7 +36,10 @@ const routes: Routes = [
   { path: 'mcp', component: McpComponent },
   { path: 'agent-monitor', component: AgentMonitorComponent },
   { path: 'configuration', component: ConfigurationComponent },
-  { path: 'secrets', component: SecretsComponent }
+  {
+    path: 'secrets',
+    redirectTo: () => inject(Router).createUrlTree(['/configuration'], { queryParams: { tab: 'secrets' } })
+  }
 ];
 
 @NgModule({

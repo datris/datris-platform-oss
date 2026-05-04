@@ -2,12 +2,14 @@
   <h1 class="page-title">Configuration</h1>
 
   <div class="sub-tab-bar">
-    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'environment'"
-            (click)="activeTab = 'environment'">Environment</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'ai-providers'"
             (click)="activeTab = 'ai-providers'">AI Providers</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'secrets'"
+            (click)="activeTab = 'secrets'" *ngIf="!isTrial">Secrets</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'taps'"
             (click)="activeTab = 'taps'">Taps</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'environment'"
+            (click)="activeTab = 'environment'">Environment</button>
   </div>
 
   <div class="config-card" *ngIf="!loading && activeTab === 'environment'">
@@ -238,5 +240,9 @@
     <app-tap-prompt-list></app-tap-prompt-list>
   </div>
 
-  <div class="loading" *ngIf="loading && activeTab !== 'taps'">Loading configuration...</div>
+  <div *ngIf="activeTab === 'secrets'">
+    <app-secrets></app-secrets>
+  </div>
+
+  <div class="loading" *ngIf="loading && activeTab !== 'taps' && activeTab !== 'secrets'">Loading configuration...</div>
 </div>

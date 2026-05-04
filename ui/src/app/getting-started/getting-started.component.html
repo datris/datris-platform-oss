@@ -95,7 +95,7 @@
       </article>
 
       <article class="tab-card" *ngIf="!isTrial">
-        <h3><a routerLink="/secrets">Secrets</a></h3>
+        <h3><a [routerLink]="['/configuration']" [queryParams]="{ tab: 'secrets' }">Secrets</a></h3>
         <p>
           Store API keys, database passwords, and other credentials that taps and
           pipelines reference by name. Values are stored in Vault — never in plain

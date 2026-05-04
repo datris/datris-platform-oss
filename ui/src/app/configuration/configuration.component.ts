@@ -1,5 +1,6 @@
 import { Component, OnInit } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { ActivatedRoute } from '@angular/router';
 import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 
 @Component({
@@ -8,7 +9,7 @@ import { ModelCatalogService, ModelOption } from '../model-catalog.service';
   styleUrls: ['./configuration.component.css']
 })
 export class ConfigurationComponent implements OnInit {
-  activeTab: 'environment' | 'ai-providers' | 'taps' = 'ai-providers';
+  activeTab: 'environment' | 'ai-providers' | 'taps' | 'secrets' = 'ai-providers';
 
   // Shared API keys (entered once in the right-hand panel)
   anthropicApiKey = '';
@@ -65,7 +66,11 @@ export class ConfigurationComponent implements OnInit {
   error = '';
   loading = true;
 
-  constructor(private http: HttpClient, private modelCatalog: ModelCatalogService) {}
+  constructor(
+    private http: HttpClient,
+    private modelCatalog: ModelCatalogService,
+    private route: ActivatedRoute
+  ) {}
 
   /** Trials share the same trial droplet infra as a hosted dedicated instance:
    *  bundled Ollama for embeddings, no local-Ollama chat option, no Advanced endpoint editing. */
@@ -74,6 +79,12 @@ export class ConfigurationComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    this.route.queryParams.subscribe(params => {
+      const tab = params['tab'];
+      if (tab === 'environment' || tab === 'ai-providers' || tab === 'taps' || tab === 'secrets') {
+        this.activeTab = tab;
+      }
+    });
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
         this.environment = data.environment || '';

@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, HostListener } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { HealthService } from './health.service';
 
@@ -14,8 +14,19 @@ export class AppComponent implements OnInit {
   isTrial = false;
   environment = '';
   version = '';
+  helpMenuOpen = false;
 
   constructor(private healthService: HealthService, private http: HttpClient) {}
+
+  toggleHelpMenu(event: MouseEvent): void {
+    event.stopPropagation();
+    this.helpMenuOpen = !this.helpMenuOpen;
+  }
+
+  @HostListener('document:click')
+  closeHelpMenu(): void {
+    this.helpMenuOpen = false;
+  }
 
   ngOnInit(): void {
     // Accept API key from URL query param (set by dashboard link)
