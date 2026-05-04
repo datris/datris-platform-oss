@@ -14,6 +14,7 @@ case class TapConfig(
     secretName: String = null,
     cronExpression: String = null,
     enabled: Boolean = true,
+    externallyScheduled: Boolean = false,
     tapType: String = "structured",
     lastRunStatus: String = null,
     lastRunTime: String = null,

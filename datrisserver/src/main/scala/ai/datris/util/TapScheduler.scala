@@ -20,7 +20,7 @@ object TapScheduler {
         val now = new Date()
 
         taps.foreach(tap => {
-            if (tap.cronExpression != null && tap.enabled && tap.lastRunStatus != "running") {
+            if (tap.cronExpression != null && tap.enabled && !tap.externallyScheduled && tap.lastRunStatus != "running") {
                 try {
                     val cron = new CronExpression(tap.cronExpression)
                     cron.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))

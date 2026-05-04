@@ -89,9 +89,12 @@
               <option *ngFor="let p of pipelines" [value]="p.name" [selected]="tap.targetPipeline === p.name">{{ p.name }}</option>
             </select>
           </td>
-          <td class="tap-cron tap-cron-link" (click)="openEditCron($event, tap)" title="Click to edit schedule">
+          <td *ngIf="!tap.externallyScheduled" class="tap-cron tap-cron-link" (click)="openEditCron($event, tap)" title="Click to edit schedule">
             <span>{{ tap.cronExpression || '-' }}</span>
             <span class="material-icons cron-edit-icon">edit</span>
+          </td>
+          <td *ngIf="tap.externallyScheduled" class="tap-cron" title="Triggered by an external scheduler. The built-in cron is disabled for this tap.">
+            <span class="external-badge">External</span>
           </td>
           <td class="tap-datatype">
             <span class="datatype-badge" *ngIf="tap.lastRunDataType || tap.lastTestRunDataType">

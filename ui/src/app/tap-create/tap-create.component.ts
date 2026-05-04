@@ -141,6 +141,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   cronPrompt = '';
   generatingCron = false;
   enabled = true;
+  externallyScheduled = false;
 
   // Step 4 — Pipeline link (attach to existing or generate new)
   targetPipeline = '';
@@ -193,6 +194,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.packages = tap.packages || [];
           this.cronExpression = tap.cronExpression || '';
           this.enabled = tap.enabled !== false;
+          this.externallyScheduled = tap.externallyScheduled === true;
           if (this.cronExpression) {
             this.useSchedule = true;
             if (!['0 0 * * * ?', '0 0 0 * * ?', '0 0 0 ? * MON'].includes(this.cronExpression)) {
@@ -1063,6 +1065,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         targetPipeline: this.targetPipeline || null,
         cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
         enabled: this.enabled,
+        externallyScheduled: this.externallyScheduled,
         tapType: this.tapType,
         lastTestRunDataType: this.testDataType || null,
         lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,

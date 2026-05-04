@@ -446,12 +446,19 @@
 
       <div class="form-group">
         <label class="toggle-row">
-          <input type="checkbox" [(ngModel)]="useSchedule">
+          <input type="checkbox" [(ngModel)]="externallyScheduled">
+          <span>Triggered by an external scheduler (Apache Airflow, etc.) — disable built-in cron for this tap</span>
+        </label>
+      </div>
+
+      <div class="form-group">
+        <label class="toggle-row">
+          <input type="checkbox" [(ngModel)]="useSchedule" [disabled]="externallyScheduled">
           <span>Enable scheduled runs</span>
         </label>
       </div>
 
-      <div *ngIf="useSchedule">
+      <div *ngIf="useSchedule && !externallyScheduled">
         <div class="form-group">
           <label class="form-label">Preset</label>
           <div class="preset-row">
@@ -502,7 +509,7 @@
         <div class="review-row" *ngIf="testDataType"><span class="review-label">Data Type</span><span class="review-value"><span class="datatype-badge">{{ testDataType.toUpperCase() }}</span></span></div>
         <div class="review-row" *ngIf="testColumns.length > 0"><span class="review-label">Columns</span><span class="review-value">{{ testColumns.join(', ') }}</span></div>
         <div class="review-row" *ngIf="testRecordCount > 0"><span class="review-label">Test Records</span><span class="review-value">{{ testRecordCount }}</span></div>
-        <div class="review-row"><span class="review-label">Schedule</span><span class="review-value">{{ useSchedule ? cronExpression + ' — ' + describeCron(cronExpression) : 'None (manual only)' }}</span></div>
+        <div class="review-row"><span class="review-label">Schedule</span><span class="review-value">{{ externallyScheduled ? 'External (e.g. Airflow) — built-in cron disabled' : (useSchedule ? cronExpression + ' — ' + describeCron(cronExpression) : 'None (manual only)') }}</span></div>
         <div class="review-row"><span class="review-label">Enabled</span><span class="review-value">{{ enabled ? 'Yes' : 'No' }}</span></div>
       </div>
 

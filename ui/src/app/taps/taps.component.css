@@ -426,6 +426,18 @@ tbody tr:last-child td {
   opacity: 1;
 }
 
+.external-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  background: rgba(180, 120, 255, 0.1);
+  border: 1px solid rgba(180, 120, 255, 0.25);
+  color: #b478ff;
+}
+
 .tap-cron-link:hover {
   color: var(--accent-cyan);
 }

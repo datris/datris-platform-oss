@@ -1,0 +1,170 @@
+---
+title: Apache Airflow
+description: Trigger Datris taps and pipelines from Airflow DAGs.
+---
+
+Datris ships an [Apache Airflow](https://airflow.apache.org/) provider so you can
+run taps and pipelines from inside DAGs. Datris stays the engine — taps still
+execute their LLM-generated Python scripts inside Datris, pipelines still run
+Datris's CodeGen DQ + transformations + loaders. Airflow handles the *outer*
+orchestration: cross-system DAGs, backfills, SLAs, dependencies on non-Datris
+work.
+
+## When to use Airflow with Datris
+
+Reach for Airflow when your data flow spans systems Datris doesn't own:
+
+- A pipeline depends on a non-Datris job finishing first.
+- You need backfills with explicit date ranges.
+- Multiple taps and pipelines compose into a DAG with branches and joins.
+- You already run Airflow and want a single pane for scheduling.
+
+If your needs are simpler — "run this tap nightly, run this pipeline when a file
+lands" — the built-in Datris scheduler is enough. You can always migrate
+later by toggling a tap's **Externally scheduled** flag.
+
+## Install
+
+```bash
+pip install apache-airflow-providers-datris
+```
+
+The provider supports Airflow 3.0 and newer.
+
+For an existing Airflow 3.x stack, build a custom image:
+
+```dockerfile
+FROM apache/airflow:3.2.1
+RUN pip install --no-cache-dir apache-airflow-providers-datris
+```
+
+## Configure the connection
+
+Add an Airflow connection of type **Datris** pointing at your Datris instance:
+
+| Field    | Value                                              |
+| -------- | -------------------------------------------------- |
+| Conn Id  | `datris_default` (or any id you prefer)            |
+| Conn Type| `datris`                                           |
+| Host     | Full base URL, e.g. `https://datris.example.com`   |
+| Password | Your Datris API key (sent as the `x-api-key` header) |
+| Extra    | `{"verify": true, "timeout": 30}` (optional)       |
+
+CLI form:
+
+```bash
+airflow connections add datris_default \
+  --conn-type datris \
+  --conn-host https://datris.example.com \
+  --conn-password $DATRIS_API_KEY
+```
+
+## Mark taps as externally scheduled
+
+When Airflow drives a tap, the built-in Datris scheduler should stay out of the
+way. In the Datris UI, open the tap's **Schedule** step and check
+**Triggered by an external scheduler (Airflow, etc.)**. The Taps list will show
+an **External** badge in the schedule column, and Datris will skip the tap from
+its cron loop.
+
+## Operators and sensor
+
+| Component                          | Purpose                                                              |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| `DatrisRunTapOperator`             | Triggers a tap. Pushes `publisher_token` and `pipeline_tokens` to XCom. |
+| `DatrisRunPipelineOperator`        | Uploads a local file or in-memory bytes to a pipeline.               |
+| `DatrisUploadToPipelineOperator`   | Convenience: fetch from `s3://` / `gs://` / `file://`, then upload.  |
+| `DatrisPipelineJobSensor`          | Polls Datris until the pipeline reaches a terminal state.            |
+
+`DatrisUploadToPipelineOperator` lazy-imports the AWS / GCS provider hooks, so
+those dependencies are only required when you use those schemes.
+
+## Example: run a tap on a daily schedule
+
+Replaces the per-tap cron with an Airflow schedule. The sensor uses
+`mode="reschedule"` so it releases its worker slot between pokes.
+
+```python
+from datetime import datetime
+from airflow import DAG
+from datris_airflow.operators.run_tap import DatrisRunTapOperator
+from datris_airflow.sensors.pipeline_job import DatrisPipelineJobSensor
+
+with DAG(
+    dag_id="datris_daily_tap",
+    start_date=datetime(2026, 1, 1),
+    schedule="@daily",
+    catchup=False,
+    tags=["datris"],
+) as dag:
+    run = DatrisRunTapOperator(
+        task_id="run_tap",
+        tap_name="nyse_quotes",
+        datris_conn_id="datris_default",
+    )
+    wait = DatrisPipelineJobSensor(
+        task_id="wait_for_pipeline",
+        publisher_token="{{ ti.xcom_pull(task_ids='run_tap', key='publisher_token') }}",
+        datris_conn_id="datris_default",
+        mode="reschedule",
+        poke_interval=30,
+        timeout=60 * 60,
+    )
+    run >> wait
+```
+
+## Example: ingest an S3 file into a pipeline
+
+```python
+from datris_airflow.operators.upload_to_pipeline import DatrisUploadToPipelineOperator
+from datris_airflow.sensors.pipeline_job import DatrisPipelineJobSensor
+
+upload = DatrisUploadToPipelineOperator(
+    task_id="upload",
+    pipeline="quotes_csv",
+    source_uri="s3://my-bucket/path/data.csv",
+    datris_conn_id="datris_default",
+    aws_conn_id="aws_default",
+)
+wait = DatrisPipelineJobSensor(
+    task_id="wait",
+    publisher_token="{{ ti.xcom_pull(task_ids='upload', key='publisher_token') }}",
+    datris_conn_id="datris_default",
+)
+upload >> wait
+```
+
+`DatrisPipelineJobSensor` reads the rollup envelope returned by
+`/api/v1/pipeline/status?withrollup=true`. It returns true on aggregate status
+`success` (or `warning`, with a log line). It raises `AirflowException` on
+`error` or `timed_out`. On task kill, the sensor calls `/api/v1/job/kill` for
+each pipeline token it has observed so the underlying jobs move to `CANCELLED`
+instead of orphaning.
+
+## Behavior notes
+
+**Server-side debounce.** If you fire two `DatrisRunTapOperator` runs against
+the same tap inside Datris's debounce window (default 30 seconds), the second is
+silently skipped. The operator treats that as success-with-warning — debounce
+is a feature, not a failure.
+
+**Reschedule sensor mode.** The default `mode="reschedule"` releases the worker
+slot between pokes. For pipelines that finish in under a minute, switch to
+`mode="poke"` to avoid scheduling overhead.
+
+**Multi-tenant.** One Airflow connection per Datris tenant. The `x-api-key` on
+the connection determines which tenant the operator targets.
+
+**File-archive uploads.** If you upload a `.zip` / `.tar.gz` to a pipeline,
+Datris explodes it server-side and creates one job per file. The
+`pipeline_token` XCom is omitted in that case; poll on `publisher_token`
+instead — it covers all jobs created by the upload.
+
+## Troubleshooting
+
+| Symptom                                                          | Likely cause and fix                                                                                                                  |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `AirflowException: Datris ... returned 401`                      | Missing or wrong API key on the Airflow connection. Re-paste the key into the connection's Password field.                            |
+| `ModuleNotFoundError: No module named 'datris_airflow'` during DAG parse | Provider not installed in the dag-processor container. Install it there and restart the dag-processor so its parser workers reload sys.path. |
+| Sensor never finishes                                            | Confirm the `publisher_token` XCom is populated by the upstream operator. The operator only pushes it when the response includes one. |
+| Datris shows duplicate runs                                      | The tap is still scheduled in Datris. Check the **Externally scheduled** flag in the tap's Schedule step.                             |

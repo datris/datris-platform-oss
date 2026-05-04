@@ -111,6 +111,12 @@
               "examples/test-mcp-server",
               "examples/topic-subscriber"
             ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/airflow"
+            ]
           }
         ]
       },
