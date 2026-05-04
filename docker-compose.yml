@@ -108,7 +108,7 @@ services:
     container_name: tei
     ports:
       - "11434:80"   # external port preserved so any prior EMBEDDING_ENDPOINT overrides keep working
-    command: --model-id BAAI/bge-m3 --max-batch-tokens 16384
+    command: --model-id BAAI/bge-m3 --max-batch-tokens 8192
     environment:
       HUGGINGFACE_HUB_CACHE: /data
     volumes:
