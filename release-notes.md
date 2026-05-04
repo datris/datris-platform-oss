@@ -1,23 +1,18 @@
 # Release Notes
 
-## v1.6.15 — April 30, 2026
+## v1.6.16 — May 4, 2026
 
-**Smaller, faster default install. Lighter download, opt-in Kafka, vector ingestion fixes.**
+**UI cleanup, friendlier Help menu, and a more reliable bundled embedding service.**
 
-- **~58% smaller `docker compose pull`.** The bundled platform now downloads roughly 11 GB less out of the box. Fresh installs come up dramatically faster.
-- **Bundled embeddings are faster on the same `bge-m3` model.** No configuration changes needed; existing vector collections built with the previous bundled embedder continue to work without re-embedding.
-- **Kafka is now opt-in.** Most local installs don't need it, so Kafka, Zookeeper, and the Kafka UI ship commented out in `docker-compose.yml`. Uncomment the bundled blocks (and the related volumes at the top of the file) to enable them. Pipelines that point at external Kafka brokers are unaffected.
-- **Vector ingestion no longer fails with a "duplicate key" error when many documents land at once.** Concurrent document loaders previously raced on creating the `pgvector` extension; the race is now serialized.
-- **Vector ingestion no longer fails on embedding providers that limit batch size.** The chunk batch size is now configurable per embedding secret (`batchSize`), with a cross-provider-safe default. OpenAI users who want to maximize throughput can set this higher.
-- **Configuration tab clarifies optional providers.** The bundled embedding option is labeled `bge-m3 (bundled)`. The AI Provider, CodeGen Provider, and Embedding Provider dropdowns each indicate that local Ollama is opt-in.
-- **Service Health no longer shows "Down" for optional services that were never enabled.** Kafka and the optional vector databases (Qdrant, Weaviate, Milvus, Chroma) now correctly report "Not Configured" until you turn them on. Existing installs may still show "Down" until their stale Vault secrets are removed.
+- **Bundled embedding handles large ingest batches without errors.** The bundled embedding service no longer rejects large batches submitted by the platform, which previously surfaced as ingestion failures on long documents.
+- **Secrets is now a tab inside Configuration.** Instead of a separate top-level tab, Secrets lives under Configuration alongside AI Providers, Taps, and Environment. Existing `/secrets` links continue to work — they redirect to the new location.
+- **Help menu in the top bar.** The Docs link is replaced with a Help dropdown that exposes both the docs and a direct link to file an issue on GitHub.
+- **Easier setup with Claude.** A new "Configuring Claude" page in the docs walks through Claude Desktop and Claude Code setup end-to-end, including a first-prompts walkthrough for an empty install.
+- **Structured issue reporting.** GitHub issues now use forms that capture version, component, deployment mode, and reproduction steps, making bug reports easier to triage and faster to fix.
 
 **Upgrading**
 
-- New installs: nothing to do.
-- Existing installs: pull the new images and re-run with the `--remove-orphans` flag — `docker compose pull && docker compose up -d --remove-orphans`. The flag is required because the bundled embedding service moved off Ollama and onto the same host port; without it the previous Ollama container keeps holding port 11434 and the upgrade fails with `Bind for 0.0.0.0:11434 failed: port is already allocated`. Your data and the Ollama model are preserved (the Ollama image's named volume is untouched).
-- Vault is auto-seeded on first start.
-- If you were relying on the bundled local Kafka broker for a pipeline, uncomment the Kafka services in your `docker-compose.yml` after upgrading.
+- Existing installs: `docker compose pull && docker compose up -d`. No data migration needed.
 
 ---
 
