@@ -121,6 +121,7 @@
             "group": "MCP",
             "pages": [
               "mcp-server",
+              "configuring-claude",
               "cli"
             ]
           }

@@ -1,0 +1,174 @@
+---
+title: "Configuring Claude"
+description: "Connect Claude Desktop and Claude Code to the Datris MCP server"
+---
+
+This page covers the client-side configuration for Anthropic's Claude products to talk to the Datris MCP server. For server-side details (architecture, transports, available tools), see [MCP Server (AI Agent Integration)](/mcp-server).
+
+## Configuring Claude Desktop
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows), then quit and relaunch Claude Desktop.
+
+### Recommended: SSE via mcp-remote (Docker stack)
+
+If you're running the standard Docker stack, route Claude Desktop through the dockerized MCP server on port 3000 using `mcp-remote`:
+
+```json
+{
+    "mcpServers": {
+        "datris": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "http://localhost:3000/sse", "--transport", "sse-only"]
+        }
+    }
+}
+```
+
+Why this is the default: connections via SSE register MCP sessions with the Datris server, so Claude Desktop appears in the **Agents** tab of the Datris UI with live tool-call streaming. The stdio alternative below makes plain REST calls and is invisible to that monitor.
+
+Requires Node.js (for `npx`).
+
+### Alternative: stdio via uvx (no Docker)
+
+If you're not running the Docker stack — for example, you only want the MCP server and run the Datris API separately — use the PyPI package directly:
+
+```json
+{
+    "mcpServers": {
+        "datris": {
+            "command": "uvx",
+            "args": ["datris-mcp-server"],
+            "env": {
+                "PIPELINE_URL": "http://localhost:8080"
+            }
+        }
+    }
+}
+```
+
+Requires `uv` / `uvx` (`brew install uv`). On macOS, Claude Desktop is a GUI app and doesn't inherit your shell PATH, so use the full path to `uvx` (e.g. `/Users/you/.local/bin/uvx`) if `uvx` alone doesn't resolve. Tool calls will not appear in the Agents tab.
+
+## Configuring Claude Code
+
+Add to `.mcp.json` in your project root. The same two options apply.
+
+### Recommended: SSE via mcp-remote (Docker stack)
+
+```json
+{
+    "mcpServers": {
+        "datris": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "http://localhost:3000/sse", "--transport", "sse-only"]
+        }
+    }
+}
+```
+
+### Alternative: stdio via uvx (no Docker)
+
+```json
+{
+    "mcpServers": {
+        "datris": {
+            "command": "uvx",
+            "args": ["datris-mcp-server"],
+            "env": {
+                "PIPELINE_URL": "http://localhost:8080"
+            }
+        }
+    }
+}
+```
+
+## Talking to Claude
+
+Once the MCP server is configured, just talk to Claude naturally. Claude sees all 30+ Datris tools and picks the right one based on your request.
+
+### First prompts (empty Datris)
+
+If you've just installed Datris and have no data yet, these prompts exercise the full create → query loop without needing files on hand. Watch the **Agents** tab in the Datris UI as you go — you'll see each tool call stream in real time.
+
+**1. Confirm discovery works (returns empty, but proves the round-trip):**
+
+> "List my Datris pipelines and tell me what's there."
+
+**2. Have Claude generate sample data and ingest it:**
+
+> "Generate 50 rows of sample stock price data (symbol, date, open, close, volume) and ingest it into PostgreSQL as a pipeline called `stock_prices`."
+
+This single prompt exercises `create_pipeline` (with destination schema), the actual ingest, and several supporting tools — multiple tool calls light up the activity log.
+
+**3. Query the data you just created:**
+
+> "Show me the top 10 rows in `stock_prices` by volume."
+
+**4. Add AI-generated data quality rules:**
+
+> "Profile the `stock_prices` pipeline and suggest data quality rules I should add."
+
+This exercises the AI/CodeGen path — Claude writes Python validators, Datris runs them locally.
+
+**5. Read the pipeline configuration resource:**
+
+> "Read the Datris pipeline configuration reference and summarize what destination types are supported."
+
+Confirms Claude can pull MCP resources (not just tools) — useful to verify your client supports both.
+
+If you have a PDF handy, also try the RAG path:
+
+> "Ingest this PDF into pgvector so I can search it." *(drag the PDF into the chat)*
+>
+> Then: "Search the documents for [topic from the PDF]."
+
+### Ingest data
+
+> "Create a pipeline called stock_prices and ingest this CSV into PostgreSQL"
+
+> "Upload this PDF to pgvector so I can search it later"
+
+> "Ingest this sales data into PostgreSQL and validate that all prices are positive"
+
+### Query data
+
+> "Show me the top 10 stocks by volume from the stock_prices table"
+
+> "What's the average closing price for AAPL?"
+
+> "How many orders were placed in March?"
+
+### Search documents (RAG)
+
+> "Search my financial documents for information about quarterly revenue"
+
+> "What does the employee handbook say about the return policy?"
+
+### Profile data
+
+> "Profile this CSV file and tell me what validation rules I should add"
+
+> "What does this data look like? Give me a summary"
+
+### Manage pipelines
+
+> "List all my pipelines"
+
+> "Delete the test_pipeline"
+
+> "What's the status of the stock_prices pipeline?"
+
+### Explore databases
+
+> "What tables are in my PostgreSQL database?"
+
+> "Show me the columns in the orders table"
+
+> "What vector collections do I have?"
+
+### Health and diagnostics
+
+> "Are all the backend services running?"
+
+> "Check the health of the platform"
+
+You can also drag and drop files directly into the Claude chat to upload them for ingestion or profiling.
