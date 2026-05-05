@@ -1,19 +1,16 @@
 # Release Notes
 
-## v1.6.18 — May 5, 2026
+## v1.6.19 — May 5, 2026
 
-**User authentication, roles, and an admin-only Configuration tab.**
+**Choose your embedding provider independently of your chat provider.**
 
-- **Optional username/password login.** Datris can now require a login before any tab is reachable. Three roles ship out of the box — **admin** (full access), **editor** (read + edit pipelines, taps, secrets), and **viewer** (read-only). Off by default, so existing single-tenant installs are unaffected. See the new "User Authentication" doc to enable it.
-- **Configuration is admin-only.** When auth is on, only admins see the Configuration tab (Secrets, AI Providers, Taps, Users, Environment). Editors and viewers continue to use everything else.
-- **New Users sub-tab.** Admins can add, remove, and reassign roles. A built-in 16-character password generator with a reveal toggle makes handing out credentials painless. The last admin can't be deleted.
-- **Self-service password change.** Users can change their own password from the top-right user menu.
-- **Reveal toggle on the login screen.** Easier to see what you're typing on a new device.
-- **Clear the Agents activity log.** The trash icon now wipes the server-side activity buffer (with an inline confirm) so the cleared state survives a refresh.
+- **Mix-and-match AI providers.** The embedding slot is now configured separately from the chat and code-generation slots, so you can keep Claude for chat and code generation while pointing embeddings at OpenAI (or vice-versa). Useful when the bundled embedder is too heavy for your host, or when you want a different model family for vector quality vs chat quality. See [AI Configuration](https://docs.datris.ai/ai-configuration) for the full list of options.
+- **Existing installs keep their current behavior.** If you don't set an embedding override, the embedding slot continues to follow your chat provider exactly as before — Claude installs keep using the bundled embedder, OpenAI installs keep using OpenAI embeddings. The override is purely opt-in.
 
 **Upgrading**
 
-- Existing installs: `docker compose pull && docker compose up -d`. No data migration needed; auth defaults to off.
+- Existing installs: `docker compose pull && docker compose up -d --remove-orphans`. No data migration needed.
+- If you switch embedding providers on an existing deployment, vector destinations built on the previous embedder will fail-fast with a dimension-mismatch message on the next run. Drop the affected destination tables or collections and re-ingest.
 
 ---
 

@@ -104,6 +104,33 @@ OPENAI_MODEL=gpt-4.1
 CODEGEN_MODEL=claude-opus-4-7   # or gpt-5 if using OpenAI
 ```
 
+### Mix-and-match: Anthropic chat + OpenAI embeddings
+
+The embedding slot is **decoupled from the chat slots** — set `EMBEDDING_PROVIDER` in `.env` to override what `vault-init.sh` seeds for `oss/embedding`, regardless of `AI_PROVIDER`. This is the recommended path when you want Claude for chat/codegen but don't want to run the bundled TEI sidecar (for example on a small host where TEI gets OOM-killed).
+
+```bash
+# .env — Anthropic for chat/codegen, OpenAI for embeddings
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+EMBEDDING_PROVIDER=openai
+```
+
+Valid values for `EMBEDDING_PROVIDER`:
+
+| Value | Endpoint | Default model | Requirements |
+|-------|----------|---------------|--------------|
+| `openai` | `https://api.openai.com/v1/embeddings` | `text-embedding-3-small` (1536-dim) | `OPENAI_API_KEY` set |
+| `tei` | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` (1024-dim) | bundled TEI sidecar running |
+| `ollama` | `http://ollama:11434/v1/embeddings` | `bge-m3` (1024-dim) | optional Ollama service enabled, model pulled |
+
+`EMBEDDING_MODEL` overrides the default model for the chosen provider (e.g. `text-embedding-3-large` for higher quality at 3072-dim). `EMBEDDING_ENDPOINT` overrides the URL for the `tei` or `ollama` providers — useful when running TEI or Ollama on a separate host and pointing at it from inside Docker.
+
+When `EMBEDDING_PROVIDER` is unset, embedding follows `AI_PROVIDER`: `anthropic` seeds the bundled TEI; `openai` seeds OpenAI embeddings.
+
+<Warning>
+**Switching providers changes vector dimensions.** `bge-m3` is 1024-dim, `text-embedding-3-small` is 1536-dim, `text-embedding-3-large` is 3072-dim. Existing pgvector / Qdrant / Weaviate / Milvus / Chroma collections built on the previous embedder will fail-fast on the next run with a dimension-mismatch message — drop the destination table or collection and re-ingest.
+</Warning>
+
 ## Hot Reload
 
 When you save AI configuration from the Configuration UI, the server reloads the `ai-primary` and `codegen` configs from Vault immediately — **no restart required**. The next AI call uses the updated provider, model, and endpoint. The `embedding` config is read from Vault on each request and also requires no restart.

@@ -139,6 +139,7 @@
         <div class="config-section">
           <h2 class="section-title">Embedding Provider</h2>
           <p class="section-hint">Used for vector destinations (Qdrant, Weaviate, Milvus, Chroma, pgvector) and semantic search. Must be an OpenAI-compatible embeddings endpoint. Anthropic-only deployments use the bundled embedding service running bge-m3 — no OpenAI key required.</p>
+          <p class="section-tip"><strong>Highly recommended:</strong> OpenAI <code>text-embedding-3-small</code> for the most reliable, low-cost path — works on any host. For a fully-local zero-cost setup, Ollama with <code>bge-m3</code> is a strong open-source alternative.</p>
 
           <!-- Hosted + Anthropic: locked to bundled bge-m3 -->
           <div *ngIf="hostedOrTrial && aiPrimaryProvider === 'anthropic'">
