@@ -1,0 +1,59 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature. For early-stage or open-ended ideas, consider posting in [Discussions → Ideas](../../discussions/categories/ideas) first to gather feedback before opening a formal issue.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case and who it serves. Try to avoid jumping straight to a solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like Datris to solve it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, other tools that solve this, etc.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component this would touch
+      options:
+        - Server / API
+        - MCP server / tools
+        - UI
+        - CLI
+        - Taps / ingestion
+        - AI / CodeGen
+        - Discovery / search
+        - Docker / deployment
+        - Docs
+        - Cross-cutting / not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues and discussions for duplicates
+          required: true

@@ -26,7 +26,7 @@
 }
 
 .tab {
-  padding: 8px 20px;
+  padding: 8px 14px;
   font-size: 14px;
   font-family: var(--font-sans);
   font-weight: 500;
@@ -34,6 +34,7 @@
   text-decoration: none;
   border-radius: 6px;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 
 .tab:hover {
@@ -44,6 +45,62 @@
 .tab-active {
   color: var(--accent-cyan);
   background: rgba(0, 180, 255, 0.1);
+}
+
+.help-menu {
+  position: relative;
+}
+
+.help-trigger {
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.help-trigger-open {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.help-caret {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.help-menu-items {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 160px;
+  background: rgba(20, 26, 42, 0.98);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 110;
+}
+
+.help-menu-item {
+  padding: 8px 12px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: 4px;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.help-menu-item:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .env-info {

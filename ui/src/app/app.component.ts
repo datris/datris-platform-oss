@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, HostListener } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Router, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs/operators';
@@ -18,6 +18,7 @@ export class AppComponent implements OnInit {
   isTrial = false;
   environment = '';
   version = '';
+  helpMenuOpen = false;
 
   // user-auth
   useUserAuth = false;
@@ -33,6 +34,16 @@ export class AppComponent implements OnInit {
     private auth: AuthService,
     private router: Router
   ) {}
+
+  toggleHelpMenu(event: MouseEvent): void {
+    event.stopPropagation();
+    this.helpMenuOpen = !this.helpMenuOpen;
+  }
+
+  @HostListener('document:click')
+  closeHelpMenu(): void {
+    this.helpMenuOpen = false;
+  }
 
   ngOnInit(): void {
     // Track whether we're on the login route so the chrome can hide.

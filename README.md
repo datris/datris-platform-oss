@@ -1,19 +1,17 @@
 # Datris — The First AI Agent-Native Data Platform
 
-[![Try Hosted Free](https://img.shields.io/badge/Try_Hosted_Free-14_day_trial-00b4ff?style=for-the-badge)](https://datris.ai/signup)
-
 [![PyPI](https://img.shields.io/pypi/v/datris-mcp-server)](https://pypi.org/project/datris-mcp-server/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.datris%2Fdatris-blue)](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris)
 [![Docker Hub](https://img.shields.io/docker/v/datrisai/datris-server?label=Docker%20Hub)](https://hub.docker.com/u/datrisai)
-[![License](https://img.shields.io/github/license/datris/datris-platform-oss)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-[datris.ai](https://datris.ai) · [Try Hosted Free](https://datris.ai/signup) · [Documentation](https://docs.datris.ai) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
+[datris.ai](https://datris.ai) · [Documentation](https://docs.datris.ai) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
 
 Ingest, validate, transform, store, and retrieve your data — whether you're an AI agent talking through MCP or a developer writing config. One platform for both.
 
 ## Why Datris?
 
-- **Agent-native** — Built-in MCP server with 35+ tools. Claude, Cursor, OpenClaw, and any MCP-compatible agent can operate pipelines through natural conversation
+- **Agent-native** — Built-in MCP server with 47 tools. Claude, Cursor, and any MCP-compatible agent can operate pipelines through natural conversation
 - **Taps** — AI-generated Python scripts that fetch data from external sources (APIs, web scraping, databases) and push it into pipelines. Describe what you want, Datris generates the script. Includes AI diagnosis, CRON scheduling, and credentials via Vault
 - **AI at every stage** — AI data quality, AI transformations, AI schema generation, AI profiling, AI error explanation, natural language queries, RAG
 - **No vendor lock-in** — 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault). Runs anywhere Docker does
@@ -32,21 +30,20 @@ docker compose up -d
 
 ### Connect an AI Agent
 
-Add to your MCP client config (Claude Desktop, Cursor, etc.):
+Add to your MCP client config (Claude Desktop, Claude Code, Cursor, etc.). With the Docker stack running, route through the bundled MCP server on port 3000 — your client appears in the Datris UI **Agents** tab with live tool-call streaming:
 
 ```json
 {
   "mcpServers": {
     "datris": {
-      "command": "uvx",
-      "args": ["datris-mcp-server"],
-      "env": {
-        "PIPELINE_URL": "http://localhost:8080"
-      }
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:3000/sse", "--transport", "sse-only"]
     }
   }
 }
 ```
+
+Requires Node.js. For a stdio alternative (no Docker), or full Claude Desktop / Claude Code walkthroughs, see [Configuring Claude](https://docs.datris.ai/configuring-claude).
 
 ### CLI
 
@@ -78,7 +75,7 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 
 | Feature | Description |
 |---------|-------------|
-| **MCP Server** | 30+ tools for AI agents — pipeline CRUD, upload, query, search, profiling |
+| **MCP Server** | 47 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps |
 | **AI Data Quality** | Plain English validation rules — AI generates and runs a validation script |
 | **AI Transformation** | Plain English transformations — AI generates and runs a transformation script |
 | **AI Schema Generation** | Upload a file, get a complete pipeline config |
@@ -89,20 +86,22 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 
 ### Supported Formats
 
-CSV, JSON, XML, Excel, PDF, Word, PowerPoint, HTML, email, EPUB, plain text, .zip/.tar/.gz archives
+CSV, JSON, XML, Excel, PDF, Word (DOCX), plain text
 
 ### AI Providers
 
-Anthropic Claude (Opus 4.6, Sonnet 4.6, Haiku) · OpenAI (GPT-5, GPT-4.1, o3) · Ollama (local models)
+Anthropic Claude (Sonnet 4.6 default, Opus 4.7 for CodeGen) · OpenAI (GPT-5.5) · Ollama (local models, optional). Embeddings via TEI sidecar (BAAI/bge-m3) when using Anthropic, or `text-embedding-3-small` when using OpenAI.
 
 ## Architecture
 
 | Service | Purpose |
 |---------|---------|
 | **MinIO** | S3-compatible object store for file staging and data output |
+| **PostgreSQL** | Default structured destination, also hosts pgvector for RAG |
 | **MongoDB** | Configuration store, job status tracking, metadata |
 | **ActiveMQ** | File notification queue, pipeline event notifications |
 | **HashiCorp Vault** | Secrets management (database credentials, API keys) |
+| **TEI** | Text Embeddings Inference sidecar (BAAI/bge-m3) for vector embeddings without an OpenAI key |
 | **Apache Kafka** | Optional streaming source and destination |
 | **Apache Spark** | Local Spark for writing Parquet/ORC to MinIO |
 

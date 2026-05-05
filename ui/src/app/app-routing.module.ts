@@ -1,6 +1,5 @@
-import { NgModule } from '@angular/core';
-import { RouterModule, Routes, Router, UrlTree } from '@angular/router';
-import { inject } from '@angular/core';
+import { inject, NgModule } from '@angular/core';
+import { Router, RouterModule, Routes, UrlTree } from '@angular/router';
 import { PipelinesComponent } from './pipelines/pipelines.component';
 import { PipelineCreateComponent } from './pipeline-create/pipeline-create.component';
 import { PipelineEditComponent } from './pipeline-edit/pipeline-edit.component';

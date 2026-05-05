@@ -19,7 +19,15 @@
     <a class="tab" routerLink="/ingestion" routerLinkActive="tab-active">Ingestion</a>
     <a class="tab" routerLink="/search" routerLinkActive="tab-active">Search</a>
     <a class="tab" routerLink="/configuration" routerLinkActive="tab-active" *ngIf="!useUserAuth || isAdmin()">Configuration</a>
-    <a class="tab" href="https://docs.datris.ai" target="_blank" rel="noopener">Docs ↗</a>
+    <div class="help-menu">
+      <button class="tab help-trigger" type="button" (click)="toggleHelpMenu($event)" [class.help-trigger-open]="helpMenuOpen">
+        Help <span class="help-caret">▾</span>
+      </button>
+      <div class="help-menu-items" *ngIf="helpMenuOpen">
+        <a class="help-menu-item" href="https://docs.datris.ai" target="_blank" rel="noopener">Docs ↗</a>
+        <a class="help-menu-item" href="https://github.com/datris/datris-platform-oss/issues" target="_blank" rel="noopener">Support ↗</a>
+      </div>
+    </div>
   </div>
   <div class="env-info" *ngIf="environment">
     <div class="user-menu" *ngIf="useUserAuth && currentUser">

@@ -254,9 +254,9 @@ NEVER rules:
 
 Required workflow:
   1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
-  2. Create a pipeline: call create_pipeline with your sample data (base64-encoded), pipeline name, and destination type. The schema is auto-detected from the data — you do not construct pipeline configs manually.
+  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb), pass sample data (base64-encoded) + filename so the schema is auto-detected. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead).
   3. Ingest data (choose one):
-     Option A — Direct upload: call upload_data with base64-encoded content and the pipeline name.
+     Option A — Direct upload: call upload_data ONCE with the entire base64-encoded content and the pipeline name. Do NOT split the content into multiple uploads — vector destinations (pgvector, qdrant, weaviate, milvus, chroma) chunk server-side, and structured pipelines accept the whole file as one batch.
      Option B — Create a tap: use create_tap to provide an instruction (AI generates the script) or your own Python script that fetches data from an external source and pushes it into the pipeline automatically. See Tap workflow below.
   4. Monitor: call get_job_status and poll until status is COMPLETED or FAILED. You MUST wait for COMPLETED before querying.
   5. If FAILED: read the error message from get_job_status. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
@@ -369,10 +369,10 @@ PIPELINE_CONFIG_REFERENCE = """\
 
 1. Call `list_pipelines` to check if the pipeline already exists.
 2. If it exists, data may already be in the destination. Use metadata tools (`list_postgres_tables`, `list_mongodb_collections`, `list_qdrant_collections`, etc.) to discover it and query/search directly. Only re-ingest if the data is stale or needs updating.
-3. If the pipeline does not exist, call `create_pipeline` with your sample data (base64-encoded), pipeline name, and destination type. The schema is auto-detected from the data.
+3. If the pipeline does not exist, call `create_pipeline`. Structured destinations (postgres, mongodb) need sample data (base64) for schema auto-detection. Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
 5. Call `check_service_health` to verify the target destination service is available.
 6. Call `create_pipeline` with the config.
-7. Call `upload_data` with your data (base64-encoded) and the pipeline name.
+7. Call `upload_data` ONCE with your full data (base64-encoded) and the pipeline name. Do not pre-chunk — vector destinations chunk server-side, structured pipelines accept the whole file as one batch.
 8. Call `get_job_status` to monitor processing. Poll until status is COMPLETED or FAILED.
 9. Query or search the data: `query_postgres`, `query_mongodb`, `search_qdrant`, `search_pgvector`, etc.
 10. For RAG: pass search results as context to `ai_answer` with the user's question.
@@ -802,17 +802,17 @@ async def list_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline by sending sample data. The schema is auto-detected from the data — you do not need to specify field names or types. Just provide the data, pipeline name, and destination type.",
+            description="Create a pipeline. For STRUCTURED destinations (postgres, mongodb): send a small sample file and the schema is auto-detected — you do not specify field names or types. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma): there is no schema; pass ONLY pipeline + destination (and optionally filename to set the file-extension hint). Do NOT base64 the document just to satisfy this call — that's wasted tokens; send the document later via upload_data.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "content": {
                         "type": "string",
-                        "description": "Base64-encoded sample data file content"
+                        "description": "Base64-encoded sample data file content. REQUIRED for structured destinations (postgres, mongodb). OMIT for vector destinations — the file goes through upload_data after this call returns."
                     },
                     "filename": {
                         "type": "string",
-                        "description": "Filename (e.g., data.csv, report.json, orders.xml)"
+                        "description": "Filename (e.g., data.csv, report.json, orders.xml). REQUIRED for structured destinations. Optional for vector destinations — only used as a fileExtension hint (defaults to txt)."
                     },
                     "pipeline": {
                         "type": "string",
@@ -848,7 +848,7 @@ async def list_tools():
                         "description": "Optional transformation instruction as a plain-English description. Only add when the user explicitly requests transformation. Datris will generate a Python script from this instruction and run it locally to transform all data. Example: 'Convert all date columns to YYYY/MM/DD format and uppercase all name fields'"
                     }
                 },
-                "required": ["content", "filename", "pipeline"]
+                "required": ["pipeline"]
             }
         ),
         Tool(
@@ -867,7 +867,7 @@ async def list_tools():
         ),
         Tool(
             name="upload_data",
-            description="Upload data to a registered pipeline for processing. Send the file content as a base64-encoded string. The pipeline's rules are applied: schema validation, data quality checks, transformations, then routing to the configured destination. Returns a pipeline token for tracking job status via get_job_status.",
+            description="Upload data to a registered pipeline for processing. Send the ENTIRE file content as a single base64-encoded string in ONE call — do not pre-split or chunk the content client-side. Vector destinations (pgvector, qdrant, weaviate, milvus, chroma) apply recursive chunking server-side using the pipeline's configured chunkSize/chunkOverlap; for those, one upload_data call yields many embedded chunks automatically. The pipeline's rules are applied: schema validation, data quality checks, transformations, then routing to the configured destination. Returns a pipelineToken for tracking job status via get_job_status.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1612,7 +1612,7 @@ def _dispatch(name: str, args: dict) -> str:
         try:
             pipelines = json.loads(result)
             if not pipelines or (isinstance(pipelines, list) and len(pipelines) == 0):
-                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline with your sample data (base64-encoded), pipeline name, and destination type."})
+                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations pass sample data (base64) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
         except (json.JSONDecodeError, TypeError):
             pass
         return result
@@ -1621,36 +1621,53 @@ def _dispatch(name: str, args: dict) -> str:
         return _call("get", "/api/v1/pipeline", params={"pipeline": args["pipeline"]})
 
     elif name == "create_pipeline":
-        # Step 1: Generate schema from sample data
         pipeline_name = args["pipeline"]
-        gen_data = {"pipeline": pipeline_name, "allStrings": "true"}
-        if args.get("delimiter"):
-            gen_data["delimiter"] = args["delimiter"]
-        header = args.get("header", True)
-        gen_data["header"] = str(header).lower()
-        gen_result = _upload_content("/api/v1/pipeline/generate", args["content"], args["filename"], gen_data)
-
-        # Step 2: Parse the generated config and set destination
-        try:
-            config = json.loads(gen_result)
-        except json.JSONDecodeError:
-            return json.dumps({"error": "Failed to generate schema: " + gen_result})
-
         table_name = args.get("table", pipeline_name)
         db_name = args.get("database", "datris")
         dest_type = args.get("destination", "")
+        filename = args.get("filename", "")
 
         # Auto-detect destination if not specified
         if not dest_type:
-            filename = args.get("filename", "").lower()
-            if filename.endswith(".json"):
+            fn_lower = filename.lower()
+            if fn_lower.endswith(".json"):
                 dest_type = "mongodb"
-            elif filename.endswith(".xml"):
+            elif fn_lower.endswith(".xml"):
                 dest_type = "postgres"
-            elif filename.endswith(".pdf") or filename.endswith(".docx") or filename.endswith(".txt"):
+            elif fn_lower.endswith(".pdf") or fn_lower.endswith(".docx") or fn_lower.endswith(".txt"):
                 dest_type = "pgvector"
             else:
                 dest_type = "postgres"
+
+        is_vector = dest_type in ("pgvector", "qdrant", "weaviate", "milvus", "chroma")
+
+        if is_vector:
+            # Vector destinations have no schema to detect — synthesize the config
+            # directly and skip the /generate round-trip. Saves ~90K tokens of
+            # base64'd sample content for typical PDF/DOCX uploads.
+            file_ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
+            config = {
+                "name": pipeline_name,
+                "source": {
+                    "fileAttributes": {
+                        "unstructuredAttributes": {"fileExtension": file_ext}
+                    }
+                }
+            }
+        else:
+            # Structured destinations: send sample to /generate for schema detection
+            if not args.get("content") or not filename:
+                return json.dumps({"error": "content and filename are required for non-vector destinations (used for schema auto-detection)"})
+            gen_data = {"pipeline": pipeline_name, "allStrings": "true"}
+            if args.get("delimiter"):
+                gen_data["delimiter"] = args["delimiter"]
+            header = args.get("header", True)
+            gen_data["header"] = str(header).lower()
+            gen_result = _upload_content("/api/v1/pipeline/generate", args["content"], filename, gen_data)
+            try:
+                config = json.loads(gen_result)
+            except json.JSONDecodeError:
+                return json.dumps({"error": "Failed to generate schema: " + gen_result})
 
         # Build destination
         dest = {}
@@ -1694,7 +1711,13 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps({"error": "Pipeline registration failed silently. Generated config may be invalid.", "config": str(config)[:500]})
 
         actual_name = config.get("name", pipeline_name)
-        return json.dumps({"status": "Pipeline created", "pipeline": actual_name, "destination": dest_type, "table": table_name})
+        response = {"status": "Pipeline created", "pipeline": actual_name, "destination": dest_type, "table": table_name}
+        if dest_type in ("pgvector", "qdrant", "weaviate", "milvus", "chroma"):
+            response["nextStep"] = (
+                "Vector destination — call upload_data ONCE with the entire document content. "
+                "The server chunks it server-side (chunkSize 500, overlap 50) and embeds each chunk."
+            )
+        return json.dumps(response)
 
     elif name == "delete_pipeline":
         return _call("delete", "/api/v1/pipeline", params={"pipeline": args["pipeline"]})

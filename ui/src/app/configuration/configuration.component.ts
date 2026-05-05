@@ -102,6 +102,7 @@ export class ConfigurationComponent implements OnInit {
       }
     });
 
+
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
         this.environment = data.environment || '';
