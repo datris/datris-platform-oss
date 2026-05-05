@@ -43,7 +43,6 @@ if [ "$PROVIDER" = "openai" ]; then
     echo "ERROR: AI_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
     exit 1
   fi
-  # OpenAI handles main AI, codegen, and embedding from a single key.
   vault kv put secret/oss/ai-primary \
     provider="openai" \
     endpoint="https://api.openai.com/v1/chat/completions" \
@@ -54,19 +53,11 @@ if [ "$PROVIDER" = "openai" ]; then
     endpoint="https://api.openai.com/v1/chat/completions" \
     model="${CODEGEN_MODEL:-gpt-5.5}" \
     apiKey="${OPENAI_API_KEY}"
-  vault kv put secret/oss/embedding \
-    provider="openai" \
-    endpoint="https://api.openai.com/v1/embeddings" \
-    model="text-embedding-3-small" \
-    apiKey="${OPENAI_API_KEY}"
 elif [ "$PROVIDER" = "anthropic" ]; then
   if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
     echo "ERROR: AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set." >&2
     exit 1
   fi
-  # Anthropic handles main AI and codegen. Anthropic has no embeddings API,
-  # so embedding falls back to the bundled TEI sidecar serving bge-m3
-  # (1024-dim, strong open-source embedding model). No OpenAI key needed.
   vault kv put secret/oss/ai-primary \
     provider="anthropic" \
     endpoint="https://api.anthropic.com/v1/messages" \
@@ -79,13 +70,52 @@ elif [ "$PROVIDER" = "anthropic" ]; then
     model="${CODEGEN_MODEL:-claude-opus-4-7}" \
     apiKey="${ANTHROPIC_API_KEY}" \
     version="2023-06-01"
-  vault kv put secret/oss/embedding \
-    provider="tei" \
-    endpoint="http://tei:80/v1/embeddings" \
-    model="BAAI/bge-m3" \
-    apiKey=""
 else
   echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2
+  exit 1
+fi
+
+# Embedding slot — decoupled from AI_PROVIDER so users can mix-and-match
+# (e.g. Anthropic for chat/codegen + OpenAI for embedding when bundled TEI
+# is unreliable on a small host).
+#
+# Selection precedence:
+#   1. EMBEDDING_PROVIDER (openai|tei|ollama) — explicit override.
+#   2. Otherwise: AI_PROVIDER=openai → OpenAI embeddings;
+#                 AI_PROVIDER=anthropic → bundled TEI (bge-m3, 1024-dim).
+EMBEDDING_PROVIDER_RESOLVED="${EMBEDDING_PROVIDER:-}"
+if [ -z "$EMBEDDING_PROVIDER_RESOLVED" ]; then
+  if [ "$PROVIDER" = "openai" ]; then
+    EMBEDDING_PROVIDER_RESOLVED="openai"
+  else
+    EMBEDDING_PROVIDER_RESOLVED="tei"
+  fi
+fi
+
+if [ "$EMBEDDING_PROVIDER_RESOLVED" = "openai" ]; then
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "ERROR: EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
+    exit 1
+  fi
+  vault kv put secret/oss/embedding \
+    provider="openai" \
+    endpoint="https://api.openai.com/v1/embeddings" \
+    model="${EMBEDDING_MODEL:-text-embedding-3-small}" \
+    apiKey="${OPENAI_API_KEY}"
+elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "tei" ]; then
+  vault kv put secret/oss/embedding \
+    provider="tei" \
+    endpoint="${EMBEDDING_ENDPOINT:-http://tei:80/v1/embeddings}" \
+    model="${EMBEDDING_MODEL:-BAAI/bge-m3}" \
+    apiKey=""
+elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "ollama" ]; then
+  vault kv put secret/oss/embedding \
+    provider="ollama" \
+    endpoint="${EMBEDDING_ENDPOINT:-http://ollama:11434/v1/embeddings}" \
+    model="${EMBEDDING_MODEL:-bge-m3}" \
+    apiKey=""
+else
+  echo "ERROR: Unknown EMBEDDING_PROVIDER='$EMBEDDING_PROVIDER_RESOLVED'. Expected: openai, tei, or ollama." >&2
   exit 1
 fi
 
