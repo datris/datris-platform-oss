@@ -1,17 +1,19 @@
 # Release Notes
 
-## v1.6.17 — May 4, 2026
+## v1.6.18 — May 5, 2026
 
-**AI-agent RAG ingestion no longer burns through the conversation context.**
+**User authentication, roles, and an admin-only Configuration tab.**
 
-- **Creating a vector-store pipeline no longer requires sample content.** Asking an agent to ingest a PDF into pgvector previously forced it to base64-encode the entire document just to register the pipeline — wasting tens of thousands of tokens before any work began. Vector pipelines now register from a name plus destination alone, freeing budget for the actual upload.
-- **Agents are guided to send each document in a single upload.** The MCP server now makes explicit that vector destinations chunk server-side, preventing agents from needlessly splitting documents into many small uploads.
-- **Clearer Claude setup docs.** The "Configuring Claude" guide shows the recommended SSE / mcp-remote setup first, and steers large-file ingestion to the CLI rather than dragging files directly into the chat — which can overflow the conversation context on sizable PDFs.
-- **README accuracy pass.** Corrected tool counts, AI-provider model defaults, and license badge.
+- **Optional username/password login.** Datris can now require a login before any tab is reachable. Three roles ship out of the box — **admin** (full access), **editor** (read + edit pipelines, taps, secrets), and **viewer** (read-only). Off by default, so existing single-tenant installs are unaffected. See the new "User Authentication" doc to enable it.
+- **Configuration is admin-only.** When auth is on, only admins see the Configuration tab (Secrets, AI Providers, Taps, Users, Environment). Editors and viewers continue to use everything else.
+- **New Users sub-tab.** Admins can add, remove, and reassign roles. A built-in 16-character password generator with a reveal toggle makes handing out credentials painless. The last admin can't be deleted.
+- **Self-service password change.** Users can change their own password from the top-right user menu.
+- **Reveal toggle on the login screen.** Easier to see what you're typing on a new device.
+- **Clear the Agents activity log.** The trash icon now wipes the server-side activity buffer (with an inline confirm) so the cleared state survives a refresh.
 
 **Upgrading**
 
-- Existing installs: `docker compose pull && docker compose up -d`. No data migration needed.
+- Existing installs: `docker compose pull && docker compose up -d`. No data migration needed; auth defaults to off.
 
 ---
 
