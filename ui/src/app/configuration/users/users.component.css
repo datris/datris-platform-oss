@@ -37,6 +37,46 @@ h3 {
 
 .add-form input { flex: 1; }
 
+.password-cell {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+}
+
+.password-cell input {
+  flex: 1;
+  padding-right: 64px;
+}
+
+.password-cell .icon-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: #8b9dc3;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.password-cell .icon-btn:hover {
+  color: #00b4ff;
+}
+
+.password-cell .icon-btn mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.password-cell .icon-btn:nth-of-type(1) { right: 32px; }
+.password-cell .icon-btn:nth-of-type(2) { right: 4px; }
+
 .users-table {
   width: 100%;
   border-collapse: collapse;

@@ -63,6 +63,37 @@ class MCPActivityAPIController {
         }
     }
 
+    /** Clear the MCP server's activity buffer. The UI's "trash" icon hits this so
+      * the cleared state survives page reloads — without this, the buffer replays
+      * on the next /activity poll. Live sessions are left untouched. */
+    @DeleteMapping(path = Array("/mcp/activity"))
+    def clearActivity(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+        try {
+            APIKeyValidator.validate(apiKey)
+
+            val url = mcpBaseUrl + "/activity"
+            val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
+            connection.setRequestMethod("DELETE")
+            connection.setConnectTimeout(2000)
+            connection.setReadTimeout(3000)
+
+            try {
+                val code = connection.getResponseCode
+                if(code >= 200 && code < 300) {
+                    new ResponseEntity[String]("", HttpStatus.NO_CONTENT)
+                } else {
+                    new ResponseEntity[String]("mcp-server returned " + code, HttpStatus.BAD_GATEWAY)
+                }
+            } finally {
+                connection.disconnect()
+            }
+        } catch {
+            case e: Exception =>
+                logger.warn("mcp-server activity clear failed: " + e.getMessage)
+                new ResponseEntity[String](e.getMessage, HttpStatus.BAD_GATEWAY)
+        }
+    }
+
     /** Attach human-readable identifiers to each call/session:
       *   - multi-tenant: api_key_hint → tenant (via the api-key-mappings secret)
       *   - single-tenant: api_key_hint → key_name (via the oss/api-keys secret, which maps

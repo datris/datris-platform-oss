@@ -1,88 +1,26 @@
+# Docker Compose overrides. Spring loads this on top of the JAR-bundled
+# application.yaml via --spring.config.additional-location (see docker-init.sh).
+# Keep this file as small as possible — only set values that genuinely differ
+# from the bundled defaults in localhost mode. Anything else inherits.
+#
+# To toggle auth / multi-tenancy / api-keys, do NOT add them here — set
+# USE_USER_AUTH / USE_API_KEYS / MULTI_TENANT in your .env instead. They
+# flow through docker-compose.yml as USEUSERAUTH / USEAPIKEYS / MULTITENANT
+# env vars and Spring's relaxed binding overrides the YAML at runtime.
+
 spring:
-  servlet:
-    multipart:
-      max-file-size: 1GB
-      max-request-size: 1GB
-  server:
-    tomcat:
-      connection-timeout: "600000"
-  management:
-    health:
-      probes:
-        enabled: "true"
-      livenessState:
-        enabled: "true"
-      readinessState:
-        enabled: "true"
   data:
     mongodb:
       uri: mongodb://mongodb:27017/datris
-logging:
-  level:
-    root: INFO
-    org.springframework.web: INFO
-    ai.datris: INFO
-schedule:
-  checkFileNotifierQueue: "5000"
-  findJobsToStart: "5000"
-  checkDatabaseSourceQueries: "30000"
-environment: oss
-useApiKeys: "false"
-useUserAuth: "false"
-multiTenant: "false"
-hosted: "false"
 
-# Object store: MinIO (Docker service)
 minio:
   server: http://minio:9000
 
-# Secrets: HashiCorp Vault (Docker service)
-secrets:
-  apiKeysSecretName: oss/api-keys
-  postgresSecretName: oss/postgres
-  minIOSecretName: oss/minio
-  activeMQSecretName: oss/activemq
-  mongoDbSecretName: oss/mongodb
-  kafkaProducerSecretName: oss/kafka-producer
-  embeddingSecretName: oss/embedding
-  qdrantSecretName: oss/qdrant
-  weaviateSecretName: oss/weaviate
-  milvusSecretName: oss/milvus
-  chromaSecretName: oss/chroma
-  pgvectorSecretName: oss/pgvector
-
-# Queue + notifications: ActiveMQ (Docker service)
 activemq:
   server: tcp://activemq:61616
 
-# NoSQL: MongoDB (Docker service)
 mongodb:
   connectionString: mongodb://mongodb:27017
-  # User-facing database: pipelines write here, shown in the UI.
-  database: datris
-  # Internal platform database: pipeline/tap configs, run status, etc.
-  internalDatabase: oss
 
-sendPipelineNotifications: "true"
-ttlFileNotifierQueueMessages: "60"
-
-# AI configuration — three independent, self-describing Vault secrets
-# (ai-primary for general AI, codegen for code-generation, embedding for
-# vector destinations + semantic search). vault-init.sh seeds all three
-# from .env on first start.
-ai:
-  enabled: "true"
-  aiPrimary:
-    secretName: "oss/ai-primary"
-  codegen:
-    secretName: "oss/codegen"
-  embedding:
-    secretName: "oss/embedding"
-
-# Kafka consumer
 kafkaConsumer:
-  enabled: "false"
   bootstrapServers: kafka:9092
-  groupId: oss-group
-  topicPollingInterval: "500"
-  topicPrefix: oss

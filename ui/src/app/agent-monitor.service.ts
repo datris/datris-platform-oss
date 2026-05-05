@@ -50,4 +50,8 @@ export class AgentMonitorService {
   getActivity(since: number): Observable<AgentActivity> {
     return this.http.get<AgentActivity>(this.apiUrl + '?since=' + since);
   }
+
+  clearActivity(): Observable<void> {
+    return this.http.delete<void>(this.apiUrl);
+  }
 }

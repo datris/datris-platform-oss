@@ -41,7 +41,9 @@ export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecke
   connected = true;
   copied = false;
   copyLabel = 'Copy log to clipboard';
+  confirmingClear = false;
   private copyResetTimer: any;
+  private confirmClearTimer: any;
 
   readonly serverX = 110;
   readonly serverY = 200;
@@ -67,10 +69,39 @@ export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecke
     if (this.refreshInterval) clearInterval(this.refreshInterval);
     if (this.animationTimer) clearInterval(this.animationTimer);
     if (this.copyResetTimer) clearTimeout(this.copyResetTimer);
+    if (this.confirmClearTimer) clearTimeout(this.confirmClearTimer);
+  }
+
+  /** First click on the trash icon — show inline "Clear N events?" prompt.
+   *  Auto-reverts after 5s of inactivity so the toolbar never gets stuck in
+   *  confirmation state. */
+  askClear(): void {
+    if (this.log.length === 0) return;
+    this.confirmingClear = true;
+    if (this.confirmClearTimer) clearTimeout(this.confirmClearTimer);
+    this.confirmClearTimer = setTimeout(() => { this.confirmingClear = false; }, 5000);
+  }
+
+  cancelClear(): void {
+    this.confirmingClear = false;
+    if (this.confirmClearTimer) { clearTimeout(this.confirmClearTimer); this.confirmClearTimer = null; }
   }
 
   clearLog(): void {
-    this.log = [];
+    this.cancelClear();
+    // Clear the server-side buffer first. Without this, the next /activity poll
+    // (or a page reload) replays the buffer and the log refills. On failure,
+    // leave the local view alone — clearing it would just refill on next poll
+    // and confuse the user — and surface the error.
+    this.service.clearActivity().subscribe({
+      next: () => {
+        this.log = [];
+        this.error = '';
+      },
+      error: (err) => {
+        this.error = err?.error || err?.message || 'Failed to clear activity log';
+      }
+    });
   }
 
   copyLog(): void {

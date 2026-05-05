@@ -227,6 +227,13 @@ def _activity_session_close(session_id: str) -> None:
         _activity_sessions.pop(session_id, None)
 
 
+def _activity_clear() -> None:
+    """Wipe the activity buffer. Live session rows are left untouched —
+    those represent currently-connected MCP clients, not historical events."""
+    with _activity_lock:
+        _activity_buffer.clear()
+
+
 def _activity_snapshot(since: float) -> dict[str, Any]:
     now = time.time()
     with _activity_lock:
@@ -2237,6 +2244,12 @@ def _extract_api_key(scope) -> str:
 
 
 async def _handle_activity(scope, send) -> None:
+    method = scope.get("method", "GET").upper()
+    if method == "DELETE":
+        _activity_clear()
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+        return
     qs = scope.get("query_string", b"").decode("utf-8")
     since = 0.0
     for part in qs.split("&"):

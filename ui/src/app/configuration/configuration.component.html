@@ -247,9 +247,5 @@
     <app-tap-prompt-list></app-tap-prompt-list>
   </div>
 
-  <div *ngIf="activeTab === 'secrets'">
-    <app-secrets></app-secrets>
-  </div>
-
   <div class="loading" *ngIf="loading && activeTab !== 'taps' && activeTab !== 'secrets'">Loading configuration...</div>
 </div>

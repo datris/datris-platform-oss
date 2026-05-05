@@ -63,6 +63,43 @@ input::placeholder {
   color: #5a6b8a;
 }
 
+.input-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-row input {
+  flex: 1;
+  padding-right: 44px;
+}
+
+.reveal-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: #8b9dc3;
+  cursor: pointer;
+  padding: 6px;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.reveal-btn:hover {
+  color: #00b4ff;
+}
+
+.reveal-btn mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
 .connect-btn {
   padding: 12px 24px;
   background: linear-gradient(135deg, #00b4ff, #00e5a0);

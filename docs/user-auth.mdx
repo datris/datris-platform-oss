@@ -1,0 +1,85 @@
+---
+title: "User Authentication"
+description: "Enable username/password login, admin gating, and per-user roles for the Datris UI."
+---
+
+By default, the Datris OSS install runs single-tenant with no login screen — anyone who reaches the UI URL has full access. For shared installs (a team running Datris on a server, a managed deployment, anything past your laptop), turn on user authentication so the UI requires a login and the Configuration tab is admin-only.
+
+## What it does
+
+When `USE_USER_AUTH=true`:
+
+- The UI shows a **login screen** before any tab is reachable.
+- The **Configuration** tab (Secrets, AI Providers, Taps, Users, Environment) is gated to **admin** users.
+- A new **Users** sub-tab appears under Configuration for adding, removing, and changing roles.
+- Sessions are server-side, with a TTL index cleaning them up automatically.
+
+When the flag is off, the toggle has zero effect on data — pipelines, taps, secrets, and run history all work the same.
+
+## Enabling it
+
+1. Add the flag to your `.env`:
+
+   ```bash
+   USE_USER_AUTH=true
+   ```
+
+2. Recreate the Datris container:
+
+   ```bash
+   docker compose up -d --force-recreate datris
+   ```
+
+3. Open the UI. You'll see the login screen.
+
+4. Log in as the seed account:
+
+   ```
+   Username:  admin
+   Password:  (leave blank)
+   ```
+
+   On first login Datris prompts you to set a password (minimum 5 characters). After that, `admin` is your administrator account.
+
+<Note>
+The default `admin` row is seeded on **every startup** (idempotent — only when the user table is empty), regardless of whether `USE_USER_AUTH` is on. That means flipping the flag on later "just works" — there's no separate provisioning step.
+</Note>
+
+## Roles
+
+| Role | Can read pipelines / data | Can edit pipelines / taps / secrets | Can manage users + Configuration |
+|---|:-:|:-:|:-:|
+| **admin** | ✓ | ✓ | ✓ |
+| **editor** | ✓ | ✓ |   |
+| **viewer** | ✓ |   |   |
+
+`admin` is the only role that sees the Configuration tab in the top nav. `editor` and `viewer` see everything else (Pipelines, Taps, Search, etc.) according to the same access rules.
+
+## Adding users
+
+As an admin: **Configuration → Users → Add user**. Fill in username + role; the new user has no password until they log in for the first time. Send them their username and tell them to leave the password field blank on first login — they'll be prompted to set one.
+
+You can change a user's role or delete them from the same screen. Datris won't let you remove the **last admin** — there's an `adminCount` guard on delete and role-change.
+
+## Changing your own password
+
+Click your username in the top-right → **Change password**. Enter your current password and the new one (min 5 chars).
+
+If you've forgotten your password and there's another admin: have them delete and re-add your user; the new row will prompt you for a fresh password on next login.
+
+If you're the **only** admin and you've lost the password, you'll need to clear your user row directly in MongoDB (the user table lives in the platform's internal database, default `oss`). After deletion, restart Datris — the seed will recreate `admin` with a null password and you can set a new one through the UI.
+
+## Reverting
+
+Set `USE_USER_AUTH=false` (or remove the line) and recreate the Datris container. The login screen disappears; the Configuration tab is unrestricted again. **User rows persist in the database** — they just aren't checked. Flipping back on later returns you to the same set of users with the same passwords.
+
+## Production checklist
+
+- Run Datris **behind HTTPS** before turning auth on. Sessions are cookie-based; without TLS, the login is exposed in transit.
+- Review your CORS allow-list (`cors.allowedOrigins` in `application.yaml`) — the default `"*"` is for local dev only.
+- Consider also enabling `USE_API_KEYS=true` if you have automation hitting the REST or MCP API. User auth gates the **UI**; API-key gating handles programmatic clients.
+
+## Related
+
+- [Configuring Claude](/configuring-claude) — connecting AI agents via MCP. MCP clients use the API-key path, not user auth.
+- [Configuration Reference](/configuration-reference) — the underlying `useUserAuth`, `useApiKeys`, and `multiTenant` keys in `application.yaml`.

@@ -74,12 +74,27 @@
               (click)="copyLog()">
         <span class="material-icons">{{ copied ? 'check' : 'content_copy' }}</span>
       </button>
-      <button class="log-action" type="button"
-              [disabled]="log.length === 0"
-              title="Clear log"
-              (click)="clearLog()">
-        <span class="material-icons">delete_sweep</span>
-      </button>
+      <ng-container *ngIf="!confirmingClear; else confirmInline">
+        <button class="log-action" type="button"
+                [disabled]="log.length === 0"
+                title="Clear log"
+                (click)="askClear()">
+          <span class="material-icons">delete_sweep</span>
+        </button>
+      </ng-container>
+      <ng-template #confirmInline>
+        <span class="log-confirm-text">Clear {{ log.length }} {{ log.length === 1 ? 'event' : 'events' }}?</span>
+        <button class="log-action log-action-yes" type="button"
+                title="Yes, clear"
+                (click)="clearLog()">
+          <span class="material-icons">check</span>
+        </button>
+        <button class="log-action" type="button"
+                title="Cancel"
+                (click)="cancelClear()">
+          <span class="material-icons">close</span>
+        </button>
+      </ng-template>
     </div>
 
     <div class="log-scroll" #logScroll>

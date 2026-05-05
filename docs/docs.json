@@ -96,6 +96,7 @@
             "group": "Configuration",
             "pages": [
               "configuration-reference",
+              "user-auth",
               "monitoring",
               "notifications"
             ]

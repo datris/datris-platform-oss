@@ -16,6 +16,7 @@ export class UsersComponent implements OnInit {
   newUsername = '';
   newRole: 'admin' | 'editor' | 'viewer' = 'viewer';
   newPassword = '';
+  showNewPassword = false;
 
   constructor(private auth: AuthService) {}
 
@@ -39,12 +40,29 @@ export class UsersComponent implements OnInit {
         this.showAdd = false;
         this.newUsername = '';
         this.newPassword = '';
+        this.showNewPassword = false;
         this.newRole = 'viewer';
         this.error = '';
         this.refresh();
       },
       error: (err) => { this.error = err?.error?.error || 'Failed to create user'; }
     });
+  }
+
+  /** Generate a 16-char password from an unambiguous alphabet (no I/l/1/0/O).
+   *  Uses crypto.getRandomValues so the result is cryptographically random.
+   *  Auto-reveals so the admin can copy/share before clicking Create — once
+   *  the user is created the password is hashed and unrecoverable. */
+  generatePassword(): void {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_!#$%&';
+    const buf = new Uint32Array(16);
+    crypto.getRandomValues(buf);
+    let pw = '';
+    for (let i = 0; i < buf.length; i++) {
+      pw += chars[buf[i] % chars.length];
+    }
+    this.newPassword = pw;
+    this.showNewPassword = true;
   }
 
   setRole(user: UserListItem, role: string): void {

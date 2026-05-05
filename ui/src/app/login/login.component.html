@@ -13,13 +13,24 @@
         autocomplete="username"
         autofocus
       />
-      <input
-        type="password"
-        [(ngModel)]="password"
-        name="password"
-        placeholder="Password (leave blank if first login)"
-        autocomplete="current-password"
-      />
+      <div class="input-row">
+        <input
+          [type]="showPassword ? 'text' : 'password'"
+          [(ngModel)]="password"
+          name="password"
+          placeholder="Password (leave blank if first login)"
+          autocomplete="current-password"
+        />
+        <button
+          type="button"
+          class="reveal-btn"
+          (click)="showPassword = !showPassword"
+          [title]="showPassword ? 'Hide password' : 'Show password'"
+          [attr.aria-label]="showPassword ? 'Hide password' : 'Show password'"
+        >
+          <mat-icon>{{ showPassword ? 'visibility_off' : 'visibility' }}</mat-icon>
+        </button>
+      </div>
       <button type="submit" class="connect-btn" [disabled]="loading">
         {{ loading ? 'Signing in…' : 'Sign in' }}
       </button>

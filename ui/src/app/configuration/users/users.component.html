@@ -11,7 +11,27 @@
       <option value="editor">editor</option>
       <option value="viewer">viewer</option>
     </select>
-    <input type="password" placeholder="Initial password (optional)" [(ngModel)]="newPassword" name="newPassword" />
+    <div class="password-cell">
+      <input
+        [type]="showNewPassword ? 'text' : 'password'"
+        placeholder="Initial password (optional)"
+        [(ngModel)]="newPassword"
+        name="newPassword"
+        autocomplete="new-password"
+      />
+      <button type="button" class="icon-btn" (click)="generatePassword()" title="Generate strong password" aria-label="Generate password">
+        <mat-icon>autorenew</mat-icon>
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        (click)="showNewPassword = !showNewPassword"
+        [title]="showNewPassword ? 'Hide password' : 'Show password'"
+        [attr.aria-label]="showNewPassword ? 'Hide password' : 'Show password'"
+      >
+        <mat-icon>{{ showNewPassword ? 'visibility_off' : 'visibility' }}</mat-icon>
+      </button>
+    </div>
     <button class="btn-primary" (click)="addUser()">Create</button>
   </div>
 
