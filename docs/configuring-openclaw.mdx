@@ -1,0 +1,120 @@
+---
+title: "Configuring OpenClaw"
+description: "Use the Datris Platform as OpenClaw's long-term memory and semantic search layer"
+---
+
+This page covers connecting [OpenClaw](https://openclaw.ai) to a Datris MCP server so the agent can use Datris as its **long-term semantic memory** — local memory files stay canonical, while Datris becomes the retrieval/index layer.
+
+For server-side details (architecture, transports, available tools), see [MCP Server (AI Agent Integration)](/mcp-server).
+
+## Why route OpenClaw memory through Datris
+
+This isn't a "no memory vs. memory" comparison. OpenClaw already has memory. It's a comparison about *enforcement, scale, and reuse*.
+
+### vs. OpenClaw's default memory (best-effort, not enforced)
+
+OpenClaw ships with persistent memory out of the box — daily memory files, a curated `MEMORY.md`, and semantic search over archived sessions. It works. The catch is that everything is advisory: the model decides when to save, what to save, and whether to search before answering. Long sessions, context compaction, and restarts all chip away at recall. You'll see it fail the same way every time — a fact you established in week one stops surfacing in week three, not because it's gone, but because the model didn't think to look for it.
+
+Datris-backed memory enforces capture and retrieval at the system layer instead of leaving it to the prompt. Memory is written outside the agent's session, and relevant context is reintroduced on every turn. Restarts don't matter. Long conversations don't matter. The agent reasons with the same facts every time.
+
+### vs. flat file-based memory (raw markdown, JSON blobs)
+
+Hand-rolled file memory — a `PREFERENCES.md` here, a `CONTEXT.md` there, a `notes/` folder with grep on top — is the path most people start down. It works for a week. Past a few dozen entries the agent ends up either loading whole files into context or substring-matching for keywords that may not appear in the original note. A question phrased as *"what did we decide about the pipeline architecture?"* misses notes filed under "ingestion topology" or "data flow design."
+
+Datris stores memories in pgvector (or Qdrant, Weaviate, Milvus, Chroma — your call) and retrieves by meaning, not exact wording. The same question finds the right note regardless of how it was originally phrased.
+
+### vs. MemGPT/Letta-class agent runtimes
+
+MemGPT (now Letta) does semantic memory well — that's the system that popularized the LLM-as-OS framing for agent memory. The trade-off is that Letta is a runtime, not a memory layer. Adopting it means running your agent inside their framework: their agent loop, their tool execution, their state model. That's a fine choice from a clean slate. It's a heavy migration if you already have an agent you like — including OpenClaw.
+
+Datris is a memory layer exposed over MCP. OpenClaw stays OpenClaw. Your agent loop, your tools, your skills — all unchanged. Point your MCP client at Datris and the agent gains enforced, semantic, persistent memory without rewriting anything.
+
+### What you actually get
+
+Indexing local memory files into Datris gives you the best of both worlds — markdown stays human-editable and version-controllable, while Datris handles retrieval at scale.
+
+- **Agent-runtime-agnostic.** Datris exposes memory through MCP, so OpenClaw, Claude Desktop, Cursor, or any custom MCP client can point at the same instance and share the same memory. No bespoke integration per agent, no rewriting your agent loop to match someone else's runtime.
+- **Tool-rich, not just retrieval.** The same MCP connection that gives OpenClaw memory also exposes pipeline management, ingestion, and SQL and vector query tools — over 30 in total. Memory-only products stop at recall; Datris hands the agent the rest of a data platform on the same connection.
+- **Auditable.** The **Agents** tab in the Datris UI shows OpenClaw's memory tool calls as they happen, so you can see exactly what the agent searched for, what came back, and what it stored.
+- **Semantic recall, not substring search.** Ask in natural language and get the right snippet back even when the wording doesn't match — *"what did we decide about the pipeline architecture?"* finds the note filed under "ingestion topology."
+- **Scales past the context window.** Large memory corpora that would never fit into a single prompt become retrievable on demand. The agent pulls only what's relevant for the current turn.
+- **Files remain the source of truth.** For memory you author yourself, the markdown files are yours — Datris is a derived index. Edit locally, re-ingest when ready. No vendor lock-in on your notes.
+
+## Step 1 — Register the Datris MCP server with OpenClaw
+
+Point OpenClaw at the local Datris MCP server (the SSE endpoint exposed by the standard Docker stack on port 3000):
+
+```bash
+openclaw mcp set datris '{"url":"http://localhost:3000/sse"}'
+```
+
+Verify the registration:
+
+```bash
+openclaw mcp show datris
+```
+
+You should see the `datris` server listed with its URL. SSE registration also means OpenClaw will appear in the Datris UI's **Agents** tab with live tool-call streaming — useful for watching what the agent is actually doing during ingestion and retrieval.
+
+## Step 2 — Give OpenClaw the memory-layer prompt
+
+Tool descriptions alone aren't enough. OpenClaw needs an explicit operating model so it knows local files stay canonical, Datris is the retrieval layer, and ingestion has to follow the right workflow (whole-document upload, server-side chunking, job polling, verification).
+
+Paste the prompt below into OpenClaw to bootstrap its memory workflow.
+
+```text
+Use Datris as your long-term semantic memory layer. Your existing local memory files (MEMORY.md and memory/*.md in your workspace) stay canonical; Datris is the retrieval index built from them.
+
+Before acting: read the Datris MCP resources and tool descriptions, and understand the intended workflow for pipelines, upload_data, job status, and vector search. Do not invent workflows that contradict the tool descriptions.
+
+RULES
+- Prefer Datris MCP tools over shell/CLI.
+- Ingest whole documents via upload_data and let Datris chunk server-side. Do not pre-chunk. Do not use a document tap for local files.
+- Poll job status to completion before claiming success.
+- Verify retrieval with a semantic search after ingestion.
+
+TASKS
+1. Check service health.
+2. Reuse an existing vector pipeline for long-term memory, or create one (pgvector is fine).
+3. Ingest MEMORY.md and all relevant memory/*.md files. If the corpus is too large for one upload, chunk by document.
+4. Wait for all jobs to finish, then verify with semantic search.
+5. Record the run in memory/$(today).md and propose an incremental sync strategy for future edits.
+
+REPORT
+- Pipeline used/created, what was ingested, verification results, anything that failed and why.
+
+Now, start to use the Datris Platform and the MCP server for storing and retrieving your memory.
+```
+
+### What this prompt actually does
+
+- **Forces tool-description review first** — prevents OpenClaw from inventing a workflow that contradicts how Datris pipelines and uploads actually work.
+- **Pins canonicality** — the local markdown files are the source of truth. Datris is rebuilt from them, not the other way around.
+- **Enforces the right ingestion shape** — whole-document uploads via `upload_data` with server-side chunking, not pre-chunked rows or a misapplied document tap.
+- **Requires verification** — after ingestion, OpenClaw runs a semantic search to confirm retrieval works before declaring success.
+- **Closes the loop** — the run gets recorded into a dated memory file and OpenClaw proposes an incremental sync strategy so future edits don't require a full re-ingest.
+
+## Step 3 — Use it
+
+Once OpenClaw has finished the bootstrap run, you can talk to it normally and it will reach for Datris semantic search instead of grepping files:
+
+> "What did I note about my preferred code review process?"
+
+> "Find anything in my memory related to onboarding new teammates."
+
+> "Summarize what I've written down about meeting cadence."
+
+Watch the **Agents** tab in the Datris UI to see the underlying tool calls — `vector_search`, `ai_answer`, `pipeline_status`, etc. — stream in real time.
+
+## Advantages of this setup
+
+Beyond the per-feature wins listed at the top, the architectural payoff of putting Datris between OpenClaw and your memory files is:
+
+- **Recall quality scales with corpus size** — adding more memory files makes retrieval *better*, not slower or noisier, because semantic search ranks by relevance instead of dumping everything into context.
+- **Context budget stays tight** — only the top-matching snippets land in the prompt, so long-running OpenClaw sessions don't burn their window loading memory the agent doesn't need.
+- **One memory layer, many agents** — point Claude Desktop, Claude Code, OpenClaw, or any other MCP-aware client at the same Datris pipeline and they all share the same long-term memory. No per-tool re-indexing.
+- **Local-first, not cloud-locked** — your markdown stays on disk, the index lives in your own Datris stack. You can wipe and rebuild the index any time without losing knowledge.
+- **Memory becomes queryable, not just retrievable** — because it's a real Datris pipeline, you can run vector search, AI answer, and even SQL-shaped questions against your memory corpus from the CLI or REST API, not only from inside the agent chat.
+- **Future memory is incremental** — once the sync strategy from task 10 is in place, edits to a single memory file re-ingest just that document rather than rebuilding the whole index.
+
+The net effect: your agent stops forgetting, your memory files stop being a flat pile of markdown, and you get a real semantic layer over the knowledge you've been writing down all along.

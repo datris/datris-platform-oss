@@ -123,6 +123,7 @@
             "pages": [
               "mcp-server",
               "configuring-claude",
+              "configuring-openclaw",
               "cli"
             ]
           }
