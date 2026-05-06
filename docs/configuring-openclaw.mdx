@@ -76,55 +76,188 @@ openclaw mcp show datris
 
 You should see the `datris` server listed with its URL. SSE registration also means OpenClaw will appear in the Datris UI's **Agents** tab with live tool-call streaming — useful for watching what the agent is actually doing during ingestion and retrieval.
 
-## Step 3 — Give OpenClaw the memory-layer prompt
+## Step 3 — Install the Datris memory skill
 
-Tool descriptions alone aren't enough. OpenClaw needs an explicit operating model so it knows local files stay canonical, Datris is the retrieval layer, and ingestion has to follow the right workflow (whole-document upload, server-side chunking, job polling, verification).
+A one-shot prompt isn't enough — memory work is ongoing (bootstrap, incremental sync, retrieval defaults, handling renames and deletes), and the agent needs persistent operating instructions, not just a single bootstrap run. OpenClaw uses **skills** — markdown files under `.openclaw/workspace/skills/` — for exactly this. Install the Datris memory skill once and OpenClaw auto-triggers it whenever the user mentions saving, recalling, ingesting, syncing, or searching memory (and even on memory-shaped questions like *"what did I note about X"* that don't say "Datris" out loud).
 
-Paste the prompt below into OpenClaw to bootstrap its memory workflow.
+Create the skill directory:
 
-```text
-Use Datris as your long-term semantic memory layer. Your existing local memory files (MEMORY.md and memory/*.md in your workspace) stay canonical; Datris is the retrieval index built from them.
-
-Before acting: read the Datris MCP resources and tool descriptions, and understand the intended workflow for pipelines, upload_data, job status, and vector search. Do not invent workflows that contradict the tool descriptions.
-
-RULES
-- Prefer Datris MCP tools over shell/CLI.
-- Ingest whole documents via upload_data and let Datris chunk server-side. Do not pre-chunk. Do not use a document tap for local files.
-- Poll job status to completion before claiming success.
-- Verify retrieval with a semantic search after ingestion.
-
-TASKS
-1. Check service health.
-2. Reuse an existing vector pipeline for long-term memory, or create one (pgvector is fine).
-3. Ingest MEMORY.md and all relevant memory/*.md files. If the corpus is too large for one upload, chunk by document.
-4. Wait for all jobs to finish, then verify with semantic search.
-5. Record the run in memory/$(today).md and propose an incremental sync strategy for future edits.
-
-REPORT
-- Pipeline used/created, what was ingested, verification results, anything that failed and why.
-
-Now, start to use the Datris Platform and the MCP server for storing and retrieving your memory.
+```bash
+mkdir -p ~/.openclaw/workspace/skills/datris-memory
 ```
 
-### What this prompt actually does
+Then create `~/.openclaw/workspace/skills/datris-memory/skill.md` with the contents below:
 
-- **Forces tool-description review first** — prevents OpenClaw from inventing a workflow that contradicts how Datris pipelines and uploads actually work.
-- **Pins canonicality** — the local markdown files are the source of truth. Datris is rebuilt from them, not the other way around.
-- **Enforces the right ingestion shape** — whole-document uploads via `upload_data` with server-side chunking, not pre-chunked rows or a misapplied document tap.
-- **Requires verification** — after ingestion, OpenClaw runs a semantic search to confirm retrieval works before declaring success.
-- **Closes the loop** — the run gets recorded into a dated memory file and OpenClaw proposes an incremental sync strategy so future edits don't require a full re-ingest.
+```markdown
+---
+name: datris-memory
+description: Long-term semantic memory layer for AI agents, built on the Datris Platform via MCP. Local markdown files (MEMORY.md, memory/*.md) are the source of truth; Datris is the queryable index, rebuilt from them with strict one-file-per-upload provenance and incremental mtime-based sync (background timer, post-write flush, on-demand). Triggers on memory-shaped questions — saving, recalling, ingesting, syncing, searching — even when the user doesn't say "Datris."
+version: 1.0.0
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - datris
+        - docker
+    envVars:
+      - name: MCP_SERVER_URL
+        required: false
+        description: Datris MCP server SSE endpoint. Defaults to http://localhost:3000/sse.
+    install:
+      - id: brew
+        kind: brew
+        formula: datris/tap/datris
+        bins: [datris]
+        label: Install Datris CLI (brew)
+---
 
-## Step 4 — Use it
+# Datris memory layer
 
-Once OpenClaw has finished the bootstrap run, you can talk to it normally and it will reach for Datris semantic search instead of grepping files:
+Datris is the long-term semantic memory layer. Local memory files are the source of truth. Datris is rebuilt from them — never the other way around.
+
+## Prerequisites
+
+This skill assumes a local Datris install:
+
+- **Datris Platform** (includes the MCP server) — Docker-based, see [docs.datris.ai/installation](https://docs.datris.ai/installation). The MCP server runs at `http://localhost:3000/sse` by default; override with `MCP_SERVER_URL`.
+- **Datris CLI** — `brew tap datris/tap && brew install datris`. See [docs.datris.ai/cli](https://docs.datris.ai/cli) for command reference.
+
+Confirm both are working before relying on this skill: `datris health` pings every backend service the memory pipeline needs.
+
+## Rules
+
+- Prefer Datris MCP tools over the CLI for memory operations. The CLI is a fallback for the cases listed under "When to use the CLI" below.
+- **One file in = one `upload_data` call.** Never concatenate, bundle, or consolidate multiple memory files into a single corpus upload. Each file's name is its provenance — it must round-trip cleanly into Datris and back out in retrieval results. Bundling looks like an optimization and is not one: it permanently breaks provenance, blocks per-file incremental sync, and makes resets harder.
+- Upload each file as-is. Let Datris chunk server-side. Do not pre-chunk. Do not use a document tap for local files. The only time to split a single file is when that one file genuinely exceeds the upload limit; in that case, split it with explicit provenance markers in the chunk filenames (e.g. `MEMORY.md.part1`, `MEMORY.md.part2`).
+- Upload files in parallel. Each `upload_data` call returns a job token immediately — fire all uploads first, then poll. Do not wait for one job to finish before starting the next.
+- Poll job status to completion before claiming any ingestion succeeded. Polling is for verification, not for gating subsequent uploads.
+- Verify retrieval with a semantic search after every ingestion run.
+- Memory pipelines must target a vector destination (pgvector, Qdrant, Weaviate, Milvus, or Chroma).
+- The embedding model is pinned at pipeline-creation time. Vector dimensions cannot change after the fact. Confirm the embedder matches the pipeline before ingesting. Switching embedders means dropping and recreating the destination collection.
+- **Place every created resource in the `openclaw` data catalog by default.** Pipelines, taps, secrets, destination collections — anything the agent creates in Datris on OpenClaw's behalf goes in the catalog named `openclaw` unless the user explicitly directs otherwise. This keeps OpenClaw's footprint cleanly separated from other Datris workloads on the same instance, makes cleanup and auditing trivial, and lets multiple OpenClaw users share an instance without colliding. If an existing resource the agent wants to reuse lives in a different catalog, do not migrate it silently — surface the mismatch to the user and ask before continuing.
+
+## When to use the CLI
+
+MCP tools are the default. Reach for the `datris` CLI in these specific situations:
+
+- **Health checks during bootstrap or troubleshooting.** `datris health` confirms every backend service is up. Use it as a more thorough cross-check when MCP `check_service_health` returns ambiguous results, or when diagnosing a stuck ingestion.
+- **MCP server unavailable.** If the MCP connection is down, `datris ingest <file> --dest pgvector` and `datris search "<query>" --store pgvector --collection <name>` are the equivalent fallbacks for ingestion and retrieval. Use these only to keep the user unblocked; restore MCP-based operation as soon as the server is reachable.
+- **Pipeline status when MCP polling stalls.** `datris status <pipeline>` is a clean way to read the latest job state if the MCP `get_job_status` loop has lost track of which token to follow.
+- **Spot-checks the user runs themselves.** When the user wants to verify an ingestion by hand, point them at `datris search` against the destination collection rather than walking them through MCP tool calls.
+
+Log every CLI invocation in the audit log (`memory/<today>.md`) the same way an MCP call would be logged — same provenance discipline applies.
+
+## First-run bootstrap
+
+1. Read the Datris MCP resources and tool descriptions. Understand the pipeline, upload, job-status, and search workflows before acting.
+2. Check service health via the MCP `check_service_health` tool. If it returns ambiguous or partial results, fall back to `datris health` for a more detailed per-service view.
+3. Reuse an existing vector pipeline for memory in the `openclaw` catalog if one exists. Otherwise create one in the `openclaw` catalog — pgvector is fine. If a memory pipeline exists outside the `openclaw` catalog, surface that to the user before reusing or migrating it.
+4. Ingest `MEMORY.md` and each `memory/*.md` file via its own `upload_data` call — one upload per file, no exceptions. Do not concatenate them into a single corpus document, even if the total set is small. Fire the uploads in parallel and collect all the job tokens before polling.
+5. Poll all jobs concurrently until every one reports completion.
+6. Verify with two or three representative semantic queries. Confirm both that (a) the expected content comes back, and (b) results show real source filenames (`MEMORY.md`, `memory/2026-05-06.md`, etc.) — not a consolidated corpus filename or any other synthetic name. The filename round-trip check is the early-warning signal that the one-file-per-upload rule is being followed; if results show a corpus filename, stop and apply the remediation workflow below.
+7. Record the run in `memory/<today>.md`: pipeline used, files ingested, verification queries and results, any failures.
+8. Propose an incremental sync strategy for future edits.
+
+## Ongoing sync
+
+Memory files change continuously — the agent writes to them during sessions, the user edits them in their editor between sessions, and new dated files appear over time. Sync is incremental and runs lazily, in three modes:
+
+### When to sync
+
+1. **Periodic background sync.** A timer-driven sweep runs every 30 minutes by default — diff memory files by `mtime` against the last sync record, upload anything stale. This runs out-of-band: it never blocks an agent response or a user query. Cadence is configurable: faster (5–10 min) for users actively editing memory between sessions, slower (hourly or more) for read-mostly use. The right value is whatever keeps the staleness window short enough that the user rarely needs to force a sync.
+
+2. **End of any agent response that wrote to memory.** When the agent edits or creates a memory file during a turn, flush those uploads before the response is considered complete — including polling to completion. This puts the cost on the response that did the writing, not on later queries, and guarantees that a follow-up question in the same conversation can retrieve what the agent just wrote. Never let an agent-authored memory write wait for the next timer tick.
+
+3. **On explicit user request.** Phrases like "sync memory," "save what we discussed," "update Datris with my recent notes" — full diff sweep across all memory files, immediate sync. This is the user's escape valve for the case where they just edited a file in their editor and want it queryable right now rather than waiting for the next timer tick.
+
+### Staleness window — and why it's acceptable
+
+Memory edits made outside of an agent session — for example, the user editing `MEMORY.md` in their editor between conversations — may be up to one timer interval behind in retrieval results. That is the explicit trade. Query latency stays predictable, ingestion is invisible, and the user has a one-line escape hatch ("sync memory") when freshness matters. Do not try to close the staleness window by syncing on every retrieval; that path puts ingestion cost on the user's wait time and is the design this skill replaces.
+
+### Detecting what changed
+
+Compare each memory file's filesystem `mtime` against the most recent sync timestamp recorded for that file in the `memory/<date>.md` audit logs. Three cases:
+
+- **No sync record exists** — treat as a new file, ingest it.
+- **`mtime` newer than last-sync timestamp** — re-upload.
+- **`mtime` unchanged** — skip. Do not re-ingest unchanged files; the point of incremental sync is to do less work.
+
+A content hash is more reliable than `mtime` if the user touches files without editing them (some editors do this on save), but `mtime` is sufficient as a default. Switch to hashing only if redundant uploads start showing up in the audit log.
+
+### Sync workflow
+
+Classify each changed file into one of four cases and act accordingly:
+
+- **Edited file** — re-upload via `upload_data`. Pipelines upsert on source filename, so this overwrites the file's existing chunks cleanly.
+- **New file** (no prior sync record) — upload via `upload_data` like any other.
+- **Renamed file** — treat as `delete + add`, never as `update`. Delete chunks for the old filename from the destination collection, then upload the new file. Otherwise the index keeps orphan chunks under the old name.
+- **Deleted file** — delete its chunks from the destination collection. Do not leave orphans.
+
+Then:
+
+- Fire all uploads in parallel, collect the job tokens, poll concurrently to completion.
+- Verify with one or two semantic queries that touch the changed content. Confirm filenames in results reflect the post-sync state — no stale entries from before a rename or delete, no consolidated-corpus names.
+- Append a per-file entry to today's audit log: filename, change type (edit / new / rename / delete), timestamp, verification result.
+
+## Inheriting a consolidated-corpus pipeline
+
+If the existing memory pipeline was bootstrapped with a single consolidated upload (a `*-corpus-*.md` source file, or any upload whose filename doesn't match a real memory file), the pipeline has broken provenance and cannot be incrementally synced cleanly. Do not patch around it. Reset and re-ingest:
+
+1. Confirm with the user before resetting — destination collections may contain manual edits.
+2. Drop the destination collection (or recreate the pipeline with the same name).
+3. Re-ingest each canonical memory file individually per the bootstrap workflow above.
+4. Verify with semantic queries that retrieval results now show real source filenames (`MEMORY.md`, `memory/2026-05-06.md`, etc.) rather than a corpus filename.
+
+## Retrieval
+
+When the user asks a memory-shaped question, reach for `vector_search` (or `ai_answer` for synthesis) against the memory pipeline before grepping local files. Substring search on local markdown is a fallback, not the default. If the MCP layer is unreachable, `datris search "<query>" --store pgvector --collection <name>` is the equivalent fallback against the same destination.
+
+## Reporting
+
+After any bootstrap or sync, report:
+
+- Pipeline used or created.
+- Files ingested.
+- Verification queries and whether they returned the expected content.
+- Anything that failed and why.
+```
+
+### What this skill enforces
+
+- **Auto-triggers on memory intent** — the skill's `description` covers explicit phrasing ("sync memory," "save what we discussed") *and* implicit memory-shaped questions ("what did I note about X"), so the user never has to remember to invoke it.
+- **Declares its prerequisites** — the `metadata.openclaw` block tells OpenClaw the skill needs the `datris` and `docker` binaries and offers a Homebrew install path (`datris/tap/datris`) if `datris` is missing. Override the default MCP endpoint via the `MCP_SERVER_URL` env var.
+- **One file in = one upload** — no bundling, no concatenation. Filenames round-trip into retrieval results so provenance is preserved and per-file incremental sync stays clean.
+- **Parallel uploads, then poll** — fires every `upload_data` call up front, collects job tokens, polls concurrently. No serial waiting.
+- **Catalog isolation** — every resource the agent creates lands in the `openclaw` data catalog by default, keeping OpenClaw's footprint separate from other workloads on the same Datris instance.
+- **Three-mode incremental sync** — periodic timer sweep (default 30 min), end-of-response flush for agent-authored writes, and explicit user "sync memory" trigger. Renames go through delete-then-add so the index never accumulates orphans.
+- **CLI fallback for resilience** — MCP tools are the default, but the skill documents when to drop to `datris health`, `datris ingest`, `datris search`, and `datris status` — so a flaky MCP connection or a stalled poll doesn't leave the user blocked.
+- **Self-healing for inherited corpora** — if a previous setup bundled everything into one file, the skill includes the reset-and-re-ingest workflow rather than papering over broken provenance.
+
+## Step 4 — Restart the OpenClaw gateway
+
+Skills are discovered at gateway startup, so the new `datris-memory` skill won't be active until you reload:
+
+```bash
+openclaw gateway restart
+```
+
+After the restart, OpenClaw will pick up `~/.openclaw/workspace/skills/datris-memory/skill.md` and auto-trigger it on any memory-shaped request.
+
+## Step 5 — Kick off the bootstrap, then use it
+
+With the skill loaded, point OpenClaw at it once so it runs the first-time bootstrap — health check, pipeline creation, parallel ingestion of every existing memory file, and verification. A simple opener works:
+
+> "You now have the `datris-memory` skill installed. Use it to ingest my existing memory into Datris."
+
+Watch the **Agents** tab in the Datris UI as it runs — you'll see each `upload_data` call, `pipeline_status` poll, and `vector_search` verification stream in real time. When the bootstrap finishes, OpenClaw will write a summary into today's `memory/<date>.md` audit log.
+
+After that, just talk normally. The skill auto-triggers on any memory-shaped request and reaches for Datris semantic search instead of grepping local files:
 
 > "What did I note about my preferred code review process?"
 
 > "Find anything in my memory related to onboarding new teammates."
 
 > "Summarize what I've written down about meeting cadence."
-
-Watch the **Agents** tab in the Datris UI to see the underlying tool calls — `vector_search`, `ai_answer`, `pipeline_status`, etc. — stream in real time.
 
 ## Advantages of this setup
 
@@ -135,6 +268,6 @@ Beyond the per-feature wins listed at the top, the architectural payoff of putti
 - **One memory layer, many agents** — point Claude Desktop, Claude Code, OpenClaw, or any other MCP-aware client at the same Datris pipeline and they all share the same long-term memory. No per-tool re-indexing.
 - **Local-first, not cloud-locked** — your markdown stays on disk, the index lives in your own Datris stack. You can wipe and rebuild the index any time without losing knowledge.
 - **Memory becomes queryable, not just retrievable** — because it's a real Datris pipeline, you can run vector search, AI answer, and even SQL-shaped questions against your memory corpus from the CLI or REST API, not only from inside the agent chat.
-- **Future memory is incremental** — once the sync strategy from task 10 is in place, edits to a single memory file re-ingest just that document rather than rebuilding the whole index.
+- **Future memory is incremental** — the skill's three-mode sync (timer sweep, end-of-response flush, explicit user trigger) re-ingests only the files that changed, never the whole corpus.
 
 The net effect: your agent stops forgetting, your memory files stop being a flat pile of markdown, and you get a real semantic layer over the knowledge you've been writing down all along.
