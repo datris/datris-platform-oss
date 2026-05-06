@@ -57,6 +57,8 @@ datris pipelines
 
 Create a pipeline and ingest a data file in one step. The schema is auto-detected from the file.
 
+If the named pipeline already exists, the existing config is preserved and the file is uploaded into it — `--dest`, `--table`, `--ai-validate`, `--ai-transform`, and `--catalog` are ignored on re-ingest. Delete the pipeline first (`datris delete <name>`) if you need a fresh config.
+
 ```bash
 datris ingest <FILE> [OPTIONS]
 ```
@@ -70,6 +72,7 @@ datris ingest <FILE> [OPTIONS]
 | `--ai-validate` | AI data quality rule — plain-English instruction |
 | `--ai-transform` | AI transformation instruction — plain-English instruction |
 | `--ai-analyze` | Ask a question about the data after ingestion completes |
+| `--catalog` | Catalog label to group this pipeline with related pipelines (e.g. `openclaw`). Free-form — no need to pre-create. Only applied when creating a new pipeline. |
 | `--json` | Return raw JSON |
 
 **Examples:**
@@ -97,6 +100,9 @@ datris ingest events.json --dest mongodb --database analytics
 
 # Ingest into a vector store for RAG
 datris ingest manual.pdf --dest pgvector
+
+# Group related pipelines under a catalog
+datris ingest legal-2026.pdf --pipeline legal_2026 --dest pgvector --catalog legal
 
 # Ingest + analyze in one command
 datris ingest trades.csv --dest postgres --ai-analyze "What are the top 5 stocks by volume?"

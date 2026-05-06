@@ -82,6 +82,7 @@ Content-Type: application/json
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `tapType` | string | `"structured"` | `"structured"` or `"document"`. Document taps return `{uri, filename, content}` dicts and require a `targetPipeline` with an `unstructuredAttributes` source and a vector-store destination. Cannot be changed once set. |
+| `catalog` | string | `null` | Free-form label that groups related taps and pipelines in the [Data Catalog](/data-catalog). Empty or null = Uncataloged. |
 
 **Document-tap compatibility rule.** When `tapType == "document"` and `targetPipeline` is non-empty, the server validates that the pipeline has:
 

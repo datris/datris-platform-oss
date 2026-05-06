@@ -43,11 +43,13 @@ The **Data Catalog** tab in the UI shows one card per catalog plus an **Uncatalo
 
 ## Assigning a catalog
 
-Three ways to put a tap or pipeline into a catalog:
+Five ways to put a tap or pipeline into a catalog:
 
 1. **Discovery** — the catalog you pick in Discovery Step 1 is applied to every tap and pipeline produced by that session.
 2. **Tap editor** — when creating or editing a tap manually, set the **Catalog** field.
 3. **Pipeline editor** — same field on the pipeline form.
+4. **CLI** — pass `--catalog <name>` to `datris ingest` when creating a new pipeline. Re-ingesting an existing pipeline preserves its current catalog (and the rest of the config) — use the `set_catalog` MCP tool to change a catalog after the fact.
+5. **MCP agent** — call `set_catalog(pipeline="<name>", catalog="<label>")` or `set_catalog(tap="<name>", catalog="<label>")` to set the label on an existing item. Pass an empty string (or omit `catalog`) to clear it back to Uncataloged. New pipelines created via `create_pipeline` accept an optional `catalog` argument directly.
 
 Leave the field blank to keep the item Uncataloged.
 
@@ -58,7 +60,7 @@ There are no dedicated `/catalogs` REST endpoints — catalogs are just a field 
 - `GET /api/v1/taps` and `GET /api/v1/pipelines` return the `catalog` field on each item.
 - `POST` / `PUT` to those endpoints accept a `catalog` field. To move an item, send a request with the new value.
 
-For programmatic catalog browsing from an MCP agent, list taps or pipelines and group client-side by `catalog`.
+From an MCP agent, the `set_catalog` tool wraps the read-modify-write for you on either a pipeline or a tap, so you don't have to round-trip the full config yourself. For browsing, list taps or pipelines and group client-side by `catalog`.
 
 ## What catalogs don't do
 

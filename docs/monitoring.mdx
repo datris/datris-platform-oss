@@ -75,7 +75,7 @@ Returns every status row whose `publisherToken` matches — covers all ingestion
 
 Add `&withrollup=true` to wrap the response in a `{rollup, events}` object that classifies each job (`success`, `warning`, `error`, `processing`, `timed_out`) and exposes `rollup.allDone` for a single boolean to poll on. See the [status API reference](/api-reference/status-api#rollup-response) for the full shape.
 
-Agents call the same query via the MCP `get_pipeline_status` tool — pass `publisher_token` from a `run_tap` response and poll until `rollup.allDone` is `true`. The MCP tool sets `withrollup=true` automatically.
+Agents call the same query via the MCP `get_pipeline_status` tool — pass `publisher_token` from a `run_tap` response and poll until `rollup.allDone` is `true`. The MCP tool sets `withrollup=true` automatically. For an `upload_data` flow, `get_job_status` does the same with the `pipelineToken` returned from the upload.
 
 ### Query by Pipeline Name
 
