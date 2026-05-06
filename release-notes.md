@@ -1,16 +1,17 @@
 # Release Notes
 
-## v1.6.19 — May 5, 2026
+## v1.6.20 — May 6, 2026
 
-**Choose your embedding provider independently of your chat provider.**
+**Reliable job-status polling, re-ingest that doesn't overwrite your config, and first-class catalog tooling.**
 
-- **Mix-and-match AI providers.** The embedding slot is now configured separately from the chat and code-generation slots, so you can keep Claude for chat and code generation while pointing embeddings at OpenAI (or vice-versa). Useful when the bundled embedder is too heavy for your host, or when you want a different model family for vector quality vs chat quality. See [AI Configuration](https://docs.datris.ai/ai-configuration) for the full list of options.
-- **Existing installs keep their current behavior.** If you don't set an embedding override, the embedding slot continues to follow your chat provider exactly as before — Claude installs keep using the bundled embedder, OpenAI installs keep using OpenAI embeddings. The override is purely opt-in.
+- **Polling an upload's job status now gives you a clear answer.** Previously, when a file finished processing successfully, the response was a raw stream of progress events with no terminal status — agents and scripts couldn't tell "still running" from "done." Job status now returns a rollup with a single `allDone` flag and an aggregate outcome (`success`, `warning`, `error`), plus per-job error detail when something fails. Poll the rollup; act on the outcome. No more guessing.
+- **Re-ingesting a file preserves your pipeline's config.** `datris ingest` against an existing pipeline used to silently rewrite the config from CLI flags only — wiping out the catalog, custom validation rules, and any other fields you'd set through the UI or via an agent. Re-ingest now uploads into the existing pipeline as-is. To start over with a different config, delete the pipeline first.
+- **Catalogs without the read-modify-write dance.** New `--catalog` flag on `datris ingest` for new pipelines, new optional `catalog` argument on the `create_pipeline` MCP tool, and a new `set_catalog` MCP tool that retags an existing pipeline or tap in one call. Empty catalog clears the label back to Uncataloged. See [Data Catalog](https://docs.datris.ai/data-catalog) for the full picture.
 
 **Upgrading**
 
-- Existing installs: `docker compose pull && docker compose up -d --remove-orphans`. No data migration needed.
-- If you switch embedding providers on an existing deployment, vector destinations built on the previous embedder will fail-fast with a dimension-mismatch message on the next run. Drop the affected destination tables or collections and re-ingest.
+- Existing installs: `docker compose pull && docker compose up -d`. No data migration needed.
+- The `datris` CLI: `brew upgrade datris`.
 
 ---
 
