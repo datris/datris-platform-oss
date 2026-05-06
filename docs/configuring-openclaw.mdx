@@ -40,7 +40,22 @@ Indexing local memory files into Datris gives you the best of both worlds — ma
 - **Scales past the context window.** Large memory corpora that would never fit into a single prompt become retrievable on demand. The agent pulls only what's relevant for the current turn.
 - **Files remain the source of truth.** For memory you author yourself, the markdown files are yours — Datris is a derived index. Edit locally, re-ingest when ready. No vendor lock-in on your notes.
 
-## Step 1 — Register the Datris MCP server with OpenClaw
+## Step 1 — Set the embedding model to OpenAI `text-embedding-3-small`
+
+Before ingesting any memory, pick the embedding model the pipeline will use to encode it. For long-term memory we recommend **OpenAI** with **`text-embedding-3-small`** — it's the best balance of recall quality, latency, and cost for this use case in our testing.
+
+In the Datris UI:
+
+1. Open the **Configuration** tab, then the **AI Providers** sub-tab.
+2. In the **Embedding Provider** section, choose **OpenAI** as the provider and **`text-embedding-3-small`** as the model.
+3. Enter your OpenAI API key in the right-hand **API Keys** panel (if you haven't already).
+4. Click **Save Configuration**. Changes take effect immediately — no restart required.
+
+<Warning>
+**Set the embedder before you create the memory pipeline.** Vector dimensions are pinned at pipeline-creation time — `bge-m3` (the bundled default) is 1024-dim, `text-embedding-3-small` is 1536-dim. Switching embedders after ingestion will fail-fast with a dimension-mismatch error and you'll have to drop the destination collection and re-ingest. See [AI Configuration](/ai-configuration) for the full provider matrix.
+</Warning>
+
+## Step 2 — Register the Datris MCP server with OpenClaw
 
 Point OpenClaw at the local Datris MCP server (the SSE endpoint exposed by the standard Docker stack on port 3000):
 
@@ -56,7 +71,7 @@ openclaw mcp show datris
 
 You should see the `datris` server listed with its URL. SSE registration also means OpenClaw will appear in the Datris UI's **Agents** tab with live tool-call streaming — useful for watching what the agent is actually doing during ingestion and retrieval.
 
-## Step 2 — Give OpenClaw the memory-layer prompt
+## Step 3 — Give OpenClaw the memory-layer prompt
 
 Tool descriptions alone aren't enough. OpenClaw needs an explicit operating model so it knows local files stay canonical, Datris is the retrieval layer, and ingestion has to follow the right workflow (whole-document upload, server-side chunking, job polling, verification).
 
@@ -94,7 +109,7 @@ Now, start to use the Datris Platform and the MCP server for storing and retriev
 - **Requires verification** — after ingestion, OpenClaw runs a semantic search to confirm retrieval works before declaring success.
 - **Closes the loop** — the run gets recorded into a dated memory file and OpenClaw proposes an incremental sync strategy so future edits don't require a full re-ingest.
 
-## Step 3 — Use it
+## Step 4 — Use it
 
 Once OpenClaw has finished the bootstrap run, you can talk to it normally and it will reach for Datris semantic search instead of grepping files:
 
