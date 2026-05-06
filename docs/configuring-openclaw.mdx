@@ -11,6 +11,11 @@ For server-side details (architecture, transports, available tools), see [MCP Se
 
 This isn't a "no memory vs. memory" comparison. OpenClaw already has memory. It's a comparison about *enforcement, scale, and reuse*.
 
+The short version:
+
+1. **OpenClaw's built-in memory is best-effort** — the model decides when to save and when to look — so long sessions, restarts, and context compaction quietly erode recall. Datris moves memory out of the prompt and enforces it at the system layer, so your agent stops forgetting.
+2. **The same MCP connection that gives OpenClaw enforced semantic memory also exposes 30+ Datris tools** — pipelines, ingestion, SQL, vector search — so you're not bolting on a memory product, you're handing your agent a full data platform.
+
 ### vs. OpenClaw's default memory (best-effort, not enforced)
 
 OpenClaw ships with persistent memory out of the box — daily memory files, a curated `MEMORY.md`, and semantic search over archived sessions. It works. The catch is that everything is advisory: the model decides when to save, what to save, and whether to search before answering. Long sessions, context compaction, and restarts all chip away at recall. You'll see it fail the same way every time — a fact you established in week one stops surfacing in week three, not because it's gone, but because the model didn't think to look for it.
