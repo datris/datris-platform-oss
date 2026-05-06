@@ -80,6 +80,18 @@ You should see the `datris` server listed with its URL. SSE registration also me
 
 A one-shot prompt isn't enough — memory work is ongoing (bootstrap, incremental sync, retrieval defaults, handling renames and deletes), and the agent needs persistent operating instructions, not just a single bootstrap run. OpenClaw uses **skills** — markdown files under `.openclaw/workspace/skills/` — for exactly this. Install the Datris memory skill once and OpenClaw auto-triggers it whenever the user mentions saving, recalling, ingesting, syncing, or searching memory (and even on memory-shaped questions like *"what did I note about X"* that don't say "Datris" out loud).
 
+You have two options for installing the skill.
+
+### Option A: install via the OpenClaw CLI (recommended)
+
+```bash
+openclaw skills install datris-memory
+```
+
+This pulls the latest published version of the skill, drops it at `~/.openclaw/workspace/skills/datris-memory/skill.md`, and you're done. Skip ahead to Step 4.
+
+### Option B: install manually
+
 Create the skill directory:
 
 ```bash
