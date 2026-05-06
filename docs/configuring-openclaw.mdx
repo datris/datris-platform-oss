@@ -60,7 +60,26 @@ In the Datris UI:
 **Set the embedder before you create the memory pipeline.** Vector dimensions are pinned at pipeline-creation time — `bge-m3` (the bundled default) is 1024-dim, `text-embedding-3-small` is 1536-dim. Switching embedders after ingestion will fail-fast with a dimension-mismatch error and you'll have to drop the destination collection and re-ingest. See [AI Configuration](/ai-configuration) for the full provider matrix.
 </Warning>
 
-## Step 2 — Register the Datris MCP server with OpenClaw
+## Step 2 — Install the Datris CLI
+
+The memory skill prefers MCP tools but falls back to the `datris` CLI for health checks, stalled-job recovery, and operating when the MCP server is unreachable. It also declares `datris` as a required binary in its install metadata, so it has to be on your `PATH` before the skill will activate cleanly.
+
+Install via Homebrew:
+
+```bash
+brew tap datris/tap
+brew install datris
+```
+
+Verify:
+
+```bash
+datris health
+```
+
+You should see every backend service report healthy. See [docs.datris.ai/cli](/cli) for the full command reference.
+
+## Step 3 — Register the Datris MCP server with OpenClaw
 
 Point OpenClaw at the local Datris MCP server (the SSE endpoint exposed by the standard Docker stack on port 3000):
 
@@ -76,7 +95,7 @@ openclaw mcp show datris
 
 You should see the `datris` server listed with its URL. SSE registration also means OpenClaw will appear in the Datris UI's **Agents** tab with live tool-call streaming — useful for watching what the agent is actually doing during ingestion and retrieval.
 
-## Step 3 — Install the Datris memory skill
+## Step 4 — Install the Datris memory skill
 
 A one-shot prompt isn't enough — memory work is ongoing (bootstrap, incremental sync, retrieval defaults, handling renames and deletes), and the agent needs persistent operating instructions, not just a single bootstrap run. OpenClaw uses **skills** — markdown files under `.openclaw/workspace/skills/` — for exactly this. Install the Datris memory skill once and OpenClaw auto-triggers it whenever the user mentions saving, recalling, ingesting, syncing, or searching memory (and even on memory-shaped questions like *"what did I note about X"* that don't say "Datris" out loud).
 
@@ -88,7 +107,7 @@ You have two options for installing the skill.
 openclaw skills install datris-memory
 ```
 
-This pulls the latest published version of the skill, drops it at `~/.openclaw/workspace/skills/datris-memory/skill.md`, and you're done. Skip ahead to Step 4.
+This pulls the latest published version of the skill, drops it at `~/.openclaw/workspace/skills/datris-memory/skill.md`, and you're done. Skip ahead to Step 5.
 
 ### Option B: install manually
 
@@ -245,7 +264,7 @@ After any bootstrap or sync, report:
 - **CLI fallback for resilience** — MCP tools are the default, but the skill documents when to drop to `datris health`, `datris ingest`, `datris search`, and `datris status` — so a flaky MCP connection or a stalled poll doesn't leave the user blocked.
 - **Self-healing for inherited corpora** — if a previous setup bundled everything into one file, the skill includes the reset-and-re-ingest workflow rather than papering over broken provenance.
 
-## Step 4 — Restart the OpenClaw gateway
+## Step 5 — Restart the OpenClaw gateway
 
 Skills are discovered at gateway startup, so the new `datris-memory` skill won't be active until you reload:
 
@@ -255,7 +274,7 @@ openclaw gateway restart
 
 After the restart, OpenClaw will pick up `~/.openclaw/workspace/skills/datris-memory/skill.md` and auto-trigger it on any memory-shaped request.
 
-## Step 5 — Kick off the bootstrap, then use it
+## Step 6 — Kick off the bootstrap, then use it
 
 With the skill loaded, point OpenClaw at it once so it runs the first-time bootstrap — health check, pipeline creation, parallel ingestion of every existing memory file, and verification. A simple opener works:
 
