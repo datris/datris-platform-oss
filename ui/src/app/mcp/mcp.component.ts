@@ -143,10 +143,10 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'get_pipeline_status',
-      description: 'Poll pipeline ingestion status after run_tap. Pass publisher_token (covers every job the run submitted — recommended) or pipeline_token (one job). A job is done when its last row state is end or error.',
+      description: 'Poll pipeline ingestion status after run_tap. Pass publisher_token (covers every job the run submitted — recommended) or pipeline_token (one job). Returns {rollup, events} — poll rollup.allDone, then read rollup.status (success / warning / error) and per-job lastError.',
       category: 'Taps',
       parameters: [
-        { name: 'publisher_token', type: 'string', description: 'UUID from run_tap response — returns status rows for every job the run submitted', required: false, inputType: 'text' },
+        { name: 'publisher_token', type: 'string', description: 'UUID from run_tap response — returns rollup + events for every job the run submitted', required: false, inputType: 'text' },
         { name: 'pipeline_token', type: 'string', description: 'UUID for a single ingestion job', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
@@ -229,7 +229,19 @@ export class McpComponent implements OnInit {
         { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' },
         { name: 'destination', type: 'string', description: 'Destination: postgres, mongodb, qdrant, weaviate, milvus, chroma, pgvector', required: false, inputType: 'text' },
         { name: 'table', type: 'string', description: 'Table/collection name (default: pipeline name)', required: false, inputType: 'text' },
-        { name: 'database', type: 'string', description: 'Database name (default: datris)', required: false, inputType: 'text' }
+        { name: 'database', type: 'string', description: 'Database name (default: datris)', required: false, inputType: 'text' },
+        { name: 'catalog', type: 'string', description: 'Catalog label to group this pipeline (e.g. openclaw, finance). Free-form — no need to pre-create.', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'set_catalog',
+      description: 'Set or clear the catalog grouping label on an existing pipeline or tap. Pass exactly one of pipeline or tap. Omit catalog (or pass empty) to clear.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'pipeline', type: 'string', description: 'Pipeline name to update. Mutually exclusive with tap.', required: false, inputType: 'text' },
+        { name: 'tap', type: 'string', description: 'Tap name to update. Mutually exclusive with pipeline.', required: false, inputType: 'text' },
+        { name: 'catalog', type: 'string', description: 'Catalog label. Empty string clears the label.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -255,11 +267,11 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'get_job_status',
-      description: 'Get job status by pipeline token or pipeline name.',
+      description: 'Get job status. Pass pipeline_token for a {rollup, events} response — poll rollup.allDone, then read rollup.status (success / warning / error). Pass pipeline_name for a paginated summary across recent jobs.',
       category: 'Pipeline Management',
       parameters: [
-        { name: 'pipeline_token', type: 'string', description: 'Pipeline token from upload_data', required: false, inputType: 'text' },
-        { name: 'pipeline_name', type: 'string', description: 'Pipeline name for latest status', required: false, inputType: 'text' },
+        { name: 'pipeline_token', type: 'string', description: 'Pipeline token from upload_data — returns rollup + events for a single job', required: false, inputType: 'text' },
+        { name: 'pipeline_name', type: 'string', description: 'Pipeline name — returns a paginated summary array of recent jobs', required: false, inputType: 'text' },
         { name: 'page', type: 'integer', description: 'Page number (default: 1)', required: false, inputType: 'number' }
       ],
       playgroundEnabled: true

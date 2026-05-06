@@ -265,8 +265,8 @@ Required workflow:
   3. Ingest data (choose one):
      Option A — Direct upload: call upload_data ONCE with the entire base64-encoded content and the pipeline name. Do NOT split the content into multiple uploads — vector destinations (pgvector, qdrant, weaviate, milvus, chroma) chunk server-side, and structured pipelines accept the whole file as one batch.
      Option B — Create a tap: use create_tap to provide an instruction (AI generates the script) or your own Python script that fetches data from an external source and pushes it into the pipeline automatically. See Tap workflow below.
-  4. Monitor: call get_job_status and poll until status is COMPLETED or FAILED. You MUST wait for COMPLETED before querying.
-  5. If FAILED: read the error message from get_job_status. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
+  4. Monitor: call get_job_status with the pipelineToken returned from upload_data and poll until `rollup.allDone` is true. You MUST wait for that before querying.
+  5. If `rollup.status` is `error` or `warning`: read `rollup.jobs[].lastError` for the failing process and description. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
   6. Query & search: use query_postgres, query_mongodb for structured data; search_qdrant, search_pgvector, etc. for vector search
   7. RAG: pass search results as context to ai_answer with the user's question
 
@@ -380,7 +380,7 @@ PIPELINE_CONFIG_REFERENCE = """\
 5. Call `check_service_health` to verify the target destination service is available.
 6. Call `create_pipeline` with the config.
 7. Call `upload_data` ONCE with your full data (base64-encoded) and the pipeline name. Do not pre-chunk — vector destinations chunk server-side, structured pipelines accept the whole file as one batch.
-8. Call `get_job_status` to monitor processing. Poll until status is COMPLETED or FAILED.
+8. Call `get_job_status` with the pipelineToken returned from `upload_data` to monitor processing. Poll until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`).
 9. Query or search the data: `query_postgres`, `query_mongodb`, `search_qdrant`, `search_pgvector`, etc.
 10. For RAG: pass search results as context to `ai_answer` with the user's question.
 
@@ -853,9 +853,40 @@ async def list_tools():
                     "codegen_transform": {
                         "type": "string",
                         "description": "Optional transformation instruction as a plain-English description. Only add when the user explicitly requests transformation. Datris will generate a Python script from this instruction and run it locally to transform all data. Example: 'Convert all date columns to YYYY/MM/DD format and uppercase all name fields'"
+                    },
+                    "catalog": {
+                        "type": "string",
+                        "description": "Optional catalog name to group this pipeline with related pipelines (e.g., 'openclaw', 'finance'). Free-form label — no need to pre-create the catalog."
                     }
                 },
                 "required": ["pipeline"]
+            }
+        ),
+        Tool(
+            name="set_catalog",
+            description=(
+                "Set or clear the catalog grouping label on an existing pipeline or tap. "
+                "Catalogs are free-form labels (e.g. 'openclaw', 'finance') used to group related pipelines/taps in the UI and for discovery. "
+                "Pass exactly one of `pipeline` or `tap` to identify the target. Pass `catalog` to set the label, or omit it (or pass an empty string) to clear it. "
+                "Survives subsequent re-ingests — `datris ingest` no longer rewrites an existing pipeline's config."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline": {
+                        "type": "string",
+                        "description": "Pipeline name to update. Mutually exclusive with `tap`."
+                    },
+                    "tap": {
+                        "type": "string",
+                        "description": "Tap name to update. Mutually exclusive with `pipeline`."
+                    },
+                    "catalog": {
+                        "type": "string",
+                        "description": "Catalog label. Omit or pass an empty string to clear the label."
+                    },
+                },
+                "required": []
             }
         ),
         Tool(
@@ -896,17 +927,26 @@ async def list_tools():
         ),
         Tool(
             name="get_job_status",
-            description="Get job status. Query by pipeline_token (from upload_data) for detailed status of a specific job, or by pipeline_name for a paginated summary of all jobs for that pipeline. Status values: RUNNING, COMPLETED, FAILED, CANCELLED. IMPORTANT: If status is RUNNING, you MUST keep polling (wait a few seconds and call again) until status changes to COMPLETED or FAILED. Do NOT proceed to query/search until the job is COMPLETED. If FAILED, read the error message and fix the issue.",
+            description=(
+                "Get job status for an upload_data submission. Pass `pipeline_token` (returned from upload_data) for the recommended path. "
+                "Pass `pipeline_name` instead for a paginated summary of recent jobs for that pipeline. "
+                "When queried by `pipeline_token`, the response is `{rollup: {allDone, status, jobs: [...]}, events: [...]}` — "
+                "poll every few seconds until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`) for the outcome. "
+                "Per-job detail is in `rollup.jobs[]` with `pipelineToken`, `pipeline`, `filename`, `status`, `startedAt`, `lastEventAt`, `elapsed`, and `lastError` (populated on failure with `processName` and `description`). "
+                "`events[]` is the raw begin/info/end audit trail; the rollup is the source of truth for completion. "
+                "When queried by `pipeline_name`, the response is a paginated array of summary rows; the most recent job is index 0 and its `status` field is `success` | `processing` | `error`. "
+                "Do NOT proceed to query/search until the job is in a terminal state."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pipeline_token": {
                         "type": "string",
-                        "description": "Pipeline token returned from upload_file"
+                        "description": "Pipeline token returned from upload_data"
                     },
                     "pipeline_name": {
                         "type": "string",
-                        "description": "Pipeline name to get latest status for"
+                        "description": "Pipeline name to get a paginated summary of recent jobs"
                     },
                     "page": {
                         "type": "integer",
@@ -1705,6 +1745,10 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("codegen_transform"):
             config["transformation"] = {"aiTransformation": {"instruction": args["codegen_transform"]}}
 
+        # Step 2d: Add optional catalog grouping label
+        if args.get("catalog"):
+            config["catalog"] = args["catalog"]
+
         # Step 3: Register the pipeline
         create_result = _call("post", "/api/v1/pipeline", json=config)
 
@@ -1734,39 +1778,24 @@ def _dispatch(name: str, args: dict) -> str:
         result = _upload_content("/api/v1/pipeline/upload", args["content"], args["filename"], data)
         token = result.strip() if result else ""
         if token and not token.startswith("{"):
-            return json.dumps({"pipelineToken": token, "message": "Upload successful. Use this pipelineToken with get_job_status to monitor processing."})
+            return json.dumps({"pipelineToken": token, "message": "Upload successful. Pass this pipelineToken to get_job_status and poll until rollup.allDone is true."})
         return result
 
     elif name == "get_job_status":
+        # Token queries opt into the rollup shape ({rollup, events}) so callers
+        # have a single boolean (rollup.allDone) and aggregate status to poll on
+        # instead of having to replay begin/info/end/error rules over raw events.
+        # Name queries hit the paginated summary path, which already carries a
+        # status field per row.
         params = {}
         if args.get("pipeline_token"):
             params["pipelinetoken"] = args["pipeline_token"]
+            params["withrollup"] = "true"
         if args.get("pipeline_name"):
             params["pipelinename"] = args["pipeline_name"]
         if args.get("page"):
             params["page"] = args["page"]
-        result = _call("get", "/api/v1/pipeline/status", params=params)
-        try:
-            data = json.loads(result)
-            # Detect status from either detail (state field) or summary (status field)
-            status = None
-            if isinstance(data, list) and len(data) > 0:
-                last = data[-1] if isinstance(data[-1], dict) else data[0]
-                # Detail view uses "state" (begin/processing/end/error)
-                # Summary view uses "status" (processing/success/completed/error)
-                status = last.get("status") or last.get("state")
-            elif isinstance(data, dict):
-                status = data.get("status") or data.get("state")
-
-            if status:
-                s = status.lower()
-                if s in ("processing", "begin"):
-                    return "STILL RUNNING — you MUST call get_job_status again in a few seconds. Do NOT proceed to query/search until job is complete.\n\n" + result
-                elif s == "error":
-                    return "JOB FAILED — read the error details below. Delete the pipeline and recreate if needed.\n\n" + result
-        except (json.JSONDecodeError, TypeError, KeyError):
-            pass
-        return result
+        return _call("get", "/api/v1/pipeline/status", params=params)
 
     elif name == "kill_job":
         payload = {"pipelineToken": args["pipeline_token"]}
@@ -2181,6 +2210,59 @@ def _dispatch(name: str, args: dict) -> str:
 
     elif name == "test_tap":
         return _call("post", "/api/v1/tap/run", json={"name": args["name"], "mode": "test"})
+
+    elif name == "set_catalog":
+        # Read-modify-write: there is no PATCH endpoint for either entity. The
+        # tap POST path strips a `script` field that GET adds for convenience;
+        # the pipeline POST path round-trips its own config cleanly.
+        pipeline_name = args.get("pipeline")
+        tap_name = args.get("tap")
+        if bool(pipeline_name) == bool(tap_name):
+            return json.dumps({"error": "Pass exactly one of `pipeline` or `tap`."})
+        new_catalog = args.get("catalog") or ""
+
+        if pipeline_name:
+            existing = _call("get", "/api/v1/pipeline", params={"pipeline": pipeline_name})
+            try:
+                config = json.loads(existing)
+            except (json.JSONDecodeError, TypeError):
+                return json.dumps({"error": f"Pipeline '{pipeline_name}' not found"})
+            if not isinstance(config, dict) or config.get("name") != pipeline_name:
+                return json.dumps({"error": f"Pipeline '{pipeline_name}' not found"})
+            config["catalog"] = new_catalog if new_catalog else None
+            save_result = _call("post", "/api/v1/pipeline", json=config)
+            if save_result and ("Exception" in save_result or "error" in save_result.lower()):
+                return json.dumps({"error": "Failed to update pipeline: " + save_result[:500]})
+            return json.dumps({
+                "message": f"Pipeline '{pipeline_name}' catalog " + ("cleared" if not new_catalog else f"set to '{new_catalog}'"),
+                "pipeline": pipeline_name,
+                "catalog": new_catalog or None,
+            })
+
+        # tap path
+        existing = _call("get", f"/api/v1/tap?name={tap_name}")
+        try:
+            tap_config = json.loads(existing)
+            if "error" in tap_config:
+                return existing
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"error": f"Tap '{tap_name}' not found"})
+        tap_config["catalog"] = new_catalog if new_catalog else None
+        # GET /tap injects these for UI use; POST /tap doesn't expect them.
+        tap_config.pop("script", None)
+        tap_config.pop("scriptMissing", None)
+        save_result = _call("post", "/api/v1/tap", json=tap_config)
+        try:
+            saved = json.loads(save_result)
+            if "error" in saved:
+                return save_result
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return json.dumps({
+            "message": f"Tap '{tap_name}' catalog " + ("cleared" if not new_catalog else f"set to '{new_catalog}'"),
+            "tap": tap_name,
+            "catalog": new_catalog or None,
+        })
 
     elif name == "update_tap":
         # Fetch existing config

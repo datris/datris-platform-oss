@@ -23,10 +23,11 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 |------|-------------|
 | `list_pipelines` | List all registered pipeline configurations |
 | `get_pipeline` | Get a specific pipeline configuration by name |
-| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Specify destination type. |
+| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Specify destination type. Optional `catalog` to group related pipelines. |
 | `delete_pipeline` | Delete a pipeline and its destination data |
 | `upload_data` | Upload data (base64-encoded) to a pipeline for processing. New CSV columns are auto-added to the schema ([schema evolution](/schemas#schema-evolution)). Returns pipeline token. |
-| `get_job_status` | Get job status by pipeline token or pipeline name |
+| `get_job_status` | Get job status. Pass `pipeline_token` for a `{rollup, events}` response — poll `rollup.allDone`, then read `rollup.status` (`success` / `warning` / `error`) and per-job `lastError`. Pass `pipeline_name` for a paginated summary across recent jobs. |
+| `set_catalog` | Set or clear the catalog grouping label on an existing pipeline or tap. Pass exactly one of `pipeline` or `tap`. |
 | `kill_job` | Kill a running job by pipeline token |
 | `profile_data` | AI-profile data (base64-encoded) with summary stats and suggested DQ rules |
 | `get_version` | Get pipeline server version |
@@ -171,7 +172,7 @@ All database connections, vector search, and embedding are handled by the pipeli
 1. **Check for an existing pipeline** — `list_pipelines`. If one already fits the data, skip to step 3.
 2. **Create a pipeline** — `create_pipeline` with the CSV as sample data. Schema is auto-detected. Keep the config simple; only pass `codegen_rule` / `codegen_transform` if the user explicitly asks for validation or transformation.
 3. **Upload** — `upload_data` with the CSV content (base64).
-4. **Verify it landed** — `get_job_status` and poll until status is `COMPLETED` (or `FAILED`, in which case read the error and fix).
+4. **Verify it landed** — `get_job_status` with the `pipelineToken` returned from `upload_data`. Poll until `rollup.allDone` is `true`, then read `rollup.status` (`success`, `warning`, `error`). On failure, `rollup.jobs[].lastError` carries the failing process and message.
 
 ### Onboard a new external data source via a tap
 

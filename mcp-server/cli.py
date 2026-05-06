@@ -182,8 +182,9 @@ def pipelines(json_output):
 @click.option("--ai-validate", default=None, help="AI data quality rule (plain English, e.g. 'all prices must be positive')")
 @click.option("--ai-transform", default=None, help="AI transformation instruction (plain English, e.g. 'convert dates to YYYY/MM/DD')")
 @click.option("--ai-analyze", default=None, help="Ask a question about the data after ingestion (plain English)")
+@click.option("--catalog", default=None, help="Catalog label to group this pipeline with related pipelines (e.g. 'openclaw'). Only applied when creating a new pipeline.")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
-def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform, ai_analyze, json_output):
+def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform, ai_analyze, catalog, json_output):
     """Create a pipeline and ingest a data file."""
     content = b64_file(file)
     filename = os.path.basename(file)
@@ -192,34 +193,49 @@ def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform, ai_
     if not pipeline:
         pipeline = os.path.splitext(filename)[0].lower().replace("-", "_").replace(" ", "_")
 
-    # Build args
-    args = {
-        "content": content,
-        "filename": filename,
-        "pipeline": pipeline,
-        "destination": dest,
-    }
-    if table:
-        args["table"] = table
-    if database != "datris":
-        args["database"] = database
-    if ai_validate:
-        args["codegen_rule"] = ai_validate
-    if ai_transform:
-        args["codegen_transform"] = ai_transform
+    # Skip create_pipeline if one already exists with this name. create_pipeline
+    # rebuilds the config from CLI flags only and POSTs it, which would clobber
+    # fields the user/agent set out-of-band (catalog, custom dataQuality, etc.).
+    # Re-ingest's intent is "load more data," not "reset the config." Delete the
+    # pipeline first if you want a fresh one.
+    existing = mcp("get_pipeline", {"pipeline": pipeline})
+    pipeline_exists = isinstance(existing, dict) and existing.get("name") == pipeline
 
-    # Create pipeline
-    click.echo(f"  Creating pipeline '{pipeline}' → {dest}...")
-    result = mcp("create_pipeline", args)
-    if result.get("error"):
-        click.echo(f"  Error: {result['error'][:200]}")
-        sys.exit(1)
-    click.echo(f"  ✓ Pipeline created")
+    if pipeline_exists:
+        click.echo(f"  Pipeline '{pipeline}' already exists — keeping existing config")
+        if ai_validate or ai_transform or catalog:
+            click.echo(f"  ⚠ --ai-validate / --ai-transform / --catalog ignored (delete the pipeline first to apply)")
+    else:
+        args = {
+            "content": content,
+            "filename": filename,
+            "pipeline": pipeline,
+            "destination": dest,
+        }
+        if table:
+            args["table"] = table
+        if database != "datris":
+            args["database"] = database
+        if ai_validate:
+            args["codegen_rule"] = ai_validate
+        if ai_transform:
+            args["codegen_transform"] = ai_transform
+        if catalog:
+            args["catalog"] = catalog
 
-    if ai_validate:
-        click.echo(f"  ✓ AI validation: {ai_validate}")
-    if ai_transform:
-        click.echo(f"  ✓ AI transformation: {ai_transform}")
+        click.echo(f"  Creating pipeline '{pipeline}' → {dest}...")
+        result = mcp("create_pipeline", args)
+        if result.get("error"):
+            click.echo(f"  Error: {result['error'][:200]}")
+            sys.exit(1)
+        click.echo(f"  ✓ Pipeline created")
+
+        if ai_validate:
+            click.echo(f"  ✓ AI validation: {ai_validate}")
+        if ai_transform:
+            click.echo(f"  ✓ AI transformation: {ai_transform}")
+        if catalog:
+            click.echo(f"  ✓ Catalog: {catalog}")
 
     # Upload data
     click.echo(f"  Uploading {filename}...")
@@ -230,26 +246,27 @@ def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform, ai_
     token = upload_result.get("pipelineToken", "")
     click.echo(f"  ✓ Uploaded (token: {token[:36]})")
 
-    # Wait for completion
+    # Wait for completion — poll the rollup by pipelineToken so a single boolean
+    # tells us when the load is done.
     click.echo(f"  Waiting...")
     completed = False
     for _ in range(30):
         time.sleep(2)
-        status = mcp("get_job_status", {"pipeline_name": pipeline})
-        if isinstance(status, list) and len(status) > 0:
-            s = status[0].get("status", "")
-            if s in ("success", "completed"):
-                click.echo(f"  ✓ Done ({status[0].get('totalTime', '')})")
+        status = mcp("get_job_status", {"pipeline_token": token})
+        rollup = status.get("rollup") if isinstance(status, dict) else None
+        if rollup and rollup.get("allDone"):
+            agg = rollup.get("status", "")
+            if agg in ("success", "warning"):
+                jobs = rollup.get("jobs") or []
+                elapsed = jobs[0].get("elapsed", "") if jobs else ""
+                click.echo(f"  ✓ Done ({elapsed})")
                 completed = True
                 break
-            elif s == "error":
-                click.echo(f"  ✗ Failed")
-                sys.exit(1)
-        elif isinstance(status, dict) and "text" in status:
-            if "STILL RUNNING" in status.get("text", ""):
-                continue
-            elif "FAILED" in status.get("text", ""):
-                click.echo(f"  ✗ Failed")
+            else:
+                jobs = rollup.get("jobs") or []
+                err = (jobs[0].get("lastError") or {}) if jobs else {}
+                msg = err.get("description") or "unknown error"
+                click.echo(f"  ✗ Failed: {msg[:200]}")
                 sys.exit(1)
 
     if not completed:
