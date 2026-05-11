@@ -261,6 +261,8 @@ NEVER rules:
 Required workflow:
   1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
   2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb), pass sample data (base64-encoded) + filename so the schema is auto-detected. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead).
+     create_pipeline UPSERTS by name: if a pipeline with the same name already exists, the call REPLACES its config in place — the data already in the destination is NOT touched. To change a knob (keyFields, truncate, codegen_rule, etc.) on an existing pipeline, just call create_pipeline again with the same name and the new settings. You do NOT need to delete first.
+     Common knobs: keyFields (list of column names that act as a natural key for dedupe/upsert on every run), truncate (wipe the destination before each run), codegen_rule (AI-powered data quality), codegen_transform (AI-powered transformation).
   3. Ingest data (choose one):
      Option A — Direct upload: call upload_data ONCE with the entire base64-encoded content and the pipeline name. Do NOT split the content into multiple uploads — vector destinations (pgvector, qdrant, weaviate, milvus, chroma) chunk server-side, and structured pipelines accept the whole file as one batch.
      Option B — Create a tap: use create_tap to provide an instruction (AI generates the script) or your own Python script that fetches data from an external source and pushes it into the pipeline automatically. See Tap workflow below.
@@ -850,6 +852,15 @@ async def list_tools():
                         "type": "boolean",
                         "description": "Whether CSV has a header row (default: true)"
                     },
+                    "keyFields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Only applies to postgres and mongodb destinations. Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. Omit to append on every run (default behavior)."
+                    },
+                    "truncate": {
+                        "type": "boolean",
+                        "description": "Optional. When true, the destination table/collection is truncated before each run, so only the latest run's data is kept. Only applies to postgres and mongodb destinations. Default false (append). Mutually useful with — but distinct from — keyFields: truncate wipes everything each run, keyFields upserts per natural key."
+                    },
                     "codegen_rule": {
                         "type": "string",
                         "description": "Optional data quality validation rule as a plain-English instruction. Only add when the user explicitly requests validation. Datris will generate a Python validation script from this instruction and run it locally against all data. Example: 'Validate that all dates are YYYY-MM-DD format and all email addresses are valid'"
@@ -1279,13 +1290,49 @@ async def list_tools():
             }
         ),
         Tool(
+            name="list_tap_secrets",
+            description=(
+                "List the names of tap secrets that already exist (secrets tagged _type=tap "
+                "— both agent-created and human-owned ones surfaced via the UI's Tap Secrets "
+                "section). ALWAYS call this before create_tap_secret: if a suitable secret "
+                "already exists, prefer reusing it by passing its name as secret_name to "
+                "create_tap. Only ask the user to provide credentials when no existing "
+                "secret covers the need."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_tap_secret_fields",
+            description=(
+                "Return the FIELD NAMES (keys only — never values) of an existing tap "
+                "secret. Use this after list_tap_secrets to verify a candidate secret has "
+                "the keys your tap script will need (e.g. API_KEY, USER_AGENT). Secret "
+                "values are intentionally NOT returned and are never visible to the agent."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Tap secret name (from list_tap_secrets)."
+                    }
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
             name="create_tap_secret",
             description=(
                 "Create or update a secret for a tap to use. The secret's fields are "
                 "injected as environment variables into the tap's Python script at runtime. "
                 "Use this before create_tap when the tap needs credentials (API key, DB "
-                "password, etc.). Reference the secret by passing its name as secret_name "
-                "to create_tap. By default, fails if a secret with this name already exists — "
+                "password, etc.). FIRST call list_tap_secrets to check whether a suitable "
+                "secret already exists — if so, reuse it instead of creating a duplicate. "
+                "By default, fails if a secret with this name already exists — "
                 "pass overwrite=true to replace it (ask the user first). Agents can only "
                 "overwrite secrets that were also created by an agent (tagged _type=tap); "
                 "secrets owned by a human user must be updated via the UI."
@@ -1722,10 +1769,18 @@ def _dispatch(name: str, args: dict) -> str:
 
         # Build destination
         dest = {}
+        key_fields = args.get("keyFields") or None
+        truncate = bool(args.get("truncate", False))
         if dest_type == "postgres":
-            dest["database"] = {"dbName": db_name, "schema": "public", "table": table_name, "usePostgres": True}
+            db_cfg = {"dbName": db_name, "schema": "public", "table": table_name, "usePostgres": True}
+            if key_fields: db_cfg["keyFields"] = key_fields
+            if truncate:   db_cfg["truncateBeforeWrite"] = True
+            dest["database"] = db_cfg
         elif dest_type == "mongodb":
-            dest["database"] = {"dbName": db_name, "table": table_name, "useMongoDB": True}
+            db_cfg = {"dbName": db_name, "table": table_name, "useMongoDB": True}
+            if key_fields: db_cfg["keyFields"] = key_fields
+            if truncate:   db_cfg["truncateBeforeWrite"] = True
+            dest["database"] = db_cfg
         elif dest_type == "qdrant":
             dest["qdrant"] = {"collectionName": table_name, "embeddingSecretName": "oss/embedding", "qdrantSecretName": "oss/qdrant", "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50}}
         elif dest_type == "weaviate":
@@ -1961,6 +2016,25 @@ def _dispatch(name: str, args: dict) -> str:
         if secret_name not in allowed:
             return json.dumps({"error": f"Only these secrets can be updated: {', '.join(sorted(allowed))}"})
         return _call("put", f"/api/v1/secrets/{secret_name}", json=args["fields"])
+
+    elif name == "list_tap_secrets":
+        # GET /api/v1/secrets?type=tap returns the names of all secrets tagged _type=tap.
+        # No values are returned — name discovery only.
+        return _call("get", "/api/v1/secrets", params={"type": "tap"})
+
+    elif name == "get_tap_secret_fields":
+        secret_name = args["name"]
+        try:
+            data = json.loads(_call("get", f"/api/v1/secrets/{secret_name}"))
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"error": f"Could not look up secret '{secret_name}'."})
+        if not isinstance(data, dict) or "error" in data:
+            return json.dumps({"error": f"Secret '{secret_name}' not found."})
+        fields = data.get("fields") or {}
+        # Strip the _type marker — it's a platform tag, not a user-facing field. Return
+        # NAMES ONLY (no values) so the agent never sees secret material.
+        field_names = [k for k in fields.keys() if k != "_type"]
+        return json.dumps({"name": secret_name, "fieldNames": field_names, "_type": fields.get("_type")})
 
     elif name == "create_tap_secret":
         reserved = {"anthropic", "openai", "ollama", "embedding", "ai-primary", "codegen"}
@@ -2351,12 +2425,33 @@ async def _handle_activity(scope, send) -> None:
 
 
 async def run_sse(port: int):
+    # Dual transport: serves SSE (/sse + /messages) for Claude Desktop / Cursor
+    # AND Streamable HTTP (/mcp) for the in-product Datris Assistant. Both
+    # surface the same tool catalog because they wrap the same `server`
+    # instance. The streamable HTTP transport runs in stateless mode so each
+    # POST is independent — no session ID needed.
     from mcp.server.sse import SseServerTransport
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from starlette.applications import Starlette
+    import contextlib
     import uvicorn
 
     sse = SseServerTransport("/messages")
+    streamable_mgr = StreamableHTTPSessionManager(app=server, json_response=False, stateless=True)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        # StreamableHTTPSessionManager needs its run() context active for the
+        # lifetime of the process. SSE has no equivalent lifecycle hook.
+        async with streamable_mgr.run():
+            yield
+
+    starlette_app = Starlette(lifespan=lifespan)
 
     async def app(scope, receive, send):
+        if scope["type"] == "lifespan":
+            await starlette_app(scope, receive, send)
+            return
         if scope["type"] == "http":
             path = scope.get("path", "")
             if path == "/sse":
@@ -2380,6 +2475,23 @@ async def run_sse(port: int):
             elif path == "/messages":
                 await sse.handle_post_message(scope, receive, send)
                 return
+            elif path == "/mcp":
+                api_key = _extract_api_key(scope)
+                if REQUIRE_API_KEY and not api_key:
+                    await send({"type": "http.response.start", "status": 401,
+                                "headers": [[b"content-type", b"application/json"]]})
+                    await send({"type": "http.response.body",
+                                "body": b'{"error":"x-api-key header required."}'})
+                    return
+                _session_api_key.set(api_key)
+                sess_id = uuid.uuid4().hex
+                _session_id.set(sess_id)
+                _activity_session_open(sess_id, api_key)
+                try:
+                    await streamable_mgr.handle_request(scope, receive, send)
+                finally:
+                    _activity_session_close(sess_id)
+                return
             elif path == "/activity":
                 await _handle_activity(scope, send)
                 return
@@ -2387,7 +2499,7 @@ async def run_sse(port: int):
         await send({"type": "http.response.start", "status": 404, "headers": []})
         await send({"type": "http.response.body", "body": b"Not Found"})
 
-    config = uvicorn.Config(app, host="0.0.0.0", port=port)
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, lifespan="on")
     srv = uvicorn.Server(config)
     await srv.serve()
 

@@ -29,6 +29,12 @@
             ]
           },
           {
+            "group": "Assistant",
+            "pages": [
+              "assistant"
+            ]
+          },
+          {
             "group": "Discovery",
             "pages": [
               "discovery",

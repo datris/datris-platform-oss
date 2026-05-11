@@ -16,6 +16,7 @@ import { GettingStartedComponent } from './getting-started/getting-started.compo
 import { DataCatalogComponent } from './data-catalog/data-catalog.component';
 import { DiscoveryComponent } from './discovery/discovery.component';
 import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
+import { AssistantComponent } from './assistant/assistant.component';
 import { LoginComponent } from './login/login.component';
 import { authGuard } from './auth.guard';
 
@@ -38,6 +39,7 @@ const routes: Routes = [
   { path: 'search', component: SearchComponent, canActivate: [authGuard] },
   { path: 'mcp', component: McpComponent, canActivate: [authGuard] },
   { path: 'agent-monitor', component: AgentMonitorComponent, canActivate: [authGuard] },
+  { path: 'assistant', component: AssistantComponent, canActivate: [authGuard] },
   { path: 'configuration', component: ConfigurationComponent, canActivate: [authGuard] },
   // Secrets moved into Configuration as a sub-tab (v1.6.16+). Preserve the
   // legacy /secrets URL for bookmarks, getting-started links, and external docs.

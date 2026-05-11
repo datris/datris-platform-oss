@@ -179,6 +179,7 @@ case class DatrisEnvironment(
                                   postgresDatabase: String = "datris",
                                   codegenAiConfig: Option[AIConfig] = None,
                                   webSearchConfig: Option[WebSearchConfig] = None,
+                                  extendedThinking: Boolean = true,
                               hosted: Boolean = false,
                               useUserAuth: Boolean = false,
                               userTableName: String = null,

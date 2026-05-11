@@ -1,0 +1,224 @@
+<div class="assistant-page">
+  <!-- Loading / error states for the initial /init fetch -->
+  <div class="assistant-loading" *ngIf="state.loadingInit">
+    <span class="spinner-small"></span>
+    <span>Connecting to MCP server…</span>
+  </div>
+  <div class="assistant-init-error" *ngIf="state.initError">
+    {{ state.initError }}
+  </div>
+
+  <!-- Conversation area + composer -->
+  <ng-container *ngIf="!state.loadingInit && !state.initError">
+    <!-- Sticky top bar: only shown once there's a conversation to clear. -->
+    <div class="assistant-topbar" *ngIf="state.turns.length > 0">
+      <button class="topbar-btn" (click)="newChat()" [disabled]="state.streaming" title="Clear conversation and start fresh">
+        <mat-icon class="topbar-btn-icon">add</mat-icon>
+        <span>New chat</span>
+      </button>
+    </div>
+    <div class="assistant-scroll" #scrollContainer>
+      <div class="assistant-column">
+
+        <!-- Empty state: greeting, hint, starter chips -->
+        <div class="empty-state" *ngIf="isEmptyState">
+          <h1 class="empty-title">What data should we ingest?</h1>
+          <p class="empty-sub">
+            I'll find a source, build the tap, and create a pipeline — using the
+            <strong>{{ state.initInfo?.toolCount }}</strong> tools on the Datris MCP server.
+          </p>
+          <div class="starter-chips">
+            <button class="starter-chip" *ngFor="let p of starterPrompts" (click)="fillFromStarter(p)">
+              {{ p.label }}
+            </button>
+          </div>
+          <div class="empty-provider-hint" *ngIf="state.initInfo?.provider === 'ollama'">
+            Reasoning visibility requires Anthropic or OpenAI — your tenant is configured for Ollama,
+            so you'll see streaming text and tool calls but no chain-of-thought block.
+          </div>
+        </div>
+
+        <!-- Conversation turns -->
+        <ng-container *ngFor="let turn of state.turns; trackBy: trackByIndex">
+
+          <!-- User turn: right-aligned, subtle container -->
+          <div class="user-turn" *ngIf="turn.role === 'user'">
+            <div class="user-bubble">{{ turn.text }}</div>
+          </div>
+
+          <!-- Assistant turn: full-column prose, no container -->
+          <div class="assistant-turn" *ngIf="turn.role === 'assistant'">
+            <div class="assistant-marker">
+              <mat-icon class="assistant-icon">auto_awesome</mat-icon>
+            </div>
+
+            <!-- Thinking / reasoning block -->
+            <div class="thinking-block" *ngIf="turn.thinking">
+              <button class="thinking-toggle" (click)="toggleThinking(turn)">
+                <span class="thinking-label">{{ reasoningLabel }}</span>
+                <span class="thinking-caret">{{ turn.thinkingExpanded ? '▾' : '▸' }}</span>
+                <span class="thinking-spinner" *ngIf="!turn.done">…</span>
+              </button>
+              <div class="thinking-content" *ngIf="turn.thinkingExpanded">{{ turn.thinking }}</div>
+            </div>
+
+            <!-- Interleaved text + tool segments -->
+            <ng-container *ngFor="let seg of turn.segments; trackBy: trackByIndex">
+              <div class="prose-segment" *ngIf="seg.kind === 'text'">{{ seg.text }}</div>
+
+              <div class="tool-card" *ngIf="seg.kind === 'tool'" [class.tool-error]="seg.isError">
+                <button class="tool-header" (click)="toggleToolCard(seg)">
+                  <span class="tool-caret">{{ seg.expanded ? '▾' : '▸' }}</span>
+                  <span class="tool-icon">{{ toolLabel(seg).icon }}</span>
+                  <span class="tool-label">{{ toolLabel(seg).label }}</span>
+                  <span class="tool-status"
+                                            [class.tool-status-ok]="seg.status === 'ok'"
+                                            [class.tool-status-error]="seg.status === 'error'">
+                    <span class="dots-mini" *ngIf="seg.status === 'running'">
+                      <span></span><span></span><span></span>
+                    </span>
+                    <ng-container *ngIf="seg.status !== 'running'">{{ toolStatusIcon(seg) }}</ng-container>
+                  </span>
+                </button>
+
+                <!-- Inline credentials form: rendered instead of the generic
+                     tool body when this is a request_tap_secret_from_user
+                     card. Values never enter the chat — they POST straight
+                     to /api/v1/secrets and stay in Vault. -->
+                <ng-container *ngIf="seg.secretRequest as sr">
+                  <ng-container *ngIf="!sr.submitted && !sr.cancelled">
+                    <div class="secret-form" (click)="onSecretFormVisible()">
+                      <div class="secret-form-reason" *ngIf="sr.reason">{{ sr.reason }}</div>
+
+                      <div class="secret-form-mode">
+                        <label class="secret-mode-option">
+                          <input type="radio" name="secretMode-{{ seg.id }}"
+                                 [value]="'new'" [(ngModel)]="sr.mode">
+                          <span>Provide new credentials</span>
+                        </label>
+                        <label class="secret-mode-option">
+                          <input type="radio" name="secretMode-{{ seg.id }}"
+                                 [value]="'existing'" [(ngModel)]="sr.mode">
+                          <span>Use an existing tap secret</span>
+                        </label>
+                      </div>
+
+                      <!-- New: name + per-field inputs -->
+                      <div class="secret-form-fields" *ngIf="sr.mode === 'new'">
+                        <label class="secret-field">
+                          <span class="secret-field-label">Secret name</span>
+                          <input type="text" class="secret-field-input"
+                                 [(ngModel)]="sr.secretName"
+                                 placeholder="lowercase-hyphenated">
+                        </label>
+                        <label class="secret-field" *ngFor="let fname of sr.fieldNames; trackBy: trackByIndex">
+                          <span class="secret-field-label">{{ fname }}</span>
+                          <input [type]="isSecretField(fname) ? 'password' : 'text'"
+                                 class="secret-field-input"
+                                 [(ngModel)]="sr.fieldValues[fname]"
+                                 autocomplete="off"
+                                 spellcheck="false">
+                        </label>
+                      </div>
+
+                      <!-- Existing: dropdown -->
+                      <div class="secret-form-fields" *ngIf="sr.mode === 'existing'">
+                        <label class="secret-field">
+                          <span class="secret-field-label">Existing tap secret</span>
+                          <select class="secret-field-input" [(ngModel)]="sr.selectedExisting">
+                            <option value="">— pick one —</option>
+                            <option *ngFor="let n of existingTapSecrets" [value]="n">{{ n }}</option>
+                          </select>
+                        </label>
+                        <div class="secret-form-empty" *ngIf="existingTapSecrets.length === 0">
+                          No existing tap secrets found. Switch to "Provide new credentials."
+                        </div>
+                      </div>
+
+                      <div class="secret-form-error" *ngIf="sr.errorMessage">{{ sr.errorMessage }}</div>
+
+                      <div class="secret-form-actions">
+                        <button class="secret-btn secret-btn-cancel"
+                                (click)="cancelSecretForm(seg)"
+                                [disabled]="sr.submitting">Cancel</button>
+                        <button class="secret-btn secret-btn-save"
+                                (click)="submitSecretForm(seg)"
+                                [disabled]="sr.submitting">
+                          {{ sr.submitting ? 'Saving…' : (sr.mode === 'existing' ? 'Use this secret' : 'Save secret') }}
+                        </button>
+                      </div>
+                    </div>
+                  </ng-container>
+                  <div class="secret-form-result" *ngIf="sr.submitted">
+                    ✓ Credentials stored. Conversation resumed.
+                  </div>
+                  <div class="secret-form-result secret-form-result-cancelled" *ngIf="sr.cancelled">
+                    Credentials request cancelled.
+                  </div>
+                </ng-container>
+
+                <!-- Generic tool body (input + result JSON). Suppressed for
+                     active secret-request cards since the form replaces it. -->
+                <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest">
+                  <div class="tool-body-label">Input</div>
+                  <pre class="tool-body-pre">{{ formatJson(seg.input) }}</pre>
+                  <ng-container *ngIf="seg.status !== 'running'">
+                    <div class="tool-body-label">{{ seg.isError ? 'Error' : 'Result' }}</div>
+                    <pre class="tool-body-pre">{{ formatJson(seg.result) }}</pre>
+                  </ng-container>
+                </div>
+              </div>
+            </ng-container>
+
+            <!-- Streaming indicator while the loop is still going -->
+            <div class="streaming-indicator" *ngIf="!turn.done && state.streaming && turn.segments.length === 0 && !turn.thinking">
+              <span class="dots"><span></span><span></span><span></span></span>
+            </div>
+
+            <!-- Action links: Open tap / Open pipeline -->
+            <div class="action-links" *ngIf="turn.done && (createdTaps(turn).length > 0 || createdPipelines(turn).length > 0)">
+              <a class="action-link" *ngFor="let n of createdTaps(turn)" [routerLink]="['/taps', n, 'edit']">
+                → Open tap <strong>{{ n }}</strong>
+              </a>
+              <a class="action-link" *ngFor="let n of createdPipelines(turn)" [routerLink]="['/pipelines', n, 'edit']">
+                → Open pipeline <strong>{{ n }}</strong>
+              </a>
+            </div>
+
+            <!-- Error message -->
+            <div class="assistant-error" *ngIf="turn.errorMessage">{{ turn.errorMessage }}</div>
+          </div>
+
+        </ng-container>
+
+      </div>
+    </div>
+
+    <!-- Sticky composer -->
+    <div class="composer-wrap">
+      <div class="composer">
+        <textarea
+          #composerEl
+          class="composer-input"
+          [(ngModel)]="state.draft"
+          (keydown)="onComposerKeydown($event)"
+          (input)="autoGrowComposer()"
+          placeholder="Describe the data you want to ingest…"
+          rows="1"
+          [disabled]="state.streaming"></textarea>
+        <button class="composer-btn"
+                *ngIf="!state.streaming"
+                [disabled]="!state.draft.trim()"
+                (click)="send()">
+          <mat-icon class="composer-btn-icon">auto_awesome</mat-icon>
+          <span>Send</span>
+        </button>
+        <button class="composer-btn composer-stop"
+                *ngIf="state.streaming"
+                (click)="stop()">
+          Stop
+        </button>
+      </div>
+    </div>
+  </ng-container>
+</div>
