@@ -28,13 +28,15 @@ object DatrisEnvironment {
       * and all derived names, while keeping global infrastructure config.
       *
       * Per-tenant AI overrides live at fixed paths that mirror the global slots:
-      *   {env}/ai-primary, {env}/codegen, {env}/embedding
+      *   {env}/ai-primary, {env}/codegen, {env}/embedding, {env}/web-search
       * Each is fully self-describing — provider/endpoint/model/apiKey are read from
       * the secret itself, no path derivation. */
     def forEnvironment(env: String): DatrisEnvironment = {
         val tenantAiConfig = loadTenantAiConfig(env + "/ai-primary").getOrElse(values.aiConfig)
         val tenantCodegenAiConfig: Option[AIConfig] =
             loadTenantAiConfig(env + "/codegen").orElse(values.codegenAiConfig)
+        val tenantWebSearchConfig: Option[WebSearchConfig] =
+            loadTenantWebSearchConfig(env + "/web-search").orElse(values.webSearchConfig)
         // Embedding secret falls through to the global default when no per-tenant
         // override exists, matching the AI primary/codegen fallback behavior. Trial
         // provisioning intentionally does not seed {env}/embedding so the Configuration
@@ -64,6 +66,7 @@ object DatrisEnvironment {
             pgvectorSecretName = env + "/pgvector",
             aiConfig = tenantAiConfig,
             codegenAiConfig = tenantCodegenAiConfig,
+            webSearchConfig = tenantWebSearchConfig,
             tapTableName = env + "-tap",
             tapLogTableName = env + "-tap-log",
             tapLedgerTableName = env + "-tap-ledger",
@@ -80,11 +83,14 @@ object DatrisEnvironment {
         val env = values.environment
         val aiConfig = loadTenantAiConfig(env + "/ai-primary").getOrElse(values.aiConfig)
         val codegenAiConfig: Option[AIConfig] = loadTenantAiConfig(env + "/codegen").orElse(values.codegenAiConfig)
-        values = values.copy(aiConfig = aiConfig, codegenAiConfig = codegenAiConfig)
+        val webSearchConfig: Option[WebSearchConfig] = loadTenantWebSearchConfig(env + "/web-search").orElse(values.webSearchConfig)
+        values = values.copy(aiConfig = aiConfig, codegenAiConfig = codegenAiConfig, webSearchConfig = webSearchConfig)
     }
 
     /** Load a tenant AI override from a self-describing Vault secret.
-      * Returns None when the secret doesn't exist or has an empty apiKey (zombie record). */
+      * Returns None when the secret doesn't exist or has an empty apiKey (zombie record).
+      * apiKey resolves through `AIUtil.resolveApiKey`, which adds env-var fallback for
+      * single-tenant deployments only — multi-tenant tenants must have their own keys. */
     private def loadTenantAiConfig(path: String): Option[AIConfig] = {
         try {
             ai.datris.util.SecretsUtil.getSecretMap(path).flatMap { s =>
@@ -92,7 +98,10 @@ object DatrisEnvironment {
                 val map = s.asScala
                 val provider = map.getOrElse("provider", "").trim
                 val endpoint = map.getOrElse("endpoint", "").trim
-                val apiKey   = map.getOrElse("apiKey", "")
+                val rawKey   = map.getOrElse("apiKey", "")
+                val apiKey =
+                    if (provider.toLowerCase == "ollama") rawKey
+                    else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant)
                 if (provider.isEmpty || endpoint.isEmpty || (apiKey.isEmpty && provider.toLowerCase != "ollama")) None
                 else Some(AIConfig(
                     provider,
@@ -101,6 +110,31 @@ object DatrisEnvironment {
                     apiKey,
                     map.getOrElse("version", "")
                 ))
+            }
+        } catch { case _: Exception => None }
+    }
+
+    /** Load the web-search override from a self-describing Vault secret. Mirrors
+      * the embedding loader — the secret carries its own provider/endpoint/model/apiKey
+      * so it can stand alone independent of AI Primary. apiKey resolution mirrors
+      * loadTenantAiConfig (env-var fallback for single-tenant). */
+    private def loadTenantWebSearchConfig(path: String): Option[WebSearchConfig] = {
+        try {
+            ai.datris.util.SecretsUtil.getSecretMap(path).flatMap { s =>
+                import scala.collection.JavaConverters._
+                val map = s.asScala
+                val provider = map.getOrElse("provider", "").trim.toLowerCase
+                if (!Seq("anthropic", "openai").contains(provider)) None
+                else {
+                    val enabled  = map.getOrElse("enabled", "false").trim.equalsIgnoreCase("true")
+                    val endpoint = map.getOrElse("endpoint", "").trim
+                    val model    = map.getOrElse("model", "").trim
+                    val rawKey   = map.getOrElse("apiKey", "")
+                    val version  = map.getOrElse("version", "")
+                    val maxUses  = try map.getOrElse("maxUses", "3").trim.toInt catch { case _: Exception => 3 }
+                    val apiKey   = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant)
+                    Some(WebSearchConfig(enabled, provider, endpoint, model, apiKey, version, maxUses))
+                }
             }
         } catch { case _: Exception => None }
     }
@@ -144,6 +178,7 @@ case class DatrisEnvironment(
                                   dateTimezone: String = "UTC",
                                   postgresDatabase: String = "datris",
                                   codegenAiConfig: Option[AIConfig] = None,
+                                  webSearchConfig: Option[WebSearchConfig] = None,
                               hosted: Boolean = false,
                               useUserAuth: Boolean = false,
                               userTableName: String = null,

@@ -221,6 +221,11 @@ services:
       MONGO_PASSWORD: ${MONGO_PASSWORD}
       AI_PROVIDER: ${AI_PROVIDER:-openai}
       KAFKA_ENABLED: ${KAFKA_ENABLED:-false}
+      # Provider keys for AIUtil.resolveApiKey's env-var fallback. Only used in
+      # single-tenant mode (gated by multiTenant flag); multi-tenant deployments
+      # ignore them so platform keys never leak across tenants.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ./config:/config:ro
       - /data/secrets:/secrets:ro
@@ -251,8 +256,7 @@ services:
     image: datrisai/datris-mcp-server:latest
     container_name: mcp-server
     environment:
-      PIPELINE_URL: http://datris:8080
-      PIPELINE_API_KEY: ${PIPELINE_API_KEY}
+      DATRIS_API_URL: http://datris:8080
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}

@@ -242,12 +242,12 @@
         </select>
       </div>
       <div class="form-field">
-        <label class="form-label">Pipeline URL</label>
-        <input class="form-input" [(ngModel)]="pipelineUrl" placeholder="http://localhost:8080">
+        <label class="form-label">MCP Server URL</label>
+        <input class="form-input" [(ngModel)]="mcpServerUrl" placeholder="http://localhost:3000/sse">
       </div>
       <div class="form-field">
-        <label class="form-label">API Key (optional)</label>
-        <input class="form-input" [(ngModel)]="pipelineApiKey" placeholder="Leave empty if not configured">
+        <label class="form-label">API Key</label>
+        <input class="form-input" [(ngModel)]="agentApiKey" placeholder="Paste your Datris API key">
       </div>
     </div>
 

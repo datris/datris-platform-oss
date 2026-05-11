@@ -69,8 +69,28 @@ class DiscoveryAPIController {
                       |Return ONLY the JSON object, no markdown fences.""".stripMargin
 
                 val scanText = messages.map(_._2).mkString("\n")
-                val augmentedChatPrompt = TapPromptInjector.augment(chatPrompt, scanText)
-                val responseText = AIUtil.callAIWithMessages(augmentedChatPrompt, messages)
+                val discoverChatQuery = messages.lastOption.map(_._2).getOrElse(scanText)
+                val plan = AIUtil.planWebSearch(DatrisEnvironment.current.aiConfig, discoverChatQuery)
+                val chatNativeFragment = plan match {
+                    case AIUtil.WebSearchPlan.Native =>
+                        """
+                          |
+                          |Web search tool — IMPORTANT:
+                          |- A `web_search` tool is available. When recommending data sources, use it
+                          |  to verify they're still active and check what they currently offer (free
+                          |  tier, scope of data, auth requirements). Do NOT search for sources you
+                          |  already know reliably.""".stripMargin
+                    case _ => ""
+                }
+                val chatPromptWithSearch = chatPrompt + chatNativeFragment + AIUtil.renderInjectedContext(plan)
+                val augmentedChatPrompt = TapPromptInjector.augment(chatPromptWithSearch, scanText)
+                val responseText = AIUtil.callAIWithMessages(augmentedChatPrompt, messages, DatrisEnvironment.current.aiConfig, 8192, -1.0, useWebSearch = AIUtil.useNative(plan))
+                if (AIUtil.useNative(plan)) {
+                    val citations = AIUtil.extractCitations(responseText, DatrisEnvironment.current.aiConfig)
+                    if (citations.nonEmpty)
+                        logger.info("/discover (chat): native web search consulted " + citations.size + " source(s): " +
+                            citations.map { case (url, title) => "[" + title + "](" + url + ")" }.mkString(", "))
+                }
                 val rawText = AIUtil.extractText(responseText).trim
 
                 var cleaned = rawText
@@ -178,8 +198,31 @@ class DiscoveryAPIController {
             } else systemPrompt
 
             val scanText = messages.map(_._2).mkString("\n")
-            val augmentedFinalPrompt = TapPromptInjector.augment(finalPrompt, scanText)
-            val responseText = AIUtil.callAIWithMessages(augmentedFinalPrompt, messages, 32768, 0.0)
+            val discoverQuery = messages.lastOption.map(_._2).getOrElse(scanText)
+            val discoverPlan = AIUtil.planWebSearch(DatrisEnvironment.current.aiConfig, discoverQuery)
+            val discoverNativeFragment = discoverPlan match {
+                case AIUtil.WebSearchPlan.Native =>
+                    """
+                      |
+                      |Web search tool — IMPORTANT for dataset enumeration:
+                      |- A `web_search` tool is available. Use it to look up the source's CURRENT
+                      |  documentation and dataset list before enumerating. This catches new datasets
+                      |  the model doesn't know about, retired endpoints to skip, current PyPI
+                      |  package names (often different from import names), and current
+                      |  authentication / parameter contracts.
+                      |- Search the source's official docs, GitHub README, or PyPI page. Cite at
+                      |  least one URL per dataset's `tapInstruction` for non-trivial APIs.""".stripMargin
+                case _ => ""
+            }
+            val finalPromptWithSearch = finalPrompt + discoverNativeFragment + AIUtil.renderInjectedContext(discoverPlan)
+            val augmentedFinalPrompt = TapPromptInjector.augment(finalPromptWithSearch, scanText)
+            val responseText = AIUtil.callAIWithMessages(augmentedFinalPrompt, messages, DatrisEnvironment.current.aiConfig, 32768, 0.0, useWebSearch = AIUtil.useNative(discoverPlan))
+            if (AIUtil.useNative(discoverPlan)) {
+                val citations = AIUtil.extractCitations(responseText, DatrisEnvironment.current.aiConfig)
+                if (citations.nonEmpty)
+                    logger.info("/discover: native web search consulted " + citations.size + " source(s): " +
+                        citations.map { case (url, title) => "[" + title + "](" + url + ")" }.mkString(", "))
+            }
             val rawText = AIUtil.extractText(responseText).trim
 
             // Strip markdown code fences if present

@@ -100,6 +100,9 @@ class StartupRunner extends ApplicationRunner {
     @Value("${ai.embedding.secretName:}")
     var embeddingSecretName: String = _
 
+    @Value("${ai.webSearch.secretName:}")
+    var webSearchSecretName: String = _
+
     @Value("${secrets.qdrantSecretName:}")
     var qdrantSecretName: String = _
 
@@ -290,7 +293,42 @@ class StartupRunner extends ApplicationRunner {
             else loadAiConfigFromSecret(codegenSecretName, "codegen", required = false)
         codegenAiConfig.foreach(c => logger.info("AI codegen configured: " + c.provider + ", model: " + c.model + ", endpoint: " + c.endpoint))
 
-        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, codegenAiConfig = codegenAiConfig, aiEnabled = aiEnabled))
+        // Optional web-search config. Mirrors the Embedding pattern — its own
+        // provider, endpoint, model, and apiKey, independent of AI Primary. When
+        // the configured provider matches the main AI call we attach the tool
+        // natively (fastest); otherwise we make a separate search call and inject
+        // the results as context.
+        val webSearchConfig: Option[WebSearchConfig] =
+            if (webSearchSecretName == null || webSearchSecretName.isEmpty) None
+            else loadWebSearchConfigFromSecret(webSearchSecretName)
+        webSearchConfig.foreach(c => logger.info("Web search configured: provider=" + c.provider + ", model=" + c.model + ", enabled=" + c.enabled + ", maxUses=" + c.maxUses))
+
+        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, codegenAiConfig = codegenAiConfig, webSearchConfig = webSearchConfig, aiEnabled = aiEnabled))
+    }
+
+    /** Load a WebSearchConfig from a self-describing Vault secret. Mirrors the
+      * embedding loader — the secret stands alone with its own provider, endpoint,
+      * model, and apiKey. apiKey resolves through `AIUtil.resolveApiKey` (env-var
+      * fallback for single-tenant deployments). */
+    private def loadWebSearchConfigFromSecret(secretName: String): Option[WebSearchConfig] = {
+        SecretsUtil.getSecretMap(secretName).flatMap { secret =>
+            val provider = Option(secret.get("provider")).map(_.trim.toLowerCase).getOrElse("")
+            if (!Seq("anthropic", "openai").contains(provider)) {
+                logger.warn("Web search secret " + secretName + " has missing or invalid provider: '" + provider + "' — disabling web search. Valid values are: anthropic, openai")
+                None
+            } else {
+                val enabled  = Option(secret.get("enabled")).exists(_.trim.equalsIgnoreCase("true"))
+                val endpoint = Option(secret.get("endpoint")).map(_.trim).getOrElse("")
+                val model    = Option(secret.get("model")).map(_.trim).getOrElse("")
+                val rawKey   = Option(secret.get("apiKey")).getOrElse("")
+                val version  = Option(secret.get("version")).getOrElse("")
+                val maxUses  = try Option(secret.get("maxUses")).map(_.trim.toInt).getOrElse(3) catch { case _: Exception => 3 }
+                val apiKey = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant)
+                if (apiKey != rawKey && apiKey.nonEmpty)
+                    logger.info("Web search apiKey resolved from " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")
+                Some(WebSearchConfig(enabled, provider, endpoint, model, apiKey, version, maxUses))
+            }
+        }
     }
 
     /** Load an AIConfig from a self-describing Vault secret. The secret must contain
@@ -310,7 +348,7 @@ class StartupRunner extends ApplicationRunner {
         val provider = Option(secret.get("provider")).map(_.trim).getOrElse("")
         val endpoint = Option(secret.get("endpoint")).map(_.trim).getOrElse("")
         val model = Option(secret.get("model")).map(_.trim).getOrElse("")
-        val apiKey = Option(secret.get("apiKey")).getOrElse("")
+        val rawKey = Option(secret.get("apiKey")).getOrElse("")
         val version = Option(secret.get("version")).getOrElse("")
 
         if (provider.isEmpty) {
@@ -327,8 +365,19 @@ class StartupRunner extends ApplicationRunner {
             if (required) throw new DatrisException("'model' not found in AI " + label + " secret: " + secretName)
             else return None
         }
-        // For optional configs, an empty apiKey on a non-ollama provider means "not set" — fall back.
-        if (!required && apiKey.isEmpty && provider.toLowerCase != "ollama") return None
+
+        // Resolve apiKey: secret value first, env-var fallback for single-tenant.
+        // Ollama doesn't need a key; everyone else needs one.
+        val apiKey =
+            if (provider.toLowerCase == "ollama") rawKey
+            else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant)
+        if (apiKey != rawKey && apiKey.nonEmpty)
+            logger.info("AI " + label + " apiKey resolved from " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")
+        if (apiKey.isEmpty && provider.toLowerCase != "ollama") {
+            if (required) throw new DatrisException("'apiKey' not found in AI " + label + " secret: " + secretName +
+                " and no " + provider.toUpperCase + "_API_KEY environment variable is set")
+            else return None
+        }
 
         Some(AIConfig(provider, endpoint, model, apiKey, version))
     }

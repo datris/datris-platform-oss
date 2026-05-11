@@ -15,19 +15,19 @@ pip install datris-mcp-server
 ### stdio mode (Claude Desktop / Claude Code)
 
 ```bash
-PIPELINE_URL=http://localhost:8080 datris-mcp-server
+DATRIS_API_URL=http://localhost:8080 datris-mcp-server
 ```
 
 Or run directly:
 
 ```bash
-PIPELINE_URL=http://localhost:8080 python server.py
+DATRIS_API_URL=http://localhost:8080 python server.py
 ```
 
 ### SSE mode (Docker / remote agents)
 
 ```bash
-PIPELINE_URL=http://localhost:8080 datris-mcp-server --sse --port 3000
+DATRIS_API_URL=http://localhost:8080 datris-mcp-server --sse --port 3000
 ```
 
 ### Docker
@@ -46,7 +46,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
     "datris": {
       "command": "datris-mcp-server",
       "env": {
-        "PIPELINE_URL": "http://localhost:8080"
+        "DATRIS_API_URL": "http://localhost:8080"
       }
     }
   }
@@ -63,7 +63,7 @@ Add to `.mcp.json` in your project root:
     "datris": {
       "command": "datris-mcp-server",
       "env": {
-        "PIPELINE_URL": "http://localhost:8080"
+        "DATRIS_API_URL": "http://localhost:8080"
       }
     }
   }
@@ -74,8 +74,12 @@ Add to `.mcp.json` in your project root:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PIPELINE_URL` | `http://localhost:8080` | Datris pipeline server URL |
-| `PIPELINE_API_KEY` | (empty) | API key if pipeline has key validation enabled |
+| `DATRIS_API_URL` | `http://localhost:8080` | Datris REST API server URL |
+| `REQUIRE_API_KEY` | `false` | Reject SSE/HTTP sessions that connect without `x-api-key` |
+
+## Authentication
+
+There is no server-side API key. Each connecting agent authenticates per session by sending an `x-api-key` header; mcp-server forwards that key as-is to the Datris REST API on every tool call. The Datris REST API validates against `oss/api-keys` Vault secret (single-tenant) or `api-key-mappings` (multi-tenant). Manage keys in the Configuration UI's Secrets tab.
 
 ## Tools
 

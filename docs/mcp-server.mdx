@@ -154,10 +154,14 @@ Client-side setup for Claude Desktop and Claude Code — including recommended a
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PIPELINE_URL` | `http://localhost:8080` | Pipeline server URL |
-| `PIPELINE_API_KEY` | (empty) | API key if pipeline has key validation enabled |
+| `DATRIS_API_URL` | `http://localhost:8080` | Datris REST API server URL |
+| `REQUIRE_API_KEY` | `false` | Reject SSE/HTTP sessions that connect without `x-api-key` |
 
 All database connections, vector search, and embedding are handled by the pipeline server. The MCP server only needs the pipeline URL.
+
+## Authentication
+
+The MCP server has no API key of its own. Each connecting agent sends an `x-api-key` header per session and the MCP server forwards it as-is to the Datris REST API on every tool call. Manage accepted keys in the Configuration UI's Secrets tab — `oss/api-keys` (single-tenant) or `api-key-mappings` (multi-tenant).
 
 ## Example Agent Workflows
 

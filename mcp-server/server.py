@@ -38,8 +38,7 @@ from mcp.types import Resource, Tool, TextContent
 
 load_dotenv()
 
-PIPELINE_URL = os.getenv("PIPELINE_URL", "http://localhost:8080")
-PIPELINE_API_KEY = os.getenv("PIPELINE_API_KEY", "")
+DATRIS_API_URL = os.getenv("DATRIS_API_URL", "http://localhost:8080")
 REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "").lower() in ("true", "1", "yes")
 WEBSITE_URL = os.getenv("WEBSITE_URL", "https://datris.ai")
 
@@ -294,8 +293,13 @@ Do NOT call update_secret unless you need to configure AI provider keys and they
 
 
 def _effective_api_key() -> str:
-    """Return the per-session API key if set, otherwise the global env var."""
-    return _session_api_key.get() or PIPELINE_API_KEY
+    """Return the per-session API key. The agent that connected to this MCP
+    session is responsible for providing its own credentials via the
+    `x-api-key` header — there is no server-side fallback. Calls made before a
+    session establishes a key (rare) return an empty string and the downstream
+    Datris API decides whether to accept the request based on its own
+    `useApiKeys` setting."""
+    return _session_api_key.get()
 
 
 def _headers():
@@ -309,7 +313,7 @@ def _headers():
 
 def _call(method, path, **kwargs):
     """Make an HTTP request to the pipeline API."""
-    url = f"{PIPELINE_URL}{path}"
+    url = f"{DATRIS_API_URL}{path}"
     try:
         resp = getattr(requests, method)(url, headers=_headers(), timeout=300, **kwargs)
         return resp.text
@@ -326,7 +330,7 @@ def _upload(path, file_path, data=None):
         if key:
             h["x-api-key"] = key
         resp = requests.post(
-            f"{PIPELINE_URL}{path}",
+            f"{DATRIS_API_URL}{path}",
             headers=h,
             files=files,
             data=data or {},
@@ -354,7 +358,7 @@ def _upload_content(path, content_b64, filename, data=None):
             if key:
                 h["x-api-key"] = key
             resp = requests.post(
-                f"{PIPELINE_URL}{path}",
+                f"{DATRIS_API_URL}{path}",
                 headers=h,
                 files=files,
                 data=data or {},

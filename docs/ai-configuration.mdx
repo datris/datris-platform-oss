@@ -13,9 +13,9 @@ The data platform integrates with AI providers for these features:
 - **Error explanation** — AI analyzes job failures and explains the root cause in plain English
 - **Vector search & embeddings** — required when pushing data to vector destinations (Qdrant, Weaviate, Milvus, Chroma, pgvector) or running semantic search
 
-## Three Independent Secrets
+## Independent Secrets
 
-AI configuration is split into three independent, self-describing Vault secrets, each pointing at its own endpoint/model/key. Each is a separate slot in `application.yaml`:
+AI configuration is split into independent, self-describing Vault secrets, each pointing at its own endpoint/model/key. Each is a separate slot in `application.yaml`:
 
 ```yaml
 ai:
@@ -26,6 +26,8 @@ ai:
     secretName: "oss/codegen"
   embedding:
     secretName: "oss/embedding"
+  webSearch:
+    secretName: "oss/web-search"
 ```
 
 | Slot | Purpose | Used by |
@@ -33,6 +35,7 @@ ai:
 | `aiPrimary` | General AI tasks | Schema generation, error explanation, brainstorm chat, profiling, header validation, CRON generation, AI Q&A |
 | `codegen` | Code-generation tasks | Tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL |
 | `embedding` | Vector embeddings | Vector destinations (Qdrant, Weaviate, Milvus, Chroma, pgvector), semantic search |
+| `webSearch` | Live web lookup (optional) | Tap script generation and tap diagnosis when the model needs current API documentation |
 
 Each Vault secret carries its full configuration inline:
 
@@ -135,6 +138,37 @@ When `EMBEDDING_PROVIDER` is unset, embedding follows `AI_PROVIDER`: `anthropic`
 
 When you save AI configuration from the Configuration UI, the server reloads the `ai-primary` and `codegen` configs from Vault immediately — **no restart required**. The next AI call uses the updated provider, model, and endpoint. The `embedding` config is read from Vault on each request and also requires no restart.
 
+## `.env` Writeback (Single-Tenant)
+
+Vault runs in **dev mode** in the OSS docker-compose stack — its data is in-memory and lost on every container restart. `vault-init.sh` re-seeds the secrets from `.env` on each boot. To keep UI changes from being clobbered, the server mirrors AI saves back to `.env` automatically:
+
+| Section saved | Keys written to `.env` |
+|---|---|
+| AI Primary (Anthropic) | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` |
+| AI Primary (OpenAI) | `OPENAI_API_KEY`, `OPENAI_MODEL` |
+| CodeGen (Anthropic) | `ANTHROPIC_API_KEY`, `CODEGEN_MODEL` |
+| CodeGen (OpenAI) | `OPENAI_API_KEY`, `CODEGEN_MODEL` |
+| Embedding (OpenAI) | `OPENAI_API_KEY`, `EMBEDDING_MODEL` |
+| Embedding (TEI / Ollama) | `EMBEDDING_MODEL` |
+| Web Search (Anthropic) | `ANTHROPIC_API_KEY` |
+| Web Search (OpenAI) | `OPENAI_API_KEY` |
+
+Nothing else is touched — comments, ordering, and unrelated keys are preserved. Writes are atomic (tmp file + rename).
+
+This is **single-tenant only**. Multi-tenant deployments don't have a per-tenant `.env`, so writeback is skipped automatically (`multiTenant: "true"`). Tenant secret edits persist via Vault's per-tenant paths instead.
+
+The bind mount lives in `docker-compose.yml`:
+
+```yaml
+datris:
+  environment:
+    DATRIS_ENV_FILE_PATH: /datris/.env
+  volumes:
+    - ./.env:/datris/.env:rw
+```
+
+If you remove the mount or unset `DATRIS_ENV_FILE_PATH`, the writeback silently no-ops — Vault saves still work, they just won't survive a restart.
+
 ## Setting Secrets Manually
 
 To write a secret directly to Vault (note: manual Vault writes do **not** trigger hot reload — restart the server or re-save from the UI):
@@ -172,6 +206,33 @@ Anthropic has no embeddings API, so `provider: "anthropic"` is not valid for the
 
 The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
 
+## Web Search (Optional)
+
+When enabled, four surfaces can consult the live web — official API documentation, deprecation notices, current package names — instead of relying only on the model's training data. Off by default; flip it on from the **Configuration → AI Providers** tab.
+
+Web search is its own independent service — same model as Embedding. Pick a provider regardless of which provider runs the main AI work. The platform attaches the tool natively to the main AI call when the providers match (one round trip, the model decides when to search) or makes a separate out-of-band search call and injects the results as context (when providers differ — e.g. AI Primary=Anthropic, Web Search=OpenAI). Either way the model sees the current information.
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `enabled` | Yes | `true` or `false` |
+| `provider` | Yes | `anthropic` or `openai` (Ollama has no native web search) |
+| `endpoint` | Yes | Provider endpoint — Anthropic Messages or OpenAI Responses |
+| `model` | Yes | Model that runs the search call |
+| `apiKey` | Yes | Own key, copied from the right-hand panel based on the chosen provider (mirrors Embedding) |
+| `version` | Optional | API version (Anthropic uses `2023-06-01`) |
+| `maxUses` | Optional | Maximum searches per AI call (default 3) |
+
+| Surface | Web search opt-in |
+|---|---|
+| Tap brainstorm (chat) | Yes — verifies recommended data sources still exist and surfaces current free-tier / auth state |
+| Dataset discovery (`/discover` chat + full enumeration) | Yes — looks up the source's current docs and dataset list before enumerating; catches new datasets and retired endpoints |
+| Tap diagnosis (analyzes run logs after a failed test) | Yes — looks up unfamiliar exception messages, library deprecation notices |
+| Tap fix path (Auto-Fix after a tap fails) | Yes — looks up current PyPI install names, current method signatures (replaces the legacy PyPI scraper when on) |
+| First-pass tap script generation | No — happy path, model uses training data so generation stays fast |
+| NL → SQL, schema gen, profiling, DQ rule gen, etc. | No — self-contained, they don't need the web |
+
+OpenAI web search requires the **Responses API**. When the configured endpoint is `/v1/chat/completions`, the call is automatically routed to `/v1/responses`. Ollama has no native web search; selecting it as your AI Primary doesn't prevent you from using Anthropic or OpenAI for web search.
+
 ## Stronger Model for Code Generation
 
 <Tip>
@@ -202,6 +263,7 @@ In multi-tenant deployments (`multiTenant: "true"` in `application.yaml`) each t
 | AI Primary | `{env}/ai-primary` | `oss/ai-primary` |
 | CodeGen | `{env}/codegen` | `oss/codegen` |
 | Embedding | `{env}/embedding` | `oss/embedding` |
+| Web Search | `{env}/web-search` | `oss/web-search` |
 
 (`{env}` is the tenant's environment name, e.g. `trial-acme`.)
 

@@ -412,7 +412,11 @@ class TapAPIController {
                   |
                   |For free, no-auth sources, no credentials are needed — say so explicitly.
                   |
-                  |Ask ONE focused clarifying question at a time. Suggest specific data sources when relevant. Be concise — 1-2 sentences per turn. When you have enough information, tell the user the instruction is ready and they can proceed.
+                  |Ordering of clarifying questions — IMPORTANT:
+                  |1. If the user has not named a specific external data source and the data is NOT on Datris already, your FIRST follow-up MUST list 3-5 specific candidate sources (named APIs, datasets, or public services) so they can pick one. Mention whether each is free vs paid and whether each needs an API key. Do NOT ask about any other parameters yet — those questions are only useful once the model knows what API surface to write for.
+                  |2. Once a source IS picked (or the user pointed at a Datris table), THEN drill into the remaining parameters one at a time. Ask whatever is most relevant to the chosen source — typically the set of entities or items to fetch, any time range, the specific fields wanted, and any filters.
+                  |3. Ask ONE focused clarifying question at a time. Be concise — 1-2 sentences per turn.
+                  |4. When you have enough information, tell the user the instruction is ready and they can proceed.
                   |
                   |After EACH user message, return JSON with three fields:
                   |{
@@ -445,10 +449,33 @@ class TapAPIController {
             }
 
             val scanText = currentDescription + "\n" + messages.map(_._2).mkString("\n")
-            val systemPrompt = TapPromptInjector.augment(baseSystemPrompt, scanText)
+            val brainstormQuery = if (currentDescription.nonEmpty) currentDescription + "\n" + messages.lastOption.map(_._2).getOrElse("") else messages.lastOption.map(_._2).getOrElse("")
+            val plan = AIUtil.planWebSearch(DatrisEnvironment.current.aiConfig, brainstormQuery)
+            val nativeFragment = plan match {
+                case AIUtil.WebSearchPlan.Native =>
+                    """
+                      |
+                      |Web search tool — IMPORTANT for source recommendations:
+                      |- A `web_search` tool is available. Use it when recommending external data
+                      |  sources (APIs, datasets, public services) to verify they still exist,
+                      |  check current free-tier limits, surface alternatives the user may not
+                      |  know, and confirm authentication requirements before suggesting them.
+                      |- Do NOT search for things you already know reliably (well-known commercial
+                      |  APIs, the Datris platform itself, common Python libraries) — only search
+                      |  when current state matters or you're uncertain.""".stripMargin
+                case _ => ""
+            }
+            val systemWithSearch = baseSystemPrompt + nativeFragment + AIUtil.renderInjectedContext(plan)
+            val systemPrompt = TapPromptInjector.augment(systemWithSearch, scanText)
             val injectedPrompts = TapPromptInjector.matchKeys(scanText)
 
-            val responseText = AIUtil.callAIWithMessages(systemPrompt, messagesWithContext)
+            val responseText = AIUtil.callAIWithMessages(systemPrompt, messagesWithContext, DatrisEnvironment.current.aiConfig, 8192, -1.0, useWebSearch = AIUtil.useNative(plan))
+            if (AIUtil.useNative(plan)) {
+                val citations = AIUtil.extractCitations(responseText, DatrisEnvironment.current.aiConfig)
+                if (citations.nonEmpty)
+                    logger.info("/tap/brainstorm: native web search consulted " + citations.size + " source(s): " +
+                        citations.map { case (url, title) => "[" + title + "](" + url + ")" }.mkString(", "))
+            }
             val rawText = AIUtil.extractText(responseText).trim
 
             // Strip markdown code fences if present
@@ -552,7 +579,9 @@ class TapAPIController {
             if (diagnosis == null || diagnosis.isEmpty)
                 throw new DatrisException("Diagnosis is required")
 
-            val systemPrompt =
+            val codegenCfg = DatrisEnvironment.aiConfigForCodegen
+
+            val baseSystemPrompt =
                 """You are a code generator. You will be given a Python script that has a bug, along with the error output and a diagnosis.
                   |Fix the script and return a JSON object with two fields:
                   |- "script": the complete fixed Python 3 script (must define a `fetch()` function)
@@ -570,77 +599,42 @@ class TapAPIController {
                   |
                   |Return ONLY the JSON object, no markdown fences or commentary.""".stripMargin
 
-            // Check if error suggests outdated package knowledge
+            // Errors of this shape mean the model's training-data view of the library
+            // is stale or wrong (renamed methods, removed packages, version-skewed APIs).
+            // Look up the current truth to ground the fix.
             val combinedError = error + " " + diagnosis + " " + logs
             val needsPackageLookup = Seq("has no attribute", "AttributeError", "ModuleNotFoundError",
                 "No module named", "No matching distribution", "ImportError").exists(combinedError.contains)
 
-            val packageContext = if (needsPackageLookup) {
-                // Extract package names from import statements in the script
-                val importPattern = """(?:import|from)\s+(\w+)""".r
-                val imports = importPattern.findAllMatchIn(script).map(_.group(1)).toSet
-                val standardLibs = Set("os", "sys", "json", "datetime", "io", "re", "math", "time", "urllib", "collections", "itertools", "functools")
-                val thirdPartyImports = imports -- standardLibs
+            // Two paths for resolving stale-library errors:
+            //   1) Web search is enabled. Either attach the native tool (codegen provider
+            //      matches the search provider) or run an out-of-band search and inject
+            //      the results. Either way the model gets current PyPI / docs context.
+            //   2) Fallback to the legacy hand-rolled scraper that hits pypi.org/json
+            //      and pulls the docs URL out of project_urls. Kept verbatim so users
+            //      without web search still get something.
+            val plan = if (needsPackageLookup) AIUtil.planWebSearch(codegenCfg, "package documentation lookup for: " + diagnosis.take(500)) else AIUtil.WebSearchPlan.Off
+            val nativeFragment = plan match {
+                case AIUtil.WebSearchPlan.Native =>
+                    """
+                      |
+                      |Web search tool — IMPORTANT for THIS fix:
+                      |- The diagnosis indicates a stale or wrong library API. Use the `web_search`
+                      |  tool to look up the package's current documentation BEFORE writing the fix:
+                      |  the correct PyPI install name, the current method/attribute names, and any
+                      |  recent breaking changes.
+                      |- Search PyPI directly (`site:pypi.org <package>`) and the project's
+                      |  documentation. Cite at least one URL for any non-trivial API contract you
+                      |  rely on in the fix.""".stripMargin
+                case _ => ""
+            }
+            val systemPrompt = baseSystemPrompt + nativeFragment + AIUtil.renderInjectedContext(plan)
 
-                val contextParts = thirdPartyImports.take(3).flatMap { pkg =>
-                    try {
-                        logger.info("Fetching PyPI info for package: " + pkg)
-                        val client = org.apache.http.impl.client.HttpClients.createDefault()
-                        try {
-                            val pypiReq = new org.apache.http.client.methods.HttpGet("https://pypi.org/pypi/" + pkg + "/json")
-                            pypiReq.setHeader("User-Agent", "datris-platform/1.0")
-                            val pypiResp = client.execute(pypiReq)
-                            val pypiBody = org.apache.http.util.EntityUtils.toString(pypiResp.getEntity)
-
-                            if (pypiResp.getStatusLine.getStatusCode == 200) {
-                                val gson3 = new Gson
-                                val pypiData = gson3.fromJson(pypiBody, classOf[java.util.Map[String, Any]])
-                                val info = pypiData.get("info").asInstanceOf[java.util.Map[String, Any]]
-                                val version = Option(info.get("version")).map(_.toString).getOrElse("unknown")
-                                val summary = Option(info.get("summary")).map(_.toString).getOrElse("")
-                                val description = Option(info.get("description")).map(_.toString).getOrElse("")
-                                val homePage = Option(info.get("home_page")).map(_.toString).getOrElse("")
-                                val pipName = Option(info.get("name")).map(_.toString).getOrElse(pkg)
-
-                                // Try to fetch docs page for more detail
-                                val docsUrl = {
-                                    val projectUrls = Option(info.get("project_urls")).map(_.asInstanceOf[java.util.Map[String, Any]]).getOrElse(new java.util.HashMap())
-                                    Option(projectUrls.get("Documentation")).map(_.toString)
-                                        .orElse(Option(projectUrls.get("Docs")).map(_.toString))
-                                        .orElse(Option(projectUrls.get("Homepage")).map(_.toString))
-                                        .orElse(if (homePage.nonEmpty) Some(homePage) else None)
-                                }
-
-                                val docsExcerpt = docsUrl.flatMap { url =>
-                                    try {
-                                        val docsReq = new org.apache.http.client.methods.HttpGet(url)
-                                        docsReq.setHeader("User-Agent", "datris-platform/1.0")
-                                        val docsResp = client.execute(docsReq)
-                                        if (docsResp.getStatusLine.getStatusCode == 200) {
-                                            val html = org.apache.http.util.EntityUtils.toString(docsResp.getEntity)
-                                            // Strip HTML tags and truncate
-                                            val text = html.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim
-                                            Some(text.take(2000))
-                                        } else None
-                                    } catch { case _: Exception => None }
-                                }.getOrElse("")
-
-                                // Use description (README) truncated if no docs page
-                                val contextText = if (docsExcerpt.nonEmpty) docsExcerpt else description.take(2000)
-
-                                Some(s"PACKAGE INFO: $pipName v$version (pip install $pipName)\n$summary\n$contextText")
-                            } else None
-                        } finally {
-                            client.close()
-                        }
-                    } catch {
-                        case e: Exception =>
-                            logger.warn("Failed to fetch PyPI info for " + pkg + ": " + e.getMessage)
-                            None
-                    }
-                }
-                if (contextParts.nonEmpty) contextParts.mkString("\n\n") + "\n\n" else ""
-            } else ""
+            // Fall back to the legacy scraper only when web search produced nothing.
+            val packageContext: String = plan match {
+                case AIUtil.WebSearchPlan.Off if needsPackageLookup => fetchPackageContextFromPyPI(script)
+                case _ => ""
+            }
 
             val userPrompt =
                 s"""${packageContext}Current script:
@@ -655,10 +649,15 @@ class TapAPIController {
                    |
                    |Fix the script based on the diagnosis. Return the complete corrected script.""".stripMargin
 
-            val codegenCfg = DatrisEnvironment.aiConfigForCodegen
             val historyBlock = IterationHistoryPromptBuilder.build(priorIterations)
             val augmentedSystemPrompt = historyBlock + TapPromptInjector.augment(systemPrompt, diagnosis + "\n" + error + "\n" + script)
-            val responseText = AIUtil.callAIWithSystem(augmentedSystemPrompt, userPrompt, codegenCfg)
+            val responseText = AIUtil.callAIWithSystem(augmentedSystemPrompt, userPrompt, codegenCfg, useWebSearch = AIUtil.useNative(plan))
+            if (AIUtil.useNative(plan)) {
+                val citations = AIUtil.extractCitations(responseText, codegenCfg)
+                if (citations.nonEmpty)
+                    logger.info("/tap/fix: native web search consulted " + citations.size + " source(s): " +
+                        citations.map { case (url, title) => "[" + title + "](" + url + ")" }.mkString(", "))
+            }
             val extracted = AIUtil.extractText(responseText, codegenCfg)
             val cleaned = cleanAIResponse(extracted)
 
@@ -1117,10 +1116,89 @@ class TapAPIController {
                    |Respond in plain English only — no JSON, no code fences, no markdown formatting.
                    |Keep it to 2-3 concise sentences. Reference the exact line, function, or API that needs to change. Focus on actionable advice the user can apply immediately.""".stripMargin
 
-            val responseText = AIUtil.callAI(prompt)
+            val diagnoseQuery = "Diagnose this tap script error: " + error.take(500) + " | Description: " + description.take(200)
+            val plan = AIUtil.planWebSearch(DatrisEnvironment.current.aiConfig, diagnoseQuery)
+            val nativeNudge = plan match {
+                case AIUtil.WebSearchPlan.Native =>
+                    "\n\nA web_search tool is available. Use it ONLY when the diagnosis hinges on external information you don't already know — e.g. an unfamiliar exception message, a third-party API's current behavior, or a library deprecation notice. Skip it for routine Python errors or anything contradicted by the traceback already shown above."
+                case _ => ""
+            }
+            val finalPrompt = prompt + nativeNudge + AIUtil.renderInjectedContext(plan)
+            val responseText = AIUtil.callAI(finalPrompt, useWebSearch = AIUtil.useNative(plan))
             AIUtil.extractText(responseText).trim
         } catch {
             case _: Exception => null
         }
+    }
+
+    /** Fallback library-context loader for /tap/fix when web search is OFF. Hits
+      * pypi.org's JSON metadata for up to 3 third-party imports, then scrapes the
+      * project_urls Documentation/Homepage page, strips HTML, and truncates to 2000
+      * chars per package. The output is prepended to the AI fix prompt as
+      * `PACKAGE INFO:` blocks so the model has *some* current context for stale-API
+      * errors. When web search is on, the model does this itself far more
+      * effectively (real search, not a regex scrape) — this exists for offline-key
+      * deployments and as a graceful degradation. */
+    private def fetchPackageContextFromPyPI(script: String): String = {
+        val importPattern = """(?:import|from)\s+(\w+)""".r
+        val imports = importPattern.findAllMatchIn(script).map(_.group(1)).toSet
+        val standardLibs = Set("os", "sys", "json", "datetime", "io", "re", "math", "time", "urllib", "collections", "itertools", "functools")
+        val thirdPartyImports = imports -- standardLibs
+
+        val contextParts = thirdPartyImports.take(3).flatMap { pkg =>
+            try {
+                logger.info("Fetching PyPI info for package: " + pkg)
+                val client = org.apache.http.impl.client.HttpClients.createDefault()
+                try {
+                    val pypiReq = new org.apache.http.client.methods.HttpGet("https://pypi.org/pypi/" + pkg + "/json")
+                    pypiReq.setHeader("User-Agent", "datris-platform/1.0")
+                    val pypiResp = client.execute(pypiReq)
+                    val pypiBody = org.apache.http.util.EntityUtils.toString(pypiResp.getEntity)
+
+                    if (pypiResp.getStatusLine.getStatusCode == 200) {
+                        val gson3 = new Gson
+                        val pypiData = gson3.fromJson(pypiBody, classOf[java.util.Map[String, Any]])
+                        val info = pypiData.get("info").asInstanceOf[java.util.Map[String, Any]]
+                        val version = Option(info.get("version")).map(_.toString).getOrElse("unknown")
+                        val summary = Option(info.get("summary")).map(_.toString).getOrElse("")
+                        val description = Option(info.get("description")).map(_.toString).getOrElse("")
+                        val homePage = Option(info.get("home_page")).map(_.toString).getOrElse("")
+                        val pipName = Option(info.get("name")).map(_.toString).getOrElse(pkg)
+
+                        val docsUrl = {
+                            val projectUrls = Option(info.get("project_urls")).map(_.asInstanceOf[java.util.Map[String, Any]]).getOrElse(new java.util.HashMap())
+                            Option(projectUrls.get("Documentation")).map(_.toString)
+                                .orElse(Option(projectUrls.get("Docs")).map(_.toString))
+                                .orElse(Option(projectUrls.get("Homepage")).map(_.toString))
+                                .orElse(if (homePage.nonEmpty) Some(homePage) else None)
+                        }
+
+                        val docsExcerpt = docsUrl.flatMap { url =>
+                            try {
+                                val docsReq = new org.apache.http.client.methods.HttpGet(url)
+                                docsReq.setHeader("User-Agent", "datris-platform/1.0")
+                                val docsResp = client.execute(docsReq)
+                                if (docsResp.getStatusLine.getStatusCode == 200) {
+                                    val html = org.apache.http.util.EntityUtils.toString(docsResp.getEntity)
+                                    val text = html.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim
+                                    Some(text.take(2000))
+                                } else None
+                            } catch { case _: Exception => None }
+                        }.getOrElse("")
+
+                        val contextText = if (docsExcerpt.nonEmpty) docsExcerpt else description.take(2000)
+
+                        Some(s"PACKAGE INFO: $pipName v$version (pip install $pipName)\n$summary\n$contextText")
+                    } else None
+                } finally {
+                    client.close()
+                }
+            } catch {
+                case e: Exception =>
+                    logger.warn("Failed to fetch PyPI info for " + pkg + ": " + e.getMessage)
+                    None
+            }
+        }
+        if (contextParts.nonEmpty) contextParts.mkString("\n\n") + "\n\n" else ""
     }
 }

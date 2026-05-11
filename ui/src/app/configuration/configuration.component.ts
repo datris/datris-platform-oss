@@ -40,11 +40,27 @@ export class ConfigurationComponent implements OnInit {
   showAdvancedEmbedding = false;
   usingDefaultEmbedding = true;
 
+  // Web Search (optional). Independent service — pick a provider regardless of
+  // AI Primary, just like Embedding. The runtime attaches the tool natively when
+  // possible (provider matches the AI call) or runs an out-of-band search call
+  // and injects results when providers differ.
+  webSearchEnabled = false;
+  webSearchProvider: 'anthropic' | 'openai' = 'anthropic';
+  webSearchEndpoint = '';
+  webSearchModel = '';
+  webSearchMaxUses = 3;
+  // Tracks whether oss/web-search already has an apiKey saved AND for which provider.
+  // Used by save() to skip the "re-enter key" guard when the server can preserve the
+  // existing apiKey via masked-preservation (provider unchanged, key already stored).
+  private webSearchStoredProvider: 'anthropic' | 'openai' | '' = '';
+  private webSearchHasStoredKey = false;
+
   // Models loaded from existing secrets that aren't in the predefined dropdown lists.
   // Tracked per section so the dropdown can render whatever the secret actually contains.
   extraAiPrimaryModel: { value: string; label: string } | null = null;
   extraCodegenModel: { value: string; label: string } | null = null;
   extraEmbeddingModel: { value: string; label: string } | null = null;
+  extraWebSearchModel: { value: string; label: string } | null = null;
 
   // Remember the model the user typed/selected per provider so switching away and back restores it.
   private aiPrimaryModelMemory: Record<string, string> = {};
@@ -153,6 +169,14 @@ export class ConfigurationComponent implements OnInit {
     return this.withExtra(this.embeddingModels[this.embeddingProvider] || [], this.extraEmbeddingModel);
   }
 
+  /** Web search runs general-purpose summarization (read pages → write a research
+   *  note) — same shape of work as AI Primary, so we reuse the AI Primary catalog
+   *  for the provider's model list. Slow reasoning / codex models are still in
+   *  the list but the section hint warns the user off them. */
+  get webSearchModelOptions(): { value: string; label: string }[] {
+    return this.withExtra(this.models[this.webSearchProvider] || [], this.extraWebSearchModel);
+  }
+
   onAiPrimaryProviderChange(): void {
     // Stash the model from the previous provider so switching back restores it.
     if (this.aiPrimaryModel) {
@@ -230,10 +254,10 @@ export class ConfigurationComponent implements OnInit {
   }
 
   loadConfig(): void {
-    // Three independent direct GETs by known names. 404 = no per-tenant override = use defaults.
+    // Four independent direct GETs by known names. 404 = no per-tenant override = use defaults.
     this.resetSectionState();
 
-    let pending = 3;
+    let pending = 4;
     const done = () => { pending--; if (pending === 0) this.loading = false; };
 
     const recordKeyForProvider = (provider: string, apiKey: string) => {
@@ -283,6 +307,36 @@ export class ConfigurationComponent implements OnInit {
       error: () => { this.codegenEndpoint = this.endpointFor(this.codegenProvider, 'chat'); done(); }
     });
 
+    this.http.get<any>('/api/v1/secrets/web-search').subscribe({
+      next: (data) => {
+        const fields = data && data.fields;
+        if (fields) {
+          this.webSearchEnabled = String(fields.enabled).toLowerCase() === 'true';
+          const p = (fields.provider || '').toLowerCase();
+          if (p === 'anthropic' || p === 'openai') {
+            this.webSearchProvider = p;
+            this.webSearchStoredProvider = p;
+            this.prevWebSearchProvider = p;
+          }
+          this.webSearchEndpoint = fields.endpoint || '';
+          this.webSearchModel = fields.model || '';
+          this.maybeAddExtraModel('webSearch', this.webSearchProvider, this.webSearchModel);
+          const n = parseInt(fields.maxUses, 10);
+          if (!isNaN(n) && n > 0) this.webSearchMaxUses = n;
+          this.webSearchHasStoredKey = !!(fields.apiKey && fields.apiKey.length > 0);
+          // Populate the right-hand panel from this secret's key if no other section already did.
+          const recordKeyForProvider = (provider: string, apiKey: string) => {
+            if (!apiKey) return;
+            if (provider === 'anthropic' && !this.anthropicApiKey) this.anthropicApiKey = apiKey;
+            if (provider === 'openai' && !this.openaiApiKey) this.openaiApiKey = apiKey;
+          };
+          recordKeyForProvider(this.webSearchProvider, fields.apiKey || '');
+        }
+        done();
+      },
+      error: () => { done(); }
+    });
+
     this.http.get<any>('/api/v1/secrets/embedding').subscribe({
       next: (data) => {
         const fields = data && data.fields;
@@ -319,7 +373,7 @@ export class ConfigurationComponent implements OnInit {
   }
 
   /** Add a loaded model to the section's "extra" slot if it isn't in the predefined list. */
-  private maybeAddExtraModel(section: 'aiPrimary' | 'codegen' | 'embedding', provider: string, model: string): void {
+  private maybeAddExtraModel(section: 'aiPrimary' | 'codegen' | 'embedding' | 'webSearch', provider: string, model: string): void {
     if (!model) return;
     let list: { value: string; label: string }[];
     if (section === 'embedding') list = this.embeddingModels[provider] || [];
@@ -329,6 +383,7 @@ export class ConfigurationComponent implements OnInit {
     const extra = { value: model, label: model + ' (custom)' };
     if (section === 'aiPrimary') this.extraAiPrimaryModel = extra;
     else if (section === 'codegen') this.extraCodegenModel = extra;
+    else if (section === 'webSearch') this.extraWebSearchModel = extra;
     else this.extraEmbeddingModel = extra;
   }
 
@@ -350,7 +405,64 @@ export class ConfigurationComponent implements OnInit {
     this.showAdvancedEmbedding = false;
     this.extraEmbeddingModel = null;
     this.usingDefaultEmbedding = true;
+    this.webSearchEnabled = false;
+    this.webSearchProvider = 'anthropic';
+    this.webSearchEndpoint = '';
+    this.webSearchModel = '';
+    this.webSearchMaxUses = 3;
+    this.webSearchStoredProvider = '';
+    this.webSearchHasStoredKey = false;
+    this.extraWebSearchModel = null;
   }
+
+  /** Web search is its own service (like Embedding). Always offer it as long as
+   *  the platform has Anthropic or OpenAI as an available provider somewhere. */
+  get webSearchAvailable(): boolean {
+    return true;
+  }
+
+  /** Disable a provider radio when its key isn't entered. */
+  get anthropicKeyAvailable(): boolean {
+    return !!(this.anthropicApiKey && this.anthropicApiKey.length > 0);
+  }
+  get openaiKeyAvailable(): boolean {
+    return !!(this.openaiApiKey && this.openaiApiKey.length > 0);
+  }
+
+  /** Default endpoint per provider for the web-search call (mirrors the chat
+   *  endpoint defaults — Anthropic Messages, OpenAI Responses). */
+  webSearchEndpointFor(provider: string): string {
+    const p = provider.toLowerCase();
+    if (p === 'anthropic') return 'https://api.anthropic.com/v1/messages';
+    if (p === 'openai')    return 'https://api.openai.com/v1/responses';
+    return '';
+  }
+
+  /** Default model per provider when the user hasn't picked one. These are
+   *  picked for SPEED of summarization, not reasoning depth — codex / opus
+   *  models add 30-60s per search with no real quality lift. Override via
+   *  the Advanced expander if needed. */
+  webSearchModelFor(provider: string): string {
+    const p = provider.toLowerCase();
+    if (p === 'anthropic') return 'claude-sonnet-4-6';
+    if (p === 'openai')    return 'gpt-5.5';
+    return '';
+  }
+
+  onWebSearchProviderChange(): void {
+    if (!this.webSearchModel || this.webSearchModel === this.webSearchModelFor(this.prevWebSearchProvider)) {
+      this.webSearchModel = this.webSearchModelFor(this.webSearchProvider);
+    }
+    if (!this.webSearchEndpoint || this.webSearchEndpoint === this.webSearchEndpointFor(this.prevWebSearchProvider)) {
+      this.webSearchEndpoint = this.webSearchEndpointFor(this.webSearchProvider);
+    }
+    // Reset extra-tracker; if the new provider's list also lacks the loaded model
+    // (e.g. user switches and the catalog entry doesn't match), re-add it.
+    this.extraWebSearchModel = null;
+    this.maybeAddExtraModel('webSearch', this.webSearchProvider, this.webSearchModel);
+    this.prevWebSearchProvider = this.webSearchProvider;
+  }
+  private prevWebSearchProvider: 'anthropic' | 'openai' = 'anthropic';
 
   /** Look up the shared API key for a given provider. Returns empty string for local/bundled providers. */
   private keyForProvider(provider: string): string {
@@ -479,6 +591,26 @@ export class ConfigurationComponent implements OnInit {
         apiKey: this.keyForProvider(this.embeddingProvider)
       };
       tasks.push(this.http.put('/api/v1/secrets/embedding', body, { responseType: 'text' }).toPromise());
+    }
+
+    // Web search is its own independent service — provider, endpoint, model, and
+    // its own apiKey copied from the right-hand panel based on the chosen provider
+    // (mirrors how Embedding stores its key). When the panel value is masked
+    // (••••••••), we still send it — the server's masked-preservation logic
+    // keeps any existing key, and if there's nothing to preserve, runWebSearch
+    // falls back to the ANTHROPIC_API_KEY / OPENAI_API_KEY env var at request time.
+    {
+      const wsKey = this.keyForProvider(this.webSearchProvider);
+      const body: any = {
+        enabled: this.webSearchEnabled ? 'true' : 'false',
+        provider: this.webSearchProvider,
+        endpoint: useEndpoint(this.webSearchEndpoint, this.webSearchEndpointFor(this.webSearchProvider)),
+        model: this.webSearchModel || this.webSearchModelFor(this.webSearchProvider),
+        apiKey: wsKey || '',
+        maxUses: String(this.webSearchMaxUses || 3)
+      };
+      if (this.webSearchProvider === 'anthropic') body.version = '2023-06-01';
+      tasks.push(this.http.put('/api/v1/secrets/web-search', body, { responseType: 'text' }).toPromise());
     }
 
     Promise.all(tasks).then(() => {

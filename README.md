@@ -30,20 +30,24 @@ docker compose up -d
 
 ### Connect an AI Agent
 
-Add to your MCP client config (Claude Desktop, Claude Code, Cursor, etc.). With the Docker stack running, route through the bundled MCP server on port 3000 — your client appears in the Datris UI **Agents** tab with live tool-call streaming:
+Add to your MCP client config (Claude Desktop, Claude Code, Cursor, etc.). With the Docker stack running, point your client directly at the bundled MCP server on port 3000 — your client appears in the Datris UI **Agents** tab with live tool-call streaming:
 
 ```json
 {
   "mcpServers": {
     "datris": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "http://localhost:3000/sse", "--transport", "sse-only"]
+      "url": "http://localhost:3000/sse",
+      "headers": {
+        "x-api-key": "<paste your Datris API key here>"
+      }
     }
   }
 }
 ```
 
-Requires Node.js. For a stdio alternative (no Docker), or full Claude Desktop / Claude Code walkthroughs, see [Configuring Claude](https://docs.datris.ai/configuring-claude).
+The `x-api-key` value is your Datris API key. With single-tenant `USE_API_KEYS=false` (the default), any value works (or none); with `USE_API_KEYS=true` or hosted/multi-tenant, paste the key from the Configuration UI's Secrets tab. The Configuration → Connect Your Agent page generates this snippet pre-filled with your key.
+
+For a stdio alternative (no Docker), or full Claude Desktop / Claude Code walkthroughs, see [Configuring Claude](https://docs.datris.ai/configuring-claude).
 
 ### CLI
 

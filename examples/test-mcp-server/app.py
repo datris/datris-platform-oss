@@ -3,7 +3,7 @@
 MCP Server Tool Tests
 
 Tests all MCP tools against a running Datris instance.
-Requires: Datris running on localhost:8080 (or set PIPELINE_URL env var)
+Requires: Datris running on localhost:8080 (or set DATRIS_API_URL env var)
 
 Usage:
     cd examples/test-mcp-server
@@ -22,8 +22,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PIPELINE_URL = os.getenv("PIPELINE_URL", "http://localhost:8080")
-PIPELINE_API_KEY = os.getenv("PIPELINE_API_KEY", "")
+DATRIS_API_URL = os.getenv("DATRIS_API_URL", "http://localhost:8080")
 
 # Add mcp-server to path so we can import the dispatch function
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mcp-server"))
@@ -132,7 +131,7 @@ def main():
 
     print("=" * 60)
     print("  MCP Server Tool Tests")
-    print(f"  Pipeline URL: {PIPELINE_URL}")
+    print(f"  Datris API URL: {DATRIS_API_URL}")
     print("=" * 60)
     print()
 

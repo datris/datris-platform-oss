@@ -227,7 +227,11 @@ object TapScriptGenerator {
 
         val userPrompt = "Generate a Python script to: " + description + secretKeysHint
 
-        // Call AI to generate the script — use codegen config (falls back to main aiConfig when unset)
+        // Call AI to generate the script — use codegen config (falls back to main aiConfig when unset).
+        // First-pass generation does NOT use web search by design — it's the happy path that
+        // typically targets common APIs the model already knows. Web search is reserved for the
+        // recovery paths (/tap/diagnose and /tap/fix) where the model has demonstrably gotten
+        // something wrong and current docs add real value.
         val codegenCfg = DatrisEnvironment.aiConfigForCodegen
         val baseSystemPrompt = if (tapType == "document") DOCUMENT_SYSTEM_PROMPT else SYSTEM_PROMPT
         val systemPrompt = TapPromptInjector.augment(baseSystemPrompt, description)
@@ -242,27 +246,34 @@ object TapScriptGenerator {
         // Try to parse an LLM response as a {script, packages} JSON object.
         // Returns Some((script, packages)) on success, None on any failure.
         // Handles preamble/suffix text around the JSON and common LLM formatting quirks.
+        //
+        // Robustness: with web search enabled the response often interleaves narrative
+        // ("I searched for X, found Y") with the final JSON, and that narrative may
+        // contain stray braces (e.g. `{example}` placeholders, `{site:pypi.org ...}`
+        // search-syntax mentions). A naive `text.indexOf('{') .. text.lastIndexOf('}')`
+        // would span those stray braces and produce invalid JSON. We instead scan
+        // every `{` position, find its balanced `}` using string-aware nesting, and
+        // accept the first one that parses with the expected `script` field.
         def tryParseAsJsonObject(text: String): Option[(String, java.util.List[String])] = {
-            try {
-                val start = text.indexOf('{')
-                val end = text.lastIndexOf('}')
-                val isolated = if (start >= 0 && end > start) text.substring(start, end + 1) else text
-                val result = gson.fromJson(isolated, classOf[java.util.Map[String, Any]])
-                Option(result).flatMap { r =>
-                    Option(r.get("script")).map(_.toString).filter(_.trim.nonEmpty).map { s =>
-                        val p: java.util.List[String] = r.get("packages") match {
-                            case null => new java.util.ArrayList[String]()
-                            case list: java.util.List[_] =>
-                                val stringList = new java.util.ArrayList[String]()
-                                val it = list.iterator()
-                                while (it.hasNext) stringList.add(it.next().toString)
-                                stringList
-                            case _ => new java.util.ArrayList[String]()
+            findBalancedJsonObjects(text).iterator.flatMap { candidate =>
+                try {
+                    val result = gson.fromJson(candidate, classOf[java.util.Map[String, Any]])
+                    Option(result).flatMap { r =>
+                        Option(r.get("script")).map(_.toString).filter(_.trim.nonEmpty).map { s =>
+                            val p: java.util.List[String] = r.get("packages") match {
+                                case null => new java.util.ArrayList[String]()
+                                case list: java.util.List[_] =>
+                                    val stringList = new java.util.ArrayList[String]()
+                                    val it = list.iterator()
+                                    while (it.hasNext) stringList.add(it.next().toString)
+                                    stringList
+                                case _ => new java.util.ArrayList[String]()
+                            }
+                            (s, p)
                         }
-                        (s, p)
                     }
-                }
-            } catch { case _: Exception => None }
+                } catch { case _: Exception => None }
+            }.toIterable.headOption
         }
 
         // Attempt 1: parse the original response as a JSON object.
@@ -317,6 +328,18 @@ object TapScriptGenerator {
         if (script == null || script.trim.isEmpty)
             throw new DatrisException("AI returned an empty script")
 
+        // Sanity check — every tap script must define a top-level `fetch()` function;
+        // the runner imports the module and calls `mod.fetch()`. Without this guard a
+        // bad-shape generation (e.g. JSON parser fell through to raw-text fallback and
+        // we kept the model's narrative) would still be stored to MinIO and only fail
+        // at run time with a confusing `AttributeError: module 'tap' has no attribute 'fetch'`.
+        // Catching it here gives the user a clearer error and avoids storing junk.
+        if (!hasFetchFunction(script))
+            throw new DatrisException(
+                "AI returned a script that doesn't define a `fetch()` function. " +
+                "This usually means the model returned narrative text instead of code. " +
+                "Try regenerating, or paste your own script via 'I Have My Own Code'.")
+
         // Store script in MinIO (cleanup old)
         val scriptPath = storeScript(tapName, script, oldScriptPath)
 
@@ -370,5 +393,79 @@ object TapScriptGenerator {
         if (cleaned.endsWith("```"))
             cleaned = cleaned.stripSuffix("```").trim
         cleaned
+    }
+
+    /** Check whether a Python script defines a top-level `fetch()` function.
+      * Matches `def fetch(`, `async def fetch(`, with any whitespace, but only
+      * when at the start of a line (so we don't match `# def fetch()` in a
+      * comment). Cheap and precise enough for our purposes — full Python
+      * parsing is overkill. */
+    private def hasFetchFunction(script: String): Boolean = {
+        if (script == null) return false
+        val pattern = "(?m)^\\s*(?:async\\s+)?def\\s+fetch\\s*\\(".r
+        pattern.findFirstIn(script).isDefined
+    }
+
+    /** Scan a string for every balanced `{...}` JSON object substring, in order
+      * of appearance. Tracks string literals and escape sequences so braces
+      * inside strings don't break nesting depth. Returns a list of substrings,
+      * each beginning with `{` and ending with the matching `}`. The caller
+      * tries each in turn (typically picking the first that parses with the
+      * expected schema).
+      *
+      * Why this exists: the naive `text.indexOf('{') .. text.lastIndexOf('}')`
+      * approach fails on responses that mention `{example}` or
+      * `{site:pypi.org ...}` in narrative text alongside the actual JSON. With
+      * web search enabled the model frequently produces such narrative. */
+    private def findBalancedJsonObjects(text: String): List[String] = {
+        if (text == null || text.isEmpty) return Nil
+        val out = scala.collection.mutable.ListBuffer.empty[String]
+        var i = 0
+        val n = text.length
+        while (i < n) {
+            if (text.charAt(i) == '{') {
+                val end = matchingBrace(text, i)
+                if (end > i) {
+                    out += text.substring(i, end + 1)
+                    i = end + 1
+                } else {
+                    i += 1
+                }
+            } else {
+                i += 1
+            }
+        }
+        out.toList
+    }
+
+    /** Find the matching `}` for the `{` at startIdx, respecting JSON string
+      * literals (`"..."` with `\` escapes) so braces inside strings are
+      * ignored. Returns -1 if no balanced match is found. */
+    private def matchingBrace(text: String, startIdx: Int): Int = {
+        if (startIdx < 0 || startIdx >= text.length || text.charAt(startIdx) != '{') return -1
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var i = startIdx
+        while (i < text.length) {
+            val c = text.charAt(i)
+            if (escaped) {
+                escaped = false
+            } else if (inString) {
+                if (c == '\\') escaped = true
+                else if (c == '"') inString = false
+            } else {
+                c match {
+                    case '"' => inString = true
+                    case '{' => depth += 1
+                    case '}' =>
+                        depth -= 1
+                        if (depth == 0) return i
+                    case _ => ()
+                }
+            }
+            i += 1
+        }
+        -1
     }
 }

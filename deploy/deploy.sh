@@ -77,7 +77,6 @@ MINIO_ROOT_USER="datris"
 MINIO_ROOT_PASSWORD="$(gen_password)"
 ACTIVEMQ_USERNAME="datris"
 ACTIVEMQ_PASSWORD="$(gen_password)"
-PIPELINE_API_KEY="$(openssl rand -hex 16)"
 
 # Set AI defaults based on provider
 case "$AI_PROVIDER" in
@@ -113,7 +112,6 @@ MINIO_ROOT_USER=$MINIO_ROOT_USER
 MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD
 ACTIVEMQ_USERNAME=$ACTIVEMQ_USERNAME
 ACTIVEMQ_PASSWORD=$ACTIVEMQ_PASSWORD
-PIPELINE_API_KEY=$PIPELINE_API_KEY
 AI_PROVIDER=$AI_PROVIDER
 AI_ENDPOINT=$AI_ENDPOINT
 AI_MODEL=$AI_MODEL
@@ -183,7 +181,8 @@ echo "  Platform UI:  https://app.$CUSTOMER_DOMAIN"
 echo "  REST API:     https://api.$CUSTOMER_DOMAIN"
 echo "  MCP Server:   https://mcp.$CUSTOMER_DOMAIN/sse"
 echo ""
-echo "  API Key:      $PIPELINE_API_KEY"
+echo "  API keys are managed in the Configuration UI's Secrets tab."
+echo "  Visit https://app.$CUSTOMER_DOMAIN/configuration after sign-in."
 echo ""
 echo "  Admin UIs:"
 echo "    MinIO:      https://minio.$CUSTOMER_DOMAIN"

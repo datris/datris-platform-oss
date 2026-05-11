@@ -120,10 +120,11 @@ object AIUtil {
         messages: Seq[(String, String)],
         aiConfig: AIConfig,
         maxTokens: Int,
-        temperature: Double
+        temperature: Double,
+        useWebSearch: Boolean = false
     ): String = {
         val endpoint = responsesEndpointFor(aiConfig)
-        logger.info("Calling OpenAI Responses API, endpoint: " + endpoint + ", model: " + aiConfig.model + ", messages: " + messages.size + ", maxTokens: " + maxTokens)
+        logger.info("Calling OpenAI Responses API, endpoint: " + endpoint + ", model: " + aiConfig.model + ", messages: " + messages.size + ", maxTokens: " + maxTokens + ", webSearch: " + useWebSearch)
 
         val inputArr = new JsonArray()
         messages.foreach { case (role, content) =>
@@ -140,6 +141,8 @@ object AIUtil {
         requestObj.add("input", inputArr)
         requestObj.addProperty("max_output_tokens", maxTokens)
         if (temperature >= 0) requestObj.addProperty("temperature", temperature)
+
+        attachWebSearchToolResponses(requestObj, aiConfig, useWebSearch)
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
@@ -159,6 +162,189 @@ object AIUtil {
     private def addTokenLimit(requestObj: JsonObject, provider: String, model: String, maxTokens: Int): Unit = {
         val field = if (provider.toLowerCase == "openai") openAiTokenField(model) else "max_tokens"
         requestObj.addProperty(field, maxTokens)
+    }
+
+    /** Resolve an apiKey for an AI provider section. Used by every AI-config loader
+      * (ai-primary, codegen, embedding, web-search) so the same fallback applies
+      * uniformly:
+      *
+      *   1. The secret's own `apiKey` if non-empty (Vault-stored, the normal path)
+      *   2. The matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var, but ONLY
+      *      in single-tenant mode — env vars hold the platform's keys, and in
+      *      multi-tenant deployments those keys belong to Datris, not to each
+      *      tenant. Multi-tenant tenants must provide their own keys explicitly.
+      *
+      * Returns the empty string when neither is available; callers decide whether
+      * that's fatal (ai-primary) or skippable (web-search). */
+    def resolveApiKey(rawKey: String, provider: String, multiTenant: Boolean): String = {
+        if (rawKey != null && rawKey.nonEmpty) return rawKey
+        if (multiTenant) return ""
+        provider.toLowerCase match {
+            case "anthropic" => sys.env.getOrElse("ANTHROPIC_API_KEY", "")
+            case "openai"    => sys.env.getOrElse("OPENAI_API_KEY", "")
+            case _           => ""
+        }
+    }
+
+    /** Whether web search is enabled at all. Independent of which provider runs the
+      * main AI call — we either attach the tool natively (when providers match) or
+      * run a separate search call and inject the results (when they don't). */
+    def webSearchActive: Boolean =
+        DatrisEnvironment.current.webSearchConfig.exists(_.enabled)
+
+    /** Whether we can attach the native web-search tool to a request that's about to
+      * go out — true only when the request provider is the same as the configured
+      * web-search provider AND the request can carry the tool (Anthropic Messages
+      * or OpenAI Responses). Used by `attachWebSearchTool*` helpers. */
+    private def canAttachNativeWebSearch(aiConfig: AIConfig): Boolean = {
+        if (aiConfig == null) return false
+        val ws = DatrisEnvironment.current.webSearchConfig
+        if (!ws.exists(_.enabled)) return false
+
+        val provider = aiConfig.provider.toLowerCase
+        val configProvider = ws.get.provider
+        if (configProvider != provider) return false                    // out-of-band path
+        if (provider == "openai" && !usesResponsesApi(aiConfig)) return false  // Chat Completions can't carry the tool
+        provider == "anthropic" || provider == "openai"
+    }
+
+    /** Attach the Anthropic `web_search_20250305` server tool to an outgoing request when
+      * the caller opted in AND the request provider matches the configured web-search
+      * provider (Anthropic). The mismatched-provider case is handled by `runWebSearch`
+      * out of band before the main call. */
+    private def attachWebSearchToolAnthropic(requestObj: JsonObject, aiConfig: AIConfig, useWebSearch: Boolean): Unit = {
+        if (!useWebSearch || !canAttachNativeWebSearch(aiConfig) || aiConfig.provider.toLowerCase != "anthropic") return
+        val tools = new JsonArray()
+        val tool  = new JsonObject()
+        tool.addProperty("type", "web_search_20250305")
+        tool.addProperty("name", "web_search")
+        tool.addProperty("max_uses", DatrisEnvironment.current.webSearchConfig.get.maxUses)
+        tools.add(tool)
+        requestObj.add("tools", tools)
+    }
+
+    /** Attach the OpenAI Responses-API `web_search` tool. Same gating as the Anthropic helper. */
+    private def attachWebSearchToolResponses(requestObj: JsonObject, aiConfig: AIConfig, useWebSearch: Boolean): Unit = {
+        if (!useWebSearch || !canAttachNativeWebSearch(aiConfig) || aiConfig.provider.toLowerCase != "openai") return
+        val tools = new JsonArray()
+        val tool  = new JsonObject()
+        tool.addProperty("type", "web_search")
+        tools.add(tool)
+        requestObj.add("tools", tools)
+    }
+
+    /** Result of an out-of-band web search pass: the model's research notes plus
+      * the citations it consulted. Pass `notes` into the main AI call's system
+      * prompt as context, and `citations` into the audit log. */
+    case class WebSearchResult(notes: String, citations: List[(String, String)])
+
+    /** What a call site should do for an upcoming AI call when web search is requested.
+      * Three states: Off, attach the tool natively, or inject pre-fetched research. */
+    sealed trait WebSearchPlan
+    object WebSearchPlan {
+        case object Off extends WebSearchPlan
+        case object Native extends WebSearchPlan
+        case class Injected(notes: String, citations: List[(String, String)]) extends WebSearchPlan
+    }
+
+    /** Decide how to apply web search for an upcoming AI call.
+      *   - Off: web search isn't enabled (or the search itself failed)
+      *   - Native: attach the tool to the upcoming call (providers match)
+      *   - Injected: a separate search call happened — its result is in the payload,
+      *               caller should prepend it to the system prompt and call without
+      *               useWebSearch
+      *
+      * `searchQuery` is what the search-side model sees as the user's request when
+      * doing the out-of-band search. Send the user-facing request (description,
+      * brainstorm question, etc.) — not the full system prompt or pipeline internals. */
+    def planWebSearch(aiConfig: AIConfig, searchQuery: String): WebSearchPlan = {
+        if (!webSearchActive) WebSearchPlan.Off
+        else if (canAttachNativeWebSearch(aiConfig)) WebSearchPlan.Native
+        else runWebSearch(searchQuery) match {
+            case Some(r) => WebSearchPlan.Injected(r.notes, r.citations)
+            case None    => WebSearchPlan.Off
+        }
+    }
+
+    /** Format the injected research as a system-prompt suffix. Empty string when
+      * the plan isn't Injected, so callers can append unconditionally. */
+    def renderInjectedContext(plan: WebSearchPlan): String = plan match {
+        case WebSearchPlan.Injected(notes, citations) =>
+            val sources =
+                if (citations.isEmpty) ""
+                else "\n\n### Sources consulted\n" +
+                    citations.map { case (url, title) => "- " + title + " (" + url + ")" }.mkString("\n")
+            "\n\n## Web search context (pre-fetched)\n\nThe following research was gathered to help with the request:\n\n" + notes + sources
+        case _ => ""
+    }
+
+    /** Whether the upcoming call should attach the native tool. */
+    def useNative(plan: WebSearchPlan): Boolean = plan == WebSearchPlan.Native
+
+    /** Run a separate web search call against the configured web-search provider and
+      * return research notes + citations. Used when the main AI call's provider differs
+      * from the web-search provider (e.g. main=Anthropic, web search=OpenAI), where we
+      * can't attach a native tool. The model on the search side decides what to search
+      * for based on the supplied query/context.
+      *
+      * Returns None when web search isn't configured, isn't enabled, or fails — in all
+      * those cases the caller proceeds without web context. The apiKey on `ws` was
+      * already resolved at load time (Vault apiKey, then env-var fallback for
+      * single-tenant deployments). */
+    def runWebSearch(query: String): Option[WebSearchResult] = {
+        val ws = DatrisEnvironment.current.webSearchConfig.filter(_.enabled).getOrElse(return None)
+        if (ws.apiKey == null || ws.apiKey.isEmpty) {
+            logger.warn("runWebSearch: web search is enabled but no apiKey is available — set it in the web-search secret or the matching " +
+                (if (ws.provider == "anthropic") "ANTHROPIC_API_KEY" else "OPENAI_API_KEY") + " environment variable. Skipping.")
+            return None
+        }
+
+        val searchAiConfig = AIConfig(
+            provider = ws.provider,
+            endpoint = if (ws.endpoint.nonEmpty) ws.endpoint else defaultEndpointFor(ws.provider),
+            model    = if (ws.model.nonEmpty) ws.model else defaultModelFor(ws.provider),
+            apiKey   = ws.apiKey,
+            version  = ws.version
+        )
+
+        val systemPrompt =
+            "You are a research assistant. Use the web_search tool to gather current, accurate information " +
+            "relevant to the user's request. Return a concise summary of what you found, with the most useful " +
+            "facts called out plainly. Always cite your sources via the tool's citation mechanism."
+
+        try {
+            logger.info("runWebSearch: making out-of-band search call, provider=" + ws.provider + ", model=" + searchAiConfig.model)
+            val responseText = callAIWithSystem(systemPrompt, query, searchAiConfig, useWebSearch = true)
+            val notes = extractText(responseText, searchAiConfig)
+            val citations = extractCitations(responseText, searchAiConfig)
+            if (citations.nonEmpty)
+                logger.info("runWebSearch: consulted " + citations.size + " source(s): " +
+                    citations.map { case (url, title) => "[" + title + "](" + url + ")" }.mkString(", "))
+            else
+                logger.info("runWebSearch: completed (no citations returned by the model)")
+            Some(WebSearchResult(notes, citations))
+        } catch {
+            case e: Exception =>
+                logger.warn("runWebSearch: failed (" + e.getClass.getSimpleName + "): " + e.getMessage + " — main AI call will proceed without web context")
+                None
+        }
+    }
+
+    private def defaultEndpointFor(provider: String): String = provider.toLowerCase match {
+        case "anthropic" => "https://api.anthropic.com/v1/messages"
+        case "openai"    => "https://api.openai.com/v1/responses"
+        case _           => ""
+    }
+
+    /** Default model for web-search runs. Both providers are picked for SPEED of
+      * summarization, not reasoning depth — the task is "read N web pages and
+      * write a useful research note." Codex / reasoning models add 30-60s with
+      * no quality lift for this. Override via the Web Search section's Advanced
+      * model field if you want a different one. */
+    private def defaultModelFor(provider: String): String = provider.toLowerCase match {
+        case "anthropic" => "claude-sonnet-4-6"
+        case "openai"    => "gpt-5.5"
+        case _           => ""
     }
 
     def maxInputChars(): Int = {
@@ -184,16 +370,19 @@ object AIUtil {
     }
 
     def callAIWithSystem(systemPrompt: String, userPrompt: String): String =
-        callAIWithSystem(systemPrompt, userPrompt, DatrisEnvironment.current.aiConfig)
+        callAIWithSystem(systemPrompt, userPrompt, DatrisEnvironment.current.aiConfig, useWebSearch = false)
 
-    def callAIWithSystem(systemPrompt: String, userPrompt: String, aiConfig: AIConfig): String = {
+    def callAIWithSystem(systemPrompt: String, userPrompt: String, aiConfig: AIConfig): String =
+        callAIWithSystem(systemPrompt, userPrompt, aiConfig, useWebSearch = false)
+
+    def callAIWithSystem(systemPrompt: String, userPrompt: String, aiConfig: AIConfig, useWebSearch: Boolean): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
         if (usesResponsesApi(aiConfig))
-            return callResponsesApi(systemPrompt, Seq("user" -> userPrompt), aiConfig, 8192, -1.0)
+            return callResponsesApi(systemPrompt, Seq("user" -> userPrompt), aiConfig, 8192, -1.0, useWebSearch)
 
-        logger.info("Calling AI with custom system prompt, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model)
+        logger.info("Calling AI with custom system prompt, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", webSearch: " + useWebSearch)
 
         val messagesArr = new JsonArray()
 
@@ -218,34 +407,39 @@ object AIUtil {
             requestObj.addProperty("system", systemPrompt)
         }
 
+        attachWebSearchToolAnthropic(requestObj, aiConfig, useWebSearch)
+
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
         executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
     }
 
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)]): String =
-        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, 8192)
+        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, 8192, -1.0, useWebSearch = false)
 
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig): String =
-        callAIWithMessages(systemPrompt, messages, aiConfig, 8192)
+        callAIWithMessages(systemPrompt, messages, aiConfig, 8192, -1.0, useWebSearch = false)
 
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], maxTokens: Int): String =
-        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, maxTokens, -1.0)
+        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, maxTokens, -1.0, useWebSearch = false)
 
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], maxTokens: Int, temperature: Double): String =
-        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, maxTokens, temperature)
+        callAIWithMessages(systemPrompt, messages, DatrisEnvironment.current.aiConfig, maxTokens, temperature, useWebSearch = false)
 
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int): String =
-        callAIWithMessages(systemPrompt, messages, aiConfig, maxTokens, -1.0)
+        callAIWithMessages(systemPrompt, messages, aiConfig, maxTokens, -1.0, useWebSearch = false)
 
-    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int, temperature: Double): String = {
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int, temperature: Double): String =
+        callAIWithMessages(systemPrompt, messages, aiConfig, maxTokens, temperature, useWebSearch = false)
+
+    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int, temperature: Double, useWebSearch: Boolean): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
         if (usesResponsesApi(aiConfig))
-            return callResponsesApi(systemPrompt, messages, aiConfig, maxTokens, temperature)
+            return callResponsesApi(systemPrompt, messages, aiConfig, maxTokens, temperature, useWebSearch)
 
-        logger.info("Calling AI with conversation, " + messages.size + " messages, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", maxTokens: " + maxTokens)
+        logger.info("Calling AI with conversation, " + messages.size + " messages, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", maxTokens: " + maxTokens + ", webSearch: " + useWebSearch)
 
         val messagesArr = new JsonArray()
 
@@ -275,24 +469,40 @@ object AIUtil {
             requestObj.addProperty("system", systemPrompt)
         }
 
+        attachWebSearchToolAnthropic(requestObj, aiConfig, useWebSearch)
+
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
         executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
     }
 
     def callAI(prompt: String): String =
-        callAI(prompt, DatrisEnvironment.current.aiConfig)
+        callAI(prompt, DatrisEnvironment.current.aiConfig, useWebSearch = false)
 
-    def callAI(prompt: String, aiConfig: AIConfig): String = {
+    def callAI(prompt: String, aiConfig: AIConfig): String =
+        callAI(prompt, aiConfig, useWebSearch = false)
+
+    def callAI(prompt: String, useWebSearch: Boolean): String =
+        callAI(prompt, DatrisEnvironment.current.aiConfig, useWebSearch)
+
+    def callAI(prompt: String, aiConfig: AIConfig, useWebSearch: Boolean): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
-        val systemInstruction = "You are a data validation engine. Output ONLY valid JSON arrays. Never describe, summarize, or ask questions about the data."
+        // The default callAI path is used by data-validation callers that expect a JSON
+        // array. Web-search-enabled callers (tap diagnosis) want plain English instead;
+        // swap the system instruction when web search is on so the model isn't forced
+        // into JSON-only mode while it's also citing sources.
+        val systemInstruction =
+            if (useWebSearch)
+                "You are a helpful diagnostic assistant. Answer the user's question directly."
+            else
+                "You are a data validation engine. Output ONLY valid JSON arrays. Never describe, summarize, or ask questions about the data."
 
         if (usesResponsesApi(aiConfig))
-            return callResponsesApi(systemInstruction, Seq("user" -> prompt), aiConfig, 8192, -1.0)
+            return callResponsesApi(systemInstruction, Seq("user" -> prompt), aiConfig, 8192, -1.0, useWebSearch)
 
-        logger.info("Calling AI endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", prompt length: " + prompt.length + " chars")
+        logger.info("Calling AI endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", prompt length: " + prompt.length + " chars, webSearch: " + useWebSearch)
 
         val messagesArr = new JsonArray()
 
@@ -319,9 +529,68 @@ object AIUtil {
             requestObj.addProperty("system", systemInstruction)
         }
 
+        attachWebSearchToolAnthropic(requestObj, aiConfig, useWebSearch)
+
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
         executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
+    }
+
+    /** Pull the web-search URLs the model consulted for this response, if any.
+      * Returns an empty list when the request didn't use web search or the provider
+      * didn't surface citations. Both Anthropic and OpenAI surface URLs differently;
+      * we normalize to (url, title) tuples. */
+    def extractCitations(apiResponse: String, aiConfig: AIConfig): List[(String, String)] = {
+        try {
+            val gson = new Gson()
+            val responseMap = gson.fromJson(apiResponse, classOf[java.util.Map[String, Any]])
+            if (usesResponsesApi(aiConfig)) extractResponsesApiCitations(responseMap)
+            else aiConfig.provider.toLowerCase match {
+                case "anthropic" => extractAnthropicCitations(responseMap)
+                case _ => Nil
+            }
+        } catch { case _: Exception => Nil }
+    }
+
+    private def extractAnthropicCitations(responseMap: java.util.Map[String, Any]): List[(String, String)] = {
+        // Anthropic surfaces citations on `text` content blocks via a `citations` array,
+        // each entry having `url` and `title`. Multiple text blocks may carry citations;
+        // dedupe by URL while preserving order.
+        val contentList = responseMap.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+        if (contentList == null) return Nil
+        val seen = scala.collection.mutable.LinkedHashMap.empty[String, String]
+        contentList.asScala.foreach { block =>
+            val cites = block.get("citations").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+            if (cites != null) cites.asScala.foreach { c =>
+                val url = Option(c.get("url")).map(_.toString).getOrElse("")
+                val title = Option(c.get("title")).map(_.toString).getOrElse(url)
+                if (url.nonEmpty && !seen.contains(url)) seen.put(url, title)
+            }
+        }
+        seen.toList
+    }
+
+    private def extractResponsesApiCitations(responseMap: java.util.Map[String, Any]): List[(String, String)] = {
+        // OpenAI Responses surfaces citations as `url_citation` annotations on the
+        // message's text content. Same dedupe-by-URL.
+        val output = responseMap.get("output").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+        if (output == null) return Nil
+        val seen = scala.collection.mutable.LinkedHashMap.empty[String, String]
+        output.asScala.foreach { item =>
+            val content = item.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+            if (content != null) content.asScala.foreach { c =>
+                val annotations = c.get("annotations").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
+                if (annotations != null) annotations.asScala.foreach { a =>
+                    val t = Option(a.get("type")).map(_.toString).getOrElse("")
+                    if (t == "url_citation") {
+                        val url = Option(a.get("url")).map(_.toString).getOrElse("")
+                        val title = Option(a.get("title")).map(_.toString).getOrElse(url)
+                        if (url.nonEmpty && !seen.contains(url)) seen.put(url, title)
+                    }
+                }
+            }
+        }
+        seen.toList
     }
 
     def extractText(apiResponse: String): String =
@@ -346,7 +615,18 @@ object AIUtil {
                     val contentList = responseMap.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
                     if (contentList == null || contentList.isEmpty)
                         throw new DatrisException("Anthropic response contained no content")
-                    contentList.get(0).get("text").asInstanceOf[String]
+                    // Anthropic returns a list of content blocks. Without tools the first
+                    // block is always `text`. With server tools enabled (web_search), the
+                    // list interleaves `text`, `server_tool_use`, and `web_search_tool_result`
+                    // blocks — we want every text block concatenated, in order, so the
+                    // model's narrative around tool calls is preserved for the caller.
+                    val texts = contentList.asScala.flatMap { block =>
+                        val t = Option(block.get("type")).map(_.toString).getOrElse("text")
+                        if (t == "text") Option(block.get("text")).map(_.toString) else None
+                    }
+                    if (texts.isEmpty)
+                        throw new DatrisException("Anthropic response had no text blocks")
+                    texts.mkString("\n")
             }
 
         if (text == null || text.trim.isEmpty)

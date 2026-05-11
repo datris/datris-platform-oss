@@ -162,8 +162,25 @@ services:
       USEUSERAUTH: "${USE_USER_AUTH:-false}"
       USEAPIKEYS: "${USE_API_KEYS:-false}"
       MULTITENANT: "${MULTI_TENANT:-false}"
+      # Provider API keys exposed to the Scala runtime for AIUtil.resolveApiKey's
+      # env-var fallback (gated to single-tenant). Used when an AI section's Vault
+      # secret has no apiKey of its own — e.g. user enabled web search via UI but
+      # the right-hand panel showed the masked placeholder so no real key reached
+      # oss/web-search. The runtime then falls back to these. Multi-tenant tenants
+      # don't fall through (multiTenant=true short-circuits the helper) so platform
+      # keys never leak across tenants.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Path inside the container to the host .env file (mounted below). When
+      # the user saves changes in the AI Configuration UI, the server mirrors
+      # the relevant keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, *_MODEL) back to
+      # this file so they survive a `docker compose down && up` (Vault is in
+      # dev mode = in-memory, and vault-init.sh re-seeds from .env on each
+      # boot). Single-tenant only.
+      DATRIS_ENV_FILE_PATH: /datris/.env
     volumes:
       - ./docker/config:/config
+      - ./.env:/datris/.env:rw
       - pip-cache:/root/.cache/pip
     networks:
       - datris-net
@@ -186,8 +203,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      PIPELINE_URL: http://datris:8080
-      PIPELINE_API_KEY: ${PIPELINE_API_KEY:-}
+      DATRIS_API_URL: http://datris:8080
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-http://host.docker.internal:11434}

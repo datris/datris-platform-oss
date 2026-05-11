@@ -5,20 +5,32 @@ description: "Connect Claude Desktop and Claude Code to the Datris MCP server"
 
 This page covers the client-side configuration for Anthropic's Claude products to talk to the Datris MCP server. For server-side details (architecture, transports, available tools), see [MCP Server (AI Agent Integration)](/mcp-server).
 
+## Authentication
+
+The MCP server is a transparent forwarder — it has no API key of its own. Each connecting client sends an `x-api-key` header on the SSE/HTTP session and the MCP server forwards that key to the Datris REST API on every tool call.
+
+- **Single-tenant OSS with `USE_API_KEYS=false`** (default): the Datris API doesn't validate keys; any value (or none) works. Snippets below still include a placeholder so the client is happy.
+- **Single-tenant OSS with `USE_API_KEYS=true`**: the value must match an entry in the `oss/api-keys` Vault secret. Manage entries from the Configuration UI's Secrets tab — each entry is `name=key`; the *value* is what your client sends.
+- **Hosted / multi-tenant**: each tenant gets a key from the trial provisioning flow. That same key authenticates both the REST API and the MCP server for that tenant.
+
+The Configuration UI's **Connect Your Agent** panel pre-generates the snippets below with your key already pasted in.
+
 ## Configuring Claude Desktop
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows), then quit and relaunch Claude Desktop.
 
-### Recommended: SSE via mcp-remote (Docker stack)
+### Recommended: direct SSE (Docker stack)
 
-If you're running the standard Docker stack, route Claude Desktop through the dockerized MCP server on port 3000 using `mcp-remote`:
+If you're running the standard Docker stack, point Claude Desktop directly at the bundled MCP server on port 3000:
 
 ```json
 {
     "mcpServers": {
         "datris": {
-            "command": "npx",
-            "args": ["-y", "mcp-remote", "http://localhost:3000/sse", "--transport", "sse-only"]
+            "url": "http://localhost:3000/sse",
+            "headers": {
+                "x-api-key": "<paste your Datris API key here>"
+            }
         }
     }
 }
@@ -26,7 +38,32 @@ If you're running the standard Docker stack, route Claude Desktop through the do
 
 Why this is the default: connections via SSE register MCP sessions with the Datris server, so Claude Desktop appears in the **Agents** tab of the Datris UI with live tool-call streaming. The stdio alternative below makes plain REST calls and is invisible to that monitor.
 
-Requires Node.js (for `npx`).
+<Note>
+Claude Desktop opens the SSE stream once at app launch and does not auto-reconnect if the MCP server restarts — you'll see "Failed to call tool" errors until you quit and relaunch the app. If you restart the MCP container often (e.g. during development), use the bridge option below instead.
+</Note>
+
+### Reconnect-safe: SSE via mcp-remote bridge
+
+Wrap the SSE URL with [mcp-remote](https://www.npmjs.com/package/mcp-remote), a tiny npm package that runs as a stdio child of Claude Desktop and transparently reconnects to the SSE endpoint when the server restarts:
+
+```json
+{
+    "mcpServers": {
+        "datris": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp-remote",
+                "http://localhost:3000/sse",
+                "--header",
+                "x-api-key:<paste your Datris API key here>"
+            ]
+        }
+    }
+}
+```
+
+The underlying connection is still SSE to port 3000, so sessions register with the Datris server and the **Agents** tab keeps live tool-call streaming. Requires Node.js on your `PATH` (`brew install node`). On macOS, Claude Desktop is a GUI app and doesn't inherit your shell `PATH`, so use the full path to `npx` (e.g. `/opt/homebrew/bin/npx`) if `npx` alone doesn't resolve.
 
 ### Alternative: stdio via uvx (no Docker)
 
@@ -39,27 +76,33 @@ If you're not running the Docker stack — for example, you only want the MCP se
             "command": "uvx",
             "args": ["datris-mcp-server"],
             "env": {
-                "PIPELINE_URL": "http://localhost:8080"
+                "DATRIS_API_URL": "http://localhost:8080"
             }
         }
     }
 }
 ```
 
-Requires `uv` / `uvx` (`brew install uv`). On macOS, Claude Desktop is a GUI app and doesn't inherit your shell PATH, so use the full path to `uvx` (e.g. `/Users/you/.local/bin/uvx`) if `uvx` alone doesn't resolve. Tool calls will not appear in the Agents tab.
+Requires `uv` / `uvx` (`brew install uv`). On macOS, Claude Desktop is a GUI app and doesn't inherit your shell PATH, so use the full path to `uvx` (e.g. `/Users/you/.local/bin/uvx`) if `uvx` alone doesn't resolve.
+
+<Note>
+The stdio transport has no header layer, so it can't carry an API key. If your Datris instance has `USE_API_KEYS=true`, use the direct-SSE option above instead. With `USE_API_KEYS=false` (single-tenant OSS default), stdio works fine but tool calls won't appear in the Agents tab.
+</Note>
 
 ## Configuring Claude Code
 
 Add to `.mcp.json` in your project root. The same two options apply.
 
-### Recommended: SSE via mcp-remote (Docker stack)
+### Recommended: direct SSE (Docker stack)
 
 ```json
 {
     "mcpServers": {
         "datris": {
-            "command": "npx",
-            "args": ["-y", "mcp-remote", "http://localhost:3000/sse", "--transport", "sse-only"]
+            "url": "http://localhost:3000/sse",
+            "headers": {
+                "x-api-key": "<paste your Datris API key here>"
+            }
         }
     }
 }
@@ -74,7 +117,7 @@ Add to `.mcp.json` in your project root. The same two options apply.
             "command": "uvx",
             "args": ["datris-mcp-server"],
             "env": {
-                "PIPELINE_URL": "http://localhost:8080"
+                "DATRIS_API_URL": "http://localhost:8080"
             }
         }
     }

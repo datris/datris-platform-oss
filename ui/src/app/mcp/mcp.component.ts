@@ -38,9 +38,16 @@ export class McpComponent implements OnInit {
   toolsByCategory: Record<string, McpTool[]> = {};
 
   // Section 3: Config Generator
+  // The connect-your-agent snippet is generated for SSE MCP transport. The agent
+  // (Claude Desktop, Cursor, etc.) connects to the bundled mcp-server's /sse
+  // endpoint and sends `x-api-key` per session — there's no server-side fallback,
+  // so the user must paste a real key from the Configuration UI's Secrets tab.
+  // The default is whatever key the user already entered for this UI session
+  // (api-key-prompt stores it under `datris-api-key`); typically the same value
+  // belongs in their agent config.
   selectedAgent = 'claude-desktop';
-  pipelineUrl = 'http://localhost:8080';
-  pipelineApiKey = localStorage.getItem('datris-api-key') || '';
+  mcpServerUrl = 'http://localhost:3000/sse';
+  agentApiKey = localStorage.getItem('datris-api-key') || '';
   copySuccess = false;
 
   // Section 4: Tool Playground
@@ -637,21 +644,24 @@ export class McpComponent implements OnInit {
 
   // Config Generator
   get configSnippet(): string {
+    // SSE-mode MCP server config. The agent connects to the running mcp-server
+    // over HTTP/SSE and authenticates via the x-api-key header on every session.
+    // If the user hasn't pasted a key yet we render a literal placeholder so
+    // they can see exactly where to put it.
+    const apiKey = this.agentApiKey && this.agentApiKey.length > 0
+      ? this.agentApiKey
+      : '<paste your Datris API key here>';
+
     const config: any = {
       mcpServers: {
         datris: {
-          command: 'python',
-          args: ['mcp-server/server.py'],
-          env: {
-            PIPELINE_URL: this.pipelineUrl
+          url: this.mcpServerUrl,
+          headers: {
+            'x-api-key': apiKey
           }
         }
       }
     };
-
-    if (this.pipelineApiKey) {
-      config.mcpServers.datris.env.PIPELINE_API_KEY = this.pipelineApiKey;
-    }
 
     return JSON.stringify(config, null, 2);
   }
