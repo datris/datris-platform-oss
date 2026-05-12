@@ -53,7 +53,7 @@
           <span class="step-number">3</span>
           <div class="step-content">
             <span class="step-title">Create a pipeline (if needed)</span>
-            <span class="step-detail">call create_pipeline with sample data &mdash; schema is auto-detected. Keep the config simple: source + destination only. Do not add dataQuality or transformation sections unless explicitly requested (use codegen_rule / codegen_transform for plain-English rules).</span>
+            <span class="step-detail">call <code>create_pipeline</code> with sample data &mdash; schema is auto-detected. Keep the config simple: source + destination only. Do not add dataQuality or transformation sections unless explicitly requested (use codegen_rule / codegen_transform for plain-English rules). <strong>create_pipeline upserts by name</strong> &mdash; calling it again with the same name replaces the config in place without dropping destination data, so you can edit a pipeline (add <code>keyFields</code> for dedupe, flip <code>truncate</code>, change <code>codegen_rule</code>) without delete-then-recreate.</span>
           </div>
         </div>
         <div class="workflow-step">
@@ -74,7 +74,7 @@
           <span class="step-number">5a</span>
           <div class="step-content">
             <span class="step-title">Create secrets (if needed)</span>
-            <span class="step-detail">if the tap needs credentials (API keys, tokens), call create_tap_secret first. Each field becomes an env var inside the script.</span>
+            <span class="step-detail">if the tap needs credentials (API keys, tokens), call <code>list_tap_secrets</code> first &mdash; reuse an existing secret by passing its name as <code>secret_name</code> to create_tap. Only create a new one (via <code>create_tap_secret</code>) when nothing existing fits. Use <code>get_tap_secret_fields</code> to confirm a candidate has the required keys (names only; values stay in Vault).</span>
           </div>
         </div>
         <div class="workflow-step step-sub">

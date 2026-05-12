@@ -102,6 +102,11 @@ ai:
     secretName: "oss/embedding"
   webSearch:
     secretName: "oss/web-search"
+  # Enable extended thinking on the Assistant tab's agent loop. Anthropic-only —
+  # surfaces the model's chain-of-thought above the visible response so the user
+  # can watch it reason about which MCP tool to call next. Adds ~$0.05/turn and
+  # ~2-8s latency on Opus. Set to "false" to disable platform-wide.
+  extendedThinking: "true"
 
 # Kafka consumer.
 # Disabled by default since v1.6.15 — the bundled Kafka service is opt-in

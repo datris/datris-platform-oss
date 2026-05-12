@@ -103,6 +103,9 @@ class StartupRunner extends ApplicationRunner {
     @Value("${ai.webSearch.secretName:}")
     var webSearchSecretName: String = _
 
+    @Value("${ai.extendedThinking:true}")
+    var extendedThinking: Boolean = _
+
     @Value("${secrets.qdrantSecretName:}")
     var qdrantSecretName: String = _
 
@@ -303,7 +306,7 @@ class StartupRunner extends ApplicationRunner {
             else loadWebSearchConfigFromSecret(webSearchSecretName)
         webSearchConfig.foreach(c => logger.info("Web search configured: provider=" + c.provider + ", model=" + c.model + ", enabled=" + c.enabled + ", maxUses=" + c.maxUses))
 
-        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, codegenAiConfig = codegenAiConfig, webSearchConfig = webSearchConfig, aiEnabled = aiEnabled))
+        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, codegenAiConfig = codegenAiConfig, webSearchConfig = webSearchConfig, aiEnabled = aiEnabled, extendedThinking = extendedThinking))
     }
 
     /** Load a WebSearchConfig from a self-describing Vault secret. Mirrors the

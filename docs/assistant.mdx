@@ -1,0 +1,99 @@
+---
+title: "Assistant"
+description: "Chat with an in-product agent that finds data sources and builds taps and pipelines for you."
+---
+
+The **Assistant** tab is an in-product agent that wires up taps and pipelines
+for you. You describe what data you want; the agent finds a source, generates
+the tap script, creates the pipeline, links them, and shows you the result —
+all in one chat.
+
+It uses the same MCP tools that external agents (Claude Desktop, Cursor) see
+when they connect to your Datris MCP server. There is one canonical workflow,
+shared between in-product and external agents.
+
+## What you can ask
+
+The Assistant is open-ended. Some examples:
+
+- *"Find a source of US public-company SEC filings and build a tap and pipeline."*
+- *"Pull current weather data from a public API and create a pipeline for it."*
+- *"Ingest the most recent NYC taxi trip data into a pipeline."*
+- *"List the taps that are currently scheduled and tell me which haven't run in over a week."*
+
+The agent will reach for tools as it needs them: web search to find a source,
+`list_taps` / `list_pipelines` to check for existing work, `create_tap_secret`
+when credentials are needed, `create_tap`, `test_tap`, `create_pipeline`, and
+so on.
+
+## What you'll see in real time
+
+Three live layers in every assistant turn:
+
+1. **💭 Thinking** — the model's chain-of-thought, streaming character-by-character.
+   Anthropic tenants see the full reasoning; OpenAI tenants see a high-level
+   summary instead. Click the block to expand.
+2. **Tool cards** — inline within the response. Each card shows a human-friendly
+   label (*"🔍 Searching the web for SEC EDGAR API…"*, *"🛠 Creating tap sec-edgar…"*)
+   with a spinner while running, then a ✓ or ✕. Click to expand the raw input
+   and result.
+3. **Streaming prose** — the response text appears as the model writes it, with
+   tool calls inlined where the model invoked them.
+
+When the agent finishes, **Open tap** and **Open pipeline** links appear at the
+bottom of the turn so you can jump straight to anything it created.
+
+## Safety
+
+The agent has access to every MCP tool, including destructive ones
+(`delete_tap`, `delete_pipeline`, `delete_tap_secret`, `update_secret`). It is
+instructed to **never invoke a destructive tool without asking you first** —
+if you say "delete the broken tap," the agent will name what it's about to
+delete and wait for your confirmation in the chat before proceeding.
+
+The Stop button at the bottom of the chat aborts the loop server-side at the
+next checkpoint, so you can interrupt anytime.
+
+## Reasoning visibility by provider
+
+| Provider | Streaming text | Tool cards | Reasoning block |
+|----------|---------------|------------|-----------------|
+| Anthropic Claude 4.x | ✅ | ✅ | Full chain-of-thought (extended thinking) |
+| OpenAI GPT-5 | ✅ | ✅ | Reasoning summary |
+| Ollama / Llama | ✅ | If the model supports tool calling | None |
+
+Set `ai.extendedThinking: "false"` in `application.yaml` to disable the
+reasoning block platform-wide. Default is on. Extended thinking adds roughly
+$0.05/turn and 2–8s of latency on Opus 4.x — cheap insurance for transparency
+on an agent that's writing production-bound config.
+
+## Configuration
+
+The Assistant uses your tenant's **codegen** AI config (the same one that
+powers tap script generation, AI data quality, and AI transformations). On
+Anthropic tenants the default is Opus 4.x; on OpenAI tenants it's GPT-5.
+
+There is no per-tenant Assistant configuration to manage beyond what you
+already have for codegen. See [AI Configuration](/ai-configuration) for the
+underlying AI primary / codegen / web search / embedding settings.
+
+## Limits
+
+- **25 iterations per turn.** The agent loop is hard-capped to bound cost. If
+  the agent runs out of iterations, it stops and asks you to send a follow-up
+  message to continue.
+- **No conversation history.** v1 is session-only — refreshing the tab clears
+  the conversation. Persistence is on the roadmap.
+- **16K output tokens per LLM call.** Sufficient for thinking + reasoning +
+  tool selection on every public model we support.
+
+## How it relates to other tabs
+
+- **MCP tab** — static catalog of the tools the Assistant uses. Read this if
+  you want to understand what each tool does.
+- **Agents tab** — read-only activity monitor of *external* MCP clients
+  (Claude Desktop, Cursor, scripts) calling your server. The Assistant is the
+  in-product counterpart — same tools, different surface.
+- **Taps tab / Pipelines tab** — anything the Assistant creates lands here.
+  The "→ Open tap" / "→ Open pipeline" links at the end of each conversation
+  route you there.

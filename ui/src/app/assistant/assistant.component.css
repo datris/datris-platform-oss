@@ -1,0 +1,547 @@
+/* Claude-App style chat layout: single centered column, asymmetric.
+   User messages: subtle right-aligned container.
+   Assistant messages: plain prose, full column width, no container.
+   Dark theme to match the in-product nav.   */
+
+.assistant-page {
+  height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  background: #1a1d24;
+  color: #e8e8ea;
+}
+
+.assistant-loading,
+.assistant-init-error {
+  padding: 32px;
+  text-align: center;
+  color: #a0a4ac;
+}
+.assistant-init-error {
+  color: #ff7373;
+}
+.spinner-small {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #3a3f4a;
+  border-top-color: #c0c4cc;
+  border-radius: 50%;
+  animation: assistant-spin 0.8s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+@keyframes assistant-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* --- Top bar (New chat button) --- */
+
+.assistant-topbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 24px 0;
+  background: #1a1d24;
+  border-bottom: 1px solid #2c303a;
+}
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: #c0c4cc;
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  padding: 6px 12px 6px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.topbar-btn:hover:not(:disabled) {
+  background: #262a33;
+  border-color: #4a505c;
+  color: #f0f1f5;
+}
+.topbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.topbar-btn-icon {
+  font-size: 16px !important;
+  width: 16px !important;
+  height: 16px !important;
+  line-height: 16px !important;
+}
+
+/* --- Scroll container and column --- */
+
+.assistant-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 32px 24px 24px;
+}
+.assistant-column {
+  max-width: 768px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* --- Empty state --- */
+
+.empty-state {
+  text-align: center;
+  margin-top: 48px;
+  padding: 0 16px;
+}
+.empty-title {
+  font-size: 28px;
+  font-weight: 500;
+  color: #f0f1f5;
+  margin: 0 0 12px;
+}
+.empty-sub {
+  color: #a8acb4;
+  margin: 0 0 24px;
+  line-height: 1.5;
+}
+.empty-sub strong {
+  color: #e8e8ea;
+}
+.starter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.starter-chip {
+  background: #262a33;
+  border: 1px solid #3a3f4a;
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 14px;
+  color: #d8dae0;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.starter-chip:hover {
+  background: #2f343f;
+  border-color: #4a505c;
+}
+.empty-provider-hint {
+  font-size: 13px;
+  color: #888;
+  font-style: italic;
+  margin-top: 16px;
+}
+
+/* --- User turn (right-aligned, subtle container) --- */
+
+.user-turn {
+  display: flex;
+  justify-content: flex-end;
+}
+.user-bubble {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  padding: 10px 16px;
+  max-width: 80%;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: #f0f1f5;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* --- Assistant turn (no container, prose flow) --- */
+
+.assistant-turn {
+  position: relative;
+  padding-left: 32px;
+  color: #e8e8ea;
+  font-size: 15px;
+  line-height: 1.6;
+}
+.assistant-marker {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  color: #8a8e96;
+}
+.assistant-icon {
+  font-size: 18px !important;
+  width: 18px !important;
+  height: 18px !important;
+}
+
+.prose-segment {
+  white-space: pre-wrap;
+  margin: 8px 0;
+}
+
+/* --- Thinking / reasoning block --- */
+
+.thinking-block {
+  border-left: 2px solid #3a3f4a;
+  padding: 4px 0 4px 12px;
+  margin: 4px 0 12px;
+  color: #8a8e96;
+  font-style: italic;
+  font-size: 13.5px;
+}
+.thinking-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: #8a8e96;
+  font-style: italic;
+  font-size: 13.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.thinking-toggle:hover { color: #c0c4cc; }
+.thinking-spinner {
+  animation: assistant-pulse 1.2s ease-in-out infinite;
+}
+@keyframes assistant-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+.thinking-content {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+/* --- Tool cards (inline within assistant turn) --- */
+
+.tool-card {
+  margin: 8px 0;
+  background: #262a33;
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13.5px;
+}
+.tool-card.tool-error {
+  border-color: #6a3030;
+  background: #2e2424;
+}
+.tool-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13.5px;
+  color: #d8dae0;
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+.tool-header:hover { background: #2f343f; }
+.tool-caret {
+  color: #8a8e96;
+  width: 12px;
+  display: inline-block;
+}
+.tool-icon { width: 18px; text-align: center; }
+.tool-label {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-status {
+  font-weight: 500;
+  min-width: 14px;
+  text-align: center;
+}
+.tool-status-ok      { color: #6ad88a; }
+.tool-status-error   { color: #ff7373; }
+
+/* Inline three-dot pulsing indicator for in-flight tool calls. Each dot has
+   its own animation-delay so motion is obvious even when the page is
+   re-rendering on every streaming SSE event. */
+.dots-mini {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  vertical-align: middle;
+}
+.dots-mini span {
+  width: 4px;
+  height: 4px;
+  background: #a0a4ac;
+  border-radius: 50%;
+  animation: assistant-pulse 1.2s ease-in-out infinite;
+}
+.dots-mini span:nth-child(2) { animation-delay: 0.2s; }
+.dots-mini span:nth-child(3) { animation-delay: 0.4s; }
+
+.tool-body {
+  border-top: 1px solid #3a3f4a;
+  padding: 8px 12px 12px;
+  background: #1f2229;
+}
+.tool-body-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8a8e96;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+.tool-body-label:first-child { margin-top: 0; }
+.tool-body-pre {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  background: #16181d;
+  border: 1px solid #2c303a;
+  border-radius: 4px;
+  padding: 8px;
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #d0d2d8;
+}
+
+/* --- Inline credentials form on request_tap_secret_from_user cards --- */
+
+.secret-form {
+  border-top: 1px solid #3a3f4a;
+  padding: 12px;
+  background: #1f2229;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.secret-form-reason {
+  color: #c0c4cc;
+  font-size: 13.5px;
+  font-style: italic;
+}
+.secret-form-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.secret-mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #d8dae0;
+  cursor: pointer;
+}
+.secret-mode-option input[type="radio"] { accent-color: var(--accent-cyan); }
+.secret-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.secret-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.secret-field-label {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8a8e96;
+}
+.secret-field-input {
+  background: #16181d;
+  border: 1px solid #2c303a;
+  border-radius: 4px;
+  padding: 8px 10px;
+  color: #f0f1f5;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.secret-field-input:focus { border-color: var(--accent-cyan); }
+.secret-form-empty {
+  font-size: 12.5px;
+  color: #8a8e96;
+  font-style: italic;
+}
+.secret-form-error {
+  color: #ff7373;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  background: rgba(255, 60, 60, 0.08);
+  border: 1px solid rgba(255, 60, 60, 0.25);
+  border-radius: 4px;
+}
+.secret-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.secret-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: box-shadow 0.2s, opacity 0.2s;
+}
+.secret-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.secret-btn-save {
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  color: #0a0e1a;
+}
+.secret-btn-save:hover:not(:disabled) { box-shadow: 0 0 12px rgba(0, 180, 255, 0.3); }
+.secret-btn-cancel {
+  background: transparent;
+  color: #c0c4cc;
+  border: 1px solid #3a3f4a;
+}
+.secret-btn-cancel:hover:not(:disabled) {
+  border-color: #4a505c;
+  color: #f0f1f5;
+}
+.secret-form-result {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #6ad88a;
+  background: rgba(106, 216, 138, 0.08);
+  border-top: 1px solid rgba(106, 216, 138, 0.2);
+}
+.secret-form-result-cancelled {
+  color: #c0c4cc;
+  background: rgba(255, 255, 255, 0.04);
+  border-top-color: #3a3f4a;
+}
+
+/* --- Streaming "thinking" dots while no segments yet --- */
+
+.streaming-indicator {
+  margin: 8px 0;
+  color: #8a8e96;
+}
+.dots {
+  display: inline-flex;
+  gap: 4px;
+}
+.dots span {
+  width: 6px;
+  height: 6px;
+  background: #8a8e96;
+  border-radius: 50%;
+  display: inline-block;
+  animation: assistant-pulse 1.2s ease-in-out infinite;
+}
+.dots span:nth-child(2) { animation-delay: 0.2s; }
+.dots span:nth-child(3) { animation-delay: 0.4s; }
+
+/* --- Action links (Open tap / pipeline) --- */
+
+.action-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: rgba(80, 130, 200, 0.12);
+  border: 1px solid rgba(80, 130, 200, 0.24);
+  border-radius: 8px;
+}
+.action-link {
+  color: #82b1ff;
+  text-decoration: none;
+  font-size: 14px;
+}
+.action-link:hover { color: #b3d1ff; text-decoration: underline; }
+
+.assistant-error {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: rgba(255, 60, 60, 0.1);
+  border: 1px solid rgba(255, 60, 60, 0.3);
+  border-radius: 6px;
+  color: #ff9090;
+  font-size: 13.5px;
+}
+
+/* --- Composer (sticky bottom) ---
+   Extra bottom padding so the input doesn't kiss the window edge and the
+   send button has room to look like a proper floating control. */
+
+.composer-wrap {
+  border-top: 1px solid #2c303a;
+  background: #1a1d24;
+  padding: 16px 24px 32px;
+}
+.composer {
+  max-width: 768px;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: #262a33;
+  border: 1px solid #3a3f4a;
+  border-radius: 12px;
+  padding: 8px 8px 8px 12px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+.composer-input {
+  flex: 1 1 auto;
+  border: none;
+  outline: none;
+  resize: none;
+  font: inherit;
+  font-size: 15px;
+  color: #f0f1f5;
+  background: transparent;
+  min-height: 24px;
+  max-height: 200px;
+  padding: 6px 0;
+  line-height: 1.5;
+}
+.composer-input::placeholder { color: #6a6e76; }
+/* Send button: matches the tap-create "Ask" brainstorm button — cyan→green
+   gradient with dark text. Visual consistency across in-product AI affordances. */
+.composer-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  color: #0a0e1a;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: box-shadow 0.2s, opacity 0.2s;
+}
+.composer-btn-icon {
+  font-size: 16px !important;
+  width: 16px !important;
+  height: 16px !important;
+  line-height: 16px !important;
+}
+.composer-btn:hover:not(:disabled) { box-shadow: 0 0 12px rgba(0, 180, 255, 0.3); }
+.composer-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.composer-stop {
+  background: #d34a4a;
+  color: #fff;
+}
+.composer-stop:hover { background: #e25c5c; box-shadow: 0 0 12px rgba(211, 74, 74, 0.3); }
