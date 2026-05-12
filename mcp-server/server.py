@@ -871,7 +871,7 @@ async def list_tools():
                     },
                     "catalog": {
                         "type": "string",
-                        "description": "Optional catalog name to group this pipeline with related pipelines (e.g., 'openclaw', 'finance'). Free-form label — no need to pre-create the catalog."
+                        "description": "OMIT BY DEFAULT. Catalogs are a user-chosen organizational convention — do NOT set a catalog unless the user has explicitly asked to group this pipeline under a named catalog. Assigning one for them puts the pipeline into a taxonomy they didn't ask for. When unset, the platform shows the pipeline as Uncataloged, which is the correct default."
                     }
                 },
                 "required": ["pipeline"]
@@ -881,7 +881,9 @@ async def list_tools():
             name="set_catalog",
             description=(
                 "Set or clear the catalog grouping label on an existing pipeline or tap. "
-                "Catalogs are free-form labels (e.g. 'openclaw', 'finance') used to group related pipelines/taps in the UI and for discovery. "
+                "ONLY call this when the user has explicitly asked to organize work under a named catalog. "
+                "Do NOT call it proactively — catalogs are a user-chosen organizational convention; "
+                "assigning one for them puts the pipeline/tap into a taxonomy they didn't ask for. "
                 "Pass exactly one of `pipeline` or `tap` to identify the target. Pass `catalog` to set the label, or omit it (or pass an empty string) to clear it. "
                 "Survives subsequent re-ingests — `datris ingest` no longer rewrites an existing pipeline's config."
             ),
@@ -906,13 +908,29 @@ async def list_tools():
         ),
         Tool(
             name="delete_pipeline",
-            description="Delete a registered pipeline configuration by name. This removes the config but does not delete any data already processed by the pipeline.",
+            description=(
+                "Delete a pipeline. This is DESTRUCTIVE: by default it removes BOTH the "
+                "pipeline configuration AND all data already written to the destination "
+                "(MongoDB collection rows, Postgres table rows, vector-store entries). "
+                "It also wipes document-tap ledgers and staged files for any tap that "
+                "targets this pipeline, so a recreate gets a clean re-ingest. "
+                "The platform deliberately does NOT support deleting just the config and "
+                "orphaning the data — that creates ghost state. "
+                "If you want to keep the config but wipe the destination data (\"reset\"), "
+                "pass keep_config=true; the config survives, the data does not. "
+                "ALWAYS confirm with the user before calling this tool."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "pipeline": {
                         "type": "string",
                         "description": "Pipeline name to delete"
+                    },
+                    "keep_config": {
+                        "type": "boolean",
+                        "description": "If true, delete only the destination data but keep the pipeline config (useful for a clean reset). Default false (full delete of both config and data).",
+                        "default": False
                     }
                 },
                 "required": ["pipeline"]
@@ -1830,7 +1848,12 @@ def _dispatch(name: str, args: dict) -> str:
         return json.dumps(response)
 
     elif name == "delete_pipeline":
-        return _call("delete", "/api/v1/pipeline", params={"pipeline": args["pipeline"]})
+        params = {"pipeline": args["pipeline"]}
+        if args.get("keep_config", False):
+            # Reset mode: wipe destination data but keep the pipeline config.
+            params["deleteConfig"] = "false"
+            params["deleteData"] = "true"
+        return _call("delete", "/api/v1/pipeline", params=params)
 
     elif name == "upload_data":
         data = {"pipeline": args["pipeline"]}

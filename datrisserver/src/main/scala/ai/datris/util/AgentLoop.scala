@@ -161,7 +161,10 @@ object AgentLoop {
             if (cancelled()) {
                 sink(LoopEvent.Error("Cancelled by user"))
             } else if (iter >= maxIterations) {
-                sink(LoopEvent.Error("Reached max iterations (" + maxIterations + "). Send a follow-up to continue."))
+                sink(LoopEvent.Error(
+                    "I've used " + maxIterations + " iterations on this turn and need to pause so I don't run away on cost. " +
+                    "I haven't failed — I just hit the per-turn iteration cap. " +
+                    "Send a follow-up (\"keep going\", \"continue\", or specific next-step instructions) and I'll pick up where I left off."))
                 sink(LoopEvent.Done)
             } else {
                 sink(LoopEvent.Done)

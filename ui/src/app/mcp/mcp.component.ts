@@ -89,8 +89,24 @@ export class McpComponent implements OnInit {
     },
     // --- Taps ---
     {
+      name: 'list_tap_secrets',
+      description: 'List the names of existing tap secrets (tagged _type=tap). Always call this before create_tap_secret — if a suitable secret already exists, reuse it by passing its name as secret_name to create_tap.',
+      category: 'Taps',
+      parameters: [],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_tap_secret_fields',
+      description: 'Return the field NAMES (keys only — never values) of an existing tap secret. Use after list_tap_secrets to confirm a candidate secret has the keys your tap script needs.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Tap secret name (from list_tap_secrets)', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'create_tap_secret',
-      description: 'Create or update a tap secret. Fields are injected as env vars into the tap script. Call before create_tap when credentials are needed. Agents can only overwrite secrets tagged _type=tap.',
+      description: 'Create or update a tap secret. Fields are injected as env vars into the tap script. Call list_tap_secrets first to check for an existing match. Agents can only overwrite secrets tagged _type=tap.',
       category: 'Taps',
       parameters: [
         { name: 'name', type: 'string', description: 'Secret name (lowercase, hyphenated, e.g. stripe-api-key). Reserved AI-slot names are blocked.', required: true, inputType: 'text' },
@@ -228,22 +244,24 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'create_pipeline',
-      description: 'Create a pipeline from sample data. Schema is auto-detected.',
+      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule) without delete-then-recreate.',
       category: 'Pipeline Management',
       parameters: [
-        { name: 'content', type: 'string', description: 'Base64-encoded sample data', required: true, inputType: 'textarea' },
-        { name: 'filename', type: 'string', description: 'Filename (e.g., data.csv)', required: true, inputType: 'text' },
+        { name: 'content', type: 'string', description: 'Base64-encoded sample data. Required for structured destinations; omit for vector destinations.', required: false, inputType: 'textarea' },
+        { name: 'filename', type: 'string', description: 'Filename (e.g., data.csv). Required for structured destinations.', required: false, inputType: 'text' },
         { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' },
         { name: 'destination', type: 'string', description: 'Destination: postgres, mongodb, qdrant, weaviate, milvus, chroma, pgvector', required: false, inputType: 'text' },
         { name: 'table', type: 'string', description: 'Table/collection name (default: pipeline name)', required: false, inputType: 'text' },
         { name: 'database', type: 'string', description: 'Database name (default: datris)', required: false, inputType: 'text' },
-        { name: 'catalog', type: 'string', description: 'Catalog label to group this pipeline (e.g. openclaw, finance). Free-form — no need to pre-create.', required: false, inputType: 'text' }
+        { name: 'keyFields', type: 'array', description: 'Optional natural-key columns used to dedupe / upsert rows on every run (postgres / mongodb only). E.g. ["user_id", "event_date"] — rows with the same key replace the existing row instead of appending.', required: false, inputType: 'text' },
+        { name: 'truncate', type: 'boolean', description: 'Optional. Wipe destination table/collection before each run (postgres / mongodb only). Default false. Distinct from keyFields: truncate clears everything; keyFields upserts per key.', required: false, inputType: 'text' },
+        { name: 'catalog', type: 'string', description: 'Optional catalog label to group this pipeline with related ones (free-form). Omit by default — users assign catalogs explicitly.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
     {
       name: 'set_catalog',
-      description: 'Set or clear the catalog grouping label on an existing pipeline or tap. Pass exactly one of pipeline or tap. Omit catalog (or pass empty) to clear.',
+      description: 'Set or clear the catalog grouping label on an existing pipeline or tap. ONLY call when the user has explicitly asked to organize work under a named catalog — do not call proactively. Pass exactly one of pipeline or tap. Omit catalog (or pass empty) to clear.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'pipeline', type: 'string', description: 'Pipeline name to update. Mutually exclusive with tap.', required: false, inputType: 'text' },
@@ -254,10 +272,11 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'delete_pipeline',
-      description: 'Delete a pipeline configuration by name.',
+      description: 'DESTRUCTIVE. Deletes BOTH the pipeline config AND the destination data (rows, collection contents, vector store entries). Also wipes document-tap ledgers and staged files for any tap targeting this pipeline. Config-only delete (orphaning the data) is not supported — the platform forces data delete to come along to prevent ghost state. Pass keep_config=true to reset: wipes data, keeps config.',
       category: 'Pipeline Management',
       parameters: [
-        { name: 'pipeline', type: 'string', description: 'Pipeline name to delete', required: true, inputType: 'text' }
+        { name: 'pipeline', type: 'string', description: 'Pipeline name to delete', required: true, inputType: 'text' },
+        { name: 'keep_config', type: 'boolean', description: 'Optional. If true, delete only the destination data and keep the pipeline config (clean reset). Default false (full delete).', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
