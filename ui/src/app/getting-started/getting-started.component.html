@@ -27,7 +27,7 @@
       </article>
 
       <article class="tab-card">
-        <h3><a routerLink="/agent-monitor">Agents</a></h3>
+        <h3><a routerLink="/agent-monitor">Agent Monitor</a></h3>
         <p>
           <strong>Live monitor of connected agents.</strong> Every MCP tool call is
           shown as it happens — agent name, arguments, record count, response size,
@@ -38,21 +38,22 @@
       </article>
 
       <article class="tab-card">
-        <h3><a routerLink="/data-catalog">Data Catalog</a></h3>
+        <h3><a routerLink="/assistant">Assistant</a></h3>
         <p>
-          Organize your data assets into <strong>catalogs</strong> — logical groups of related
-          taps and pipelines. Catalogs are created through Discovery or when building
-          individual taps and pipelines. View, manage, and delete entire catalogs from here.
+          <strong>In-product AI agent for end-to-end tap and pipeline building.</strong>
+          Describe the data you want; the Assistant finds an external source, builds
+          the tap, creates the pipeline, runs it, and shows you the result — all in
+          one chat. Watch the model's reasoning and every tool call inline. The
+          fastest way to onboard a new data source.
         </p>
       </article>
 
       <article class="tab-card">
-        <h3><a routerLink="/discovery">Discovery</a></h3>
+        <h3><a routerLink="/data-catalog">Data Catalog</a></h3>
         <p>
-          <strong>AI-powered data discovery.</strong> Chat about data sources, then let AI
-          enumerate all available datasets. Select the ones you want, configure parameters,
-          and bulk-build taps, pipelines, and schedules — all in one guided flow.
-          The fastest way to onboard a new data source.
+          Organize your data assets into <strong>catalogs</strong> — logical groups of related
+          taps and pipelines. Catalogs are created when building taps and pipelines
+          (manually or via the Assistant). View, manage, and delete entire catalogs from here.
         </p>
       </article>
 
@@ -123,15 +124,15 @@
   <section class="next-steps">
     <h2>Suggested first run</h2>
     <ol>
-      <li>Open <a routerLink="/discovery">Discovery</a> and ask about a data source (e.g., "yfinance" for stock data).</li>
-      <li>Select the datasets you want and build taps — the AI generates scripts and tests them.</li>
-      <li>Create pipelines for each tap and optionally set up schedules.</li>
-      <li>Run the taps and watch data arrive in <a routerLink="/ingestion">Ingestion</a>.</li>
+      <li>Open the <a routerLink="/assistant">Assistant</a> and describe the data you want (e.g., "Pull current weather data from a public API and create a pipeline").</li>
+      <li>Watch the agent find a source, create the tap, build the pipeline, and run it — providing credentials inline if needed.</li>
+      <li>Click straight into the created tap or pipeline from the chat to inspect or tweak it.</li>
+      <li>See records arrive in <a routerLink="/ingestion">Ingestion</a>.</li>
       <li>Query the results in <a routerLink="/search">Search</a>.</li>
     </ol>
     <p class="alt-flow">
       <strong>Alternative:</strong> Open <a routerLink="/taps">Taps</a> to create a single tap manually,
-      or connect an <a routerLink="/mcp">MCP agent</a> to drive the entire workflow programmatically.
+      or connect an external <a routerLink="/mcp">MCP agent</a> (Claude, Cursor, etc.) to drive the entire workflow programmatically.
     </p>
   </section>
 </div>

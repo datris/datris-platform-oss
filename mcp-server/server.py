@@ -1394,58 +1394,6 @@ async def list_tools():
                 "required": ["name"]
             }
         ),
-        # --- Managed Service ---
-        Tool(
-            name="signup_trial",
-            description="Sign up for a free 14-day Datris trial. Returns an API key you can use to connect to the hosted MCP endpoint. No API key required to call this tool — it is the bootstrap for getting one.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "email": {"type": "string", "description": "Email address for the trial account"},
-                    "password": {"type": "string", "description": "Password for the trial account (min 8 characters)"},
-                    "company": {"type": "string", "description": "Company or project name"},
-                    "ai_provider": {
-                        "type": "string",
-                        "enum": ["anthropic", "openai"],
-                        "description": "AI provider for the trial (default: anthropic)"
-                    },
-                },
-                "required": ["email", "password", "company"]
-            }
-        ),
-        Tool(
-            name="upgrade_to_dedicated",
-            description="Upgrade from a shared trial to a dedicated Datris instance. Returns a Stripe checkout URL — the user must complete payment in their browser. After payment, provisioning starts automatically. Use check_upgrade_status to monitor progress.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "droplet_size": {
-                        "type": "string",
-                        "enum": ["s-2vcpu-8gb", "s-4vcpu-16gb", "s-8vcpu-32gb", "s-16vcpu-64gb"],
-                        "description": "Compute size (default: s-2vcpu-8gb)"
-                    },
-                    "storage_gb": {
-                        "type": "integer",
-                        "enum": [25, 50, 100, 250, 500, 1000],
-                        "description": "Block storage in GB (default: 25)"
-                    },
-                    "region": {
-                        "type": "string",
-                        "description": "Datacenter region (default: nyc1). Options: nyc1, nyc3, sfo3, ams3, lon1, fra1, tor1, blr1, sgp1, syd1"
-                    },
-                },
-                "required": []
-            }
-        ),
-        Tool(
-            name="check_upgrade_status",
-            description="Check the status of a dedicated instance upgrade. Returns 'none' if no upgrade started, 'provisioning' if in progress, or 'active' with the new MCP endpoint URL and API key when ready. No input needed — your identity is resolved from your API key.",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            }
-        ),
-
         # --- Discovery ---
         Tool(
             name="discover_source",
@@ -2094,82 +2042,6 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps({"error": f"Secret '{secret_name}' is not a tap secret. Agents can only delete tap secrets."})
         return _call("delete", f"/api/v1/secrets/{secret_name}")
 
-    # --- Managed Service ---
-    elif name == "signup_trial":
-        payload = {
-            "email": args["email"],
-            "password": args["password"],
-            "company": args["company"],
-            "ai_provider": args.get("ai_provider", "anthropic"),
-        }
-        try:
-            resp = requests.post(f"{WEBSITE_URL}/api/provision/agent-trial", json=payload, timeout=30)
-            data = resp.json()
-            if resp.status_code == 201:
-                return json.dumps({
-                    "status": "Trial created",
-                    "api_key": data.get("apiKey"),
-                    "mcp_url": f"https://mcp.trial.datris.ai/sse",
-                    "trial_expires": data.get("trialExpires"),
-                    "message": "Reconnect to the MCP endpoint with your API key in the x-api-key header to start using Datris tools."
-                })
-            return json.dumps({"error": data.get("error", f"Signup failed (HTTP {resp.status_code})")})
-        except requests.RequestException as e:
-            return json.dumps({"error": f"Failed to reach Datris website: {e}"})
-
-    elif name == "upgrade_to_dedicated":
-        api_key = _effective_api_key()
-        if not api_key:
-            return json.dumps({"error": "API key required. Sign up first using signup_trial."})
-        payload = {
-            "dropletSize": args.get("droplet_size", "s-2vcpu-8gb"),
-            "storageGb": args.get("storage_gb", 25),
-            "region": args.get("region", "nyc1"),
-        }
-        try:
-            resp = requests.post(
-                f"{WEBSITE_URL}/api/billing/checkout",
-                json=payload,
-                headers={"x-api-key": api_key},
-                timeout=30
-            )
-            data = resp.json()
-            if resp.status_code == 200 and data.get("url"):
-                return json.dumps({
-                    "status": "Checkout ready",
-                    "checkout_url": data["url"],
-                    "message": "Open this URL in a browser to complete payment. After payment, provisioning starts automatically. Use check_upgrade_status to monitor progress."
-                })
-            return json.dumps({"error": data.get("error", f"Checkout failed (HTTP {resp.status_code})")})
-        except requests.RequestException as e:
-            return json.dumps({"error": f"Failed to reach Datris website: {e}"})
-
-    elif name == "check_upgrade_status":
-        api_key = _effective_api_key()
-        if not api_key:
-            return json.dumps({"error": "API key required. Sign up first using signup_trial."})
-        try:
-            resp = requests.get(
-                f"{WEBSITE_URL}/api/provision/status",
-                headers={"x-api-key": api_key},
-                timeout=30
-            )
-            data = resp.json()
-            status = data.get("status", "none")
-            result = {"status": status}
-            if status == "active" and data.get("domain"):
-                result["domain"] = data["domain"]
-                result["mcp_url"] = f"https://mcp.{data['domain']}/sse"
-                result["api_key"] = data.get("apiKey")
-                result["message"] = "Your dedicated instance is ready! Reconnect to the new MCP URL with the new API key."
-            elif status == "provisioning":
-                result["message"] = "Your dedicated instance is being provisioned. Check back in a few minutes."
-            elif status == "none":
-                result["message"] = "No upgrade in progress. Use upgrade_to_dedicated to start."
-            return json.dumps(result)
-        except requests.RequestException as e:
-            return json.dumps({"error": f"Failed to reach Datris website: {e}"})
-
     # --- Discovery ---
     elif name == "discover_source":
         messages = args.get("messages")
@@ -2483,7 +2355,7 @@ async def run_sse(port: int):
                     await send({"type": "http.response.start", "status": 401,
                                 "headers": [[b"content-type", b"application/json"]]})
                     await send({"type": "http.response.body",
-                                "body": b'{"error":"x-api-key header required. Use the signup_trial tool or sign up at datris.ai to get an API key."}'})
+                                "body": b'{"error":"x-api-key header required. Sign up at datris.ai to get an API key."}'})
                     return
                 _session_api_key.set(api_key)
                 sess_id = uuid.uuid4().hex
@@ -2553,7 +2425,7 @@ async def run_streamable_http(port: int):
                     await send({"type": "http.response.start", "status": 401,
                                 "headers": [[b"content-type", b"application/json"]]})
                     await send({"type": "http.response.body",
-                                "body": b'{"error":"x-api-key header required. Use the signup_trial tool or sign up at datris.ai to get an API key."}'})
+                                "body": b'{"error":"x-api-key header required. Sign up at datris.ai to get an API key."}'})
                     return
                 _session_api_key.set(api_key)
                 sess_id = uuid.uuid4().hex

@@ -6,6 +6,8 @@
 
 - **Assistant: keep typing without clicking.** After you send a question, the cursor stays in the composer — so as soon as the agent finishes (or even while it's still working), you can type your next prompt without reaching for the mouse.
 - **AI Configuration: provider switches no longer wipe your overrides.** Switching the primary AI, codegen, or embedding provider used to clear the saved provider/model/endpoint on the next page load, so you had to re-pick them every time. Your selections now persist correctly through a provider switch (you still re-enter the API key when changing providers — that's intentional).
+- **Connect Your Agent: paste-and-go for local.** The MCP tab's generated config no longer asks for an API key for the default local setup — paste the snippet into your agent and it just works. A key is still required when you point the snippet at a hosted, trial, or dedicated instance.
+- **Trial signup and dedicated upgrade move fully to the website.** The corresponding agent tools have been removed — users finish those flows in a browser anyway. The Getting Started tab has also been refreshed to point at the Assistant for the common onboarding path.
 
 **Upgrading**
 

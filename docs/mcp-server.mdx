@@ -111,19 +111,9 @@ For a document tap, `create_tap` **requires** the `target_pipeline` to have an `
 | `upload_config` | Upload a JSON Schema config file (base64-encoded content) |
 | `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
 
-### Managed Service
-
-Tools for signing up, upgrading, and monitoring hosted Datris instances. Available on the remote MCP endpoint at `mcp.trial.datris.ai`.
-
-| Tool | Description |
-|------|-------------|
-| `signup_trial` | Sign up for a free 14-day trial. Returns an API key and MCP endpoint URL. No authentication required. |
-| `upgrade_to_dedicated` | Upgrade from shared trial to a dedicated instance. Returns a Stripe checkout URL. |
-| `check_upgrade_status` | Check provisioning status. Returns `none`, `provisioning`, or `active` with the new MCP endpoint. |
-
 ## Monitoring Active Agents
 
-The [Datris UI](http://localhost:4200) includes an **Agents** tab that shows a live view of every agent currently connected to the MCP server and a streaming log of the tool calls each one is making. Agents are labeled using their MCP `clientInfo.name` — so Claude Desktop appears as `claude-ai`, Claude Code as `claude-code`, Cursor as `cursor`, and so on — with graceful fallbacks to tenant name, API-key name, or session id for clients that don't supply one. See [Monitoring → Agent Monitor](/monitoring#agent-monitor) for details.
+The [Datris UI](http://localhost:4200) includes an **Agent Monitor** tab that shows a live view of every agent currently connected to the MCP server and a streaming log of the tool calls each one is making. Agents are labeled using their MCP `clientInfo.name` — so Claude Desktop appears as `claude-ai`, Claude Code as `claude-code`, Cursor as `cursor`, and so on — with graceful fallbacks to tenant name, API-key name, or session id for clients that don't supply one. See [Monitoring → Agent Monitor](/monitoring#agent-monitor) for details.
 
 ## Setup
 

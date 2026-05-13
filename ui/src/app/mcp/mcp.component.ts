@@ -38,13 +38,14 @@ export class McpComponent implements OnInit {
   toolsByCategory: Record<string, McpTool[]> = {};
 
   // Section 3: Config Generator
-  // The connect-your-agent snippet is generated for SSE MCP transport. The agent
-  // (Claude Desktop, Cursor, etc.) connects to the bundled mcp-server's /sse
-  // endpoint and sends `x-api-key` per session — there's no server-side fallback,
-  // so the user must paste a real key from the Configuration UI's Secrets tab.
-  // The default is whatever key the user already entered for this UI session
-  // (api-key-prompt stores it under `datris-api-key`); typically the same value
-  // belongs in their agent config.
+  // The connect-your-agent snippet uses the `npx mcp-remote` stdio bridge,
+  // which Claude Desktop / Claude Code / Cursor all support uniformly. The
+  // bridge connects to the bundled mcp-server's SSE endpoint and transparently
+  // reconnects on restarts. `--transport sse-only` pins the protocol so the
+  // bridge doesn't try its streamable-HTTP fallback. The default local server
+  // runs without auth, so the API key field is optional — when blank, the
+  // snippet omits the `--header` flag entirely. Hosted / trial / dedicated
+  // deployments require a key, which mcp-remote forwards as `x-api-key`.
   selectedAgent = 'claude-desktop';
   mcpServerUrl = 'http://localhost:3000/sse';
   agentApiKey = localStorage.getItem('datris-api-key') || '';
@@ -539,37 +540,6 @@ export class McpComponent implements OnInit {
       ],
       playgroundEnabled: true
     },
-    // --- Managed Service ---
-    {
-      name: 'signup_trial',
-      description: 'Sign up for a free 14-day Datris trial. Returns an API key for the hosted MCP endpoint. No API key required.',
-      category: 'Managed Service',
-      parameters: [
-        { name: 'email', type: 'string', description: 'Email address', required: true, inputType: 'text' },
-        { name: 'password', type: 'string', description: 'Password (min 8 characters)', required: true, inputType: 'text' },
-        { name: 'company', type: 'string', description: 'Company or project name', required: true, inputType: 'text' },
-        { name: 'ai_provider', type: 'string', description: 'AI provider: anthropic or openai (default: anthropic)', required: false, inputType: 'text' }
-      ],
-      playgroundEnabled: false
-    },
-    {
-      name: 'upgrade_to_dedicated',
-      description: 'Upgrade from shared trial to a dedicated instance. Returns a Stripe checkout URL for payment.',
-      category: 'Managed Service',
-      parameters: [
-        { name: 'droplet_size', type: 'string', description: 'Compute size (default: s-2vcpu-8gb)', required: false, inputType: 'text' },
-        { name: 'storage_gb', type: 'integer', description: 'Block storage in GB (default: 25)', required: false, inputType: 'text' },
-        { name: 'region', type: 'string', description: 'Datacenter region (default: nyc1)', required: false, inputType: 'text' }
-      ],
-      playgroundEnabled: false
-    },
-    {
-      name: 'check_upgrade_status',
-      description: 'Check dedicated instance provisioning status. Returns new MCP endpoint URL and API key when ready.',
-      category: 'Managed Service',
-      parameters: [],
-      playgroundEnabled: false
-    }
   ];
 
   constructor(private mcpService: McpService) { }
@@ -663,26 +633,18 @@ export class McpComponent implements OnInit {
 
   // Config Generator
   get configSnippet(): string {
-    // SSE-mode MCP server config. The agent connects to the running mcp-server
-    // over HTTP/SSE and authenticates via the x-api-key header on every session.
-    // If the user hasn't pasted a key yet we render a literal placeholder so
-    // they can see exactly where to put it.
-    const apiKey = this.agentApiKey && this.agentApiKey.length > 0
-      ? this.agentApiKey
-      : '<paste your Datris API key here>';
-
-    const config: any = {
+    // `npx mcp-remote` stdio bridge with --transport sse-only. No header flag
+    // for the default local server (no auth). When the user pastes a key, we
+    // append `--header x-api-key:<key>` so it's forwarded on every call.
+    const args: string[] = ['-y', 'mcp-remote', this.mcpServerUrl, '--transport', 'sse-only'];
+    if (this.agentApiKey && this.agentApiKey.length > 0) {
+      args.push('--header', `x-api-key:${this.agentApiKey}`);
+    }
+    return JSON.stringify({
       mcpServers: {
-        datris: {
-          url: this.mcpServerUrl,
-          headers: {
-            'x-api-key': apiKey
-          }
-        }
+        datris: { command: 'npx', args }
       }
-    };
-
-    return JSON.stringify(config, null, 2);
+    }, null, 2);
   }
 
   get configFileHint(): string {

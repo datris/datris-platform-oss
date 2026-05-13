@@ -152,6 +152,7 @@
         <h3 class="discovery-subtitle">Transports</h3>
         <div class="transport-badges">
           <span class="transport-badge">stdio</span>
+          <span class="transport-badge">streamable-HTTP</span>
           <span class="transport-badge">SSE</span>
         </div>
       </div>
@@ -246,8 +247,8 @@
         <input class="form-input" [(ngModel)]="mcpServerUrl" placeholder="http://localhost:3000/sse">
       </div>
       <div class="form-field">
-        <label class="form-label">API Key</label>
-        <input class="form-input" [(ngModel)]="agentApiKey" placeholder="Paste your Datris API key">
+        <label class="form-label">API Key <span class="param-hint">(optional for local; required for hosted)</span></label>
+        <input class="form-input" [(ngModel)]="agentApiKey" placeholder="Leave blank for default local setup">
       </div>
     </div>
 
