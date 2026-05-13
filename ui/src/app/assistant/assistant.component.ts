@@ -26,6 +26,7 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
 
   private scrollPending = false;
   private lastTurnCount = 0;
+  private wasStreaming = false;
 
   /** Names of existing tap secrets — used by the credentials form's
    *  "Use existing secret" dropdown. Loaded lazily the first time a form
@@ -70,6 +71,20 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
       this.lastTurnCount = turnCount;
       this.scrollToBottom();
     }
+    // When a stream finishes, drop focus back into the composer so the user
+    // can immediately type a follow-up. Skip if they've already moved focus
+    // into another field (e.g., a credentials form rendered inside a turn).
+    if (this.wasStreaming && !this.state.streaming) {
+      this.wasStreaming = false;
+      const active = document.activeElement as HTMLElement | null;
+      const tag = active?.tagName;
+      const inField = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!active?.isContentEditable;
+      if (!inField) {
+        requestAnimationFrame(() => this.composerEl?.nativeElement.focus());
+      }
+    } else if (this.state.streaming) {
+      this.wasStreaming = true;
+    }
   }
 
   private scrollToBottom(): void {
@@ -100,6 +115,7 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
   onComposerKeydown(e: KeyboardEvent): void {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (this.state.streaming) return;
       this.send();
     }
   }

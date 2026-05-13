@@ -205,7 +205,7 @@
           (input)="autoGrowComposer()"
           placeholder="Describe the data you want to ingest…"
           rows="1"
-          [disabled]="state.streaming"></textarea>
+          [readonly]="state.streaming"></textarea>
         <button class="composer-btn"
                 *ngIf="!state.streaming"
                 [disabled]="!state.draft.trim()"

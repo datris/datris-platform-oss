@@ -270,7 +270,12 @@ export class ConfigurationComponent implements OnInit {
     this.http.get<any>('/api/v1/secrets/ai-primary').subscribe({
       next: (data) => {
         const fields = data && data.fields;
-        if (fields && (fields.apiKey || (fields.provider || '').toLowerCase() === 'ollama')) {
+        // Load the saved override whenever the secret has ANY meaningful state
+        // (apiKey, Ollama provider, OR just a stored provider). The apiKey can
+        // be missing after a provider switch — the backend intentionally drops
+        // it so the old provider's key isn't sent to the new one. That doesn't
+        // mean the saved provider/model/endpoint should be ignored.
+        if (fields && (fields.apiKey || fields.provider)) {
           this.aiPrimaryProvider = (fields.provider || 'anthropic').toLowerCase();
           this.prevAiPrimaryProvider = this.aiPrimaryProvider;
           this.aiPrimaryModel = fields.model || '';
@@ -290,7 +295,9 @@ export class ConfigurationComponent implements OnInit {
     this.http.get<any>('/api/v1/secrets/codegen').subscribe({
       next: (data) => {
         const fields = data && data.fields;
-        if (fields && (fields.apiKey || (fields.provider || '').toLowerCase() === 'ollama')) {
+        // Same relaxation as ai-primary: load the override whenever a provider
+        // is stored, even if apiKey was cleared by a provider switch.
+        if (fields && (fields.apiKey || fields.provider)) {
           this.codegenProvider = (fields.provider || 'anthropic').toLowerCase();
           this.prevCodegenProvider = this.codegenProvider;
           this.codegenModel = fields.model || '';
@@ -342,7 +349,9 @@ export class ConfigurationComponent implements OnInit {
         const fields = data && data.fields;
         const loadedProvider = (fields && fields.provider || '').toLowerCase();
         const isBundledNoKey = loadedProvider === 'ollama' || loadedProvider === 'tei';
-        if (fields && (fields.apiKey || isBundledNoKey)) {
+        // Same relaxation as ai-primary / codegen: load the override whenever
+        // a provider is stored, even if apiKey was cleared by a provider switch.
+        if (fields && (fields.apiKey || isBundledNoKey || loadedProvider)) {
           let ep = loadedProvider || 'openai';
           // Distinguish bundled vs unbundled Ollama by endpoint — bundled uses docker hostname.
           if (ep === 'ollama' && fields.endpoint && !fields.endpoint.includes('ollama:')) {
