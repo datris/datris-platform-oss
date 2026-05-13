@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.7.1" description="May 13, 2026">
+  **Polish for the Assistant and AI Configuration tabs.**
+
+  - **Assistant: keep typing without clicking.** After you send a question, the cursor stays in the composer — so as soon as the agent finishes (or even while it's still working), you can type your next prompt without reaching for the mouse.
+  - **AI Configuration: provider switches no longer wipe your overrides.** Switching the primary AI, codegen, or embedding provider used to clear the saved provider/model/endpoint on the next page load, so you had to re-pick them every time. Your selections now persist correctly through a provider switch (you still re-enter the API key when changing providers — that's intentional).
+
+  **Upgrading:** `docker compose pull && docker compose up -d`. No data migration needed. The CLI: `brew upgrade datris`.
+</Update>
+
 <Update label="v1.7.0" description="May 12, 2026">
   **A new in-product Assistant — chat your way from "I need data" to a working pipeline.**
 
