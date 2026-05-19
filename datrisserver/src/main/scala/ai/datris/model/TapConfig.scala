@@ -29,5 +29,6 @@ case class TapConfig(
     lastTestRunColumns: java.util.List[String] = null,
     createdAt: String = null,
     updatedAt: String = null,
-    catalog: String = null
+    catalog: String = null,
+    createdByKeyLabel: String = null
 )

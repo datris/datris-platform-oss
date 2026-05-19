@@ -250,9 +250,15 @@ def _activity_snapshot(since: float) -> dict[str, Any]:
 server = Server("datris", instructions="""\
 Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, and vector stores — all driven by pipeline configurations that AI agents can create and manage programmatically.
 
+FIRST-RESPONSE RULE (read this before anything else):
+When the user makes ANY data-related ask — "I'm looking for X", "can you get me Y", "do you have Z", "I need data about W", "help me ingest...", or anything similar — your FIRST tool call MUST be `list_pipelines` AND `list_taps`. Do this BEFORE generating any text reply. Do this BEFORE suggesting external sources (SEC EDGAR, yfinance, Alpha Vantage, etc.). Do this BEFORE asking clarifying scope questions. The user is connected to a Datris environment that likely already has the data they want — assume YES until your tool calls prove otherwise.
+
+After those calls return, anchor your reply in what exists: "There's already a `<name>` pipeline doing X — does that cover your need, or do you want to extend it / add Y / pick a different source?" Only enumerate external API options after you've confirmed nothing in the platform already covers the ask. A generic options menu drawn from training data wastes the user's time when the answer is sitting in their own environment.
+
 A pipeline config has two required sections: source and destination. Keep configs simple: source + destination only.
 
 NEVER rules:
+  - NEVER respond to a data-related ask without first calling list_pipelines and list_taps (see FIRST-RESPONSE RULE above)
   - NEVER use profile_data to determine how to generate a pipeline configuration
   - NEVER add dataQuality or transformation sections unless explicitly requested
   - If data quality is needed, use codegen_rule on create_pipeline (plain-English validation instruction)
@@ -793,7 +799,7 @@ async def list_tools():
         # --- Pipeline Management ---
         Tool(
             name="list_pipelines",
-            description="List all registered pipeline configurations. Each pipeline defines a complete data processing flow: source format and schema, AI-powered data quality and transformations, and destination (database, message queue, or vector store).",
+            description="List all registered pipeline configurations. Each pipeline defines a complete data processing flow: source format and schema, AI-powered data quality and transformations, and destination (database, message queue, or vector store). CALL THIS FIRST on any data-related user request — before suggesting external sources, before asking scope questions. The user almost always cares more about what's already in their Datris environment than about a generic options menu.",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -1471,7 +1477,7 @@ async def list_tools():
         ),
         Tool(
             name="list_taps",
-            description="List all taps with their status, target pipeline, schedule, and last run info.",
+            description="List all taps with their status, target pipeline, schedule, and last run info. CALL THIS FIRST (alongside list_pipelines) on any data-related user request — the user's existing taps often reveal what's already being pulled and where, which short-circuits the entire 'should I suggest an external API?' conversation.",
             inputSchema={
                 "type": "object",
                 "properties": {},

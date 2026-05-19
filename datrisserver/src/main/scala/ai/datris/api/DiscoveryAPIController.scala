@@ -7,8 +7,10 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonParser}
+import ai.datris.auth.ResolvedKeyAccess
 import ai.datris.model.{TapConfig, PipelineConfig, Source, Destination, FileAttributes, JsonAttributes, Database, DatrisEnvironment, DatrisException}
 import ai.datris.util._
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -324,10 +326,12 @@ class DiscoveryAPIController {
 
     @PostMapping(path = Array("/discover/build"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def build(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-              @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+              @RequestBody body: java.util.Map[String, Any],
+              request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /discover/build called")
             APIKeyValidator.validate(apiKey)
+            val ownerLabel = ResolvedKeyAccess.keyLabel(request).orNull
 
             val prefix = Option(body.get("prefix")).map(_.toString).getOrElse("discovery")
             val datasetsRaw = body.get("datasets").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
@@ -412,7 +416,8 @@ class DiscoveryAPIController {
                         lastTestRunDataType = "",
                         lastTestRunColumns = new java.util.ArrayList[String](),
                         createdAt = now,
-                        updatedAt = now
+                        updatedAt = now,
+                        createdByKeyLabel = ownerLabel
                     )
                     TapConfigIO.write(tapConfig)
 
@@ -434,7 +439,8 @@ class DiscoveryAPIController {
                                         useMongoDB = true,
                                         truncateBeforeWrite = false
                                     )
-                                )
+                                ),
+                                createdByKeyLabel = ownerLabel
                             )
 
                             PipelineConfigIO.write(pipelineConfig)

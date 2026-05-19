@@ -4,7 +4,7 @@ import { ActivatedRoute } from '@angular/router';
 import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
 
-type ConfigTab = 'environment' | 'ai-providers' | 'taps' | 'users' | 'secrets';
+type ConfigTab = 'environment' | 'ai-providers' | 'users' | 'secrets' | 'keys';
 
 @Component({
   selector: 'app-configuration',
@@ -81,6 +81,7 @@ export class ConfigurationComponent implements OnInit {
   isTrial = false;
   isHosted = false;
   multiTenant = false;
+  useApiKeys = false;
   saving = false;
   success = '';
   error = '';
@@ -108,12 +109,22 @@ export class ConfigurationComponent implements OnInit {
     return !this.isTrial && (!this.useUserAuth || this.isAdmin());
   }
 
+  /** Keys are managed by admins only when user-auth is on. In legacy
+   *  no-user-auth mode the whole UI is essentially admin, so anyone with
+   *  access to the page can see them. Hidden on trial droplets (matches
+   *  Secrets) since the platform's keys are managed centrally there.
+   *  Also hidden when USE_API_KEYS=false — issuing keys is pointless when
+   *  the validation layer isn't checking them. */
+  get canSeeKeys(): boolean {
+    return this.useApiKeys && !this.isTrial && (!this.useUserAuth || this.isAdmin());
+  }
+
   ngOnInit(): void {
     // Honor ?tab=<name> for deep-links (e.g. the redirect from /secrets).
     this.route.queryParamMap.subscribe(p => {
       const t = p.get('tab');
-      if (t === 'environment' || t === 'ai-providers' || t === 'taps' ||
-          t === 'users' || t === 'secrets') {
+      if (t === 'environment' || t === 'ai-providers' ||
+          t === 'users' || t === 'secrets' || t === 'keys') {
         this.activeTab = t;
       }
     });
@@ -127,10 +138,16 @@ export class ConfigurationComponent implements OnInit {
         this.isHosted = String(data.hosted) === 'true';
         this.multiTenant = String(data.multiTenant) === 'true';
         this.useUserAuth = String(data.useUserAuth) === 'true';
+        this.useApiKeys = String(data.useApiKeys) === 'true';
         // The Users sub-tab only exists when user-auth is on. If a deep-link
         // (or stale URL) put us on activeTab='users' before we knew that,
         // bounce back to the default so the page isn't blank.
         if (this.activeTab === 'users' && !this.useUserAuth) {
+          this.activeTab = 'ai-providers';
+        }
+        // Same fallback for the API-Keys tab when USE_API_KEYS is off — the
+        // tab is hidden, so a deep-link landing on it would show nothing.
+        if (this.activeTab === 'keys' && !this.canSeeKeys) {
           this.activeTab = 'ai-providers';
         }
         // Load the model catalog before reading secrets so maybeAddExtraModel compares

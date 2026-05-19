@@ -42,6 +42,11 @@ object AgentLoop {
           * The loop ends after this so the user can submit; their next chat message
           * resumes the conversation. */
         case class  SecretRequest(id: String, secretName: String, fieldNames: List[String], reason: String) extends LoopEvent
+        /** Transient system message — surfaced to the user as a small inline note,
+          * not as part of the assistant's textual response. Currently used to tell
+          * the user when the model was downgraded mid-request (e.g., Opus → Sonnet
+          * after sustained `overloaded_error` from Anthropic). */
+        case class  Notice(message: String)                              extends LoopEvent
         case object Done                                                 extends LoopEvent
         case class  Error(message: String)                               extends LoopEvent
     }
@@ -88,14 +93,16 @@ object AgentLoop {
                 iter += 1
                 sink(LoopEvent.IterationStart)
 
-                val response: AIToolResponse = AIUtil.callAIWithToolsStreaming(
+                val response: AIToolResponse = callWithRetryAndFallback(
                     aiConfig = aiConfig,
                     system = system,
                     messages = messages,
                     tools = anthropicTools,
-                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(aiConfig),
+                    enableThinking = enableThinking,
                     maxTokens = maxTokensPerCall,
-                    sink = streamSinkAdapter(sink)
+                    sink = streamSinkAdapter(sink),
+                    cancelled = cancelled,
+                    notice = (msg: String) => sink(LoopEvent.Notice(msg))
                 )
 
                 if (cancelled()) {
@@ -210,5 +217,124 @@ object AgentLoop {
             else JsonParser.parseString("""{"type":"object","properties":{}}""")
         out.add("input_schema", schema)
         out
+    }
+
+    /** Backoff schedule for `overloaded_error` retries. Anthropic's load-shedding
+      * typically clears within a few seconds, and the heaviest shapes (Opus +
+      * extended thinking + many tools + streaming) sit in the most-shed lane. */
+    private val OverloadBackoffMs: List[Long] = List(1000L, 3000L)
+
+    /** Calls the Anthropic streaming API with retry-and-fallback around
+      * `overloaded_error`. Retries the same model 3 times with exponential
+      * backoff (1s, 3s, 8s). If still overloaded after that, attempts one
+      * final call on a lighter sibling model (Opus → Sonnet) and surfaces
+      * a `Notice` event so the UI can show "running on X — Y was overloaded".
+      *
+      * Stream events emitted by failed attempts are swallowed — the user
+      * only sees the successful attempt's stream. Non-overloaded errors
+      * propagate immediately (no retry). Cancellation is honored between
+      * attempts and during backoff sleeps. */
+    private def callWithRetryAndFallback(
+        aiConfig: AIConfig,
+        system: String,
+        messages: List[(String, List[AIContentBlock])],
+        tools: List[JsonObject],
+        enableThinking: Boolean,
+        maxTokens: Int,
+        sink: AIStreamEvent => Unit,
+        cancelled: () => Boolean,
+        notice: String => Unit
+    ): AIToolResponse = {
+        var emitStreamErrors = false
+        val gatedSink: AIStreamEvent => Unit = {
+            case AIStreamEvent.Error(_) if !emitStreamErrors => ()
+            case other                                       => sink(other)
+        }
+
+        var lastOverloadError: Throwable = null
+
+        // Attempt 0 = original call; attempts 1..N = retries with backoff.
+        var attempt = 0
+        while (attempt <= OverloadBackoffMs.length) {
+            if (cancelled()) throw new DatrisException("Cancelled by user")
+            if (attempt > 0) {
+                val sleepMs = OverloadBackoffMs(attempt - 1)
+                logger.warn(
+                    "AgentLoop: Anthropic overloaded; retrying in " + sleepMs +
+                    "ms (retry " + attempt + " of " + OverloadBackoffMs.length + ")"
+                )
+                try Thread.sleep(sleepMs)
+                catch { case _: InterruptedException => throw new DatrisException("Cancelled by user") }
+            }
+            try {
+                return AIUtil.callAIWithToolsStreaming(
+                    aiConfig = aiConfig,
+                    system = system,
+                    messages = messages,
+                    tools = tools,
+                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(aiConfig),
+                    maxTokens = maxTokens,
+                    sink = gatedSink
+                )
+            } catch {
+                case e: DatrisException if isOverloadedError(e) =>
+                    lastOverloadError = e
+                    attempt += 1
+                // Non-overloaded errors propagate out of the loop naturally.
+            }
+        }
+
+        // All in-model retries exhausted. One more attempt on a lighter model.
+        sonnetFallbackFor(aiConfig) match {
+            case Some(fallbackModel) =>
+                val fallbackCfg = aiConfig.copy(model = fallbackModel)
+                logger.warn(
+                    "AgentLoop: Anthropic overloaded after " + OverloadBackoffMs.length +
+                    " retries on " + aiConfig.model + "; falling back to " + fallbackModel + " for this request"
+                )
+                notice("Running on " + fallbackModel + " — " + aiConfig.model + " is currently overloaded.")
+                emitStreamErrors = true
+                AIUtil.callAIWithToolsStreaming(
+                    aiConfig = fallbackCfg,
+                    system = system,
+                    messages = messages,
+                    tools = tools,
+                    enableThinking = enableThinking && AIUtil.supportsExtendedThinking(fallbackCfg),
+                    maxTokens = maxTokens,
+                    sink = gatedSink
+                )
+            case None =>
+                // No lighter model to fall back to. Surface the original error.
+                val msg = if (lastOverloadError != null && lastOverloadError.getMessage != null)
+                    lastOverloadError.getMessage else "Anthropic overloaded"
+                sink(AIStreamEvent.Error(msg))
+                throw (if (lastOverloadError != null) lastOverloadError else new DatrisException(msg))
+        }
+    }
+
+    private def isOverloadedError(e: Throwable): Boolean = {
+        val msg = if (e == null || e.getMessage == null) "" else e.getMessage
+        msg.contains("overloaded_error")
+    }
+
+    /** Lighter sibling model to fall back to under sustained overload.
+      * Only defined for Anthropic + Opus today — OpenAI and other providers
+      * return None and the caller surfaces the original error.
+      *
+      * The Anthropic default (`claude-sonnet-4-6`) is only consulted on the
+      * Anthropic+Opus path, so an OpenAI-only deployment never carries a
+      * Claude string in its config surface. Operator-overridable via
+      * `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` so the fallback can be bumped
+      * when a newer Sonnet ships without a recompile.
+      *
+      * Returns None when the override equals the current model (avoids a
+      * no-op retry if someone misconfigures it to the same Opus). */
+    private def sonnetFallbackFor(cfg: AIConfig): Option[String] = {
+        val provider = if (cfg.provider == null) "" else cfg.provider.toLowerCase
+        val model    = if (cfg.model == null) "" else cfg.model.toLowerCase
+        if (provider == "anthropic" && model.contains("opus")) {
+            val fallback = sys.env.getOrElse("ANTHROPIC_OVERLOAD_FALLBACK_MODEL", "claude-sonnet-4-6").trim
+            if (fallback.nonEmpty && fallback != cfg.model) Some(fallback) else None
+        } else None
     }
 }

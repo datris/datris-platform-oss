@@ -528,7 +528,10 @@
 
         <div *ngIf="targetPipeline" class="linked-pipeline">
           <span class="material-icons">check_circle</span>
-          <span>Linked to: <strong>{{ targetPipeline }}</strong></span>
+          <span>Linked to:
+            <a class="pipeline-link" [routerLink]="['/pipelines', targetPipeline, 'edit']"
+               title="Edit pipeline">{{ targetPipeline }}</a>
+          </span>
           <button class="link-btn" (click)="detachPipeline()">Detach</button>
         </div>
       </div>

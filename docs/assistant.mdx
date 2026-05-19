@@ -77,6 +77,31 @@ There is no per-tenant Assistant configuration to manage beyond what you
 already have for codegen. See [AI Configuration](/ai-configuration) for the
 underlying AI primary / codegen / web search / embedding settings.
 
+### Authentication
+
+The Assistant inherits the identity of the user running it. How that maps
+to permissions depends on which auth mode the platform is running in:
+
+- **`USE_USER_AUTH=true`** (recommended): the Assistant runs as your
+  logged-in user. Audit log entries and capability checks both show
+  `session:<your username>`. Permissions follow your role — admin gets
+  full access, editor gets create/update/run on data resources, viewer
+  gets read-only. See [User Authentication](/user-auth) for the role-to-
+  capability mapping.
+- **`USE_USER_AUTH=false` + `USE_API_KEYS=true`**: the Assistant uses
+  whatever value you pasted into the Connect prompt (typically the seeded
+  `ui` key). Same identity for everyone using the browser.
+- **`USE_API_KEYS=false`**: no auth on tool calls; the Assistant runs as
+  the platform's anonymous identity.
+
+The Assistant doesn't have its own dedicated API key — its server-side
+MCP-bound tool calls use the same identity the chat endpoint was
+authenticated under. Want to give the Assistant *narrower* permissions
+than the human user has? That's not exposed today; the workaround is to
+log in as a different user (an editor or viewer) when running the
+Assistant, so the role mapping applies. See [API Keys](/api-keys) for
+the full capability model.
+
 ## Limits
 
 - **25 iterations per turn.** The agent loop is hard-capped to bound cost. If

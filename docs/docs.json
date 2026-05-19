@@ -103,6 +103,7 @@
             "pages": [
               "configuration-reference",
               "user-auth",
+              "api-keys",
               "monitoring",
               "notifications"
             ]

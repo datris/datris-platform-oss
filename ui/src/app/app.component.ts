@@ -69,6 +69,9 @@ export class AppComponent implements OnInit {
 
         if (this.useUserAuth) {
           // User-auth mode: probe /me, redirect to /login on 401.
+          // The session cookie is sufficient auth for the UI; no x-api-key
+          // is sent on requests from logged-in browsers — the server's
+          // APIKeyValidator bypasses the key check when UserContext is set.
           this.auth.refreshMe().subscribe(user => {
             this.currentUser = user;
             this.bootstrapped = true;
@@ -157,4 +160,5 @@ export class AppComponent implements OnInit {
       }
     });
   }
+
 }

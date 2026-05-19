@@ -90,6 +90,7 @@ services:
     environment:
       VAULT_ADDR: http://vault:8200
       VAULT_TOKEN: root-token
+      DATRIS_UI_API_KEY: ${DATRIS_UI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
@@ -134,8 +135,8 @@ services:
       - datris-net
 
   datris:
-    image: datrisai/datris-server:latest
-    #build: .  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-server:latest
+    build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
     ports:
       - "8080:8080"
@@ -162,6 +163,15 @@ services:
       USEUSERAUTH: "${USE_USER_AUTH:-false}"
       USEAPIKEYS: "${USE_API_KEYS:-false}"
       MULTITENANT: "${MULTI_TENANT:-false}"
+      # Capability enforcement: `enforce` (default) returns HTTP 403 on policy
+      # violations by scoped keys. Override to `log-only` in .env to emit
+      # would-deny log lines without rejecting — useful only when iterating
+      # on a new scope policy and you want a trial run before flipping on.
+      # Legacy `*:*` keys are unaffected either way.
+      CAPABILITY_ENFORCEMENT: "${CAPABILITY_ENFORCEMENT:-enforce}"
+      # Operator-override fallback model when Anthropic Opus is sustained-
+      # overloaded; read by AgentLoop.sonnetFallbackFor() at runtime.
+      ANTHROPIC_OVERLOAD_FALLBACK_MODEL: "${ANTHROPIC_OVERLOAD_FALLBACK_MODEL:-}"
       # Provider API keys exposed to the Scala runtime for AIUtil.resolveApiKey's
       # env-var fallback (gated to single-tenant). Used when an AI section's Vault
       # secret has no apiKey of its own — e.g. user enabled web search via UI but
@@ -186,8 +196,8 @@ services:
       - datris-net
 
   ui:
-    image: datrisai/datris-ui:latest
-    #build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-ui:latest
+    build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: ui
     ports:
       - "4200:8080"
@@ -197,8 +207,8 @@ services:
       - datris-net
 
   mcp-server:
-    image: datrisai/datris-mcp-server:latest
-    #build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-mcp-server:latest
+    build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: mcp-server
     ports:
       - "3000:3000"

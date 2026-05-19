@@ -27,6 +27,7 @@ import { AssistantComponent } from './assistant/assistant.component';
 import { LoginComponent } from './login/login.component';
 import { ChangePasswordModalComponent } from './change-password-modal/change-password-modal.component';
 import { UsersComponent } from './configuration/users/users.component';
+import { KeysComponent } from './configuration/keys/keys.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { apiKeyInterceptor } from './api-key.interceptor';
@@ -59,7 +60,8 @@ import { MaterialModule } from './material.module';
     AssistantComponent,
     LoginComponent,
     ChangePasswordModalComponent,
-    UsersComponent
+    UsersComponent,
+    KeysComponent
   ],
   imports: [
     BrowserModule,

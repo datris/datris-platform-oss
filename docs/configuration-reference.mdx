@@ -37,11 +37,26 @@ The pipeline server is configured via `application.yaml` (or `application.proper
 | Property | Default | Description |
 |----------|---------|-------------|
 | `environment` | `oss` | Environment name. Used as prefix for bucket names (`oss-raw`, `oss-data`, etc.) and table names |
-| `useApiKeys` | `false` | Enable API key authentication |
+| `useApiKeys` | `false` | Enable API key authentication. See [Authentication](#authentication) and the [API Keys guide](/api-keys) |
 | `multiTenant` | `false` | Enable per-request tenant resolution. When true, the postgres database is overridden per-request with the tenant name |
 | `sendPipelineNotifications` | `true` | Enable pipeline event notifications |
 | `ttlFileNotifierQueueMessages` | `60` | Days to retain processed message IDs for deduplication |
 | `tapScriptTimeoutSeconds` | `300` | Maximum tap script execution time in seconds |
+
+### Authentication
+
+Two independent flags control access. Set them together — see [the supported matrix](/api-keys#supported-configurations) — and use [User Authentication](/user-auth) and [API Keys](/api-keys) for the full setup walkthroughs.
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `USE_USER_AUTH` | `false` | Require login for the UI; gate Configuration and Users tabs to `admin`. See [User Authentication](/user-auth) |
+| `USE_API_KEYS` | `false` | Require `x-api-key` on every REST and MCP request. Maps to `useApiKeys` above |
+| `MULTI_TENANT` | `false` | Per-tenant database isolation; routes requests by API-key value. Hosted/managed deployments only |
+| `CAPABILITY_ENFORCEMENT` | `enforce` | Default: scoped keys missing the required capability get HTTP 403. Override to `log-only` to emit `would-deny` log lines without rejecting — useful only when iterating on a new scope policy and you want a trial run before flipping enforcement on. Legacy `*:*` keys are unaffected either way |
+
+With `USE_USER_AUTH=true` + `USE_API_KEYS=true` (recommended), the UI authenticates via session cookie — no `x-api-key` value to seed or paste. Issue programmatic-client keys from **Configuration → API-Keys**.
+
+For `USE_USER_AUTH=false` + `USE_API_KEYS=true` (legacy paste-and-go), the seeded fallback value `default-ui-key` is what the user pastes into the Connect prompt on first load. Rotate it any time from **Configuration → API-Keys**.
 
 ### CORS
 

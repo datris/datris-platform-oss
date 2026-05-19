@@ -10,8 +10,8 @@ By default, the Datris OSS install runs single-tenant with no login screen — a
 When `USE_USER_AUTH=true`:
 
 - The UI shows a **login screen** before any tab is reachable.
-- The **Configuration** tab (Secrets, AI Providers, Taps, Users, Environment) is gated to **admin** users.
-- A new **Users** sub-tab appears under Configuration for adding, removing, and changing roles.
+- Sensitive **Configuration** sub-tabs (Secrets, API-Keys) are gated to **admin** users. The AI Providers and Environment sub-tabs remain visible to all roles. The Users and API-Keys sub-tabs appear based on the active flags (see the [matrix](/api-keys#supported-configurations) for full visibility rules).
+- A new **Users** sub-tab appears under Configuration for adding, removing, and changing roles (admin-only by virtue of being inside Configuration).
 - Sessions are server-side, with a TTL index cleaning them up automatically.
 
 When the flag is off, the toggle has zero effect on data — pipelines, taps, secrets, and run history all work the same.
@@ -53,7 +53,7 @@ The default `admin` row is seeded on **every startup** (idempotent — only when
 | **editor** | ✓ | ✓ |   |
 | **viewer** | ✓ |   |   |
 
-`admin` is the only role that sees the Configuration tab in the top nav. `editor` and `viewer` see everything else (Pipelines, Taps, Search, etc.) according to the same access rules.
+All roles see the **Configuration** tab in the top nav, but the sub-tabs differ: admins see Secrets and API-Keys; editors and viewers see only AI Providers, Users, and Environment. Everything outside Configuration (Pipelines, Taps, Search, etc.) is accessible to all roles per the read/write rules above.
 
 ## Adding users
 
@@ -77,9 +77,10 @@ Set `USE_USER_AUTH=false` (or remove the line) and recreate the Datris container
 
 - Run Datris **behind HTTPS** before turning auth on. Sessions are cookie-based; without TLS, the login is exposed in transit.
 - Review your CORS allow-list (`cors.allowedOrigins` in `application.yaml`) — the default `"*"` is for local dev only.
-- Consider also enabling `USE_API_KEYS=true` if you have automation hitting the REST or MCP API. User auth gates the **UI**; API-key gating handles programmatic clients.
+- Pair this with `USE_API_KEYS=true` for any shared install — user auth gates the **UI**, API-key gating handles programmatic clients (CLI, MCP, external scripts). Setting `USE_API_KEYS=true` without `USE_USER_AUTH=true` is [refused at boot](/api-keys#supported-configurations); the two are designed to compose.
 
 ## Related
 
+- [API Keys](/api-keys) — the paired flag. Required for any deployment where the UI or CLI talks to a real install.
 - [Configuring Claude](/configuring-claude) — connecting AI agents via MCP. MCP clients use the API-key path, not user auth.
 - [Configuration Reference](/configuration-reference) — the underlying `useUserAuth`, `useApiKeys`, and `multiTenant` keys in `application.yaml`.

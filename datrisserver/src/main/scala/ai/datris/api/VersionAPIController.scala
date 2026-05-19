@@ -9,7 +9,6 @@ import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.build.sbt.BuildInfo
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.APIKeyValidator
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -25,7 +24,13 @@ class VersionAPIController {
     def getVersion(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /api/v1/version called")
-            APIKeyValidator.validate(apiKey)
+            // No `validate()` call: /version is public infrastructure. The UI
+            // calls this BEFORE the user pastes a key (to render server status
+            // and decide whether to show the login screen vs the API-key prompt),
+            // so requiring auth here creates 500-error noise during the load.
+            // The RoleEnforcementInterceptor already skips this path; the
+            // capability interceptor's skip-list also includes it. The
+            // apiKey parameter is retained for forward compatibility but ignored.
             // postgresDatabase and mongodbDatabase are the canonical, server-configured database names.
             // UI must treat these as authoritative and not allow users to edit them.
             val mongodbDatabase =
@@ -37,6 +42,7 @@ class VersionAPIController {
                 "multiTenant" -> DatrisEnvironment.current.multiTenant.toString,
                 "hosted" -> DatrisEnvironment.current.hosted.toString,
                 "useUserAuth" -> DatrisEnvironment.values.useUserAuth.toString,
+                "useApiKeys" -> DatrisEnvironment.values.useApiKeys.toString,
                 "postgresDatabase" -> DatrisEnvironment.current.postgresDatabase,
                 "mongodbDatabase" -> mongodbDatabase
             ).asJava

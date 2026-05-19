@@ -20,6 +20,20 @@ The CLI connects to the MCP server via SSE. Set the server URL with an environme
 export MCP_SERVER_URL=http://localhost:3000/sse    # default
 ```
 
+### Authentication
+
+When the Datris platform has [`USE_API_KEYS=true`](/api-keys), every CLI command must present an API key. Set it as an environment variable:
+
+```bash
+export DATRIS_API_KEY=<your key>
+```
+
+The CLI sends it as `x-api-key` on every MCP request, which the MCP server forwards to the REST API.
+
+Issue a key dedicated to the CLI from the UI: **Configuration → API-Keys → Issue new key** with a label like `cli` and the capability scope you want (e.g. `read-only` template for an analyst CLI, `ops` for a deploy runner). The value is shown once at issue time — set it as `DATRIS_API_KEY` in your shell. Each label is a distinct caller identity in the request logs and can be revoked independently. See [API Keys](/api-keys) for the full pattern.
+
+When `USE_API_KEYS=false` (the OSS default), the CLI works without any key — the env var is ignored.
+
 ## JSON Output
 
 Every command supports `--json` to return raw JSON instead of human-readable output. This is useful for scripting and programmatic use.

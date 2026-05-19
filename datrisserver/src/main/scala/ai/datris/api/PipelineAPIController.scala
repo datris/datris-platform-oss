@@ -7,9 +7,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
+import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
 import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
 import ai.datris.util._
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -45,18 +47,34 @@ class PipelineAPIController {
     }
 
     @GetMapping(path = Array("/pipelines"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getPipelines(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    def getPipelines(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                     request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /pipelines called")
             APIKeyValidator.validate(apiKey)
 
             val pipelineNames = NoSQLDbUtil.getItemsKeysByKeyName(DatrisEnvironment.current.pipelineTableName, "name")
-            val pipelineConfigs = pipelineNames.map(name => {
+            val allConfigs = pipelineNames.map(name => {
                 PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name)
-            }).asJava
+            })
+
+            // Scope-aware filter for keys whose only `pipeline:read` grant is
+            // `pipeline:read:owner=self` — return ONLY pipelines this key
+            // created. A key with an unscoped `pipeline:read` or `*:*` skips
+            // the filter entirely. Server-side filtering keeps the result
+            // shape consistent with single-resource reads and prevents
+            // leaking metadata (names, destinations) about pipelines the
+            // caller has no business seeing.
+            val filteredConfigs =
+                if (CapabilityCheck.hasOnlyOwnerSelfScope(request, "pipeline", "read")) {
+                    val ownerLabel = ResolvedKeyAccess.keyLabel(request).orNull
+                    allConfigs.filter(c => c != null && c.createdByKeyLabel != null && c.createdByKeyLabel == ownerLabel)
+                } else {
+                    allConfigs
+                }
 
             val gson = new Gson
-            val json = gson.toJson(pipelineConfigs)
+            val json = gson.toJson(filteredConfigs.asJava)
             new ResponseEntity[String](json, HttpStatus.OK)
         }
         catch {
@@ -68,7 +86,8 @@ class PipelineAPIController {
 
     @PostMapping(path = Array("/pipeline"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def putPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                         @RequestBody config: PipelineConfig): ResponseEntity[String] = {
+                         @RequestBody config: PipelineConfig,
+                         request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /pipeline with pipeline name: " + config.name)
             APIKeyValidator.validate(apiKey)
@@ -77,8 +96,17 @@ class PipelineAPIController {
             PipelineValidatorUtil.validate(withDefaults)
             val modifiedConfig = PipelineValidatorUtil.modify(withDefaults)
 
+            // Stamp the issuing key's label so `owner=self` capabilities can
+            // match resources this key created. Null when no key is present
+            // (auth disabled or public endpoint) — that resource will not
+            // match `owner=self` for anyone, which is intended.
+            val tagged = ResolvedKeyAccess.keyLabel(request) match {
+                case Some(label) => modifiedConfig.copy(createdByKeyLabel = label)
+                case None        => modifiedConfig
+            }
+
             // Write to NoSQL pipeline table
-            PipelineConfigIO.write(modifiedConfig)
+            PipelineConfigIO.write(tagged)
 
             // If the source is a database, initialize the pipeline pull table
             if(modifiedConfig.source.databaseAttributes != null)
@@ -97,7 +125,8 @@ class PipelineAPIController {
     def deletePipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                             @RequestParam pipeline: String,
                             @RequestParam(defaultValue = "true") deleteData: String,
-                            @RequestParam(defaultValue = "true") deleteConfig: String): ResponseEntity[String] = {
+                            @RequestParam(defaultValue = "true") deleteConfig: String,
+                            request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /pipeline with pipeline name: " + pipeline + ", deleteData: " + deleteData + ", deleteConfig: " + deleteConfig)
             APIKeyValidator.validate(apiKey)
@@ -105,6 +134,11 @@ class PipelineAPIController {
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
             if(config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
+
+            // Scope check: a key with `pipeline:delete:owner=self` may only
+            // delete pipelines it created. Loaded resource provides the
+            // `createdByKeyLabel` we compare against the caller's label.
+            CapabilityCheck.assertOwnerScope(request, "pipeline", "delete", config.createdByKeyLabel)
 
             // Deleting the config without also deleting the data is disallowed.
             // Leaving orphaned rows/collections/tables behind with no pipeline to
