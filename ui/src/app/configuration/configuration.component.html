@@ -7,17 +7,19 @@
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'secrets'"
             *ngIf="canSeeSecrets"
             (click)="activeTab = 'secrets'">Secrets</button>
-    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'taps'"
-            (click)="activeTab = 'taps'">Taps</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'users'"
             *ngIf="useUserAuth"
             (click)="activeTab = 'users'">Users</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'keys'"
+            *ngIf="canSeeKeys"
+            (click)="activeTab = 'keys'">API-Keys</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'environment'"
             (click)="activeTab = 'environment'">Environment</button>
   </div>
 
   <app-users *ngIf="activeTab === 'users' && useUserAuth"></app-users>
   <app-secrets *ngIf="activeTab === 'secrets' && canSeeSecrets"></app-secrets>
+  <app-keys *ngIf="activeTab === 'keys' && canSeeKeys"></app-keys>
 
   <div class="config-card" *ngIf="!loading && activeTab === 'environment'">
     <div class="info-grid">
@@ -283,9 +285,5 @@
     </div>
   </div>
 
-  <div class="config-card" *ngIf="activeTab === 'taps'">
-    <app-tap-prompt-list></app-tap-prompt-list>
-  </div>
-
-  <div class="loading" *ngIf="loading && activeTab !== 'taps' && activeTab !== 'secrets'">Loading configuration...</div>
+  <div class="loading" *ngIf="loading && activeTab !== 'secrets'">Loading configuration...</div>
 </div>

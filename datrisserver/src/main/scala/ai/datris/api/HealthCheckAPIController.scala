@@ -63,7 +63,10 @@ class HealthCheckAPIController {
     def checkServiceHealth(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /health/services called")
-            APIKeyValidator.validate(apiKey)
+            // Public infrastructure endpoint — health probes, container
+            // orchestrators, and the UI's status indicators all need to
+            // reach this without auth. The `apiKey` parameter is kept for
+            // forward compat but ignored.
 
             val env = DatrisEnvironment.current
             val results = new java.util.LinkedHashMap[String, Any]()

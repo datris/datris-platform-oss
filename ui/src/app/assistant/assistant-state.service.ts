@@ -35,7 +35,15 @@ export interface TextSegment {
   text: string;
 }
 
-export type AssistantSegment = TextSegment | ToolCard;
+/** Transient system message rendered as a small inline pill — not part of
+ *  the assistant's textual response. Emitted by the server when something
+ *  about the system behavior changes mid-stream (e.g., model fallback). */
+export interface NoticeSegment {
+  kind: 'notice';
+  message: string;
+}
+
+export type AssistantSegment = TextSegment | ToolCard | NoticeSegment;
 
 export interface UserTurn {
   role: 'user';
@@ -258,6 +266,9 @@ export class AssistantStateService {
         };
         break;
       }
+      case 'notice':
+        turn.segments.push({ kind: 'notice', message: evt.message });
+        break;
       case 'done':
         turn.done = true;
         break;

@@ -1336,6 +1336,17 @@
   font-size: 20px;
 }
 
+.linked-pipeline .pipeline-link {
+  color: var(--accent-cyan);
+  text-decoration: none;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.linked-pipeline .pipeline-link:hover {
+  text-decoration: underline;
+}
+
 .linked-pipeline .link-btn {
   margin-left: auto;
   background: transparent;

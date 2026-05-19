@@ -66,6 +66,11 @@
             <ng-container *ngFor="let seg of turn.segments; trackBy: trackByIndex">
               <div class="prose-segment" *ngIf="seg.kind === 'text'">{{ seg.text }}</div>
 
+              <div class="assistant-notice" *ngIf="seg.kind === 'notice'">
+                <span class="assistant-notice-icon">ⓘ</span>
+                <span class="assistant-notice-text">{{ seg.message }}</span>
+              </div>
+
               <div class="tool-card" *ngIf="seg.kind === 'tool'" [class.tool-error]="seg.isError">
                 <button class="tool-header" (click)="toggleToolCard(seg)">
                   <span class="tool-caret">{{ seg.expanded ? '▾' : '▸' }}</span>

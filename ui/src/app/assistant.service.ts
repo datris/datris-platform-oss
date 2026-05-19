@@ -35,6 +35,10 @@ export type AssistantEvent =
    *  an inline credentials form on the matching tool card. Values never enter
    *  the chat — they go straight to /api/v1/secrets on submit. */
   | { type: 'secret_request'; id: string; secretName: string; fieldNames: string[]; reason: string }
+  /** Transient system message — surfaced inline as a small pill, not as part
+   *  of the assistant's textual response. Currently used when the model is
+   *  downgraded mid-request (e.g. Opus → Sonnet after sustained overload). */
+  | { type: 'notice'; message: string }
   | { type: 'done' }
   | { type: 'error'; message: string };
 
@@ -62,8 +66,11 @@ export class AssistantService {
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream'
       };
-      // Match the api-key interceptor's behavior: only attach x-api-key when
-      // user-auth is OFF. With user-auth on, the session cookie does the work.
+      // Mirror the apiKeyInterceptor: attach x-api-key only when user-auth
+      // is off. With user-auth on, the session cookie carries identity and
+      // the server bypasses the key check on cookie-authenticated requests.
+      // The native fetch() used here for SSE streaming doesn't go through
+      // the Angular interceptor, so we duplicate the gate locally.
       if (!this.auth.userAuthEnabled) {
         const apiKey = localStorage.getItem('datris-api-key');
         if (apiKey) headers['x-api-key'] = apiKey;

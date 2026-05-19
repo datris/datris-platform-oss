@@ -7,9 +7,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonParser}
+import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
 import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
 import ai.datris.util.{APIKeyValidator, EnvFileWriter, SecretsUtil}
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -108,7 +110,8 @@ class SecretsAPIController {
     @PutMapping(path = Array("/secrets/{name}"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def putSecret(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                   @PathVariable name: String,
-                  @RequestBody body: String): ResponseEntity[String] = {
+                  @RequestBody body: String,
+                  request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint PUT /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
@@ -119,6 +122,18 @@ class SecretsAPIController {
                 // Existing secret at the same path — used to preserve sensitive fields
                 // when the request sends them as the masked placeholder.
                 val existing = SecretsUtil.getSecretMap(secretPath).map(_.asScala).getOrElse(scala.collection.mutable.Map.empty[String, String])
+
+                // In-action capability scope check for `secret:write:_type=tap`
+                // keys. The interceptor's scope-agnostic gate already confirmed
+                // the key holds `secret:write` for some scope; we now verify
+                // the actual target (existing secret's _type, or "tap" for a
+                // brand-new tap secret) satisfies the key's scope predicates.
+                // Server-side parallel to the Python `_type=tap` filter on the
+                // MCP path — both retained for defense in depth.
+                val existingType = existing.get("_type").getOrElse("")
+                val scopeContext = if (existingType.nonEmpty) Map("_type" -> existingType)
+                                   else Map.empty[String, String]
+                CapabilityCheck.assertScope(request, "secret", "write", scopeContext)
 
                 val json = JsonParser.parseString(body).getAsJsonObject
                 val incoming = new java.util.LinkedHashMap[String, Object]()
@@ -165,7 +180,36 @@ class SecretsAPIController {
                     }
                 }
 
+                // Owner-tag the secret with the issuing key's label. Preserve on
+                // update so ownership reflects who created the secret, not who
+                // last edited it. Skip if the existing secret already has a
+                // value to avoid clobbering.
+                val existingOwner = existing.get("createdByKeyLabel").filter(_.nonEmpty)
+                existingOwner match {
+                    case Some(prior) =>
+                        incoming.put("createdByKeyLabel", prior)
+                    case None =>
+                        ResolvedKeyAccess.keyLabel(request).foreach(label =>
+                            incoming.put("createdByKeyLabel", label))
+                }
+
                 SecretsUtil.writeSecret(secretPath, incoming)
+
+                // Mirror the UI identity's key value into oss/api-keys under
+                // the reserved `ui` label so it actually validates at the auth
+                // layer. Without this, saving a new value here would break the
+                // UI and the Assistant on the next request (key not recognized).
+                if (name == "ui-api-key") {
+                    val incomingValue = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).filter(_.nonEmpty)
+                    incomingValue.foreach { v =>
+                        try mirrorUiKeyIntoApiKeys(env, v)
+                        catch {
+                            case e: Exception =>
+                                logger.warn("Failed to mirror ui-api-key into oss/api-keys: " + e.getMessage)
+                        }
+                    }
+                    APIKeyValidator.invalidateCache()
+                }
 
                 // Hot-reload AI config when an AI secret changes — no restart required.
                 // web-search rides the same reload because reloadAiConfig() refreshes the
@@ -193,13 +237,24 @@ class SecretsAPIController {
 
     @DeleteMapping(path = Array("/secrets/{name}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def deleteSecret(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @PathVariable name: String): ResponseEntity[String] = {
+                     @PathVariable name: String,
+                     request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
             rejectIfTrialAiSecret(name).getOrElse {
                 val env = DatrisEnvironment.current.environment
                 val secretPath = env + "/" + name
+
+                // Scope check before deletion — a key with
+                // `secret:write:_type=tap` may only delete tap secrets.
+                // Look up the existing secret's _type to feed the check.
+                val existing = SecretsUtil.getSecretMap(secretPath).map(_.asScala).getOrElse(scala.collection.mutable.Map.empty[String, String])
+                val existingType = existing.get("_type").getOrElse("")
+                val scopeContext = if (existingType.nonEmpty) Map("_type" -> existingType)
+                                   else Map.empty[String, String]
+                CapabilityCheck.assertScope(request, "secret", "write", scopeContext)
+
                 SecretsUtil.deleteSecret(secretPath)
                 new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
             }
@@ -271,5 +326,21 @@ class SecretsAPIController {
             logger.info("PUT /secrets/" + name + ": mirroring to " + envFilePath + " (keys: " + keysOnly + ")")
             EnvFileWriter.update(envFilePath, updates.toMap)
         }
+    }
+
+    /** Copy a new UI-identity key value into the `ui` slot of oss/api-keys so
+      * the auth layer recognizes it. Other labels in the map are preserved
+      * (we read, update one slot, write back). Called when the operator saves
+      * a new value in the ui-api-key secret; without this mirror, the new
+      * value would be unknown to APIKeyValidator and the next UI request
+      * would 401. */
+    private def mirrorUiKeyIntoApiKeys(env: String, newValue: String): Unit = {
+        val apiKeysPath = env + "/api-keys"
+        val existing = SecretsUtil.getSecretMap(apiKeysPath).map(_.asScala).getOrElse(scala.collection.mutable.Map.empty[String, String])
+        val updated = new java.util.LinkedHashMap[String, Object]()
+        existing.foreach { case (k, v) => if (k != "ui") updated.put(k, v) }
+        updated.put("ui", newValue)
+        SecretsUtil.writeSecret(apiKeysPath, updated)
+        logger.info("PUT /secrets/ui-api-key: mirrored value into " + apiKeysPath + " under label 'ui'")
     }
 }

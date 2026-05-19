@@ -1,0 +1,205 @@
+<div class="keys-tab">
+
+  <div class="keys-header">
+    <div>
+      <h2 class="keys-title">API Keys</h2>
+      <p class="keys-sub">Issue scoped credentials for the UI, CLI, MCP agents, and integrations. Each key carries an explicit capability list — what it's allowed to do — and is independently revocable.</p>
+    </div>
+    <button class="btn-primary" (click)="openWizard()" *ngIf="!loading">Issue new key</button>
+  </div>
+
+  <div class="legacy-banner" *ngIf="hasLegacyKeys()">
+    <span class="legacy-icon">⚠</span>
+    <span>One or more keys carry legacy full access (<code>*:*</code>). Consider issuing scoped replacements and revoking the legacy ones.</span>
+  </div>
+
+  <div class="error-banner" *ngIf="error">{{ error }}</div>
+
+  <div class="loading" *ngIf="loading">Loading keys…</div>
+
+  <div class="keys-table-wrap" *ngIf="!loading && keys.length > 0">
+    <table class="keys-table">
+      <thead>
+        <tr>
+          <th>Label</th>
+          <th>Capabilities</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let row of keys; trackBy: trackByLabel"
+            [class.row-revoked]="row.revoked"
+            [class.row-legacy]="row.isLegacyFullAccess && !row.revoked">
+          <td class="cell-label">{{ row.label }}</td>
+          <td>
+            <ng-container *ngIf="row.isLegacyFullAccess">
+              <span class="cap-chip cap-legacy">*:*  (full access)</span>
+            </ng-container>
+            <ng-container *ngIf="!row.isLegacyFullAccess">
+              <span class="cap-chip" *ngFor="let c of row.capabilities; trackBy: trackByIndex">{{ c }}</span>
+              <span class="cap-chip cap-empty" *ngIf="row.capabilities.length === 0">no capabilities</span>
+            </ng-container>
+          </td>
+          <td>
+            <span class="status-pill" [class.status-active]="statusLabel(row) === 'active'"
+                                       [class.status-legacy]="statusLabel(row) === 'legacy'"
+                                       [class.status-revoked]="statusLabel(row) === 'revoked'">
+              {{ statusLabel(row) }}
+            </span>
+          </td>
+          <td class="cell-created">
+            <span *ngIf="row.createdAt">{{ row.createdAt }}</span>
+            <span class="muted" *ngIf="row.createdBy"> · {{ row.createdBy }}</span>
+            <span class="muted" *ngIf="!row.createdAt">—</span>
+          </td>
+          <td class="cell-actions">
+            <button class="btn-action" (click)="rotate(row)" [disabled]="row.revoked">Rotate</button>
+            <button class="btn-action btn-danger" (click)="askRevoke(row)" [disabled]="row.revoked">Revoke</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="empty-state" *ngIf="!loading && keys.length === 0">
+    <p>No keys yet. Issue your first one to get started.</p>
+  </div>
+
+
+  <!-- Issue wizard ----------------------------------------------------- -->
+  <div class="modal-backdrop" *ngIf="showWizard" (click)="closeWizard()">
+    <div class="modal modal-wide" (click)="$event.stopPropagation()">
+      <div class="modal-header">
+        <h3>Issue new key — step {{ wizardStep }} of 2</h3>
+        <button class="modal-close" (click)="closeWizard()">×</button>
+      </div>
+
+      <!-- Step 1 -->
+      <div class="modal-body" *ngIf="wizardStep === 1">
+        <label class="field-label">Label</label>
+        <input class="field-input" type="text" placeholder="e.g. claude-desktop, support-rag, ops-agent"
+               [(ngModel)]="wizardLabel" maxlength="64">
+        <p class="field-hint">Lowercase letters, digits, dash, underscore. Used in audit logs to identify this key.</p>
+
+        <label class="field-label" style="margin-top:14px;">Template (optional)</label>
+        <select class="field-input" [ngModel]="wizardTemplate" (ngModelChange)="applyTemplate($event)">
+          <option value="">Blank — start from scratch</option>
+          <option *ngFor="let t of templates; trackBy: trackByIndex" [value]="t.name">
+            {{ t.name }}
+          </option>
+        </select>
+        <p class="field-hint" *ngIf="wizardTemplate">
+          <ng-container *ngFor="let t of templates; trackBy: trackByIndex">
+            <ng-container *ngIf="t.name === wizardTemplate">{{ t.description }}</ng-container>
+          </ng-container>
+        </p>
+
+        <label class="field-label" style="margin-top:14px;">Capabilities</label>
+        <div class="cap-rows">
+          <div class="cap-row" *ngFor="let cap of wizardCapabilities; let i = index; trackBy: trackByIndex">
+            <input class="field-input" type="text"
+                   placeholder="resource:action[:scope=value]"
+                   [ngModel]="cap"
+                   (ngModelChange)="updateCapabilityRow(i, $event)">
+            <button class="btn-row-remove" (click)="removeCapabilityRow(i)">×</button>
+          </div>
+        </div>
+        <button class="btn-secondary" (click)="addCapabilityRow()">+ Add capability</button>
+
+        <details class="cap-help" *ngIf="capabilityCatalog.length > 0">
+          <summary>Capability reference</summary>
+          <p class="field-hint">Format: <code>resource:action</code> or <code>resource:action:scope=value</code>. Scope examples: <code>catalog=support</code>, <code>owner=self</code>, <code>_type=tap</code>.</p>
+          <table class="catalog-table">
+            <thead><tr><th>Resource</th><th>Actions</th><th>Scope keys</th></tr></thead>
+            <tbody>
+              <tr *ngFor="let r of capabilityCatalog; trackBy: trackByIndex">
+                <td><code>{{ r.resource }}</code></td>
+                <td>{{ r.actions.join(', ') }}</td>
+                <td>{{ r.scopeKeys.length > 0 ? r.scopeKeys.join(', ') : '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
+
+        <div class="wizard-error" *ngIf="wizardError">{{ wizardError }}</div>
+        <div class="modal-footer">
+          <button class="btn-secondary" (click)="closeWizard()">Cancel</button>
+          <button class="btn-primary" (click)="goToReview()">Next: Review</button>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="modal-body" *ngIf="wizardStep === 2">
+        <p class="review-label">Label:</p>
+        <p class="review-value"><code>{{ wizardLabel }}</code></p>
+
+        <p class="review-label">Capabilities:</p>
+        <ul class="review-cap-list">
+          <li *ngFor="let c of wizardCapabilities; trackBy: trackByIndex"><code>{{ c }}</code></li>
+        </ul>
+
+        <p class="review-note">
+          A random key value will be generated. <strong>You'll see it once on the next screen</strong> — copy it before closing the modal. The value is not stored in a recoverable form on the server.
+        </p>
+
+        <div class="wizard-error" *ngIf="wizardError">{{ wizardError }}</div>
+        <div class="modal-footer">
+          <button class="btn-secondary" (click)="wizardStep = 1">Back</button>
+          <button class="btn-primary" (click)="submitIssue()" [disabled]="wizardSubmitting">
+            {{ wizardSubmitting ? 'Issuing…' : 'Issue key' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Show-once value modal ------------------------------------------- -->
+  <div class="modal-backdrop" *ngIf="shownKey" (click)="dismissShownKey()">
+    <div class="modal modal-show-once" (click)="$event.stopPropagation()">
+      <div class="modal-header">
+        <h3>
+          {{ shownKey.isNew ? 'Key issued' : 'Key rotated' }} — copy this value now
+        </h3>
+        <button class="modal-close" (click)="dismissShownKey()">×</button>
+      </div>
+      <div class="modal-body">
+        <p>Label: <code>{{ shownKey.label }}</code></p>
+        <p class="show-once-warning">
+          This value is shown <strong>once</strong>. It is not retrievable from the server again. Copy it now and store it where the caller will use it.
+        </p>
+        <div class="key-value-row">
+          <input #valueInput class="key-value-input" type="text" [value]="shownKey.value" readonly (click)="valueInput.select()">
+          <button class="btn-primary" (click)="copyValue()">{{ copied ? 'Copied ✓' : 'Copy' }}</button>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" (click)="dismissShownKey()">I've saved it</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Revoke confirmation --------------------------------------------- -->
+  <div class="modal-backdrop" *ngIf="revokeTarget" (click)="cancelRevoke()">
+    <div class="modal" (click)="$event.stopPropagation()">
+      <div class="modal-header">
+        <h3>Revoke <code>{{ revokeTarget.label }}</code>?</h3>
+        <button class="modal-close" (click)="cancelRevoke()">×</button>
+      </div>
+      <div class="modal-body">
+        <p>The key will stop authenticating immediately. Anyone or any service using it will start receiving 401 errors on their next request.</p>
+        <p>This action is recorded in the audit log and cannot be undone — you'd need to issue a new key.</p>
+        <div class="modal-footer">
+          <button class="btn-secondary" (click)="cancelRevoke()" [disabled]="revokeBusy">Cancel</button>
+          <button class="btn-primary btn-danger" (click)="confirmRevoke()" [disabled]="revokeBusy">
+            {{ revokeBusy ? 'Revoking…' : 'Revoke' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>

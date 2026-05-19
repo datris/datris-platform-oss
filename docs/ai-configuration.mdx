@@ -271,11 +271,15 @@ A per-tenant secret takes effect on the next AI call — no restart needed. The 
 
 ### Setting your key from the UI
 
-Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI. The Configuration page is organized into three sub-tabs:
+Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI. The Configuration page is organized into sub-tabs:
 
-- **Environment** — tenant name, version, trial/hosted flags, and a status block showing which AI slots are using Datris-managed defaults vs your own keys.
 - **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right. This is where you enter your Anthropic / OpenAI key and pick models.
-- **Taps** — [Prompt Fragments](/tap-prompts): source-specific context the LLM sees when you create a tap or use Discovery.
+- **Secrets** — operator-facing platform credentials (Vault-backed). Admin-only when user-auth is on.
+- **Users** — user accounts and roles. Visible when `USE_USER_AUTH=true`.
+- **API-Keys** — issue and revoke scoped credentials for the CLI, MCP agents, and other programmatic clients. Visible when `USE_API_KEYS=true`. See [API Keys](/api-keys).
+- **Environment** — tenant name, version, trial/hosted flags, and a status block showing which AI slots are using Datris-managed defaults vs your own keys.
+
+Some sub-tabs are role- and flag-gated — see the [API Keys matrix](/api-keys#supported-configurations) for the full visibility rules.
 
 To set your AI keys:
 

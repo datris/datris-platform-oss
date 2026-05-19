@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject, JsonParser}
-import ai.datris.model.DatrisEnvironment
+import ai.datris.model.{DatrisEnvironment, DatrisException}
 import ai.datris.util.APIKeyValidator
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -55,10 +55,19 @@ class MCPActivityAPIController {
             new ResponseEntity[String](enriched, HttpStatus.OK)
         }
         catch {
+            // Auth failure — surface honestly so the UI can differentiate
+            // "your key is invalid" from "the MCP server is down." Both
+            // previously returned the same "unreachable" payload, which made
+            // an invalid localStorage key look like an infrastructure outage.
+            case e: DatrisException =>
+                logger.warn("mcp-server activity auth error: " + e.getMessage)
+                val payload = "{\"server_time\":0,\"sessions\":[],\"calls\":[],\"error\":\"" +
+                    e.getMessage.replace("\"", "'") + "\",\"errorKind\":\"auth\"}"
+                new ResponseEntity[String](payload, HttpStatus.OK)
             case e: Exception =>
                 logger.warn("mcp-server activity unreachable: " + e.getMessage)
                 val empty = "{\"server_time\":0,\"sessions\":[],\"calls\":[],\"error\":\"" +
-                    e.getMessage.replace("\"", "'") + "\"}"
+                    e.getMessage.replace("\"", "'") + "\",\"errorKind\":\"unreachable\"}"
                 new ResponseEntity[String](empty, HttpStatus.OK)
         }
     }

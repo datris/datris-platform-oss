@@ -38,6 +38,7 @@ class AuthAPIController {
         }
     }
 
+
     @PostMapping(path = Array("/login"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def login(@RequestBody body: String, response: HttpServletResponse): ResponseEntity[String] = {
         try {

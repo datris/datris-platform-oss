@@ -6,8 +6,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
-import ai.datris.model.{DatrisEnvironment, DatrisException}
-import ai.datris.util.{AIUtil, AgentLoop, APIKeyValidator, MCPClient}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
+import ai.datris.util.{AIUtil, AgentLoop, APIKeyValidator, MCPClient, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -49,16 +49,41 @@ class AssistantAPIController {
     // GET /api/v1/assistant/init — warm caches, return tool catalog
     // ------------------------------------------------------------------
 
+    /** Resolves the API key the UI identity uses on MCP-bound REST calls
+      * driven by the Assistant. The UI is one logical caller — direct REST
+      * traffic and Assistant-routed MCP traffic share the same key — so this
+      * is just "what does the UI present to the auth layer."
+      *
+      *  - When `useApiKeys=false`: returns null. Anonymous mode; no
+      *    `x-api-key` header is sent on outbound calls.
+      *  - When `useApiKeys=true`: returns the `apiKey` field from the
+      *    `{env}/ui-api-key` Vault secret. Falls back to the user-supplied
+      *    key on the request if the secret is missing or empty (preserves
+      *    behavior for deployments upgraded before this secret existed). */
+    private def resolveUiApiKey(userApiKey: String): String = {
+        if (!DatrisEnvironment.values.useApiKeys) return null
+
+        val secretPath = DatrisEnvironment.current.environment + "/ui-api-key"
+        SecretsUtil.getSecretMap(secretPath).flatMap(m => Option(m.get("apiKey"))) match {
+            case Some(v) if v != null && v.nonEmpty => v
+            case _                                  => userApiKey
+        }
+    }
+
     @GetMapping(path = Array("/assistant/init"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def init(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
 
-            val tools = MCPClient.listTools(apiKey)
+            // MCP-bound calls go out under the UI identity (same as direct
+            // REST traffic from the UI tabs).
+            val uiKey = resolveUiApiKey(apiKey)
+
+            val tools = MCPClient.listTools(uiKey)
             val toolNames = tools.flatMap(t => Option(t.get("name")).map(_.getAsString)).toList
 
             val workflowReference: String =
-                try MCPClient.readResource("datris://pipeline-config-reference", apiKey)
+                try MCPClient.readResource("datris://pipeline-config-reference", uiKey)
                 catch {
                     case e: Exception =>
                         logger.warn("Assistant init: could not read pipeline-config-reference resource: " + e.getMessage)
@@ -105,8 +130,18 @@ class AssistantAPIController {
         emitter.onTimeout   (() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
         emitter.onError     (_  => { cancelled.set(true); cancelFlags.remove(emitterId); () })
 
+        // Capture the request-thread ThreadLocals so the worker thread can
+        // re-establish them. UserContext drives the session-bypass in
+        // APIKeyValidator.validate(); TenantContext routes multi-tenant
+        // requests. Without restoring these, the worker thread sees None
+        // for both and validate() rejects what was a session-authed call.
+        val capturedUser = UserContext.get()
+        val capturedTenant = TenantContext.get()
+
         chatExecutor.submit(new Runnable {
             override def run(): Unit = {
+                capturedUser.foreach(UserContext.set)
+                capturedTenant.foreach(TenantContext.set)
                 try {
                     APIKeyValidator.validate(apiKey)
                     runChat(apiKey, body, emitter, cancelled)
@@ -116,6 +151,9 @@ class AssistantAPIController {
                             sendEvent(emitter, "error", makeEvent("error", "message", e.getMessage))
                         } catch { case _: Exception => () }
                         try emitter.complete() catch { case _: Exception => () }
+                } finally {
+                    UserContext.clear()
+                    TenantContext.clear()
                 }
             }
         })
@@ -150,14 +188,18 @@ class AssistantAPIController {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the codegen secret is configured.")
 
+        // The UI identity for MCP-bound calls — same key the UI sends on
+        // direct REST traffic from other tabs.
+        val uiKey = resolveUiApiKey(apiKey)
+
         // Fetch MCP tool catalog + workflow reference resource (both cached).
         // Append the synthetic `request_tap_secret_from_user` tool. The agent
         // sees it like any other tool, but AgentLoop intercepts the call
         // instead of dispatching to MCP — it emits a SecretRequest SSE event
         // that the UI renders as an inline credentials form.
-        val toolDefs = MCPClient.listTools(apiKey) :+ syntheticSecretToolDef()
+        val toolDefs = MCPClient.listTools(uiKey) :+ syntheticSecretToolDef()
         val workflowReference =
-            try MCPClient.readResource("datris://pipeline-config-reference", apiKey)
+            try MCPClient.readResource("datris://pipeline-config-reference", uiKey)
             catch { case _: Exception => "" }
 
         val systemPrompt = buildSystemPrompt(workflowReference, env.environment)
@@ -171,7 +213,7 @@ class AssistantAPIController {
             system = systemPrompt,
             userMessages = userMessages,
             toolDefs = toolDefs,
-            apiKey = apiKey,
+            apiKey = uiKey,
             enableThinking = env.extendedThinking,
             maxIterations = maxIterations,
             maxTokensPerCall = maxTokensPerCall,
@@ -221,6 +263,8 @@ class AssistantAPIController {
                 obj.add("fieldNames", fieldsArr)
                 obj.addProperty("reason", reason)
                 sendEvent(emitter, "secret_request", obj)
+            case AgentLoop.LoopEvent.Notice(msg) =>
+                sendEvent(emitter, "notice", makeEvent("notice", "message", msg))
             case AgentLoop.LoopEvent.Done =>
                 sendEvent(emitter, "done", makeEvent("done"))
             case AgentLoop.LoopEvent.Error(msg) =>
@@ -255,7 +299,9 @@ class AssistantAPIController {
         sb.append("You are the in-product Datris Assistant for tenant `").append(tenantEnv).append("`. ")
         sb.append("The user is interacting with you in a chat tab inside the Datris UI. They can see your tool calls and reasoning in real time as you work.\n\n")
         sb.append("## Behavior rules\n\n")
-        sb.append("- When the user asks for data from an external source, find a suitable source (web_search if available, or your own knowledge), then create the tap and pipeline that delivers that data. Don't just describe what to do — do it.\n")
+        sb.append("- **Check existing platform state FIRST — before any recommendation, before listing external sources, before asking clarifying scope questions.** On the first turn of any data-related request (anything that sounds like \"I'm looking for X\", \"can you get me Y\", \"do you have Z\", \"I want to ingest...\"), call `list_pipelines` AND `list_taps` BEFORE generating any text reply. Then anchor your response in what already exists: `\"There's already a `financials` pipeline doing SEC EDGAR for Mag 7 — does that cover what you need, or do you want to extend it / add tickers / pick a different source?\"`. Do NOT enumerate external API options (yfinance, Alpha Vantage, etc.) until you've confirmed nothing in the platform already covers the ask. The user almost always cares more about what's already running than about a generic options menu drawn from your training data.\n")
+        sb.append("- When existing pipelines/taps DO partially cover the request, name them specifically and ask whether to extend, modify, or build alongside. When nothing covers it, then — and only then — propose external sources or ask scope questions.\n")
+        sb.append("- When the user asks for data from an external source AND no existing pipeline/tap covers it, find a suitable source (web_search if available, or your own knowledge), then create the tap and pipeline that delivers that data. Don't just describe what to do — do it.\n")
         sb.append("- Always check existing taps/pipelines first via `list_taps` and `list_pipelines` before creating new ones.\n")
         sb.append("- Tap secrets must be tagged `_type=tap`. When you call `create_tap_secret`, the platform sets that automatically — don't try to set `_type` yourself.\n")
         sb.append("- **Reuse existing tap secrets before creating new ones.** ALWAYS call `list_tap_secrets` before asking the user for credentials. If a candidate already exists, call `get_tap_secret_fields` to confirm it has the keys your tap script needs (field names only — values are never returned to you). When a matching secret exists, just pass its name as `secret_name` to `create_tap` and move on.\n")
@@ -280,6 +326,12 @@ class AssistantAPIController {
         sb.append("- Phrase questions about scope in neutral, domain-appropriate terms. Avoid loaded shortcuts that signal a specific industry or framing.\n")
         sb.append("- The same rule applies to schedules, batch sizes, retention windows, refresh cadences, and other tunables — ask, don't assume.\n")
         sb.append("- **Do not assign taps or pipelines to a data catalog** (the `catalog` parameter on `create_tap` and `create_pipeline`, or the `set_catalog` tool) unless the user has explicitly asked you to organize the work under a named catalog. Catalog labels are a user-chosen organizational convention — assigning one for them puts them into a taxonomy they didn't ask for. When unset, the platform shows the tap/pipeline as Uncataloged, which is the right default.\n")
+        sb.append("\n")
+        sb.append("## Run the tap when you're done\n\n")
+        sb.append("- **No schedule → run it once at the end.** When you've just finished creating a tap + pipeline pair AND the tap has NO cron schedule configured, call `run_tap` once at the very end to actually pull data into the pipeline. A fresh pipeline with zero records is not a useful artifact — the user wants to see real data flowing. Mention what you're doing in one short sentence (\"Running the tap now to load the first batch.\") and then surface the result count when it finishes.\n")
+        sb.append("- **Scheduled → ask, don't auto-run.** When the tap WAS configured with a cron schedule (whether you set it or the user specified one), do NOT auto-run it. The schedule will fire on its own at the next slot. Instead, ask: \"The tap is scheduled to run [<cron in plain English>] — want me to trigger a run now to verify it works end-to-end, or wait for the next scheduled fire?\" Wait for the user's answer.\n")
+        sb.append("- **Document/RAG taps follow the same rule.** Auto-run if no cron, ask if cron — the only difference is the destination semantics, not the run-or-ask decision.\n")
+        sb.append("- **Update flows skip the run.** If you UPDATED an existing tap (rather than created one), do not auto-run — the existing schedule or operator-driven cadence is already managing runs. Mention that the update is saved and stop there.\n")
         sb.append("\n")
         sb.append("## Safety + finish\n\n")
         sb.append("- **Destructive operations gate**: NEVER call `delete_tap`, `delete_pipeline`, `delete_tap_secret`, or `update_secret` on an existing secret without explicit user confirmation in the chat. If the user asks to delete or overwrite something, restate what will be removed and ask the user to confirm before proceeding.\n")

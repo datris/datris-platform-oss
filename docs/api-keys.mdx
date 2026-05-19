@@ -1,0 +1,150 @@
+---
+title: "API Keys"
+description: "Enable API-key authentication for the UI, CLI, MCP clients, and any other programmatic access to Datris."
+---
+
+By default, the Datris OSS install accepts unauthenticated requests on the REST and MCP APIs — fine for laptop development, wrong for any shared or hosted setup. Turn on API-key authentication and every caller (the UI, the CLI, agent MCP clients) must present a key that the platform recognizes.
+
+This page covers single-tenant deployments. Multi-tenant setups use the same flag and a different mapping mechanism — see [user-auth](/user-auth) and the Configuration → Tenants screen.
+
+## What it does
+
+When `USE_API_KEYS=true`:
+
+- Programmatic clients (CLI, MCP-connected agents, external scripts) must include `x-api-key: <value>` on every request.
+- The platform validates the value against a known set of issued keys.
+- The capability framework enforces what each scoped key is allowed to do (see [the capability model](#the-capability-model)). Calls outside the key's scope return HTTP 403.
+- The Datris UI behavior depends on whether [user authentication](/user-auth) is also enabled. With `USE_USER_AUTH=true` (recommended), the UI authenticates via session cookie alone — no API key is sent or required. With user-auth off, the UI falls back to the legacy "paste a key" prompt on first load.
+
+The flag is independent of `USE_USER_AUTH` but they're paired conceptually — see [the supported matrix](#supported-configurations) below.
+
+## Enabling it
+
+The recommended setup pairs `USE_API_KEYS=true` with `USE_USER_AUTH=true` (see [the matrix below](#supported-configurations) for why).
+
+### 1. Flip the flags
+
+In `.env`:
+
+```bash
+USE_USER_AUTH=true
+USE_API_KEYS=true
+```
+
+### 2. Restart
+
+```bash
+docker compose up -d --force-recreate datris
+```
+
+### 3. Use the platform
+
+- **The UI**: log in with your admin account. The session cookie authenticates browser flows — no `x-api-key` is sent, no Connect prompt appears. The Assistant inherits your session for capability checks; its tool calls and audit log are tagged `session:<your username>`.
+- **Programmatic clients** (CLI, MCP agents, scripts): each one needs its own key, issued from **Configuration → API-Keys**. See [the issuance flow](#issuing-keys-for-cli-mcp-and-other-clients) below.
+
+That's it. No env var to track, no value to paste anywhere.
+
+### Legacy mode (`USE_USER_AUTH=false`, `USE_API_KEYS=true`)
+
+If you can't or don't want to enable user-auth, the UI falls back to the older "paste a key" flow:
+
+- The Connect prompt appears on first load
+- The default seeded value is `default-ui-key` (defined in `docker/vault-init.sh`); paste it once
+- Browser stores it in localStorage; subsequent loads skip the prompt
+- Rotate it any time from **Configuration → API-Keys → ui → Rotate** (the new value is mirrored automatically into the validation map, and the operator distributes it out of band)
+
+This mode is fine for laptop development but **not** appropriate for shared installs — anyone with the URL can reach the Connect prompt, and the only gate is knowledge of the pasted value.
+
+## Issuing keys for CLI, MCP, and other clients
+
+Open **Configuration → API-Keys → Issue new key**.
+
+1. Pick a label (`cli`, `claude-desktop`, `cursor`, `prod-loader`, etc.) — lowercase, hyphens/underscores ok.
+2. Pick a template or build a capability list manually:
+   - **read-only** — observer access to pipelines/taps/jobs/metadata + query/search
+   - **rag-builder** — create pipelines/taps in a catalog, upload documents, run vector search
+   - **reporting** — analyst-shaped read access
+   - **ops** — run any tap or pipeline, kill stuck jobs, no edits
+   - **full-access** — legacy `*:*` shape; avoid for agents
+3. Review and create.
+4. **Copy the value immediately** — it's shown once. The platform stores a hashed copy; the plaintext is not retrievable after this modal closes.
+5. Paste the value into the agent's MCP client config (or CLI env var, etc.).
+
+Each label is a distinct identity in the audit log and can be revoked independently of the others.
+
+<Note>
+The Vault label `ui` is reserved for the seeded fallback UI key (used in legacy `USE_USER_AUTH=false` mode and for the Assistant's internal MCP-to-REST hop). You don't issue this one from the UI — it's seeded by `vault-init.sh` on first boot and rotated from the API-Keys tab like any other key.
+</Note>
+
+## Supported configurations
+
+`USE_API_KEYS` and `USE_USER_AUTH` compose into four states:
+
+| `USE_USER_AUTH` | `USE_API_KEYS` | Behavior |
+|---|---|---|
+| `false` | `false` | Full anonymous. No prompts, no auth, no gating. **OSS default; fine for laptop dev.** |
+| `true` | `true` | UI gated by login; programmatic clients gated by key. **Recommended for shared installs.** |
+| `true` | `false` | UI gated by login; programmatic clients are anonymous. Workable, slightly odd. |
+| `false` | `true` | **Refused at boot.** No coherent auth mechanism for the browser. Pick a different combination. |
+
+The fourth row is the trap. When you require strict auth for programmatic clients but no login for the UI, the browser has nothing to present. Set both flags together, or neither.
+
+## Rotating a key
+
+From the **API-Keys** tab in Configuration, click **Rotate** on any row:
+
+1. A new value is generated server-side
+2. The validation map (`oss/api-keys`) and operator-facing record are updated in sync
+3. The new value is shown once in a copy-to-clipboard modal
+4. Distribute the new value out of band to whoever was using it; they'll get 401s on their next request and need the new value
+
+The previous value stops working the moment Rotate returns.
+
+## Revoking a key
+
+From the **API-Keys** tab, click **Revoke**. The key's metadata is marked revoked; the underlying value stays in `oss/api-keys` so failed auth attempts log as "revoked key" rather than "unknown key" — useful for tracking compromised credential reuse.
+
+Revoked keys cannot be un-revoked. Issue a new key instead.
+
+## How requests get logged
+
+Each authenticated request emits a structured line in the datris container log:
+
+```
+capability check: route=POST /api/v1/pipeline required=pipeline:create key=claude-desktop legacy=false outcome=grant
+```
+
+The fields:
+
+- `route` — HTTP method + path
+- `required` — the capability the route needs (see [the capability model](#the-capability-model))
+- `key` — the label of the API key (or `session:<username>` for cookie-authed UI flows)
+- `legacy=true` — the key has full access via the backward-compatibility backstop; `false` means a scoped key
+- `outcome` — `grant`, `would-deny`, `deny`, or `unmapped`
+
+Enforcement is **on by default**: a scoped key calling a route it lacks the capability for gets `outcome=deny` and an HTTP 403. To trial a new scope policy without rejecting traffic — for example, you've issued a new scoped key and want to see what it would have been denied under real workload before pointing a production agent at it — set `CAPABILITY_ENFORCEMENT=log-only` in `.env`. The same calls then succeed and emit `outcome=would-deny` log lines instead of 403s. Flip back to `enforce` (or remove the line) once you've validated the policy.
+
+## The capability model
+
+Every API key carries a list of capability strings:
+
+```
+pipeline:read:catalog=support
+document:upload:collection=support_docs
+search:vector:collection=support_docs
+job:read
+```
+
+Each capability is `resource:action[:scope]`. Scope segments restrict by container (catalog, database, collection), type, or ownership — never by leaf resource name, since agents pick those at runtime.
+
+When user-auth is on, logged-in browser sessions are first-class identities too: `session:admin`, `session:editor1`, etc. The capability bundle is derived from the user's role (admin → full access, editor → create/update/run, viewer → read-only). The API-Keys tab in Configuration shows scoped *keys*; per-role capabilities are managed via the **Users** tab.
+
+## Multi-tenant
+
+`MULTI_TENANT=true` switches the model: a single `api-key-mappings` secret maps `keyValue → tenantEnv`, and every tenant carries its own per-environment data. The UI key flow above is single-tenant only; see the Configuration → Tenants documentation for the multi-tenant equivalent.
+
+## See also
+
+- [User Authentication](/user-auth) — login + roles for the UI
+- [Configuration Reference](/configuration-reference) — full env var list
+- [MCP Server](/mcp-server) — how external agents connect

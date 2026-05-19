@@ -16,6 +16,9 @@ class WebMvcConfig extends WebMvcConfigurer {
     var tenantInterceptor: TenantInterceptor = _
 
     @Autowired
+    var capabilityInterceptor: CapabilityInterceptor = _
+
+    @Autowired
     var sessionAuthenticator: SessionAuthenticator = _
 
     @Autowired
@@ -25,13 +28,26 @@ class WebMvcConfig extends WebMvcConfigurer {
     var allowedOrigins: String = _
 
     override def addInterceptors(registry: InterceptorRegistry): Unit = {
-        // Order matters: TenantInterceptor sets multi-tenant env first, SessionAuthenticator
-        // populates UserContext from the cookie, then RoleEnforcementInterceptor checks
-        // @RequiresRole using that context.
+        // Order matters:
+        //   1. TenantInterceptor — sets multi-tenant env from x-api-key, and
+        //      attaches a key-derived ResolvedKey when x-api-key is present.
+        //   2. SessionAuthenticator — reads the session cookie and populates
+        //      UserContext. Runs after TenantInterceptor so multi-tenant
+        //      session storage (which is per-tenant) is queried with the
+        //      right tenant context.
+        //   3. CapabilityInterceptor — reads the ResolvedKey for the
+        //      capability check. If none was attached by TenantInterceptor
+        //      (no x-api-key), falls back to deriving one from UserContext
+        //      so logged-in browser flows are first-class identities too.
+        //   4. RoleEnforcementInterceptor — gates @RequiresRole methods using
+        //      UserContext.
         registry.addInterceptor(tenantInterceptor)
             .addPathPatterns("/api/**")
             .excludePathPatterns("/minio-events")
         registry.addInterceptor(sessionAuthenticator)
+            .addPathPatterns("/api/**")
+            .excludePathPatterns("/minio-events")
+        registry.addInterceptor(capabilityInterceptor)
             .addPathPatterns("/api/**")
             .excludePathPatterns("/minio-events")
         registry.addInterceptor(roleEnforcementInterceptor)

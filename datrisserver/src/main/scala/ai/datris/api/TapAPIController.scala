@@ -7,8 +7,10 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder, JsonParser}
+import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
 import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException}
 import ai.datris.util._
+import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -37,14 +39,26 @@ class TapAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[TapAPIController])
 
     @GetMapping(path = Array("/taps"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTaps(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+    def getTaps(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /taps called")
             APIKeyValidator.validate(apiKey)
 
-            val taps = TapConfigIO.readAll(DatrisEnvironment.current.tapTableName).asJava
+            val allTaps = TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)
+            // Scope-aware filter: a key whose only `tap:read` grant is
+            // `tap:read:owner=self` sees only its own taps. Same pattern as
+            // /pipelines above. Keys with unscoped `tap:read` or `*:*` see
+            // everything.
+            val filteredTaps =
+                if (CapabilityCheck.hasOnlyOwnerSelfScope(request, "tap", "read")) {
+                    val ownerLabel = ResolvedKeyAccess.keyLabel(request).orNull
+                    allTaps.filter(t => t != null && t.createdByKeyLabel != null && t.createdByKeyLabel == ownerLabel)
+                } else {
+                    allTaps
+                }
             val gson = new Gson
-            val json = gson.toJson(taps)
+            val json = gson.toJson(filteredTaps.asJava)
             new ResponseEntity[String](json, HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -124,7 +138,8 @@ class TapAPIController {
 
     @PostMapping(path = Array("/tap"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def createOrUpdateTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                          @RequestBody tapConfig: TapConfig): ResponseEntity[String] = {
+                          @RequestBody tapConfig: TapConfig,
+                          request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /tap called with name: " + tapConfig.name)
             APIKeyValidator.validate(apiKey)
@@ -162,15 +177,26 @@ class TapAPIController {
                 }
             }
 
-            // Set timestamps
+            // Set timestamps and stamp the issuing key's label on first create.
+            // On update we preserve the original `createdByKeyLabel` — ownership
+            // is a property of creation, not the last edit (otherwise an editor
+            // key would silently claim ownership and `owner=self` would drift).
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
             val sdf2 = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
             sdf2.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
             val now = sdf2.format(new java.util.Date())
             val configToSave = if (existing != null)
-                tapConfig.copy(createdAt = existing.createdAt, updatedAt = now)
+                tapConfig.copy(
+                    createdAt = existing.createdAt,
+                    updatedAt = now,
+                    createdByKeyLabel = existing.createdByKeyLabel
+                )
             else
-                tapConfig.copy(createdAt = now, updatedAt = now)
+                tapConfig.copy(
+                    createdAt = now,
+                    updatedAt = now,
+                    createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull
+                )
 
             TapConfigIO.write(configToSave)
 
@@ -185,7 +211,8 @@ class TapAPIController {
 
     @DeleteMapping(path = Array("/tap"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def deleteTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                  @RequestParam name: String): ResponseEntity[String] = {
+                  @RequestParam name: String,
+                  request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /tap called with name: " + name)
             APIKeyValidator.validate(apiKey)
@@ -193,6 +220,9 @@ class TapAPIController {
             // Delete script from MinIO if it exists
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
             if (existing != null) {
+                // Scope check: `tap:delete:owner=self` keys may only delete
+                // taps they created. Loaded resource carries createdByKeyLabel.
+                CapabilityCheck.assertOwnerScope(request, "tap", "delete", existing.createdByKeyLabel)
                 TapScriptGenerator.deleteScript(existing.scriptPath)
             }
 
@@ -874,7 +904,8 @@ class TapAPIController {
 
     @PostMapping(path = Array("/tap/run"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def runTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-               @RequestBody body: java.util.Map[String, String]): ResponseEntity[String] = {
+               @RequestBody body: java.util.Map[String, String],
+               request: HttpServletRequest): ResponseEntity[String] = {
         try {
             val name = body.get("name")
             logger.info("API endpoint POST /tap/run called for tap: " + name)
@@ -886,6 +917,11 @@ class TapAPIController {
             val tapConfig = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
             if (tapConfig == null)
                 throw new DatrisException("Tap: " + name + " not found")
+
+            // Scope check: `tap:run:owner=self` keys (e.g. rag-builder) may
+            // only run taps they created. The loaded tap's createdByKeyLabel
+            // is matched against the caller's label.
+            CapabilityCheck.assertOwnerScope(request, "tap", "run", tapConfig.createdByKeyLabel)
 
             val mode = Option(body.get("mode")).map(_.toLowerCase).getOrElse("test")
 

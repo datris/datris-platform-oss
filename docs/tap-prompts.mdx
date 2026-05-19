@@ -28,11 +28,23 @@ If a key appears in any of those texts, the fragment's `content` is appended to 
 
 ## Managing fragments
 
-Fragments live under **Configuration → Taps**. The Configuration page itself has three sub-tabs:
+Fragments are managed via the `/api/v1/tap-prompts` REST endpoints (GET / POST / DELETE / `suggest`). The dedicated UI surface previously lived under **Configuration → Taps** and was removed when the Configuration tab list was simplified; the underlying data and API endpoints are unchanged, so existing fragments still apply to tap creation, brainstorm, auto-fix, optimize, and Discovery chat exactly as before.
 
-1. **Environment** — tenant name, version, trial/hosted status, current AI provider summary.
-2. **AI Providers** — AI Primary, CodeGen, and Embedding provider settings plus shared API keys.
-3. **Taps** — the Prompt Fragments list.
+To add a fragment from the CLI or a script:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tap-prompts \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: <your key>" \
+  -d '{
+    "key": "AWS",
+    "aliases": ["S3", "EC2", "Lambda", "boto3"],
+    "content": "Use boto3 for AWS APIs. Read credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env vars (don't hardcode). Default region is us-east-1.",
+    "enabled": true
+  }'
+```
+
+GET `/api/v1/tap-prompts` lists all fragments; DELETE `/api/v1/tap-prompts/{key}` removes one.
 
 ### Each fragment has
 

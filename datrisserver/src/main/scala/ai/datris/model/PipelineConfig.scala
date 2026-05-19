@@ -14,7 +14,8 @@ case class PipelineConfig(
                             dataQuality: DataQuality = null,
                             transformation: Transformation = null,
                             destination: Destination = null,
-                            catalog: String = null
+                            catalog: String = null,
+                            createdByKeyLabel: String = null
                         )
 
 case class Source(

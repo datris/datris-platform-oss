@@ -11,7 +11,15 @@ echo "Seeding Vault secrets..."
 vault kv put secret/oss/minio accessKey=minioadmin secretKey=minioadmin
 vault kv put secret/oss/activemq username=admin password=admin
 vault kv put secret/oss/mongodb connectionString=mongodb://mongodb:27017 database=oss
-vault kv put secret/oss/api-keys key=default-api-key
+# The UI API key — operator-supplied via DATRIS_UI_API_KEY in .env, or a
+# stable fallback for fresh local installs. Seeded in two places so the
+# auth layer recognizes it AND the operator can rotate it from the UI:
+#   - oss/api-keys[ui] is the validation source (APIKeyValidator looks here)
+#   - oss/ui-api-key is the operator-facing record (rotatable in Secrets UI;
+#     on save, the server auto-mirrors the new value into oss/api-keys[ui])
+UI_API_KEY_VALUE="${DATRIS_UI_API_KEY:-default-ui-key}"
+vault kv put secret/oss/api-keys ui="${UI_API_KEY_VALUE}"
+vault kv put secret/oss/ui-api-key apiKey="${UI_API_KEY_VALUE}"
 vault kv put secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 username=postgres password=postgres
 # kafka-producer is intentionally not seeded — the bundled Kafka service is
 # now opt-in (see optional Kafka block in docker-compose.yml). Users who
