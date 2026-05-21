@@ -1,4 +1,5 @@
 import { Component, OnInit, ViewChild, ElementRef, AfterViewInit, AfterViewChecked } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { AssistantStateService, AssistantTurn, ToolCard, TextSegment } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 
@@ -34,11 +35,36 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
   existingTapSecrets: string[] = [];
   private existingTapSecretsLoaded = false;
 
-  constructor(public state: AssistantStateService, private secretsService: SecretsService) { }
+  constructor(public state: AssistantStateService, private secretsService: SecretsService, private route: ActivatedRoute) { }
 
   ngOnInit(): void {
     this.state.ensureInit();
     this.scrollPending = true;
+
+    // When the user navigated in from a specific catalog (e.g. clicked
+    // "Describe to Assistant" inside a catalog card), start a fresh chat so
+    // the new request isn't grafted onto an unrelated prior conversation.
+    // Seed the composer with an instruction that names the catalog so the
+    // model assigns it on the create_tap / create_pipeline calls it makes.
+    const catalogParam = this.route.snapshot.queryParamMap.get('catalog');
+    if (catalogParam) {
+      this.state.newChat();
+      // Named catalog: short context prefix that names the catalog so the
+      // model carries it onto the create_tap / create_pipeline calls. For
+      // Uncataloged there's nothing to anchor, so leave the composer empty.
+      const seed = catalogParam === 'Uncataloged'
+        ? ''
+        : `In the "${catalogParam}" catalog: `;
+      this.state.draft = seed;
+      requestAnimationFrame(() => {
+        const el = this.composerEl?.nativeElement;
+        if (el) {
+          el.focus();
+          el.setSelectionRange(seed.length, seed.length);
+          this.autoGrowComposer();
+        }
+      });
+    }
   }
 
   /** Ensure the existing tap secrets list is loaded for the form dropdown.
@@ -162,7 +188,6 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
 
     switch (name) {
       case 'web_search':            return { icon: '🔍', label: 'Searching the web' + (arg('query') ? ` for ${arg('query')}` : '') };
-      case 'discover_source':       return { icon: '🧭', label: 'Exploring data sources' + (arg('topic') ? ` for ${arg('topic')}` : '') };
       case 'create_tap':            return { icon: '🛠',  label: 'Creating tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'update_tap':            return { icon: '✏️', label: 'Updating tap' + (arg('name') ? ` ${arg('name')}` : '') };
       case 'test_tap':              return { icon: '▶️', label: 'Testing tap' + (arg('name') ? ` ${arg('name')}` : '') };

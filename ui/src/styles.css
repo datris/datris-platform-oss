@@ -49,3 +49,208 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
 }
+
+/* ============================================================
+   Catalog-embedded table styles (shared by <app-taps> and
+   <app-pipelines> when rendered inside a Catalog card body).
+   Lives in global CSS so both components render with identical
+   column widths, fonts, and badge styles — otherwise Angular's
+   per-component view encapsulation would let them diverge.
+   ============================================================ */
+.embed-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+.embed-table th,
+.embed-table td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-primary);
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.embed-table thead th {
+  background: var(--bg-header);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.embed-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.embed-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.embed-name-link {
+  color: var(--accent-cyan);
+  text-decoration: none;
+  font-weight: 500;
+}
+.embed-name-link:hover { text-decoration: underline; }
+
+.embed-name-edit-btn {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  margin-left: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  vertical-align: middle;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.embed-name-edit-btn .material-icons {
+  font-size: 14px;
+}
+tr:hover .embed-name-edit-btn { opacity: 1; }
+.embed-name-edit-btn:hover { color: var(--text-primary); }
+
+.embed-name-input {
+  width: 100%;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-focus);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 8px;
+  outline: none;
+}
+
+.embed-details {
+  color: var(--text-secondary);
+}
+
+.embed-connection {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.embed-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(0, 180, 255, 0.12);
+  color: var(--accent-cyan);
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.embed-cron {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.embed-muted {
+  color: var(--text-muted);
+}
+
+.embed-status {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.embed-status-success { background: rgba(0, 229, 160, 0.15); color: var(--accent-green); }
+.embed-status-error   { background: rgba(239, 68, 68, 0.15);  color: var(--accent-red); }
+.embed-status-never   { background: rgba(100, 116, 139, 0.15); color: var(--text-muted); }
+
+.embed-records {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* Specificity note: the table-wide `.embed-table td` rule (class + element)
+   would otherwise out-specify a bare `.embed-actions-cell` class selector and
+   force the cell back to text-align: left. Selectors below match (0,2,1) to
+   win the cascade and the right-align actually applies. */
+.embed-table td.embed-actions-cell {
+  text-align: right;
+  white-space: nowrap;
+  /* Override the table-wide overflow: hidden so action buttons can't get
+     clipped and the Move-to-catalog dropdown can escape the td bounds. */
+  overflow: visible;
+}
+
+.embed-action-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  margin-left: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.embed-action-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.embed-action-btn .material-icons {
+  font-size: 18px;
+}
+
+.embed-move-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.embed-move-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  min-width: 180px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  padding: 4px 0;
+  margin-top: 4px;
+}
+
+.embed-move-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+.embed-move-item:hover {
+  background: var(--bg-hover);
+}
+.embed-move-item .material-icons {
+  font-size: 16px;
+  color: var(--text-muted);
+}

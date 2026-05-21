@@ -1,22 +1,24 @@
-<div class="container">
-  <div class="page-header">
-    <h1 class="page-title">Taps <span class="beta-tag">(beta)</span></h1>
-    <button class="create-btn" routerLink="/taps/create" *ngIf="auth.canWrite()">+ Create Tap</button>
-  </div>
-  <p class="page-description">
-    A tap is an AI-generated Python script that fetches data from an external source and pushes it into a pipeline.
-    Create a tap by describing what data you want to fetch, and Datris will generate the script for you.
-    Taps can run on a schedule using CRON expressions.
-  </p>
+<div [class.container]="!isEmbedded" [class.embedded]="isEmbedded">
+  <ng-container *ngIf="!isEmbedded">
+    <div class="page-header">
+      <h1 class="page-title">Taps <span class="beta-tag">(beta)</span></h1>
+      <button class="create-btn" routerLink="/taps/create" *ngIf="auth.canWrite()">+ Create Tap</button>
+    </div>
+    <p class="page-description">
+      A tap is an AI-generated Python script that fetches data from an external source and pushes it into a pipeline.
+      Create a tap by describing what data you want to fetch, and Datris will generate the script for you.
+      Taps can run on a schedule using CRON expressions.
+    </p>
 
-  <div class="search-bar" *ngIf="taps.length > 0">
-    <span class="material-icons search-icon">search</span>
-    <input class="search-input" [(ngModel)]="searchQuery" (ngModelChange)="filterTaps()" placeholder="Search taps...">
-  </div>
+    <div class="search-bar" *ngIf="taps.length > 0">
+      <span class="material-icons search-icon">search</span>
+      <input class="search-input" [(ngModel)]="searchQuery" (ngModelChange)="filterTaps()" placeholder="Search taps...">
+    </div>
+  </ng-container>
 
   <div class="table-container" *ngIf="filteredTaps.length > 0">
     <div *ngFor="let group of catalogGroups" class="catalog-group">
-      <div class="catalog-group-header" (click)="group.expanded = !group.expanded">
+      <div class="catalog-group-header" *ngIf="!isEmbedded" (click)="group.expanded = !group.expanded">
         <span class="material-icons catalog-expand-icon">{{ group.expanded ? 'expand_more' : 'chevron_right' }}</span>
         <span class="material-icons catalog-folder-icon">{{ group.name === 'Uncataloged' ? 'folder_off' : 'folder' }}</span>
         <span class="catalog-group-name">{{ group.name }}</span>
@@ -50,7 +52,86 @@
           </button>
         </div>
       </div>
-    <table *ngIf="group.expanded">
+    <!-- Catalog-embedded view: unified 7-column row so Taps and Pipelines
+         tables visually align inside a catalog card. Same colgroup as the
+         pipelines embedded table; shared typography lives in styles.css. -->
+    <table *ngIf="group.expanded && isEmbedded" class="embed-table">
+      <colgroup>
+        <col style="width: 14%">
+        <col style="width: 22%">
+        <col style="width: 13%">
+        <col style="width: 8%">
+        <col style="width: 11%">
+        <col style="width: 12%">
+        <col style="width: 20%">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Details</th>
+          <th>Connection</th>
+          <th></th>
+          <th>Schedule</th>
+          <th>Last Run</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let tap of group.taps; trackBy: trackByTapName">
+          <td>
+            <ng-container *ngIf="editingName !== tap.name">
+              <a class="embed-name-link" [routerLink]="['/taps', tap.name, 'edit']">{{ tap.name }}</a>
+              <button class="embed-name-edit-btn" *ngIf="auth.canWrite()" (click)="startEditName($event, tap)" title="Rename">
+                <span class="material-icons">edit</span>
+              </button>
+            </ng-container>
+            <input *ngIf="editingName === tap.name" class="embed-name-input"
+                   [(ngModel)]="editingNameValue"
+                   (blur)="cancelEditName($event)"
+                   (keydown.enter)="saveEditName(tap)"
+                   (keydown.escape)="cancelEditName($event)"
+                   (click)="$event.stopPropagation()"
+                   #nameInput>
+          </td>
+          <td class="embed-details" [title]="tap.description">{{ tap.description || '—' }}</td>
+          <td>
+            <span *ngIf="tap.targetPipeline" class="embed-connection" [title]="tap.targetPipeline">→ {{ tap.targetPipeline }}</span>
+            <span *ngIf="!tap.targetPipeline" class="embed-muted">—</span>
+          </td>
+          <td></td>
+          <td>
+            <span class="embed-cron" *ngIf="tap.cronExpression" [title]="tap.cronExpression">{{ tap.cronExpression }}</span>
+            <span class="embed-muted" *ngIf="!tap.cronExpression">—</span>
+          </td>
+          <td>
+            <span class="embed-status embed-status-success" *ngIf="tap.lastRunStatus === 'success'">success</span>
+            <span class="embed-status embed-status-error" *ngIf="tap.lastRunStatus === 'error'">error</span>
+            <span class="embed-status embed-status-never" *ngIf="!tap.lastRunStatus">never</span>
+            <span class="embed-status embed-status-never" *ngIf="tap.lastRunStatus && tap.lastRunStatus !== 'success' && tap.lastRunStatus !== 'error'">{{ tap.lastRunStatus }}</span>
+            <span class="embed-records" *ngIf="tap.lastRunRecordCount">{{ tap.lastRunRecordCount }} records</span>
+          </td>
+          <td class="embed-actions-cell">
+            <button class="embed-action-btn" (click)="viewLogs($event, tap.name)" title="Run history"><span class="material-icons">history</span></button>
+            <button class="embed-action-btn" (click)="editTap($event, tap.name)" title="Edit" *ngIf="auth.canWrite()"><span class="material-icons">edit</span></button>
+            <button class="embed-action-btn" (click)="runTap($event, tap.name)" title="Test run" *ngIf="auth.canWrite()"><span class="material-icons">play_arrow</span></button>
+            <span class="embed-move-wrap" *ngIf="auth.canWrite() && moveTargets().length > 0">
+              <button class="embed-action-btn" (click)="toggleMoveMenu(tap.name, $event)" title="Move to catalog">
+                <span class="material-icons">drive_file_move</span>
+              </button>
+              <div class="embed-move-menu" *ngIf="moveMenuOpen === tap.name" (click)="$event.stopPropagation()">
+                <button class="embed-move-item" *ngFor="let target of moveTargets()" (click)="moveToCatalog(tap, target, $event)">
+                  <span class="material-icons">folder</span> {{ target }}
+                </button>
+              </div>
+            </span>
+            <button class="embed-action-btn" (click)="promptDelete($event, tap.name)" title="Delete" *ngIf="auth.canWrite()"><span class="material-icons">delete</span></button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- Standalone /taps view (currently unreached; route redirects to /catalog) -->
+    <table *ngIf="group.expanded && !isEmbedded">
       <thead>
         <tr>
           <th>Name</th>
@@ -152,11 +233,11 @@
     </div>
   </div>
 
-  <div class="empty-state" *ngIf="taps.length > 0 && filteredTaps.length === 0">
+  <div class="empty-state" *ngIf="!isEmbedded && taps.length > 0 && filteredTaps.length === 0">
     <p>No taps match "{{ searchQuery }}"</p>
   </div>
 
-  <div class="empty-state" *ngIf="taps.length === 0">
+  <div class="empty-state" *ngIf="!isEmbedded && taps.length === 0">
     <p>No taps created. Use the Create Tap button, the API, CLI, or MCP server to create one.</p>
   </div>
 </div>

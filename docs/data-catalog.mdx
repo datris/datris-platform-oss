@@ -4,14 +4,14 @@ description: "A logical grouping for related taps and pipelines"
 ---
 
 <Note>
-**Beta.** Data Catalogs ship alongside [Discovery](/discovery) and may evolve as we add features like sharing and access control.
+**Beta.** Data Catalogs may evolve as we add features like sharing and access control.
 </Note>
 
 A **Data Catalog** is a named bucket that groups related [taps](/taps) and [pipelines](/pipeline-configuration). It's pure metadata — assigning a tap to a catalog doesn't change how the tap runs or where its data lands. Catalogs exist to make a busy platform browsable: instead of a flat list of 40 taps, you see "Stock Prices (12)", "Weather (6)", "Earnings (8)" and so on.
 
 ## When to use a catalog
 
-Use one whenever you have more than a handful of related taps that should travel together — same source, same domain, same project. Discovery [creates a catalog by default](/discovery#step-1-discover-data-sources) because every Discovery session produces a set of related taps, and they belong together.
+Use one whenever you have more than a handful of related taps that should travel together — same source, same domain, same project.
 
 You don't have to use catalogs. Anything you create outside a catalog falls into the **Uncataloged** group, which works fine for one-off taps and pipelines.
 
@@ -22,7 +22,7 @@ Catalogs aren't a separate table or external system. Each tap and pipeline carri
 - A catalog "exists" as soon as anything is assigned to it. There's no separate create step required to *use* a name.
 - Renaming a catalog means updating the `catalog` field on every tap and pipeline in it. The Data Catalog UI handles this for you.
 
-When you create a catalog explicitly (via the UI or Discovery), Datris persists the name by writing a placeholder tap named `__catalog__<name>` (description "Catalog placeholder", `enabled=false`). This makes empty catalogs survive across UI reloads. The placeholder is hidden from the Taps list and ignored by the runtime.
+When you create a catalog explicitly via the UI, Datris persists the name by writing a placeholder tap named `__catalog__<name>` (description "Catalog placeholder", `enabled=false`). This makes empty catalogs survive across UI reloads. The placeholder is hidden from the Taps list and ignored by the runtime.
 
 ## The Data Catalog page
 
@@ -43,13 +43,12 @@ The **Data Catalog** tab in the UI shows one card per catalog plus an **Uncatalo
 
 ## Assigning a catalog
 
-Five ways to put a tap or pipeline into a catalog:
+Four ways to put a tap or pipeline into a catalog:
 
-1. **Discovery** — the catalog you pick in Discovery Step 1 is applied to every tap and pipeline produced by that session.
-2. **Tap editor** — when creating or editing a tap manually, set the **Catalog** field.
-3. **Pipeline editor** — same field on the pipeline form.
-4. **CLI** — pass `--catalog <name>` to `datris ingest` when creating a new pipeline. Re-ingesting an existing pipeline preserves its current catalog (and the rest of the config) — use the `set_catalog` MCP tool to change a catalog after the fact.
-5. **MCP agent** — call `set_catalog(pipeline="<name>", catalog="<label>")` or `set_catalog(tap="<name>", catalog="<label>")` to set the label on an existing item. Pass an empty string (or omit `catalog`) to clear it back to Uncataloged. New pipelines created via `create_pipeline` accept an optional `catalog` argument directly.
+1. **Tap editor** — when creating or editing a tap manually, set the **Catalog** field.
+2. **Pipeline editor** — same field on the pipeline form.
+3. **CLI** — pass `--catalog <name>` to `datris ingest` when creating a new pipeline. Re-ingesting an existing pipeline preserves its current catalog (and the rest of the config) — use the `set_catalog` MCP tool to change a catalog after the fact.
+4. **MCP agent** — call `set_catalog(pipeline="<name>", catalog="<label>")` or `set_catalog(tap="<name>", catalog="<label>")` to set the label on an existing item. Pass an empty string (or omit `catalog`) to clear it back to Uncataloged. New pipelines created via `create_pipeline` accept an optional `catalog` argument directly.
 
 Leave the field blank to keep the item Uncataloged.
 

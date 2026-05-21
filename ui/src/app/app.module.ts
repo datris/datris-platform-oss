@@ -19,11 +19,11 @@ import { TapPromptListComponent } from './configuration/tap-prompts/tap-prompt-l
 import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
-import { GettingStartedComponent } from './getting-started/getting-started.component';
 import { DataCatalogComponent } from './data-catalog/data-catalog.component';
-import { DiscoveryComponent } from './discovery/discovery.component';
 import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
 import { AssistantComponent } from './assistant/assistant.component';
+import { McpShellComponent } from './mcp-shell/mcp-shell.component';
+import { DataShellComponent } from './data-shell/data-shell.component';
 import { LoginComponent } from './login/login.component';
 import { ChangePasswordModalComponent } from './change-password-modal/change-password-modal.component';
 import { UsersComponent } from './configuration/users/users.component';
@@ -53,11 +53,11 @@ import { MaterialModule } from './material.module';
     TapsComponent,
     TapCreateComponent,
     TapRunComponent,
-    GettingStartedComponent,
     DataCatalogComponent,
-    DiscoveryComponent,
     AgentMonitorComponent,
     AssistantComponent,
+    McpShellComponent,
+    DataShellComponent,
     LoginComponent,
     ChangePasswordModalComponent,
     UsersComponent,

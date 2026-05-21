@@ -1,6 +1,14 @@
-<div class="container">
-  <h1 class="page-title">Agent Monitor</h1>
-  <p class="page-subtitle">
+<div class="container" [class.popout-mode]="isPopout">
+  <div class="agent-monitor-header">
+    <h1 class="page-title">Agent Monitor</h1>
+    <button type="button" class="popout-btn"
+            *ngIf="!isPopout"
+            (click)="openInPopout()"
+            title="Open Agent Monitor in a new window — keep it on a second monitor while you work in the Assistant.">
+      <span class="material-icons">open_in_new</span>
+    </button>
+  </div>
+  <p class="page-subtitle" *ngIf="!isPopout">
     Live view of AI agents connected to the Datris MCP server. Each active session appears as an
     agent on the right; lines pulse as tools are invoked. The activity log below streams every
     tool call with its status and latency.
@@ -99,7 +107,7 @@
 
     <div class="log-scroll" #logScroll>
       <div *ngIf="log.length === 0" class="log-empty">
-        Waiting for agent activity…
+        No agent activity yet. <a routerLink="/mcp/connect">Connect an agent</a> to start seeing tool calls here, or talk to the in-product <a routerLink="/assistant">Assistant</a>.
       </div>
       <div *ngFor="let row of log; trackBy: trackLog" class="log-entry">
         <div class="log-row"

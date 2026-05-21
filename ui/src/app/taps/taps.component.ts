@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, ElementRef, ViewChildren, QueryList } from '@angular/core';
+import { Component, OnInit, OnDestroy, ElementRef, ViewChildren, QueryList, Input, HostListener } from '@angular/core';
 import { Router } from '@angular/router';
 import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
@@ -9,10 +9,32 @@ import { AuthService } from '../auth.service';
   styleUrls: ['./taps.component.css']
 })
 export class TapsComponent implements OnInit, OnDestroy {
+  /** When set, renders only the taps that belong to this catalog and hides the
+   *  outer page chrome (heading, search bar, catalog-group folder rows). Used
+   *  by DataCatalogComponent to embed this component inside each catalog card. */
+  @Input() embedCatalog?: string;
+
+  /** Catalog names available as move targets when embedded. Passed in by the
+   *  parent so the embedded component doesn't have to know about empty
+   *  catalogs (which only the parent enumerates via __catalog__ placeholders). */
+  @Input() allCatalogs: string[] = [];
+
   taps: any[] = [];
   filteredTaps: any[] = [];
   searchQuery = '';
   catalogGroups: Array<{name: string, taps: any[], expanded: boolean, deleting?: boolean, running?: boolean}> = [];
+
+  /** Identifier of the row whose Move menu is currently open, or '' for none. */
+  moveMenuOpen = '';
+
+  get isEmbedded(): boolean { return !!this.embedCatalog; }
+
+  /** Close the Move menu when the user clicks outside it. The menu's own
+   *  click handlers call stopPropagation, so in-menu clicks won't reach here. */
+  @HostListener('document:click')
+  onDocumentClick(): void {
+    if (this.moveMenuOpen) this.moveMenuOpen = '';
+  }
   private refreshInterval: any;
 
   deleteTarget = '';
@@ -77,6 +99,19 @@ export class TapsComponent implements OnInit, OnDestroy {
 
   private buildCatalogGroups(): void {
     const prevExpanded = new Set(this.catalogGroups.filter(g => g.expanded).map(g => g.name));
+
+    // When embedded inside a catalog card, render exactly one group containing
+    // just that catalog's taps. The group is always expanded — the parent
+    // catalog card is what controls expansion at the outer level.
+    if (this.isEmbedded) {
+      const target = this.embedCatalog!;
+      const matches = this.filteredTaps.filter(t =>
+        target === 'Uncataloged' ? !t.catalog : t.catalog === target
+      );
+      this.catalogGroups = [{ name: target, taps: matches, expanded: true }];
+      return;
+    }
+
     const map = new Map<string, any[]>();
     for (const tap of this.filteredTaps) {
       const cat = tap.catalog || 'Uncataloged';
@@ -288,17 +323,53 @@ export class TapsComponent implements OnInit, OnDestroy {
 
     if (!newName || newName === oldName) return;
 
-    // Rename: create with new name, delete old
-    const updated = { ...tap, name: newName };
-    this.tapService.createOrUpdateTap(updated).subscribe({
-      next: () => {
-        this.tapService.deleteTap(oldName).subscribe({
-          next: () => this.loadTaps(),
-          error: () => this.loadTaps()
-        });
+    // Rename a tap is three things on the server:
+    //   1. Load the full config (the list endpoint omits the script body).
+    //   2. Re-store the script under the new tap name so the file actually
+    //      exists at a path tied to the new tap. Without this step, the new
+    //      tap config inherits the OLD scriptPath, and step 3's deleteTap
+    //      wipes the file out — leaving the renamed tap pointing at nothing
+    //      ("script is missing from object storage").
+    //   3. Create-or-update the tap config under the new name with the new
+    //      scriptPath, then delete the old tap (which cleans up the old
+    //      script file we no longer reference).
+    this.tapService.getTap(oldName).subscribe({
+      next: (fullTap) => {
+        const finishRename = (newScriptPath: string | null) => {
+          const updated = { ...fullTap, name: newName, scriptPath: newScriptPath };
+          this.tapService.createOrUpdateTap(updated).subscribe({
+            next: () => {
+              this.tapService.deleteTap(oldName).subscribe({
+                next: () => this.loadTaps(),
+                error: () => this.loadTaps()
+              });
+            },
+            error: (err) => {
+              alert('Failed to rename: ' + (err.error || err.message));
+              this.loadTaps();
+            }
+          });
+        };
+
+        const script = (fullTap && fullTap.script) ? fullTap.script : '';
+        if (script) {
+          // Pass null for oldScriptPath so the server doesn't delete the
+          // old file yet — deleteTap on the old name will clean it up.
+          this.tapService.storeScript(newName, script, undefined).subscribe({
+            next: (res) => finishRename((res && res.scriptPath) || null),
+            error: (err) => {
+              alert('Failed to copy script to new name: ' + (err.error || err.message));
+              this.loadTaps();
+            }
+          });
+        } else {
+          // No script content (e.g. tap with no generated script yet) — just
+          // rename the config with no scriptPath.
+          finishRename(null);
+        }
       },
       error: (err) => {
-        alert('Failed to rename: ' + (err.error || err.message));
+        alert('Failed to load tap for rename: ' + (err.error || err.message));
         this.loadTaps();
       }
     });
@@ -308,6 +379,39 @@ export class TapsComponent implements OnInit, OnDestroy {
     event.stopPropagation();
     this.editingName = '';
     this.editingNameValue = '';
+  }
+
+  /** Target catalogs available for a move from this row's current catalog.
+   *  Excludes the catalog the row already lives in. Uncataloged is included
+   *  as a target — selecting it clears the row's catalog assignment. */
+  moveTargets(): string[] {
+    return this.allCatalogs.filter(c => c !== this.embedCatalog);
+  }
+
+  toggleMoveMenu(tapName: string, event: Event): void {
+    event.stopPropagation();
+    this.moveMenuOpen = this.moveMenuOpen === tapName ? '' : tapName;
+  }
+
+  /** ngFor trackBy used in the embedded rows so the 5s refresh interval
+   *  doesn't destroy the row DOM (which would close any open Move menu and
+   *  reset inline-edit state). Identity by name keeps the same <tr> in place. */
+  trackByTapName(_index: number, tap: any): string {
+    return tap?.name || '';
+  }
+
+  moveToCatalog(tap: any, targetCatalog: string, event: Event): void {
+    event.stopPropagation();
+    this.moveMenuOpen = '';
+    // The Uncataloged pseudo-catalog is "no catalog assignment" — store as null
+    // so the server treats it as unassigned, not as a literal catalog named
+    // "Uncataloged".
+    const catalogValue = targetCatalog === 'Uncataloged' ? null : targetCatalog;
+    const updated = { ...tap, catalog: catalogValue };
+    this.tapService.createOrUpdateTap(updated).subscribe({
+      next: () => this.loadTaps(),
+      error: (err) => alert('Failed to move: ' + (err.error || err.message))
+    });
   }
 
   openPipelineDropdown(event: Event, name: string): void {

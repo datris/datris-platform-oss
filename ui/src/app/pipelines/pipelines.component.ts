@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, ViewChildren, ElementRef, QueryList } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChildren, ElementRef, QueryList, Input, HostListener } from '@angular/core';
 import { Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 import { PipelineStatusService } from '../pipeline-status.service';
@@ -11,10 +11,28 @@ import { AuthService } from '../auth.service';
   styleUrls: ['./pipelines.component.css']
 })
 export class PipelinesComponent implements OnInit, OnDestroy {
+  /** When set, renders only the pipelines that belong to this catalog and hides
+   *  the outer page chrome. Used by DataCatalogComponent to embed this component
+   *  inside each catalog card. */
+  @Input() embedCatalog?: string;
+
+  /** Catalog names available as move targets when embedded. */
+  @Input() allCatalogs: string[] = [];
+
   pipelines: any[] = [];
   filteredPipelines: any[] = [];
   searchQuery = '';
   catalogGroups: Array<{name: string, pipelines: any[], expanded: boolean, deleting?: boolean}> = [];
+
+  /** Identifier of the row whose Move menu is currently open, or '' for none. */
+  moveMenuOpen = '';
+
+  get isEmbedded(): boolean { return !!this.embedCatalog; }
+
+  @HostListener('document:click')
+  onDocumentClick(): void {
+    if (this.moveMenuOpen) this.moveMenuOpen = '';
+  }
   showDiagram = false;
   pipelineToTap: { [pipelineName: string]: string } = {};
   editingName = '';
@@ -96,6 +114,33 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     this.editingNameValue = '';
   }
 
+  moveTargets(): string[] {
+    return this.allCatalogs.filter(c => c !== this.embedCatalog);
+  }
+
+  toggleMoveMenu(name: string, event: Event): void {
+    event.stopPropagation();
+    this.moveMenuOpen = this.moveMenuOpen === name ? '' : name;
+  }
+
+  /** ngFor trackBy used in the embedded rows so the 5s refresh interval
+   *  doesn't destroy the row DOM (which would close any open Move menu and
+   *  reset inline-edit state). Identity by name keeps the same <tr> in place. */
+  trackByPipelineName(_index: number, p: any): string {
+    return p?.name || '';
+  }
+
+  moveToCatalog(pipeline: any, targetCatalog: string, event: Event): void {
+    event.stopPropagation();
+    this.moveMenuOpen = '';
+    const catalogValue = targetCatalog === 'Uncataloged' ? null : targetCatalog;
+    const updated = { ...pipeline, catalog: catalogValue };
+    this.pipelineService.createPipeline(updated).subscribe({
+      next: () => this.loadPipelines(),
+      error: (err) => alert('Failed to move: ' + (err.error || err.message))
+    });
+  }
+
   loadTaps(): void {
     this.tapService.getTaps().subscribe({
       next: (taps) => {
@@ -147,6 +192,19 @@ export class PipelinesComponent implements OnInit, OnDestroy {
 
   private buildCatalogGroups(): void {
     const prevExpanded = new Set(this.catalogGroups.filter(g => g.expanded).map(g => g.name));
+
+    // When embedded inside a catalog card, render exactly one group containing
+    // just that catalog's pipelines. Always expanded; the parent catalog card
+    // controls expansion at the outer level.
+    if (this.isEmbedded) {
+      const target = this.embedCatalog!;
+      const matches = this.filteredPipelines.filter(p =>
+        target === 'Uncataloged' ? !p.catalog : p.catalog === target
+      );
+      this.catalogGroups = [{ name: target, pipelines: matches, expanded: true }];
+      return;
+    }
+
     const map = new Map<string, any[]>();
     for (const p of this.filteredPipelines) {
       const cat = p.catalog || 'Uncataloged';

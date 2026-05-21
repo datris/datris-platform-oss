@@ -191,6 +191,13 @@ export class TapCreateComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     const name = this.route.snapshot.paramMap.get('name');
+    // Pre-fill the catalog field when the user entered Create from a specific
+    // catalog (e.g. clicked Create Tap inside a catalog card). Uncataloged
+    // means "no catalog assignment" — leave the field empty.
+    const catalogParam = this.route.snapshot.queryParamMap.get('catalog');
+    if (catalogParam && catalogParam !== 'Uncataloged') {
+      this.catalog = catalogParam;
+    }
     if (name) {
       this.isEditMode = true;
       this.tapService.getTap(name).subscribe({
@@ -218,13 +225,27 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       });
     }
 
-    // Load available catalogs + existing tap names (for the overwrite warning)
+    // Load available catalogs + existing tap names (for the overwrite warning).
+    // Catalogs come from BOTH taps and pipelines so a catalog that contains
+    // only pipelines (no taps yet) still appears as a dropdown option — without
+    // this, opening the wizard for an item in such a catalog can null its
+    // catalog assignment via ngModel mismatch on save.
+    const collectedCatalogs = new Set<string>();
+    const finalizeCatalogs = () => {
+      this.availableCatalogs = Array.from(collectedCatalogs).sort();
+    };
     this.tapService.getTaps().subscribe({
       next: (taps) => {
-        const cats = new Set<string>();
-        (taps || []).forEach((t: any) => { if (t.catalog) cats.add(t.catalog); });
-        this.availableCatalogs = Array.from(cats).sort();
+        (taps || []).forEach((t: any) => { if (t.catalog) collectedCatalogs.add(t.catalog); });
+        finalizeCatalogs();
         this.existingTapNames = (taps || []).map((t: any) => (t.name || '')).filter((n: string) => n.length > 0);
+      },
+      error: () => {}
+    });
+    this.pipelineService.getPipelines().subscribe({
+      next: (pipelines: any[]) => {
+        (pipelines || []).forEach((p: any) => { if (p.catalog) collectedCatalogs.add(p.catalog); });
+        finalizeCatalogs();
       },
       error: () => {}
     });

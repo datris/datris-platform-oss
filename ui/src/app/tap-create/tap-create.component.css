@@ -1,7 +1,17 @@
 .container {
   padding: 0 32px 32px;
   max-width: 800px;
-  margin: 0 auto;
+  color: var(--text-primary);
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 16px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 14px;
+}
+.back-link:hover {
   color: var(--text-primary);
 }
 
@@ -1108,6 +1118,17 @@
   margin-top: 24px;
   padding-top: 20px;
   border-top: 1px solid var(--border-color);
+}
+
+/* Top copy of the navigation row — mirrors the bottom buttons so users can
+   advance the wizard without scrolling to the end of long steps. */
+.nav-buttons-top {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .spacer {

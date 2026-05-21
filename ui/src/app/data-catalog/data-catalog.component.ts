@@ -10,6 +10,8 @@ interface CatalogInfo {
   tapCount: number;
   pipelineCount: number;
   expanded?: boolean;
+  tapsExpanded?: boolean;
+  pipelinesExpanded?: boolean;
   taps: any[];
   pipelines: any[];
   deleting?: boolean;
@@ -35,6 +37,13 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   movingItem = '';
   moveError = '';
   private moveErrorTimeout: any;
+  // Catalog-level bulk move (move all taps + pipelines in one catalog into
+  // another). Tracks which catalog's move menu is open and which is mid-move.
+  moveCatalogMenuOpen = '';
+  movingCatalog = '';
+  /** Catalog the user is about to be sent to once a bulk move finishes; the
+   *  next loadCatalogs() expands it so the moved items are visible immediately. */
+  private pendingAutoExpand = '';
   private refreshInterval: any;
 
   constructor(private tapService: TapService, private pipelineService: PipelineService, private router: Router, public auth: AuthService) {}
@@ -46,6 +55,39 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.refreshInterval) clearInterval(this.refreshInterval);
+    // Save expansion state so the catalog page restores its open sections when
+    // the user navigates back (e.g. from an Edit Pipeline wizard).
+    this.saveExpandedState();
+  }
+
+  private static readonly STATE_KEY = 'catalog.expanded';
+
+  private readExpandedState(): { catalogs: string[]; taps: string[]; pipelines: string[] } {
+    try {
+      const raw = sessionStorage.getItem(DataCatalogComponent.STATE_KEY);
+      if (!raw) return { catalogs: [], taps: [], pipelines: [] };
+      const parsed = JSON.parse(raw);
+      return {
+        catalogs: Array.isArray(parsed.catalogs) ? parsed.catalogs : [],
+        taps: Array.isArray(parsed.taps) ? parsed.taps : [],
+        pipelines: Array.isArray(parsed.pipelines) ? parsed.pipelines : []
+      };
+    } catch {
+      return { catalogs: [], taps: [], pipelines: [] };
+    }
+  }
+
+  private saveExpandedState(): void {
+    try {
+      const state = {
+        catalogs: this.catalogs.filter(c => c.expanded).map(c => c.name),
+        taps: this.catalogs.filter(c => c.tapsExpanded).map(c => c.name),
+        pipelines: this.catalogs.filter(c => c.pipelinesExpanded).map(c => c.name)
+      };
+      sessionStorage.setItem(DataCatalogComponent.STATE_KEY, JSON.stringify(state));
+    } catch {
+      // sessionStorage can throw in private mode or when full — ignore.
+    }
   }
 
   loadCatalogs(): void {
@@ -99,17 +141,47 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         }
       }
 
-      // Preserve expanded state
-      const prevExpanded = new Set(this.catalogs.filter(c => c.expanded).map(c => c.name));
-      this.catalogs = Array.from(catalogMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-      // Add Uncataloged at the end if it has any items
-      if (uncataloged.tapCount > 0 || uncataloged.pipelineCount > 0) {
-        this.catalogs.push(uncataloged);
+      // Preserve expanded state across reloads. On the first load (fresh
+      // component instance — e.g. user navigated back to /catalog from an Edit
+      // wizard) seed from sessionStorage; on subsequent 10s refreshes use the
+      // current in-memory state so user toggles aren't lost on tick.
+      const isFirstLoad = this.catalogs.length === 0;
+      let prevExpanded: Set<string>;
+      let prevTapsExpanded: Set<string>;
+      let prevPipelinesExpanded: Set<string>;
+      if (isFirstLoad) {
+        const stored = this.readExpandedState();
+        prevExpanded = new Set(stored.catalogs);
+        prevTapsExpanded = new Set(stored.taps);
+        prevPipelinesExpanded = new Set(stored.pipelines);
+      } else {
+        prevExpanded = new Set(this.catalogs.filter(c => c.expanded).map(c => c.name));
+        prevTapsExpanded = new Set(this.catalogs.filter(c => c.tapsExpanded).map(c => c.name));
+        prevPipelinesExpanded = new Set(this.catalogs.filter(c => c.pipelinesExpanded).map(c => c.name));
       }
+      this.catalogs = Array.from(catalogMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+      // Always render Uncataloged — even when empty it's the day-1 home for any
+      // tap or pipeline created without an assigned catalog, and its Create Tap /
+      // Create Pipeline buttons are the primary new-user entry point.
+      this.catalogs.push(uncataloged);
       for (const cat of this.catalogs) {
         if (prevExpanded.has(cat.name)) cat.expanded = true;
+        if (prevTapsExpanded.has(cat.name)) cat.tapsExpanded = true;
+        if (prevPipelinesExpanded.has(cat.name)) cat.pipelinesExpanded = true;
+        // After a bulk move, auto-expand the destination so users see the
+        // moved items without having to find the collapsed card.
+        if (this.pendingAutoExpand && cat.name === this.pendingAutoExpand) {
+          cat.expanded = true;
+          cat.tapsExpanded = cat.taps.length > 0;
+          cat.pipelinesExpanded = cat.pipelines.length > 0;
+        }
       }
+      this.pendingAutoExpand = '';
       this.loading = false;
+      // Persist current expansion to sessionStorage on every refresh so the
+      // state survives tab refresh / unexpected component teardown — ngOnDestroy
+      // is the primary save path for clean navigations.
+      this.saveExpandedState();
     };
 
     this.tapService.getTaps().subscribe({
@@ -217,11 +289,43 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   closeMenus(): void {
     this.menuOpenKey = '';
     this.moveMenuOpenKey = '';
+    this.moveCatalogMenuOpen = '';
+  }
+
+  /** ngFor trackBy so the 10s catalog refresh reuses each card's DOM
+   *  (and the embedded <app-taps>/<app-pipelines> components inside) instead
+   *  of destroying them — preserves inline-edit state, expansion state, and
+   *  any open menus across the auto-refresh tick. */
+  trackByCatalogName(_index: number, cat: CatalogInfo): string {
+    return cat.name;
   }
 
   /** Catalog names that an uncataloged item can be moved into. Excludes 'Uncataloged'. */
   moveTargets(): string[] {
     return this.catalogs.filter(c => c.name !== 'Uncataloged').map(c => c.name);
+  }
+
+  /** All catalog names (including 'Uncataloged'), passed to embedded
+   *  TapsComponent / PipelinesComponent so each row can offer Move-to-catalog
+   *  targets. Empty catalogs are included via the __catalog__ placeholder taps
+   *  that loadCatalogs already enumerates. */
+  get allCatalogNames(): string[] {
+    return this.catalogs.map(c => c.name);
+  }
+
+  describeToAssistant(catalogName: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.router.navigate(['/assistant'], { queryParams: { catalog: catalogName } });
+  }
+
+  createTapInCatalog(catalogName: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.router.navigate(['/catalog/taps/create'], { queryParams: { catalog: catalogName } });
+  }
+
+  createPipelineInCatalog(catalogName: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.router.navigate(['/catalog/pipelines/create'], { queryParams: { catalog: catalogName } });
   }
 
   editTap(name: string, event: MouseEvent): void {
@@ -309,6 +413,57 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       next: () => { this.movingItem = ''; this.loadCatalogs(); },
       error: () => { this.movingItem = ''; this.loadCatalogs(); }
     });
+  }
+
+  // ── Catalog-level bulk move ────────────────────────────────────────────
+  // Move every tap and pipeline from one catalog into another in one click,
+  // from the catalog header. Targets exclude the source catalog and the
+  // Uncataloged pseudo-catalog (use the wizard to unassign instead).
+
+  catalogMoveTargets(currentCatalogName: string): string[] {
+    return this.catalogs
+      .filter(c => c.name !== currentCatalogName)
+      .map(c => c.name);
+  }
+
+  toggleMoveCatalogMenu(catalogName: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.moveCatalogMenuOpen = this.moveCatalogMenuOpen === catalogName ? '' : catalogName;
+  }
+
+  moveCatalogContents(source: CatalogInfo, targetCatalog: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.moveCatalogMenuOpen = '';
+
+    const realTaps = source.taps.filter(t => !(t.name || '').startsWith('__catalog__'));
+    const total = realTaps.length + source.pipelines.length;
+    if (total === 0) return;
+
+    // Moving to the Uncataloged pseudo-catalog means clearing the catalog
+    // assignment on each item; the server stores no literal "Uncataloged".
+    const catalogValue = targetCatalog === 'Uncataloged' ? null : targetCatalog;
+
+    this.movingCatalog = source.name;
+    this.pendingAutoExpand = targetCatalog;
+    let completed = 0;
+    const done = () => {
+      completed++;
+      if (completed === total) {
+        this.movingCatalog = '';
+        this.loadCatalogs();
+      }
+    };
+
+    for (const tap of realTaps) {
+      this.tapService.createOrUpdateTap({ ...tap, catalog: catalogValue }).subscribe({
+        next: done, error: done
+      });
+    }
+    for (const pipeline of source.pipelines) {
+      this.pipelineService.createPipeline({ ...pipeline, catalog: catalogValue }).subscribe({
+        next: done, error: done
+      });
+    }
   }
 
   deletePipelineItem(name: string): void {

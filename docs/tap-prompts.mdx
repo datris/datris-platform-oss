@@ -13,7 +13,7 @@ Fragments are per-tenant, stored in MongoDB (`{env}-tap-prompt`), and cached in 
 
 ## Where they apply
 
-A matching fragment is injected into every AI flow that touches a tap or discovery:
+A matching fragment is injected into every AI flow that touches a tap:
 
 | Flow | Matched against |
 |---|---|
@@ -22,13 +22,12 @@ A matching fragment is injected into every AI flow that touches a tap or discove
 | Post-run script review (`/tap/review`) | The current script |
 | Auto-optimize (`/tap/optimize`) | The current script |
 | Tap brainstorm chat (`/tap/brainstorm`) | The rolling description + full chat history |
-| Data discovery chat and discover modes (`/discover`) | The full chat history |
 
 If a key appears in any of those texts, the fragment's `content` is appended to a `## User-provided context` block at the end of the system prompt.
 
 ## Managing fragments
 
-Fragments are managed via the `/api/v1/tap-prompts` REST endpoints (GET / POST / DELETE / `suggest`). The dedicated UI surface previously lived under **Configuration → Taps** and was removed when the Configuration tab list was simplified; the underlying data and API endpoints are unchanged, so existing fragments still apply to tap creation, brainstorm, auto-fix, optimize, and Discovery chat exactly as before.
+Fragments are managed via the `/api/v1/tap-prompts` REST endpoints (GET / POST / DELETE / `suggest`). The dedicated UI surface previously lived under **Configuration → Taps** and was removed when the Configuration tab list was simplified; the underlying data and API endpoints are unchanged, so existing fragments still apply to tap creation, brainstorm, auto-fix, and optimize exactly as before.
 
 To add a fragment from the CLI or a script:
 
@@ -91,7 +90,7 @@ The same storage is exposed via REST for scripting and tenant migrations. See [T
 
 ## Performance
 
-The injector caches matched fragments in a per-tenant `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so UI edits take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap/discovery flows pay no measurable cost.
+The injector caches matched fragments in a per-tenant `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so UI edits take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap flows pay no measurable cost.
 
 ## Multi-tenant
 

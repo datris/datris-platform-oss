@@ -1,6 +1,6 @@
 <div class="container">
-  <a class="back-link" routerLink="/pipelines">&#8592; Back to Pipelines</a>
-  <h1 class="page-title">{{ isEditMode ? 'Edit Pipeline' : 'Create Pipeline' }}</h1>
+  <a class="back-link" routerLink="/catalog">&#8592; Back to Catalog</a>
+  <h1 class="page-title">{{ isEditMode ? ('Edit Pipeline: ' + pipelineName) : 'Create Pipeline' }}</h1>
 
   <!-- Step indicators -->
   <div class="steps">
@@ -29,10 +29,10 @@
     <div class="btn-row btn-row-top">
       <button class="secondary-btn" (click)="prevStep()" *ngIf="step > 1">Back</button>
       <div class="spacer"></div>
-      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 9">
+      <button class="primary-btn" (click)="nextStep()" *ngIf="step < 8">
         Next
       </button>
-      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 9">
+      <button class="primary-btn" (click)="create()" [disabled]="creating" *ngIf="step === 8">
         {{ creating ? 'Saving...' : (isEditMode ? 'Save Pipeline' : 'Create Pipeline') }}
       </button>
     </div>
@@ -664,15 +664,6 @@
           </div>
         </div>
       </ng-container>
-    </div>
-
-    <!-- Step 9: Review -->
-    <div *ngIf="step === 9">
-      <h2 class="step-title">Review Configuration</h2>
-      <div class="form-row">
-        <label class="form-label">Pipeline Configuration (editable)</label>
-        <textarea class="form-input form-textarea config-editor" [(ngModel)]="configJson" rows="20"></textarea>
-      </div>
     </div>
 
     <!-- Error -->

@@ -147,6 +147,13 @@
   overflow: hidden;
 }
 
+/* When the catalog's Move-to-catalog menu is open, relax the clipping so the
+   dropdown isn't cut off at the card's rounded boundary. Scoped to the open
+   card only — every other card keeps its rounded-corner clipping. */
+.catalog-card.menu-open {
+  overflow: visible;
+}
+
 .catalog-card-header {
   display: flex;
   align-items: center;
@@ -210,6 +217,71 @@
 
 .delete-catalog-btn .material-icons {
   font-size: 18px;
+}
+
+.catalog-move-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.move-catalog-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  opacity: 0.5;
+  transition: all 0.2s;
+}
+
+.move-catalog-btn:hover:not(:disabled) {
+  color: var(--accent-cyan, #00b4ff);
+  opacity: 1;
+}
+
+.move-catalog-btn:disabled {
+  cursor: not-allowed;
+}
+
+.move-catalog-btn .material-icons {
+  font-size: 18px;
+}
+
+.catalog-move-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  min-width: 180px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  padding: 4px 0;
+  margin-top: 4px;
+}
+
+.catalog-move-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.catalog-move-item:hover {
+  background: var(--bg-hover);
+}
+
+.catalog-move-item .material-icons {
+  font-size: 16px;
+  color: var(--text-muted);
 }
 
 .delete-confirm {
@@ -290,6 +362,46 @@
   padding: 16px 20px;
 }
 
+.catalog-create-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.catalog-create-manual {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.catalog-create-manual .link-btn {
+  background: transparent;
+  border: none;
+  padding: 0 2px;
+  color: var(--accent-cyan, #00b4ff);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  text-decoration: underline;
+}
+
+.catalog-create-manual .link-btn:hover {
+  color: var(--text-primary, #f0f4ff);
+}
+
+.catalog-create-manual .link-sep {
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+
+.catalog-empty-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 8px 0 4px 0;
+}
+
 .catalog-section {
   margin-bottom: 16px;
 }
@@ -298,13 +410,42 @@
   margin-bottom: 0;
 }
 
+.catalog-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  transition: background-color 0.15s;
+}
+
+.catalog-section-header:hover {
+  background-color: var(--hover-bg, rgba(99, 179, 237, 0.06));
+}
+
+.section-expand-icon {
+  font-size: 18px;
+  color: var(--text-muted);
+}
+
 .catalog-section-title {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
-  margin-bottom: 8px;
+}
+
+.catalog-section-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background-color: var(--badge-bg, rgba(99, 179, 237, 0.12));
+  border-radius: 10px;
+  padding: 2px 8px;
 }
 
 .catalog-item {
