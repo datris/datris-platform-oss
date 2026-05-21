@@ -3,6 +3,69 @@
   color: var(--text-primary);
 }
 
+/* Popped-out window: both panes must fit the viewport and reflow on resize.
+   Switch the container to a flex column anchored to viewport height, and
+   override the fixed pane heights below so the two cards share space. */
+.container.popout-mode {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 24px;
+  box-sizing: border-box;
+}
+
+.popout-mode .agent-monitor-header {
+  flex-shrink: 0;
+  margin-bottom: 0;
+}
+
+.popout-mode .page-title {
+  margin-bottom: 0;
+}
+
+.popout-mode .section-card {
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Connections pane: takes ~45% of remaining height, viz svg fills it. */
+.popout-mode .viz-card {
+  flex: 0 1 45%;
+}
+
+.popout-mode .viz-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.popout-mode .viz {
+  height: 100%;
+  flex: 1;
+}
+
+/* Activity Log pane: takes the rest. Internal log-scroll fills the card. */
+.popout-mode .section-card:not(.viz-card) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.popout-mode .log-scroll {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.agent-monitor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .page-title {
   font-size: 28px;
   font-weight: 700;
@@ -11,6 +74,27 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+.popout-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.popout-btn:hover {
+  color: var(--accent-cyan, #00b4ff);
+  border-color: var(--accent-cyan, #00b4ff);
+  background: rgba(0, 180, 255, 0.06);
+}
+
+.popout-btn .material-icons {
+  font-size: 18px;
+  vertical-align: middle;
 }
 
 .page-subtitle {

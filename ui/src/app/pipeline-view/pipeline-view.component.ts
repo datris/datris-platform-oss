@@ -72,7 +72,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
       // Delete config + data
       this.pipelineService.deletePipeline(this.name).subscribe({
         next: () => {
-          this.router.navigate(['/pipelines']);
+          this.router.navigate(['/catalog']);
         },
         error: (err) => {
           this.error = err.error || err.message || 'Failed to delete pipeline';

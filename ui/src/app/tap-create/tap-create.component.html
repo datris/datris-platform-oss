@@ -1,6 +1,7 @@
 <div class="container">
+  <a class="back-link" routerLink="/catalog">&#8592; Back to Catalog</a>
   <div class="page-header">
-    <h1 class="page-title">{{ isEditMode ? 'Edit Tap' : 'Create Tap' }}</h1>
+    <h1 class="page-title">{{ isEditMode ? ('Edit Tap: ' + tapName) : 'Create Tap' }}</h1>
   </div>
 
   <!-- Script-missing banner — shown when editing a tap whose scriptPath is set
@@ -35,6 +36,24 @@
   </div>
 
   <div class="form-card">
+
+    <!-- Top navigation buttons -->
+    <div class="nav-buttons nav-buttons-top">
+      <button class="secondary-btn" *ngIf="step > 1 && step < 5" (click)="prevStep()" [disabled]="isBusy()">Back</button>
+      <div class="spacer"></div>
+      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 1 && bringYourOwnCode && (!script || script !== userScript)) || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
+      <button class="primary-btn" *ngIf="step === 4" (click)="save()" [disabled]="saving || isBusy()">
+        {{ saving ? 'Saving...' : (targetPipeline ? 'Save Tap & Continue' : 'Save Tap') }}
+      </button>
+      <ng-container *ngIf="step === 5">
+        <button class="secondary-btn" (click)="finishWithoutRun()" [disabled]="runningTap">Done</button>
+        <button class="primary-btn" (click)="runTapNow()" [disabled]="runningTap">
+          <span class="material-icons">play_arrow</span>
+          {{ runningTap ? 'Running...' : 'Run the Tap Now' }}
+        </button>
+      </ng-container>
+    </div>
+
     <!-- Step 1: Describe -->
     <div *ngIf="step === 1">
       <h2 class="step-title" *ngIf="!bringYourOwnCode">Describe Your Data Source</h2>
@@ -764,7 +783,6 @@
     <!-- Navigation -->
     <div class="nav-buttons">
       <button class="secondary-btn" *ngIf="step > 1 && step < 5" (click)="prevStep()" [disabled]="isBusy()">Back</button>
-      <button class="secondary-btn" routerLink="/taps" *ngIf="step === 1">Cancel</button>
       <div class="spacer"></div>
       <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 1 && bringYourOwnCode && (!script || script !== userScript)) || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
       <button class="primary-btn" *ngIf="step === 4" (click)="save()" [disabled]="saving || isBusy()">

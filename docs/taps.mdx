@@ -31,10 +31,6 @@ Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DO
 
 **I Have My Own Code** produces either Structured or Document output depending on what the pasted `fetch()` returns — the shape rules in [Data Types](#data-types) are what determine downstream routing, not the radio button. In practice pick this when you already have Python code you trust; if you change your mind and want AI help later, create a new tap.
 
-<Tip>
-Building several related taps from the same source? Try **[Discovery](/discovery)** instead — it enumerates every dataset a source exposes, generates all the tap scripts in parallel, builds the matching pipelines, and groups everything in a [Data Catalog](/data-catalog). The Tap wizard below is best when you already know exactly which dataset you want.
-</Tip>
-
 ## Creating a Tap
 
 The Tap creation wizard walks you through 4 steps — or 5, if you link the tap to a pipeline (the optional 5th step lets you run the tap immediately and push data through the pipeline before leaving the wizard).

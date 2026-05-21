@@ -2,7 +2,7 @@
   <div class="page-header">
     <h1 class="page-title">Test Tap: {{ tapName }}</h1>
     <button class="back-btn" (click)="backToTaps()">
-      <span class="material-icons">arrow_back</span> Back to Taps
+      <span class="material-icons">arrow_back</span> Back to Catalog
     </button>
   </div>
 
@@ -82,7 +82,7 @@
 
   <!-- Actions after run -->
   <div class="actions" *ngIf="hasRun && !running">
-    <button class="secondary-btn" (click)="backToTaps()">Back to Taps</button>
+    <button class="secondary-btn" (click)="backToTaps()">Back to Catalog</button>
     <button class="primary-btn" (click)="runTap()">Run Again</button>
   </div>
 </div>

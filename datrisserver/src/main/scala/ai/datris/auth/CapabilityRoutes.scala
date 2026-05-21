@@ -103,11 +103,9 @@ object CapabilityRoutes {
         // Vector search (one capability across all stores; the scope identifies the collection)
         Route("POST",   "/api/v1/search/**",           "search",   "vector"),
 
-        // Metadata discovery
+        // Metadata
         Route("GET",    "/api/v1/metadata/**",         "metadata", "read"),
         Route("GET",    "/api/v1/vector-stores/available", "metadata", "read"),
-        Route("POST",   "/api/v1/discover",            "metadata", "read"),
-        Route("POST",   "/api/v1/discover/build",      "metadata", "read"),
         Route("POST",   "/api/v1/config/generate-schema", "metadata", "read"),
 
         // Config

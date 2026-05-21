@@ -106,6 +106,6 @@ export class TapRunComponent implements OnInit, OnDestroy {
   }
 
   backToTaps(): void {
-    this.router.navigate(['/taps']);
+    this.router.navigate(['/catalog']);
   }
 }

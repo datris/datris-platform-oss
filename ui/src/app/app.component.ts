@@ -144,8 +144,16 @@ export class AppComponent implements OnInit {
     return this.currentUser?.role === 'admin';
   }
 
+  /** True when the user opened this window/tab as a popout view (e.g. from the
+   *  Agent Monitor "pop out" button). Popout windows skip the top nav so the
+   *  embedded content gets the full viewport. */
+  get isPopout(): boolean {
+    return window.location.pathname.startsWith('/popout/');
+  }
+
   /** True when the main app chrome should be visible. */
   showChrome(): boolean {
+    if (this.isPopout) return false;
     if (this.isLoginRoute) return false;
     if (this.useUserAuth) return !!this.currentUser;
     return this.hasApiKey;

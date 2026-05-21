@@ -104,6 +104,22 @@ export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecke
     });
   }
 
+  /** True when this component is rendered in a popped-out browser window
+   *  (opened via openInPopout below). The template uses this to hide the
+   *  pop-out button itself so popout windows don't show a "pop out again"
+   *  control, and to drop the subtitle paragraph to save vertical space. */
+  get isPopout(): boolean {
+    return typeof window !== 'undefined' && window.location.pathname.startsWith('/popout/');
+  }
+
+  /** Open the Agent Monitor (Connections + Activity Log) in a new browser
+   *  window. The fixed window name ('datris-agent-monitor') means a second
+   *  click focuses the existing popout instead of opening another one. */
+  openInPopout(): void {
+    const features = 'width=1100,height=900,resizable=yes,scrollbars=yes,menubar=no,toolbar=no,location=no,status=no';
+    window.open('/popout/activity', 'datris-agent-monitor', features);
+  }
+
   copyLog(): void {
     if (this.log.length === 0) return;
     const text = this.log.map(r => this.formatRowForCopy(r)).join('\n\n' + '-'.repeat(60) + '\n\n');

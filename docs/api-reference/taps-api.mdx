@@ -320,7 +320,7 @@ Content-Type: application/json
 
 After a successful test, asks the LLM to restructure a working script for performance — e.g. swap serial HTTP calls for a `ThreadPoolExecutor`, reuse a `requests.Session()`, or drop unnecessary `time.sleep()` — while preserving correctness (`fetch()` signature, `DATRIS_TAP_TEST_LIMIT` handling, Vault env-var reads, retry/backoff behavior, and `raise_for_status` calls).
 
-The UI invokes this automatically after a green test in both the Create Tap wizard and the Discovery wizard's per-tap build, with a regression guard that auto-reverts if the rewrite runs ≥20% slower. Callers integrating this endpoint directly should implement the same re-test + revert pattern.
+The UI invokes this automatically after a green test in the Create Tap wizard, with a regression guard that auto-reverts if the rewrite runs ≥20% slower. Callers integrating this endpoint directly should implement the same re-test + revert pattern.
 
 **Body:**
 ```json
@@ -525,7 +525,7 @@ Probes use the same logic as `/api/v1/health/services`, with a 2-second timeout 
 
 ## Tap Prompt Fragments
 
-User-configured system prompt fragments that auto-inject into tap and discovery AI flows when the user's text matches the fragment's key or any alias. See [Tap Prompt Fragments](/tap-prompts) for the full concept; this section covers the REST endpoints.
+User-configured system prompt fragments that auto-inject into tap AI flows when the user's text matches the fragment's key or any alias. See [Tap Prompt Fragments](/tap-prompts) for the full concept; this section covers the REST endpoints.
 
 Fragments are per-tenant, stored in MongoDB at `{env}-tap-prompt`, and matched case-insensitively with word boundaries.
 
@@ -565,7 +565,7 @@ POST /api/v1/tap-prompts
 Content-Type: application/json
 ```
 
-Create-or-update semantics — if a fragment with the same `key` already exists, it is overwritten. `createdAt` is preserved across updates; `updatedAt` is refreshed on every write. Writing through this endpoint invalidates the in-process fragment cache immediately, so the next tap generation / fix / optimize / brainstorm / discovery call sees the change without restart.
+Create-or-update semantics — if a fragment with the same `key` already exists, it is overwritten. `createdAt` is preserved across updates; `updatedAt` is refreshed on every write. Writing through this endpoint invalidates the in-process fragment cache immediately, so the next tap generation / fix / optimize / brainstorm call sees the change without restart.
 
 **Body:**
 ```json

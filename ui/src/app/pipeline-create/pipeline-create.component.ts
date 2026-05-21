@@ -141,18 +141,45 @@ export class PipelineCreateComponent implements OnInit {
       }
     });
 
-    // Load taps for "Create from Tap" option + extract catalogs
+    // Load taps for "Create from Tap" option + extract catalogs. Catalogs
+    // are collected from BOTH taps and pipelines (and from __catalog__
+    // placeholder taps, which represent empty catalogs created via the
+    // Catalog page). Pulling from taps alone misses catalogs that contain
+    // only pipelines — when the wizard opens for such a pipeline, the
+    // dropdown lacks a matching option, the displayed value diverges from
+    // this.catalog, and a subsequent save can write null to the server.
+    const collectedCatalogs = new Set<string>();
+    const finalizeCatalogs = () => {
+      this.availableCatalogs = Array.from(collectedCatalogs).sort();
+    };
     this.tapService.getTaps().subscribe({
       next: (data) => {
         const allTaps = data || [];
         this.taps = allTaps.filter((t: any) => t.lastTestRunDataType || t.lastRunDataType)
                         .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
-        const cats = new Set<string>();
-        allTaps.forEach((t: any) => { if (t.catalog) cats.add(t.catalog); });
-        this.availableCatalogs = Array.from(cats).sort();
+        allTaps.forEach((t: any) => {
+          // Real tap with a catalog assignment, OR a placeholder for an empty catalog.
+          if (t.catalog) collectedCatalogs.add(t.catalog);
+        });
+        finalizeCatalogs();
       },
       error: () => {}
     });
+    this.pipelineService.getPipelines().subscribe({
+      next: (pipelines: any[]) => {
+        (pipelines || []).forEach((p: any) => { if (p.catalog) collectedCatalogs.add(p.catalog); });
+        finalizeCatalogs();
+      },
+      error: () => {}
+    });
+
+    // Pre-fill the catalog field when the user entered Create from a specific
+    // catalog (e.g. clicked Create Pipeline inside a catalog card). Uncataloged
+    // means "no catalog assignment" — leave the field empty.
+    const catalogParam = this.route.snapshot.queryParamMap.get('catalog');
+    if (catalogParam && catalogParam !== 'Uncataloged') {
+      this.catalog = catalogParam;
+    }
 
     const editName = this.route.snapshot.paramMap.get('name');
     if (editName) {
@@ -788,10 +815,6 @@ export class PipelineCreateComponent implements OnInit {
       this.loadMongoCollections();
     }
 
-    // Generate config JSON when entering review step (9)
-    if (this.step === 9) {
-      this.configJson = JSON.stringify(this.buildConfig(), null, 2);
-    }
   }
 
   prevStep(): void {
@@ -1014,14 +1037,7 @@ export class PipelineCreateComponent implements OnInit {
     this.creating = true;
     this.error = '';
 
-    let config;
-    try {
-      config = JSON.parse(this.configJson);
-    } catch (e) {
-      this.error = 'Invalid JSON configuration';
-      this.creating = false;
-      return;
-    }
+    const config: any = this.buildConfig();
 
     // Set catalog on the pipeline config
     config.catalog = this.catalog || null;

@@ -98,12 +98,6 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 
 For a document tap, `create_tap` **requires** the `target_pipeline` to have an `unstructuredAttributes` source and a vector-store destination (qdrant, pgvector, weaviate, milvus, or chroma). The server rejects mismatched pairings with HTTP 400.
 
-### Discovery
-
-| Tool | Description |
-|------|-------------|
-| `discover_source` | Discover available datasets from any data source — Python package, API, website, or database. Chat with the AI to identify a source, then enumerate every dataset it exposes with parameters, auth requirements, and `tapInstruction` templates ready to feed into `create_tap`. Powers the same flow as the [Discovery wizard](/discovery) |
-
 ### Configuration
 
 | Tool | Description |
@@ -182,15 +176,14 @@ The platform's [capability framework](/api-keys#the-capability-model) enforces w
 ### Onboard a new external data source via a tap
 
 1. **Check existing taps** — `list_taps`. If a tap already covers this source, run or test it directly.
-2. **Discover (optional)** — `discover_source` with a natural-language question like *"what datasets are available in yfinance?"*. Returns a structured catalog with a `tapInstruction` template per dataset.
-3. **Create credentials** — if the source needs an API key, call `create_tap_secret` with the credential fields (they become env vars inside the script).
-4. **Create the tap** — `create_tap` with an instruction (AI generates the script) or with your own Python `fetch()` function (faster and more reliable). Pass `secret_name` to bind the credentials from step 3. For PDFs/Word/HTML into a vector-store pipeline, pass `tap_type="document"`.
-5. **Test** — `test_tap`. If it fails, read the error, fix the script, and call `create_tap` again. Repeat until the test passes.
-6. **Run** — `run_tap`. Read the response's `persisted` field first:
-   - `persisted: true` → capture `publisherToken` and continue to step 7.
+2. **Create credentials** — if the source needs an API key, call `create_tap_secret` with the credential fields (they become env vars inside the script).
+3. **Create the tap** — `create_tap` with an instruction (AI generates the script) or with your own Python `fetch()` function (faster and more reliable). Pass `secret_name` to bind the credentials from step 2. For PDFs/Word/HTML into a vector-store pipeline, pass `tap_type="document"`.
+4. **Test** — `test_tap`. If it fails, read the error, fix the script, and call `create_tap` again. Repeat until the test passes.
+5. **Run** — `run_tap`. Read the response's `persisted` field first:
+   - `persisted: true` → capture `publisherToken` and continue to step 6.
    - `persisted: false` → read `persistedReason` (`no_target_pipeline`, `test_mode`, `run_error`, `no_records`, `debounced`), tell the user exactly why, and stop. (`run_tap` does not return records — call `test_tap` if you need to preview what the script produces.) `debounced` means the same tap was triggered within the last 5 seconds; the earlier run is still executing — do not retry, look it up via `get_tap_logs` and poll `get_pipeline_status` instead.
-7. **Verify it landed** — `get_pipeline_status(publisher_token=...)` and poll until `rollup.allDone` is `true`. Then `rollup.status` is the outcome (`success`, `warning`, `error`) and `rollup.jobs[].lastError` carries any failure detail. The tap log only tells you the script ran; the publisher token is how you confirm records actually reached the destination.
-8. **Schedule (optional)** — `update_tap` with a `cron_expression`. For each scheduled run, pick the corresponding entry from `get_tap_logs` to get its `publisherToken`, then verify with step 7.
+6. **Verify it landed** — `get_pipeline_status(publisher_token=...)` and poll until `rollup.allDone` is `true`. Then `rollup.status` is the outcome (`success`, `warning`, `error`) and `rollup.jobs[].lastError` carries any failure detail. The tap log only tells you the script ran; the publisher token is how you confirm records actually reached the destination.
+7. **Schedule (optional)** — `update_tap` with a `cron_expression`. For each scheduled run, pick the corresponding entry from `get_tap_logs` to get its `publisherToken`, then verify with step 6.
 
 ### Build and query a RAG knowledge base from external documents
 

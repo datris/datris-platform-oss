@@ -35,9 +35,8 @@
             ]
           },
           {
-            "group": "Discovery",
+            "group": "Catalog",
             "pages": [
-              "discovery",
               "data-catalog"
             ]
           },
