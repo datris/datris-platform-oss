@@ -3,6 +3,24 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.7.4" description="May 21, 2026">
+  **Streamlined navigation and a Catalog-centric workflow — fewer tabs, richer Catalog, and the Assistant front-and-center.**
+
+  - **Five top-level tabs instead of ten.** Datris now opens to Assistant, MCP, Catalog, Data, Configuration — plus the Help dropdown. Same capabilities, organized around how you actually work.
+  - **Catalog is the home for taps and pipelines.** Each catalog card embeds the full tap and pipeline tables with inline rename and a move-to-catalog dropdown on every row. Uncataloged is always shown so day-1 users have a place to start.
+  - **Bulk move at the catalog level.** Move every tap and pipeline from one catalog into another in one click. The destination auto-expands so you see the items land.
+  - **Describe to Assistant from any catalog.** A button on each catalog card opens the Assistant with a fresh chat and the catalog pre-filled — the Assistant assigns the right catalog to whatever it creates.
+  - **Wizards link back to where you came from.** Tap and pipeline edit screens now show the item's name in the title, a "Back to Catalog" link at the top, and primary action buttons at both top and bottom of the form. Pipeline wizard's JSON-review step is gone — Save fires from the Destination step.
+  - **Pop out the Agent Monitor.** A new icon opens both Connections and Activity Log in a separate browser window — park it on a second monitor and watch tool calls stream while you work in the Assistant.
+  - **Catalog state persists across navigation.** Open catalogs and expanded sub-sections survive refreshes and tab switches.
+  - **Fixed: tap rename no longer breaks scripts.** Renaming a tap inline used to leave the new tap pointing at a deleted script file.
+  - **Fixed: catalogs containing only pipelines could lose their assignment** when the pipeline edit wizard was opened.
+  - **Discovery tab removed.** The Assistant covers its workflow.
+  - **Getting Started tab removed.** First-run guidance lives in the Assistant's starter prompts and inline empty states.
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate datris ui`. No data migration needed. The CLI: `brew upgrade datris`.
+</Update>
+
 <Update label="v1.7.3" description="May 19, 2026">
   **Scoped API keys with per-agent permissions, plus Assistant resilience and smarter onboarding.**
 

@@ -1,23 +1,24 @@
 # Release Notes
 
-## v1.7.3 — May 19, 2026
+## v1.7.4 — May 21, 2026
 
-**Scoped API keys with per-agent permissions, plus Assistant resilience and smarter onboarding.**
+**Streamlined navigation and a Catalog-centric workflow — fewer tabs, richer Catalog, and the Assistant front-and-center.**
 
-- **New API-Keys tab in Configuration.** Issue a dedicated key per agent, CLI, or integration with an explicit list of what it's allowed to do — read pipelines, run taps, upload documents, query data, and so on. Each key is its own identity in the request log and can be rotated or revoked independently. Five starting templates: read-only, rag-builder, reporting, ops, and full-access. The tab only appears when you've set `USE_API_KEYS=true` in `.env` — issuing keys is pointless until the validation layer is on.
-- **Keys actually constrain.** When an external agent (Claude Desktop, Cursor, the CLI) connects with a scoped key and tries something outside its bundle, the platform refuses the call and tells the agent why in plain JSON — so the agent doesn't keep retrying alternate paths. Agents stay productive within their lane; you don't have to trust them not to wander.
-- **UI no longer asks for a key when user authentication is on.** With login enabled, your session cookie is the only thing the browser needs — paste-the-key flow goes away. The Assistant runs under your identity, audit logs show you as the actor, and your role determines what it can do (admin = full access, editor = data writes, viewer = read-only).
-- **Assistant rides through Anthropic overload.** When Claude Opus is rate-limit-shedded, the Assistant retries with backoff and, if needed, transparently switches to Sonnet for the rest of the turn — with a small inline note so you know it happened. Conversations that previously errored out now keep moving.
-- **Assistant checks the platform before suggesting external sources.** On any data-related ask ("I'm looking for X"), the agent now lists your existing pipelines and taps first, then either points you to what already exists or asks before adding more. Avoids the "let me enumerate seven public APIs" detour.
-- **Assistant auto-runs newly created taps that have no schedule.** When you build a one-shot tap, the Assistant kicks off the first run so you see real data instead of an empty pipeline. For scheduled taps it asks first, since the cron will fire on its own.
-- **Health and version endpoints are public.** Container orchestrators, status pages, and the UI's connection check no longer trip 500s when API-key auth is required.
-- **Configuration → Taps sub-tab removed.** Prompt Fragments are unchanged and still apply to tap creation, brainstorm, auto-fix, and Discovery — they're now managed via the API instead of a dedicated UI page.
-- **Tap wizard pipeline link is clickable.** The "Linked to: \<pipeline\>" pill in step 4 now navigates straight to the pipeline editor.
+- **Five top-level tabs instead of ten.** Datris now opens to Assistant, MCP, Catalog, Data, Configuration — plus the Help dropdown. Same capabilities, organized around how you actually work: talk to the Assistant, manage agents through MCP, browse what you've built in Catalog, watch what's flowing in Data.
+- **Catalog is the home for taps and pipelines.** Each catalog card embeds the full tap and pipeline tables — description, schedule, last-run status, all actions — with inline rename and a move-to-catalog dropdown on every row. Uncataloged is always shown, even when empty, so day-1 users have an obvious place to start.
+- **Bulk move at the catalog level.** Move every tap and pipeline from one catalog into another in one click. The destination auto-expands so you can see the items land immediately.
+- **Describe to Assistant from any catalog.** A button on each catalog card opens the Assistant with a fresh chat and the catalog name pre-filled — the Assistant picks up that context and assigns the right catalog to whatever it creates. Create-manually links remain right next to it for users who prefer the wizard.
+- **Wizards link back to where you came from.** Editing a tap or pipeline now opens with the item's name in the page title, a "Back to Catalog" link at the top, and primary action buttons at both top and bottom of the form. The Pipeline wizard's final JSON-review step is gone — Save fires straight from the Destination step.
+- **Pop out the Agent Monitor.** A new icon next to the Agent Monitor title opens both Connections and Activity Log in a separate browser window — park it on a second monitor and watch tool calls stream while you work in the Assistant. The window resizes responsively so both panes always fit.
+- **Catalog state persists across navigation.** Which catalogs are open, which Taps / Pipelines sections you expanded — all preserved through refreshes and tab switches.
+- **Fixed: tap rename no longer breaks scripts.** Renaming a tap inline used to leave the new tap pointing at a deleted script file. The script now follows the rename automatically.
+- **Fixed: catalogs with only pipelines could lose their assignment.** Opening the pipeline edit wizard for a pipeline in a pipeline-only catalog no longer drops it into Uncataloged on save.
+- **Discovery tab removed.** The Assistant is the path for adding new data sources now — its conversational flow covers everything Discovery did.
+- **Getting Started tab removed.** First-run guidance lives in the Assistant's starter prompts and inline empty-state hints.
 
 **Upgrading**
 
 - Existing installs: `docker compose pull && docker compose up -d --force-recreate datris ui`. No data migration needed.
-- Existing API keys keep working — they're treated as full-access until you replace them with scoped keys from the new tab.
 - The `datris` CLI: `brew upgrade datris`.
 
 ---
