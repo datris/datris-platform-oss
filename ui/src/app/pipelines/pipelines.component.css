@@ -532,6 +532,16 @@ tbody tr:last-child td {
   align-items: center;
 }
 
+/* Inline variant for the embedded catalog view, where the confirm sits next
+   to the other action icons in a right-aligned, nowrap cell. */
+.embed-delete-confirm {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 2px;
+}
+
 .del-opt {
   display: flex;
   align-items: center;

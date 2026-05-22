@@ -1400,32 +1400,6 @@ async def list_tools():
                 "required": ["name"]
             }
         ),
-        # --- Discovery ---
-        Tool(
-            name="discover_source",
-            description="Discover available datasets from any data source. Chat with AI to enumerate datasets from a Python package, API, website, or database. Returns a structured dataset catalog with parameters and tap instruction templates. Use the returned tap instructions with create_tap to build taps for selected datasets.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "message": {
-                        "type": "string",
-                        "description": "What to discover (e.g., 'What datasets are available in yfinance?')"
-                    },
-                    "messages": {
-                        "type": "array",
-                        "description": "Full conversation history for multi-turn discovery. Each item has 'role' and 'content'. If omitted, 'message' is used as a single user message.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "role": {"type": "string"},
-                                "content": {"type": "string"}
-                            }
-                        }
-                    }
-                },
-                "required": ["message"]
-            }
-        ),
 
         # --- Taps ---
         Tool(
@@ -1648,6 +1622,29 @@ async def list_tools():
                     },
                 },
                 "required": ["name"]
+            }
+        ),
+        Tool(
+            name="wait_seconds",
+            description=(
+                "Sleep for a fixed number of seconds, then return. Use this to pace polling against long-running "
+                "platform work (most often `get_pipeline_status` after `run_tap`, or `get_job_status` after `upload_data`) "
+                "so you do not burn tool calls hammering an endpoint that is still in progress. "
+                "ALWAYS poll once BEFORE the first wait — many runs finish in 1–5 seconds. "
+                "Then use exponential backoff between polls: 5s, 10s, 20s, 30s, 60s, 60s, ... (cap at 60s normally, 120s only if the run is genuinely glacial). "
+                "Reset to a short wait (5–15s) on the next cycle whenever a poll shows new jobs flipped to a terminal state — that means you're close to done. "
+                "If 80%+ of jobs are terminal, wait ~15s; if only 1–2 jobs remain, wait ~10s. "
+                "Hard upper bound is 120 seconds per call — for longer waits, call this tool in a loop interleaved with a status check."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "integer",
+                        "description": "How long to sleep, in seconds. Range: 1–120. Values outside this range are clamped."
+                    }
+                },
+                "required": ["seconds"]
             }
         ),
     ]
@@ -2048,13 +2045,6 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps({"error": f"Secret '{secret_name}' is not a tap secret. Agents can only delete tap secrets."})
         return _call("delete", f"/api/v1/secrets/{secret_name}")
 
-    # --- Discovery ---
-    elif name == "discover_source":
-        messages = args.get("messages")
-        if not messages:
-            messages = [{"role": "user", "content": args["message"]}]
-        return _call("post", "/api/v1/discover", json={"messages": messages})
-
     # --- Taps ---
     elif name == "create_tap":
         tap_name = args["name"]
@@ -2275,6 +2265,19 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps({"message": f"Tap '{args['name']}' updated", "tap": saved})
         except (json.JSONDecodeError, TypeError):
             return json.dumps({"message": f"Tap '{args['name']}' updated"})
+
+    elif name == "wait_seconds":
+        # Clamp to a safe range; the LLM occasionally asks for absurd values.
+        # Upper bound matches the description so the agent learns the limit.
+        # _dispatch is sync (every other tool branch calls blocking `requests`),
+        # so plain time.sleep is correct here.
+        try:
+            requested = int(args.get("seconds", 0))
+        except (TypeError, ValueError):
+            return json.dumps({"error": "seconds must be an integer"})
+        seconds = max(1, min(120, requested))
+        time.sleep(seconds)
+        return json.dumps({"slept": seconds, "requested": requested})
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

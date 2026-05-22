@@ -98,7 +98,13 @@ lazy val allDependencies = Seq(
     "org.eclipse.angus" % "angus-mail" % "2.0.3",
 
     // JavaScript engine (Nashorn removed in Java 15+)
-    "org.openjdk.nashorn" % "nashorn-core" % "15.4"
+    "org.openjdk.nashorn" % "nashorn-core" % "15.4",
+
+    // Exact OpenAI tokenization (cl100k_base / o200k_base / p50k_base / r50k_base).
+    // ~150 KB, MIT, pure JVM. Used by TokenGuard's OpenAITokenCounter when the
+    // embedding model name matches an OpenAI family; otherwise the heuristic
+    // counter is used and this dependency is dormant.
+    "com.knuddels" % "jtokkit" % "1.1.0"
 )
 
 lazy val assemblySettings = Seq(

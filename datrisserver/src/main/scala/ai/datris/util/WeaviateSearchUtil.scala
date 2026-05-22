@@ -23,7 +23,7 @@ object WeaviateSearchUtil {
 
         // Get embedding for the query
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
-        val queryEmbedding = EmbeddingUtil.generateEmbeddings(List(query), embeddingConfig).head
+        val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
         // Get Weaviate connection details
         val weaviateSecret = SecretsUtil.getSecretMap(weaviateSecretName)

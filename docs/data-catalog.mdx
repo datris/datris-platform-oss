@@ -35,7 +35,7 @@ The **Data Catalog** tab in the UI shows one card per catalog plus an **Uncatalo
 - **+ Create Catalog** — make a new empty catalog. The name is sanitized (lowercase, alphanumerics + underscores).
 - **Delete catalog** — confirms, then deletes the catalog's placeholder **plus every tap and pipeline inside it**. This is destructive and not reversible. If you want to keep the items, re-tag them to a different catalog first (or to Uncataloged by clearing the field on each).
 - **Delete Uncataloged** — same delete icon on the Uncataloged group removes every tap and pipeline that isn't in a named catalog. Confirm prompt reads *"Delete ALL uncataloged items?"* to make the scope obvious.
-- **Delete individual tap or pipeline** — expand any catalog (including Uncataloged) and use the trash icon on a specific row to delete just that item.
+- **Delete individual tap or pipeline** — expand any catalog (including Uncataloged) and use the trash icon on a specific row to delete just that item. Clicking the trash icon swaps the row's action icons for an inline confirm: **Delete** / **×** for a tap; **Config & Data** / **Data Only** / **×** for a pipeline (Data Only wipes the rows but keeps the pipeline config so the next ingest fills it again).
 - **Row actions menu (Uncataloged)** — each item in the Uncataloged group has a ⋮ kebab menu after the trash icon with three actions:
   - **Edit** — opens the tap or pipeline editor.
   - **Delete** — same as the trash icon (inline confirm).

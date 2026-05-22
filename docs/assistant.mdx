@@ -54,6 +54,30 @@ delete and wait for your confirmation in the chat before proceeding.
 The Stop button at the bottom of the chat aborts the loop server-side at the
 next checkpoint, so you can interrupt anytime.
 
+## Long-running runs are carried to completion
+
+When the agent runs a tap (`run_tap` or `upload_data`), it owns that work all
+the way to a terminal `success` / `warning` / `error` outcome. It will not
+kick off the job and tell you to check back later — that defeats the point of
+delegating.
+
+The polling pattern it uses:
+
+1. Poll `get_pipeline_status` immediately after the run is submitted (most
+   small structured taps finish in 1–5 seconds; no point sleeping first).
+2. If still in progress, sleep with `wait_seconds` using exponential backoff
+   (5s → 10s → 20s → 30s → 60s → 60s …, capped at 60s normally, 120s only if
+   things are genuinely glacial).
+3. Reset to a short wait (5–15s) the moment a poll shows new jobs flipping to
+   a terminal state — progress means it's about to finish.
+4. Emit a one-line progress update each cycle ("12 of 28 jobs done, 16 still
+   processing — checking again in 30s") so you can see the run advance.
+5. After ~20 polls, if the run is still in progress, pause and ask whether to
+   keep waiting, kill the run, or check later — never silently stop.
+
+The same pattern applies to `upload_data` → `get_job_status`. If the chat
+seems to be "hanging" mid-run, it's waiting between polls on purpose.
+
 ## Reasoning visibility by provider
 
 | Provider | Streaming text | Tool cards | Reasoning block |
@@ -116,9 +140,11 @@ the full capability model.
 
 - **MCP tab** — static catalog of the tools the Assistant uses. Read this if
   you want to understand what each tool does.
-- **Agents tab** — read-only activity monitor of *external* MCP clients
-  (Claude Desktop, Cursor, scripts) calling your server. The Assistant is the
-  in-product counterpart — same tools, different surface.
-- **Taps tab / Pipelines tab** — anything the Assistant creates lands here.
-  The "→ Open tap" / "→ Open pipeline" links at the end of each conversation
-  route you there.
+- **Agent Monitor (pop-out)** — read-only activity monitor of *external* MCP
+  clients (Claude Desktop, Cursor, scripts) calling your server. Opens in its
+  own browser window via the pop-out icon on the MCP tab so you can keep an
+  eye on Connections and the Activity Log while you work elsewhere. The
+  Assistant is the in-product counterpart — same tools, different surface.
+- **Catalog tab** — anything the Assistant creates (taps and pipelines) lands
+  here, grouped by catalog. The "→ Open tap" / "→ Open pipeline" links at the
+  end of each conversation route you there.

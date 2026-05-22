@@ -66,9 +66,9 @@ Your data is preserved across upgrades — Postgres pipelines, Vault secrets, Mi
 
 ### Stale secrets after an upgrade
 
-Datris occasionally deprecates secret paths between versions (for example, v1.5.6 split AI configuration into three new Vault slots and stopped reading the old single-slot path). Because Vault data persists across upgrades, deprecated entries stay in Vault and continue to appear in the Secrets tab even though the server ignores them. To clean them up:
+Datris occasionally deprecates secret paths between versions (for example, v1.5.6 split AI configuration into three new Vault slots and stopped reading the old single-slot path). Because Vault data persists across upgrades, deprecated entries stay in Vault and continue to appear in the Configuration → Secrets list even though the server ignores them. To clean them up:
 
-- **Targeted (preserves your data):** delete the stale entries one at a time from the Secrets tab UI, or run `docker compose exec -e VAULT_TOKEN=root-token vault vault kv delete secret/oss/<name>` for each deprecated path.
+- **Targeted (preserves your data):** delete the stale entries one at a time from Configuration → Secrets in the UI, or run `docker compose exec -e VAULT_TOKEN=root-token vault vault kv delete secret/oss/<name>` for each deprecated path.
 - **Total reset (destroys all data):** see the next section.
 
 ### Reset everything (destroys all data)

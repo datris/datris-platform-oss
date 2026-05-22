@@ -90,10 +90,11 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | `test_tap` | Test-run a tap without pushing data to the pipeline |
 | `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
 | `get_pipeline_status` | Watch ingestion progress after `run_tap`. Pass the response's `publisherToken` (covers every job the run submitted — structured = 1, document = N) or a single `pipelineToken`. Returns a `rollup` (with `allDone`, `status`, per-job `lastError`) plus the raw `events`; poll until `rollup.allDone` is `true` |
+| `wait_seconds` | Sleep 1–120 seconds, then return. Use to pace polling of long-running pipeline work without burning tool calls — typical pattern is `run_tap` → poll → `wait_seconds(5)` → poll → `wait_seconds(10)` → poll → ... with exponential backoff capped at 60s (120s only if progress is genuinely glacial). Reset to a short wait whenever a poll shows new jobs flipped to a terminal state |
 | `get_tap_logs` | Get run history for a tap (last 50 entries with status, duration, errors, and `publisherToken` for each run that submitted records). Pivot from a scheduled-run entry to `get_pipeline_status(publisher_token=...)` to confirm the run actually landed in the destination |
 | `get_tap_ledger` | Document taps only: read the ledger of discovered documents (URI, filename, status, hashes, timestamps). Pass `clear_uri` to force-reprocess one file, or `clear_all=true` to force a full re-scan |
 | `create_tap_secret` | Create or update a Vault secret for a tap to read as env vars (tagged `_type=tap`). Fails on collision unless `overwrite=true`. Reserved AI-provider names are blocked |
-| `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be removed — human-owned secrets must be deleted from the Secrets tab |
+| `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be removed — human-owned secrets must be deleted from Configuration → Secrets in the UI |
 | `delete_tap` | Delete a tap and its stored script (also clears the ledger and staged MinIO objects for document taps) |
 
 For a document tap, `create_tap` **requires** the `target_pipeline` to have an `unstructuredAttributes` source and a vector-store destination (qdrant, pgvector, weaviate, milvus, or chroma). The server rejects mismatched pairings with HTTP 400.

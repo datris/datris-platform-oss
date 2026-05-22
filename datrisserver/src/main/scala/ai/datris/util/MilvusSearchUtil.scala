@@ -23,7 +23,7 @@ object MilvusSearchUtil {
             throw new DatrisException("Search query cannot be empty")
 
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
-        val queryEmbedding = EmbeddingUtil.generateEmbeddings(List(query), embeddingConfig).head
+        val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
         val milvusSecret = SecretsUtil.getSecretMap(milvusSecretName)
             .getOrElse(throw new DatrisException("Milvus secret not found: " + milvusSecretName))

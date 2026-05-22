@@ -303,6 +303,8 @@ Used by all vector store destinations.
 | `strategy` | string | `recursive` | Chunking strategy: `fixed`, `sentence`, `paragraph`, `recursive` |
 | `chunkSize` | int | 500 | Maximum characters per chunk |
 | `chunkOverlap` | int | 50 | Overlap between consecutive chunks |
+| `maxChunkTokens` | int | 0 (off) | Optional token-count cap. When set, the chunker refuses to emit any chunk over this estimate, splitting oversized output before it ever reaches the embedding API. Recommended: ~80% of the embedding model's input cap (e.g. 6500 for `text-embedding-3-small`). Without it, the server-side embedding guard catches oversized chunks as a fallback. |
+| `tokensPerCharRatio` | float | 2.0 | Chars-per-token ratio for the chunker's heuristic counter. Lower is more conservative (more splits); raise to ~3.5 for predictable Latin prose. |
 
 ### Destination > Schema Properties (Optional)
 

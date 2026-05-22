@@ -137,11 +137,11 @@ Job statuses are stored in MongoDB in the `{environment}-pipeline-status` collec
 
 ## Datris UI
 
-The [Datris UI](http://localhost:4200) provides a visual interface for managing your entire Datris platform. It includes tabs for MCP server status and tools, the Agents tab for live AI agent activity, pipeline management, ingestion monitoring with job history and error details, semantic search across vector databases, and secrets management — all without needing to use the API directly.
+The [Datris UI](http://localhost:4200) provides a visual interface for managing your entire Datris platform. Five top-level tabs — **Assistant** (in-product agent), **MCP** (server status, tools, and a pop-out Agent Monitor for live AI agent activity), **Catalog** (taps and pipelines grouped by catalog), **Data** (ingestion uploads, job history, and semantic search across vector destinations), and **Configuration** (AI providers, secrets, API keys, users) — cover everything you can do through the API.
 
 ## Agent Monitor
 
-The **Agents** tab shows a live view of every AI agent currently connected to the platform's MCP server, along with a streaming log of the tool calls each agent is making.
+The **Agent Monitor** lives on the MCP tab and shows a live view of every AI agent currently connected to the platform's MCP server, along with a streaming log of the tool calls each agent is making. Both panes (Connections and Activity Log) are sized to fit the viewport on initial load and reflow when you resize the window — the visualization stays roughly the upper third and the log fills the rest, with its own internal scroll. A pop-out icon next to the title opens the same view in a separate browser window so you can park it on a second monitor while you work elsewhere in the UI.
 
 The visualization pane draws one icon per active MCP session on the right of the MCP server icon, connected by a line that pulses whenever a call is in flight. Idle sessions fade out automatically once they disconnect.
 

@@ -23,7 +23,7 @@ object PGVectorSearchUtil {
             throw new DatrisException("Search query cannot be empty")
 
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
-        val queryEmbedding = EmbeddingUtil.generateEmbeddings(List(query), embeddingConfig).head
+        val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
         val pgSecret = SecretsUtil.getSecretMap(postgresSecretName)
             .getOrElse(throw new DatrisException("PostgreSQL secret not found: " + postgresSecretName))

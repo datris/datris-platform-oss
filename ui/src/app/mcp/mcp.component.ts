@@ -77,6 +77,15 @@ export class McpComponent implements OnInit {
       parameters: [],
       playgroundEnabled: true
     },
+    {
+      name: 'wait_seconds',
+      description: 'Sleep 1–120 seconds, then return. Use to pace polling of long-running pipeline work without burning tool calls. Typical pattern: run_tap → get_pipeline_status → wait_seconds(5) → get_pipeline_status → wait_seconds(10) → ... with exponential backoff capped at 60s (120s only if progress is genuinely glacial). Reset to a short wait whenever a poll shows new jobs flipped to a terminal state.',
+      category: 'System',
+      parameters: [
+        { name: 'seconds', type: 'integer', description: 'How long to sleep, in seconds. Range: 1–120. Values outside this range are clamped.', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
     // --- Taps ---
     {
       name: 'list_tap_secrets',

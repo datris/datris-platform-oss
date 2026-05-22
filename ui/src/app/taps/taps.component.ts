@@ -488,9 +488,29 @@ export class TapsComponent implements OnInit, OnDestroy {
 
   getStatusClass(status: string): string {
     if (status === 'success') return 'status-success';
-    if (status === 'failure') return 'status-failure';
-    if (status === 'running') return 'status-running';
+    if (status === 'failure' || status === 'error' || status === 'timed_out') return 'status-failure';
+    if (status === 'warning') return 'status-warning';
+    if (status === 'running' || status === 'processing') return 'status-running';
     return 'status-none';
+  }
+
+  /** Aggregate status from the downstream pipeline rollup, if present.
+   *  Overrides the tap-script `status` field in the Run History row so a
+   *  run where the tap fetched 28 docs but 1 chunking/embedding job failed
+   *  shows up as `error` / `warning`, not the misleading `success` that
+   *  came from the tap-script step alone. */
+  rollupStatus(log: any): string | null {
+    return log?.pipelineRollup?.status || null;
+  }
+
+  jobSuccessCount(log: any): number {
+    const jobs = log?.pipelineRollup?.jobs || [];
+    return jobs.filter((j: any) => j.status === 'success').length;
+  }
+
+  jobFailCount(log: any): number {
+    const jobs = log?.pipelineRollup?.jobs || [];
+    return jobs.filter((j: any) => j.status === 'error' || j.status === 'timed_out').length;
   }
 
   formatTime(time: string): string {

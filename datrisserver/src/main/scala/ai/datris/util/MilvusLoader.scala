@@ -67,15 +67,18 @@ class MilvusLoader(jobContext: JobContext) {
             val dimension = EmbeddingUtil.embeddingDimension(embeddingConfig)
             ensureCollection(client, milvusConfig.collectionName, dimension)
 
-            // Batch: embed + upsert
+            // Batch: embed + upsert. globalChunkIdx is the row's chunk_index AND
+            // part of the deterministic PK seed; it advances per fitted chunk
+            // because TokenGuard's split mode can fan one input chunk into N.
             var totalUpserted = 0
-            chunks.zipWithIndex.grouped(UPSERT_BATCH_SIZE).foreach { batch =>
-                val texts = batch.map(_._1)
-                val embeddings = EmbeddingUtil.generateEmbeddings(texts, embeddingConfig)
+            var globalChunkIdx = 0
+            chunks.grouped(UPSERT_BATCH_SIZE).foreach { batch =>
+                val embedded = EmbeddingUtil.generateEmbeddings(batch, embeddingConfig)
 
                 val rows = new java.util.ArrayList[JsonObject]()
 
-                batch.zip(embeddings).foreach { case ((chunkText, chunkIdx), embedding) =>
+                embedded.foreach { case EmbeddingUtil.EmbeddedChunk(chunkText, embedding) =>
+                    val chunkIdx = globalChunkIdx
                     val objectId = UUID.nameUUIDFromBytes(
                         (jobContext.pipelineToken + "_" + chunkIdx).getBytes
                     ).toString
@@ -100,6 +103,7 @@ class MilvusLoader(jobContext: JobContext) {
                     row.add("embedding", embeddingArray)
 
                     rows.add(row)
+                    globalChunkIdx += 1
                 }
 
                 val insertReq = InsertReq.builder()
@@ -108,8 +112,8 @@ class MilvusLoader(jobContext: JobContext) {
                     .build()
 
                 client.insert(insertReq)
-                totalUpserted += batch.size
-                statusUtil.info("processing", "Upserted " + totalUpserted + " of " + chunks.size + " chunks")
+                totalUpserted += embedded.size
+                statusUtil.info("processing", "Upserted " + totalUpserted + " chunks (input chunks: " + chunks.size + ")")
             }
 
             sendNotification()

@@ -77,11 +77,13 @@ class PGVectorLoader(jobContext: JobContext) {
             // Build column lists for metadata
             val metadataKeys = if (pgvectorConfig.metadata != null) pgvectorConfig.metadata.asScala.keys.toList else List.empty
 
-            // Batch: embed + upsert
+            // Batch: embed + upsert. globalChunkIdx is the row's chunk_index AND
+            // part of the deterministic PK seed; it advances per fitted chunk
+            // because TokenGuard's split mode can fan one input chunk into N.
             var totalUpserted = 0
-            chunks.zipWithIndex.grouped(UPSERT_BATCH_SIZE).foreach { batch =>
-                val texts = batch.map(_._1)
-                val embeddings = EmbeddingUtil.generateEmbeddings(texts, embeddingConfig)
+            var globalChunkIdx = 0
+            chunks.grouped(UPSERT_BATCH_SIZE).foreach { batch =>
+                val embedded = EmbeddingUtil.generateEmbeddings(batch, embeddingConfig)
 
                 val allColumns = List("id", "text", "chunk_index", "source_pipeline", "filename") ++ metadataKeys ++ List("embedding")
                 val placeholders = allColumns.map(_ => "?").mkString(", ")
@@ -93,7 +95,8 @@ class PGVectorLoader(jobContext: JobContext) {
 
                 val stmt = conn.prepareStatement(sql)
 
-                batch.zip(embeddings).foreach { case ((chunkText, chunkIdx), embedding) =>
+                embedded.foreach { case EmbeddingUtil.EmbeddedChunk(chunkText, embedding) =>
+                    val chunkIdx = globalChunkIdx
                     val objectId = UUID.nameUUIDFromBytes(
                         (jobContext.pipelineToken + "_" + chunkIdx).getBytes
                     )
@@ -116,12 +119,13 @@ class PGVectorLoader(jobContext: JobContext) {
                     stmt.setObject(paramIdx, vectorStr, java.sql.Types.OTHER)
 
                     stmt.addBatch()
+                    globalChunkIdx += 1
                 }
 
                 stmt.executeBatch()
                 stmt.close()
-                totalUpserted += batch.size
-                statusUtil.info("processing", "Upserted " + totalUpserted + " of " + chunks.size + " chunks")
+                totalUpserted += embedded.size
+                statusUtil.info("processing", "Upserted " + totalUpserted + " chunks (input chunks: " + chunks.size + ")")
             }
 
             conn.commit()

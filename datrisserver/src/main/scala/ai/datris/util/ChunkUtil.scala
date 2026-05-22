@@ -12,7 +12,7 @@ object ChunkUtil {
     def chunk(text: String, config: ChunkingConfig): List[String] = {
         if (text == null || text.isEmpty) return List.empty
 
-        config.strategy.toLowerCase match {
+        val raw = config.strategy.toLowerCase match {
             case "none" => List(text)
             case "fixed" => fixedChunk(text, config.chunkSize, config.chunkOverlap)
             case "sentence" => sentenceChunk(text, config.chunkSize, config.chunkOverlap)
@@ -20,6 +20,16 @@ object ChunkUtil {
             case "recursive" => recursiveChunk(text, config.chunkSize, config.chunkOverlap)
             case other => throw new DatrisException("Unknown chunking strategy: " + other + ". Valid strategies: none, fixed, sentence, paragraph, recursive")
         }
+
+        // Token-aware safety pass. When maxChunkTokens is set, anything the
+        // strategy emits that exceeds the token cap gets split here so the
+        // embedding-side TokenGuard becomes a true safety net rather than the
+        // primary defender. Uses the heuristic counter — exact tokenizers can
+        // be plugged in later via TokenCounterRegistry.
+        if (config.maxChunkTokens > 0) {
+            val counter = new HeuristicTokenCounter(config.tokensPerCharRatio)
+            raw.flatMap(splitByTokens(_, counter, config.maxChunkTokens, config.chunkOverlap))
+        } else raw
     }
 
     private def fixedChunk(text: String, chunkSize: Int, chunkOverlap: Int): List[String] = {
@@ -98,5 +108,34 @@ object ChunkUtil {
 
         if (current.nonEmpty) chunks += current.toString()
         chunks.toList
+    }
+
+    /**
+     * Token-aware split: if `text` exceeds `maxTokens` by the heuristic count,
+     * slice it into pieces sized to fit under the cap, with `chunkOverlap`
+     * char overlap to preserve context across the boundary.
+     */
+    private def splitByTokens(text: String, counter: HeuristicTokenCounter, maxTokens: Int, overlapChars: Int): List[String] = {
+        if (text == null || text.isEmpty) return List(text)
+        if (counter.count(text) <= maxTokens) return List(text)
+
+        val targetChars = Math.max(1, (maxTokens * counter.charsPerToken * 0.90).toInt)
+        val effOverlap = Math.max(0, Math.min(overlapChars, targetChars - 1))
+        val stride = Math.max(1, targetChars - effOverlap)
+
+        val buf = scala.collection.mutable.ListBuffer[String]()
+        var start = 0
+        while (start < text.length) {
+            val end = Math.min(start + targetChars, text.length)
+            var piece = text.substring(start, end)
+            // Heuristic-miss back-off: if a piece still over-counts, shrink it.
+            while (counter.count(piece) > maxTokens && piece.length > 1) {
+                piece = piece.substring(0, Math.max(1, (piece.length * 0.9).toInt))
+            }
+            buf += piece
+            if (end >= text.length) start = text.length
+            else start += stride
+        }
+        buf.toList
     }
 }
