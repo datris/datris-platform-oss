@@ -1,6 +1,72 @@
+/* Embedded view: pin to the viewport so both panes are always visible without
+   page scroll. ~80px top nav + ~62px sub-tab bar (Activity / Connect) is the
+   chrome above us; subtract a bit more as buffer so sub-pixel rounding never
+   pushes us into a scrollbar. `height` (not min-height) caps the container —
+   `overflow: hidden` is the belt-and-suspenders so an oversized section can't
+   leak past the viewport either; the log-scroll has its own internal scroll. */
 .container {
-  padding: 0 32px 32px;
+  padding: 0 32px 16px;
   color: var(--text-primary);
+  height: calc(100vh - 160px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.container .agent-monitor-header,
+.container .page-subtitle {
+  flex-shrink: 0;
+}
+
+/* Tighten the title + subtitle so the panes get more vertical real estate.
+   The full descriptive subtitle is the popped-out window's job; in the
+   embedded view we keep it but trim the bottom margin so it doesn't eat
+   a quarter of the viewport. */
+.container .page-title {
+  margin-bottom: 4px;
+}
+
+.container .page-subtitle {
+  margin-bottom: 8px;
+}
+
+.container .section-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-bottom: 0;
+  padding: 16px 20px;
+}
+
+/* Split the remaining vertical space between the two cards. Viz card takes
+   ~38% of remaining (caps itself naturally), log card absorbs the rest. */
+.container .viz-card {
+  flex: 0 1 38%;
+}
+
+.container .viz-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.container .viz {
+  height: 100%;
+  width: 100%;
+  flex: 1;
+}
+
+.container .section-card:not(.viz-card) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.container .log-scroll {
+  flex: 1;
+  height: auto;
+  min-height: 0;
 }
 
 /* Popped-out window: both panes must fit the viewport and reflow on resize.
@@ -8,6 +74,7 @@
    override the fixed pane heights below so the two cards share space. */
 .container.popout-mode {
   height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;

@@ -24,7 +24,7 @@ object QdrantSearchUtil {
 
         // Get embedding for the query
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
-        val queryEmbedding = EmbeddingUtil.generateEmbeddings(List(query), embeddingConfig).head
+        val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
         // Get Qdrant connection details
         val qdrantSecret = SecretsUtil.getSecretMap(qdrantSecretName)

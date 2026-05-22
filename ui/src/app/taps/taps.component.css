@@ -471,6 +471,11 @@ tbody tr:last-child td {
   color: #fbbf24;
 }
 
+.status-warning {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+
 .status-none {
   background: var(--bg-card-alt);
   color: var(--text-muted);
@@ -556,6 +561,16 @@ tbody tr:last-child td {
   display: flex;
   gap: 4px;
   align-items: center;
+}
+
+/* Inline variant for the embedded catalog view, where the confirm sits next
+   to the other action icons in a right-aligned, nowrap cell. */
+.embed-delete-confirm {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 2px;
 }
 
 .del-opt {
@@ -726,6 +741,87 @@ tbody tr:last-child td {
   white-space: pre-wrap;
   max-height: 200px;
   overflow-y: auto;
+}
+
+/* Per-document pipeline tally chip shown on each Run History row. */
+.log-jobs-tally {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 3px;
+  background: rgba(74, 222, 128, 0.1);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+}
+
+.log-jobs-tally.has-failures {
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+/* Expanded per-job list under a Run History row. */
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.job-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--bg-card-alt);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.job-row-error {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.job-row-warning {
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(251, 191, 36, 0.05);
+}
+
+.job-filename {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.job-elapsed {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.job-error {
+  grid-column: 1 / -1;
+  color: #f87171;
+  font-size: 12px;
+  line-height: 1.5;
+  padding-top: 4px;
+  border-top: 1px solid rgba(239, 68, 68, 0.15);
+  margin-top: 4px;
+}
+
+.job-error-stage {
+  font-weight: 600;
+  font-family: var(--font-mono);
 }
 
 /* Config modal */

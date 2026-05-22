@@ -25,7 +25,7 @@ object ChromaSearchUtil {
             throw new DatrisException("Search query cannot be empty")
 
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
-        val queryEmbedding = EmbeddingUtil.generateEmbeddings(List(query), embeddingConfig).head
+        val queryEmbedding = EmbeddingUtil.generateVectors(List(query), embeddingConfig).head
 
         val chromaSecret = SecretsUtil.getSecretMap(chromaSecretName)
             .getOrElse(throw new DatrisException("Chroma secret not found: " + chromaSecretName))

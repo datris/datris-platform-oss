@@ -183,6 +183,16 @@ tr:hover .embed-name-edit-btn { opacity: 1; }
   margin-top: 2px;
 }
 
+/* Last-run timestamp shown above the status badge in embedded catalog/tap rows.
+   Block-level so the status badge falls onto the next line, matching the
+   standalone view's stacked layout. */
+.embed-last-run-time {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
 /* Specificity note: the table-wide `.embed-table td` rule (class + element)
    would otherwise out-specify a bare `.embed-actions-cell` class selector and
    force the cell back to text-align: left. Selectors below match (0,2,1) to

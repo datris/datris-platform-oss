@@ -142,7 +142,7 @@ ActiveMQ credentials are stored in Vault under `secrets.activeMQSecretName`:
 | Property | Description |
 |----------|-------------|
 | `mongodb.connectionString` | MongoDB connection URI (e.g., `mongodb://localhost:27017`) |
-| `mongodb.database` | **User-facing** database name (default: `datris`). Pipelines write here, the UI Search tab reads here, and tap scripts get this as `DATRIS_MONGODB_DATABASE`. In multi-tenant mode the tenant environment name is used instead. |
+| `mongodb.database` | **User-facing** database name (default: `datris`). Pipelines write here, the UI Data tab reads here (semantic-search panel), and tap scripts get this as `DATRIS_MONGODB_DATABASE`. In multi-tenant mode the tenant environment name is used instead. |
 | `mongodb.internalDatabase` | **Platform-internal** database name (default: `oss`). Holds pipeline/tap configs, run status, job queues — never surfaced in the UI. Keep this distinct from `mongodb.database` so user data and platform state don't mix. |
 
 ### PostgreSQL
@@ -226,6 +226,33 @@ See [AI Configuration](/ai-configuration) for full setup details.
   "connectionString": "mongodb://localhost:27017"
 }
 ```
+
+### Embedding
+```json
+{
+  "endpoint": "https://api.openai.com/v1/embeddings",
+  "model": "text-embedding-3-small",
+  "apiKey": "sk-...",
+  "batchSize": "32",
+  "maxTokens": "8192",
+  "tokenizer": "openai",
+  "tokensPerCharRatio": "2.0",
+  "oversize": "split",
+  "retryIndividualOnFailure": "false"
+}
+```
+
+`endpoint`, `model`, `apiKey` are required; `batchSize` defaults to 32. The remaining fields tune the server-side token-count guard that prevents oversized chunks from failing an embedding batch:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `maxTokens` | model-default | Per-model input cap. Built-in defaults cover common OpenAI / Cohere / Voyage / BAAI / Nomic / E5 / Mistral models; unknown models get 6000. A 90% safety margin is applied automatically. |
+| `tokenizer` | auto | Token-count strategy. Auto picks `openai` (exact, via jtokkit) when the model name matches an OpenAI family, otherwise `heuristic`. Set explicitly to override. |
+| `tokensPerCharRatio` | `2.0` | Chars-per-token for the heuristic counter. Lower is more conservative (more splits); raise to `~3.5` for predictable Latin prose. Ignored when `tokenizer=openai`. |
+| `oversize` | `split` | What to do with chunks over the cap: `split` (lossless — fan one input into N sub-chunks, token-boundary with `openai`, char-boundary with heuristic), `truncate` (lossy — drop the tail), or `fail` (raise an error naming the chunk index). |
+| `retryIndividualOnFailure` | `false` | When the embedding API rejects a batch with a 4xx, retry each chunk one-at-a-time so a single poison chunk doesn't lose the whole batch. Costs N HTTP calls in the failure path. |
+
+The guard always runs. When `maxChunkTokens` is set on the destination's `chunking` config (see [Pipeline configuration](/configuration)), the chunker stops merging segments before they cross the token cap, leaving the guard as a true safety net rather than the primary defender.
 
 ## MinIO Buckets
 

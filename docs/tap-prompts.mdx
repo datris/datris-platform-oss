@@ -27,7 +27,7 @@ If a key appears in any of those texts, the fragment's `content` is appended to 
 
 ## Managing fragments
 
-Fragments are managed via the `/api/v1/tap-prompts` REST endpoints (GET / POST / DELETE / `suggest`). The dedicated UI surface previously lived under **Configuration → Taps** and was removed when the Configuration tab list was simplified; the underlying data and API endpoints are unchanged, so existing fragments still apply to tap creation, brainstorm, auto-fix, and optimize exactly as before.
+Fragments are managed via the `/api/v1/tap-prompts` REST endpoints (GET / POST / DELETE / `suggest`). There is no dedicated UI surface today — tap creation and editing live in the **Catalog** tab, and prompt fragments continue to apply transparently to tap creation, brainstorm, auto-fix, and optimize whenever a matching keyword appears.
 
 To add a fragment from the CLI or a script:
 

@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import com.google.common.base.Throwables
-import com.google.gson.{Gson, GsonBuilder, JsonParser}
+import com.google.gson.{Gson, GsonBuilder, JsonElement, JsonNull, JsonParser}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
 import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException}
 import ai.datris.util._
@@ -128,7 +128,34 @@ class TapAPIController {
                 } else None
             })
 
-            new ResponseEntity[String](gson.toJson(logs.asJava), HttpStatus.OK)
+            // Enrich each run with its downstream pipeline rollup so the Run History
+            // modal can show per-document job outcomes — not just the tap-script
+            // fetch summary. Without this, a tap run that fetched 28 docs but had
+            // 1 chunking/embedding failure shows up as "SUCCESS 28 records" with
+            // no hint of the failure. Only runs that actually fed a pipeline
+            // (mode=run with a publisherToken) get a rollup.
+            val enriched = logs.map { log =>
+                val rollupJson: JsonElement =
+                    if (log.publisherToken != null && log.publisherToken.nonEmpty) {
+                        try {
+                            val response = PipelineStatusUtil.getPipelineStatusByPublisherWithRollup(log.publisherToken)
+                            if (response != null && response.rollup != null && !response.rollup.jobs.isEmpty)
+                                gson.toJsonTree(response.rollup)
+                            else JsonNull.INSTANCE
+                        } catch {
+                            case e: Exception =>
+                                logger.warn("Could not load rollup for publisher token " + log.publisherToken + ": " + e.getMessage)
+                                JsonNull.INSTANCE
+                        }
+                    } else JsonNull.INSTANCE
+                val obj = gson.toJsonTree(log).getAsJsonObject
+                obj.add("pipelineRollup", rollupJson)
+                obj
+            }
+
+            val arr = new com.google.gson.JsonArray()
+            enriched.foreach(arr.add)
+            new ResponseEntity[String](arr.toString, HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

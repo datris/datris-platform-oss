@@ -83,7 +83,17 @@ case class ChromaConfig(
 case class ChunkingConfig(
                              strategy: String = "recursive",
                              chunkSize: Int = 500,
-                             chunkOverlap: Int = 50
+                             chunkOverlap: Int = 50,
+                             // Optional token-count cap enforced during chunking. When set, the
+                             // chunker stops merging segments before they cross this estimate (via
+                             // the same TokenCounter the embedding guard uses). Best practice:
+                             // ~80% of the embedding model's input cap. Without it, the embedding
+                             // guard is the only safety net.
+                             maxChunkTokens: Int = 0,
+                             // Heuristic chars-per-token ratio used when maxChunkTokens is set.
+                             // Matches the embedding config knob of the same name; lower is more
+                             // conservative. 2.0 over-counts on English prose.
+                             tokensPerCharRatio: Double = 2.0
                          )
 
 case class SchemaProperties(
