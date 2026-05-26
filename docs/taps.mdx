@@ -259,6 +259,42 @@ When "Send to pipeline" is checked:
 
 Poll `GET /api/v1/pipeline/status?publishertoken=...&withrollup=true` (or the MCP `get_pipeline_status` tool, which sets `withrollup=true` automatically) until `rollup.allDone` is `true`, then read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failure detail.
 
+### Per-run Parameters
+
+`run_tap` accepts an optional `params` object — a map of caller-supplied values that get injected into the script as environment variables for that one run only. Use this for values that vary per call (date windows, ticker lists, page cursors, batch sizes, geographic regions). Each key/value becomes an env var the script reads:
+
+```python
+import os, json
+
+start_date = os.environ.get("DATRIS_TAP_PARAM_start_date", "2026-01-01")   # cron-safe default
+end_date   = os.environ.get("DATRIS_TAP_PARAM_end_date")
+tickers    = json.loads(os.environ.get("DATRIS_TAP_PARAM_tickers", "[]"))  # JSON-encoded list
+```
+
+- **Key constraints:** must match `[A-Za-z_][A-Za-z0-9_]*` so the keys map cleanly onto env var names. Anything else is rejected with an actionable error.
+- **Value handling:** strings pass through; numbers/booleans are stringified; nested objects/arrays are JSON-encoded so the script can `json.loads()` them back.
+- **Scheduled runs supply no params** — cron-triggered runs have an empty params bag. Scripts MUST apply sensible defaults when the env var is absent.
+
+**Use `params` for things that change between runs; use `secret_name` for credentials that don't.** Rewriting a tap secret on every run to smuggle per-call values through is an anti-pattern — it clobbers concurrent runs, pollutes audit history, and wastes Vault writes.
+
+### Run Status Outcomes
+
+Each tap run produces one of three states on its `lastRunStatus` field and matching run log entry:
+
+| Status | Meaning |
+|---|---|
+| `success` | Script ran, returned records, and the pipeline accepted them. The `recordCount` is non-zero. |
+| `no_records` | Script ran cleanly but returned zero records. Legitimate for polling/incremental taps on a quiet day (no new data since last run, weekend with markets closed, dedup-already-loaded). NOT counted as a failure in the Failures pane on the Ops Activity dashboard. |
+| `failure` | Script errored (Python exception, HTTP error from the source, timeout, output-size guard, etc.). The `error` field carries the message. |
+
+Cron-scheduled runs that legitimately produce zero records (incremental tap that's caught up, polling tap with no new entries) record `no_records` rather than `failure` and the Ops Activity dashboard surfaces them as healthy.
+
+### Output Size Guard
+
+The platform caps tap-script output at `tapMaxOutputMB` (default 100 MB, settable via the `TAP_MAX_OUTPUT_MB` env var on the datris service). Runs that exceed the cap fail fast with an actionable error before the JSON is parsed — preventing the whole batch from buffering in JVM heap and OOM-killing the server.
+
+If a backfill blows the cap, reduce the source range using `run_tap` `params` (shorter date window, smaller page, per-symbol chunks) and call again. Multiple smaller runs all land in the same destination pipeline; with `keyFields` configured on a Postgres or MongoDB pipeline, overlapping ranges upsert safely.
+
 ## Data Types
 
 The system automatically detects the data type from what `fetch()` returns:
