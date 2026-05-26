@@ -57,12 +57,26 @@ export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecke
   private shouldScroll = false;
   private readonly maxLogRows = 200;
 
+  // Bound listener kept as a field so add/removeEventListener match (a fresh
+  // arrow on each call would never unbind, leaking listeners on every mount).
+  private readonly onVisibilityChange = (): void => {
+    if (document.visibilityState !== 'visible') return;
+    // Browser throttles setInterval to ~1/minute (Chrome) or pauses it entirely
+    // (Safari) while the tab is hidden, so when the user comes back the next
+    // poll could be up to a minute away. Force an immediate snapshot refresh
+    // by resetting `since` to 0 — replaceLog will re-render exactly what the
+    // server has right now, regardless of how stale our state is.
+    this.since = 0;
+    this.loadData();
+  };
+
   constructor(private service: AgentMonitorService) { }
 
   ngOnInit(): void {
     this.loadData();
     this.refreshInterval = setInterval(() => this.loadData(), 2000);
     this.animationTimer = setInterval(() => this.decayActive(), 200);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
 
   ngOnDestroy(): void {
@@ -70,6 +84,7 @@ export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecke
     if (this.animationTimer) clearInterval(this.animationTimer);
     if (this.copyResetTimer) clearTimeout(this.copyResetTimer);
     if (this.confirmClearTimer) clearTimeout(this.confirmClearTimer);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
   }
 
   /** First click on the trash icon — show inline "Clear N events?" prompt.
@@ -197,19 +212,50 @@ export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecke
   }
 
   private loadData(): void {
-    this.service.getActivity(this.since).subscribe({
+    // Capture the `since` we're sending with this request. A response to a
+    // `since=0` request is a full-buffer SNAPSHOT and should REPLACE the log;
+    // a response to a `since>0` request is an incremental DELTA and should
+    // APPEND. Without this distinction, three things broke on re-mount:
+    //   1. A timed-out first request returned server_time=0, leaving `since`
+    //      stuck at 0, so every subsequent poll re-fetched the whole buffer
+    //      and appended it again — duplicates.
+    //   2. A successful first request that raced an in-flight second poll
+    //      (both with since=0) returned the same buffer twice, also dup'ing.
+    //   3. If the user navigated away and back during a busy mcp-server, the
+    //      log appeared empty until a new call landed, because the failed
+    //      first request left `since=0` AND no entries to append.
+    // Treating since=0 as "this is the source of truth, render exactly this"
+    // makes the component self-correcting on any reset (re-mount, network
+    // blip, server restart) — the next successful poll always re-syncs.
+    const requestedSince = this.since;
+    this.service.getActivity(requestedSince).subscribe({
       next: (data) => {
         this.error = data.error || '';
         this.connected = !data.error;
         if (data.server_time) this.since = data.server_time;
         this.updateAgents(data.sessions || []);
-        this.appendCalls(data.calls || []);
+        if (requestedSince === 0) {
+          this.replaceLog(data.calls || []);
+        } else {
+          this.appendCalls(data.calls || []);
+        }
       },
       error: (err) => {
         this.connected = false;
         this.error = err?.message || 'Failed to reach server';
       }
     });
+  }
+
+  /** Render a since=0 snapshot. Replaces the log entirely with the server's
+   *  current buffer; clears stale agent pulses (which we'll re-derive from
+   *  the snapshot's calls if any of them lit up an agent recently). */
+  private replaceLog(calls: AgentCall[]): void {
+    this.log = calls.map(c => this.toLogRow(c));
+    if (this.log.length > this.maxLogRows) {
+      this.log = this.log.slice(this.log.length - this.maxLogRows);
+    }
+    this.shouldScroll = this.log.length > 0;
   }
 
   private updateAgents(sessions: AgentSession[]): void {

@@ -23,7 +23,35 @@ import scala.collection.JavaConverters._
 @RequiresRole(Array("admin"))
 class SecretsAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
-    private val SENSITIVE_FIELDS = Set("password", "apikey", "secretkey", "token", "secret")
+    // Substring markers in normalized field names (lowercased, underscores/hyphens
+    // stripped) that flag a field as carrying a credential value. Substring rather
+    // than exact-match because real-world field names commonly carry source/scope
+    // prefixes or suffixes — an exact-match list misses those variations and
+    // leaks the value.
+    //
+    // Mask aggressively: false positives (a field that's masked but the user
+    // wanted visible) are recoverable via the Edit flow; false negatives (a
+    // credential leaking in plain text on the Configuration screen) are not.
+    private val SENSITIVE_MARKERS = Seq(
+        "password", "passwd", "pwd",
+        "secret",
+        "token",
+        "key",
+        "credential",
+        "signature",
+        "bearer",
+        "private"
+    )
+
+    // Fields whose normalized name pattern-matches a SENSITIVE_MARKER but are
+    // platform-injected bookkeeping/metadata, not the credential itself. Keep
+    // this list tight — add only for fields the platform itself writes (not
+    // user-supplied field names).
+    private val ALWAYS_PLAIN = Set(
+        "createdbykeylabel"  // matches "key" but stores a label, not a credential value
+    )
+
+
     private val LOCKED_AI_SLOTS_ON_TRIAL = Set("ai-primary", "codegen", "embedding")
 
     /** On trial tenants, block mutations to the three AI configuration slots.
@@ -267,7 +295,9 @@ class SecretsAPIController {
     }
 
     private def isSensitive(fieldName: String): Boolean = {
-        SENSITIVE_FIELDS.contains(fieldName.toLowerCase.replaceAll("[_-]", ""))
+        val normalized = fieldName.toLowerCase.replaceAll("[_-]", "")
+        if (ALWAYS_PLAIN.contains(normalized)) false
+        else SENSITIVE_MARKERS.exists(marker => normalized.contains(marker))
     }
 
     /** Mirror an AI secret save back to the host `.env` file so the change persists

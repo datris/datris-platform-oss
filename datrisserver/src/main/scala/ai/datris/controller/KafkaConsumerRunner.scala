@@ -6,14 +6,14 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import ai.datris.model.{PipelineConfig, DatrisEnvironment}
-import ai.datris.util.{PipelineConfigIO, GuidV5, ObjectStoreUtil}
+import ai.datris.util.{PipelineConfigIO, ObjectStoreUtil}
 import ai.datris.model.GlobalJobContext
 import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecords, KafkaConsumer}
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.time.Duration
-import java.util.Properties
+import java.util.{Properties, UUID}
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
@@ -100,8 +100,8 @@ class KafkaConsumerRunner(
         }
         else {
             // Write data to a unique path in the -temp bucket
-            val tempLocation = "s3://" + DatrisEnvironment.current.environment + "-temp/kafka/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + "/"
-            val tempFilename = config.name + "." +  GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + ".tmp"
+            val tempLocation = "s3://" + DatrisEnvironment.current.environment + "-temp/kafka/" + UUID.randomUUID().toString + "/"
+            val tempFilename = config.name + "." +  UUID.randomUUID().toString + ".tmp"
             val tempUrl = tempLocation + tempFilename
             ObjectStoreUtil.writeBucketObject(ObjectStoreUtil.getBucket(tempUrl), ObjectStoreUtil.getKey(tempUrl), data)
 

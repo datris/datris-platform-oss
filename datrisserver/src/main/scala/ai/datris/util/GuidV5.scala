@@ -5,43 +5,28 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
 */
 
-import java.security.MessageDigest
 import java.util.UUID
 
 object GuidV5 {
-    def nameUUIDFrom(name: String): UUID = {
-        val sha1 = MessageDigest.getInstance("SHA-1")
-        sha1.update(name.getBytes("UTF-8"))
-
-        val data = sha1.digest().take(16)
-        data(6) = (data(6) & 0x0f).toByte
-        data(6) = (data(6) | 0x50).toByte // set version 5
-        data(8) = (data(8) & 0x3f).toByte
-        data(8) = (data(8) | 0x80).toByte
-
-        var msb = 0L
-        var lsb = 0L
-
-        for (i <- 0 to 7)
-            msb = (msb << 8) | (data(i) & 0xff)
-
-        for (i <- 8 to 15)
-            lsb = (lsb << 8) | (data(i) & 0xff)
-
-        val mostSigBits = msb
-        val leastSigBits = lsb
-
-        new UUID(mostSigBits, leastSigBits)
-    }
+    // The nameUUIDFrom(name: String) method previously lived here. It was a
+    // deterministic, SHA-1-based UUID v5 generator — same input string always
+    // produced the same UUID. Every caller in the codebase was passing
+    // `System.currentTimeMillis().toString`, treating it as a random UUID
+    // factory. That was a serious bug: two calls within the same millisecond
+    // produced the SAME UUID, which on concurrent loads caused staging file
+    // paths to collide and pipelines to read each other's data. All callsites
+    // now use `java.util.UUID.randomUUID()`. The method was removed to keep
+    // anyone from reaching for the same footgun.
+    //
+    // isValidUUID remains because it's a real format check, used by the
+    // metadata parser to distinguish UUID-shaped tokens from other strings.
 
     def isValidUUID(uuid: String): Boolean = {
-        // Is the token a UUID?
-        try{
+        try {
             UUID.fromString(uuid)
             true
         } catch {
-            case e: IllegalArgumentException =>
-                false
+            case _: IllegalArgumentException => false
         }
     }
 }

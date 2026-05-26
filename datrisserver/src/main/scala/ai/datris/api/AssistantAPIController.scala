@@ -306,6 +306,7 @@ class AssistantAPIController {
         sb.append("- Tap secrets must be tagged `_type=tap`. When you call `create_tap_secret`, the platform sets that automatically — don't try to set `_type` yourself.\n")
         sb.append("- **Reuse existing tap secrets before creating new ones.** ALWAYS call `list_tap_secrets` before asking the user for credentials. If a candidate already exists, call `get_tap_secret_fields` to confirm it has the keys your tap script needs (field names only — values are never returned to you). When a matching secret exists, just pass its name as `secret_name` to `create_tap` and move on.\n")
         sb.append("- **When no existing secret fits, ask the user via the credentials form.** Call `request_tap_secret_from_user` with the proposed secret name, the list of required field NAMES (not values), and a one-sentence reason. The UI will render a credentials form inline — the user fills it in (or picks an existing secret from a dropdown), the values go straight to Vault, and the conversation resumes via the user's next message. Do NOT type credential prompts in plain text and ask the user to paste values into chat — credential values must never enter the chat content. Do NOT call `create_tap_secret` with values you don't have.\n")
+        sb.append("- **The `fields` list on `request_tap_secret_from_user` is for TRUE SECRETS ONLY.** Include only values the user would refuse to paste into a chat: API keys, passwords, OAuth tokens, signing keys, private certificates. Do NOT include configuration values (regions, locations, account/project/tenant IDs, base URLs, endpoint URLs, container/bucket/database names, table/collection names, schemas, identifiers the user has already shared in conversation) — those belong in the tap script (hardcoded) or as `run_tap(params=...)` (per-run), NOT in the secret. Before composing `fields`, scan the conversation: anything the user has already volunteered belongs in code/config; only the values the user has NOT mentioned and SHOULD NOT type into chat belong on the form. The 'is this a secret?' test: would the user reasonably refuse to type this value into chat? If yes, it's a secret; if no, it's config.\n")
         sb.append("- Placeholder values like `DATABASE_NAME`, `SCHEMA_NAME` in pipeline configs are substituted automatically by the platform. Don't worry about filling them in literally.\n")
         sb.append("\n")
         sb.append("## Destination defaults (apply unless the user explicitly asks for something else)\n\n")
@@ -369,7 +370,10 @@ class AssistantAPIController {
             "and a brief `reason` shown to the user explaining why the credentials are needed. " +
             "The platform shows the user a form (with an option to pick an existing tap secret instead), collects the values, " +
             "stores them in Vault, and returns control to the conversation via the user's next chat message. " +
-            "You will never see the values themselves.")
+            "You will never see the values themselves. " +
+            "FIELDS LIST RULE: include only values the user would refuse to paste into chat — API keys, passwords, OAuth tokens, signing keys, certificates. " +
+            "Do NOT include configuration values (regions, locations, account/project/tenant IDs, base URLs, endpoint URLs, container/bucket/database names, table/collection names, schemas, identifiers the user has already shared in conversation). Those belong in the tap script (hardcoded) or as run_tap params, not in the secret. " +
+            "Asking for non-secret config the user already provided makes the form feel broken and wastes their time. Before composing `fields`, scan the conversation and remove anything the user already mentioned.")
         val schema = new JsonObject()
         schema.addProperty("type", "object")
         val props = new JsonObject()

@@ -26,6 +26,12 @@ trait NoSQLDbUtility {
 
     def getPageOfItemsAsJSON(tableName: String, pageNbr: Int, maxPageSize: Int, sortField: String = null, sortDescending: Boolean = true): List[String]
 
+    /** Indexed range query: returns rows where `sortField >= sinceEpochMs`, sorted desc,
+     *  capped to `maxItems`. Used for time-window dashboards (ops activity, etc.)
+     *  where fan-out by key would be slow at scale. The caller must have written
+     *  rows with `sortField` populated via `putItemJSON(..., sortKeyName, sortKeyValue)`. */
+    def getItemsSinceAsJSON(tableName: String, sortField: String, sinceEpochMs: Long, maxItems: Int): List[String]
+
     def insertJSON(tableName: String, json: String): Unit
 
     def deleteAll(tableName: String): Long

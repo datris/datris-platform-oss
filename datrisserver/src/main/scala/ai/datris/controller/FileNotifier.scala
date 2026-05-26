@@ -13,6 +13,8 @@ import ai.datris.model.{INITIALIZED, JobContext}
 import ai.datris.util.{DataUtil, PipelineMetadataUtil}
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.util.UUID
+
 class FileNotifier {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
     private val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
@@ -23,7 +25,7 @@ class FileNotifier {
 
         try {
             // Generate a UUID to track the pipeline through the pipeline
-            val pipelineToken = GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString
+            val pipelineToken = UUID.randomUUID().toString
             statusUtil.setPipelineToken(pipelineToken)
 
             val metadata = new PipelineMetadataUtil(statusUtil).read(bucket, key)

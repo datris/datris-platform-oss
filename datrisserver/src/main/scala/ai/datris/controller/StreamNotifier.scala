@@ -14,6 +14,7 @@ import ai.datris.util.CSVReader
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.io.ByteArrayInputStream
+import java.util.UUID
 import java.util.regex.Pattern
 import scala.collection.JavaConverters._
 
@@ -26,7 +27,7 @@ class StreamNotifier {
         statusUtil.setFilename("stream: " + pipeline)
 
         try {
-            val pipelineToken = GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString
+            val pipelineToken = UUID.randomUUID().toString
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(Option(publisherToken).getOrElse(pipelineToken))
 
@@ -120,7 +121,7 @@ class StreamNotifier {
 
         try {
             // Generate a UUID to track the pipeline through the pipeline
-            val pipelineToken = GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString
+            val pipelineToken = UUID.randomUUID().toString
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(pipelineToken)
             statusUtil.info("begin", "Stream received for pipeline: " + pipeline)

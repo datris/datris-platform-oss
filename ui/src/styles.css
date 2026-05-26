@@ -172,9 +172,10 @@ tr:hover .embed-name-edit-btn { opacity: 1; }
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
-.embed-status-success { background: rgba(0, 229, 160, 0.15); color: var(--accent-green); }
-.embed-status-error   { background: rgba(239, 68, 68, 0.15);  color: var(--accent-red); }
-.embed-status-never   { background: rgba(100, 116, 139, 0.15); color: var(--text-muted); }
+.embed-status-success    { background: rgba(0, 229, 160, 0.15); color: var(--accent-green); }
+.embed-status-error      { background: rgba(239, 68, 68, 0.15);  color: var(--accent-red); }
+.embed-status-no-records { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+.embed-status-never      { background: rgba(100, 116, 139, 0.15); color: var(--text-muted); }
 
 .embed-records {
   display: block;

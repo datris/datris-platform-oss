@@ -67,6 +67,13 @@ export class TapService {
     return this.http.get<any[]>('/api/v1/tap/logs?name=' + encodeURIComponent(name));
   }
 
+  // All-taps time-range query for the Ops activity dashboard. Server-side
+  // indexed scan on the created_at field, capped to `limit` rows.
+  getAllTapLogsSince(sinceEpochMs: number, limit: number = 2000): Observable<any[]> {
+    const url = '/api/v1/tap/logs/all?since=' + sinceEpochMs + '&limit=' + limit;
+    return this.http.get<any[]>(url);
+  }
+
   getTapLedger(name: string): Observable<any[]> {
     return this.http.get<any[]>('/api/v1/tap/ledger?name=' + encodeURIComponent(name));
   }

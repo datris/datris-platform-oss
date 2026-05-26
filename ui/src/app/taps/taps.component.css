@@ -476,6 +476,15 @@ tbody tr:last-child td {
   color: #fbbf24;
 }
 
+/* Tap ran cleanly but the source returned 0 records. Legitimate outcome
+   for polling/incremental taps (weekends, no new data, source caught up).
+   Visually distinct from failure (red) and full success (green) — neutral
+   slate so it reads as "ran fine, just empty." */
+.status-no-records {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+}
+
 .status-none {
   background: var(--bg-card-alt);
   color: var(--text-muted);

@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import contextvars
 import json
 import os
@@ -52,7 +53,12 @@ _session_id: contextvars.ContextVar[str] = contextvars.ContextVar("_session_id",
 _activity_buffer: deque = deque(maxlen=200)
 _activity_sessions: dict[str, dict[str, Any]] = {}
 _activity_lock = threading.Lock()
-SESSION_IDLE_SECS = 30  # sessions with no activity for this many seconds are considered gone
+# Zombie-session reaper threshold. _activity_session_open/close already track
+# the real SSE/HTTP connection lifecycle, so this is just a safety net for
+# sessions whose close handler never fires (server crash, stdio bridge oddities).
+# Keep it well above any realistic gap between tool calls — an agent thinking
+# between user prompts should not disappear from the monitor.
+SESSION_IDLE_SECS = 600
 
 
 _PREVIEW_ARG_KEYS = [
@@ -255,10 +261,33 @@ When the user makes ANY data-related ask — "I'm looking for X", "can you get m
 
 After those calls return, anchor your reply in what exists: "There's already a `<name>` pipeline doing X — does that cover your need, or do you want to extend it / add Y / pick a different source?" Only enumerate external API options after you've confirmed nothing in the platform already covers the ask. A generic options menu drawn from training data wastes the user's time when the answer is sitting in their own environment.
 
+SCHEDULING RULE (read this before suggesting any recurring/timely workflow):
+If the user mentions ANY recurrence cue — "nightly", "daily", "hourly", "every morning", "weekly", "at market open", "on a schedule", "recurring", "on a timely basis", "keep this up to date", "refresh this every X" — set a `cron_expression` on the relevant tap via `create_tap` (when first creating) or `update_tap` (when wiring an existing tap). The Datris platform runs the scheduler — once you set `cron_expression`, the tap fires automatically on that cadence, with the same publisherToken + get_tap_logs verification path as manual runs.
+DO NOT respond with shell snippets, cron jobs, Airflow DAGs, or any other external scheduler that just invokes the CLI or the API on a timer. That defeats the platform: the user delegated both "what data" and "when it refreshes" to Datris. Handing back a "run this every night at 9pm" command pushes operational burden the user already chose to offload. The schedule lives on the tap.
+After setting the schedule, tell the user what you set ("scheduled `canslim_screen` for 0 30 5 * * ? — runs daily at 5:30am") and offer to adjust the cadence or chain related taps.
+
+VALIDATION RULE (read this before the first run of any new or updated tap):
+Before calling `run_tap` AND before setting `cron_expression` on a tap whose script has not yet been validated, you MUST call `test_tap`. This applies to:
+  - Any tap just created via `create_tap` (whether AI-generated from `instruction` or user-supplied via `script`)
+  - Any tap whose script was just replaced (call `create_tap` again with the same name and a new `script` or `instruction` — create_tap upserts by name)
+If `test_tap` fails, fix the script (call `create_tap` again with a corrected `instruction` or revised `script`) and re-test until it succeeds. ONLY THEN call `run_tap` or set `cron_expression`. Setting a cron on an untested script ships a guaranteed-bad nightly run; the user delegated the schedule to Datris, not the validation to luck.
+Existing taps that have run successfully do NOT need a fresh `test_tap` for cadence-only changes (`cron_expression`, `target_pipeline`, `enabled` toggle) — only when the script itself just changed.
+
+EVIDENCE RULE (read this before summarizing what you did):
+NEVER narrate a create / update / delete / run operation as completed unless the corresponding tool call appears in THIS turn. The collapsed tool-call blocks in your message are the ONLY evidence that work actually happened — your prose must match them. Specifically:
+  - If you intended to set up a pipeline + tap but only called `create_tap`, do NOT write "pipeline and tap are live." Write what's true: "tap created; pipeline still needs to be created" and then call `create_pipeline`.
+  - If a tool call returned an error or unexpected response, do NOT paper it over with confident success language. Surface the actual response shape (error string, persistedReason, etc.) and decide the next step from that.
+  - After multi-step setups (e.g., create pipeline → create tap → test → run), enumerate explicitly what completed and what didn't BEFORE summarizing. "Pipeline X: created ✓. Tap Y: created ✓, tested ✓ (7 records). Tap not yet run — say the word."
+  - When in doubt — when you intended to do N steps and you can't enumerate the N tool calls in this turn — STOP and verify. Call `list_pipelines` / `list_taps` / `get_tap` to ground yourself in actual platform state before claiming anything is done.
+The user trusts your narrative as a proxy for the platform state. Confabulating "done" when only some of it is done corrupts that trust and creates failure modes (a cron set on a tap whose pipeline doesn't exist; a "run now" call against a pipeline that was never created). Be honest about what happened in THIS turn, even if it's less than the user asked for — they can redirect, but only if your report is true.
+
 A pipeline config has two required sections: source and destination. Keep configs simple: source + destination only.
 
 NEVER rules:
   - NEVER respond to a data-related ask without first calling list_pipelines and list_taps (see FIRST-RESPONSE RULE above)
+  - NEVER respond to a recurrence/timely ask with shell commands, external cron, or off-platform schedulers — set a `cron_expression` on the tap (see SCHEDULING RULE above)
+  - NEVER call `run_tap` or set `cron_expression` on a tap whose current script hasn't been validated by a successful `test_tap` (see VALIDATION RULE above)
+  - NEVER narrate a create/update/delete/run as completed without the corresponding tool call in THIS turn (see EVIDENCE RULE above). If you intended to do N things and only did some, say which and finish the rest.
   - NEVER use profile_data to determine how to generate a pipeline configuration
   - NEVER add dataQuality or transformation sections unless explicitly requested
   - If data quality is needed, use codegen_rule on create_pipeline (plain-English validation instruction)
@@ -284,16 +313,20 @@ Tap workflow (for step 3 Option B):
     - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries.
   Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
-  2. Test: call test_tap to validate the script without pushing data
+  2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
   4. Run: call run_tap to execute and push data to the pipeline.
      After `run_tap` returns, READ the response's `persisted` field BEFORE doing anything else:
        - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until `rollup.allDone` is true. Only THEN query the destination or report completion to the user. Reporting success before the poll finishes is a bug — the destination will appear empty. Read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failures.
        - `persisted: false` → records did NOT land in the destination. Read `persistedReason` and tell the user exactly why: `no_target_pipeline` (call update_tap to set one, then re-run), `test_mode` (you ran it in test mode — or mcp-server/datris are out of sync; flag it and stop), `run_error` (show the `error` string), `no_records` (source returned nothing).
      Note: `run_tap` does NOT return the records themselves (only `recordCount`). If you need to preview what the script produces, use `test_tap`.
-  5. Schedule (optional): call update_tap with a cron_expression to run the tap on a schedule
+  5. Schedule: if the user described any recurrence (nightly, daily, every morning, market open, etc.), set `cron_expression` — on `create_tap` if you're creating the tap now, or via `update_tap` if the tap already exists. The platform runs the scheduler; once set, the tap fires automatically and shows up in `get_tap_logs` exactly like manual runs. NEVER substitute external schedulers (shell cron, Airflow DAGs invoking the CLI, "run this every night at 9pm" shell snippets) — see the SCHEDULING RULE.
   6. Verify ingestion outcome — the same check works for any run, manual or scheduled. The `publisherToken` is your handle on whether the data actually landed in the destination. After a manual `run_tap` you already have it in the response; for a scheduled (cron) run, call `get_tap_logs` and pick the relevant entry — every log entry that submitted records includes its `publisherToken`. Either way, call `get_pipeline_status(publisher_token=...)` and poll until `rollup.allDone` is true; then `rollup.status` tells you success/warning/error and `rollup.jobs[].lastError` tells you which file failed and why. The tap log only tells you the script ran; the publisher token is how you trace it through to whether the destination actually has the data. Prefer `get_tap_logs` over holding the token in your own context across many turns — if the conversation is compressed or you reconnect, you can always re-derive the token from the log.
   7. Manage: call update_tap to enable/disable, change schedule, or retarget pipeline; call get_tap to view details and script
+
+Long-form references — read on demand to verify your mental model:
+  - `datris://pipeline-config-reference` — pipeline source/destination shapes, codegen rules, vector vs structured.
+  - `datris://tap-workflow-reference` — full tap workflow: creation, params, SCHEDULING RULE with CRON cookbook, run flow, error handling (`persistedReason` table, size limits), document taps, outcome verification. Re-read this any time you're unsure about how taps work or what the platform expects.
 
 Do NOT call check_service_health as part of the normal workflow — it is slow. Only use it for diagnostics if something fails.
 Do NOT call update_secret unless you need to configure AI provider keys and they are not already set.
@@ -554,6 +587,14 @@ Call `check_service_health` first to verify the target service is available.
 }
 ```
 
+**keyFields semantics (Postgres):** When `keyFields` is set and `truncateBeforeWrite` is false, the loader switches to an upsert path — COPY into a session-local staging table, then `INSERT ... SELECT ... ON CONFLICT (keyFields) DO UPDATE SET <non_key_cols> = EXCLUDED.<non_key_cols>`. Same external contract as Mongo's keyFields upsert.
+
+- **First load on a fresh table:** the table is created with a `PRIMARY KEY (keyFields)`. Subsequent loads upsert against that key.
+- **Retrofitting onto an existing table:** if the table predates the `keyFields` config and lacks a matching unique constraint, the loader auto-adds a `UNIQUE INDEX` on the keyFields. If existing rows already violate the proposed uniqueness, the index creation fails and the loader surfaces a clear error with remediation hints (deduplicate manually, set `truncateBeforeWrite=true`, or pick different keyFields).
+- **NULL handling on conflict:** when an incoming row collides on the natural key, ALL non-key columns are overwritten with the incoming values, **including NULLs**. This is true upsert semantics, not non-null merge. If your source emits partial rows and you don't want NULLs to clobber existing values, coalesce upstream before the pipeline.
+- **Performance:** the upsert path is meaningfully slower than raw COPY (extra staging round-trip plus the INSERT). Use `keyFields` only when you genuinely need natural-key dedupe; for append-only ingestion, leave it unset and let raw COPY do its thing.
+- **Without keyFields:** raw COPY straight into the target table. Duplicate-key violations fail the load. Use `truncateBeforeWrite=true` for full-refresh pipelines, or leave both unset for pure append.
+
 ### database — MongoDB (use for JSON data)
 
 ```json
@@ -770,6 +811,260 @@ All vector DB destinations require chunking and embedding config. Call `check_se
 """
 
 
+TAP_WORKFLOW_REFERENCE = """\
+# Datris Tap Workflow Reference
+
+This is the canonical, fetch-on-demand reference for everything tap-related: creation, running, scheduling, per-run parameterization, error handling, and verification. Re-read this any time you need to verify your mental model of how taps work — the rules here are authoritative.
+
+## What a tap is
+
+A tap is a Python script registered with Datris that fetches data from an external source (REST API, web page, S3 bucket, database, etc.) and pushes records into a target pipeline. Taps are the right answer when:
+  - The source is external (not a file the user has locally — that's `upload_data`'s job)
+  - The data needs to refresh on a schedule, on demand, or both
+  - The user wants the data flowing into a destination managed by Datris
+
+If the user already has the file in hand, prefer `upload_data` against an existing pipeline — taps add operational machinery you don't need for a one-shot load.
+
+---
+
+## Required workflow
+
+1. **Check existing.** Call `list_taps`. If a tap with the right purpose exists, prefer running it (or updating its config) over creating a new one.
+2. **Create.** Call `create_tap` with either `instruction` (AI generates the Python `fetch()` function) or `script` (you provide it directly). Writing the script yourself is usually faster and more reliable than AI generation. Pass `target_pipeline` so the tap actually persists to a destination — without it, runs come back with `persistedReason: no_target_pipeline`.
+3. **Test.** Call `test_tap` to validate the script without persisting. **MANDATORY for any newly-created or just-updated script** — see the VALIDATION RULE below. If the script errors, fix it by calling `create_tap` again with the same name and a corrected `instruction` or revised `script` (create_tap upserts and replaces the existing script), and re-test until it succeeds.
+4. **Schedule (if recurring).** If the user mentioned any recurrence cue, set `cron_expression` — see the SCHEDULING RULE below.
+5. **Run.** Call `run_tap` with `name` and optional `params`. Read the response — see the run-flow section below.
+6. **Poll.** When `persisted: true`, call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true.
+7. **Verify.** Read `rollup.status` (`success` / `warning` / `error`) and per-job `rollup.jobs[].lastError`. Report the outcome to the user with the concrete numbers.
+
+---
+
+## SCHEDULING RULE (read this every time)
+
+If the user mentions ANY recurrence cue — "nightly", "daily", "hourly", "every morning", "weekly", "at market open", "on a schedule", "recurring", "on a timely basis", "keep this up to date", "refresh this every X" — set `cron_expression` on the relevant tap via `create_tap` (when first creating) or `update_tap` (when wiring an existing one). The Datris platform runs the scheduler — once you set `cron_expression`, the tap fires automatically and its runs show up in `get_tap_logs` exactly like manual runs.
+
+**DO NOT** respond with shell snippets, host cron jobs, Airflow DAGs that just invoke the CLI on a timer, or "run this every night at 9pm" command examples for the user to wire up themselves. That defeats the platform: the user delegated both "what data" AND "when it refreshes" to Datris. Handing back a copy-pasteable cron line pushes operational burden the user already chose to offload. The schedule lives on the tap.
+
+After setting `cron_expression`, tell the user the cadence you set in plain English ("scheduled `canslim_screen` for `0 30 5 ? * MON-FRI` — runs every weekday at 5:30am") and offer to adjust it or chain related taps.
+
+### Quartz CRON expression cookbook
+
+Datris uses Quartz CRON syntax: `seconds minutes hours day-of-month month day-of-week [year]`. Note the leading SECONDS field — many cron resources online only show 5 fields.
+
+| Cadence | Expression |
+|---|---|
+| Every minute | `0 * * * * ?` |
+| Every 5 minutes | `0 */5 * * * ?` |
+| Every hour on the hour | `0 0 * * * ?` |
+| Daily at midnight | `0 0 0 * * ?` |
+| Daily at 5:30am | `0 30 5 * * ?` |
+| Weekdays at 5:30am (US market pre-open) | `0 30 5 ? * MON-FRI` |
+| Weekdays at 4:15pm (US market post-close) | `0 15 16 ? * MON-FRI` |
+| Every Sunday at 2am | `0 0 2 ? * SUN` |
+| First of each month at midnight | `0 0 0 1 * ?` |
+
+Use `?` (not `*`) when you specify one of day-of-month / day-of-week and want the other left unspecified — Quartz requires exactly one of those two fields to be `?`.
+
+---
+
+## VALIDATION RULE (read this every time you create or replace a tap's script)
+
+Before calling `run_tap` AND before setting `cron_expression` on a tap whose script has not yet been validated, you MUST call `test_tap` and see it succeed.
+
+This applies to:
+- A tap you just created via `create_tap` (AI-generated from `instruction` or supplied as `script`).
+- A tap whose script you just replaced (by calling `create_tap` again with the same name — `create_tap` upserts by name and replaces the existing script).
+
+If `test_tap` fails:
+1. Read the `error` and the `logs` field — they carry the Python traceback or runtime issue.
+2. Fix the script: call `create_tap` again with the same `name` and a corrected `instruction` or revised `script`.
+3. Re-run `test_tap`. Iterate until it passes.
+
+Only THEN are you allowed to call `run_tap` or set `cron_expression`. Setting a cron on a never-tested script ships a guaranteed-bad nightly run; the user delegated the schedule to Datris, not the validation to luck.
+
+### When `test_tap` is NOT needed
+
+For existing taps that have run successfully, cadence-only changes are safe without a fresh test:
+- Toggling `enabled` on/off
+- Changing `cron_expression` (different cadence, same script)
+- Changing `target_pipeline` (different destination, same script)
+- Updating `description` or other metadata
+
+The script itself has already been proven by past successful runs, so re-validation isn't useful. The rule fires only when the script changed.
+
+---
+
+## EVIDENCE RULE (read this before summarizing a multi-step setup)
+
+The collapsed tool-call blocks in your message are the ONLY evidence that work actually happened. Your prose must match what those blocks show, not what you intended to do.
+
+**Failure mode this prevents:** confabulated success. The classic bad turn looks like this:
+1. User: "create a tap to fetch X nightly and load to MongoDB"
+2. You call `create_tap(name=X, target_pipeline=X, cron_expression=...)`
+3. You call `test_tap(X)` — test pulls records cleanly (test mode doesn't need the pipeline to exist)
+4. You narrate: "Pipeline + tap are live, scheduled weekdays 22:00 UTC"
+5. **Reality:** the pipeline was never created. `create_pipeline` was never called. The next scheduled run will fail with `persistedReason: no_target_pipeline`.
+
+The user trusted your narrative, you produced a confident story, and the platform is in a broken state that won't surface until the cron fires.
+
+**Discipline:**
+- Before writing "X is live" or "X is set up," enumerate the tool calls you made in this turn. If your enumeration is shorter than your intent, finish the intent before claiming success.
+- For pipeline + tap workflows, the minimum is THREE tool calls in the same turn: `create_pipeline` → `create_tap` → `test_tap`. If you set `cron_expression`, that's part of `create_tap`. If the user wants a manual run too, add `run_tap` and the polling chain.
+- When a tool call returns an error or unexpected response, surface the actual response field (`error`, `persistedReason`, `recordCount`, etc.) — don't smooth it into success language.
+- When in doubt, call `list_pipelines` / `list_taps` / `get_pipeline` / `get_tap` to ground yourself in real platform state before claiming anything is done.
+
+Honest narration with fewer claims is always better than a confident narrative that drifts past the tool calls.
+
+---
+
+## Per-run params
+
+`run_tap(name, params={...})` lets you drive a single run with caller-supplied values that vary per call: date ranges, ticker lists, page cursors, batch sizes, geographic regions, anything that changes between runs.
+
+### How it works
+
+Each key/value you pass becomes an env var the script reads:
+
+```python
+import os
+start = os.environ.get("DATRIS_TAP_PARAM_start_date", "2026-01-01")  # sensible default for cron
+end   = os.environ.get("DATRIS_TAP_PARAM_end_date")
+tickers_json = os.environ.get("DATRIS_TAP_PARAM_tickers", "[]")
+tickers = json.loads(tickers_json)
+```
+
+- **Key constraints:** must match `[A-Za-z_][A-Za-z0-9_]*` (clean env var names). Anything else is rejected with an actionable error.
+- **Value handling:** strings pass through; numbers/booleans get stringified; nested objects/arrays are JSON-encoded (script can `json.loads()` them).
+- **Scheduled runs supply no params** — cron-triggered runs have an empty params bag. Scripts MUST apply sensible defaults when an env var is absent.
+
+### Params vs secrets — when to use which
+
+| Use `params` for | Use `secret_name` for | Use hardcoded script values for |
+|---|---|---|
+| Values that vary per call | Credentials (API keys, passwords, OAuth tokens, signing keys, certificates) | Static config the user has already shared in conversation |
+| Date windows, page cursors, ticker lists, batch sizes | Things the user would refuse to paste into chat | Regions, bucket names, account IDs, project IDs, base URLs, table/schema names |
+| Anything the user might want to override on an ad-hoc run | Things you'd never want to change just to trigger a one-off | Things that don't change between runs and aren't sensitive |
+
+**The "is this a secret?" test:** would the user reasonably refuse to type this value into the chat? An access key, password, or signed token? Yes — that's a secret, ask via `request_tap_secret_from_user`. A region, container/bucket/database name, account/project/tenant ID, base URL, or endpoint URL? No — that's config, hardcode it in the script or pass as a `run_tap(params=...)` value.
+
+**Anti-pattern 1:** rewriting a secret on every run to smuggle per-call params through. This clobbers concurrent runs, pollutes audit history, and wastes Vault writes. Use `params` instead. If an existing script doesn't yet read a param, update it by calling `create_tap` again with the same name and a revised `script` — create_tap upserts by name and replaces the existing script.
+
+**Anti-pattern 2:** putting non-secret config (regions, endpoint URLs, bucket names, account IDs) into the secret form when calling `request_tap_secret_from_user`. The user just spent a turn telling you the region in chat; asking them to type it AGAIN into a secret form makes the platform feel broken. Hardcode it in the script — or read it from `DATRIS_TAP_PARAM_<key>` if it should vary per call. The secret form is for values the user wouldn't safely paste into chat; everything else goes in code or params.
+
+---
+
+## Creating a tap — instruction vs script
+
+**With instruction:** pass a plain-English `instruction` to `create_tap`. Platform AI generates the Python `fetch()` function. Slower (1–2 minutes for codegen). Use when the source is well-known and the logic is straightforward.
+
+**With script:** write `fetch()` yourself and pass as `script`. Faster, no codegen wait, full control. Use when:
+- The source has quirks AI is likely to misunderstand (paginated APIs, rate limits, auth handshakes, undocumented edge cases)
+- You want to thread `DATRIS_TAP_PARAM_*` env vars through specific points in the logic
+- You've already iterated and know exactly what you want
+
+The script MUST define `fetch()` taking no arguments and returning one of:
+- A list of dicts (structured records)
+- A list of `{uri, filename, content}` dicts where `content` is base64-encoded bytes (document tap — for vector destinations)
+- A string (raw JSON, XML, or text)
+
+### Pre-installed packages
+
+`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`, `boto3`, `google-cloud-storage`, `azure-storage-blob`, `openpyxl`, `pyyaml`, `python-dateutil`, `pytz`, plus the Python stdlib. If your script imports anything else, pass it in `packages` to `create_tap` (e.g. `["yfinance", "alpha-vantage"]`).
+
+---
+
+## Run flow
+
+`run_tap` is async with respect to ingestion: the script executes synchronously, but record loading runs in the background. The response tells you whether the data is in flight, not whether it has landed.
+
+### Response shape
+
+```json
+{
+  "tap": "<name>",
+  "mode": "run",
+  "status": "success" | "failure" | "skipped",
+  "persisted": true | false,
+  "persistedReason": "<reason>",       // present when persisted=false
+  "publisherToken": "<uuid>",          // present when persisted=true
+  "pipelineTokens": ["<uuid>", ...],   // one per ingestion job submitted
+  "recordCount": 12345,
+  "error": "<string>",                 // present on failure
+  "logs": "<wrapper + script stderr>"
+}
+```
+
+### What to do based on the response
+
+**`persisted: true`** — load is in flight. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll every few seconds until `rollup.allDone` is true. Then read `rollup.status`:
+  - `success` — every job landed cleanly. Report counts.
+  - `warning` — some jobs landed, some had non-fatal issues. Read `rollup.jobs[].lastError` for the affected ones.
+  - `error` — at least one job failed. Read `rollup.jobs[].lastError` for `processName` and `description`.
+
+Do not query the destination or report completion to the user before polling completes — the data isn't there yet.
+
+**`persisted: false`** — destination was not written. Read `persistedReason`:
+
+| `persistedReason` | What it means | What to do |
+|---|---|---|
+| `no_target_pipeline` | Tap has no pipeline wired | Call `update_tap` with `target_pipeline`, then re-run |
+| `test_mode` | Ran in test mode (or mcp-server/datris version mismatch) | Flag it; do not report data as stored |
+| `run_error` | Script execution or post-execution failure | Show the `error` string. See common causes below. |
+| `no_records` | Source returned nothing | Tell the user the source had nothing; consider whether params (date window etc.) were too narrow |
+| `debounced` | Tap was triggered server-side within the last 5s | DO NOT retry. Your previous call is still running. Use `get_tap_logs` to find the live run's `publisherToken`, then poll `get_pipeline_status` |
+| `already_running` (response `status: skipped`) | Another run_tap for this tap is in flight | Same as `debounced` |
+
+### Common `run_error` causes
+
+- **Output exceeded size limit** — script produced more JSON than the configured tap output cap (default 100MB). The whole batch is buffered before pipeline loading; very large fetches risk OOM. Fix: reduce the source range via `params` (shorter date window, smaller page, per-symbol chunks). Multiple smaller runs all land in the same destination pipeline.
+- **Script raised an exception** — read the `logs` field for the Python traceback. Common: 403/404 from the source API (auth, entitlements), timeout, JSON parse error on malformed response.
+- **Subprocess timed out** — script ran longer than `tapScriptTimeoutSeconds` (default 300). Either the source is genuinely slow (chunk smaller via params) or the script has a bug (infinite loop, missing pagination break).
+
+---
+
+## Verifying outcomes
+
+The `publisherToken` is your handle on whether the data actually landed in the destination. It works the same for manual and scheduled runs:
+
+- **Manual run:** the token is in the `run_tap` response.
+- **Scheduled (cron) run:** call `get_tap_logs(name)` and pick the relevant entry — every log entry that submitted records includes its `publisherToken`.
+
+Then call `get_pipeline_status(publisher_token=...)` and poll until `rollup.allDone` is true.
+
+The tap log only tells you the script ran. The publisher token is how you trace a run through to whether the destination has the data. Prefer `get_tap_logs` over holding the token in your own context across many turns — if the conversation is compressed or you reconnect, you can always re-derive the token from the log.
+
+One `get_pipeline_status` call with the publisherToken sees every ingestion job this run submitted (structured taps = 1 job; document taps = N jobs, one per document).
+
+---
+
+## Document taps (special case)
+
+For ingesting files (PDFs, DOCX, etc.) into vector destinations, return a list of `{uri, filename, content}` dicts where `content` is base64-encoded bytes. Set `tap_type="document"` on `create_tap`. The target_pipeline MUST have:
+  - Source: `unstructuredAttributes`
+  - Destination: a vector store (`qdrant`, `pgvector`, `weaviate`, `milvus`, `chroma`)
+
+The platform maintains a per-tap ledger of processed documents (URI + content hash). On each run, documents already in the ledger are skipped — re-running a document tap is safe and only processes new or changed files. To force re-processing, call `get_tap_ledger` with `clear_uri` (one file) or `clear_all=true` (everything).
+
+---
+
+## Tool quick-reference
+
+| Tool | Use for |
+|---|---|
+| `list_taps` | Discover what taps exist. Call before suggesting new ones. |
+| `get_tap` | Read a tap's config + script. NOT for run status — use `get_pipeline_status`. |
+| `create_tap` | Create or replace a tap (upserts by name). Pass `cron_expression` here when recurrence is known up-front. |
+| `update_tap` | Change `enabled`, `cron_expression`, `target_pipeline`, or `description` without touching the script. |
+| `create_tap` (upsert) | Replacing an existing tap's script: call `create_tap` again with the same `name` and the new `script` or `instruction`. It upserts by name. There is no separate script-only update tool. |
+| `test_tap` | Validate the script without persisting. Always run before the first real `run_tap`. |
+| `run_tap` | Execute now. Pass `params` for per-call values. |
+| `get_tap_logs` | Run history for a tap (manual + scheduled). Use to recover `publisherToken` for any past run. |
+| `get_tap_ledger` | Document-tap-only: see/clear the dedupe ledger. |
+| `get_pipeline_status` | Authoritative source for whether ingestion landed. Pass the `publisherToken` from `run_tap` or `get_tap_logs`. |
+| `delete_tap` | Remove a tap and its script. |
+"""
+
+
 @server.list_resources()
 async def list_resources():
     return [
@@ -778,7 +1073,13 @@ async def list_resources():
             name="Pipeline Configuration Reference",
             description="Complete reference for building Datris pipeline configurations. Covers all source types (CSV, JSON, XML, PDF), AI-powered data quality (CodeGen), AI transformations (CodeGen), and all destination types (PostgreSQL, MongoDB, Kafka, vector databases). Read this before using create_pipeline.",
             mimeType="text/plain",
-        )
+        ),
+        Resource(
+            uri="datris://tap-workflow-reference",
+            name="Tap Workflow Reference",
+            description="Canonical reference for everything tap-related: creation (instruction vs script), per-run params, scheduling (with CRON cookbook), run flow + polling, error handling (persistedReason table, size-limit guidance), document taps, and outcome verification via publisherToken + get_tap_logs. Re-read this any time you need to verify your understanding of how taps work — including the SCHEDULING RULE for recurring data needs.",
+            mimeType="text/plain",
+        ),
     ]
 
 
@@ -786,6 +1087,8 @@ async def list_resources():
 async def read_resource(uri):
     if str(uri) == "datris://pipeline-config-reference":
         return PIPELINE_CONFIG_REFERENCE
+    if str(uri) == "datris://tap-workflow-reference":
+        return TAP_WORKFLOW_REFERENCE
     raise ValueError(f"Unknown resource: {uri}")
 
 
@@ -861,7 +1164,7 @@ async def list_tools():
                     "keyFields": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Only applies to postgres and mongodb destinations. Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. Omit to append on every run (default behavior)."
+                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Only applies to postgres and mongodb destinations. Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. On Postgres this triggers a staging + INSERT…ON CONFLICT path; on Mongo it uses upsertJSON. NOTE: on conflict, ALL non-key columns from the incoming row overwrite the existing row, including NULLs (true upsert semantics, not non-null merge). If your source emits partial rows, coalesce upstream. Omit to append on every run (default behavior)."
                     },
                     "truncate": {
                         "type": "boolean",
@@ -1406,7 +1709,9 @@ async def list_tools():
             name="create_tap",
             description=(
                 "Create a tap — a Python script that fetches data from an external source and pushes it into a pipeline. Provide a plain-English instruction to have AI generate the script, or supply your own script directly. "
-                "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. Only skip target_pipeline if the user explicitly wants a fetch-only tap."
+                "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. Only skip target_pipeline if the user explicitly wants a fetch-only tap. "
+                "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
+                "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen."
             ),
             inputSchema={
                 "type": "object",
@@ -1429,7 +1734,7 @@ async def list_tools():
                     },
                     "cron_expression": {
                         "type": "string",
-                        "description": "Optional Quartz CRON expression for scheduling (e.g., '0 0 * * * ?' for hourly)"
+                        "description": "Quartz CRON expression for recurring runs (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
                     },
                     "secret_name": {
                         "type": "string",
@@ -1463,12 +1768,21 @@ async def list_tools():
                 "Manually trigger a tap. Executes the script; when a target pipeline is configured, hands records to the pipeline async. "
                 "The response carries `recordCount`, `publisherToken`, `pipelineTokens`, `persisted`, `persistedReason`, and the script's `logs` — but NOT the records themselves. "
                 "If you need to preview what the script produces, call `test_tap` instead. "
+                "BEFORE the first run of a newly-created or newly-updated tap, you MUST have called `test_tap` and seen it succeed. See the VALIDATION RULE in the server instructions. Skipping the test on a fresh script pushes potentially-broken data into the destination — and `run_tap` doesn't return records, so you won't see the breakage from the response. "
+                "\n\n"
+                "PER-RUN PARAMS — pass a `params` object to drive this run with caller-supplied values (date range, ticker list, page cursor, etc.). "
+                "Each key/value becomes an env var the script reads via `os.environ.get('DATRIS_TAP_PARAM_<key>')`. "
+                "Keys must match `[A-Za-z_][A-Za-z0-9_]*` so they map cleanly onto env var names. Values are stringified; nested objects/arrays are JSON-encoded (script can `json.loads()` them back). "
+                "Use this for anything that varies per-call — date windows, ticker lists, page cursors, batch sizes. "
+                "Do NOT rewrite the tap secret to pass per-run params: secrets are for credentials (API keys, DB passwords); rewriting them on every call clobbers concurrent runs, pollutes audit history, and wastes Vault writes. "
+                "If the tap script doesn't yet read a particular param, update the script by calling `create_tap` again with the same `name` and a revised `script` (create_tap upserts and replaces the existing script). That's the right shape for parameterized runs.\n"
+                "\n"
                 "REQUIRED next steps based on the response:\n"
                 "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true. Then read `rollup.status` (`success`/`warning`/`error`) and `rollup.jobs[].lastError`. Do not report completion or query the destination before that.\n"
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
-                "      - `run_error`: show the `error` string.\n"
+                "      - `run_error`: show the `error` string. If the error says output exceeded the size limit, reduce the source range via `params` (shorter date window, smaller page, per-symbol chunks) and call run_tap again — multiple smaller runs all land in the same destination pipeline.\n"
                 "      - `no_records`: source returned nothing.\n"
                 "      - `debounced`: this tap was triggered server-side within the last 5 seconds. Do NOT retry — your previous call is still running. Use `get_tap_logs` to find the live run's `publisherToken`, then poll `get_pipeline_status`.\n"
                 "      - `already_running` (response `status: skipped`): another run_tap for this tap is already in flight in this agent session. Same handling as `debounced`: wait, then look up the live run in `get_tap_logs`.\n"
@@ -1481,6 +1795,18 @@ async def list_tools():
                         "type": "string",
                         "description": "Name of the tap to run"
                     },
+                    "params": {
+                        "type": "object",
+                        "description": (
+                            "Optional per-run parameters injected into the script as DATRIS_TAP_PARAM_<key> env vars. "
+                            "Use for values that vary per call (date ranges, ticker lists, page cursors, batch sizes) — "
+                            "NOT for credentials (those belong in the tap secret). "
+                            "Keys must match [A-Za-z_][A-Za-z0-9_]*. Values are stringified; nested objects/arrays are JSON-encoded. "
+                            "Scheduled cron runs supply no params, so scripts must apply sensible defaults when the env var is absent. "
+                            "Example: {\"start_date\": \"2026-05-01\", \"end_date\": \"2026-05-31\", \"tickers\": [\"AAPL\", \"MSFT\"]}"
+                        ),
+                        "additionalProperties": True
+                    }
                 },
                 "required": ["name"]
             }
@@ -1527,7 +1853,13 @@ async def list_tools():
         ),
         Tool(
             name="get_tap",
-            description="Get the full details of a single tap, including its configuration and the generated Python script content.",
+            description=(
+                "Get a tap's static definition: configuration, schedule, target pipeline, and the generated Python script content. "
+                "This is config-only — it returns the SAME data on every call and tells you NOTHING about run state. "
+                "Do NOT call this to check whether a run is finished or to poll for completion — repeatedly calling get_tap after run_tap is a bug, the response will never change to reflect ingestion progress. "
+                "For run status: call `get_pipeline_status(publisher_token=...)` (token comes from the run_tap response or from a get_tap_logs entry). "
+                "For run history: call `get_tap_logs`."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1596,7 +1928,13 @@ async def list_tools():
         ),
         Tool(
             name="update_tap",
-            description="Update an existing tap's configuration without regenerating the script. You can change the enabled state, CRON schedule, target pipeline, or description.",
+            description=(
+                "Update an existing tap's CONFIG without regenerating the script. Change the enabled state, CRON schedule, target pipeline, or description. "
+                "USE THIS to set or adjust a tap's schedule (`cron_expression`) whenever the user describes a recurrence (nightly, daily, every morning, market open, etc.). "
+                "The platform's scheduler runs the tap on the cadence you set — no external cron, Airflow DAG, or shell loop is needed (or wanted). See the SCHEDULING RULE in the server instructions. "
+                "VALIDATION RULE: if you're enabling a `cron_expression` on a tap whose script has NEVER been validated, call `test_tap` FIRST and confirm it succeeds. The cadence-change path is safe for taps that have already run successfully; it is not safe to set a cron on a never-tested script. "
+                "To change the SCRIPT itself, call `create_tap` again with the same `name` and the new `script` or `instruction` — create_tap upserts by name and replaces the existing script. There is no separate script-only update tool."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1610,7 +1948,7 @@ async def list_tools():
                     },
                     "cron_expression": {
                         "type": "string",
-                        "description": "New Quartz CRON expression (e.g., '0 0 * * * ?' for hourly)"
+                        "description": "Quartz CRON expression for recurring runs (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
                     },
                     "target_pipeline": {
                         "type": "string",
@@ -1659,7 +1997,15 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     result_text = ""
     error_msg = ""
     try:
-        result_text = _dispatch(name, arguments)
+        # _dispatch (and the _call/_upload helpers it invokes) uses synchronous
+        # `requests` with a 300s timeout. Running it directly in this async
+        # handler would block the asyncio event loop for the duration of every
+        # tool call — starving /activity, /sse, /mcp, and any concurrent
+        # tool calls from other sessions. asyncio.to_thread moves it to a
+        # worker thread so the event loop stays responsive. Contextvars
+        # (_session_api_key, _session_id) are copied automatically — see
+        # asyncio.to_thread docs.
+        result_text = await asyncio.to_thread(_dispatch, name, arguments)
         return [TextContent(type="text", text=result_text)]
     except Exception as e:
         status = "error"
@@ -2143,7 +2489,10 @@ def _dispatch(name: str, args: dict) -> str:
         return result
 
     elif name == "run_tap":
-        return _call("post", "/api/v1/tap/run", json={"name": args["name"], "mode": "run"})
+        payload = {"name": args["name"], "mode": "run"}
+        if "params" in args and args["params"]:
+            payload["params"] = args["params"]
+        return _call("post", "/api/v1/tap/run", json=payload)
 
     elif name == "get_pipeline_status":
         publisher = args.get("publisher_token")
