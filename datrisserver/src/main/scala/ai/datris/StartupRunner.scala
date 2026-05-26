@@ -124,6 +124,12 @@ class StartupRunner extends ApplicationRunner {
     @Value("${tapScriptTimeoutSeconds:300}")
     var tapScriptTimeoutSeconds: Int = _
 
+    // Tap script output ceiling. Guards the JVM from buffering massive script
+    // output and OOM'ing the server; the agent sees an actionable error and
+    // can retry with a smaller chunk (e.g., shorter date window).
+    @Value("${tapMaxOutputMB:100}")
+    var tapMaxOutputMB: Int = _
+
     @Value("${dateFormat:yyyy-MM-dd HH:mm:ss z}")
     var dateFormat: String = _
 
@@ -228,6 +234,7 @@ class StartupRunner extends ApplicationRunner {
             tapLedgerTableName = environment + "-tap-ledger",
             tapPromptTableName = environment + "-tap-prompt",
             tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
+            tapMaxOutputMB = tapMaxOutputMB,
             dateFormat = dateFormat,
             dateTimezone = dateTimezone,
             postgresDatabase = postgresDatabase,

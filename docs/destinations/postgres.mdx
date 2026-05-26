@@ -45,9 +45,20 @@ Set `truncateBeforeWrite` to `true` to issue a `TRUNCATE` statement on the targe
 
 All writes are wrapped in a database transaction by default (`useTransaction: true`). If any error occurs during the `COPY` operation, the transaction is rolled back and no partial data is committed. Set `useTransaction` to `false` to disable transactional writes.
 
-## Primary Key
+## Primary Key and Upsert
 
-Specify one or more columns in `keyFields` to define the primary key constraint on the target table. When `manageTableManually` is `false`, the auto-created table includes a `PRIMARY KEY` constraint on these columns.
+Specify one or more columns in `keyFields` to define the natural key for the target table. `keyFields` controls **two** behaviors:
+
+1. **Table shape.** When `manageTableManually` is `false`, the auto-created table includes a `PRIMARY KEY` constraint on these columns.
+2. **Load strategy.** When `keyFields` is set and `truncateBeforeWrite` is `false`, the loader switches from raw `COPY` to an upsert path: `COPY` into a session-local staging table, then `INSERT ... SELECT ... ON CONFLICT (keyFields) DO UPDATE SET <non_key_cols> = EXCLUDED.<non_key_cols>` into the target. Rows that match an existing primary-key tuple replace the existing row; rows that don't match are inserted. The same row can therefore be loaded across multiple runs without violating the unique constraint.
+
+**Retrofitting `keyFields` onto an existing table:** if you add `keyFields` to a pipeline that's been loading without it, the underlying table may not have a matching unique constraint yet. The loader auto-creates a unique index on the keyFields columns the next time it runs. If the existing data already contains rows that violate the proposed uniqueness, the index creation fails with a clear remediation message — deduplicate the existing rows, or set `truncateBeforeWrite: true` to wipe and reload from scratch.
+
+**Upsert semantics — on conflict, non-key columns are overwritten in full, including NULLs.** This matches MongoDB's `keyFields` behavior (true upsert, not a non-null merge). Sources that emit partial rows and don't want NULLs to clobber existing values should coalesce upstream before the pipeline.
+
+**When `keyFields` is empty,** the loader uses raw `COPY` directly into the target table. This is the fastest path; duplicate-key violations against any pre-existing unique constraint fail the load. Use this for append-only ingestion where duplicates aren't expected.
+
+**When `truncateBeforeWrite: true`,** the loader uses raw `COPY` regardless of `keyFields` because truncate already prevents duplicates. The upsert path would just be slower with no benefit.
 
 ## Schema Auto-Creation
 
@@ -90,7 +101,7 @@ Connection credentials are configured globally in `application.yaml` via `secret
 | `usePostgres`         | yes      | `false`  | Must be `true` to enable PostgreSQL destination  |
 | `manageTableManually` | no       | `false`  | If `true`, skip auto-creation of the table       |
 | `truncateBeforeWrite` | no       | `false`  | Truncate the table before loading                |
-| `keyFields`           | no       |          | Array of column names for the primary key        |
+| `keyFields`           | no       |          | Array of column names for the natural key. Sets a `PRIMARY KEY` constraint on auto-created tables AND switches the load strategy to upsert (`INSERT ... ON CONFLICT DO UPDATE`) when `truncateBeforeWrite` is `false`. See [Primary Key and Upsert](#primary-key-and-upsert). |
 | `useTransaction`      | no       | `true`   | Wrap the COPY in a database transaction          |
 | `options`             | no       |          | Array of additional COPY option strings          |
 

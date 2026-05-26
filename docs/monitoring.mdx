@@ -137,7 +137,26 @@ Job statuses are stored in MongoDB in the `{environment}-pipeline-status` collec
 
 ## Datris UI
 
-The [Datris UI](http://localhost:4200) provides a visual interface for managing your entire Datris platform. Five top-level tabs — **Assistant** (in-product agent), **MCP** (server status, tools, and a pop-out Agent Monitor for live AI agent activity), **Catalog** (taps and pipelines grouped by catalog), **Data** (ingestion uploads, job history, and semantic search across vector destinations), and **Configuration** (AI providers, secrets, API keys, users) — cover everything you can do through the API.
+The [Datris UI](http://localhost:4200) provides a visual interface for managing your entire Datris platform. Six top-level tabs — **Assistant** (in-product agent), **MCP** (server status, tools, and a pop-out Agent Monitor for live AI agent activity), **Catalog** (taps and pipelines grouped by catalog), **Search** (semantic search across vector destinations), **Ops** (ingestion activity dashboard, job history, file-upload ingestion), and **Configuration** (AI providers, secrets, API keys, users) — cover everything you can do through the API.
+
+## Ops Activity Dashboard
+
+The **Ops → Activity** tab is the at-a-glance health view for your platform. It pulls every tap run and pipeline job in a rolling window (24h / 7d / 30d, switchable) and surfaces what landed, what's broken, and what hasn't refreshed when it should.
+
+**KPI tiles** across the top show total runs, successes, failures, and items ingested for the window. A failing tile turns red and links to the Failures pane below.
+
+**Runs over time** and **Items ingested over time** are stacked time-series charts. Runs are colored by outcome (success green, warning amber, error red) so a spike of failures is immediately visible against the success baseline.
+
+**Failures pane** lists every tap or pipeline that had a failure in the window, deduped down to one row per unique item with an `(N attempts)` count next to the reason. Items whose most-recent run is now healthy are marked **✓ recovered** and dimmed at the bottom of the list. Each unrecovered row has a **Re-run** button:
+
+- Tap failure → Re-run triggers the tap directly.
+- Pipeline failure with an upstream tap → Re-run triggers that tap to retry the load. Direct-upload pipelines with no associated tap stay un-rerunnable from here (the user has to re-upload the source file).
+
+While a re-run is in flight, the button swaps to an amber spinner with "Running…" and disables itself; on completion the dashboard reloads and the row either disappears (full recovery) or shows the updated count.
+
+**Per-pipeline volume** is a 7-day rolling table at the bottom — each row a pipeline, with today's count, 7-day average, a sparkline, and a vs-avg percentage. Useful for spotting a pipeline that suddenly stopped ingesting or a backfill spike.
+
+**Tap status semantics:** `no_records` (script ran cleanly but returned zero records — legitimate for polling/incremental taps on a quiet day) is treated as healthy, not as a failure. It does not count in the Failures tile and does not appear in the Failures pane. See [Taps → Run Status Outcomes](/taps#run-status-outcomes).
 
 ## Agent Monitor
 
@@ -156,6 +175,10 @@ Each agent label uses the most descriptive identifier available, in this order:
 The activity log below the visualization lists every tool call as it happens — timestamped per the platform's configured [date format and timezone](/configuration-reference), with the calling agent, tool name, argument preview, record count, response size, status, and latency. Clicking a row expands it to reveal the full arguments and response bodies as pretty-printed JSON (capped at 2 KB per blob). A header toolbar lets you copy the full log (with per-row detail) to the clipboard or clear the on-screen history.
 
 Activity is held in an in-memory ring buffer on the MCP server (the most recent 200 calls) and served via the UI's internal `/api/v1/mcp/activity` proxy. It is not persisted — restarts clear the history.
+
+Session liveness is tracked from the MCP connection itself: agents appear when their SSE/HTTP session opens and disappear when it closes. A long-idle agent stays visible as long as the connection is open — useful when an agent is between tool calls and you don't want it disappearing from the Connections pane every few seconds.
+
+The Activity Log re-syncs when you return to the tab. Whether you navigated to another route, switched to a different browser tab, or stepped away for a long enough idle that the browser throttled the polling, the log refreshes to the current server state on return — no stale empty view to confuse the trail.
 
 ## CLI
 

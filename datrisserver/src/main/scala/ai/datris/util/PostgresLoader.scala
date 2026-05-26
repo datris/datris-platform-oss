@@ -13,7 +13,7 @@ import org.postgresql.core.BaseConnection
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.sql.{Connection, DriverManager, Statement}
-import java.util.Properties
+import java.util.{Properties, UUID}
 import scala.collection.JavaConverters._
 import scala.util.Try
 
@@ -74,7 +74,7 @@ class PostgresLoader(jobContext: JobContext) {
 
     private def createStagingFile(): String = {
         // Write the data to a temp location
-        val tempUrl = "s3://" + DatrisEnvironment.current.environment + "-temp/data/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + ".csv"
+        val tempUrl = "s3://" + DatrisEnvironment.current.environment + "-temp/data/" + UUID.randomUUID().toString + ".csv"
         val data = if (jobContext.data.rows != null && jobContext.data.rows.nonEmpty)
             projectRowsToDestSchema(jobContext.data.rows).mkString("\n")
         else if (jobContext.data.rawData != null)
@@ -144,6 +144,25 @@ class PostgresLoader(jobContext: JobContext) {
             statement.execute("truncate table \"" + dbName + "\".\"" + config.destination.database.schema + "\".\"" + config.destination.database.table + "\"")
         }
 
+        // Routing: when keyFields are configured AND truncateBeforeWrite is false,
+        // duplicates against the natural key are EXPECTED (incremental loads,
+        // refresh of recent partitions, backfills over already-loaded windows).
+        // Use the staging + INSERT…ON CONFLICT path so they upsert gracefully.
+        // Otherwise stay on raw COPY (faster: ~2-5x). Truncate already prevents
+        // duplicates, so the slower path adds no value when truncate is true.
+        val useUpsert = !config.destination.database.truncateBeforeWrite &&
+            config.destination.database.keyFields != null &&
+            !config.destination.database.keyFields.isEmpty
+
+        if (useUpsert) upsertInto(conn, statement, fileUrl)
+        else rawCopyInto(conn, statement, fileUrl)
+    }
+
+    /** Original load path: COPY straight into the target table. Fastest, used when
+     *  keyFields aren't set or truncateBeforeWrite=true. Duplicates against any
+     *  unique constraint fail the load — that's the contract for non-keyFields
+     *  pipelines, and that's what truncate prevents in the truncate case. */
+    private def rawCopyInto(conn: Connection, statement: Statement, fileUrl: String): Unit = {
         val sql = new StringBuilder()
         sql.append("COPY " + "\"" + config.destination.database.schema + "\"" + "." + "\"" + config.destination.database.table + "\"")
 
@@ -181,6 +200,173 @@ class PostgresLoader(jobContext: JobContext) {
         statusUtil.info("processing", "Rows inserted into table: " + rowsInserted.toString)
 
         inputStream.close()
+    }
+
+    /** Upsert path: COPY into a session-local staging table, then INSERT…SELECT
+     *  with ON CONFLICT (keyFields) DO UPDATE SET (non_key_cols) = EXCLUDED.(non_key_cols).
+     *  Used when keyFields are configured and truncateBeforeWrite is false —
+     *  the combination that, on raw COPY, fails hard on duplicate-key rows.
+     *
+     *  Semantics: an incoming row with a key match REPLACES the existing row
+     *  (full overwrite of non-key columns, including NULLs). Sources that need
+     *  "merge non-nulls only" must coalesce upstream. This matches Mongo's
+     *  upsertJSON semantics in MongoDBLoader. */
+    private def upsertInto(conn: Connection, statement: Statement, fileUrl: String): Unit = {
+        val schema = config.destination.database.schema
+        val tableName = config.destination.database.table
+        val targetRef = "\"" + dbName + "\".\"" + schema + "\".\"" + tableName + "\""
+
+        // Pre-flight: ON CONFLICT (cols) requires a matching unique constraint
+        // or unique index. Tables Datris created with keyFields already have a
+        // PRIMARY KEY matching them (see createTableIfUndefined), so this is a
+        // no-op for new pipelines. The work matters when a user retrofits
+        // keyFields onto an existing table that was first loaded without them.
+        ensureUniqueIndexForKeyFields(statement, schema, tableName)
+
+        // Staging table mirrors target structure (column list + types only — no
+        // indexes, no constraints, no defaults needed for upsert source). Named
+        // with a UUID-derived suffix so concurrent loads to the same pipeline
+        // (rare but possible) don't collide.
+        //
+        // NOTE: deliberately NOT using `ON COMMIT DROP`. With autocommit
+        // (useTransaction=false) every statement commits on its own, so
+        // ON COMMIT DROP fires immediately after CREATE — the table is gone
+        // before COPY runs and the COPY fails with "relation does not exist".
+        // Postgres TEMP tables are session-scoped regardless, so they get
+        // dropped when the connection closes. The explicit DROP IF EXISTS in
+        // the finally block below handles the in-flight cleanup for both
+        // autocommit and transaction-mode connections.
+        val stagingName = "datris_staging_" + java.util.UUID.randomUUID().toString.replace("-", "_")
+        val stagingRef = "\"" + stagingName + "\""
+
+        try {
+            statement.execute(s"CREATE TEMP TABLE $stagingRef (LIKE $targetRef INCLUDING DEFAULTS)")
+            statusUtil.info("processing", "Staging table created: " + stagingName)
+
+            val destFields = config.destination.schemaProperties.fields.asScala
+            val copyFields = if (jobContext.data.header != null && jobContext.data.header.nonEmpty) {
+                val headerSet = jobContext.data.header.map(_.toLowerCase).toSet
+                destFields.filter(f => headerSet.contains(f.name.toLowerCase))
+            } else destFields
+
+            val colList = copyFields.map(f => "\"" + f.name + "\"").mkString(", ")
+
+            // COPY into staging (identical SQL shape to the raw path, just a different target).
+            val copySql = new StringBuilder()
+            copySql.append(s"COPY $stagingRef ($colList) FROM STDIN (")
+            if (config.destination.database.options != null) {
+                copySql.append(config.destination.database.options.asScala.mkString(", "))
+            } else {
+                copySql.append("FORMAT csv")
+            }
+            copySql.append(")")
+
+            statusUtil.info("processing", "Copy command (staging): " + copySql.toString())
+            val inputStream = ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
+            val rowsCopied = try {
+                new CopyManager(conn.asInstanceOf[BaseConnection]).copyIn(copySql.mkString, inputStream)
+            } finally {
+                inputStream.close()
+            }
+            statusUtil.info("processing", "Rows copied to staging: " + rowsCopied)
+
+            // Upsert: INSERT...SELECT ON CONFLICT. If every column in the load
+            // is a key column there's nothing to update on conflict, so we
+            // emit DO NOTHING — preserves the existing row, doesn't error.
+            val keyFieldNames = config.destination.database.keyFields.asScala.toList
+            val keyFieldSet = keyFieldNames.map(_.toLowerCase).toSet
+            val copyFieldNames = copyFields.map(_.name).toList
+            val nonKeyFields = copyFieldNames.filterNot(f => keyFieldSet.contains(f.toLowerCase))
+            val keyList = keyFieldNames.map(k => "\"" + k + "\"").mkString(", ")
+
+            val upsertSql = if (nonKeyFields.isEmpty) {
+                s"INSERT INTO $targetRef ($colList) SELECT $colList FROM $stagingRef ON CONFLICT ($keyList) DO NOTHING"
+            } else {
+                val setClause = nonKeyFields.map(f => "\"" + f + "\" = EXCLUDED.\"" + f + "\"").mkString(", ")
+                s"INSERT INTO $targetRef ($colList) SELECT $colList FROM $stagingRef ON CONFLICT ($keyList) DO UPDATE SET $setClause"
+            }
+
+            statusUtil.info("processing", "Upsert command: " + upsertSql)
+            val upserted = statement.executeUpdate(upsertSql)
+            statusUtil.info("processing", "Rows upserted into target: " + upserted)
+        } finally {
+            // In-flight cleanup so the staging table doesn't accumulate on
+            // long-lived connections. Final safety net: TEMP tables are
+            // session-scoped and Postgres drops them when the connection closes.
+            // Wrapped in Try so a cleanup failure can't mask the real error
+            // from the load itself.
+            Try(statement.execute(s"DROP TABLE IF EXISTS $stagingRef"))
+        }
+    }
+
+    /** Ensure there's a unique constraint or unique index on the target table
+     *  whose columns exactly match keyFields. ON CONFLICT (cols) needs this to
+     *  exist or it raises "no unique or exclusion constraint matching" at load
+     *  time — which would feel like an obscure error to a user who just added
+     *  keyFields to their config.
+     *
+     *  No-op if a matching constraint/index already exists. When we need to add
+     *  one and existing data has duplicates against the keyFields combination,
+     *  CREATE UNIQUE INDEX fails — we re-throw with a clear remediation message
+     *  instead of letting the raw Postgres error bubble up. */
+    private def ensureUniqueIndexForKeyFields(statement: Statement, schema: String, tableName: String): Unit = {
+        val keyFieldNames = config.destination.database.keyFields.asScala.toList
+        val expectedCols = keyFieldNames.map(_.toLowerCase).sorted
+
+        // Scan pg_constraint AND pg_indexes for any unique grouping that matches.
+        // pg_constraint covers PRIMARY KEY + UNIQUE constraints; pg_indexes
+        // covers bare unique indexes that weren't promoted to constraints.
+        val findConstraintSql =
+            s"""SELECT array_agg(a.attname::text ORDER BY a.attname) as cols
+               |FROM pg_constraint c
+               |JOIN pg_class t ON c.conrelid = t.oid
+               |JOIN pg_namespace n ON t.relnamespace = n.oid
+               |JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(c.conkey)
+               |WHERE n.nspname = '$schema'
+               |  AND t.relname = '$tableName'
+               |  AND c.contype IN ('p', 'u')
+               |GROUP BY c.conname""".stripMargin
+
+        val rs = statement.executeQuery(findConstraintSql)
+        var found = false
+        while (rs.next() && !found) {
+            val arr = rs.getArray(1)
+            if (arr != null) {
+                val cols = arr.getArray.asInstanceOf[Array[AnyRef]].map(_.toString.toLowerCase).toList.sorted
+                if (cols == expectedCols) found = true
+            }
+        }
+        rs.close()
+
+        if (found) return
+
+        // No matching constraint. Add a unique index. Using a unique INDEX
+        // rather than a CONSTRAINT because Postgres' ON CONFLICT works against
+        // either, and a bare index is slightly easier to manage if the user
+        // later changes keyFields (index is droppable without disturbing
+        // anything else).
+        val safeColPart = keyFieldNames.map(_.toLowerCase.replaceAll("[^a-z0-9_]", "_")).mkString("_")
+        val indexName = ("datris_uniq_" + tableName + "_" + safeColPart).take(63)  // Postgres identifier limit
+        val cols = keyFieldNames.map(k => "\"" + k + "\"").mkString(", ")
+        val createIdx = s"""CREATE UNIQUE INDEX IF NOT EXISTS "$indexName" ON "$dbName"."$schema"."$tableName" ($cols)"""
+        statusUtil.info("processing", "Adding unique index to enable keyFields upsert: " + createIdx)
+        try {
+            statement.execute(createIdx)
+        } catch {
+            case e: org.postgresql.util.PSQLException =>
+                // Most likely "could not create unique index — Key (...) is duplicated."
+                // The user retrofitted keyFields onto a table that already has duplicate
+                // rows against those keys. We can't silently dedupe (lossy); surface
+                // a clear error with remediation hints.
+                throw new DatrisException(
+                    "Cannot enable keyFields upsert on '" + tableName + "': the existing table " +
+                    "already contains rows that violate the proposed unique key (" +
+                    keyFieldNames.mkString(", ") + "). Resolve before retrying: " +
+                    "(a) deduplicate the existing rows manually, " +
+                    "(b) set truncateBeforeWrite=true to wipe and reload, " +
+                    "or (c) choose a different keyFields combination that's actually unique. " +
+                    "Underlying Postgres error: " + e.getMessage)
+        }
     }
 
     private def createTableIfUndefined(statement: Statement, tableName: String): Unit = {

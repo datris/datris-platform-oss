@@ -174,6 +174,7 @@ case class DatrisEnvironment(
                                   tapLedgerTableName: String = null,
                                   tapPromptTableName: String = null,
                                   tapScriptTimeoutSeconds: Int = 300,
+                                  tapMaxOutputMB: Int = 100,
                                   dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
                                   dateTimezone: String = "UTC",
                                   postgresDatabase: String = "datris",

@@ -41,9 +41,12 @@
 }
 
 /* Split the remaining vertical space between the two cards. Viz card takes
-   ~38% of remaining (caps itself naturally), log card absorbs the rest. */
+   ~38% of remaining (caps itself naturally), log card absorbs the rest.
+   min-height floor prevents the SVG from collapsing to a sliver on shorter
+   viewports or when the activity log content pushes for more space. */
 .container .viz-card {
   flex: 0 1 38%;
+  min-height: 280px;
 }
 
 .container .viz-wrapper {
@@ -98,9 +101,12 @@
   min-height: 0;
 }
 
-/* Connections pane: takes ~45% of remaining height, viz svg fills it. */
+/* Connections pane: takes ~45% of remaining height, viz svg fills it.
+   Same min-height floor as embedded mode — never let the SVG collapse below
+   a usable size if the popout window is resized short. */
 .popout-mode .viz-card {
   flex: 0 1 45%;
+  min-height: 280px;
 }
 
 .popout-mode .viz-wrapper {

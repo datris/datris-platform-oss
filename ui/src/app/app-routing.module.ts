@@ -13,7 +13,8 @@ import { DataCatalogComponent } from './data-catalog/data-catalog.component';
 import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
 import { AssistantComponent } from './assistant/assistant.component';
 import { McpShellComponent } from './mcp-shell/mcp-shell.component';
-import { DataShellComponent } from './data-shell/data-shell.component';
+import { OpsShellComponent } from './ops-shell/ops-shell.component';
+import { ActivityComponent } from './activity/activity.component';
 import { LoginComponent } from './login/login.component';
 import { authGuard } from './auth.guard';
 
@@ -34,8 +35,10 @@ const routes: Routes = [
   { path: 'pipelines/create', redirectTo: 'catalog/pipelines/create', pathMatch: 'full' },
   { path: 'taps', redirectTo: 'catalog', pathMatch: 'full' },
   { path: 'taps/create', redirectTo: 'catalog/taps/create', pathMatch: 'full' },
-  { path: 'ingestion', redirectTo: 'data/ingestion', pathMatch: 'full' },
-  { path: 'search', redirectTo: 'data/search', pathMatch: 'full' },
+  { path: 'ingestion', redirectTo: 'ops/ingestion', pathMatch: 'full' },
+  { path: 'data', redirectTo: 'ops', pathMatch: 'full' },
+  { path: 'data/ingestion', redirectTo: 'ops/ingestion', pathMatch: 'full' },
+  { path: 'data/search', redirectTo: 'search', pathMatch: 'full' },
   { path: 'getting-started', redirectTo: 'assistant', pathMatch: 'full' },
 
   // Assistant — top-level, no shell
@@ -59,18 +62,21 @@ const routes: Routes = [
   { path: 'catalog/taps/create', component: TapCreateComponent, canActivate: [authGuard] },
   { path: 'catalog/pipelines/create', component: PipelineCreateComponent, canActivate: [authGuard] },
 
-  // Data shell — Ingestion / Search sub-tabs. The shell component restores the
-  // last-active sub-tab from localStorage when the user lands at bare `/data`,
+  // Ops shell — Activity / Ingestion sub-tabs. The shell component restores the
+  // last-active sub-tab from localStorage when the user lands at bare `/ops`,
   // so no static default redirect is needed here.
   {
-    path: 'data',
-    component: DataShellComponent,
+    path: 'ops',
+    component: OpsShellComponent,
     canActivate: [authGuard],
     children: [
-      { path: 'ingestion', component: PipelineStatusComponent },
-      { path: 'search', component: SearchComponent }
+      { path: 'activity', component: ActivityComponent },
+      { path: 'ingestion', component: PipelineStatusComponent }
     ]
   },
+
+  // Search — promoted to top-level (was previously /data/search)
+  { path: 'search', component: SearchComponent, canActivate: [authGuard] },
 
   // Detail routes — URLs unchanged, reached from inside Catalog via deep links.
   { path: 'pipelines/:name/edit', component: PipelineCreateComponent, canActivate: [authGuard] },

@@ -12,7 +12,8 @@
     <a class="tab" routerLink="/assistant" routerLinkActive="tab-active">Assistant</a>
     <a class="tab" routerLink="/mcp" routerLinkActive="tab-active">MCP</a>
     <a class="tab" routerLink="/catalog" routerLinkActive="tab-active">Catalog</a>
-    <a class="tab" routerLink="/data" routerLinkActive="tab-active">Data</a>
+    <a class="tab" routerLink="/search" routerLinkActive="tab-active">Search</a>
+    <a class="tab" routerLink="/ops" routerLinkActive="tab-active">Ops</a>
     <a class="tab" routerLink="/configuration" routerLinkActive="tab-active" *ngIf="!useUserAuth || isAdmin()">Configuration</a>
     <div class="help-menu">
       <button class="tab help-trigger" type="button" (click)="toggleHelpMenu($event)" [class.help-trigger-open]="helpMenuOpen">

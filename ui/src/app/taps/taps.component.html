@@ -107,8 +107,9 @@
             <span class="embed-last-run-time" *ngIf="tap.lastRunTime">{{ formatTime(tap.lastRunTime) }}</span>
             <span class="embed-status embed-status-success" *ngIf="tap.lastRunStatus === 'success'">success</span>
             <span class="embed-status embed-status-error" *ngIf="tap.lastRunStatus === 'error'">error</span>
+            <span class="embed-status embed-status-no-records" *ngIf="tap.lastRunStatus === 'no_records'">no records</span>
             <span class="embed-status embed-status-never" *ngIf="!tap.lastRunStatus">never</span>
-            <span class="embed-status embed-status-never" *ngIf="tap.lastRunStatus && tap.lastRunStatus !== 'success' && tap.lastRunStatus !== 'error'">{{ tap.lastRunStatus }}</span>
+            <span class="embed-status embed-status-never" *ngIf="tap.lastRunStatus && tap.lastRunStatus !== 'success' && tap.lastRunStatus !== 'error' && tap.lastRunStatus !== 'no_records'">{{ tap.lastRunStatus }}</span>
             <span class="embed-records" *ngIf="tap.lastRunRecordCount">{{ tap.lastRunRecordCount }} records</span>
           </td>
           <td class="embed-actions-cell">

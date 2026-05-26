@@ -110,6 +110,50 @@ class TapAPIController {
         }
     }
 
+    @GetMapping(path = Array("/tap/logs/all"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getAllTapLogs(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                      @RequestParam(required = false) since: java.lang.Long,
+                      @RequestParam(required = false) limit: java.lang.Integer): ResponseEntity[String] = {
+        try {
+            APIKeyValidator.validate(apiKey)
+            // Default: last 30 days, capped at 2000 rows. Both bounds protect the
+            // dashboard from a runaway scan on a very chatty tenant.
+            val sinceMs: Long = if (since != null) since.longValue() else System.currentTimeMillis() - 30L * 86400000L
+            val maxItems: Int = {
+                val raw = if (limit != null) limit.intValue() else 2000
+                if (raw <= 0) 2000 else math.min(raw, 5000)
+            }
+            logger.info("API endpoint GET /tap/logs/all called since=" + sinceMs + " limit=" + maxItems)
+
+            val rows = NoSQLDbUtil.getItemsSinceAsJSON(
+                DatrisEnvironment.current.tapLogTableName, "created_at", sinceMs, maxItems)
+
+            // Mongo rows have shape {"key": ..., "value": {...TapRunLog...}, "created_at": ...}.
+            // Unwrap to just the embedded TapRunLog values so the response is a flat
+            // array of run logs the UI can iterate. No pipeline-rollup enrichment
+            // here — that's only needed by the per-tap detail view; this endpoint
+            // exists to feed the Ops activity dashboard's tile/chart aggregation.
+            val parser = new JsonParser()
+            val out = new com.google.gson.JsonArray()
+            rows.foreach { json =>
+                try {
+                    val el = parser.parse(json)
+                    if (el.isJsonObject) {
+                        val obj = el.getAsJsonObject
+                        if (obj.has("value")) out.add(obj.get("value"))
+                    }
+                } catch {
+                    case _: Exception => () // skip malformed row, don't fail the whole request
+                }
+            }
+            new ResponseEntity[String](out.toString, HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @GetMapping(path = Array("/tap/logs"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getTapLogs(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
                    @RequestParam name: String): ResponseEntity[String] = {
@@ -931,10 +975,10 @@ class TapAPIController {
 
     @PostMapping(path = Array("/tap/run"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def runTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-               @RequestBody body: java.util.Map[String, String],
+               @RequestBody body: java.util.Map[String, Any],
                request: HttpServletRequest): ResponseEntity[String] = {
         try {
-            val name = body.get("name")
+            val name = Option(body.get("name")).map(_.toString).orNull
             logger.info("API endpoint POST /tap/run called for tap: " + name)
             APIKeyValidator.validate(apiKey)
 
@@ -950,7 +994,27 @@ class TapAPIController {
             // is matched against the caller's label.
             CapabilityCheck.assertOwnerScope(request, "tap", "run", tapConfig.createdByKeyLabel)
 
-            val mode = Option(body.get("mode")).map(_.toLowerCase).getOrElse("test")
+            val mode = Option(body.get("mode")).map(_.toString.toLowerCase).getOrElse("test")
+
+            // Optional per-run params. Stringify each value so the script sees
+            // env vars regardless of whether the agent sent {start_date: "2026-05-01"}
+            // or {limit: 1000}. Nested objects/arrays get JSON-encoded so a script
+            // that wants structured params can json.loads() them back.
+            val params: Map[String, String] = Option(body.get("params")) match {
+                case Some(m: java.util.Map[_, _]) =>
+                    val gson = new Gson
+                    m.asInstanceOf[java.util.Map[String, Any]].asScala.toMap.map { case (k, v) =>
+                        val sv = v match {
+                            case null => ""
+                            case s: String => s
+                            case n: java.lang.Number => n.toString
+                            case b: java.lang.Boolean => b.toString
+                            case other => gson.toJson(other)
+                        }
+                        k -> sv
+                    }
+                case _ => Map.empty[String, String]
+            }
 
             // Debounce push runs to suppress accidental duplicates (parallel tool calls,
             // double-clicks, transport retries). mode=test is read-only, no need to debounce.
@@ -980,7 +1044,7 @@ class TapAPIController {
             }
             else {
 
-            val result = TapRunner.run(tapConfig, mode = mode)
+            val result = TapRunner.run(tapConfig, mode = mode, params = params)
 
             // Save test run status when not pushing to pipeline
             if (mode != "run") {

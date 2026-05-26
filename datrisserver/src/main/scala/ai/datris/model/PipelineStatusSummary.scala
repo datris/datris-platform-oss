@@ -15,7 +15,9 @@ case class PipelineStatusSummary(
                                    startTime: String,
                                    endTime: String,
                                    totalTime: String,
-                                   status: String
+                                   status: String,
+                                   recordCount: Int = 0,
+                                   dataType: String = null
                        )
 
 case class PipelineStatusSummaryTable(

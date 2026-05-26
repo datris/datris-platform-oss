@@ -184,12 +184,12 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'update_tap',
-      description: 'Update a tap\'s config without regenerating the script.',
+      description: 'Update a tap\'s CONFIG (schedule, target pipeline, enabled flag, description) without touching the script. To change the SCRIPT itself, call create_tap again with the same name — it upserts and replaces the script.',
       category: 'Taps',
       parameters: [
         { name: 'name', type: 'string', description: 'Name of the tap to update', required: true, inputType: 'text' },
         { name: 'enabled', type: 'boolean', description: 'Enable or disable the tap', required: false, inputType: 'text' },
-        { name: 'cron_expression', type: 'string', description: 'New CRON schedule', required: false, inputType: 'text' },
+        { name: 'cron_expression', type: 'string', description: 'New CRON schedule (Quartz syntax: seconds minutes hours dom month dow). Examples: "0 0 * * * ?" hourly, "0 30 5 ? * MON-FRI" weekdays 5:30am.', required: false, inputType: 'text' },
         { name: 'target_pipeline', type: 'string', description: 'New target pipeline', required: false, inputType: 'text' },
         { name: 'description', type: 'string', description: 'New description', required: false, inputType: 'text' }
       ],

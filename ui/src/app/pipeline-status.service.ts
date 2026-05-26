@@ -10,6 +10,8 @@ export interface PipelineStatus {
   endTime: string;
   totalTime: string;
   status: string;
+  recordCount?: number;
+  dataType?: string;
 }
 
 export interface PipelineStatusDetail {

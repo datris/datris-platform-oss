@@ -130,6 +130,16 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
             .toList
     }
 
+    override def getItemsSinceAsJSON(tableName: String, sortField: String, sinceEpochMs: Long, maxItems: Int): List[String] = {
+        val collection = database.getCollection(tableName)
+        collection.find(Filters.gte(sortField, sinceEpochMs: java.lang.Long))
+            .sort(new Document(sortField, -1))
+            .limit(maxItems)
+            .asScala
+            .map(doc => doc.toJson(jsonSettings))
+            .toList
+    }
+
     override def insertJSON(tableName: String, json: String): Unit = {
         val collection = database.getCollection(tableName)
         val doc = Document.parse(json)

@@ -490,6 +490,7 @@ export class TapsComponent implements OnInit, OnDestroy {
     if (status === 'success') return 'status-success';
     if (status === 'failure' || status === 'error' || status === 'timed_out') return 'status-failure';
     if (status === 'warning') return 'status-warning';
+    if (status === 'no_records') return 'status-no-records';
     if (status === 'running' || status === 'processing') return 'status-running';
     return 'status-none';
   }

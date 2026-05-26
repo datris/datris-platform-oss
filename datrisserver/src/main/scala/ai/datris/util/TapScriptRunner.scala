@@ -76,7 +76,12 @@ object TapScriptRunner {
           |print(json.dumps(envelope))
           |""".stripMargin
 
-    def run(tapConfig: TapConfig, testLimit: Int = 0): TapScriptResult = {
+    // Per-run params are validated against this pattern so they cleanly map onto
+    // env var names (DATRIS_TAP_PARAM_<key>). Reject anything else so we never
+    // silently drop a param or generate an invalid env var.
+    private val ParamKeyPattern = "^[A-Za-z_][A-Za-z0-9_]*$".r
+
+    def run(tapConfig: TapConfig, testLimit: Int = 0, params: Map[String, String] = Map.empty): TapScriptResult = {
         logger.info("TapScriptRunner: executing tap: " + tapConfig.name)
 
         // Step 1: Install extra packages if specified
@@ -127,7 +132,22 @@ object TapScriptRunner {
             // fetch() reads everything.
             val testLimitEnvVars: Seq[(String, String)] =
                 if (testLimit > 0) Seq("DATRIS_TAP_TEST_LIMIT" -> testLimit.toString) else Seq.empty
-            val allEnvVars = platformEnvVars ++ testLimitEnvVars ++ secretEnvVars
+
+            // Per-run params from run_tap(params={...}). Surfaced to the script
+            // as DATRIS_TAP_PARAM_<key> env vars — agent can drive parameterized
+            // runs (date range, ticker list, page cursor) without rewriting the
+            // tap secret on every call. Scheduled cron runs supply no params, so
+            // scripts must apply sensible defaults when the env var is absent.
+            val paramEnvVars: Seq[(String, String)] = params.toSeq.flatMap { case (k, v) =>
+                val key = if (k == null) "" else k.trim
+                if (key.isEmpty) None
+                else if (ParamKeyPattern.findFirstIn(key).isEmpty)
+                    throw new DatrisException(
+                        "Invalid tap param key '" + key + "'. Keys must match [A-Za-z_][A-Za-z0-9_]* " +
+                        "so they map cleanly onto env var names. Got: " + key)
+                else Some("DATRIS_TAP_PARAM_" + key -> (if (v == null) "" else v))
+            }
+            val allEnvVars = platformEnvVars ++ testLimitEnvVars ++ paramEnvVars ++ secretEnvVars
 
             // Step 5: Execute the wrapper
             val secretValues = secretEnvVars.map(_._2)
@@ -140,6 +160,24 @@ object TapScriptRunner {
             val logs = if (rawLogs.nonEmpty) maskSecrets(rawLogs, secretValues) else rawLogs
             logger.info("TapScriptRunner: script executed, output length: " + rawOutput.length + " chars")
             if (logs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + logs)
+
+            // Guard the JVM from buffering huge tap outputs. The runner holds the
+            // entire script stdout as a String, then JSON-parses it into a Map —
+            // both copies live in heap simultaneously. A 200MB script output can
+            // OOM-kill the server before the agent finds out the chunk was too big.
+            // Fail fast with an actionable message the agent can act on.
+            val maxBytes: Long = DatrisEnvironment.current.tapMaxOutputMB.toLong * 1024L * 1024L
+            if (rawOutput.length.toLong > maxBytes) {
+                val actualMB = rawOutput.length / (1024 * 1024)
+                throw new DatrisException(
+                    "Tap script output exceeded the " + DatrisEnvironment.current.tapMaxOutputMB +
+                    " MB limit (got ~" + actualMB + " MB). The whole batch is buffered in memory before " +
+                    "loading to the pipeline, so very large fetches risk OOM-ing the server. " +
+                    "Reduce the source range — e.g., a shorter date window, smaller page size, " +
+                    "or per-symbol/per-day chunks — and call run_tap again. " +
+                    "Multiple smaller runs all land in the same destination pipeline."
+                )
+            }
 
             // Step 5: Parse envelope to extract data type and records
             val gson = new com.google.gson.Gson

@@ -6,8 +6,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 */
 
 import com.google.common.base.Throwables
-import com.google.gson.Gson
-import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext}
+import com.google.gson.{Gson, JsonElement, JsonParser}
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, Data}
 import ai.datris.model.JobContext
 import ai.datris.util._
 import org.slf4j.{Logger, LoggerFactory}
@@ -30,6 +30,23 @@ object JobRunner {
     }
 
     private val destinationTimeoutMinutes: Int = 10
+
+    /** Derive a per-job record count and data type from the job's Data shape.
+     *  CSV/delimited → row count, "record". Unstructured (rawBytes) → 1, "document".
+     *  JSON/XML → array length if rawData parses as a JSON array, else 1, "record". */
+    private[controller] def deriveCountAndType(data: Data): (Int, String) = {
+        if (data == null) return (0, null)
+        if (data.rows != null && data.rows.nonEmpty) return (data.rows.size, "record")
+        if (data.rawBytes != null) return (1, "document")
+        if (data.rawData != null && data.rawData.nonEmpty) {
+            try {
+                val el: JsonElement = JsonParser.parseString(data.rawData)
+                if (el != null && el.isJsonArray) return (el.getAsJsonArray.size(), "record")
+            } catch { case _: Throwable => () }
+            return (1, "record")
+        }
+        (0, null)
+    }
 }
 
 class JobRunner(jobContext: JobContext) extends Runnable {
@@ -53,6 +70,14 @@ class JobRunner(jobContext: JobContext) extends Runnable {
         val tenantEnv = jobContext.tenantEnvironment
 
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
+
+        // Stamp the per-job record count and data type onto the status summary so
+        // ops dashboards can sum items across pipeline jobs (and not have to
+        // back-derive from tap logs, which omits direct uploads).
+        val (recordCount, dataType) = JobRunner.deriveCountAndType(jobContext.data)
+        statusUtil.setRecordCount(recordCount)
+        statusUtil.setDataType(dataType)
+
         try {
             statusUtil.info("begin", "Process started")
 

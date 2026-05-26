@@ -14,6 +14,7 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 | Resource URI | Description |
 |------|-------------|
 | `datris://pipeline-config-reference` | Complete reference for building pipeline configurations — all source types, data quality rules, transformations, and destination types with JSON examples |
+| `datris://tap-workflow-reference` | Canonical reference for tap work: creation (instruction vs. script), per-run `params` with the script-side env-var contract, the scheduling rule with a Quartz CRON cookbook, the test-before-run validation discipline, the params-vs-secrets table, run flow + `persistedReason` handling, document-tap ledger, and outcome verification via `publisherToken` + `get_tap_logs`. Re-readable on demand mid-session whenever an agent needs to verify its mental model. |
 
 ## Available Tools
 
@@ -86,9 +87,9 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | `create_tap` | Create a tap from an instruction (AI generates script), a user-provided script, or config only. Optionally set target pipeline, CRON schedule, secret name, and `tap_type` (`structured` or `document`) |
 | `list_taps` | List all taps with status, `tapType`, target pipeline, schedule, and last run info |
 | `get_tap` | Get full details of a single tap including its Python script source |
-| `run_tap` | Execute a tap and push to the target pipeline. Response carries `persisted` + `persistedReason`, `recordCount`, `publisherToken`, and `pipelineTokens` for watching async loads. Records themselves are not returned — use `test_tap` to preview what a script produces |
-| `test_tap` | Test-run a tap without pushing data to the pipeline |
-| `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
+| `run_tap` | Execute a tap and push to the target pipeline. Accepts an optional `params` object — per-call values (date windows, ticker lists, page cursors, etc.) get injected as `DATRIS_TAP_PARAM_<key>` env vars the script can read for that one run only. Response carries `persisted` + `persistedReason` (`success`, `no_records`, `run_error`, `no_target_pipeline`, `test_mode`, `debounced`), `recordCount`, `publisherToken`, and `pipelineTokens` for watching async loads. Records themselves are not returned — use `test_tap` to preview what a script produces. Output exceeding `tapMaxOutputMB` (default 100MB) fails fast with an actionable error |
+| `test_tap` | Test-run a tap without pushing data to the pipeline. **Call this before the first `run_tap` of any newly-created or just-updated script**, and before setting a `cron_expression` on a never-validated script — setting a cron on an untested script ships a guaranteed-bad nightly run |
+| `update_tap` | Update a tap's CONFIG (enabled, schedule, pipeline, description) without touching the script. To replace the SCRIPT itself, call `create_tap` again with the same name and a new `script` or `instruction` — `create_tap` upserts by name |
 | `get_pipeline_status` | Watch ingestion progress after `run_tap`. Pass the response's `publisherToken` (covers every job the run submitted — structured = 1, document = N) or a single `pipelineToken`. Returns a `rollup` (with `allDone`, `status`, per-job `lastError`) plus the raw `events`; poll until `rollup.allDone` is `true` |
 | `wait_seconds` | Sleep 1–120 seconds, then return. Use to pace polling of long-running pipeline work without burning tool calls — typical pattern is `run_tap` → poll → `wait_seconds(5)` → poll → `wait_seconds(10)` → poll → ... with exponential backoff capped at 60s (120s only if progress is genuinely glacial). Reset to a short wait whenever a poll shows new jobs flipped to a terminal state |
 | `get_tap_logs` | Get run history for a tap (last 50 entries with status, duration, errors, and `publisherToken` for each run that submitted records). Pivot from a scheduled-run entry to `get_pipeline_status(publisher_token=...)` to confirm the run actually landed in the destination |
@@ -164,7 +165,9 @@ The platform's [capability framework](/api-keys#the-capability-model) enforces w
 <Note>
   The platform's canonical workflow is delivered to every connected agent through the MCP `instructions` field — agents don't need to memorize it. These examples show the same flow applied to common tasks.
 
-  Core rules the agent receives on connect: **check what exists before creating** (`list_pipelines`, `list_taps`); **keep pipeline configs simple** (source + destination only — never pass `profile_data` output into a pipeline config); **after `run_tap`, read `persisted` and `persistedReason` before doing anything else**; and **verify real completion via `get_pipeline_status(publisher_token=...)`, not by the response body**.
+  Core rules the agent receives on connect: **check what exists before creating** (`list_pipelines`, `list_taps`); **keep pipeline configs simple** (source + destination only — never pass `profile_data` output into a pipeline config); **after `run_tap`, read `persisted` and `persistedReason` before doing anything else**; **verify real completion via `get_pipeline_status(publisher_token=...)`, not by the response body**; **set `cron_expression` on the tap when the user describes a recurrence — never propose external schedulers or shell snippets**; **call `test_tap` before `run_tap` and before setting a cron on any newly-created or newly-updated script**; and **only narrate work that actually completed in the current turn** — if the tool calls didn't fire, say so honestly rather than confabulating success.
+
+  For long-form tap workflow guidance — params, scheduling, validation, error handling, the Quartz CRON cookbook — agents can re-read the `datris://tap-workflow-reference` resource on demand at any point in a session.
 </Note>
 
 ### Ingest a CSV file directly

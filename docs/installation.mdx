@@ -180,6 +180,43 @@ The pipeline server reads configuration from `application.yaml`, mounted from `d
 
 See [Configuration Reference](/configuration-reference) for the full list of properties.
 
+## JVM Heap Sizing
+
+The `datris` service runs a Spring Boot JVM. Its heap is governed by the `JAVA_OPTS` environment variable, passed in via `docker-compose.yml`. The default is sized to fit comfortably on an 8 GB host alongside the bundled TEI embedder, Postgres, MongoDB, MinIO, ActiveMQ, Vault, the UI, and the MCP server:
+
+```
+JAVA_OPTS=-Xms512m -Xmx2g   # default
+```
+
+Override in your `.env` file on larger hosts. Suggested sizings:
+
+| Host RAM | Suggested `-Xmx` |
+|---|---|
+| 16 GB | `-Xmx4g` |
+| 24 GB | `-Xmx8g` |
+| 32 GB+ | `-Xmx12g` |
+
+Example for a 24 GB host:
+
+```bash
+# .env
+JAVA_OPTS=-Xms1g -Xmx8g
+```
+
+Then restart the service:
+
+```bash
+docker compose up -d datris
+```
+
+**Docker Desktop note (macOS / Windows):** Docker Desktop runs containers inside a Linux VM with its own RAM allocation, which may be much lower than your host's total RAM. Check the VM ceiling with:
+
+```bash
+docker info --format '{{.MemTotal}}' | awk '{printf "%.1f GB\n", $1/1024/1024/1024}'
+```
+
+If the VM is capped below what you need, raise it in Docker Desktop → Settings → Resources → Memory. The JVM `-Xmx` must be smaller than the Docker VM's allocation, otherwise the kernel inside the VM will OOM-kill containers under load.
+
 ## Building from Source
 
 For development or contributing:

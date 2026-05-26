@@ -23,9 +23,10 @@ object TapRunner {
      *
      * @param tapConfig the tap to run
      * @param mode "run" persists to the pipeline and updates tap status; "test" just executes and returns without persisting
+     * @param params per-run params injected as DATRIS_TAP_PARAM_<key> env vars (date range, ticker list, etc.)
      * @return TapScriptResult with fetched records
      */
-    def run(tapConfig: TapConfig, mode: String = "run", testLimit: Int = 0): TapScriptResult = {
+    def run(tapConfig: TapConfig, mode: String = "run", testLimit: Int = 0, params: Map[String, String] = Map.empty): TapScriptResult = {
         val push = mode == "run"
         val publisherToken = if (push) UUID.randomUUID().toString else null
         val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
@@ -40,23 +41,44 @@ object TapRunner {
         }
 
         try {
-            val result = TapScriptRunner.run(tapConfig, testLimit)
+            val result = TapScriptRunner.run(tapConfig, testLimit, params)
             val durationMs = System.currentTimeMillis() - startMs
 
-            if (result.error != null || result.recordCount == 0) {
-                val errorMsg = if (result.error != null) result.error
-                    else "Script returned 0 records"
+            if (result.error != null) {
+                // Script errored. This is a real failure — write it as such.
                 if (push) {
                     val failedConfig = tapConfig.copy(
                         lastRunStatus = "failure",
                         lastRunTime = now,
                         lastRunRecordCount = 0,
-                        lastRunError = errorMsg
+                        lastRunError = result.error
                     )
                     TapConfigIO.write(failedConfig)
                 }
-                writeRunLog(tapConfig.name, now, "failure", result.recordCount, result.dataType, result.logs, errorMsg, mode, durationMs)
-                return result.copy(error = errorMsg)
+                writeRunLog(tapConfig.name, now, "failure", result.recordCount, result.dataType, result.logs, result.error, mode, durationMs)
+                return result
+            }
+
+            if (result.recordCount == 0) {
+                // Script ran cleanly but returned nothing. This is a legitimate
+                // outcome for polling taps (no new data since last run), incremental
+                // taps that have caught up, weekend/holiday market data, filters
+                // that found nothing today. Treating it as a failure inflates the
+                // Failures tile in Ops Activity, fires bogus "recovered" badges,
+                // and trains agents to interpret "no new data" as "platform broken."
+                // Record it as `no_records` instead — distinct status, not counted
+                // as a failure, agent-visible via get_tap_logs.
+                if (push) {
+                    val noRecordsConfig = tapConfig.copy(
+                        lastRunStatus = "no_records",
+                        lastRunTime = now,
+                        lastRunRecordCount = 0,
+                        lastRunError = null
+                    )
+                    TapConfigIO.write(noRecordsConfig)
+                }
+                writeRunLog(tapConfig.name, now, "no_records", 0, result.dataType, result.logs, null, mode, durationMs)
+                return result
             }
 
             // Push to pipeline if requested, records exist, and a target pipeline is configured
@@ -106,7 +128,13 @@ object TapRunner {
             val log = TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, mode, durationMs, publisherToken)
             val gson = new Gson
             val key = tapName + "|" + runTime
-            NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", gson.toJson(log))
+            // Stamp top-level created_at so the Ops activity dashboard can do an
+            // indexed time-range scan across all taps without per-tap fan-out.
+            // Old rows without created_at are simply absent from the new endpoint;
+            // they'll roll off the dashboard window naturally.
+            val nowMs: java.lang.Long = System.currentTimeMillis()
+            NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", gson.toJson(log),
+                "created_at", nowMs)
         } catch {
             case e: Exception =>
                 logger.warn("Failed to write tap run log: " + e.getMessage)

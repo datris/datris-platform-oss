@@ -13,6 +13,7 @@ import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.utils.IOUtils
 
 import java.io.{BufferedInputStream, ByteArrayInputStream}
+import java.util.UUID
 import scala.util.control.Breaks._
 
 class PipelineMetadataUtil(statusUtil: StatusUtil) {
@@ -74,7 +75,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
         statusUtil.info("processing","Pipeline name: " + pipeline)
 
         val inputStream = ObjectStoreUtil.getInputStream(bucket, key)
-        val tempWriteDirectory = "s3://" + DatrisEnvironment.current.environment + "-raw/temp/" + GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + "/"
+        val tempWriteDirectory = "s3://" + DatrisEnvironment.current.environment + "-raw/temp/" + UUID.randomUUID().toString + "/"
 
         // .gz files extract to only one file
         if(key.toLowerCase.endsWith(".gz")) {
@@ -133,7 +134,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
         val byteArrayInputStream = new ByteArrayInputStream(byteArray)
 
         // Write the temp file name
-        val tempFilename = GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString + ".tmp"
+        val tempFilename = UUID.randomUUID().toString + ".tmp"
         statusUtil.info("processing","Writing archive file to : " + writeDirectory + tempFilename)
         ObjectStoreUtil.writeBucketObjectFromStream(
             ObjectStoreUtil.getBucket(writeDirectory),
@@ -154,7 +155,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
             if (GuidV5.isValidUUID(tokens(1)))
                 tokens(1)
             else
-                GuidV5.nameUUIDFrom(System.currentTimeMillis().toString).toString
+                UUID.randomUUID().toString
         }
         (pipeline, publisherToken)
     }

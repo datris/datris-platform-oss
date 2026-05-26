@@ -24,6 +24,8 @@ class StatusUtil {
     private var filename: Option[String] = None
     private var hadWarning: Boolean = false
     private var hadError: Boolean = false
+    private var recordCount: Int = 0
+    private var dataType: Option[String] = None
 
     def init(tableName: String, processName: String): StatusUtil = {
         this.tableName = tableName
@@ -52,6 +54,16 @@ class StatusUtil {
 
     def setFilename(metadata: PipelineMetadata): Unit = {
         this.filename = Some(metadata.dataFileName)
+    }
+
+    def setRecordCount(recordCount: Int): Unit = {
+        if(recordCount >= 0)
+            this.recordCount = recordCount
+    }
+
+    def setDataType(dataType: String): Unit = {
+        if(dataType != null)
+            this.dataType = Some(dataType)
     }
 
     def info(state: String, description: String): Unit = {
@@ -168,7 +180,12 @@ class StatusUtil {
                 utcFormatter.format(Timestamp.valueOf(pipelineStatusSummary.createdAtTimestamp)),
                 utcFormatter.format(nowTimestamp),
                 totalTime,
-                statusString
+                statusString,
+                // Preserve the prior count when the current event hasn't published
+                // one (e.g. an intermediate "processing" status from a loader emitted
+                // before JobRunner records the final count).
+                if (this.recordCount > 0) this.recordCount else pipelineStatusSummary.recordCount,
+                this.dataType.orElse(Option(pipelineStatusSummary.dataType)).orNull
             )
 
             NoSQLDbUtil.updateItemJSON(tableName + "-summary",
@@ -192,7 +209,9 @@ class StatusUtil {
                 utcFormatter.format(nowTimestamp),
                 utcFormatter.format(nowTimestamp),
                 "0 seconds",
-                "processing"
+                "processing",
+                this.recordCount,
+                this.dataType.orNull
             )
 
             NoSQLDbUtil.putItemJSON(tableName + "-summary",
@@ -280,6 +299,12 @@ object StatusUtil {
 
     def setFilename(metadata: PipelineMetadata): Unit =
         _statusUtil.setFilename(metadata)
+
+    def setRecordCount(recordCount: Int): Unit =
+        _statusUtil.setRecordCount(recordCount)
+
+    def setDataType(dataType: String): Unit =
+        _statusUtil.setDataType(dataType)
 
     def info(state: String, description: String): Unit = {
         if(_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")

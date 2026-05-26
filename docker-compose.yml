@@ -188,6 +188,10 @@ services:
       # dev mode = in-memory, and vault-init.sh re-seeds from .env on each
       # boot). Single-tenant only.
       DATRIS_ENV_FILE_PATH: /datris/.env
+      # JVM heap sizing for the datris-server process. Default fits an 8GB
+      # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
+      # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
+      JAVA_OPTS: "${JAVA_OPTS:--Xms512m -Xmx2g}"
     volumes:
       - ./docker/config:/config
       - ./.env:/datris/.env:rw

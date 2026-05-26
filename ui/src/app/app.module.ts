@@ -23,7 +23,8 @@ import { DataCatalogComponent } from './data-catalog/data-catalog.component';
 import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
 import { AssistantComponent } from './assistant/assistant.component';
 import { McpShellComponent } from './mcp-shell/mcp-shell.component';
-import { DataShellComponent } from './data-shell/data-shell.component';
+import { OpsShellComponent } from './ops-shell/ops-shell.component';
+import { ActivityComponent } from './activity/activity.component';
 import { LoginComponent } from './login/login.component';
 import { ChangePasswordModalComponent } from './change-password-modal/change-password-modal.component';
 import { UsersComponent } from './configuration/users/users.component';
@@ -32,6 +33,7 @@ import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { apiKeyInterceptor } from './api-key.interceptor';
 import { MaterialModule } from './material.module';
+import { NgxEchartsModule } from 'ngx-echarts';
 
 @NgModule({
   declarations: [
@@ -57,7 +59,8 @@ import { MaterialModule } from './material.module';
     AgentMonitorComponent,
     AssistantComponent,
     McpShellComponent,
-    DataShellComponent,
+    OpsShellComponent,
+    ActivityComponent,
     LoginComponent,
     ChangePasswordModalComponent,
     UsersComponent,
@@ -67,7 +70,8 @@ import { MaterialModule } from './material.module';
     BrowserModule,
     FormsModule,
     AppRoutingModule,
-    MaterialModule
+    MaterialModule,
+    NgxEchartsModule.forRoot({ echarts: () => import('echarts') })
   ],
   providers: [provideHttpClient(withInterceptors([apiKeyInterceptor]))],
   bootstrap: [AppComponent]
