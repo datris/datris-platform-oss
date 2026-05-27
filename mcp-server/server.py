@@ -257,14 +257,18 @@ server = Server("datris", instructions="""\
 Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, and vector stores — all driven by pipeline configurations that AI agents can create and manage programmatically.
 
 FIRST-RESPONSE RULE (read this before anything else):
-When the user makes ANY data-related ask — "I'm looking for X", "can you get me Y", "do you have Z", "I need data about W", "help me ingest...", or anything similar — your FIRST tool call MUST be `list_pipelines` AND `list_taps`. Do this BEFORE generating any text reply. Do this BEFORE suggesting external sources (SEC EDGAR, yfinance, Alpha Vantage, etc.). Do this BEFORE asking clarifying scope questions. The user is connected to a Datris environment that likely already has the data they want — assume YES until your tool calls prove otherwise.
+When the user makes ANY data-related ask — "I'm looking for X", "can you get me Y", "do you have Z", "I need data about W", "help me ingest...", or anything similar — your FIRST tool call MUST be `list_pipelines` AND `list_taps`. Do this BEFORE generating any text reply. Do this BEFORE suggesting external sources or APIs. Do this BEFORE asking clarifying scope questions. The user is connected to a Datris environment that likely already has the data they want — assume YES until your tool calls prove otherwise.
 
 After those calls return, anchor your reply in what exists: "There's already a `<name>` pipeline doing X — does that cover your need, or do you want to extend it / add Y / pick a different source?" Only enumerate external API options after you've confirmed nothing in the platform already covers the ask. A generic options menu drawn from training data wastes the user's time when the answer is sitting in their own environment.
+
+If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
+
+How to find a "relevant pipeline" in the list response: the response begins with a `names` array — scan EVERY entry (the match may be at the end of a long list) for any name whose substring matches a keyword from the user's request. Hyphens, underscores, and case are interchangeable for matching. If any name matches, the pipeline EXISTS — do not announce "I don't see any …" or ask the user to clarify scope, provider, schedule, or data shape. Call the destination's query tool. Only when zero names match should you treat the resource as missing. When the user's data is already in the platform, query it and show what's there — do not collect setup parameters for a pipeline that already exists.
 
 SCHEDULING RULE (read this before suggesting any recurring/timely workflow):
 If the user mentions ANY recurrence cue — "nightly", "daily", "hourly", "every morning", "weekly", "at market open", "on a schedule", "recurring", "on a timely basis", "keep this up to date", "refresh this every X" — set a `cron_expression` on the relevant tap via `create_tap` (when first creating) or `update_tap` (when wiring an existing tap). The Datris platform runs the scheduler — once you set `cron_expression`, the tap fires automatically on that cadence, with the same publisherToken + get_tap_logs verification path as manual runs.
 DO NOT respond with shell snippets, cron jobs, Airflow DAGs, or any other external scheduler that just invokes the CLI or the API on a timer. That defeats the platform: the user delegated both "what data" and "when it refreshes" to Datris. Handing back a "run this every night at 9pm" command pushes operational burden the user already chose to offload. The schedule lives on the tap.
-After setting the schedule, tell the user what you set ("scheduled `canslim_screen` for 0 30 5 * * ? — runs daily at 5:30am") and offer to adjust the cadence or chain related taps.
+After setting the schedule, tell the user what you set — name the tap, give the cron expression, and translate it to plain English (e.g. "runs daily at 5:30am") — then offer to adjust the cadence or chain related taps.
 
 VALIDATION RULE (read this before the first run of any new or updated tap):
 Before calling `run_tap` AND before setting `cron_expression` on a tap whose script has not yet been validated, you MUST call `test_tap`. This applies to:
@@ -279,6 +283,7 @@ NEVER narrate a create / update / delete / run operation as completed unless the
   - If a tool call returned an error or unexpected response, do NOT paper it over with confident success language. Surface the actual response shape (error string, persistedReason, etc.) and decide the next step from that.
   - After multi-step setups (e.g., create pipeline → create tap → test → run), enumerate explicitly what completed and what didn't BEFORE summarizing. "Pipeline X: created ✓. Tap Y: created ✓, tested ✓ (7 records). Tap not yet run — say the word."
   - When in doubt — when you intended to do N steps and you can't enumerate the N tool calls in this turn — STOP and verify. Call `list_pipelines` / `list_taps` / `get_tap` to ground yourself in actual platform state before claiming anything is done.
+  - When the verification call FINDS the resource (the pipeline / tap / collection / table is present in the list response), it exists — full stop. Do NOT retract a previous-turn claim that it was created, do NOT apologize for confabulating, and do NOT re-create it. Skim the response for the name you're looking for; if it's there, treat it as real and move on to the user's current ask. The EVIDENCE RULE prevents fake claims of success — it does NOT require retracting true claims just because they happened in a previous turn.
 The user trusts your narrative as a proxy for the platform state. Confabulating "done" when only some of it is done corrupts that trust and creates failure modes (a cron set on a tap whose pipeline doesn't exist; a "run now" call against a pipeline that was never created). Be honest about what happened in THIS turn, even if it's less than the user asked for — they can redirect, but only if your report is true.
 
 A pipeline config has two required sections: source and destination. Keep configs simple: source + destination only.
@@ -845,7 +850,7 @@ If the user mentions ANY recurrence cue — "nightly", "daily", "hourly", "every
 
 **DO NOT** respond with shell snippets, host cron jobs, Airflow DAGs that just invoke the CLI on a timer, or "run this every night at 9pm" command examples for the user to wire up themselves. That defeats the platform: the user delegated both "what data" AND "when it refreshes" to Datris. Handing back a copy-pasteable cron line pushes operational burden the user already chose to offload. The schedule lives on the tap.
 
-After setting `cron_expression`, tell the user the cadence you set in plain English ("scheduled `canslim_screen` for `0 30 5 ? * MON-FRI` — runs every weekday at 5:30am") and offer to adjust it or chain related taps.
+After setting `cron_expression`, tell the user the cadence you set in plain English — name the tap, give the cron expression, and translate it (e.g. "runs every weekday at 5:30am") — then offer to adjust it or chain related taps.
 
 ### Quartz CRON expression cookbook
 
@@ -902,7 +907,7 @@ The collapsed tool-call blocks in your message are the ONLY evidence that work a
 1. User: "create a tap to fetch X nightly and load to MongoDB"
 2. You call `create_tap(name=X, target_pipeline=X, cron_expression=...)`
 3. You call `test_tap(X)` — test pulls records cleanly (test mode doesn't need the pipeline to exist)
-4. You narrate: "Pipeline + tap are live, scheduled weekdays 22:00 UTC"
+4. You narrate: "Pipeline + tap are live, scheduled on the cadence you asked for."
 5. **Reality:** the pipeline was never created. `create_pipeline` was never called. The next scheduled run will fail with `persistedReason: no_target_pipeline`.
 
 The user trusted your narrative, you produced a confident story, and the platform is in a broken state that won't surface until the cron fires.
@@ -912,6 +917,7 @@ The user trusted your narrative, you produced a confident story, and the platfor
 - For pipeline + tap workflows, the minimum is THREE tool calls in the same turn: `create_pipeline` → `create_tap` → `test_tap`. If you set `cron_expression`, that's part of `create_tap`. If the user wants a manual run too, add `run_tap` and the polling chain.
 - When a tool call returns an error or unexpected response, surface the actual response field (`error`, `persistedReason`, `recordCount`, etc.) — don't smooth it into success language.
 - When in doubt, call `list_pipelines` / `list_taps` / `get_pipeline` / `get_tap` to ground yourself in real platform state before claiming anything is done.
+- **If a verification call finds the resource, it exists.** Do not retract a previous-turn success claim just because you can't see the original `create_*` call in THIS turn's evidence — the platform persists between turns. Scan the list response for the name; if it's there, move on to the user's current ask. Retracting a true claim is just as misleading as confabulating a false one.
 
 Honest narration with fewer claims is always better than a confident narrative that drifts past the tool calls.
 
@@ -969,7 +975,7 @@ The script MUST define `fetch()` taking no arguments and returning one of:
 
 ### Pre-installed packages
 
-`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`, `boto3`, `google-cloud-storage`, `azure-storage-blob`, `openpyxl`, `pyyaml`, `python-dateutil`, `pytz`, plus the Python stdlib. If your script imports anything else, pass it in `packages` to `create_tap` (e.g. `["yfinance", "alpha-vantage"]`).
+`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`, `boto3`, `google-cloud-storage`, `azure-storage-blob`, `openpyxl`, `pyyaml`, `python-dateutil`, `pytz`, plus the Python stdlib. If your script imports anything else, pass those package names in `packages` to `create_tap`.
 
 ---
 
@@ -1718,11 +1724,11 @@ async def list_tools():
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Unique tap name (e.g., 'weather-data')"
+                        "description": "Unique tap name."
                     },
                     "instruction": {
                         "type": "string",
-                        "description": "Plain-English instruction for AI script generation (e.g., 'Fetch current weather for NYC from Open-Meteo API'). If provided, AI generates the Python script."
+                        "description": "Plain-English instruction for AI script generation. Describe the source and the data to fetch, in one or two sentences. If provided, AI generates the Python script."
                     },
                     "script": {
                         "type": "string",
@@ -1748,7 +1754,7 @@ async def list_tools():
                     "packages": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Extra pip packages the script imports that aren't pre-installed. Required when `script` imports non-stdlib modules beyond the pre-installed set (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, google-cloud-storage, azure-storage-blob, openpyxl, pyyaml, python-dateutil, pytz). Example: ['yfinance', 'alpha_vantage']. When `instruction` is used instead of `script`, the AI populates this automatically — if you pass it anyway, your value wins."
+                        "description": "Extra pip packages the script imports that aren't pre-installed. Required when `script` imports non-stdlib modules beyond the pre-installed set (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, google-cloud-storage, azure-storage-blob, openpyxl, pyyaml, python-dateutil, pytz). Pass the PyPI package names as a list of strings. When `instruction` is used instead of `script`, the AI populates this automatically — if you pass it anyway, your value wins."
                     },
                 },
                 "required": ["name"]
@@ -2026,6 +2032,29 @@ def _dispatch(name: str, args: dict) -> str:
             pipelines = json.loads(result)
             if not pipelines or (isinstance(pipelines, list) and len(pipelines) == 0):
                 return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations pass sample data (base64) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
+            if isinstance(pipelines, list):
+                # Summarize each pipeline to (name, destination kind, table/collection,
+                # catalog). Returning the FULL nested config for every pipeline pushes
+                # the response past ~20KB on chatty tenants and biases the agent toward
+                # only "seeing" the first few entries — it has been observed declaring
+                # a pipeline missing while its entry sat near the bottom of a long
+                # list. The summary keeps every name on its own short row so a
+                # substring scan for the user's keyword is reliable.
+                summary = []
+                for p in pipelines:
+                    dest = p.get("destination") or {}
+                    dest_kind = next(iter(dest.keys()), None) if isinstance(dest, dict) else None
+                    target = None
+                    if isinstance(dest, dict) and dest_kind and isinstance(dest.get(dest_kind), dict):
+                        d = dest[dest_kind]
+                        target = d.get("tableName") or d.get("collectionName") or d.get("topic") or d.get("bucket") or d.get("indexName")
+                    summary.append({
+                        "name": p.get("name"),
+                        "destination": dest_kind,
+                        "target": target,
+                        "catalog": p.get("catalog"),
+                    })
+                return json.dumps({"count": len(summary), "names": [s["name"] for s in summary], "pipelines": summary}, indent=2)
         except (json.JSONDecodeError, TypeError):
             pass
         return result
@@ -2483,7 +2512,10 @@ def _dispatch(name: str, args: dict) -> str:
                         "lastTestRunTime": t.get("lastTestRunTime"),
                         "lastTestRunRecordCount": t.get("lastTestRunRecordCount"),
                     })
-                return json.dumps(summary, indent=2)
+                # Flat names array at the top — see comment on list_pipelines above.
+                # A 15-tap response that buries the user's tap at the bottom of a
+                # nested-config blob has been observed slipping past the model's scan.
+                return json.dumps({"count": len(summary), "names": [s["name"] for s in summary], "taps": summary}, indent=2)
         except (json.JSONDecodeError, TypeError):
             pass
         return result
