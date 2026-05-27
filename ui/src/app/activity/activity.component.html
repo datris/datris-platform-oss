@@ -74,8 +74,8 @@
     <div class="panel-empty" *ngIf="failing.length === 0 && !loading">
       <span class="panel-empty-check">✓</span> No failures in window.
     </div>
-    <ul class="failing-list" *ngIf="failing.length > 0">
-      <ng-container *ngFor="let f of failing">
+    <ul class="failing-list" [class.panel-list-scroll]="failing.length > 10" *ngIf="failing.length > 0">
+      <ng-container *ngFor="let f of failing; trackBy: trackByFailing">
         <li class="failing-row"
             [class.failing-row-recovered]="f.recovered"
             [class.failing-row-expanded]="isExpanded(f)"
@@ -171,6 +171,29 @@
     </ul>
   </section>
 
+  <!-- Region 3b: successes (in window) -->
+  <section class="panel" *ngIf="successful.length > 0">
+    <div class="panel-header">
+      <h3 class="panel-title">Successes</h3>
+      <span class="panel-count panel-count-ok">{{ successful.length }}</span>
+      <span class="panel-sub">in selected window</span>
+    </div>
+    <ul class="failing-list" [class.panel-list-scroll]="successful.length > 10">
+      <li class="success-row" *ngFor="let s of successful; trackBy: trackBySuccess" (click)="openPipeline(s.name)">
+        <span class="failing-kind kind-pipeline">{{ s.kind }}</span>
+        <div class="failing-id">
+          <div class="failing-name">{{ s.name }}</div>
+          <div class="failing-catalog" *ngIf="s.catalog">in {{ s.catalog }}</div>
+        </div>
+        <div class="success-items">
+          {{ itemsLabel(s) }}
+          <span class="failing-attempts" *ngIf="s.successCount > 1">({{ s.successCount }} runs)</span>
+        </div>
+        <div class="failing-time">{{ formatRelative(s.timeIso) }}</div>
+      </li>
+    </ul>
+  </section>
+
   <!-- Region 4: stale taps (hidden when empty per plan) -->
   <section class="panel" *ngIf="stale.length > 0">
     <div class="panel-header">
@@ -178,7 +201,7 @@
       <span class="panel-count">{{ stale.length }}</span>
     </div>
     <ul class="stale-list">
-      <li class="stale-row" *ngFor="let s of stale" (click)="openTap(s.name)">
+      <li class="stale-row" *ngFor="let s of stale; trackBy: trackByStale" (click)="openTap(s.name)">
         <div class="stale-id">
           <div class="stale-name">{{ s.name }}</div>
           <div class="stale-catalog" *ngIf="s.catalog">in {{ s.catalog }}</div>
@@ -206,6 +229,7 @@
       <h3 class="panel-title">Per-pipeline volume</h3>
       <span class="panel-sub">last 7 days</span>
     </div>
+    <div [class.panel-list-scroll]="pipelineVolumes.length > 10">
     <table class="volume-table">
       <thead>
         <tr>
@@ -217,7 +241,7 @@
         </tr>
       </thead>
       <tbody>
-        <tr class="volume-row" *ngFor="let v of pipelineVolumes" (click)="openPipeline(v.name)">
+        <tr class="volume-row" *ngFor="let v of pipelineVolumes; trackBy: trackByVolume" (click)="openPipeline(v.name)">
           <td class="vt-name">
             <div class="vt-pipeline-name">{{ v.name }}</div>
             <div class="vt-pipeline-catalog" *ngIf="v.catalog">in {{ v.catalog }}</div>
@@ -236,5 +260,6 @@
         </tr>
       </tbody>
     </table>
+    </div>
   </section>
 </div>

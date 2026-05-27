@@ -202,6 +202,11 @@
   border-radius: 10px;
 }
 
+.panel-count-ok {
+  background: rgba(74, 222, 128, 0.16);
+  color: #4ade80;
+}
+
 .panel-empty {
   padding: 24px 18px;
   text-align: center;
@@ -222,6 +227,14 @@
   padding: 0;
 }
 
+/* Caps long Failures / Successes lists at ~10 rows and adds an inline scroll
+   so the dashboard doesn't stretch indefinitely on busy tenants. Applied
+   conditionally from the template (only when the row count justifies it). */
+.panel-list-scroll {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
 .failing-row,
 .stale-row {
   display: grid;
@@ -235,6 +248,31 @@
 
 .failing-row {
   grid-template-columns: 14px 70px 1.2fr 2fr 110px 120px;
+}
+
+.success-row {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border-color, rgba(99, 179, 237, 0.06));
+  cursor: pointer;
+  font-size: 13px;
+  grid-template-columns: 70px 1.2fr 1fr 110px;
+}
+
+.success-row:hover {
+  background: rgba(99, 179, 237, 0.05);
+}
+
+.success-row:last-child {
+  border-bottom: none;
+}
+
+.success-items {
+  color: #4ade80;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .stale-row {
@@ -523,9 +561,14 @@
   color: var(--text-secondary, #94a3b8);
   padding: 8px 18px;
   border-bottom: 1px solid var(--border-color, rgba(99, 179, 237, 0.08));
+  position: sticky;
+  top: 0;
+  background: var(--surface-elevated, rgba(15, 23, 42, 0.95));
+  z-index: 1;
 }
 
-.volume-table .vt-num {
+.volume-table .vt-num,
+.volume-table thead th.vt-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }

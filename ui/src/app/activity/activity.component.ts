@@ -37,6 +37,16 @@ interface FailingItem {
   relatedTapName: string | null;
 }
 
+interface SuccessfulItem {
+  kind: 'pipeline';               // pipeline jobs only — tap successes are represented downstream as pipeline jobs
+  name: string;
+  catalog: string | null;
+  timeIso: string | null;         // latest successful run within the window
+  successCount: number;           // # of successful runs for this pipeline within the window
+  totalItems: number;             // sum of recordCount across successful runs
+  dataType: string | null;        // 'document' | 'record' | null — drives the label suffix
+}
+
 interface StaleTap {
   name: string;
   catalog: string | null;
@@ -67,6 +77,7 @@ export class ActivityComponent implements OnInit, OnDestroy {
 
   tiles: StatTiles = { runs: 0, runsPrev: 0, success: 0, failure: 0, items: 0, records: 0, docs: 0 };
   failing: FailingItem[] = [];
+  successful: SuccessfulItem[] = [];
   stale: StaleTap[] = [];
   pipelineVolumes: PipelineVolume[] = [];
 
@@ -156,6 +167,7 @@ export class ActivityComponent implements OnInit, OnDestroy {
 
       this.computeTiles(jobs, tapFailures);
       this.computeFailing(taps || [], pipelines || [], jobs, tapFailures);
+      this.computeSuccessful(pipelines || [], jobs);
       this.computeStale(taps || []);
       this.computeCharts(jobs, tapFailures);
       this.computePipelineVolumes(pipelines || [], jobs);
@@ -379,6 +391,68 @@ export class ActivityComponent implements OnInit, OnDestroy {
 
   unrecoveredCount(): number {
     return this.failing.filter(f => !f.recovered).length;
+  }
+
+  // Mirrors computeFailing for the happy path: one row per pipeline with at
+  // least one successful job in the window. Tap successes that pushed to a
+  // pipeline already appear here as their child pipeline job, so we don't
+  // surface tap rows separately (which would double-count the same run).
+  private computeSuccessful(pipelines: any[], jobs: PipelineStatus[]): void {
+    const now = Date.now();
+    const winStart = now - this.windowMs();
+
+    const latestSuccess = new Map<string, PipelineStatus>();
+    const successCount = new Map<string, number>();
+    const itemsTotal = new Map<string, number>();
+    const dataType = new Map<string, string | null>();
+
+    for (const j of jobs) {
+      if (!j.pipeline) continue;
+      if ((j.status || '').toLowerCase() !== 'success') continue;
+      const t = this.parseTime(j.endTime) ?? this.parseTime(j.startTime);
+      if (t == null || t < winStart || t > now) continue;
+
+      successCount.set(j.pipeline, (successCount.get(j.pipeline) ?? 0) + 1);
+      itemsTotal.set(j.pipeline, (itemsTotal.get(j.pipeline) ?? 0) + Number(j.recordCount || 0));
+      if (j.dataType) dataType.set(j.pipeline, j.dataType);
+
+      const cur = latestSuccess.get(j.pipeline);
+      const curT = cur ? (this.parseTime(cur.endTime) ?? this.parseTime(cur.startTime) ?? 0) : -1;
+      if (t > curT) latestSuccess.set(j.pipeline, j);
+    }
+
+    const pipelineByName = new Map<string, any>();
+    for (const p of pipelines) pipelineByName.set(p.name, p);
+
+    const items: SuccessfulItem[] = [];
+    latestSuccess.forEach((j, name) => {
+      items.push({
+        kind: 'pipeline',
+        name,
+        catalog: pipelineByName.get(name)?.catalog || null,
+        timeIso: j.endTime || j.startTime || null,
+        successCount: successCount.get(name) ?? 1,
+        totalItems: itemsTotal.get(name) ?? 0,
+        dataType: dataType.get(name) ?? null
+      });
+    });
+
+    // Most recent first, then by items descending as a tiebreaker so a busy
+    // pipeline that just ran sorts above a one-off that finished a moment later.
+    items.sort((a, b) => {
+      const ta = this.parseTime(a.timeIso) ?? 0;
+      const tb = this.parseTime(b.timeIso) ?? 0;
+      if (tb !== ta) return tb - ta;
+      return b.totalItems - a.totalItems;
+    });
+    this.successful = items;
+  }
+
+  itemsLabel(s: SuccessfulItem): string {
+    if (s.totalItems === 0) return '0 items';
+    const formatted = this.formatNumber(s.totalItems);
+    if (s.dataType === 'document') return `${formatted} doc${s.totalItems === 1 ? '' : 's'}`;
+    return `${formatted} record${s.totalItems === 1 ? '' : 's'}`;
   }
 
   private computeStale(taps: any[]): void {
@@ -761,6 +835,14 @@ export class ActivityComponent implements OnInit, OnDestroy {
   isTapRunning(name: string): boolean {
     return this.runningTaps.has(name);
   }
+
+  // trackBy keys so the 30s auto-refresh doesn't rebuild every <li> (which
+  // would reset scrollTop on the panel-list-scroll containers and yank the
+  // user back to the top of an expanded failure / long success list).
+  trackByFailing = (_i: number, f: FailingItem): string => this.rowKey(f);
+  trackBySuccess = (_i: number, s: SuccessfulItem): string => s.kind + ':' + s.name;
+  trackByVolume  = (_i: number, v: PipelineVolume): string => v.name;
+  trackByStale   = (_i: number, s: StaleTap): string => s.name;
 
   runTap(name: string, event: Event): void {
     event.stopPropagation();
