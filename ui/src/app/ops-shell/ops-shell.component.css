@@ -27,3 +27,31 @@
   color: var(--accent-cyan, #00b4ff);
   border-bottom-color: var(--accent-cyan, #00b4ff);
 }
+
+/* Split layout: the chat panel is position:fixed at viewport top:80px so
+   its bottom always aligns with the viewport bottom, regardless of page
+   scroll. The body reserves horizontal space for the panel via a CSS
+   variable that the panel itself keeps in sync (40px collapsed, 420px
+   expanded). Sticky positioning was rejected because at scroll=0 the
+   sticky element sits in normal flow below the sub-tab bar, pushing its
+   bottom past the viewport. */
+.ops-shell-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding-right: var(--ops-chat-width, 40px);
+  transition: padding-right 0.18s ease;
+}
+
+.ops-shell-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ops-shell-chat {
+  position: fixed;
+  top: 80px;
+  right: 0;
+  height: calc(100vh - 80px);
+  z-index: 5;
+}

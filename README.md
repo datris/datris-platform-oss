@@ -92,7 +92,7 @@ CSV, JSON, XML, Excel, PDF, Word (DOCX), plain text
 
 ### AI Providers
 
-Anthropic Claude (Sonnet 4.6 default, Opus 4.7 for CodeGen) · OpenAI (GPT-5.5) · Ollama (local models, optional). Embeddings via TEI sidecar (BAAI/bge-m3) when using Anthropic, or `text-embedding-3-small` when using OpenAI.
+Anthropic Claude (Sonnet 4.6 default, Opus 4.8 for CodeGen) · OpenAI (GPT-5.5) · Ollama (local models, optional). Embeddings via TEI sidecar (BAAI/bge-m3) when using Anthropic, or `text-embedding-3-small` when using OpenAI.
 
 ## Architecture
 

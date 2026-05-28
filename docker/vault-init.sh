@@ -75,7 +75,7 @@ elif [ "$PROVIDER" = "anthropic" ]; then
   vault kv put secret/oss/codegen \
     provider="anthropic" \
     endpoint="https://api.anthropic.com/v1/messages" \
-    model="${CODEGEN_MODEL:-claude-opus-4-7}" \
+    model="${CODEGEN_MODEL:-claude-opus-4-8}" \
     apiKey="${ANTHROPIC_API_KEY}" \
     version="2023-06-01"
 else

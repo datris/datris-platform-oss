@@ -40,7 +40,8 @@ const FALLBACK: ModelCatalog = {
   },
   codegen: {
     anthropic: [
-      { value: 'claude-opus-4-7', label: 'Claude Opus 4.7 (recommended)', recommended: true },
+      { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (recommended)', recommended: true },
+      { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
       { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
       { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
       { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },

@@ -47,7 +47,8 @@ object CapabilityRoutes {
         "/api/v1/health/**",
         "/api/v1/version",
         "/api/v1/mcp/activity",
-        "/api/v1/assistant/**"
+        "/api/v1/assistant/**",
+        "/api/v1/ops-chat/**"
     )
 
     private val routes: Seq[Route] = Seq(

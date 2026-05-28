@@ -1,12 +1,15 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
 import { Router } from '@angular/router';
-import { firstValueFrom, forkJoin, of } from 'rxjs';
+import { firstValueFrom, forkJoin, of, Subscription } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import type { EChartsOption } from 'echarts';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { PipelineStatusService, PipelineStatus, PipelineStatusDetail } from '../pipeline-status.service';
 import { AuthService } from '../auth.service';
+import { OpsChatContextService } from '../ops-chat/ops-chat-context.service';
+import { OpsActionBus } from '../ops-chat/ops-action-bus.service';
+import { OpsAssistantStateService } from '../ops-chat/ops-assistant-state.service';
 
 type Window = '24h' | '7d' | '30d';
 
@@ -45,6 +48,7 @@ interface SuccessfulItem {
   successCount: number;           // # of successful runs for this pipeline within the window
   totalItems: number;             // sum of recordCount across successful runs
   dataType: string | null;        // 'document' | 'record' | null — drives the label suffix
+  pipelineToken: string | null;   // token for the latest successful job — used to lazy-load the event detail when the row is expanded (same mechanism as the Failures pane)
 }
 
 interface StaleTap {
@@ -88,6 +92,14 @@ export class ActivityComponent implements OnInit, OnDestroy {
   // fresh state, which is the real source of truth for "did it finish").
   runningTaps = new Set<string>();
 
+  // Taps the Ops chat agent has just triggered via `run_tap`. Mirrors
+  // runningTaps for UI purposes — the row's button shows a spinner — but
+  // we don't have an HTTP response to clear them on, so we drop the whole
+  // set on the next dashboard reload (the reloaded data is the source of
+  // truth for whether the chat-triggered run is still in flight).
+  chatRunningTaps = new Set<string>();
+  private actionBusSub?: Subscription;
+
   runsChartOptions: EChartsOption | null = null;
   itemsChartOptions: EChartsOption | null = null;
 
@@ -99,16 +111,28 @@ export class ActivityComponent implements OnInit, OnDestroy {
     private pipelineService: PipelineService,
     private pipelineStatusService: PipelineStatusService,
     private router: Router,
-    public auth: AuthService
+    public auth: AuthService,
+    private opsContext: OpsChatContextService,
+    private opsActionBus: OpsActionBus,
+    private opsState: OpsAssistantStateService
   ) {}
 
   ngOnInit(): void {
     this.loadData();
     this.refreshTimer = setInterval(() => this.loadData(true), this.REFRESH_MS);
+    // Chat-triggered tap runs flow through the action bus so the row's
+    // button can flip to a spinner immediately, without waiting for the
+    // 30s refresh to discover the in-flight run on its own.
+    this.actionBusSub = this.opsActionBus.events$.subscribe(evt => {
+      if (evt.kind === 'tap-run-started') {
+        this.chatRunningTaps.add(evt.tapName);
+      }
+    });
   }
 
   ngOnDestroy(): void {
     if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.actionBusSub?.unsubscribe();
   }
 
   setWindow(w: Window): void {
@@ -171,11 +195,62 @@ export class ActivityComponent implements OnInit, OnDestroy {
       this.computeStale(taps || []);
       this.computeCharts(jobs, tapFailures);
       this.computePipelineVolumes(pipelines || [], jobs);
+      // Fresh data landed — chat-triggered optimistic spinners can clear,
+      // since the row's actual state is now reflected in the lists below.
+      this.chatRunningTaps.clear();
+      this.publishOpsContext();
     } catch (err: any) {
       this.loadError = err?.message || 'Failed to load activity';
     } finally {
       this.loading = false;
     }
+  }
+
+  /** Push a compact dashboard snapshot to the chat panel's context service.
+   *  Top-N caps keep the system prompt bounded — the chat doesn't need
+   *  every row, just enough to ground its answers in the current state. */
+  private publishOpsContext(): void {
+    const TOP_FAILING = 20;
+    const TOP_STALE = 10;
+    const TOP_VOLUMES = 15;
+    this.opsContext.publish({
+      window: this.window,
+      failingItems: this.failing.slice(0, TOP_FAILING).map(f => ({
+        kind: f.kind,
+        name: f.name,
+        catalog: f.catalog,
+        reason: f.reason,
+        timeIso: f.timeIso,
+        recovered: f.recovered,
+        failureCount: f.failureCount,
+        relatedTapName: f.relatedTapName,
+        pipelineToken: f.pipelineToken
+      })),
+      staleTaps: this.stale.slice(0, TOP_STALE).map(s => ({
+        name: s.name,
+        catalog: s.catalog,
+        cadenceLabel: s.cadenceLabel,
+        lastRunIso: s.lastRunIso
+      })),
+      // Volumes sorted by largest |deltaPct| first so the chat sees
+      // anomalies — over- and under-volume — before the long tail of
+      // pipelines running at their usual rate.
+      pipelineVolumes: this.pipelineVolumes
+        .slice()
+        .sort((a, b) => {
+          const da = a.deltaPct == null ? -1 : Math.abs(a.deltaPct);
+          const db = b.deltaPct == null ? -1 : Math.abs(b.deltaPct);
+          return db - da;
+        })
+        .slice(0, TOP_VOLUMES)
+        .map(v => ({
+          name: v.name,
+          catalog: v.catalog,
+          today: v.today,
+          avg: v.avg,
+          deltaPct: v.deltaPct
+        }))
+    });
   }
 
   // Pulls additional pages until either (a) entries fall outside [now - 2×window,
@@ -433,7 +508,8 @@ export class ActivityComponent implements OnInit, OnDestroy {
         timeIso: j.endTime || j.startTime || null,
         successCount: successCount.get(name) ?? 1,
         totalItems: itemsTotal.get(name) ?? 0,
-        dataType: dataType.get(name) ?? null
+        dataType: dataType.get(name) ?? null,
+        pipelineToken: j.pipelineToken || null
       });
     });
 
@@ -833,7 +909,77 @@ export class ActivityComponent implements OnInit, OnDestroy {
   }
 
   isTapRunning(name: string): boolean {
-    return this.runningTaps.has(name);
+    return this.runningTaps.has(name) || this.chatRunningTaps.has(name);
+  }
+
+  // Successes pane uses the same expansion mechanics as Failures so the user's
+  // muscle memory carries over: click a row to see the job's event trail.
+  // Shares `expandedKey` / `detailsCache` / `detailsLoading` / `detailsErrors`
+  // with the failures pane so only ONE row across both panes is open at a
+  // time — opening a success collapses an open failure, and vice versa.
+
+  successRowKey(s: SuccessfulItem): string {
+    return 'success:' + (s.pipelineToken || s.name);
+  }
+
+  isSuccessExpanded(s: SuccessfulItem): boolean {
+    return this.expandedKey === this.successRowKey(s);
+  }
+
+  toggleSuccessExpand(s: SuccessfulItem): void {
+    const key = this.successRowKey(s);
+    if (this.expandedKey === key) {
+      this.expandedKey = null;
+      return;
+    }
+    this.expandedKey = key;
+    if (s.pipelineToken && !this.detailsCache.has(key) && !this.detailsLoading.has(key)) {
+      this.detailsLoading.add(key);
+      this.detailsErrors.delete(key);
+      this.pipelineStatusService.getPipelineStatusDetail(s.pipelineToken).subscribe({
+        next: (details) => {
+          this.detailsCache.set(key, details || []);
+          this.detailsLoading.delete(key);
+        },
+        error: (err) => {
+          this.detailsErrors.set(key, err?.message || 'Failed to load detail');
+          this.detailsLoading.delete(key);
+        }
+      });
+    }
+  }
+
+  successJobEvents(s: SuccessfulItem): PipelineStatusDetail[] {
+    const all = this.detailsCache.get(this.successRowKey(s)) || [];
+    return all.slice().sort((a, b) => (Date.parse(a.dateTime) || 0) - (Date.parse(b.dateTime) || 0));
+  }
+
+  isSuccessDetailsLoading(s: SuccessfulItem): boolean {
+    return this.detailsLoading.has(this.successRowKey(s));
+  }
+
+  successDetailsErrorFor(s: SuccessfulItem): string | undefined {
+    return this.detailsErrors.get(this.successRowKey(s));
+  }
+
+  /** Ask-about-this handler used by failure / volume rows. Hands a
+   *  row-specific prompt to the chat panel's state service — seedDraft
+   *  also emits openRequested$, so the panel expands and focuses itself. */
+  askAboutFailure(f: FailingItem, event: Event): void {
+    event.stopPropagation();
+    const subject = f.kind === 'tap' ? `tap \`${f.name}\`` : `pipeline \`${f.name}\``;
+    const prompt = f.recovered
+      ? `What happened with ${subject}? It's recovered now, but I want to know what went wrong and whether to expect it again.`
+      : `Why is ${subject} failing, and what should I do about it?`;
+    this.opsState.seedDraft(prompt);
+  }
+
+  askAboutVolume(v: PipelineVolume, event: Event): void {
+    event.stopPropagation();
+    const direction = v.deltaPct != null && v.deltaPct < 0 ? 'low' : 'high';
+    const pct = v.deltaPct != null ? `${v.deltaPct >= 0 ? '+' : ''}${v.deltaPct}%` : 'an unusual amount';
+    const prompt = `Pipeline \`${v.name}\` is ${pct} versus its 7-day average today (${direction} volume). Is this expected, and what should I check?`;
+    this.opsState.seedDraft(prompt);
   }
 
   // trackBy keys so the 30s auto-refresh doesn't rebuild every <li> (which

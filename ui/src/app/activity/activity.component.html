@@ -97,6 +97,12 @@
             <span class="recovered-badge" *ngIf="f.recovered" title="Latest run is healthy">✓ recovered</span>
           </div>
           <div class="failing-actions">
+            <!-- Ask about this row — seeds the ops chat with a row-specific prompt. -->
+            <button class="action-btn action-btn-ghost"
+                    (click)="askAboutFailure(f, $event)"
+                    title="Ask the ops assistant about this row">
+              Ask
+            </button>
             <!-- Tap failures: direct re-run of the tap whose run produced the error. -->
             <button class="action-btn"
                     *ngIf="f.kind === 'tap' && !f.recovered && auth.canWrite()"
@@ -179,18 +185,57 @@
       <span class="panel-sub">in selected window</span>
     </div>
     <ul class="failing-list" [class.panel-list-scroll]="successful.length > 10">
-      <li class="success-row" *ngFor="let s of successful; trackBy: trackBySuccess" (click)="openPipeline(s.name)">
-        <span class="failing-kind kind-pipeline">{{ s.kind }}</span>
-        <div class="failing-id">
-          <div class="failing-name">{{ s.name }}</div>
-          <div class="failing-catalog" *ngIf="s.catalog">in {{ s.catalog }}</div>
-        </div>
-        <div class="success-items">
-          {{ itemsLabel(s) }}
-          <span class="failing-attempts" *ngIf="s.successCount > 1">({{ s.successCount }} runs)</span>
-        </div>
-        <div class="failing-time">{{ formatRelative(s.timeIso) }}</div>
-      </li>
+      <ng-container *ngFor="let s of successful; trackBy: trackBySuccess">
+        <li class="success-row"
+            [class.success-row-expanded]="isSuccessExpanded(s)"
+            (click)="toggleSuccessExpand(s)">
+          <span class="expand-chevron" [class.expand-chevron-open]="isSuccessExpanded(s)">▸</span>
+          <span class="failing-kind kind-pipeline">{{ s.kind }}</span>
+          <div class="failing-id">
+            <div class="failing-name">{{ s.name }}</div>
+            <div class="failing-catalog" *ngIf="s.catalog">in {{ s.catalog }}</div>
+          </div>
+          <div class="success-items">
+            {{ itemsLabel(s) }}
+            <span class="failing-attempts" *ngIf="s.successCount > 1">({{ s.successCount }} runs)</span>
+          </div>
+          <div class="failing-time">{{ formatRelative(s.timeIso) }}</div>
+        </li>
+        <li class="failing-expansion" *ngIf="isSuccessExpanded(s)">
+          <div class="exp-loading" *ngIf="isSuccessDetailsLoading(s)">Loading job detail…</div>
+          <div class="exp-error" *ngIf="successDetailsErrorFor(s)">{{ successDetailsErrorFor(s) }}</div>
+          <div class="exp-empty" *ngIf="!isSuccessDetailsLoading(s) && !successDetailsErrorFor(s) && successJobEvents(s).length === 0">
+            No events recorded for this job.
+          </div>
+          <div class="exp-events-scroll" *ngIf="successJobEvents(s).length > 0">
+            <table class="exp-events">
+              <thead>
+                <tr>
+                  <th class="exp-time">Time</th>
+                  <th class="exp-process">Process</th>
+                  <th class="exp-state">State</th>
+                  <th class="exp-code">Code</th>
+                  <th class="exp-desc">Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let e of successJobEvents(s)"
+                    [class.exp-row-error]="e.code === 'error'"
+                    [class.exp-row-warn]="e.code === 'warning'">
+                  <td class="exp-time">{{ e.dateTime }}</td>
+                  <td class="exp-process">{{ e.processName }}</td>
+                  <td class="exp-state">{{ e.state }}</td>
+                  <td class="exp-code"
+                      [class.exp-code-error]="e.code === 'error'"
+                      [class.exp-code-warn]="e.code === 'warning'"
+                      [class.exp-code-info]="e.code === 'info'">{{ e.code }}</td>
+                  <td class="exp-desc">{{ e.description }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </li>
+      </ng-container>
     </ul>
   </section>
 
@@ -238,10 +283,11 @@
           <th class="vt-num">Today</th>
           <th class="vt-num">7d avg</th>
           <th class="vt-num">vs avg</th>
+          <th class="vt-ask"></th>
         </tr>
       </thead>
       <tbody>
-        <tr class="volume-row" *ngFor="let v of pipelineVolumes; trackBy: trackByVolume" (click)="openPipeline(v.name)">
+        <tr class="volume-row" *ngFor="let v of pipelineVolumes; trackBy: trackByVolume">
           <td class="vt-name">
             <div class="vt-pipeline-name">{{ v.name }}</div>
             <div class="vt-pipeline-catalog" *ngIf="v.catalog">in {{ v.catalog }}</div>
@@ -256,6 +302,13 @@
               {{ v.deltaPct >= 0 ? '+' : '' }}{{ v.deltaPct }}%
             </span>
             <span *ngIf="v.deltaPct === null" class="vt-muted">—</span>
+          </td>
+          <td class="vt-ask">
+            <button class="action-btn action-btn-ghost"
+                    (click)="askAboutVolume(v, $event)"
+                    title="Ask the ops assistant about this pipeline's volume">
+              Ask
+            </button>
           </td>
         </tr>
       </tbody>

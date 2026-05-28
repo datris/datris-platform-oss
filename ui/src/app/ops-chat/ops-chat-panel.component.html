@@ -1,0 +1,132 @@
+<div class="ops-chat-panel" [class.ops-chat-collapsed]="!expanded" [class.ops-chat-expanded]="expanded">
+  <!-- Collapsed rail: just a vertical "Ask" toggle. Clicking expands. -->
+  <button class="ops-chat-rail"
+          *ngIf="!expanded"
+          (click)="toggle()"
+          title="Open ops chat (Cmd+\)">
+    <mat-icon class="ops-chat-rail-icon">smart_toy</mat-icon>
+    <span class="ops-chat-rail-label">Ask</span>
+  </button>
+
+  <!-- Expanded panel: header + scroll area + composer. -->
+  <ng-container *ngIf="expanded">
+    <div class="ops-chat-header">
+      <div class="ops-chat-title">
+        <mat-icon class="ops-chat-title-icon">smart_toy</mat-icon>
+        <span>Ops assistant</span>
+      </div>
+      <div class="ops-chat-header-actions">
+        <button class="ops-chat-header-btn"
+                *ngIf="state.turns.length > 0"
+                [disabled]="state.streaming"
+                (click)="newChat()"
+                title="Clear conversation">
+          <mat-icon>add</mat-icon>
+        </button>
+        <button class="ops-chat-header-btn"
+                (click)="toggle()"
+                title="Collapse (Cmd+\)">
+          <mat-icon>chevron_right</mat-icon>
+        </button>
+      </div>
+    </div>
+
+    <div class="ops-chat-scroll" #scrollContainer>
+      <!-- Empty state with starter prompts. -->
+      <div class="ops-chat-empty" *ngIf="isEmptyState">
+        <p class="ops-chat-empty-sub">
+          I can explain failures, re-run taps, and chase down anomalies.
+          I have the current dashboard snapshot in mind.
+        </p>
+        <div class="ops-chat-starters">
+          <button class="ops-chat-starter" *ngFor="let p of starterPrompts" (click)="fillFromStarter(p)">
+            {{ p.label }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Turns. -->
+      <ng-container *ngFor="let turn of state.turns; trackBy: trackByIndex">
+        <div class="ops-user-turn" *ngIf="turn.role === 'user'">
+          <div class="ops-user-bubble">{{ turn.text }}</div>
+        </div>
+
+        <div class="ops-assistant-turn" *ngIf="turn.role === 'assistant'">
+          <div class="ops-thinking-block" *ngIf="turn.thinking">
+            <button class="ops-thinking-toggle" (click)="toggleThinking(turn)">
+              <span>💭 Thinking</span>
+              <span>{{ turn.thinkingExpanded ? '▾' : '▸' }}</span>
+              <span class="ops-thinking-spinner" *ngIf="!turn.done">…</span>
+            </button>
+            <div class="ops-thinking-content" *ngIf="turn.thinkingExpanded">{{ turn.thinking }}</div>
+          </div>
+
+          <ng-container *ngFor="let seg of turn.segments; trackBy: trackByIndex">
+            <div class="ops-prose" *ngIf="seg.kind === 'text'">{{ seg.text }}</div>
+
+            <div class="ops-notice" *ngIf="seg.kind === 'notice'">
+              <span class="ops-notice-icon">ⓘ</span>
+              <span>{{ seg.message }}</span>
+            </div>
+
+            <div class="ops-tool-card" *ngIf="seg.kind === 'tool'" [class.ops-tool-error]="seg.isError">
+              <button class="ops-tool-header" (click)="toggleToolCard(seg)">
+                <span class="ops-tool-caret">{{ seg.expanded ? '▾' : '▸' }}</span>
+                <span class="ops-tool-icon">{{ toolLabel(seg).icon }}</span>
+                <span class="ops-tool-label">{{ toolLabel(seg).label }}</span>
+                <span class="ops-tool-status"
+                      [class.ops-tool-status-ok]="seg.status === 'ok'"
+                      [class.ops-tool-status-error]="seg.status === 'error'">
+                  <span class="ops-dots" *ngIf="seg.status === 'running'">
+                    <span></span><span></span><span></span>
+                  </span>
+                  <ng-container *ngIf="seg.status !== 'running'">{{ toolStatusIcon(seg) }}</ng-container>
+                </span>
+              </button>
+              <div class="ops-tool-body" *ngIf="seg.expanded">
+                <div class="ops-tool-body-label">Input</div>
+                <pre class="ops-tool-body-pre">{{ formatJson(seg.input) }}</pre>
+                <ng-container *ngIf="seg.status !== 'running'">
+                  <div class="ops-tool-body-label">{{ seg.isError ? 'Error' : 'Result' }}</div>
+                  <pre class="ops-tool-body-pre">{{ formatJson(seg.result) }}</pre>
+                </ng-container>
+              </div>
+            </div>
+          </ng-container>
+
+          <div class="ops-streaming-indicator"
+               *ngIf="!turn.done && state.streaming && turn.segments.length === 0 && !turn.thinking">
+            <span class="ops-dots-big"><span></span><span></span><span></span></span>
+          </div>
+
+          <div class="ops-error" *ngIf="turn.errorMessage">{{ turn.errorMessage }}</div>
+        </div>
+      </ng-container>
+    </div>
+
+    <div class="ops-composer-wrap">
+      <div class="ops-composer">
+        <textarea
+          #composerEl
+          class="ops-composer-input"
+          [(ngModel)]="state.draft"
+          (keydown)="onComposerKeydown($event)"
+          (input)="autoGrowComposer()"
+          placeholder="Ask about a failure, or tell me what to do…"
+          rows="1"
+          [readonly]="state.streaming"></textarea>
+        <button class="ops-composer-btn"
+                *ngIf="!state.streaming"
+                [disabled]="!state.draft.trim()"
+                (click)="send()">
+          Send
+        </button>
+        <button class="ops-composer-btn ops-composer-stop"
+                *ngIf="state.streaming"
+                (click)="stop()">
+          Stop
+        </button>
+      </div>
+    </div>
+  </ng-container>
+</div>
