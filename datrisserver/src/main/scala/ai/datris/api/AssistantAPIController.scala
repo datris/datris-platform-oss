@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AIUtil, AgentLoop, APIKeyValidator, MCPClient, SecretsUtil}
+import ai.datris.util.{AgentLoop, APIKeyValidator, MCPClient, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -148,7 +148,8 @@ class AssistantAPIController {
                 } catch {
                     case e: Exception =>
                         try {
-                            sendEvent(emitter, "error", makeEvent("error", "message", e.getMessage))
+                            AssistantSseSupport.sendEvent(emitter, "error",
+                                AssistantSseSupport.makeEvent("error", "message", e.getMessage))
                         } catch { case _: Exception => () }
                         try emitter.complete() catch { case _: Exception => () }
                 } finally {
@@ -218,75 +219,10 @@ class AssistantAPIController {
             maxIterations = maxIterations,
             maxTokensPerCall = maxTokensPerCall,
             cancelled = () => cancelled.get(),
-            sink = (evt: AgentLoop.LoopEvent) => emitLoopEvent(emitter, evt)
+            sink = (evt: AgentLoop.LoopEvent) => AssistantSseSupport.emitLoopEvent(emitter, evt)
         )
 
         try emitter.complete() catch { case _: Exception => () }
-    }
-
-    private def emitLoopEvent(emitter: SseEmitter, evt: AgentLoop.LoopEvent): Unit = {
-        evt match {
-            case AgentLoop.LoopEvent.IterationStart =>
-                sendEvent(emitter, "iteration_start", makeEvent("iteration_start"))
-            case AgentLoop.LoopEvent.ThinkingDelta(t) =>
-                sendEvent(emitter, "thinking_delta", makeEvent("thinking_delta", "text", t))
-            case AgentLoop.LoopEvent.TextDelta(t) =>
-                sendEvent(emitter, "text_delta", makeEvent("text_delta", "text", t))
-            case AgentLoop.LoopEvent.ToolUseStart(id, name) =>
-                val obj = new JsonObject()
-                obj.addProperty("type", "tool_use_start")
-                obj.addProperty("id", id)
-                obj.addProperty("name", name)
-                sendEvent(emitter, "tool_use_start", obj)
-            case AgentLoop.LoopEvent.ToolUseComplete(id, name, input) =>
-                val obj = new JsonObject()
-                obj.addProperty("type", "tool_use")
-                obj.addProperty("id", id)
-                obj.addProperty("name", name)
-                obj.add("input", input)
-                sendEvent(emitter, "tool_use", obj)
-            case AgentLoop.LoopEvent.ToolResult(id, name, result, isError) =>
-                val obj = new JsonObject()
-                obj.addProperty("type", "tool_result")
-                obj.addProperty("id", id)
-                obj.addProperty("name", name)
-                obj.addProperty("result", result)
-                obj.addProperty("isError", isError)
-                sendEvent(emitter, "tool_result", obj)
-            case AgentLoop.LoopEvent.SecretRequest(id, secretName, fieldNames, reason) =>
-                val obj = new JsonObject()
-                obj.addProperty("type", "secret_request")
-                obj.addProperty("id", id)
-                obj.addProperty("secretName", secretName)
-                val fieldsArr = new JsonArray()
-                fieldNames.foreach(fieldsArr.add)
-                obj.add("fieldNames", fieldsArr)
-                obj.addProperty("reason", reason)
-                sendEvent(emitter, "secret_request", obj)
-            case AgentLoop.LoopEvent.Notice(msg) =>
-                sendEvent(emitter, "notice", makeEvent("notice", "message", msg))
-            case AgentLoop.LoopEvent.Done =>
-                sendEvent(emitter, "done", makeEvent("done"))
-            case AgentLoop.LoopEvent.Error(msg) =>
-                sendEvent(emitter, "error", makeEvent("error", "message", msg))
-        }
-    }
-
-    private def makeEvent(t: String, kvs: String*): JsonObject = {
-        val obj = new JsonObject()
-        obj.addProperty("type", t)
-        kvs.grouped(2).foreach { pair =>
-            if (pair.size == 2) obj.addProperty(pair(0), pair(1))
-        }
-        obj
-    }
-
-    private def sendEvent(emitter: SseEmitter, name: String, payload: JsonObject): Unit = {
-        try {
-            emitter.send(SseEmitter.event().name(name).data(payload.toString))
-        } catch {
-            case _: Exception => // client disconnected; cancellation flag will fire shortly
-        }
     }
 
     private def buildSystemPrompt(workflowReference: String, tenantEnv: String): String = {
@@ -351,9 +287,7 @@ class AssistantAPIController {
         sb.toString
     }
 
-    private def escape(s: String): String =
-        if (s == null) ""
-        else s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+    private def escape(s: String): String = AssistantSseSupport.escape(s)
 
     /** Synthetic MCP-shaped tool definition for `request_tap_secret_from_user`.
       * This is NOT registered on the MCP server — it's added to the catalog

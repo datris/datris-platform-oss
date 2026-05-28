@@ -258,10 +258,16 @@
   border-bottom: 1px solid var(--border-color, rgba(99, 179, 237, 0.06));
   cursor: pointer;
   font-size: 13px;
-  grid-template-columns: 70px 1.2fr 1fr 110px;
+  /* Matches the failing-row column layout (chevron + kind + id + items + time)
+     so the chevron column lines up visually between the two panes. */
+  grid-template-columns: 14px 70px 1.2fr 1fr 110px;
 }
 
 .success-row:hover {
+  background: rgba(99, 179, 237, 0.05);
+}
+
+.success-row-expanded {
   background: rgba(99, 179, 237, 0.05);
 }
 
@@ -512,6 +518,26 @@
   background: rgba(0, 180, 255, 0.22);
 }
 
+/* Ghost variant for "Ask" buttons that route to the ops chat — visually
+   subordinate to the primary Re-run / Run now action sitting next to them. */
+.action-btn-ghost {
+  background: transparent;
+  color: var(--text-secondary, #94a3b8);
+  border-color: rgba(148, 163, 184, 0.30);
+  min-width: 44px;
+}
+
+.action-btn-ghost:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.10);
+  color: var(--text-primary, #f0f4ff);
+  border-color: rgba(148, 163, 184, 0.50);
+}
+
+.vt-ask {
+  text-align: right;
+  width: 60px;
+}
+
 /* In-flight state — cyan dimmed to amber-ish so the user can see "this is
    doing something, just wait." Cursor switches to default (not a click
    target right now), and the spinner sits to the left of the label. */
@@ -574,12 +600,7 @@
 }
 
 .volume-row {
-  cursor: pointer;
   transition: background 0.12s;
-}
-
-.volume-row:hover {
-  background: rgba(99, 179, 237, 0.05);
 }
 
 .volume-row td {
