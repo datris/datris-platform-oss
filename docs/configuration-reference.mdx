@@ -104,6 +104,23 @@ MinIO credentials are stored in Vault under the secret specified by `secrets.min
 }
 ```
 
+### AWS S3 (per-pipeline credentials)
+
+S3 destinations don't use a global secret. Each pipeline that writes to S3 references a **Platform-tab secret** by name via the objectStore config's `credentialsSecret` field. Create the secret in the UI under Configuration → Secrets → Platform with the fields below:
+
+```json
+{
+  "accessKey": "AKIA…",
+  "secretKey": "…",
+  "region": "us-east-1",
+  "sessionToken": "…"
+}
+```
+
+Required: `accessKey`, `secretKey`, `region`. Optional: `sessionToken` (for temporary STS credentials). Field-name lookups are case-insensitive and accept the `AWS_ACCESS_KEY` / `AWS_SECRET_KEY` / `AWS_REGION` style as well.
+
+Region lives in the credentials secret rather than on the pipeline config so the credential and its scope travel together — one place to rotate, no silent mismatches. See [S3 Destination](/destinations/s3) for the full pipeline-config shape.
+
 ### Secrets (HashiCorp Vault)
 
 | Property | Description |

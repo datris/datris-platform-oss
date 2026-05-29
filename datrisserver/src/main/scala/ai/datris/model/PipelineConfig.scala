@@ -198,7 +198,17 @@ case class ObjectStore(
                           fileFormat: String = null,
                           writeToTemporaryLocation: Boolean = false,
                           deleteBeforeWrite: Boolean = false,
-                          writeMode: String = null
+                          writeMode: String = null,
+                          // "minio" (default, back-compat) or "s3". Selects the credential
+                          // path and the per-bucket S3A overrides applied at write time.
+                          // Region for "s3" lives in the credentialsSecret, not here.
+                          provider: String = "minio",
+                          // null => AWS default for provider=s3; ignored for minio.
+                          endpoint: String = null,
+                          // Vault secret holding accessKey/secretKey/region (and optional
+                          // sessionToken) for provider=s3. null + provider=s3 falls back to
+                          // the AWS DefaultAWSCredentialsProviderChain (instance role).
+                          credentialsSecret: String = null
                       )
 
 case class Database(

@@ -1,0 +1,76 @@
+---
+title: "S3 Destination (AWS)"
+description: "Write pipeline output to AWS S3 with per-bucket credentials"
+---
+
+The S3 destination writes Parquet or ORC files directly to AWS S3. It uses the same Spark + S3A code path as the [MinIO destination](/destinations/object-store); the only differences are the credentials, the endpoint, and a few S3A settings applied per-bucket so multiple S3 destinations can coexist with the built-in MinIO output.
+
+## How it differs from MinIO
+
+| Setting                          | MinIO (default)                | S3                                         |
+|----------------------------------|--------------------------------|--------------------------------------------|
+| `provider`                       | `minio` (or omitted)           | `s3`                                       |
+| Credentials                      | Global `MinIOConfig`           | Per-pipeline `credentialsSecret`           |
+| Region                           | n/a (endpoint is explicit)     | Stored in the credentials secret           |
+| `path.style.access`              | true                           | false                                      |
+| `connection.ssl.enabled`         | false                          | true                                       |
+| Default bucket                   | `{environment}-raw`            | None — `destinationBucketOverride` required|
+
+S3A's per-bucket key syntax (`fs.s3a.bucket.<bucket>.*`) is what allows a single Spark session to write to both MinIO and AWS S3 in the same deployment without one set of credentials clobbering the other.
+
+## Credentials secret
+
+Region lives in the credentials secret next to `accessKey` and `secretKey`. Bundling region with the key it pairs with keeps the credential self-contained and prevents the silent-failure mode where the pipeline config claims `us-east-1` but the key is scoped to `us-west-2`.
+
+Create a Vault secret (Secrets tab in the Datris UI) with these fields:
+
+| Field          | Required | Notes                                                     |
+|----------------|----------|-----------------------------------------------------------|
+| `accessKey`    | yes      | AWS access key ID                                         |
+| `secretKey`    | yes      | AWS secret access key                                     |
+| `region`       | yes      | AWS region for the bucket (e.g. `us-east-1`)              |
+| `sessionToken` | no       | Only when using temporary credentials (STS)               |
+
+If any of `accessKey`, `secretKey`, or `region` is missing, the write fails at resolve time with an explicit "missing required field" error naming the secret.
+
+## Configuration
+
+```json
+{
+  "destination": {
+    "objectStore": {
+      "provider": "s3",
+      "destinationBucketOverride": "acme-analytics-prod",
+      "credentialsSecret": "aws/acme-analytics",
+      "prefixKey": "events/orders",
+      "partitionBy": ["dt"],
+      "fileFormat": "parquet",
+      "writeMode": "append"
+    }
+  }
+}
+```
+
+### Field reference
+
+| Field                       | Required | Default        | Description                                                              |
+|-----------------------------|----------|----------------|--------------------------------------------------------------------------|
+| `provider`                  | yes      | `minio`        | Set to `s3` to select the AWS S3 path                                    |
+| `destinationBucketOverride` | yes      |                | Bucket to write to. No default for S3                                    |
+| `credentialsSecret`         | yes*     |                | Vault secret holding `accessKey`/`secretKey`/`region`                    |
+| `endpoint`                  | no       | AWS regional   | Override the S3 endpoint URL. Must use `https://`                        |
+| `prefixKey`                 | yes      |                | Key prefix under the bucket                                              |
+| `fileFormat`                | no       | `parquet`      | `parquet` or `orc`                                                       |
+| `writeMode`                 | no       | `append`       | `append`, `overwrite`, `ignore`, `errorifexists`                         |
+| `partitionBy`               | no       |                | Array of column names to partition by                                    |
+| `deleteBeforeWrite`         | no       | `false`        | Delete existing objects under the prefix before writing                  |
+
+\* The `credentialsSecret` field is optional only when Datris itself runs in AWS with an instance role attached; the AWS default credentials provider chain will pick up credentials and region from instance metadata. For self-hosted Datris (not running on EC2 / EKS / ECS), `credentialsSecret` is effectively required.
+
+## File formats, write modes, partitioning, type casting
+
+These behave the same as the MinIO destination — see the [Object Store Destination](/destinations/object-store) page for the full reference.
+
+## Multiple S3 destinations
+
+Per-bucket credential isolation means two pipelines can write to different S3 buckets using different IAM keys in the same deployment. Each pipeline references its own `credentialsSecret`; the credentials are applied to that specific bucket only.

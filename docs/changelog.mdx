@@ -3,6 +3,21 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.8.0" description="May 29, 2026">
+  **Write to AWS S3, query Parquet and ORC from the Assistant and Search, and stop chats actually stop.**
+
+  - **AWS S3 as a first-class destination.** The Object Store destination now writes Parquet or ORC directly to S3 alongside the built-in MinIO. Pick *Object Store (MinIO or S3)* in the pipeline wizard, point at your bucket, and reference a credentials secret you've created in Configuration → Secrets → Platform. Multiple S3 destinations with different IAM keys coexist in the same deployment — each pipeline carries its own credential reference, applied per bucket at write time.
+  - **Region lives with the credential.** AWS credentials and region travel together in the credentials secret rather than on the pipeline config. One source of truth, one place to rotate, no more silent `us-east-1`-says-the-config-but-the-key-is-`us-west-2` failures. Field names are flexible — `accessKey` / `AWS_ACCESS_KEY` / `AWS_ACCESS_KEY_ID` all work.
+  - **Query Parquet and ORC from the Assistant.** "Show me the weather data" now works against pipelines whose destination is Object Store. The Assistant resolves the bucket and credentials from the pipeline config, reads the columnar files, and returns rows in chat.
+  - **Search tab gains an Object Store option.** Pick a pipeline from the dropdown, see the resolved bucket/prefix/format, set a limit, hit Execute. Works for both MinIO and S3 destinations.
+  - **Assistant offers all three structured destinations.** When you ask for structured data and no pipeline yet covers it, the Assistant now mentions MongoDB, PostgreSQL, **and** Object Store as choices instead of silently defaulting to one.
+  - **Assistant can discover destination credentials it shouldn't create.** Platform-tab secrets are now visible to the Assistant for reading (names and field shape only — never values). When a pipeline destination needs a credentials reference, it lists what's available, verifies the field shape, and points you at the Secrets tab to create one when nothing fits.
+  - **Stop actually stops.** Clicking Stop in the Assistant now halts the in-flight chat within a fraction of a second instead of waiting for the upstream model to finish generating. Cancelled responses cost only what was already streamed.
+  - **Pipeline failures surface fast.** A failed pipeline now flips to Error in the Ops dashboard within seconds instead of staying stuck in Processing for up to ten minutes.
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. Existing MinIO pipelines work unchanged. For AWS S3, create a Platform-tab secret with `accessKey`, `secretKey`, `region` (and optionally `sessionToken`), then reference it by name from your pipeline.
+</Update>
+
 <Update label="v1.7.9" description="May 28, 2026">
   **Ask the Ops assistant about a failing pipeline without leaving the dashboard.**
 

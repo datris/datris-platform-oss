@@ -168,6 +168,22 @@ object PipelineValidatorUtil {
                     throw new DatrisException("If the 'destination.objectStore.fileFormat' is defined, it must be either 'parquet' or 'orc'")
             }
 
+            // Provider must be 'minio' (default) or 's3'.
+            val provider = if(config.destination.objectStore.provider != null) config.destination.objectStore.provider.toLowerCase else "minio"
+            if(provider.compareTo("minio") != 0 && provider.compareTo("s3") != 0)
+                throw new DatrisException("'destination.objectStore.provider' must be either 'minio' or 's3'")
+
+            // S3-specific config-level checks. Region lives in the credentials
+            // secret, not the pipeline config — CredentialResolver surfaces the
+            // missing-region error at resolve time with a clear message, so we
+            // do not check it here.
+            if(provider.compareTo("s3") == 0) {
+                if(config.destination.objectStore.destinationBucketOverride == null)
+                    throw new DatrisException("When 'destination.objectStore.provider' is 's3', 'destinationBucketOverride' is required (no global default S3 bucket exists)")
+                if(config.destination.objectStore.endpoint != null && config.destination.objectStore.endpoint.toLowerCase.startsWith("http://"))
+                    throw new DatrisException("When 'destination.objectStore.provider' is 's3', the 'endpoint' must use https:// (got: " + config.destination.objectStore.endpoint + ")")
+            }
+
             // Get the existing configuration
             val existingConfig = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, config.name)
             if(existingConfig != null) {

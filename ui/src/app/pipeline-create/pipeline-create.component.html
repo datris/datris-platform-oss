@@ -443,7 +443,7 @@
             <option value="mongodb" *ngIf="sourceType !== 'xml'">MongoDB</option>
           </optgroup>
           <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured' && sourceType !== 'xml'">
-            <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO)</option>
+            <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO or S3)</option>
             <option value="kafka" *ngIf="healthService.isAvailable('kafka')">Kafka</option>
             <option value="activemq">ActiveMQ</option>
             <option value="restendpoint">REST Endpoint</option>
@@ -530,9 +530,27 @@
       <!-- Object Store -->
       <ng-container *ngIf="destType === 'objectstore'">
         <div class="form-row">
-          <label class="form-label">Bucket (optional)</label>
-          <input class="form-input" [(ngModel)]="osBucket" placeholder="leave blank to use the default {{ '{environment}' }}-raw bucket">
-          <p class="form-hint">Leave blank to use the default <code>{{ '{environment}' }}-raw</code> bucket. Stored as <code>destinationBucketOverride</code> on the object store config.</p>
+          <label class="form-label">Provider</label>
+          <select class="form-input" [(ngModel)]="osProvider">
+            <option value="minio">MinIO (default, built-in)</option>
+            <option value="s3">AWS S3</option>
+          </select>
+        </div>
+        <div class="form-row" *ngIf="osProvider === 's3'">
+          <label class="form-label">Credentials Secret</label>
+          <input class="form-input" [(ngModel)]="osCredentialsSecret" placeholder="e.g. aws/acme-analytics">
+          <p class="form-hint">Name of an existing secret in Vault containing <code>accessKey</code>, <code>secretKey</code>, <code>region</code> (and optionally <code>sessionToken</code>). Region lives with the credential, not in the pipeline config. Leave blank to use the AWS default credentials provider chain (instance role / env vars) — only useful when Datris itself runs in AWS.</p>
+        </div>
+        <div class="form-row" *ngIf="osProvider === 's3'">
+          <label class="form-label">Endpoint (optional)</label>
+          <input class="form-input" [(ngModel)]="osEndpoint" placeholder="leave blank for the AWS default for the region">
+          <p class="form-hint">Override the S3 endpoint URL. Must use <code>https://</code>. Leave blank for AWS's default regional endpoint.</p>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Bucket {{ osProvider === 's3' ? '(required)' : '(optional)' }}</label>
+          <input class="form-input" [(ngModel)]="osBucket" [placeholder]="osProvider === 's3' ? 'your-s3-bucket' : 'leave blank to use the default {environment}-raw bucket'">
+          <p class="form-hint" *ngIf="osProvider !== 's3'">Leave blank to use the default <code>{{ '{environment}' }}-raw</code> bucket. Stored as <code>destinationBucketOverride</code> on the object store config.</p>
+          <p class="form-hint" *ngIf="osProvider === 's3'">No global default S3 bucket — pick the destination bucket explicitly.</p>
         </div>
         <div class="form-row-inline">
           <div class="form-field">

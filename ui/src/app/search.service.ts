@@ -23,6 +23,14 @@ export class SearchService {
     return this.http.post<QueryResponse>('/api/v1/query/mongodb', body);
   }
 
+  queryObjectstore(pipeline: string, limit: number): Observable<QueryResponse> {
+    return this.http.post<QueryResponse>('/api/v1/query/objectstore', { pipeline, limit });
+  }
+
+  getPipelines(): Observable<any[]> {
+    return this.http.get<any[]>('/api/v1/pipelines');
+  }
+
   searchQdrant(query: string, collection: string, embeddingSecretName: string, qdrantSecretName: string, topK: number): Observable<QueryResponse> {
     return this.http.post<QueryResponse>('/api/v1/search/qdrant', { query, collection, embeddingSecretName, qdrantSecretName, topK });
   }

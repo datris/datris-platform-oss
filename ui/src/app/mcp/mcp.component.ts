@@ -134,7 +134,8 @@ export class McpComponent implements OnInit {
         { name: 'target_pipeline', type: 'string', description: 'Pipeline to push fetched data into', required: false, inputType: 'text' },
         { name: 'cron_expression', type: 'string', description: 'Quartz CRON schedule (e.g., 0 0 * * * ?)', required: false, inputType: 'text' },
         { name: 'secret_name', type: 'string', description: 'Vault secret name for credentials', required: false, inputType: 'text' },
-        { name: 'tap_type', type: 'string', description: 'structured (default) or document (for PDFs/Word/HTML into vector-store pipelines)', required: false, inputType: 'text' }
+        { name: 'tap_type', type: 'string', description: 'structured (default) or document (for PDFs/Word/HTML into vector-store pipelines)', required: false, inputType: 'text' },
+        { name: 'packages', type: 'array', description: 'Optional list of pip packages the tap script imports beyond the base set. Auto-detected from the script when omitted.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -156,10 +157,11 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'run_tap',
-      description: 'Execute a tap and push fetched data to the target pipeline. Response carries persisted, persistedReason, publisherToken, and pipelineTokens so the caller can confirm what actually landed.',
+      description: 'Execute a tap and push fetched data to the target pipeline. Response carries `recordCount`, `publisherToken`, `pipelineTokens`, `persisted`, `persistedReason`, and the script\'s `logs`. Records themselves are not returned — use `test_tap` to preview what a script produces. Call `test_tap` first before the first run of a newly-created or just-updated script. Pass optional `params` to drive a single run with caller-supplied values (date windows, ticker lists, page cursors, etc.) — each key/value becomes a `DATRIS_TAP_PARAM_<key>` env var the script can read.',
       category: 'Taps',
       parameters: [
-        { name: 'name', type: 'string', description: 'Name of the tap to run', required: true, inputType: 'text' }
+        { name: 'name', type: 'string', description: 'Name of the tap to run', required: true, inputType: 'text' },
+        { name: 'params', type: 'object', description: 'Optional per-run values injected as DATRIS_TAP_PARAM_<key> env vars. Keys must match [A-Za-z_][A-Za-z0-9_]*. Strings pass through; numbers/booleans get stringified; nested objects/arrays are JSON-encoded.', required: false, inputType: 'textarea' }
       ],
       playgroundEnabled: true
     },
@@ -243,18 +245,31 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'create_pipeline',
-      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule) without delete-then-recreate.',
+      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule, objectstore settings) without delete-then-recreate. Supports three destination categories: structured (postgres, mongodb), objectstore (Parquet/ORC files in MinIO or AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma).',
       category: 'Pipeline Management',
       parameters: [
-        { name: 'content', type: 'string', description: 'Base64-encoded sample data. Required for structured destinations; omit for vector destinations.', required: false, inputType: 'textarea' },
-        { name: 'filename', type: 'string', description: 'Filename (e.g., data.csv). Required for structured destinations.', required: false, inputType: 'text' },
+        { name: 'content', type: 'string', description: 'Base64-encoded sample data. Required for structured destinations AND objectstore; omit for vector destinations.', required: false, inputType: 'textarea' },
+        { name: 'filename', type: 'string', description: 'Filename (e.g., data.csv). Required for structured destinations and objectstore.', required: false, inputType: 'text' },
         { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' },
-        { name: 'destination', type: 'string', description: 'Destination: postgres, mongodb, qdrant, weaviate, milvus, chroma, pgvector', required: false, inputType: 'text' },
-        { name: 'table', type: 'string', description: 'Table/collection name (default: pipeline name)', required: false, inputType: 'text' },
-        { name: 'database', type: 'string', description: 'Database name (default: datris)', required: false, inputType: 'text' },
-        { name: 'keyFields', type: 'array', description: 'Optional natural-key columns used to dedupe / upsert rows on every run (postgres / mongodb only). E.g. ["user_id", "event_date"] — rows with the same key replace the existing row instead of appending.', required: false, inputType: 'text' },
-        { name: 'truncate', type: 'boolean', description: 'Optional. Wipe destination table/collection before each run (postgres / mongodb only). Default false. Distinct from keyFields: truncate clears everything; keyFields upserts per key.', required: false, inputType: 'text' },
-        { name: 'catalog', type: 'string', description: 'Optional catalog label to group this pipeline with related ones (free-form). Omit by default — users assign catalogs explicitly.', required: false, inputType: 'text' }
+        { name: 'destination', type: 'string', description: 'Destination: postgres, mongodb, objectstore, qdrant, weaviate, milvus, chroma, pgvector', required: false, inputType: 'text' },
+        { name: 'table', type: 'string', description: 'Table/collection name (default: pipeline name). Ignored for objectstore.', required: false, inputType: 'text' },
+        { name: 'database', type: 'string', description: 'Database name (default: datris). Ignored for objectstore.', required: false, inputType: 'text' },
+        { name: 'delimiter', type: 'string', description: 'CSV delimiter (default: comma)', required: false, inputType: 'text' },
+        { name: 'header', type: 'boolean', description: 'Whether CSV has a header row (default: true)', required: false, inputType: 'text' },
+        { name: 'keyFields', type: 'array', description: 'Optional natural-key columns used to dedupe / upsert rows on every run (postgres / mongodb only).', required: false, inputType: 'text' },
+        { name: 'truncate', type: 'boolean', description: 'Optional. Wipe destination table/collection before each run (postgres / mongodb only). Default false.', required: false, inputType: 'text' },
+        { name: 'bucket', type: 'string', description: 'Object-store bucket. Optional for MinIO (default: {environment}-data). REQUIRED when provider=s3.', required: false, inputType: 'text' },
+        { name: 'prefix', type: 'string', description: 'Object-store key prefix under the bucket (e.g. "events/orders"). REQUIRED for destination=objectstore.', required: false, inputType: 'text' },
+        { name: 'fileFormat', type: 'string', description: 'Object-store file format: parquet (default) or orc.', required: false, inputType: 'text' },
+        { name: 'partitionBy', type: 'array', description: 'Optional partition columns for objectstore writes. Field names must be in the destination schema.', required: false, inputType: 'text' },
+        { name: 'writeMode', type: 'string', description: 'Object-store write mode: append (default), overwrite, ignore, errorifexists.', required: false, inputType: 'text' },
+        { name: 'deleteBeforeWrite', type: 'boolean', description: 'Object-store only. When true, delete existing objects under the prefix before writing. Default false.', required: false, inputType: 'text' },
+        { name: 'provider', type: 'string', description: 'Object-store provider: minio (default, built-in) or s3 (AWS S3). When s3, bucket and credentialsSecret are required.', required: false, inputType: 'text' },
+        { name: 'endpoint', type: 'string', description: 'S3 endpoint URL override (objectstore + provider=s3 only). Must use https://. Leave unset for the AWS regional default.', required: false, inputType: 'text' },
+        { name: 'credentialsSecret', type: 'string', description: 'PLATFORM secret holding S3 credentials (accessKey, secretKey, region; optional sessionToken). REQUIRED for provider=s3 unless Datris runs on an EC2 instance role. Discover via list_platform_secrets.', required: false, inputType: 'text' },
+        { name: 'codegen_rule', type: 'string', description: 'Optional plain-English data quality validation rule. Datris generates a Python validation script from it and runs it against ingested data. Only add when the user explicitly asks for validation.', required: false, inputType: 'textarea' },
+        { name: 'codegen_transform', type: 'string', description: 'Optional plain-English transformation instruction. Datris generates a Python script and runs it against ingested data. Only add when the user explicitly asks for a transformation.', required: false, inputType: 'textarea' },
+        { name: 'catalog', type: 'string', description: 'Optional catalog label to group this pipeline with related ones. Omit by default.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -312,11 +327,14 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'profile_data',
-      description: 'AI-profile data with summary stats and suggested DQ rules.',
+      description: 'Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline\'s dataQuality section.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'content', type: 'string', description: 'Base64-encoded file content', required: true, inputType: 'textarea' },
-        { name: 'filename', type: 'string', description: 'Filename (e.g., sample.csv)', required: true, inputType: 'text' }
+        { name: 'filename', type: 'string', description: 'Filename (e.g., sample.csv)', required: true, inputType: 'text' },
+        { name: 'delimiter', type: 'string', description: 'CSV delimiter (default: comma)', required: false, inputType: 'text' },
+        { name: 'header', type: 'boolean', description: 'Whether CSV has a header row (default: true)', required: false, inputType: 'text' },
+        { name: 'sample_size', type: 'integer', description: 'Number of rows to sample for profiling (default: 200)', required: false, inputType: 'number' }
       ],
       playgroundEnabled: true
     },
@@ -397,6 +415,16 @@ export class McpComponent implements OnInit {
         { name: 'filter', type: 'object', description: 'MongoDB query filter JSON (default: {})', required: false, inputType: 'textarea' },
         { name: 'projection', type: 'object', description: 'Fields to include/exclude JSON', required: false, inputType: 'textarea' },
         { name: 'limit', type: 'integer', description: 'Maximum documents (default: 20)', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'query_objectstore',
+      description: 'Read rows from a pipeline\'s objectStore destination (Parquet or ORC files in MinIO or AWS S3). Pass the pipeline name; the server resolves the bucket, prefix, format, and credentials from the pipeline config. Returns up to `limit` rows as JSON. Use when list_pipelines shows objectStore as the destination — query_postgres / query_mongodb / search_* will not work against Parquet/ORC files.',
+      category: 'Database Query',
+      parameters: [
+        { name: 'pipeline', type: 'string', description: 'Pipeline name (from list_pipelines)', required: true, inputType: 'text' },
+        { name: 'limit', type: 'integer', description: 'Maximum rows to return (default: 100, hard cap: 10000)', required: false, inputType: 'number' }
       ],
       playgroundEnabled: true
     },
@@ -528,6 +556,22 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     // --- Secrets ---
+    {
+      name: 'list_platform_secrets',
+      description: 'List the names of PLATFORM secrets (all secrets NOT tagged _type=tap — the Platform tab in the Secrets section). These are human-owned credentials for destinations and infrastructure (S3 credentials, database connections, vector-store endpoints). The agent can READ these (discover names + field shape) but cannot create, update, or delete them — that\'s the user\'s responsibility via the Secrets tab. Use whenever a pipeline destination needs a credentialsSecret reference (e.g. objectStore + provider=s3).',
+      category: 'Configuration',
+      parameters: [],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_platform_secret_fields',
+      description: 'Return the field NAMES (keys only — never values) of an existing platform secret. Use after list_platform_secrets to verify a candidate has the keys a destination config requires (e.g. an S3 credentialsSecret must contain accessKey, secretKey, region). Refuses tap-tagged secrets — use get_tap_secret_fields for those.',
+      category: 'Configuration',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Platform secret name (from list_platform_secrets)', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
     {
       name: 'update_secret',
       description: 'Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys for AI features.',

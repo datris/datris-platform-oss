@@ -274,7 +274,8 @@ object AgentLoop {
                     tools = tools,
                     enableThinking = enableThinking && AIUtil.supportsExtendedThinking(aiConfig),
                     maxTokens = maxTokens,
-                    sink = gatedSink
+                    sink = gatedSink,
+                    cancelled = cancelled
                 )
             } catch {
                 case e: DatrisException if isOverloadedError(e) =>
@@ -301,7 +302,8 @@ object AgentLoop {
                     tools = tools,
                     enableThinking = enableThinking && AIUtil.supportsExtendedThinking(fallbackCfg),
                     maxTokens = maxTokens,
-                    sink = gatedSink
+                    sink = gatedSink,
+                    cancelled = cancelled
                 )
             case None =>
                 // No lighter model to fall back to. Surface the original error.
