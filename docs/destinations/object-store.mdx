@@ -1,9 +1,13 @@
 ---
 title: "Object Store Destination (MinIO)"
-description: "Send data to MinIO object store"
+description: "Write Parquet or ORC files to the built-in MinIO object store"
 ---
 
 The object store destination uses an embedded Apache Spark engine to write columnar files to MinIO-compatible object storage. Output is written in Parquet or ORC format to an S3A path.
+
+<Note>
+This page covers the **MinIO** (default) provider — the built-in object store that ships with Datris. To write to **AWS S3**, see [S3 Destination](/destinations/s3) — same code path, same file formats, just per-pipeline credentials instead of the global MinIO ones.
+</Note>
 
 ## Output Path
 

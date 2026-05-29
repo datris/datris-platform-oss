@@ -95,6 +95,9 @@ export class PipelineCreateComponent implements OnInit {
   osBucket = '';
   osDeleteBeforeWrite = false;
   osPartitionBy: string[] = [];
+  osProvider: 'minio' | 's3' = 'minio';
+  osEndpoint = '';
+  osCredentialsSecret = '';
   pgKeyFields: string[] = [];
   mongoKeyFields: string[] = [];
   kafkaTopic = '';
@@ -283,6 +286,9 @@ export class PipelineCreateComponent implements OnInit {
       this.osBucket = dest.objectStore.destinationBucketOverride || '';
       this.osDeleteBeforeWrite = !!dest.objectStore.deleteBeforeWrite;
       this.osPartitionBy = Array.isArray(dest.objectStore.partitionBy) ? [...dest.objectStore.partitionBy] : [];
+      this.osProvider = (dest.objectStore.provider === 's3') ? 's3' : 'minio';
+      this.osEndpoint = dest.objectStore.endpoint || '';
+      this.osCredentialsSecret = dest.objectStore.credentialsSecret || '';
     } else if (dest?.kafka) {
       this.destType = 'kafka';
       this.kafkaTopic = dest.kafka.topic || '';
@@ -766,6 +772,12 @@ export class PipelineCreateComponent implements OnInit {
         if (!this.mongoTable.trim()) { this.error = 'Collection name is required'; return; }
       } else if (this.destType === 'objectstore') {
         if (!this.osPrefix.trim()) { this.error = 'Key is required'; return; }
+        if (this.osProvider === 's3') {
+          if (!this.osBucket.trim()) { this.error = 'Bucket is required when provider is S3'; return; }
+          if (this.osEndpoint.trim() && this.osEndpoint.trim().toLowerCase().startsWith('http://')) {
+            this.error = 'S3 endpoint must use https://'; return;
+          }
+        }
       } else if (this.destType === 'kafka') {
         if (!this.kafkaTopic.trim()) { this.error = 'Topic is required'; return; }
       } else if (this.destType === 'activemq') {
@@ -988,6 +1000,11 @@ export class PipelineCreateComponent implements OnInit {
       if (this.osBucket.trim()) os.destinationBucketOverride = this.osBucket.trim();
       const partitions = this.osPartitionBy.filter(p => p && p.trim());
       if (partitions.length > 0) os.partitionBy = partitions;
+      if (this.osProvider === 's3') {
+        os.provider = 's3';
+        if (this.osEndpoint.trim()) os.endpoint = this.osEndpoint.trim();
+        if (this.osCredentialsSecret.trim()) os.credentialsSecret = this.osCredentialsSecret.trim();
+      }
       config.destination.objectStore = os;
     } else if (this.destType === 'kafka') {
       config.destination.kafka = { topic: sanitizeIdentifier(this.kafkaTopic) };

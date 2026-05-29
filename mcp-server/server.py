@@ -261,7 +261,7 @@ When the user makes ANY data-related ask — "I'm looking for X", "can you get m
 
 After those calls return, anchor your reply in what exists: "There's already a `<name>` pipeline doing X — does that cover your need, or do you want to extend it / add Y / pick a different source?" Only enumerate external API options after you've confirmed nothing in the platform already covers the ask. A generic options menu drawn from training data wastes the user's time when the answer is sitting in their own environment.
 
-If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
+If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, `query_objectstore` (Parquet/ORC files in MinIO or AWS S3), or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
 
 How to find a "relevant pipeline" in the list response: the response begins with a `names` array — scan EVERY entry (the match may be at the end of a long list) for any name whose substring matches a keyword from the user's request. Hyphens, underscores, and case are interchangeable for matching. If any name matches, the pipeline EXISTS — do not announce "I don't see any …" or ask the user to clarify scope, provider, schedule, or data shape. Call the destination's query tool. Only when zero names match should you treat the resource as missing. When the user's data is already in the platform, query it and show what's there — do not collect setup parameters for a pipeline that already exists.
 
@@ -300,7 +300,7 @@ NEVER rules:
 
 Required workflow:
   1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
-  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb), pass sample data (base64-encoded) + filename so the schema is auto-detected. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead).
+  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb) and OBJECTSTORE (Parquet/ORC writes to MinIO or AWS S3), pass sample data (base64-encoded) + filename so the schema is auto-detected — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first.
      create_pipeline UPSERTS by name: if a pipeline with the same name already exists, the call REPLACES its config in place — the data already in the destination is NOT touched. To change a knob (keyFields, truncate, codegen_rule, etc.) on an existing pipeline, just call create_pipeline again with the same name and the new settings. You do NOT need to delete first.
      Common knobs: keyFields (list of column names that act as a natural key for dedupe/upsert on every run), truncate (wipe the destination before each run), codegen_rule (AI-powered data quality), codegen_transform (AI-powered transformation).
   3. Ingest data (choose one):
@@ -308,7 +308,7 @@ Required workflow:
      Option B — Create a tap: use create_tap to provide an instruction (AI generates the script) or your own Python script that fetches data from an external source and pushes it into the pipeline automatically. See Tap workflow below.
   4. Monitor: call get_job_status with the pipelineToken returned from upload_data and poll until `rollup.allDone` is true. You MUST wait for that before querying.
   5. If `rollup.status` is `error` or `warning`: read `rollup.jobs[].lastError` for the failing process and description. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
-  6. Query & search: use query_postgres, query_mongodb for structured data; search_qdrant, search_pgvector, etc. for vector search
+  6. Query & search: use query_postgres, query_mongodb for structured data; query_objectstore for Parquet/ORC files in MinIO or S3; search_qdrant, search_pgvector, etc. for vector search
   7. RAG: pass search results as context to ai_answer with the user's question
 
 Tap workflow (for step 3 Option B):
@@ -431,7 +431,7 @@ PIPELINE_CONFIG_REFERENCE = """\
 6. Call `create_pipeline` with the config.
 7. Call `upload_data` ONCE with your full data (base64-encoded) and the pipeline name. Do not pre-chunk — vector destinations chunk server-side, structured pipelines accept the whole file as one batch.
 8. Call `get_job_status` with the pipelineToken returned from `upload_data` to monitor processing. Poll until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`).
-9. Query or search the data: `query_postgres`, `query_mongodb`, `search_qdrant`, `search_pgvector`, etc.
+9. Query or search the data: `query_postgres`, `query_mongodb`, `query_objectstore`, `search_qdrant`, `search_pgvector`, etc.
 10. For RAG: pass search results as context to `ai_answer` with the user's question.
 
 ---
@@ -612,7 +612,9 @@ Call `check_service_health` first to verify the target service is available.
 }
 ```
 
-### objectStore — S3/MinIO
+### objectStore — MinIO (default) or AWS S3
+
+**MinIO** (the platform's built-in object store — used unless you explicitly say S3):
 
 ```json
 "destination": {
@@ -620,13 +622,30 @@ Call `check_service_health` first to verify the target service is available.
     "prefixKey": "data/output/",
     "fileFormat": "parquet",
     "writeMode": "overwrite",
-    "partitionBy": ["date", "region"]
+    "partitionBy": ["date", "category"]
   }
 }
 ```
 
-File formats: `parquet`, `csv`, `json`, `orc`
-Write modes: `overwrite`, `append`, `ignore`, `error`
+**AWS S3** — set `provider: "s3"` and name a credentials secret. The secret must contain `accessKey`, `secretKey`, `region` (required — region lives in the secret next to the credential that authorizes it), and optionally `sessionToken`. Region is NOT a config field; if the secret is missing `region`, the write fails at resolve time with a clear error.
+
+```json
+"destination": {
+  "objectStore": {
+    "provider": "s3",
+    "destinationBucketOverride": "<bucket-name>",
+    "credentialsSecret": "<vault-secret-name>",
+    "prefixKey": "data/output/",
+    "fileFormat": "parquet",
+    "writeMode": "append"
+  }
+}
+```
+
+The credentials secret is human-owned (not `_type=tap`), so the agent does NOT create it. **Before asking the user**, call `list_platform_secrets` to see what's already configured — destination credentials live on the Platform tab and `list_tap_secrets` will not find them. If a candidate exists, call `get_platform_secret_fields` to verify it has `accessKey`, `secretKey`, and `region`. Only if nothing suitable exists, ask the user to add a secret in the Configuration → Secrets → Platform tab with those fields (and optionally `sessionToken`), then give you the secret name. Region lives with the credentials because it pairs with the key that authorizes it.
+
+File formats: `parquet`, `orc`
+Write modes: `overwrite`, `append`, `ignore`, `errorifexists`
 
 ### kafka
 
@@ -1130,17 +1149,17 @@ async def list_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. For STRUCTURED destinations (postgres, mongodb): send a small sample file and the schema is auto-detected — you do not specify field names or types. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma): there is no schema; pass ONLY pipeline + destination (and optionally filename to set the file-extension hint). Do NOT base64 the document just to satisfy this call — that's wasted tokens; send the document later via upload_data.",
+            description="Create a pipeline. THREE destination categories: STRUCTURED (postgres, mongodb) — send a small sample file and the schema is auto-detected. OBJECTSTORE (objectstore — writes Parquet/ORC to MinIO or AWS S3) — same shape as structured (CSV-only, sample file required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint). Do NOT base64 the document just to satisfy this call — that's wasted tokens; send the document later via upload_data.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "content": {
                         "type": "string",
-                        "description": "Base64-encoded sample data file content. REQUIRED for structured destinations (postgres, mongodb). OMIT for vector destinations — the file goes through upload_data after this call returns."
+                        "description": "Base64-encoded sample data file content. REQUIRED for structured destinations (postgres, mongodb) AND for objectstore (CSV only — schema auto-detected from the sample). OMIT for vector destinations — the file goes through upload_data after this call returns."
                     },
                     "filename": {
                         "type": "string",
-                        "description": "Filename (e.g., data.csv, report.json, orders.xml). REQUIRED for structured destinations. Optional for vector destinations — only used as a fileExtension hint (defaults to txt)."
+                        "description": "Filename (e.g., data.csv, report.json, orders.xml). REQUIRED for structured destinations and objectstore. Optional for vector destinations — only used as a fileExtension hint (defaults to txt)."
                     },
                     "pipeline": {
                         "type": "string",
@@ -1148,16 +1167,16 @@ async def list_tools():
                     },
                     "destination": {
                         "type": "string",
-                        "enum": ["postgres", "mongodb", "qdrant", "weaviate", "milvus", "chroma", "pgvector"],
-                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML)"
+                        "enum": ["postgres", "mongodb", "objectstore", "qdrant", "weaviate", "milvus", "chroma", "pgvector"],
+                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). Use 'objectstore' for Parquet/ORC writes to MinIO (default provider) or AWS S3 (set provider=s3)."
                     },
                     "table": {
                         "type": "string",
-                        "description": "Destination table or collection name (default: pipeline name)"
+                        "description": "Destination table or collection name (default: pipeline name). Ignored for objectstore (the destination is bucket+prefix, not a table)."
                     },
                     "database": {
                         "type": "string",
-                        "description": "Destination database name (default: datris)"
+                        "description": "Destination database name (default: datris). Ignored for objectstore."
                     },
                     "delimiter": {
                         "type": "string",
@@ -1175,6 +1194,46 @@ async def list_tools():
                     "truncate": {
                         "type": "boolean",
                         "description": "Optional. When true, the destination table/collection is truncated before each run, so only the latest run's data is kept. Only applies to postgres and mongodb destinations. Default false (append). Mutually useful with — but distinct from — keyFields: truncate wipes everything each run, keyFields upserts per natural key."
+                    },
+                    "bucket": {
+                        "type": "string",
+                        "description": "Object-store bucket name. Only applies to destination=objectstore. For MinIO this is optional (default: {environment}-data). For S3 (provider=s3) this is REQUIRED — there is no global default S3 bucket."
+                    },
+                    "prefix": {
+                        "type": "string",
+                        "description": "Object-store key prefix under the bucket (e.g. 'sales/daily'). REQUIRED for destination=objectstore."
+                    },
+                    "fileFormat": {
+                        "type": "string",
+                        "enum": ["parquet", "orc"],
+                        "description": "Object-store file format. Only applies to destination=objectstore. Default: parquet."
+                    },
+                    "partitionBy": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional partition columns for objectstore writes. Spark creates a directory structure based on the distinct values of these columns. Field names must be in the destination schema. Example: ['dt', 'region']."
+                    },
+                    "writeMode": {
+                        "type": "string",
+                        "enum": ["append", "overwrite", "ignore", "errorifexists"],
+                        "description": "Object-store write mode. Only applies to destination=objectstore. Default: append."
+                    },
+                    "deleteBeforeWrite": {
+                        "type": "boolean",
+                        "description": "When true, delete existing objects under the prefix before writing. Only applies to destination=objectstore. Default: false. Distinct from writeMode=overwrite (which is Spark-level)."
+                    },
+                    "provider": {
+                        "type": "string",
+                        "enum": ["minio", "s3"],
+                        "description": "Object-store provider. Only applies to destination=objectstore. Default 'minio' (the platform's built-in store). Set to 's3' to write to AWS S3 — that requires bucket AND credentialsSecret."
+                    },
+                    "endpoint": {
+                        "type": "string",
+                        "description": "S3 endpoint URL override. Only applies to destination=objectstore + provider=s3. Must use https://. Leave unset for the AWS regional default. Ignored for provider=minio."
+                    },
+                    "credentialsSecret": {
+                        "type": "string",
+                        "description": "Name of an existing PLATFORM secret holding S3 credentials (accessKey, secretKey, region; optionally sessionToken). REQUIRED when destination=objectstore + provider=s3 unless Datris runs in AWS with an instance role. Discover candidates via list_platform_secrets and verify field shape via get_platform_secret_fields. The agent cannot create this secret — if none exists, ask the user to create one on Configuration → Secrets → Platform."
                     },
                     "codegen_rule": {
                         "type": "string",
@@ -1444,6 +1503,26 @@ async def list_tools():
             }
         ),
         Tool(
+            name="query_objectstore",
+            description=(
+                "Read rows from a pipeline's objectStore destination (Parquet or ORC files in MinIO or AWS S3). "
+                "Pass the pipeline name; the server resolves the bucket, prefix, format, and credentials from "
+                "the pipeline config — same code path the writer uses, so MinIO and S3 destinations both work. "
+                "Returns up to `limit` rows as JSON objects keyed by column name, plus the resolved s3a:// path "
+                "and format for transparency. Returns 0 rows (not an error) when the pipeline has no successful "
+                "runs yet. This is the right tool when list_pipelines shows objectStore as the destination — "
+                "query_postgres / query_mongodb / search_* will not work against Parquet/ORC files."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines)."},
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100, hard cap: 10000)."}
+                },
+                "required": ["pipeline"]
+            }
+        ),
+        Tool(
             name="query_mongodb",
             description="Query a MongoDB collection with optional filter and projection. Use list_mongodb_databases and list_mongodb_collections first to discover available data. Returns matching documents as JSON.",
             inputSchema={
@@ -1652,6 +1731,47 @@ async def list_tools():
                     "name": {
                         "type": "string",
                         "description": "Tap secret name (from list_tap_secrets)."
+                    }
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="list_platform_secrets",
+            description=(
+                "List the names of PLATFORM secrets (all secrets NOT tagged _type=tap — the "
+                "Platform tab in the UI's Secrets section). These are human-owned credentials "
+                "for destinations and infrastructure (e.g. S3 destination credentials, "
+                "Postgres connection, MongoDB connection, embedding/vector-store endpoints). "
+                "The agent can READ these (to look up their names and field shape via "
+                "get_platform_secret_fields and reference them in pipeline configs) but "
+                "cannot create, update, or delete them — those operations are the user's "
+                "responsibility via the Secrets tab. Use this whenever a pipeline's "
+                "destination needs a credentialsSecret reference (e.g. objectStore with "
+                "provider=s3) and you need to discover which secrets the user already has."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_platform_secret_fields",
+            description=(
+                "Return the FIELD NAMES (keys only — never values) of an existing platform "
+                "secret. Use this after list_platform_secrets to verify a candidate secret "
+                "has the keys a destination config requires (e.g. an S3 credentialsSecret "
+                "must contain accessKey, secretKey, region). Secret values are intentionally "
+                "NOT returned. If the named secret is tap-tagged, this tool refuses — use "
+                "get_tap_secret_fields for those."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Platform secret name (from list_platform_secrets)."
                     }
                 },
                 "required": ["name"]
@@ -2031,7 +2151,7 @@ def _dispatch(name: str, args: dict) -> str:
         try:
             pipelines = json.loads(result)
             if not pipelines or (isinstance(pipelines, list) and len(pipelines) == 0):
-                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations pass sample data (base64) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
+                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations (postgres, mongodb) and objectstore (Parquet/ORC to MinIO or S3) pass sample data (base64) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
             if isinstance(pipelines, list):
                 # Summarize each pipeline to (name, destination kind, table/collection,
                 # catalog). Returning the FULL nested config for every pipeline pushes
@@ -2082,6 +2202,20 @@ def _dispatch(name: str, args: dict) -> str:
                 dest_type = "postgres"
 
         is_vector = dest_type in ("pgvector", "qdrant", "weaviate", "milvus", "chroma")
+        is_objectstore = dest_type == "objectstore"
+
+        # Validate objectstore-specific params before doing any work.
+        if is_objectstore:
+            if not args.get("prefix"):
+                return json.dumps({"error": "destination=objectstore requires the 'prefix' parameter (key prefix under the bucket)"})
+            provider = (args.get("provider") or "minio").lower()
+            if provider not in ("minio", "s3"):
+                return json.dumps({"error": "objectstore 'provider' must be 'minio' or 's3'"})
+            if provider == "s3":
+                if not args.get("bucket"):
+                    return json.dumps({"error": "destination=objectstore with provider=s3 requires 'bucket' — there is no global default S3 bucket"})
+                if args.get("endpoint") and args["endpoint"].lower().startswith("http://"):
+                    return json.dumps({"error": "S3 'endpoint' must use https://"})
 
         if is_vector:
             # Vector destinations have no schema to detect — synthesize the config
@@ -2097,7 +2231,10 @@ def _dispatch(name: str, args: dict) -> str:
                 }
             }
         else:
-            # Structured destinations: send sample to /generate for schema detection
+            # Structured destinations AND objectstore: send sample to /generate for
+            # schema detection. ObjectStore is CSV-only at the validator level and
+            # writes a typed Parquet/ORC schema, so it needs the same schema-detection
+            # round-trip as postgres/mongodb.
             if not args.get("content") or not filename:
                 return json.dumps({"error": "content and filename are required for non-vector destinations (used for schema auto-detection)"})
             gen_data = {"pipeline": pipeline_name, "allStrings": "true"}
@@ -2135,6 +2272,25 @@ def _dispatch(name: str, args: dict) -> str:
             dest["chroma"] = {"collectionName": table_name, "embeddingSecretName": "oss/embedding", "chromaSecretName": "oss/chroma", "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50}}
         elif dest_type == "pgvector":
             dest["pgvector"] = {"tableName": table_name, "schemaName": "public", "embeddingSecretName": "oss/embedding", "postgresSecretName": "oss/pgvector", "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50}}
+        elif dest_type == "objectstore":
+            provider = (args.get("provider") or "minio").lower()
+            obj_cfg = {
+                "prefixKey": args["prefix"],
+                "fileFormat": args.get("fileFormat") or "parquet",
+                "writeMode": args.get("writeMode") or "append",
+                "deleteBeforeWrite": bool(args.get("deleteBeforeWrite", False)),
+                "provider": provider,
+            }
+            if args.get("bucket"):
+                obj_cfg["destinationBucketOverride"] = args["bucket"]
+            if args.get("partitionBy"):
+                obj_cfg["partitionBy"] = args["partitionBy"]
+            if provider == "s3":
+                if args.get("endpoint"):
+                    obj_cfg["endpoint"] = args["endpoint"]
+                if args.get("credentialsSecret"):
+                    obj_cfg["credentialsSecret"] = args["credentialsSecret"]
+            dest["objectStore"] = obj_cfg
         else:
             dest["database"] = {"dbName": db_name, "schema": "public", "table": table_name, "usePostgres": True}
 
@@ -2269,6 +2425,12 @@ def _dispatch(name: str, args: dict) -> str:
         return _call("post", "/api/v1/search/chroma", json=payload)
 
     # --- Database Queries (via REST API) ---
+    elif name == "query_objectstore":
+        payload = {"pipeline": args["pipeline"]}
+        if args.get("limit") is not None:
+            payload["limit"] = args["limit"]
+        return _call("post", "/api/v1/query/objectstore", json=payload)
+
     elif name == "query_postgres":
         payload = {"sql": args["sql"]}
         if args.get("limit"):
@@ -2383,6 +2545,29 @@ def _dispatch(name: str, args: dict) -> str:
         # Strip the _type marker — it's a platform tag, not a user-facing field. Return
         # NAMES ONLY (no values) so the agent never sees secret material.
         field_names = [k for k in fields.keys() if k != "_type"]
+        return json.dumps({"name": secret_name, "fieldNames": field_names, "_type": fields.get("_type")})
+
+    elif name == "list_platform_secrets":
+        # Server-side filter for secrets NOT tagged _type=tap (the UI's Platform tab).
+        # These are human-owned (destination credentials, infrastructure connections).
+        # Names only — no values, no field shape; use get_platform_secret_fields next.
+        return _call("get", "/api/v1/secrets", params={"type": "platform"})
+
+    elif name == "get_platform_secret_fields":
+        secret_name = args["name"]
+        try:
+            data = json.loads(_call("get", f"/api/v1/secrets/{secret_name}"))
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"error": f"Could not look up secret '{secret_name}'."})
+        if not isinstance(data, dict) or "error" in data:
+            return json.dumps({"error": f"Secret '{secret_name}' not found."})
+        fields = data.get("fields") or {}
+        # Refuse tap-tagged secrets — agent should use get_tap_secret_fields for those.
+        if fields.get("_type") == "tap":
+            return json.dumps({"error": f"Secret '{secret_name}' is a tap secret (_type=tap). Use get_tap_secret_fields instead."})
+        # Strip the _type marker and the createdByKeyLabel bookkeeping field — return
+        # only the user-meaningful field NAMES (no values). The agent never sees secret material.
+        field_names = [k for k in fields.keys() if k not in ("_type", "createdByKeyLabel")]
         return json.dumps({"name": secret_name, "fieldNames": field_names, "_type": fields.get("_type")})
 
     elif name == "create_tap_secret":

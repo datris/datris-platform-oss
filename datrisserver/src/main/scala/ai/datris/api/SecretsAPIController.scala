@@ -79,11 +79,24 @@ class SecretsAPIController {
             val allSecrets = SecretsUtil.listSecrets(env)
 
             val secrets = if (secretType != null && secretType.nonEmpty) {
-                // Filter by _type field
-                allSecrets.filter(name => {
-                    val secretMap = SecretsUtil.getSecretMap(env + "/" + name)
-                    secretMap.exists(m => secretType.equals(m.get("_type")))
-                })
+                // type=platform → all secrets NOT tagged _type=tap (mirrors the
+                // UI's Platform tab). Any other value → exact-match on _type.
+                if ("platform".equals(secretType)) {
+                    allSecrets.filter(name => {
+                        val secretMap = SecretsUtil.getSecretMap(env + "/" + name)
+                        // Include when the secret has no _type (most platform
+                        // secrets predate the tag) or when _type != "tap".
+                        secretMap.exists(m => {
+                            val t = m.get("_type")
+                            t == null || !"tap".equals(t)
+                        })
+                    })
+                } else {
+                    allSecrets.filter(name => {
+                        val secretMap = SecretsUtil.getSecretMap(env + "/" + name)
+                        secretMap.exists(m => secretType.equals(m.get("_type")))
+                    })
+                }
             } else allSecrets
 
             val gson = new Gson

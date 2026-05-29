@@ -110,49 +110,70 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                 try { f } finally { TenantContext.clear() }
             }
 
+            // Wrap a loader's `process()` body for scheduling on destinationEC. Two
+            // jobs in one:
+            //  1. Set/clear tenant context on the pool thread (was withTenant).
+            //  2. Translate ANY Throwable — including fatal LinkageError /
+            //     IllegalAccessError / OutOfMemoryError — into a RuntimeException
+            //     so Scala's Future captures it. Without this, fatal errors leave
+            //     the Future's Promise uncompleted, the executing thread dies, and
+            //     Await.result below blocks for the full destinationTimeoutMinutes
+            //     before throwing TimeoutException — the user sees PROCESSING for
+            //     ~10 minutes after a failure that should have ended the job
+            //     instantly. JobRunner is the right boundary for that translation:
+            //     the JVM is still healthy enough to log + fail this job; we don't
+            //     need to take down the whole server for one bad pipeline.
+            def runLoader(loaderName: String)(body: => Unit): Future[Unit] = Future {
+                try { withTenant(body) }
+                catch {
+                    case t: Throwable =>
+                        throw new RuntimeException(loaderName + " failed: " + t.getClass.getName + ": " + t.getMessage, t)
+                }
+            }
+
             val destinationFutures = List(
                 if (config.destination.objectStore != null)
-                    Some(Future(withTenant(new SparkObjectStoreLoader(jobContextTransform).process())))
+                    Some(runLoader("SparkObjectStoreLoader")(new SparkObjectStoreLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.database != null && config.destination.database.usePostgres)
-                    Some(Future(withTenant(new PostgresLoader(jobContextTransform).process())))
+                    Some(runLoader("PostgresLoader")(new PostgresLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.database != null && config.destination.database.useMongoDB)
-                    Some(Future(withTenant(new MongoDBLoader(jobContextTransform).process())))
+                    Some(runLoader("MongoDBLoader")(new MongoDBLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.restEndpoint != null)
-                    Some(Future(withTenant(new RestEndpointRunner(jobContextTransform, config.destination.restEndpoint).process())))
+                    Some(runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextTransform, config.destination.restEndpoint).process()))
                 else None,
 
                 if (config.destination.kafka != null)
-                    Some(Future(withTenant(new KafkaLoader(jobContextTransform).process())))
+                    Some(runLoader("KafkaLoader")(new KafkaLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.activeMQ != null)
-                    Some(Future(withTenant(new ActiveMQLoader(jobContextTransform).process())))
+                    Some(runLoader("ActiveMQLoader")(new ActiveMQLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.qdrant != null)
-                    Some(Future(withTenant(new QdrantLoader(jobContextTransform).process())))
+                    Some(runLoader("QdrantLoader")(new QdrantLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.weaviate != null)
-                    Some(Future(withTenant(new WeaviateLoader(jobContextTransform).process())))
+                    Some(runLoader("WeaviateLoader")(new WeaviateLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.pgvector != null)
-                    Some(Future(withTenant(new PGVectorLoader(jobContextTransform).process())))
+                    Some(runLoader("PGVectorLoader")(new PGVectorLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.milvus != null)
-                    Some(Future(withTenant(new MilvusLoader(jobContextTransform).process())))
+                    Some(runLoader("MilvusLoader")(new MilvusLoader(jobContextTransform).process()))
                 else None,
 
                 if (config.destination.chroma != null)
-                    Some(Future(withTenant(new ChromaLoader(jobContextTransform).process())))
+                    Some(runLoader("ChromaLoader")(new ChromaLoader(jobContextTransform).process()))
                 else None
 
             ).flatten
@@ -162,7 +183,13 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             statusUtil.overrideProcessName(this.getClass.getSimpleName)
             statusUtil.info("end", "Process completed")
         } catch {
-            case e: Exception =>
+            // Catch Throwable (not Exception) for defense in depth. The runLoader
+            // wrapper above already translates fatal errors into RuntimeException
+            // at the Future site, but anything raised on this thread directly
+            // (validator, preprocessor, transform) could still be a fatal Error.
+            // VirtualMachineError (OOM, StackOverflow) gets logged + reported here
+            // but the JVM may still be unhealthy — that's a separate concern.
+            case e: Throwable =>
                 val errorMessage = Throwables.getStackTraceAsString(e)
                 statusUtil.error("end", "Process completed, error: " + errorMessage)
                 val aiExplanation = getAIErrorExplanation(errorMessage)

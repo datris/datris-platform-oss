@@ -25,22 +25,25 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
 
         val spark = SparkSessionManager.getOrCreate()
 
-        val bucket = {
-            if (config.destination.objectStore.destinationBucketOverride != null)
-                config.destination.objectStore.destinationBucketOverride
-            else
-                DatrisEnvironment.current.environment + "-data"
-        }
-        val prefixKey = config.destination.objectStore.prefixKey
+        val objectStore = config.destination.objectStore
+        val bucket = ObjectStoreSpark.resolveBucket(objectStore)
+        val prefixKey = objectStore.prefixKey
         val outputPath = "s3a://" + bucket + "/" + prefixKey
 
-        // Delete existing data if requested
-        if (config.destination.objectStore.deleteBeforeWrite) {
+        ObjectStoreSpark.applyPerBucketConfig(spark, bucket, objectStore)
+
+        // Delete existing data if requested. Route through the Hadoop FileSystem
+        // (S3A) rather than the MinIO Java SDK, so it honors the per-bucket config
+        // we just applied and works for both MinIO and AWS S3. Using the MinIO SDK
+        // here would always hit the global MinIO endpoint — wrong for S3 buckets.
+        if (objectStore.deleteBeforeWrite) {
             statusUtil.info("processing", "Deleting existing data at: " + outputPath)
             try {
-                ObjectStoreUtil.deleteFolder(bucket, prefixKey)
+                val path = new org.apache.hadoop.fs.Path(outputPath)
+                val fs = path.getFileSystem(spark.sparkContext.hadoopConfiguration)
+                if (fs.exists(path)) fs.delete(path, true)
             } catch {
-                case _: Exception => logger.info("No existing data to delete at: " + outputPath)
+                case e: Exception => logger.info("No existing data to delete at: " + outputPath + " (" + e.getMessage + ")")
             }
         }
 

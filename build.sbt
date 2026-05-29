@@ -21,6 +21,29 @@ lazy val datrisserver = project
         assemblySettings,
         libraryDependencies ++= allDependencies,
         libraryDependencySchemes += "com.github.luben" % "zstd-jni" % VersionScheme.Always,
+        // Pin Jackson to 2.15.x to match what Spark 3.5.4 ships with — its
+        // jackson-module-scala 2.15.2 strictly checks for jackson-databind in
+        // [2.15.0, 2.16.0). Without this override, transitive deps (vault driver,
+        // weaviate client, etc.) drag in jackson-databind 2.18.x and Spark blows
+        // up with ExceptionInInitializerError the first time RDDOperationScope
+        // loads (which is any time a destination uses SparkSession — objectStore
+        // writes, in particular). Spring Boot 3.2.12 also ships 2.15.x, so this
+        // is the natural floor for the whole stack.
+        dependencyOverrides ++= Seq(
+            "com.fasterxml.jackson.core" % "jackson-core" % "2.15.2",
+            "com.fasterxml.jackson.core" % "jackson-annotations" % "2.15.2",
+            "com.fasterxml.jackson.core" % "jackson-databind" % "2.15.2",
+            "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.15.2",
+            // Lock the entire Hadoop family to 3.3.4 — what Spark 3.5.4 ships.
+            // S3A and the rest of the Hadoop FileSystem layer share private
+            // interfaces (IOStatistics, DurationTracker, CallableRaisingIOE);
+            // a version skew between hadoop-aws and hadoop-common surfaces as
+            // NoSuchMethodError on the first S3A read. The bump-together rule
+            // applies to every transitive consumer too.
+            "org.apache.hadoop" % "hadoop-common" % "3.3.4",
+            "org.apache.hadoop" % "hadoop-client-api" % "3.3.4",
+            "org.apache.hadoop" % "hadoop-client-runtime" % "3.3.4"
+        ),
         buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion, sbtVersion),
         buildInfoPackage := "ai.datris.build.sbt"
     )
@@ -66,7 +89,12 @@ lazy val allDependencies = Seq(
     // Spark
     "org.apache.spark" %% "spark-core" % "3.5.4",
     "org.apache.spark" %% "spark-sql" % "3.5.4",
-    "org.apache.hadoop" % "hadoop-aws" % "3.3.6",
+    // hadoop-aws must match the hadoop-common that Spark ships. Spark 3.5.4
+    // bundles hadoop 3.3.4 — using a newer hadoop-aws (3.3.5+) leaves it
+    // calling IOStatisticsBinding overloads that don't exist in 3.3.4, with
+    // a NoSuchMethodError on the first Parquet read from S3A. Keep these
+    // versions locked together; bumping one requires bumping the other.
+    "org.apache.hadoop" % "hadoop-aws" % "3.3.4",
 
     // Secrets: HashiCorp Vault
     "io.github.jopenlibs" % "vault-java-driver" % "6.2.1",

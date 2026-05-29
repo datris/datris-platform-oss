@@ -727,7 +727,8 @@ object AIUtil {
         tools: List[JsonObject],
         enableThinking: Boolean,
         maxTokens: Int,
-        sink: AIStreamEvent => Unit
+        sink: AIStreamEvent => Unit,
+        cancelled: () => Boolean = () => false
     ): AIToolResponse = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized.")
@@ -735,7 +736,7 @@ object AIUtil {
         sink(AIStreamEvent.IterationStart)
 
         aiConfig.provider.toLowerCase match {
-            case "anthropic" => anthropicStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink)
+            case "anthropic" => anthropicStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink, cancelled)
             case "openai"    => openaiNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
             case other       =>
                 throw new DatrisException("Provider '" + other + "' is not yet supported by the in-product Assistant. " +
@@ -778,16 +779,17 @@ object AIUtil {
         tools: List[JsonObject],
         enableThinking: Boolean,
         maxTokens: Int,
-        sink: AIStreamEvent => Unit
+        sink: AIStreamEvent => Unit,
+        cancelled: () => Boolean
     ): AIToolResponse = {
         if (!enableThinking) {
-            return anthropicStreamingCallOnce(aiConfig, system, messages, tools, ThinkingForm.Unsupported, maxTokens, sink)
+            return anthropicStreamingCallOnce(aiConfig, system, messages, tools, ThinkingForm.Unsupported, maxTokens, sink, cancelled)
         }
 
         val key = thinkingCacheKey(aiConfig)
         Option(thinkingFormCache.get(key)) match {
             case Some(form) =>
-                anthropicStreamingCallOnce(aiConfig, system, messages, tools, form, maxTokens, sink)
+                anthropicStreamingCallOnce(aiConfig, system, messages, tools, form, maxTokens, sink, cancelled)
             case None =>
                 // Cold cache — try the new (adaptive) form first, then fall back.
                 val ladder: List[ThinkingForm] = List(ThinkingForm.Adaptive, ThinkingForm.Enabled, ThinkingForm.Unsupported)
@@ -796,7 +798,7 @@ object AIUtil {
                 while (iter.hasNext) {
                     val form = iter.next()
                     try {
-                        val r = anthropicStreamingCallOnce(aiConfig, system, messages, tools, form, maxTokens, sink)
+                        val r = anthropicStreamingCallOnce(aiConfig, system, messages, tools, form, maxTokens, sink, cancelled)
                         thinkingFormCache.put(key, form)
                         logger.info("Assistant: cached thinking form for " + key + " = " + form)
                         return r
@@ -838,7 +840,8 @@ object AIUtil {
         tools: List[JsonObject],
         form: ThinkingForm,
         maxTokens: Int,
-        sink: AIStreamEvent => Unit
+        sink: AIStreamEvent => Unit,
+        cancelled: () => Boolean
     ): AIToolResponse = {
         val req = new JsonObject()
         req.addProperty("model", aiConfig.model)
@@ -886,7 +889,7 @@ object AIUtil {
                 throw new DatrisException("Anthropic returned " + status + ": " + body.take(800))
             }
             val stream = response.getEntity.getContent
-            try parseAnthropicSseStream(stream, sink)
+            try parseAnthropicSseStream(stream, sink, cancelled, httpPost)
             finally stream.close()
         } finally {
             response.close()
@@ -950,7 +953,9 @@ object AIUtil {
       */
     private def parseAnthropicSseStream(
         stream: java.io.InputStream,
-        sink: AIStreamEvent => Unit
+        sink: AIStreamEvent => Unit,
+        cancelled: () => Boolean,
+        httpPost: org.apache.http.client.methods.HttpPost
     ): AIToolResponse = {
         val reader = new java.io.BufferedReader(new java.io.InputStreamReader(stream, StandardCharsets.UTF_8))
 
@@ -958,8 +963,24 @@ object AIUtil {
         val builders = scala.collection.mutable.Map.empty[Int, AnthropicBlockBuilder]
         var stopReason: String = ""
 
+        // Cancellation check up front — short-circuit before we touch the stream.
+        // After that, check between Anthropic SSE lines so we stop consuming tokens
+        // (and Anthropic stops generating them) as soon as the client disconnects.
+        // httpPost.abort() forces the HTTP connection to close immediately, which
+        // Anthropic detects within ~one packet and uses to halt token generation —
+        // without it, the connection might linger on a socket buffer.
+        if (cancelled()) {
+            try httpPost.abort() catch { case _: Throwable => () }
+            throw new DatrisException("Cancelled by user")
+        }
+
         var line = reader.readLine()
         while (line != null) {
+            if (cancelled()) {
+                logger.info("Anthropic streaming cancelled mid-response — aborting connection to stop token generation")
+                try httpPost.abort() catch { case _: Throwable => () }
+                throw new DatrisException("Cancelled by user")
+            }
             if (line.startsWith("data:")) {
                 val payload = line.substring(5).trim
                 if (payload.nonEmpty) {

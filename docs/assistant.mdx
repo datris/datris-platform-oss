@@ -20,6 +20,7 @@ The Assistant is open-ended. Some examples:
 - *"Pull current weather data from a public API and create a pipeline for it."*
 - *"Ingest the most recent NYC taxi trip data into a pipeline."*
 - *"List the taps that are currently scheduled and tell me which haven't run in over a week."*
+- *"Show me the rows in the `weather` pipeline."* (works for MongoDB, PostgreSQL, **Object Store (Parquet / ORC)**, or vector destinations — the agent picks the right query tool for the destination)
 
 The agent will reach for tools as it needs them: web search to find a source,
 `list_taps` / `list_pipelines` to check for existing work, `create_tap_secret`
@@ -52,7 +53,19 @@ if you say "delete the broken tap," the agent will name what it's about to
 delete and wait for your confirmation in the chat before proceeding.
 
 The Stop button at the bottom of the chat aborts the loop server-side at the
-next checkpoint, so you can interrupt anytime.
+next checkpoint, so you can interrupt anytime. Stop halts the in-flight model
+call within a fraction of a second — cancelled responses cost only what was
+already streamed.
+
+## Platform-tab secrets are visible but read-only
+
+When a pipeline destination needs operator-owned credentials (AWS S3, an
+external Postgres, a vector-store endpoint, etc.), the agent can **discover**
+secrets you've created on Configuration → Secrets → Platform and verify their
+field shape — but it cannot create, modify, or delete them. If nothing
+suitable exists, the agent will name the field shape the destination needs and
+ask you to add the secret in the Secrets tab, then give it the name to use.
+Secret values are never exposed to the agent.
 
 ## Long-running runs are carried to completion
 

@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder}
 import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
-import ai.datris.util.{AIUtil, APIKeyValidator, PostgresQueryUtil, MongoDBQueryUtil, SecretsRetrieverUtil}
+import ai.datris.util.{AIUtil, APIKeyValidator, ObjectStoreQueryUtil, PostgresQueryUtil, MongoDBQueryUtil, SecretsRetrieverUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -89,6 +89,43 @@ class QueryAPIController {
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         }
         catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @PostMapping(path = Array("/query/objectstore"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def queryObjectStore(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                         @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /query/objectstore called")
+            APIKeyValidator.validate(apiKey)
+
+            val pipelineName = Option(body.get("pipeline")).map(_.toString)
+                .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
+            val limit = Option(body.get("limit")).map {
+                case d: java.lang.Double  => d.intValue()
+                case i: java.lang.Integer => i.intValue()
+                case other                => other.toString.toInt
+            }.getOrElse(100)
+
+            val result = ObjectStoreQueryUtil.query(pipelineName, limit)
+
+            val gson = new GsonBuilder().serializeNulls().create()
+            val response = new java.util.LinkedHashMap[String, Any]()
+            response.put("pipeline", pipelineName)
+            response.put("path", result.path)
+            response.put("format", result.format)
+            response.put("columns", result.columns)
+            response.put("results", result.rows)
+            response.put("count", result.rows.size())
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        }
+        catch {
+            case e: DatrisException =>
+                logger.warn("query/objectstore: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))

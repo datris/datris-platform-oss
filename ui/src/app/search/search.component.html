@@ -9,6 +9,9 @@
           <option value="postgres">PostgreSQL</option>
           <option value="mongodb">MongoDB</option>
         </optgroup>
+        <optgroup label="Object Store">
+          <option value="objectstore">Object Store (MinIO / S3 — Parquet or ORC)</option>
+        </optgroup>
         <optgroup label="Vector Search">
           <option value="qdrant" *ngIf="healthService.isAvailable('qdrant')">Qdrant</option>
           <option value="weaviate" *ngIf="healthService.isAvailable('weaviate')">Weaviate</option>
@@ -82,6 +85,33 @@
       <div class="form-row">
         <label class="form-label">Projection (JSON, optional)</label>
         <textarea class="form-input form-textarea" [(ngModel)]="mongoProjection" placeholder='{"name": 1, "_id": 0}' rows="2"></textarea>
+      </div>
+    </ng-container>
+
+    <!-- Object Store fields -->
+    <ng-container *ngIf="isObjectStore()">
+      <div class="form-row-inline">
+        <div class="form-field" style="flex: 3">
+          <label class="form-label">Pipeline</label>
+          <select class="form-input" [(ngModel)]="osSelectedPipeline">
+            <option value="">Select a pipeline...</option>
+            <option *ngFor="let p of osPipelines" [value]="p.name">{{ p.name }}</option>
+          </select>
+        </div>
+        <div class="form-field" style="flex: 1">
+          <label class="form-label">Limit</label>
+          <input class="form-input" type="number" [(ngModel)]="osLimit">
+        </div>
+      </div>
+      <div class="form-row" *ngIf="selectedObjectStoreMeta() as meta">
+        <p class="form-hint">
+          Reading <strong>{{ meta.format }}</strong> from
+          <code>s3a://{{ meta.bucket }}/{{ meta.prefix }}</code>
+          ({{ meta.provider === 's3' ? 'AWS S3' : 'MinIO' }}).
+        </p>
+      </div>
+      <div class="form-row" *ngIf="osPipelines.length === 0">
+        <p class="form-hint">No pipelines with an Object Store destination yet. Create one from the Pipelines tab — choose <em>Object Store (MinIO or S3)</em> as the destination.</p>
       </div>
     </ng-container>
 

@@ -52,6 +52,11 @@ export class SearchComponent implements OnInit, OnDestroy {
   vectorSecretName = 'oss/pgvector';
   topK = 5;
 
+  // Object Store fields
+  osPipelines: { name: string; bucket: string; prefix: string; format: string; provider: string }[] = [];
+  osSelectedPipeline = '';
+  osLimit = 100;
+
   isTrial = false;
   private routerSub: Subscription | null = null;
 
@@ -66,6 +71,7 @@ export class SearchComponent implements OnInit, OnDestroy {
         this.mongoDatabase = data.mongodbDatabase || 'datris';
         this.loadPgSchemas();
         this.loadMongoCollections();
+        this.loadObjectStorePipelines();
       }
     });
 
@@ -100,6 +106,31 @@ export class SearchComponent implements OnInit, OnDestroy {
       error: () => {}
     });
     this.loadMongoCollections();
+    this.loadObjectStorePipelines();
+  }
+
+  loadObjectStorePipelines(): void {
+    this.searchService.getPipelines().subscribe({
+      next: (configs) => {
+        this.osPipelines = (configs || [])
+          .filter(c => c && c.destination && c.destination.objectStore)
+          .map(c => ({
+            name: c.name,
+            bucket: c.destination.objectStore.destinationBucketOverride || '(default)',
+            prefix: c.destination.objectStore.prefixKey || '',
+            format: (c.destination.objectStore.fileFormat || 'parquet').toLowerCase(),
+            provider: (c.destination.objectStore.provider || 'minio').toLowerCase()
+          }));
+        if (this.osPipelines.length > 0 && !this.osSelectedPipeline) {
+          this.osSelectedPipeline = this.osPipelines[0].name;
+        }
+      },
+      error: () => { this.osPipelines = []; }
+    });
+  }
+
+  selectedObjectStoreMeta(): { bucket: string; prefix: string; format: string; provider: string } | null {
+    return this.osPipelines.find(p => p.name === this.osSelectedPipeline) || null;
   }
 
   loadPgSchemas(): void {
@@ -207,6 +238,10 @@ export class SearchComponent implements OnInit, OnDestroy {
     return ['qdrant', 'weaviate', 'milvus', 'chroma', 'pgvector'].includes(this.queryType);
   }
 
+  isObjectStore(): boolean {
+    return this.queryType === 'objectstore';
+  }
+
   retrieveAllMongo(): void {
     this.mongoFilter = '{}';
     this.mongoProjection = '';
@@ -239,6 +274,10 @@ export class SearchComponent implements OnInit, OnDestroy {
         return;
       }
     }
+    if (this.isObjectStore() && !this.osSelectedPipeline) {
+      this.error = 'Please select a pipeline with an Object Store destination';
+      return;
+    }
 
     this.loading = true;
     this.results = [];
@@ -269,6 +308,9 @@ export class SearchComponent implements OnInit, OnDestroy {
         break;
       case 'pgvector':
         request = this.searchService.searchPgvector(this.searchQuery, this.searchTable, this.searchSchema, this.embeddingSecretName, this.vectorSecretName, this.topK);
+        break;
+      case 'objectstore':
+        request = this.searchService.queryObjectstore(this.osSelectedPipeline, this.osLimit);
         break;
       default:
         this.loading = false;

@@ -64,6 +64,7 @@
               "destinations/mongodb",
               "destinations/kafka",
               "destinations/object-store",
+              "destinations/s3",
               "destinations/pgvector",
               "destinations/qdrant",
               "destinations/milvus",

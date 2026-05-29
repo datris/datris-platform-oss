@@ -24,7 +24,7 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 |------|-------------|
 | `list_pipelines` | List all registered pipeline configurations |
 | `get_pipeline` | Get a specific pipeline configuration by name |
-| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Specify destination type. Optional `catalog` to group related pipelines. |
+| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Supports three destination categories: structured (postgres, mongodb), object store (Parquet or ORC to MinIO / AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). For S3, set `provider: "s3"` and reference a Platform-tab `credentialsSecret`. Optional `catalog` to group related pipelines. |
 | `delete_pipeline` | Delete a pipeline and its destination data |
 | `upload_data` | Upload data (base64-encoded) to a pipeline for processing. New CSV columns are auto-added to the schema ([schema evolution](/schemas#schema-evolution)). Returns pipeline token. |
 | `get_job_status` | Get job status. Pass `pipeline_token` for a `{rollup, events}` response — poll `rollup.allDone`, then read `rollup.status` (`success` / `warning` / `error`) and per-job `lastError`. Pass `pipeline_name` for a paginated summary across recent jobs. |
@@ -54,6 +54,7 @@ Read-only queries against the pipeline's backend databases.
 |------|-------------|
 | `query_postgres` | Execute a read-only SQL SELECT query against PostgreSQL |
 | `query_mongodb` | Query a MongoDB collection with filter and projection |
+| `query_objectstore` | Read rows from a pipeline's Object Store destination (Parquet or ORC files in MinIO or AWS S3). Pass the pipeline name; the server resolves bucket, prefix, format, and credentials from the pipeline config. |
 | `query_natural` | Ask a question in natural language — AI generates and executes SQL |
 
 ### Metadata Discovery
@@ -106,6 +107,8 @@ For a document tap, `create_tap` **requires** the `target_pipeline` to have an `
 |------|-------------|
 | `upload_config` | Upload a JSON Schema config file (base64-encoded content) |
 | `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
+| `list_platform_secrets` | List the names of human-owned platform secrets (the Platform tab in Configuration → Secrets). These hold destination credentials and infrastructure connections. Read-only — agents cannot create, modify, or delete them. |
+| `get_platform_secret_fields` | Return the field NAMES (no values) of a platform secret. Use after `list_platform_secrets` to verify a candidate has the required keys for a destination — e.g. an S3 `credentialsSecret` must contain `accessKey`, `secretKey`, `region`. |
 
 ## Monitoring Active Agents
 
