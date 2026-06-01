@@ -109,6 +109,12 @@
             ]
           },
           {
+            "group": "Integrations",
+            "pages": [
+              "integrations/airflow"
+            ]
+          },
+          {
             "group": "Examples",
             "pages": [
               "examples",

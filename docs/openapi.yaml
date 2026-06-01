@@ -1625,6 +1625,19 @@ paths:
                   enum: [run, test]
                   default: test
                   description: "'run' feeds records into the configured target pipeline; 'test' executes the script and returns results without persisting"
+                params:
+                  type: object
+                  additionalProperties: true
+                  description: >-
+                    Optional per-run parameters. Each value is stringified and
+                    exposed to the tap script as an environment variable (nested
+                    objects/arrays are JSON-encoded so the script can json.loads()
+                    them back). Use for date-windowed backfills, e.g.
+                    {"since": "2026-05-01", "until": "2026-05-02"}. From Airflow,
+                    pass Jinja-templated values like {"since": "{{ ds }}"}.
+                  example:
+                    since: "2026-05-01"
+                    until: "2026-05-02"
       responses:
         '200':
           description: Run result
