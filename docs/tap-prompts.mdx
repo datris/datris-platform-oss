@@ -4,7 +4,7 @@ description: "Inject source-specific context into the LLM when you create a tap"
 ---
 
 <Note>
-**Beta.** Prompt fragments are a new feature and the API and UI may evolve based on user feedback. The storage model and injection points are stable.
+**Beta.** Prompt fragments are a new feature and the API may evolve based on user feedback. The storage model and injection points are stable. There is no dedicated UI for managing fragments today — they're managed via the REST API (see [Managing fragments](#managing-fragments)).
 </Note>
 
 Prompt fragments let you teach the tap generator about a specific data source — its conventions, rate limits, preferred libraries, required env vars — without having to re-type the same hints into every tap description. Once a fragment is configured, its content is **automatically appended to the LLM system prompt** whenever the user's text mentions the fragment's key or any of its aliases (case-insensitive, word-boundary match).
@@ -50,14 +50,7 @@ GET `/api/v1/tap-prompts` lists all fragments; DELETE `/api/v1/tap-prompts/{key}
 - **Key** (required, unique) — the primary match keyword, e.g. `AWS`, `Polygon`, `Stripe`. Matched case-insensitively with `\b` boundaries so `AI` won't accidentally match `email` or `Gmail`.
 - **Aliases** (optional, comma-separated) — additional match keywords. A single `AWS` fragment can also match `S3`, `EC2`, `Lambda`, `boto3`, etc.
 - **Content** (required) — the extra system-prompt text. Typically 2-6 sentences covering library choice, env-var names, rate limits, pagination style, and gotchas.
-- **Enabled** (default on) — unchecking keeps the fragment in storage but stops it from matching.
-
-### Top-of-page actions
-
-- **Create Fragment** — opens an inline form. A **Suggest** button on the Content field asks the LLM to draft a fragment from the key + aliases you've entered (useful as a starting point; edit before saving).
-- **Load Examples** — seeds a starter set of 4 fragments (AWS, Polygon, Stripe, SEC EDGAR). Keys that already exist are skipped. Confirm / Cancel inline — no browser popup.
-- **Export** — downloads the fragment list as a pretty-printed JSON file (`datris-tap-prompts-{YYYY-MM-DD}.json`).
-- **Import** — upload a JSON file in the same shape. Each fragment is POSTed individually; invalid entries are skipped. Existing keys are overwritten (create-or-update).
+- **Enabled** (default on) — setting it `false` keeps the fragment in storage but stops it from matching.
 
 ### Writing good fragments
 
@@ -74,7 +67,7 @@ After **Generate Script** or a **Brainstorm** reply, any matching fragment keys 
 
 > Extra context applied: `AWS` `Polygon`
 
-Click a chip to jump to the Taps sub-tab for that fragment. This makes it easy to see what the LLM saw, and catch cases where a fragment matched when it shouldn't have (or failed to match when it should have).
+This makes it easy to see what the LLM saw, and catch cases where a fragment matched when it shouldn't have (or failed to match when it should have).
 
 ## HTTP API
 
@@ -90,7 +83,7 @@ The same storage is exposed via REST for scripting and tenant migrations. See [T
 
 ## Performance
 
-The injector caches matched fragments in a per-tenant `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so UI edits take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap flows pay no measurable cost.
+The injector caches matched fragments in a per-tenant `ConcurrentHashMap` with a 60s TTL as a safety net. Writes through the API (create / update / delete) invalidate immediately, so changes take effect on the next LLM call without restart. With zero fragments configured the hot path returns in microseconds — the tap flows pay no measurable cost.
 
 ## Multi-tenant
 
