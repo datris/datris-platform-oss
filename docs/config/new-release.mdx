@@ -150,22 +150,24 @@ brew upgrade datris
 datris --version
 ```
 
+{/* ──────────────────────────────────────────────────────────────────────
+STEP 9 DISABLED — the Trial Droplet is no longer in use. Skip this step.
+Kept here, commented out, in case a hosted deploy step is re-implemented later.
+
 ## 9. Deploy to Trial Droplet
 
-```bash
-ssh root@67.205.149.242
+  ssh root@67.205.149.242
 
-# On the Droplet:
-docker pull datrisai/datris-server:latest
-docker pull datrisai/datris-ui:latest
-docker pull datrisai/datris-mcp-server:latest
-cd /opt/datris && docker compose -f docker-compose.prod.yml up -d --force-recreate datris ui mcp-server
-docker restart nginx
-```
+  # On the Droplet:
+  docker pull datrisai/datris-server:latest
+  docker pull datrisai/datris-ui:latest
+  docker pull datrisai/datris-mcp-server:latest
+  cd /opt/datris && docker compose -f docker-compose.prod.yml up -d --force-recreate datris ui mcp-server
+  docker restart nginx
 
-**Important:** Always restart nginx after recreating containers — it caches container IPs and will return 502 if they change.
-
-**If containers fail to start:** Ensure `/opt/datris/.env` exists with credentials from `/data/secrets/datris.env` and `VAULT_TOKEN` from `/data/secrets/vault-token`.
+Important: Always restart nginx after recreating containers — it caches container IPs and will return 502 if they change.
+If containers fail to start: Ensure /opt/datris/.env exists with credentials from /data/secrets/datris.env and VAULT_TOKEN from /data/secrets/vault-token.
+────────────────────────────────────────────────────────────────────── */}
 
 ## 10. Publish to MCP Registry
 
@@ -209,8 +211,8 @@ datris --version
 # MCP Registry
 curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.datris/datris" | python3 -m json.tool | grep isLatest
 
-# Trial Droplet
-curl -s https://api.trial.datris.ai/api/v1/version
+# Trial Droplet — DISABLED (no longer in use; step 9 is commented out)
+# curl -s https://api.trial.datris.ai/api/v1/version
 # Should return: {"version":"{x.y.z}","environment":"oss","multiTenant":"true"}
 
 # Docs site (auto-deploys from main)
@@ -229,6 +231,6 @@ curl -s https://api.trial.datris.ai/api/v1/version
 | 6 | Tag | GitHub tag → triggers Docker Hub build + MCP Registry |
 | 7 | Wait for Docker build | GitHub Actions builds multi-arch images — do NOT build locally |
 | 8 | Homebrew | Update formula sha256, push tap repo |
-| 9 | Trial Droplet | Pull `:latest` images, recreate containers, restart nginx |
+| ~~9~~ | ~~Trial Droplet~~ | _Disabled — no longer in use (step commented out)_ |
 | 10 | MCP Registry | Automated (or `mcp-publisher publish` if failed) |
-| 11 | Verify | Docker, CLI, registry, trial app, docs |
+| 11 | Verify | Docker, CLI, registry, docs |
