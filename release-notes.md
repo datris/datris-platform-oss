@@ -1,17 +1,25 @@
 # Release Notes
 
-## v1.8.1 — June 2, 2026
+## v1.8.2 — June 3, 2026
 
-**Orchestrate Datris taps from Apache Airflow.**
+**Ask your data a question — conversational search comes to the Search tab.**
 
-- **Run taps from Airflow.** A new `airflow-provider-datris` package adds an operator that triggers a tap, waits for the pipeline to finish, streams Datris logs into the Airflow task log, and reports run tokens and row counts back to Airflow. Cancelling the DAG run cancels the Datris job.
-- **Date-windowed backfills.** Taps can now take per-run parameters, so an Airflow DAG can pass its logical date (or any window) into the tap for that run — backfills and incremental loads work without editing the tap.
-- **No double-firing.** A tap is scheduled by Datris or Airflow, never both: if a tap has a Datris cron, the Airflow operator declines to trigger it. To drive a tap from Airflow, leave its cron empty.
+- **Chat search.** The Search tab has a new **Chat** mode, with a **Traditional** toggle for the structured query UI you already know. Ask a question in plain language and Datris finds the answer across all your pipelines and taps — cataloged or not — querying tables, searching documents, and replying with citations to where each answer came from. It's read-only: it looks, it never changes anything.
+- **Scope to a catalog.** Narrow a chat to a single catalog (or to Uncataloged data) from the dropdown, or leave it on All to search everything.
+- **Conversations survive a refresh.** Your Search chat and Assistant conversations now persist across a browser refresh, so reloading the page no longer clears the transcript.
 
 **Upgrading**
 
 - Existing installs: `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. No data migration needed.
-- Install the Airflow provider where Airflow runs: `pip install airflow-provider-datris`.
+- The CLI: `brew upgrade datris`.
+
+---
+
+## v1.8.1 — June 2, 2026
+
+**Orchestrate Datris taps from Apache Airflow.**
+
+See [archived v1.8.1 release notes](release-notes/v1.8.1.md).
 
 ---
 
@@ -20,14 +28,6 @@
 **Write to AWS S3, query Parquet and ORC from the Assistant and Search, and stop chats actually stop.**
 
 See [archived v1.8.0 release notes](release-notes/v1.8.0.md).
-
----
-
-## v1.7.9 — May 28, 2026
-
-**Ask the Ops assistant about a failing pipeline without leaving the dashboard.**
-
-See [archived v1.7.9 release notes](release-notes/v1.7.9.md).
 
 ---
 
