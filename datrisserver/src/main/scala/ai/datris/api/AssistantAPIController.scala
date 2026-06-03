@@ -219,10 +219,18 @@ class AssistantAPIController {
             maxIterations = maxIterations,
             maxTokensPerCall = maxTokensPerCall,
             cancelled = () => cancelled.get(),
-            sink = (evt: AgentLoop.LoopEvent) => AssistantSseSupport.emitLoopEvent(emitter, evt)
+            sink = (evt: AgentLoop.LoopEvent) => {
+                // Stop emitting once the client disconnects and flip the cancel
+                // flag so the agent loop unwinds — avoids a broken-pipe write
+                // per remaining token delta.
+                if (!cancelled.get() && !AssistantSseSupport.emitLoopEvent(emitter, evt)) cancelled.set(true)
+            }
         )
 
-        try emitter.complete() catch { case _: Exception => () }
+        // If the client already disconnected (a failed write flipped the
+        // cancel flag), skip complete() — flushing to a dead socket would log
+        // another spurious broken pipe. The container finalizes the response.
+        if (!cancelled.get()) { try emitter.complete() catch { case _: Exception => () } }
     }
 
     private def buildSystemPrompt(workflowReference: String, tenantEnv: String): String = {

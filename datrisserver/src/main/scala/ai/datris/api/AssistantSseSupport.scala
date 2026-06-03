@@ -20,8 +20,13 @@ object AssistantSseSupport {
 
     /** Serialize an AgentLoop event onto the SSE emitter. Matches the
       * existing wire format consumed by the UI's ops-assistant.service.ts
-      * and assistant.service.ts. */
-    def emitLoopEvent(emitter: SseEmitter, evt: AgentLoop.LoopEvent): Unit = {
+      * and assistant.service.ts.
+      *
+      * Returns false if the write failed because the client is gone (a mid-
+      * stream browser refresh closes the SSE socket). Callers use that to stop
+      * pushing further events at the source rather than firing a broken-pipe
+      * write for every remaining token delta. */
+    def emitLoopEvent(emitter: SseEmitter, evt: AgentLoop.LoopEvent): Boolean = {
         evt match {
             case AgentLoop.LoopEvent.IterationStart =>
                 sendEvent(emitter, "iteration_start", makeEvent("iteration_start"))
@@ -78,11 +83,17 @@ object AssistantSseSupport {
         obj
     }
 
-    def sendEvent(emitter: SseEmitter, name: String, payload: JsonObject): Unit = {
+    /** Write one SSE frame. Returns false (rather than throwing) when the
+      * client has disconnected — the write to a closed socket raises
+      * IOException("Broken pipe"), which is benign here: the user navigated
+      * away or refreshed. We swallow it so it never surfaces as an application
+      * error, and report failure so the caller can stop emitting. */
+    def sendEvent(emitter: SseEmitter, name: String, payload: JsonObject): Boolean = {
         try {
             emitter.send(SseEmitter.event().name(name).data(payload.toString))
+            true
         } catch {
-            case _: Exception => // client disconnected; cancellation flag will fire shortly
+            case _: Exception => false // client disconnected; stop emitting
         }
     }
 

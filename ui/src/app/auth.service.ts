@@ -34,6 +34,12 @@ export class AuthService {
     return this.currentUser$.value;
   }
 
+  /** Drop the cached user — used when the server reports the session is gone
+   *  (e.g. a 401 caught by authErrorInterceptor after a timeout). */
+  clearUser(): void {
+    this.currentUser$.next(null);
+  }
+
   /** Probe /me. 200 → set user; 401 → null user. */
   refreshMe(): Observable<CurrentUser | null> {
     return this.http.get<CurrentUser>('/api/v1/auth/me', { withCredentials: true }).pipe(

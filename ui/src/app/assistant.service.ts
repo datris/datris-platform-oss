@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, Observer } from 'rxjs';
+import { Router } from '@angular/router';
 import { AuthService } from './auth.service';
 
 /** Init payload returned by GET /api/v1/assistant/init. The UI uses this to
@@ -44,7 +45,7 @@ export type AssistantEvent =
 
 @Injectable({ providedIn: 'root' })
 export class AssistantService {
-  constructor(private http: HttpClient, private auth: AuthService) { }
+  constructor(private http: HttpClient, private auth: AuthService, private router: Router) { }
 
   /** Warm the MCP client caches server-side and grab the tool catalog. */
   init(): Observable<AssistantInit> {
@@ -84,6 +85,13 @@ export class AssistantService {
         signal: controller.signal
       }).then(async (response) => {
         if (!response.ok) {
+          // A 401 here means the session timed out mid-chat. This fetch() path
+          // bypasses the Angular interceptors, so mirror authErrorInterceptor:
+          // clear the user and bounce to login instead of leaving the chat wedged.
+          if (response.status === 401 && this.auth.userAuthEnabled) {
+            this.auth.clearUser();
+            this.router.navigate(['/login']);
+          }
           const text = await response.text().catch(() => '');
           observer.next({ type: 'error', message: 'HTTP ' + response.status + ': ' + text.substring(0, 400) });
           observer.complete();

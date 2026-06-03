@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Datris logging config.
+
+  Includes Spring Boot's default console (and optional file) setup unchanged,
+  so log format and the per-logger levels in application.yaml still apply. The
+  only addition is a turbo filter that drops benign client-disconnect stack
+  traces (broken pipe / connection reset) the servlet container raises when an
+  SSE stream's browser closes mid-response. See ClientAbortLogFilter.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/base.xml"/>
+    <turboFilter class="ai.datris.util.ClientAbortLogFilter"/>
+</configuration>

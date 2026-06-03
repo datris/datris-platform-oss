@@ -19,6 +19,18 @@ object PostgresQueryUtil {
     // a preview-sized result pass an explicit positive limit.
     private val DEFAULT_LIMIT = 100
 
+    // Safety cap on how long a *limited* (preview/agent) query may run before the
+    // server cancels it. Ad-hoc queries written by an agent (e.g. an exact
+    // COUNT(*) on a large table) can do an expensive sequential scan and tie up a
+    // JDBC connection + worker thread for many seconds. This bounds that blast
+    // radius. NOT applied to unlimited tap-script reads (limit < 0), which may
+    // legitimately stream a whole large table and are allowed to run long.
+    private val QUERY_TIMEOUT_SECONDS = 30
+    // Bound connection establishment so a wedged/unreachable Postgres host fails
+    // fast instead of hanging the request. These cap connect/login only, never
+    // query duration, so they're safe for tap-script reads too.
+    private val CONNECT_TIMEOUT_SECONDS = 10
+
     // Keywords that indicate write operations — checked as whole words (case-insensitive)
     private val BLOCKED_KEYWORDS = Set(
         "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
@@ -47,6 +59,10 @@ object PostgresQueryUtil {
         val properties = new Properties()
         properties.setProperty("user", secrets.username)
         properties.setProperty("password", secrets.password)
+        // TCP connect + login timeout (pgjdbc, in seconds). Bounds connection
+        // setup only — does not limit how long a query runs.
+        properties.setProperty("connectTimeout", CONNECT_TIMEOUT_SECONDS.toString)
+        properties.setProperty("loginTimeout", CONNECT_TIMEOUT_SECONDS.toString)
 
         // Append database name to JDBC URL (same pattern as PostgresLoader)
         // URL format: jdbc:postgresql://host:port/dbname — check if dbname is already present after host:port
@@ -63,6 +79,11 @@ object PostgresQueryUtil {
             conn.setAutoCommit(true)
 
             val stmt = conn.createStatement()
+            // Cancel a runaway *limited* query after QUERY_TIMEOUT_SECONDS (pgjdbc
+            // maps setQueryTimeout to statement_timeout). Unlimited tap-script
+            // reads (limit < 0) keep the prior no-timeout behavior so a legitimate
+            // full-table export isn't cut off mid-stream.
+            if (!unlimited) stmt.setQueryTimeout(QUERY_TIMEOUT_SECONDS)
             val rs = stmt.executeQuery(finalSql)
             val metaData = rs.getMetaData
             val columnCount = metaData.getColumnCount

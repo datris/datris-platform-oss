@@ -268,21 +268,21 @@
     </ul>
   </section>
 
-  <!-- Region 5: per-pipeline volume (always 7-day) -->
+  <!-- Region 5: per-pipeline volume (follows the 24h/7d/30d window selector) -->
   <section class="panel" *ngIf="pipelineVolumes.length > 0">
     <div class="panel-header">
       <h3 class="panel-title">Per-pipeline volume</h3>
-      <span class="panel-sub">last 7 days</span>
+      <span class="panel-sub">last {{ window }}</span>
     </div>
     <div [class.panel-list-scroll]="pipelineVolumes.length > 10">
     <table class="volume-table">
       <thead>
         <tr>
           <th class="vt-name">Pipeline</th>
-          <th class="vt-spark">7-day trend</th>
-          <th class="vt-num">Today</th>
-          <th class="vt-num">7d avg</th>
-          <th class="vt-num">vs avg</th>
+          <th class="vt-spark">{{ window }} trend</th>
+          <th class="vt-num">This {{ window }}</th>
+          <th class="vt-num">Prior {{ window }}</th>
+          <th class="vt-num">vs prior</th>
           <th class="vt-ask"></th>
         </tr>
       </thead>
@@ -295,8 +295,8 @@
           <td class="vt-spark">
             <div class="sparkline" echarts [options]="v.sparkOptions"></div>
           </td>
-          <td class="vt-num">{{ formatNumber(v.today) }}</td>
-          <td class="vt-num">{{ formatNumber(v.avg) }}</td>
+          <td class="vt-num">{{ formatNumber(v.current) }}</td>
+          <td class="vt-num">{{ formatNumber(v.prior) }}</td>
           <td class="vt-num">
             <span *ngIf="v.deltaPct !== null" [ngClass]="deltaClass(v.deltaPct)">
               {{ v.deltaPct >= 0 ? '+' : '' }}{{ v.deltaPct }}%

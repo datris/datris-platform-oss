@@ -41,8 +41,8 @@ export interface OpsChatStale {
 export interface OpsChatVolume {
   name: string;
   catalog: string | null;
-  today: number;
-  avg: number;
+  current: number;   // records in the selected window (matches `window` above)
+  prior: number;     // records in the equal-length prior window
   deltaPct: number | null;
 }
 

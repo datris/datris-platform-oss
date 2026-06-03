@@ -25,7 +25,7 @@ export class OpsChatPanelComponent implements OnInit, OnDestroy, AfterViewChecke
     { label: 'Why is it failing?',     prompt: 'Why is the most recent failure failing? Walk me through the root cause.' },
     { label: 'Re-run latest failures', prompt: 'Re-run the taps for the most recent unrecovered failures.' },
     { label: 'What\'s stale?',         prompt: 'Which taps look stale — overdue relative to their schedule — and what should I do about them?' },
-    { label: 'Volume anomalies',       prompt: 'Which pipelines look unusually quiet or unusually busy today versus their 7-day average?' }
+    { label: 'Volume anomalies',       prompt: 'Which pipelines look unusually quiet or unusually busy this period versus the prior period?' }
   ];
 
   @ViewChild('composerEl') composerEl?: ElementRef<HTMLTextAreaElement>;

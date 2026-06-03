@@ -170,10 +170,18 @@ class OpsChatAPIController {
             maxIterations = maxIterations,
             maxTokensPerCall = maxTokensPerCall,
             cancelled = () => cancelled.get(),
-            sink = (evt: AgentLoop.LoopEvent) => AssistantSseSupport.emitLoopEvent(emitter, evt)
+            sink = (evt: AgentLoop.LoopEvent) => {
+                // Stop emitting once the client disconnects and flip the cancel
+                // flag so the agent loop unwinds — avoids a broken-pipe write
+                // per remaining token delta.
+                if (!cancelled.get() && !AssistantSseSupport.emitLoopEvent(emitter, evt)) cancelled.set(true)
+            }
         )
 
-        try emitter.complete() catch { case _: Exception => () }
+        // If the client already disconnected (a failed write flipped the
+        // cancel flag), skip complete() — flushing to a dead socket would log
+        // another spurious broken pipe. The container finalizes the response.
+        if (!cancelled.get()) { try emitter.complete() catch { case _: Exception => () } }
     }
 
     /** Operational tools first, then the rest. This isn't filtering — the
@@ -258,15 +266,16 @@ class OpsChatAPIController {
 
         val vols = Option(ctx.getAsJsonArray("pipelineVolumes")).map(_.asScala.toList).getOrElse(Nil)
         if (vols.nonEmpty) {
-            sb.append("Pipeline volume anomalies (top ").append(vols.size).append(" by |delta| vs 7d avg):\n")
+            sb.append("Pipeline volume anomalies (top ").append(vols.size)
+              .append(" by |delta| this ").append(window).append(" vs the prior ").append(window).append("):\n")
             vols.foreach { el =>
                 val v = el.getAsJsonObject
                 val name = strOpt(v, "name").getOrElse("?")
-                val today = intOpt(v, "today").getOrElse(0)
-                val avg = intOpt(v, "avg").getOrElse(0)
+                val current = intOpt(v, "current").getOrElse(0)
+                val prior = intOpt(v, "prior").getOrElse(0)
                 val delta = if (v.has("deltaPct") && !v.get("deltaPct").isJsonNull) v.get("deltaPct").getAsInt.toString + "%" else "n/a"
-                sb.append("  - `").append(name).append("`: today=").append(today)
-                  .append(", 7d avg=").append(avg).append(", vs avg=").append(delta).append("\n")
+                sb.append("  - `").append(name).append("`: this ").append(window).append("=").append(current)
+                  .append(", prior ").append(window).append("=").append(prior).append(", vs prior=").append(delta).append("\n")
             }
             sb.append("\n")
         }

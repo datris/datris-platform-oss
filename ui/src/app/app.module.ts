@@ -11,6 +11,7 @@ import { PipelineViewComponent } from './pipeline-view/pipeline-view.component';
 import { PipelineStatusComponent } from './pipeline-status/pipeline-status.component';
 import { PipelineDetailComponent } from './pipeline-detail/pipeline-detail.component';
 import { SearchComponent } from './search/search.component';
+import { SearchChatPanelComponent } from './search/search-chat/search-chat-panel.component';
 import { McpComponent } from './mcp/mcp.component';
 import { SecretsComponent } from './secrets/secrets.component';
 import { ApiKeyPromptComponent } from './api-key-prompt/api-key-prompt.component';
@@ -33,6 +34,7 @@ import { KeysComponent } from './configuration/keys/keys.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { apiKeyInterceptor } from './api-key.interceptor';
+import { authErrorInterceptor } from './auth-error.interceptor';
 import { MaterialModule } from './material.module';
 import { NgxEchartsModule } from 'ngx-echarts';
 
@@ -48,6 +50,7 @@ import { NgxEchartsModule } from 'ngx-echarts';
     PipelineStatusComponent,
     PipelineDetailComponent,
     SearchComponent,
+    SearchChatPanelComponent,
     McpComponent,
     SecretsComponent,
     ApiKeyPromptComponent,
@@ -75,7 +78,7 @@ import { NgxEchartsModule } from 'ngx-echarts';
     MaterialModule,
     NgxEchartsModule.forRoot({ echarts: () => import('echarts') })
   ],
-  providers: [provideHttpClient(withInterceptors([apiKeyInterceptor]))],
+  providers: [provideHttpClient(withInterceptors([apiKeyInterceptor, authErrorInterceptor]))],
   bootstrap: [AppComponent]
 })
 export class AppModule { }

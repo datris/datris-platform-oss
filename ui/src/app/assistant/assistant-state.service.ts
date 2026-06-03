@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { AssistantService, AssistantEvent, AssistantInit, ChatMessage } from '../assistant.service';
+import { loadChatState, saveChatState, clearChatState } from '../shared/chat-persistence';
 
 /** Tool invocation inside an assistant turn. */
 export interface ToolCard {
@@ -87,7 +88,23 @@ export class AssistantStateService {
   // unsubscribe and cancel the server-side agent loop.
   private activeSub: Subscription | null = null;
 
-  constructor(private api: AssistantService) { }
+  /** sessionStorage key for this tab's transcript (see chat-persistence). */
+  private static readonly STORAGE_KEY = 'assistant.chat.transcript';
+
+  constructor(private api: AssistantService) {
+    const restored = loadChatState(AssistantStateService.STORAGE_KEY);
+    if (restored) {
+      this.turns = restored.turns;
+      this.draft = restored.draft;
+    }
+    // Catch a mid-stream refresh: snapshot whatever's on screen so it survives
+    // the reload. Terminal transitions persist explicitly too.
+    window.addEventListener('beforeunload', () => this.persist());
+  }
+
+  private persist(): void {
+    saveChatState(AssistantStateService.STORAGE_KEY, this.turns, this.draft);
+  }
 
   /** Idempotent: fetches /init the first time, no-ops thereafter. Component
    *  calls this on mount; subsequent mounts see the cached payload. */
@@ -129,6 +146,7 @@ export class AssistantStateService {
     this.turns.push(assistantTurn);
     this.draft = '';
     this.streaming = true;
+    this.persist();
 
     // Build outbound history. Skip the in-progress assistant turn; flatten
     // each prior assistant turn's text segments into one string. Tool calls
@@ -157,11 +175,13 @@ export class AssistantStateService {
         assistantTurn.errorMessage = err?.message || 'Connection error';
         assistantTurn.done = true;
         this.streaming = false;
+        this.persist();
       },
       complete: () => {
         assistantTurn.done = true;
         this.streaming = false;
         this.activeSub = null;
+        this.persist();
       }
     });
   }
@@ -179,6 +199,7 @@ export class AssistantStateService {
         last.errorMessage = 'Stopped.';
       }
     }
+    this.persist();
   }
 
   /** Clear the conversation. Used by an explicit "New chat" affordance if we
@@ -187,6 +208,7 @@ export class AssistantStateService {
     this.stop();
     this.turns = [];
     this.draft = '';
+    clearChatState(AssistantStateService.STORAGE_KEY);
   }
 
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {

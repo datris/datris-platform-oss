@@ -32,6 +32,7 @@ import uuid
 from collections import deque
 from typing import Any
 
+import anyio
 import requests
 from dotenv import load_dotenv
 from mcp.server import Server
@@ -1492,7 +1493,7 @@ async def list_tools():
         # --- Database Query Tools ---
         Tool(
             name="query_postgres",
-            description="Execute a read-only SQL SELECT query against PostgreSQL. Use the metadata discovery tools (list_postgres_databases, list_postgres_schemas, list_postgres_tables, list_postgres_columns) first to explore available data before constructing queries. Only SELECT is allowed; LIMIT is auto-appended if missing.",
+            description="Execute a read-only SQL SELECT query against PostgreSQL. Use the metadata discovery tools (list_postgres_databases, list_postgres_schemas, list_postgres_tables, list_postgres_columns) first to explore available data before constructing queries. Only SELECT is allowed; LIMIT is auto-appended if missing. Queries are cancelled if they run too long, so avoid full-table scans. For approximate row counts — \"how many rows / records does table X have\", overviews, or summarizing several tables — do NOT run exact `SELECT COUNT(*)` (it scans the whole table and can take many seconds on a large one). Instead read the planner estimate, which is effectively instant regardless of table size: `SELECT reltuples::bigint AS estimate FROM pg_class WHERE relname = '<table>'`. Use exact `COUNT(*)` only when the user explicitly needs an exact count of a known-small or filtered result.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2943,7 +2944,16 @@ async def run_sse(port: int):
                     _activity_session_close(sess_id)
                 return
             elif path == "/messages":
-                await sse.handle_post_message(scope, receive, send)
+                # If the client's SSE stream has already closed (it dropped the
+                # connection, reconnected with a new session, or its agent loop
+                # finished) the write into the per-session memory stream raises
+                # ClosedResourceError/BrokenResourceError. That's a benign "client
+                # already gone" race, not a server fault — swallow it so it doesn't
+                # surface as an unhandled ASGI exception traceback on every drop.
+                try:
+                    await sse.handle_post_message(scope, receive, send)
+                except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+                    pass
                 return
             elif path == "/mcp":
                 api_key = _extract_api_key(scope)

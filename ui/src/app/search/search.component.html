@@ -1,6 +1,24 @@
 <div class="container">
   <h1 class="page-title">Search</h1>
 
+  <!-- Sub-panel toggle: conversational Chat search vs. the structured
+       Traditional query UI. -->
+  <div class="search-view-toggle">
+    <button class="search-view-tab" [class.active]="activeView === 'chat'" (click)="setActiveView('chat')">
+      <span class="material-icons">auto_awesome</span>
+      Chat
+    </button>
+    <button class="search-view-tab" [class.active]="activeView === 'traditional'" (click)="setActiveView('traditional')">
+      <span class="material-icons">tune</span>
+      Traditional
+    </button>
+  </div>
+
+  <!-- Chat search -->
+  <app-search-chat-panel *ngIf="activeView === 'chat'"></app-search-chat-panel>
+
+  <!-- Traditional structured query UI -->
+  <ng-container *ngIf="activeView === 'traditional'">
   <div class="search-form">
     <div class="form-row">
       <label class="form-label">Query Type</label>
@@ -212,4 +230,5 @@
       <div class="ai-answer-error" *ngIf="aiError">{{ aiError }}</div>
     </div>
   </div>
+  </ng-container>
 </div>

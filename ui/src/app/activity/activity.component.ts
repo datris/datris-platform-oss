@@ -62,9 +62,9 @@ interface StaleTap {
 interface PipelineVolume {
   name: string;
   catalog: string | null;
-  daily: number[];      // last 7 days oldest→newest, including today
-  today: number;
-  avg: number;
+  buckets: number[];    // selected window, oldest→newest (hourly for 24h, daily for 7d/30d)
+  current: number;      // records in the selected window [now - windowMs, now]
+  prior: number;        // records in the equal-length prior window
   deltaPct: number | null;
   sparkOptions: EChartsOption;
 }
@@ -246,8 +246,8 @@ export class ActivityComponent implements OnInit, OnDestroy {
         .map(v => ({
           name: v.name,
           catalog: v.catalog,
-          today: v.today,
-          avg: v.avg,
+          current: v.current,
+          prior: v.prior,
           deltaPct: v.deltaPct
         }))
     });
@@ -707,49 +707,62 @@ export class ActivityComponent implements OnInit, OnDestroy {
   }
 
   // ── Per-pipeline volume table (always 7-day) ──────────────────────────────
-  // Aggregates pipeline-summary recordCount by pipeline name into daily buckets
-  // for the last 7 days. Covers tap-fed AND direct-upload pipelines uniformly.
+  // Aggregates pipeline-summary recordCount by pipeline name for the selected
+  // window (24h/7d/30d), so the table agrees with the tiles and charts above it.
+  // `current` is the rolling selected window; `prior` is the equal-length window
+  // before it; the sparkline buckets mirror the chart granularity (hourly for
+  // 24h, daily for 7d/30d). Covers tap-fed AND direct-upload pipelines uniformly.
   private computePipelineVolumes(pipelines: any[], jobs: PipelineStatus[]): void {
-    const DAYS = 7;
-    const anchors = this.bucketAnchors(DAYS, 86400_000);
-    const firstAnchor = anchors[0];
-    const lastAnchor = anchors[DAYS - 1] + 86400_000;
+    const now = Date.now();
+    const winMs = this.windowMs();
+    const winStart = now - winMs;
+    const prevStart = winStart - winMs;
 
-    const dailyByPipeline = new Map<string, number[]>();
+    // Sparkline buckets match computeCharts(): 24h → 24 hourly, 7d/30d → daily.
+    const bucketCount = this.window === '24h' ? 24 : (this.window === '7d' ? 7 : 30);
+    const bucketMs = this.window === '24h' ? 3600_000 : 86400_000;
+    const anchors = this.bucketAnchors(bucketCount, bucketMs);
+    const firstAnchor = anchors[0];
+    const lastAnchor = anchors[anchors.length - 1] + bucketMs;
+
+    const byPipeline = new Map<string, { current: number; prior: number; buckets: number[] }>();
     for (const p of pipelines) {
-      if (p.name) dailyByPipeline.set(p.name, new Array(DAYS).fill(0));
+      if (p.name) byPipeline.set(p.name, { current: 0, prior: 0, buckets: new Array(bucketCount).fill(0) });
     }
 
     for (const j of jobs) {
       if (!j.pipeline) continue;
-      const buckets = dailyByPipeline.get(j.pipeline);
-      if (!buckets) continue;
+      const agg = byPipeline.get(j.pipeline);
+      if (!agg) continue;
       const t = this.parseTime(j.endTime) ?? this.parseTime(j.startTime);
-      if (t == null || t < firstAnchor || t >= lastAnchor) continue;
-      const idx = Math.floor((t - firstAnchor) / 86400_000);
-      buckets[idx] += Number(j.recordCount || 0);
+      if (t == null) continue;
+      const records = Number(j.recordCount || 0);
+      // Rolling current vs prior window for the headline numbers.
+      if (t >= winStart && t <= now) agg.current += records;
+      else if (t >= prevStart && t < winStart) agg.prior += records;
+      // Anchored buckets for the trend sparkline.
+      if (t >= firstAnchor && t < lastAnchor) {
+        agg.buckets[Math.floor((t - firstAnchor) / bucketMs)] += records;
+      }
     }
 
     const volumes: PipelineVolume[] = [];
     for (const p of pipelines) {
-      const daily = dailyByPipeline.get(p.name) || new Array(DAYS).fill(0);
-      const today = daily[DAYS - 1];
-      const total = daily.reduce((a, b) => a + b, 0);
-      const avg = total / DAYS;
-      const deltaPct = avg > 0 ? Math.round(((today - avg) / avg) * 100) : null;
+      const agg = byPipeline.get(p.name) || { current: 0, prior: 0, buckets: new Array(bucketCount).fill(0) };
+      const deltaPct = agg.prior > 0 ? Math.round(((agg.current - agg.prior) / agg.prior) * 100) : null;
       volumes.push({
         name: p.name,
         catalog: p.catalog || null,
-        daily,
-        today,
-        avg: Math.round(avg),
+        buckets: agg.buckets,
+        current: agg.current,
+        prior: agg.prior,
         deltaPct,
-        sparkOptions: this.buildSparkOptions(daily)
+        sparkOptions: this.buildSparkOptions(agg.buckets)
       });
     }
 
-    // Default sort: highest 7d total first, so noisy pipelines surface.
-    volumes.sort((a, b) => (b.daily.reduce((x, y) => x + y, 0)) - (a.daily.reduce((x, y) => x + y, 0)));
+    // Default sort: highest current-window volume first, so busy pipelines surface.
+    volumes.sort((a, b) => b.current - a.current);
     this.pipelineVolumes = volumes;
   }
 
@@ -978,7 +991,7 @@ export class ActivityComponent implements OnInit, OnDestroy {
     event.stopPropagation();
     const direction = v.deltaPct != null && v.deltaPct < 0 ? 'low' : 'high';
     const pct = v.deltaPct != null ? `${v.deltaPct >= 0 ? '+' : ''}${v.deltaPct}%` : 'an unusual amount';
-    const prompt = `Pipeline \`${v.name}\` is ${pct} versus its 7-day average today (${direction} volume). Is this expected, and what should I check?`;
+    const prompt = `Pipeline \`${v.name}\` is ${pct} this ${this.window} versus the prior ${this.window} (${direction} volume). Is this expected, and what should I check?`;
     this.opsState.seedDraft(prompt);
   }
 

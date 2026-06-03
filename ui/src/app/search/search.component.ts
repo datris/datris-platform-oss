@@ -60,9 +60,24 @@ export class SearchComponent implements OnInit, OnDestroy {
   isTrial = false;
   private routerSub: Subscription | null = null;
 
+  // Sub-panel toggle: the new conversational "Chat" search vs. the existing
+  // structured "Traditional" query UI. Chat is the default. Persisted in
+  // sessionStorage so the choice survives navigating away and back (the
+  // conversation itself lives in a root singleton; this is just the view).
+  private static readonly VIEW_KEY = 'search.activeView';
+  activeView: 'chat' | 'traditional' = 'chat';
+
   constructor(private searchService: SearchService, public healthService: HealthService, private http: HttpClient, private router: Router) { }
 
+  setActiveView(view: 'chat' | 'traditional'): void {
+    this.activeView = view;
+    try { sessionStorage.setItem(SearchComponent.VIEW_KEY, view); } catch { /* ignore */ }
+  }
+
   ngOnInit(): void {
+    const savedView = (() => { try { return sessionStorage.getItem(SearchComponent.VIEW_KEY); } catch { return null; } })();
+    if (savedView === 'chat' || savedView === 'traditional') this.activeView = savedView;
+
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
         this.isTrial = data.multiTenant === 'true';

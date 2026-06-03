@@ -1,0 +1,117 @@
+<div class="sc-panel">
+  <div class="sc-header">
+    <div class="sc-scope">
+      <label class="sc-scope-label">Scope</label>
+      <select class="sc-scope-select" [(ngModel)]="ctx.catalog" [disabled]="state.streaming">
+        <option *ngFor="let c of catalogOptions" [value]="c">{{ c }}</option>
+      </select>
+    </div>
+    <button class="sc-header-btn"
+            *ngIf="state.turns.length > 0"
+            [disabled]="state.streaming"
+            (click)="newChat()"
+            title="Clear conversation">
+      <mat-icon>add</mat-icon>
+      <span>New chat</span>
+    </button>
+  </div>
+
+  <div class="sc-scroll" #scrollContainer>
+    <!-- Empty state with starter prompts. -->
+    <div class="sc-empty" *ngIf="isEmptyState">
+      <p class="sc-empty-sub">
+        Ask a question and I'll find the answer in your data — searching across every
+        pipeline and tap, cataloged or not. I can query tables, search documents, and
+        synthesize an answer with citations. I'm read-only: I look, I don't change anything.
+      </p>
+      <div class="sc-starters">
+        <button class="sc-starter" *ngFor="let p of starterPrompts" (click)="fillFromStarter(p)">
+          {{ p.label }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Turns. -->
+    <ng-container *ngFor="let turn of state.turns; trackBy: trackByIndex">
+      <div class="sc-user-turn" *ngIf="turn.role === 'user'">
+        <div class="sc-user-bubble">{{ turn.text }}</div>
+      </div>
+
+      <div class="sc-assistant-turn" *ngIf="turn.role === 'assistant'">
+        <div class="sc-thinking-block" *ngIf="turn.thinking">
+          <button class="sc-thinking-toggle" (click)="toggleThinking(turn)">
+            <span>💭 Thinking</span>
+            <span>{{ turn.thinkingExpanded ? '▾' : '▸' }}</span>
+            <span class="sc-thinking-spinner" *ngIf="!turn.done">…</span>
+          </button>
+          <div class="sc-thinking-content" *ngIf="turn.thinkingExpanded">{{ turn.thinking }}</div>
+        </div>
+
+        <ng-container *ngFor="let seg of turn.segments; trackBy: trackByIndex">
+          <div class="sc-prose" *ngIf="seg.kind === 'text'">{{ seg.text }}</div>
+
+          <div class="sc-notice" *ngIf="seg.kind === 'notice'">
+            <span class="sc-notice-icon">ⓘ</span>
+            <span>{{ seg.message }}</span>
+          </div>
+
+          <div class="sc-tool-card" *ngIf="seg.kind === 'tool'" [class.sc-tool-error]="seg.isError">
+            <button class="sc-tool-header" (click)="toggleToolCard(seg)">
+              <span class="sc-tool-caret">{{ seg.expanded ? '▾' : '▸' }}</span>
+              <span class="sc-tool-icon">{{ toolLabel(seg).icon }}</span>
+              <span class="sc-tool-label">{{ toolLabel(seg).label }}</span>
+              <span class="sc-tool-status"
+                    [class.sc-tool-status-ok]="seg.status === 'ok'"
+                    [class.sc-tool-status-error]="seg.status === 'error'">
+                <span class="sc-dots" *ngIf="seg.status === 'running'">
+                  <span></span><span></span><span></span>
+                </span>
+                <ng-container *ngIf="seg.status !== 'running'">{{ toolStatusIcon(seg) }}</ng-container>
+              </span>
+            </button>
+            <div class="sc-tool-body" *ngIf="seg.expanded">
+              <div class="sc-tool-body-label">Input</div>
+              <pre class="sc-tool-body-pre">{{ formatJson(seg.input) }}</pre>
+              <ng-container *ngIf="seg.status !== 'running'">
+                <div class="sc-tool-body-label">{{ seg.isError ? 'Error' : 'Result' }}</div>
+                <pre class="sc-tool-body-pre">{{ formatJson(seg.result) }}</pre>
+              </ng-container>
+            </div>
+          </div>
+        </ng-container>
+
+        <div class="sc-streaming-indicator"
+             *ngIf="!turn.done && state.streaming && turn.segments.length === 0 && !turn.thinking">
+          <span class="sc-dots-big"><span></span><span></span><span></span></span>
+        </div>
+
+        <div class="sc-error" *ngIf="turn.errorMessage">{{ turn.errorMessage }}</div>
+      </div>
+    </ng-container>
+  </div>
+
+  <div class="sc-composer-wrap">
+    <div class="sc-composer">
+      <textarea
+        #composerEl
+        class="sc-composer-input"
+        [(ngModel)]="state.draft"
+        (keydown)="onComposerKeydown($event)"
+        (input)="autoGrowComposer()"
+        placeholder="Ask a question about your data…"
+        rows="1"
+        [readonly]="state.streaming"></textarea>
+      <button class="sc-composer-btn"
+              *ngIf="!state.streaming"
+              [disabled]="!state.draft.trim()"
+              (click)="send()">
+        Send
+      </button>
+      <button class="sc-composer-btn sc-composer-stop"
+              *ngIf="state.streaming"
+              (click)="stop()">
+        Stop
+      </button>
+    </div>
+  </div>
+</div>
