@@ -1,12 +1,11 @@
 # Release Notes
 
-## v1.8.2 — June 3, 2026
+## v1.8.3 — June 4, 2026
 
-**Ask your data a question — conversational search comes to the Search tab.**
+**Organize your catalog by chatting with it.**
 
-- **Chat search.** The Search tab has a new **Chat** mode, with a **Traditional** toggle for the structured query UI you already know. Ask a question in plain language and Datris finds the answer across all your pipelines and taps — cataloged or not — querying tables, searching documents, and replying with citations to where each answer came from. It's read-only: it looks, it never changes anything.
-- **Scope to a catalog.** Narrow a chat to a single catalog (or to Uncataloged data) from the dropdown, or leave it on All to search everything.
-- **Conversations survive a refresh.** Your Search chat and Assistant conversations now persist across a browser refresh, so reloading the page no longer clears the transcript.
+- **Catalog assistant.** The Catalog tab has a new side-panel assistant for tidying things up. Ask it to group your taps and pipelines into catalogs, move items around, or suggest a cleaner structure — it lays out a plan first and only makes changes once you approve them, and the catalog updates as it works. It sticks to organizing: questions about your data go to Search, and running or fixing pipelines stays in Ops.
+- **Right where you're working.** The assistant lives in a collapsible right rail (toggle it with Cmd/Ctrl + backslash) so the catalog stays in view while you reorganize. Clicking **Describe to Assistant** on a catalog now opens this panel in place instead of jumping to another tab, and the conversation sticks around as you navigate away and back.
 
 **Upgrading**
 
@@ -15,19 +14,19 @@
 
 ---
 
+## v1.8.2 — June 3, 2026
+
+**Ask your data a question — conversational search comes to the Search tab.**
+
+See [archived v1.8.2 release notes](release-notes/v1.8.2.md).
+
+---
+
 ## v1.8.1 — June 2, 2026
 
 **Orchestrate Datris taps from Apache Airflow.**
 
 See [archived v1.8.1 release notes](release-notes/v1.8.1.md).
-
----
-
-## v1.8.0 — May 29, 2026
-
-**Write to AWS S3, query Parquet and ORC from the Assistant and Search, and stop chats actually stop.**
-
-See [archived v1.8.0 release notes](release-notes/v1.8.0.md).
 
 ---
 
