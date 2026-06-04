@@ -1,0 +1,133 @@
+<div class="cc-panel" [class.cc-collapsed]="!expanded" [class.cc-expanded]="expanded">
+  <!-- Collapsed rail: just a vertical "Ask" toggle. Clicking expands. -->
+  <button class="cc-rail"
+          *ngIf="!expanded"
+          (click)="toggle()"
+          title="Open catalog assistant (Cmd+\)">
+    <mat-icon class="cc-rail-icon">smart_toy</mat-icon>
+    <span class="cc-rail-label">Ask</span>
+  </button>
+
+  <!-- Expanded panel: header + scroll area + composer. -->
+  <ng-container *ngIf="expanded">
+    <div class="cc-header">
+      <div class="cc-title">
+        <mat-icon class="cc-title-icon">smart_toy</mat-icon>
+        <span>Catalog assistant</span>
+      </div>
+      <div class="cc-header-actions">
+        <button class="cc-header-btn"
+                *ngIf="state.turns.length > 0"
+                [disabled]="state.streaming"
+                (click)="newChat()"
+                title="Clear conversation">
+          <mat-icon>add</mat-icon>
+        </button>
+        <button class="cc-header-btn"
+                (click)="toggle()"
+                title="Collapse (Cmd+\)">
+          <mat-icon>chevron_right</mat-icon>
+        </button>
+      </div>
+    </div>
+
+    <div class="cc-scroll" #scrollContainer>
+      <!-- Empty state with starter prompts. -->
+      <div class="cc-empty" *ngIf="isEmptyState">
+        <p class="cc-empty-sub">
+          I help you organize your catalogs — group, move, rename, and describe
+          taps and pipelines. I have the current catalog layout in mind. I'll
+          propose groupings; I only move things when you tell me to.
+        </p>
+        <div class="cc-starters">
+          <button class="cc-starter" *ngFor="let p of starterPrompts" (click)="fillFromStarter(p)">
+            {{ p.label }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Turns. -->
+      <ng-container *ngFor="let turn of state.turns; trackBy: trackByIndex">
+        <div class="cc-user-turn" *ngIf="turn.role === 'user'">
+          <div class="cc-user-bubble">{{ turn.text }}</div>
+        </div>
+
+        <div class="cc-assistant-turn" *ngIf="turn.role === 'assistant'">
+          <div class="cc-thinking-block" *ngIf="turn.thinking">
+            <button class="cc-thinking-toggle" (click)="toggleThinking(turn)">
+              <span>💭 Thinking</span>
+              <span>{{ turn.thinkingExpanded ? '▾' : '▸' }}</span>
+              <span class="cc-thinking-spinner" *ngIf="!turn.done">…</span>
+            </button>
+            <div class="cc-thinking-content" *ngIf="turn.thinkingExpanded">{{ turn.thinking }}</div>
+          </div>
+
+          <ng-container *ngFor="let seg of turn.segments; trackBy: trackByIndex">
+            <div class="cc-prose" *ngIf="seg.kind === 'text'">{{ seg.text }}</div>
+
+            <div class="cc-notice" *ngIf="seg.kind === 'notice'">
+              <span class="cc-notice-icon">ⓘ</span>
+              <span>{{ seg.message }}</span>
+            </div>
+
+            <div class="cc-tool-card" *ngIf="seg.kind === 'tool'" [class.cc-tool-error]="seg.isError">
+              <button class="cc-tool-header" (click)="toggleToolCard(seg)">
+                <span class="cc-tool-caret">{{ seg.expanded ? '▾' : '▸' }}</span>
+                <span class="cc-tool-icon">{{ toolLabel(seg).icon }}</span>
+                <span class="cc-tool-label">{{ toolLabel(seg).label }}</span>
+                <span class="cc-tool-status"
+                      [class.cc-tool-status-ok]="seg.status === 'ok'"
+                      [class.cc-tool-status-error]="seg.status === 'error'">
+                  <span class="cc-dots" *ngIf="seg.status === 'running'">
+                    <span></span><span></span><span></span>
+                  </span>
+                  <ng-container *ngIf="seg.status !== 'running'">{{ toolStatusIcon(seg) }}</ng-container>
+                </span>
+              </button>
+              <div class="cc-tool-body" *ngIf="seg.expanded">
+                <div class="cc-tool-body-label">Input</div>
+                <pre class="cc-tool-body-pre">{{ formatJson(seg.input) }}</pre>
+                <ng-container *ngIf="seg.status !== 'running'">
+                  <div class="cc-tool-body-label">{{ seg.isError ? 'Error' : 'Result' }}</div>
+                  <pre class="cc-tool-body-pre">{{ formatJson(seg.result) }}</pre>
+                </ng-container>
+              </div>
+            </div>
+          </ng-container>
+
+          <div class="cc-streaming-indicator"
+               *ngIf="!turn.done && state.streaming && turn.segments.length === 0 && !turn.thinking">
+            <span class="cc-dots-big"><span></span><span></span><span></span></span>
+          </div>
+
+          <div class="cc-error" *ngIf="turn.errorMessage">{{ turn.errorMessage }}</div>
+        </div>
+      </ng-container>
+    </div>
+
+    <div class="cc-composer-wrap">
+      <div class="cc-composer">
+        <textarea
+          #composerEl
+          class="cc-composer-input"
+          [(ngModel)]="state.draft"
+          (keydown)="onComposerKeydown($event)"
+          (input)="autoGrowComposer()"
+          placeholder="Ask me to organize, or tell me what to move…"
+          rows="1"
+          [readonly]="state.streaming"></textarea>
+        <button class="cc-composer-btn"
+                *ngIf="!state.streaming"
+                [disabled]="!state.draft.trim()"
+                (click)="send()">
+          Send
+        </button>
+        <button class="cc-composer-btn cc-composer-stop"
+                *ngIf="state.streaming"
+                (click)="stop()">
+          Stop
+        </button>
+      </div>
+    </div>
+  </ng-container>
+</div>

@@ -1,3 +1,4 @@
+<div class="catalog-shell">
 <div class="container">
   <div class="page-header">
     <h1 class="page-title">Catalog</h1>
@@ -106,4 +107,9 @@
       </div>
     </div>
   </div>
+</div>
+<!-- Right-rail curation assistant. Lives beside the tree so it stays in view
+     while the assistant organizes. Gated on write access — its main job is
+     moving/renaming, which read-only users can't do anyway. -->
+<app-catalog-chat-panel *ngIf="auth.canWrite()" class="catalog-shell-chat"></app-catalog-chat-panel>
 </div>

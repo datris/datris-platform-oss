@@ -27,6 +27,7 @@ import { McpShellComponent } from './mcp-shell/mcp-shell.component';
 import { OpsShellComponent } from './ops-shell/ops-shell.component';
 import { ActivityComponent } from './activity/activity.component';
 import { OpsChatPanelComponent } from './ops-chat/ops-chat-panel.component';
+import { CatalogChatPanelComponent } from './catalog-chat/catalog-chat-panel.component';
 import { LoginComponent } from './login/login.component';
 import { ChangePasswordModalComponent } from './change-password-modal/change-password-modal.component';
 import { UsersComponent } from './configuration/users/users.component';
@@ -66,6 +67,7 @@ import { NgxEchartsModule } from 'ngx-echarts';
     OpsShellComponent,
     ActivityComponent,
     OpsChatPanelComponent,
+    CatalogChatPanelComponent,
     LoginComponent,
     ChangePasswordModalComponent,
     UsersComponent,

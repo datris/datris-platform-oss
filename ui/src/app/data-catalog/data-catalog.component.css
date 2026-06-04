@@ -1,3 +1,21 @@
+/* Split layout: the curation chat panel is position:fixed at viewport
+   top:80px so its bottom always aligns with the viewport bottom, regardless
+   of page scroll. The shell reserves matching horizontal space via a CSS
+   variable the panel keeps in sync (40px collapsed, 420px expanded). Mirrors
+   the Ops shell's approach. */
+.catalog-shell {
+  padding-right: var(--catalog-chat-width, 40px);
+  transition: padding-right 0.18s ease;
+}
+
+.catalog-shell-chat {
+  position: fixed;
+  top: 80px;
+  right: 0;
+  height: calc(100vh - 80px);
+  z-index: 5;
+}
+
 .container {
   padding: 0 32px 32px;
   color: var(--text-primary);

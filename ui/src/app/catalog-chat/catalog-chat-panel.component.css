@@ -1,0 +1,448 @@
+:host {
+  display: block;
+}
+
+/* Panel fills the host (which the catalog page sizes to viewport - 80px), so
+   the composer stays anchored to the bottom of the viewport and the scroll
+   area in between scrolls internally. */
+.cc-panel {
+  display: flex;
+  flex-direction: column;
+  background: #1a1d24;
+  border-left: 1px solid #2c303a;
+  height: 100%;
+  overflow: hidden;
+  transition: width 0.18s ease;
+}
+
+.cc-collapsed {
+  width: 40px;
+}
+
+.cc-expanded {
+  width: 420px;
+}
+
+/* Collapsed rail: a tall vertical button along the right edge. */
+.cc-rail {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.cc-rail:hover {
+  background: #1f232b;
+  color: #f0f4ff;
+}
+
+.cc-rail-icon {
+  font-size: 22px !important;
+  width: 22px !important;
+  height: 22px !important;
+}
+
+.cc-rail-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+/* Header */
+.cc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2c303a;
+  background: #1f232b;
+  flex: 0 0 auto;
+}
+
+.cc-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #f0f4ff;
+}
+
+.cc-title-icon {
+  font-size: 18px !important;
+  width: 18px !important;
+  height: 18px !important;
+  color: var(--accent-cyan, #00b4ff);
+}
+
+.cc-header-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.cc-header-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.cc-header-btn:hover:not(:disabled) {
+  background: #262a33;
+  border-color: #3a3f4a;
+  color: #f0f4ff;
+}
+
+.cc-header-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.cc-header-btn mat-icon {
+  font-size: 18px !important;
+  width: 18px !important;
+  height: 18px !important;
+}
+
+/* Scroll area */
+.cc-scroll {
+  flex: 1 1 auto;
+  /* min-height:0 lets the flex item shrink below its content size, which is
+     what makes overflow-y actually scroll inside a flex column. */
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Empty state */
+.cc-empty {
+  margin-top: 16px;
+}
+
+.cc-empty-sub {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #94a3b8;
+  margin: 0 0 16px;
+}
+
+.cc-starters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cc-starter {
+  background: #262a33;
+  border: 1px solid #3a3f4a;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #d8dae0;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.cc-starter:hover {
+  background: #2f343f;
+  border-color: #4a505c;
+}
+
+/* Turns */
+.cc-user-turn {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cc-user-bubble {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 8px 12px;
+  max-width: 92%;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: #f0f1f5;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cc-assistant-turn {
+  color: #e8e8ea;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.cc-prose {
+  white-space: pre-wrap;
+  margin: 6px 0;
+}
+
+.cc-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  color: #a0a4b0;
+  background: rgba(160, 164, 176, 0.08);
+  border: 1px solid rgba(160, 164, 176, 0.18);
+  border-radius: 10px;
+  width: fit-content;
+}
+
+.cc-notice-icon {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+/* Thinking block */
+.cc-thinking-block {
+  border-left: 2px solid #3a3f4a;
+  padding: 4px 0 4px 10px;
+  margin: 4px 0 8px;
+  color: #8a8e96;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.cc-thinking-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: #8a8e96;
+  font-style: italic;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cc-thinking-toggle:hover { color: #c0c4cc; }
+
+.cc-thinking-spinner {
+  animation: cc-pulse 1.2s ease-in-out infinite;
+}
+
+.cc-thinking-content {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  line-height: 1.45;
+}
+
+/* Tool cards */
+.cc-tool-card {
+  margin: 6px 0;
+  background: #262a33;
+  border: 1px solid #3a3f4a;
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.cc-tool-card.cc-tool-error {
+  border-color: #6a3030;
+  background: #2e2424;
+}
+
+.cc-tool-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  color: #d8dae0;
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+
+.cc-tool-header:hover { background: #2f343f; }
+
+.cc-tool-caret {
+  color: #8a8e96;
+  width: 10px;
+  display: inline-block;
+}
+
+.cc-tool-icon { width: 16px; text-align: center; }
+
+.cc-tool-label {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-tool-status {
+  font-weight: 500;
+  min-width: 12px;
+  text-align: center;
+}
+
+.cc-tool-status-ok    { color: #6ad88a; }
+.cc-tool-status-error { color: #ff7373; }
+
+.cc-tool-body {
+  border-top: 1px solid #3a3f4a;
+  padding: 6px 10px 10px;
+  background: #1f2229;
+}
+
+.cc-tool-body-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8a8e96;
+  margin: 6px 0 3px;
+}
+
+.cc-tool-body-label:first-child { margin-top: 0; }
+
+.cc-tool-body-pre {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  background: #16181d;
+  border: 1px solid #2c303a;
+  border-radius: 4px;
+  padding: 6px;
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #d0d2d8;
+}
+
+/* Streaming indicator */
+.cc-streaming-indicator { margin: 6px 0; color: #8a8e96; }
+
+.cc-dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  vertical-align: middle;
+}
+
+.cc-dots span {
+  width: 4px;
+  height: 4px;
+  background: #a0a4ac;
+  border-radius: 50%;
+  animation: cc-pulse 1.2s ease-in-out infinite;
+}
+
+.cc-dots span:nth-child(2) { animation-delay: 0.2s; }
+.cc-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+.cc-dots-big {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.cc-dots-big span {
+  width: 6px;
+  height: 6px;
+  background: #8a8e96;
+  border-radius: 50%;
+  display: inline-block;
+  animation: cc-pulse 1.2s ease-in-out infinite;
+}
+
+.cc-dots-big span:nth-child(2) { animation-delay: 0.2s; }
+.cc-dots-big span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes cc-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.cc-error {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 60, 60, 0.1);
+  border: 1px solid rgba(255, 60, 60, 0.3);
+  border-radius: 4px;
+  color: #ff9090;
+  font-size: 12px;
+}
+
+/* Composer */
+.cc-composer-wrap {
+  border-top: 1px solid #2c303a;
+  background: #1a1d24;
+  padding: 10px 12px 14px;
+  flex: 0 0 auto;
+}
+
+.cc-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  background: #262a33;
+  border: 1px solid #3a3f4a;
+  border-radius: 8px;
+  padding: 6px 6px 6px 10px;
+}
+
+.cc-composer-input {
+  flex: 1 1 auto;
+  border: none;
+  outline: none;
+  resize: none;
+  font: inherit;
+  font-size: 13px;
+  color: #f0f1f5;
+  background: transparent;
+  min-height: 24px;
+  max-height: 160px;
+  padding: 6px 0;
+  line-height: 1.5;
+}
+
+.cc-composer-input::placeholder { color: #6a6e76; }
+
+.cc-composer-btn {
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, var(--accent-cyan, #00b4ff), var(--accent-green, #4ade80));
+  color: #0a0e1a;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: box-shadow 0.2s, opacity 0.2s;
+}
+
+.cc-composer-btn:hover:not(:disabled) { box-shadow: 0 0 8px rgba(0, 180, 255, 0.3); }
+.cc-composer-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.cc-composer-stop {
+  background: #d34a4a;
+  color: #fff;
+}
+
+.cc-composer-stop:hover { background: #e25c5c; box-shadow: 0 0 8px rgba(211, 74, 74, 0.3); }

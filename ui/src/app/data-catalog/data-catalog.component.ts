@@ -1,9 +1,12 @@
 import { Component, OnInit, OnDestroy, HostListener } from '@angular/core';
 import { Router } from '@angular/router';
+import { Subscription } from 'rxjs';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { sanitizeLabel } from '../shared/sanitize';
 import { AuthService } from '../auth.service';
+import { CatalogChatContextService, CatalogSnapshot } from '../catalog-chat/catalog-chat-context.service';
+import { CatalogAssistantStateService } from '../catalog-chat/catalog-assistant-state.service';
 
 interface CatalogInfo {
   name: string;
@@ -45,19 +48,46 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
    *  next loadCatalogs() expands it so the moved items are visible immediately. */
   private pendingAutoExpand = '';
   private refreshInterval: any;
+  private changedSub?: Subscription;
 
-  constructor(private tapService: TapService, private pipelineService: PipelineService, private router: Router, public auth: AuthService) {}
+  constructor(
+    private tapService: TapService,
+    private pipelineService: PipelineService,
+    private router: Router,
+    public auth: AuthService,
+    private chatContext: CatalogChatContextService,
+    private chatState: CatalogAssistantStateService
+  ) {}
 
   ngOnInit(): void {
     this.loadCatalogs();
     this.refreshInterval = setInterval(() => this.loadCatalogs(), 10000);
+    // The curation chat reloads the tree as soon as it moves an item, so the
+    // user sees the change without waiting for the 10s tick.
+    this.changedSub = this.chatState.changed$.subscribe(() => this.loadCatalogs());
   }
 
   ngOnDestroy(): void {
     if (this.refreshInterval) clearInterval(this.refreshInterval);
+    this.changedSub?.unsubscribe();
     // Save expansion state so the catalog page restores its open sections when
     // the user navigates back (e.g. from an Edit Pipeline wizard).
     this.saveExpandedState();
+  }
+
+  /** Publish a compact inventory snapshot for the curation chat panel to
+   *  reason against. Excludes the __catalog__ placeholder taps that only exist
+   *  to persist empty catalog names. */
+  private publishChatSnapshot(): void {
+    const snapshot: CatalogSnapshot[] = this.catalogs.map(c => ({
+      name: c.name,
+      tapCount: c.tapCount,
+      pipelineCount: c.pipelineCount,
+      taps: c.taps.filter(t => !(t.name || '').startsWith('__catalog__')).map(t => t.name),
+      pipelines: c.pipelines.map(p => p.name)
+    }));
+    const existing = this.chatContext.snapshot();
+    this.chatContext.publish({ catalogs: snapshot, focus: existing?.focus ?? null });
   }
 
   private static readonly STATE_KEY = 'catalog.expanded';
@@ -182,6 +212,8 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       // state survives tab refresh / unexpected component teardown — ngOnDestroy
       // is the primary save path for clean navigations.
       this.saveExpandedState();
+      // Keep the curation chat's inventory snapshot in sync with the tree.
+      this.publishChatSnapshot();
     };
 
     this.tapService.getTaps().subscribe({
@@ -313,9 +345,17 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     return this.catalogs.map(c => c.name);
   }
 
+  /** Open the in-page curation chat focused on this catalog, with a seeded
+   *  prompt the user can edit and send. Replaces the old bounce-out to the
+   *  /assistant tab — the chat now lives beside the tree so the catalog stays
+   *  in view while the assistant works. */
   describeToAssistant(catalogName: string, event: MouseEvent): void {
     event.stopPropagation();
-    this.router.navigate(['/assistant'], { queryParams: { catalog: catalogName } });
+    this.chatContext.setFocus(catalogName);
+    const prompt = catalogName === 'Uncataloged'
+      ? 'Look at what\'s in Uncataloged and suggest how to group it into catalogs.'
+      : `Describe the "${catalogName}" catalog — what's in it and how it's organized.`;
+    this.chatState.seedDraft(prompt);
   }
 
   createTapInCatalog(catalogName: string, event: MouseEvent): void {
