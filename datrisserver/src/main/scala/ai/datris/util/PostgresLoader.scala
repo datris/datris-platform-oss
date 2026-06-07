@@ -186,7 +186,7 @@ class PostgresLoader(jobContext: JobContext) {
         else {
             // Postgres CSV format treats unquoted empty fields as NULL by default,
             // which is what every standard CSV exporter expects. Sources with
-            // non-empty NULL placeholders (e.g. FRED's ".") should normalize them
+            // non-empty NULL placeholders (e.g. some sources use "." as a NULL placeholder) should normalize them
             // at their own layer, or set destination.database.options explicitly.
             sql.append("FORMAT csv")
         }

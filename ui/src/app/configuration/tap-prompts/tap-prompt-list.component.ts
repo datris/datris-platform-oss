@@ -20,11 +20,14 @@ const STARTER_FRAGMENTS: TapPromptFragment[] = [
     enabled: true,
   },
   {
-    key: 'Polygon',
-    aliases: ['polygon.io'],
+    key: 'Rate-Limited API',
+    aliases: ['rate limit', 'throttling'],
     content:
-      'Use the `requests` library with `os.environ.get("POLYGON_API_KEY")` and pass auth via the ' +
-      '`Authorization: Bearer {key}` header (query param `?apiKey=` also works but prefer the header).',
+      'For a public REST API with strict rate limits, use the `requests` library with ' +
+      '`os.environ.get("API_KEY")` and pass auth via the `Authorization: Bearer {key}` header ' +
+      '(a query param like `?apiKey=` may also work, but prefer the header). Respect the ' +
+      'documented requests-per-second limit, honor any `Retry-After` response header, and back ' +
+      'off with exponential delays on HTTP 429.',
     enabled: true,
   },
   {
@@ -37,12 +40,13 @@ const STARTER_FRAGMENTS: TapPromptFragment[] = [
     enabled: true,
   },
   {
-    key: 'SEC EDGAR',
-    aliases: ['EDGAR', 'sec.gov'],
+    key: 'User-Agent Required API',
+    aliases: ['user agent', 'user-agent header'],
     content:
-      'SEC EDGAR requires a User-Agent header identifying the requester (e.g. "CompanyName contact@email"). ' +
-      'Rate limit: 10 requests per second. Use https://data.sec.gov/ for JSON APIs, https://www.sec.gov/ ' +
-      'for document downloads. CIK values must be zero-padded to 10 digits.',
+      'Some public REST APIs require a descriptive User-Agent header identifying the requester ' +
+      '(e.g. "CompanyName contact@email") and will reject requests without one. Always set the ' +
+      '`User-Agent` header explicitly on every request rather than relying on the client default, ' +
+      'and use separate base URLs when the API splits JSON endpoints from raw document downloads.',
     enabled: true,
   },
 ];

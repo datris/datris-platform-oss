@@ -106,7 +106,7 @@ class TapPromptAPIController {
             val systemPrompt =
                 """You write system-prompt fragments that are injected into an AI code generator when a user creates a "tap" — a Python script that fetches data from an external source.
                   |
-                  |Your job: given a source key (e.g. "AWS", "Polygon", "Stripe") and optional aliases, write a short, dense fragment (2-6 sentences, under 500 characters when possible) that captures the non-obvious conventions, gotchas, or constraints the code generator should know when writing a tap for that source. Prefer concrete specifics: library choice, auth env var names, rate limits, pagination style, required headers, known quirks.
+                  |Your job: given a source key (e.g. "AWS", "ExampleAPI", "Stripe") and optional aliases, write a short, dense fragment (2-6 sentences, under 500 characters when possible) that captures the non-obvious conventions, gotchas, or constraints the code generator should know when writing a tap for that source. Prefer concrete specifics: library choice, auth env var names, rate limits, pagination style, required headers, known quirks.
                   |
                   |Rules:
                   |- Return ONLY the fragment text. No preamble, no markdown fences, no commentary, no headings.

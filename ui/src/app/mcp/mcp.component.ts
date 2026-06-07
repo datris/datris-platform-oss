@@ -157,7 +157,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'run_tap',
-      description: 'Execute a tap and push fetched data to the target pipeline. Response carries `recordCount`, `publisherToken`, `pipelineTokens`, `persisted`, `persistedReason`, and the script\'s `logs`. Records themselves are not returned — use `test_tap` to preview what a script produces. Call `test_tap` first before the first run of a newly-created or just-updated script. Pass optional `params` to drive a single run with caller-supplied values (date windows, ticker lists, page cursors, etc.) — each key/value becomes a `DATRIS_TAP_PARAM_<key>` env var the script can read.',
+      description: 'Execute a tap and push fetched data to the target pipeline. Response carries `recordCount`, `publisherToken`, `pipelineTokens`, `persisted`, `persistedReason`, and the script\'s `logs`. Records themselves are not returned — use `test_tap` to preview what a script produces. Call `test_tap` first before the first run of a newly-created or just-updated script. Pass optional `params` to drive a single run with caller-supplied values (date windows, id lists, page cursors, etc.) — each key/value becomes a `DATRIS_TAP_PARAM_<key>` env var the script can read.',
       category: 'Taps',
       parameters: [
         { name: 'name', type: 'string', description: 'Name of the tap to run', required: true, inputType: 'text' },

@@ -35,7 +35,7 @@ object TapScriptOptimizer {
           |Return a JSON object with three fields:
           |- "script": the complete optimized Python 3 script (must still define a `fetch()` function)
           |- "packages": list of EXACT pip install package names needed beyond the pre-installed set (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, pyyaml, openpyxl, python-dateutil, pytz, google-cloud-storage, azure-storage-blob). Empty list if none.
-          |- "changes": array of 1-5 short bullets describing what you changed (e.g. "Parallelized ticker fetches with ThreadPoolExecutor(10)", "Removed 0.25s per-item sleep", "Added 0.25s sleep between calls — source reported burst-pattern warning"). If the logs make optimization unsafe or the script is already well-tuned, return an empty array and the script unchanged.
+          |- "changes": array of 1-5 short bullets describing what you changed (e.g. "Parallelized record fetches with ThreadPoolExecutor(10)", "Removed 0.25s per-item sleep", "Added 0.25s sleep between calls — source reported burst-pattern warning"). If the logs make optimization unsafe or the script is already well-tuned, return an empty array and the script unchanged.
           |
           |HARD PRESERVATION RULES (must not change):
           |- Keep the `fetch()` function signature and its return shape.

@@ -135,7 +135,7 @@ object TapScriptRunner {
 
             // Per-run params from run_tap(params={...}). Surfaced to the script
             // as DATRIS_TAP_PARAM_<key> env vars — agent can drive parameterized
-            // runs (date range, ticker list, page cursor) without rewriting the
+            // runs (date range, id list, page cursor) without rewriting the
             // tap secret on every call. Scheduled cron runs supply no params, so
             // scripts must apply sensible defaults when the env var is absent.
             val paramEnvVars: Seq[(String, String)] = params.toSeq.flatMap { case (k, v) =>
@@ -174,7 +174,7 @@ object TapScriptRunner {
                     " MB limit (got ~" + actualMB + " MB). The whole batch is buffered in memory before " +
                     "loading to the pipeline, so very large fetches risk OOM-ing the server. " +
                     "Reduce the source range — e.g., a shorter date window, smaller page size, " +
-                    "or per-symbol/per-day chunks — and call run_tap again. " +
+                    "or per-record/per-day chunks — and call run_tap again. " +
                     "Multiple smaller runs all land in the same destination pipeline."
                 )
             }
@@ -341,7 +341,7 @@ object TapScriptRunner {
       *   "Order#"        -> "order_num"
       *   "miles/hour"    -> "miles_per_hour"
       *   "R&D Spending"  -> "r_and_d_spending"
-      *   "ticker"        -> "ticker"             (no-op for already-clean names)
+      *   "id"            -> "id"                 (no-op for already-clean names)
       */
     private[util] def normalizeColumnName(name: String): String = {
         if (name == null || name.isEmpty) return name

@@ -1492,7 +1492,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.generatingPipeline = true;
 
     // All-string schema by default. Tap output shape is unstable across runs
-    // (yfinance NaN-contamination promotes int columns to float, REST APIs
+    // (some sources' NaN contamination promotes int columns to float, REST APIs
     // change types between calls, etc.) — inferring narrow types from a small
     // test sample produces hard-to-debug COPY failures in production. Storing
     // everything as text guarantees the data lands identical to what the tap

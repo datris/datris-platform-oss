@@ -757,23 +757,23 @@ All vector DB destinations require chunking and embedding config. Call `check_se
 
 ```json
 {
-  "name": "stock_prices",
+  "name": "prices",
   "source": {
     "fileAttributes": {
       "csvAttributes": {"delimiter": ",", "header": true, "encoding": "UTF-8"}
     },
     "schemaProperties": {
       "fields": [
-        {"name": "symbol", "type": "string"},
+        {"name": "id", "type": "string"},
         {"name": "date", "type": "string"},
-        {"name": "close", "type": "double"},
-        {"name": "volume", "type": "int"}
+        {"name": "price", "type": "double"},
+        {"name": "quantity", "type": "int"}
       ]
     }
   },
   "dataQuality": {
     "aiRule": {
-      "instruction": "All price columns must be positive. Volume must be a positive integer.",
+      "instruction": "All price columns must be positive. Quantity must be a positive integer.",
       "onFailureIsError": false
     }
   },
@@ -781,7 +781,7 @@ All vector DB destinations require chunking and embedding config. Call `check_se
     "database": {
       "dbName": "datris",
       "schema": "public",
-      "table": "stock_prices",
+      "table": "prices",
       "usePostgres": true
     }
   }
@@ -792,7 +792,7 @@ All vector DB destinations require chunking and embedding config. Call `check_se
 
 ```json
 {
-  "name": "financial_docs",
+  "name": "documents",
   "source": {
     "fileAttributes": {
       "unstructuredAttributes": {"fileExtension": "pdf", "preserveFilename": true}
@@ -800,10 +800,10 @@ All vector DB destinations require chunking and embedding config. Call `check_se
   },
   "destination": {
     "pgvector": {
-      "tableName": "financial_documents",
+      "tableName": "documents",
       "schemaName": "public",
       "chunking": {"strategy": "recursive", "chunkSize": 500, "chunkOverlap": 50},
-      "metadata": {"company": "Acme Corp", "document_type": "10-K"},
+      "metadata": {"company": "Acme Corp", "document_type": "report"},
       "embeddingSecretName": "oss/embedding",
       "postgresSecretName": "oss/pgvector"
     }
@@ -945,7 +945,7 @@ Honest narration with fewer claims is always better than a confident narrative t
 
 ## Per-run params
 
-`run_tap(name, params={...})` lets you drive a single run with caller-supplied values that vary per call: date ranges, ticker lists, page cursors, batch sizes, geographic regions, anything that changes between runs.
+`run_tap(name, params={...})` lets you drive a single run with caller-supplied values that vary per call: date ranges, id lists, page cursors, batch sizes, geographic regions, anything that changes between runs.
 
 ### How it works
 
@@ -955,8 +955,8 @@ Each key/value you pass becomes an env var the script reads:
 import os
 start = os.environ.get("DATRIS_TAP_PARAM_start_date", "2026-01-01")  # sensible default for cron
 end   = os.environ.get("DATRIS_TAP_PARAM_end_date")
-tickers_json = os.environ.get("DATRIS_TAP_PARAM_tickers", "[]")
-tickers = json.loads(tickers_json)
+ids_json = os.environ.get("DATRIS_TAP_PARAM_ids", "[]")
+ids = json.loads(ids_json)
 ```
 
 - **Key constraints:** must match `[A-Za-z_][A-Za-z0-9_]*` (clean env var names). Anything else is rejected with an actionable error.
@@ -968,7 +968,7 @@ tickers = json.loads(tickers_json)
 | Use `params` for | Use `secret_name` for | Use hardcoded script values for |
 |---|---|---|
 | Values that vary per call | Credentials (API keys, passwords, OAuth tokens, signing keys, certificates) | Static config the user has already shared in conversation |
-| Date windows, page cursors, ticker lists, batch sizes | Things the user would refuse to paste into chat | Regions, bucket names, account IDs, project IDs, base URLs, table/schema names |
+| Date windows, page cursors, id lists, batch sizes | Things the user would refuse to paste into chat | Regions, bucket names, account IDs, project IDs, base URLs, table/schema names |
 | Anything the user might want to override on an ad-hoc run | Things you'd never want to change just to trigger a one-off | Things that don't change between runs and aren't sensitive |
 
 **The "is this a secret?" test:** would the user reasonably refuse to type this value into the chat? An access key, password, or signed token? Yes — that's a secret, ask via `request_tap_secret_from_user`. A region, container/bucket/database name, account/project/tenant ID, base URL, or endpoint URL? No — that's config, hardcode it in the script or pass as a `run_tap(params=...)` value.
@@ -1042,7 +1042,7 @@ Do not query the destination or report completion to the user before polling com
 
 ### Common `run_error` causes
 
-- **Output exceeded size limit** — script produced more JSON than the configured tap output cap (default 100MB). The whole batch is buffered before pipeline loading; very large fetches risk OOM. Fix: reduce the source range via `params` (shorter date window, smaller page, per-symbol chunks). Multiple smaller runs all land in the same destination pipeline.
+- **Output exceeded size limit** — script produced more JSON than the configured tap output cap (default 100MB). The whole batch is buffered before pipeline loading; very large fetches risk OOM. Fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
 - **Script raised an exception** — read the `logs` field for the Python traceback. Common: 403/404 from the source API (auth, entitlements), timeout, JSON parse error on malformed response.
 - **Subprocess timed out** — script ran longer than `tapScriptTimeoutSeconds` (default 300). Either the source is genuinely slow (chunk smaller via params) or the script has a bug (infinite loop, missing pagination break).
 
@@ -1431,7 +1431,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural language search query"},
-                    "collection": {"type": "string", "description": "Qdrant collection name (default: financial_documents)"},
+                    "collection": {"type": "string", "description": "Qdrant collection name (default: documents)"},
                     "top_k": {"type": "integer", "description": "Number of results to return (default: 5)"},
                 },
                 "required": ["query"]
@@ -1444,7 +1444,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural language search query"},
-                    "class_name": {"type": "string", "description": "Weaviate class name (default: FinancialDocuments)"},
+                    "class_name": {"type": "string", "description": "Weaviate class name (default: Documents)"},
                     "top_k": {"type": "integer", "description": "Number of results to return (default: 5)"},
                 },
                 "required": ["query"]
@@ -1457,7 +1457,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural language search query"},
-                    "collection": {"type": "string", "description": "Milvus collection name (default: financial_documents)"},
+                    "collection": {"type": "string", "description": "Milvus collection name (default: documents)"},
                     "top_k": {"type": "integer", "description": "Number of results to return (default: 5)"},
                 },
                 "required": ["query"]
@@ -1470,7 +1470,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural language search query"},
-                    "table": {"type": "string", "description": "Table name (default: financial_documents)"},
+                    "table": {"type": "string", "description": "Table name (default: documents)"},
                     "schema": {"type": "string", "description": "PostgreSQL schema (default: public)"},
                     "top_k": {"type": "integer", "description": "Number of results to return (default: 5)"},
                 },
@@ -1484,7 +1484,7 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural language search query"},
-                    "collection": {"type": "string", "description": "Chroma collection name (default: financial_documents)"},
+                    "collection": {"type": "string", "description": "Chroma collection name (default: documents)"},
                     "top_k": {"type": "integer", "description": "Number of results to return (default: 5)"},
                 },
                 "required": ["query"]
@@ -1897,10 +1897,10 @@ async def list_tools():
                 "If you need to preview what the script produces, call `test_tap` instead. "
                 "BEFORE the first run of a newly-created or newly-updated tap, you MUST have called `test_tap` and seen it succeed. See the VALIDATION RULE in the server instructions. Skipping the test on a fresh script pushes potentially-broken data into the destination — and `run_tap` doesn't return records, so you won't see the breakage from the response. "
                 "\n\n"
-                "PER-RUN PARAMS — pass a `params` object to drive this run with caller-supplied values (date range, ticker list, page cursor, etc.). "
+                "PER-RUN PARAMS — pass a `params` object to drive this run with caller-supplied values (date range, id list, page cursor, etc.). "
                 "Each key/value becomes an env var the script reads via `os.environ.get('DATRIS_TAP_PARAM_<key>')`. "
                 "Keys must match `[A-Za-z_][A-Za-z0-9_]*` so they map cleanly onto env var names. Values are stringified; nested objects/arrays are JSON-encoded (script can `json.loads()` them back). "
-                "Use this for anything that varies per-call — date windows, ticker lists, page cursors, batch sizes. "
+                "Use this for anything that varies per-call — date windows, id lists, page cursors, batch sizes. "
                 "Do NOT rewrite the tap secret to pass per-run params: secrets are for credentials (API keys, DB passwords); rewriting them on every call clobbers concurrent runs, pollutes audit history, and wastes Vault writes. "
                 "If the tap script doesn't yet read a particular param, update the script by calling `create_tap` again with the same `name` and a revised `script` (create_tap upserts and replaces the existing script). That's the right shape for parameterized runs.\n"
                 "\n"
@@ -1909,7 +1909,7 @@ async def list_tools():
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
-                "      - `run_error`: show the `error` string. If the error says output exceeded the size limit, reduce the source range via `params` (shorter date window, smaller page, per-symbol chunks) and call run_tap again — multiple smaller runs all land in the same destination pipeline.\n"
+                "      - `run_error`: show the `error` string. If the error says output exceeded the size limit, reduce the source range via `params` (shorter date window, smaller page, per-id chunks) and call run_tap again — multiple smaller runs all land in the same destination pipeline.\n"
                 "      - `no_records`: source returned nothing.\n"
                 "      - `debounced`: this tap was triggered server-side within the last 5 seconds. Do NOT retry — your previous call is still running. Use `get_tap_logs` to find the live run's `publisherToken`, then poll `get_pipeline_status`.\n"
                 "      - `already_running` (response `status: skipped`): another run_tap for this tap is already in flight in this agent session. Same handling as `debounced`: wait, then look up the live run in `get_tap_logs`.\n"
@@ -1926,11 +1926,11 @@ async def list_tools():
                         "type": "object",
                         "description": (
                             "Optional per-run parameters injected into the script as DATRIS_TAP_PARAM_<key> env vars. "
-                            "Use for values that vary per call (date ranges, ticker lists, page cursors, batch sizes) — "
+                            "Use for values that vary per call (date ranges, id lists, page cursors, batch sizes) — "
                             "NOT for credentials (those belong in the tap secret). "
                             "Keys must match [A-Za-z_][A-Za-z0-9_]*. Values are stringified; nested objects/arrays are JSON-encoded. "
                             "Scheduled cron runs supply no params, so scripts must apply sensible defaults when the env var is absent. "
-                            "Example: {\"start_date\": \"2026-05-01\", \"end_date\": \"2026-05-31\", \"tickers\": [\"AAPL\", \"MSFT\"]}"
+                            "Example: {\"start_date\": \"2026-05-01\", \"end_date\": \"2026-05-31\", \"ids\": [\"A001\", \"B002\"]}"
                         ),
                         "additionalProperties": True
                     }

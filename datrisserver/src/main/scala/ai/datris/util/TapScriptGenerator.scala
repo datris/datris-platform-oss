@@ -89,7 +89,7 @@ object TapScriptGenerator {
           |
           |Test-sample environment variable `DATRIS_TAP_TEST_LIMIT`:
           |- When the user enables "Limit test sample" in the Create Tap test UI, the runner injects `DATRIS_TAP_TEST_LIMIT` (an integer string, e.g. "20") into the script process. Cron and manual runs never set this variable.
-          |- If `DATRIS_TAP_TEST_LIMIT` is set, the script MUST cap its work at that many records: use it as the `limit` on `/query/*` bodies (instead of -1) AND break out of any per-item iteration (per-ticker, per-user, per-page, etc.) after that many items. If unset or empty, pass `limit: -1` and iterate unbounded.
+          |- If `DATRIS_TAP_TEST_LIMIT` is set, the script MUST cap its work at that many records: use it as the `limit` on `/query/*` bodies (instead of -1) AND break out of any per-item iteration (per-record, per-user, per-page, etc.) after that many items. If unset or empty, pass `limit: -1` and iterate unbounded.
           |- Required pattern at the top of `fetch()`:
           |    _tl = os.environ.get('DATRIS_TAP_TEST_LIMIT')
           |    sample_cap = int(_tl) if _tl else None            # None = unlimited

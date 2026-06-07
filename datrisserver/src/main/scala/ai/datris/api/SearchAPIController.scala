@@ -28,7 +28,7 @@ class SearchAPIController {
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
-            val collection = optString(body, "collection", "financial_documents")
+            val collection = optString(body, "collection", "documents")
             val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
             val qdrantSecretName = tenantSecretName(optString(body, "qdrantSecretName", DatrisEnvironment.current.qdrantSecretName), DatrisEnvironment.current.qdrantSecretName)
             val topK = optInt(body, "topK", 5)
@@ -67,7 +67,7 @@ class SearchAPIController {
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
-            val className = optString(body, "className", "FinancialDocuments")
+            val className = optString(body, "className", "Documents")
             val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
             val weaviateSecretName = tenantSecretName(optString(body, "weaviateSecretName", DatrisEnvironment.current.weaviateSecretName), DatrisEnvironment.current.weaviateSecretName)
             val topK = optInt(body, "topK", 5)
@@ -106,7 +106,7 @@ class SearchAPIController {
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
-            val collection = optString(body, "collection", "financial_documents")
+            val collection = optString(body, "collection", "documents")
             val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
             val milvusSecretName = tenantSecretName(optString(body, "milvusSecretName", DatrisEnvironment.current.milvusSecretName), DatrisEnvironment.current.milvusSecretName)
             val topK = optInt(body, "topK", 5)
@@ -145,7 +145,7 @@ class SearchAPIController {
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
-            val collection = optString(body, "collection", "financial_documents")
+            val collection = optString(body, "collection", "documents")
             val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
             val chromaSecretName = tenantSecretName(optString(body, "chromaSecretName", DatrisEnvironment.current.chromaSecretName), DatrisEnvironment.current.chromaSecretName)
             val topK = optInt(body, "topK", 5)
@@ -184,7 +184,7 @@ class SearchAPIController {
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
-            val table = optString(body, "table", "financial_documents")
+            val table = optString(body, "table", "documents")
             val schema = optString(body, "schema", "public")
             val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
             val postgresSecretName = tenantSecretName(optString(body, "postgresSecretName", DatrisEnvironment.current.pgvectorSecretName), DatrisEnvironment.current.pgvectorSecretName)

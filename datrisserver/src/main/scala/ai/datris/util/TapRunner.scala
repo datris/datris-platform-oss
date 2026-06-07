@@ -23,7 +23,7 @@ object TapRunner {
      *
      * @param tapConfig the tap to run
      * @param mode "run" persists to the pipeline and updates tap status; "test" just executes and returns without persisting
-     * @param params per-run params injected as DATRIS_TAP_PARAM_<key> env vars (date range, ticker list, etc.)
+     * @param params per-run params injected as DATRIS_TAP_PARAM_<key> env vars (date range, id list, etc.)
      * @return TapScriptResult with fetched records
      */
     def run(tapConfig: TapConfig, mode: String = "run", testLimit: Int = 0, params: Map[String, String] = Map.empty): TapScriptResult = {

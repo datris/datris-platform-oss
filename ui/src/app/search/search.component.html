@@ -142,7 +142,7 @@
       <div class="form-row-inline">
         <div class="form-field" *ngIf="queryType === 'weaviate'">
           <label class="form-label">Class Name</label>
-          <input class="form-input" [(ngModel)]="searchClassName" placeholder="FinancialDocuments">
+          <input class="form-input" [(ngModel)]="searchClassName" placeholder="Documents">
         </div>
         <div class="form-field" *ngIf="queryType === 'pgvector'">
           <label class="form-label">Schema</label>
@@ -159,7 +159,7 @@
         </div>
         <div class="form-field" *ngIf="queryType !== 'weaviate' && queryType !== 'pgvector'">
           <label class="form-label">Collection</label>
-          <input class="form-input" [(ngModel)]="searchCollection" placeholder="financial_documents">
+          <input class="form-input" [(ngModel)]="searchCollection" placeholder="documents">
         </div>
         <div class="form-field">
           <label class="form-label">Top K</label>

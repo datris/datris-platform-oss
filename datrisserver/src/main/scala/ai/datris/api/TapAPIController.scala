@@ -487,16 +487,16 @@ class TapAPIController {
                   |IMPORTANT — The Datris platform is the host for this tap. It exposes its own data via REST endpoints that the generated script can call:
                   |- Metadata discovery: /api/v1/metadata/postgres/{databases,schemas,tables,columns} and /api/v1/metadata/mongodb/{databases,collections}
                   |- Queries: POST /api/v1/query/postgres with {sql, database} and POST /api/v1/query/mongodb with {query, database, collection}
-                  |- The script can read from existing Datris tables/collections (e.g., to get a list of tickers, IDs, parameters) and use those values to drive an external API fetch.
+                  |- The script can read from existing Datris tables/collections (e.g., to get a list of ids, parameters) and use those values to drive an external API fetch.
                   |
-                  |So if a user says "get the tickers from the consumer_discretionary_earnings table on Datris", confidently confirm — the script generator knows how to query that table. Do NOT tell the user it's TBD or unknown.
+                  |So if a user says "get the ids from the products table on Datris", confidently confirm — the script generator knows how to query that table. Do NOT tell the user it's TBD or unknown.
                   |
                   |DO NOT ask the user about things the platform can discover automatically:
                   |- Database name (the postgres database is available as DATRIS_POSTGRES_DATABASE and the mongo database is available as DATRIS_MONGODB_DATABASE — both auto-injected)
                   |- Schema name (default to "public" for postgres, or have the script call /api/v1/metadata/postgres/schemas to find it)
                   |- Whether a table exists or what columns it has (the script will call /api/v1/metadata/postgres/columns at runtime to discover the schema)
                   |- Exact column types or names — the script can introspect them
-                  |- The exact table or collection name when the user doesn't name one (the script can list tables via /api/v1/metadata/postgres/tables and pick the one with a matching column like 'ticker' or 'symbol')
+                  |- The exact table or collection name when the user doesn't name one (the script can list tables via /api/v1/metadata/postgres/tables and pick the one with a matching column like 'id' or 'record_id')
                   |
                   |When the user says "the data is on Datris" but doesn't name the table, do NOT ask for it and do NOT ask "should the script look for a column named X?" — just confidently state that the script will discover the right table at runtime by listing tables and matching on a likely column name, write that into the description draft, and move on to the next missing piece (time range, filters, output fields, external API choice). Asking the user to confirm a discovery strategy is still asking — don't do it.
                   |
