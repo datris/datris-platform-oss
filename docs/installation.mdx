@@ -21,9 +21,9 @@ It prompts for an AI provider key (Anthropic recommended; press Enter to use
 OpenAI instead), then runs everything. On first start, `vault-init` seeds your
 key into Vault. That's it — the platform is running.
 
-Prefer not to pipe a script to `sh`? Grab one self-contained Compose file
-instead (the init scripts and config are inlined, so nothing else is needed —
-requires Docker Compose ≥ 2.23):
+Or, for a fully self-contained single file (no installer) — the init scripts
+and config are inlined, so nothing else is needed (requires Docker Compose
+≥ 2.23):
 
 ```bash
 curl -O https://get.datris.ai/docker-compose.standalone.yml

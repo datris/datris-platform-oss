@@ -27,11 +27,10 @@ curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
 <details>
-<summary>Single file, no installer (read-it-first)</summary>
+<summary>Single file, no installer</summary>
 
-Prefer not to pipe a script to `sh`? Grab one self-contained Compose file —
-the init scripts and config are inlined, so nothing else is needed (requires
-Docker Compose ≥ 2.23):
+A fully self-contained Compose file — the init scripts and config are inlined,
+so nothing else is needed (requires Docker Compose ≥ 2.23):
 
 ```bash
 curl -O https://get.datris.ai/docker-compose.standalone.yml
