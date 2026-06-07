@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Generate docker-compose.standalone.yml — a single, self-contained Compose file.
+
+The canonical docker-compose.yml bind-mounts three files from the repo tree
+(the two init scripts + the config override), which is why a plain download of
+that file alone won't run without a checkout. This script inlines those files
+into a top-level `configs:` block using Compose's inline `content:` (Compose
+>= 2.23), so the resulting docker-compose.standalone.yml needs nothing but
+itself:
+
+    curl -O https://get.datris.ai/docker-compose.standalone.yml
+    ANTHROPIC_API_KEY=sk-ant-... docker compose -f docker-compose.standalone.yml up -d
+
+Source of truth stays docker-compose.yml + docker/*. Re-run this after editing
+any of them. The transform is plain text (not a YAML round-trip) so every
+comment in the source compose file is preserved verbatim.
+"""
+import sys
+import pathlib
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# (config-name, source-path-relative-to-root)
+INLINE = [
+    ("vault-init-sh", "docker/vault-init.sh"),
+    ("minio-init-sh", "docker/minio-init.sh"),
+    ("datris-app-yaml", "docker/config/application.yaml"),
+]
+
+# Each entry rewrites a service's host bind mount into a `configs:` reference.
+# Exact-string replacements keep us honest: if the source compose file changes
+# shape, the matching fails loudly instead of producing a broken standalone.
+REPLACEMENTS = [
+    (
+        "    volumes:\n"
+        "      - ./docker/vault-init.sh:/vault-init.sh\n",
+        "    configs:\n"
+        "      - source: vault-init-sh\n"
+        "        target: /vault-init.sh\n"
+        "        mode: 0755\n",
+    ),
+    (
+        "    volumes:\n"
+        "      - ./docker/minio-init.sh:/minio-init.sh\n",
+        "    configs:\n"
+        "      - source: minio-init-sh\n"
+        "        target: /minio-init.sh\n"
+        "        mode: 0755\n",
+    ),
+    (
+        # datris: inline the config override, drop the rw .env mount (the
+        # UI key-mirroring feature needs a host file and is single-tenant
+        # convenience only), keep the pip-cache named volume.
+        "    volumes:\n"
+        "      - ./docker/config:/config\n"
+        "      - ./.env:/datris/.env:rw\n"
+        "      - pip-cache:/root/.cache/pip\n",
+        "    configs:\n"
+        "      - source: datris-app-yaml\n"
+        "        target: /config/application.yaml\n"
+        "    volumes:\n"
+        "      - pip-cache:/root/.cache/pip\n",
+    ),
+]
+
+HEADER = (
+    "# ============================================================\n"
+    "# GENERATED FILE — DO NOT EDIT BY HAND.\n"
+    "# Produced by scripts/build-standalone-compose.py from:\n"
+    "#   docker-compose.yml + docker/vault-init.sh\n"
+    "#   + docker/minio-init.sh + docker/config/application.yaml\n"
+    "#\n"
+    "# A single self-contained Compose file: no repo checkout, no bind\n"
+    "# mounts. The init scripts and config are inlined below under the\n"
+    "# top-level `configs:` block. Requires Docker Compose >= 2.23.\n"
+    "#\n"
+    "# Run:\n"
+    "#   ANTHROPIC_API_KEY=sk-ant-... \\\n"
+    "#     docker compose -f docker-compose.standalone.yml up -d\n"
+    "# (or place a .env next to this file — Compose reads it automatically)\n"
+    "# ============================================================\n\n"
+)
+
+
+def indent(text, n):
+    pad = " " * n
+    return "\n".join((pad + line) if line.strip() else "" for line in text.split("\n"))
+
+
+def main():
+    compose = (ROOT / "docker-compose.yml").read_text()
+
+    for old, new in REPLACEMENTS:
+        if old not in compose:
+            sys.exit(
+                "error: expected bind-mount block not found in docker-compose.yml — "
+                "it may have changed shape. Update REPLACEMENTS in this script.\n"
+                "Missing block:\n" + old
+            )
+        compose = compose.replace(old, new, 1)
+
+    blocks = ["configs:"]
+    for name, path in INLINE:
+        content = (ROOT / path).read_text().rstrip("\n")
+        blocks.append(f"  {name}:")
+        blocks.append("    content: |")
+        blocks.append(indent(content, 6))
+    configs_block = "\n".join(blocks) + "\n"
+
+    out = HEADER + compose.rstrip("\n") + "\n\n" + configs_block
+    target = ROOT / "docker-compose.standalone.yml"
+    target.write_text(out)
+    print(f"wrote {target.relative_to(ROOT)} ({len(out)} bytes)")
+
+
+if __name__ == "__main__":
+    main()

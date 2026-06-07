@@ -19,12 +19,38 @@ Ingest, validate, transform, store, and retrieve your data — whether you're an
 
 ## Quick Start
 
+You only need Docker. This pulls pre-built images and runtime files, seeds a
+`.env`, and starts the stack into `./datris` — no git checkout required:
+
+```bash
+curl -fsSL https://get.datris.ai/install.sh | sh
+```
+
+<details>
+<summary>Single file, no installer (read-it-first)</summary>
+
+Prefer not to pipe a script to `sh`? Grab one self-contained Compose file —
+the init scripts and config are inlined, so nothing else is needed (requires
+Docker Compose ≥ 2.23):
+
+```bash
+curl -O https://get.datris.ai/docker-compose.standalone.yml
+ANTHROPIC_API_KEY=sk-ant-... docker compose -f docker-compose.standalone.yml up -d
+```
+
+</details>
+
+<details>
+<summary>From source (for contributors)</summary>
+
 ```bash
 git clone https://github.com/datris/datris-platform-oss.git
 cd datris-platform-oss
 cp .env.example .env       # Add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY
 docker compose up -d
 ```
+
+</details>
 
 **UI**: [http://localhost:4200](http://localhost:4200) · **API**: [http://localhost:8080](http://localhost:8080)
 

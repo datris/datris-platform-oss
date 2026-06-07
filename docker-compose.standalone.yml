@@ -1,0 +1,641 @@
+# ============================================================
+# GENERATED FILE — DO NOT EDIT BY HAND.
+# Produced by scripts/build-standalone-compose.py from:
+#   docker-compose.yml + docker/vault-init.sh
+#   + docker/minio-init.sh + docker/config/application.yaml
+#
+# A single self-contained Compose file: no repo checkout, no bind
+# mounts. The init scripts and config are inlined below under the
+# top-level `configs:` block. Requires Docker Compose >= 2.23.
+#
+# Run:
+#   ANTHROPIC_API_KEY=sk-ant-... \
+#     docker compose -f docker-compose.standalone.yml up -d
+# (or place a .env next to this file — Compose reads it automatically)
+# ============================================================
+
+networks:
+  datris-net:
+    driver: bridge
+
+volumes:
+  pip-cache:
+  tei-data:
+  # kafka-data:        # uncomment if re-enabling the optional Kafka service below
+  # zookeeper-data:    # uncomment if re-enabling the optional Kafka service below
+  # zookeeper-log:     # uncomment if re-enabling the optional Kafka service below
+  # ollama-data:       # uncomment if re-enabling the optional Ollama service below
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datris-net
+
+  activemq:
+    image: apache/activemq-classic:latest
+    container_name: activemq
+    ports:
+      - "61616:61616"
+      - "8161:8161"
+    networks:
+      - datris-net
+
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    networks:
+      - datris-net
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: datris
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datris-net
+
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root-token
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8200/v1/sys/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datris-net
+
+  vault-init:
+    image: hashicorp/vault:1.15
+    container_name: vault-init
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root-token
+      DATRIS_UI_API_KEY: ${DATRIS_UI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      CODEGEN_MODEL: ${CODEGEN_MODEL:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}
+    configs:
+      - source: vault-init-sh
+        target: /vault-init.sh
+        mode: 0755
+    entrypoint: ["/bin/sh", "/vault-init.sh"]
+    restart: "no"
+    networks:
+      - datris-net
+
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
+    platform: linux/amd64   # TEI publishes amd64 only; arm64 hosts run under Docker's QEMU translation
+    container_name: tei
+    ports:
+      - "11434:80"   # external port preserved so any prior EMBEDDING_ENDPOINT overrides keep working
+    command: --model-id BAAI/bge-m3 --max-batch-tokens 8192
+    environment:
+      HUGGINGFACE_HUB_CACHE: /data
+    volumes:
+      - tei-data:/data
+    # TEI's Rust HTTP client under amd64-emulation on arm64 hosts can fail to resolve
+    # huggingface.co via Docker's embedded DNS (127.0.0.11) on user-defined bridges.
+    # Pin to public resolvers so the first-run model download succeeds.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s   # first-run model download (~2.2 GB)
+    networks:
+      - datris-net
+
+  datris:
+    image: datrisai/datris-server:latest
+    #build: .  # Uncomment to build from source instead of pulling from Docker Hub
+    container_name: datris
+    ports:
+      - "8080:8080"
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      activemq:
+        condition: service_started
+      mongodb:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      tei:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root-token
+      # Auth / multi-tenancy toggles. Defaults preserve OSS single-tenant behavior;
+      # flip these in your .env to enable user auth, API-key gating, or multi-tenant
+      # mode without rebuilding the JAR. Spring's relaxed binding maps these env
+      # names onto useUserAuth / useApiKeys / multiTenant in application.yaml.
+      USEUSERAUTH: "${USE_USER_AUTH:-false}"
+      USEAPIKEYS: "${USE_API_KEYS:-false}"
+      MULTITENANT: "${MULTI_TENANT:-false}"
+      # Capability enforcement: `enforce` (default) returns HTTP 403 on policy
+      # violations by scoped keys. Override to `log-only` in .env to emit
+      # would-deny log lines without rejecting — useful only when iterating
+      # on a new scope policy and you want a trial run before flipping on.
+      # Legacy `*:*` keys are unaffected either way.
+      CAPABILITY_ENFORCEMENT: "${CAPABILITY_ENFORCEMENT:-enforce}"
+      # Operator-override fallback model when Anthropic Opus is sustained-
+      # overloaded; read by AgentLoop.sonnetFallbackFor() at runtime.
+      ANTHROPIC_OVERLOAD_FALLBACK_MODEL: "${ANTHROPIC_OVERLOAD_FALLBACK_MODEL:-}"
+      # Provider API keys exposed to the Scala runtime for AIUtil.resolveApiKey's
+      # env-var fallback (gated to single-tenant). Used when an AI section's Vault
+      # secret has no apiKey of its own — e.g. user enabled web search via UI but
+      # the right-hand panel showed the masked placeholder so no real key reached
+      # oss/web-search. The runtime then falls back to these. Multi-tenant tenants
+      # don't fall through (multiTenant=true short-circuits the helper) so platform
+      # keys never leak across tenants.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Path inside the container to the host .env file (mounted below). When
+      # the user saves changes in the AI Configuration UI, the server mirrors
+      # the relevant keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, *_MODEL) back to
+      # this file so they survive a `docker compose down && up` (Vault is in
+      # dev mode = in-memory, and vault-init.sh re-seeds from .env on each
+      # boot). Single-tenant only.
+      DATRIS_ENV_FILE_PATH: /datris/.env
+      # JVM heap sizing for the datris-server process. Default fits an 8GB
+      # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
+      # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
+      JAVA_OPTS: "${JAVA_OPTS:--Xms512m -Xmx2g}"
+    configs:
+      - source: datris-app-yaml
+        target: /config/application.yaml
+    volumes:
+      - pip-cache:/root/.cache/pip
+    networks:
+      - datris-net
+
+  ui:
+    image: datrisai/datris-ui:latest
+    #build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
+    container_name: ui
+    ports:
+      - "4200:8080"
+    depends_on:
+      - datris
+    networks:
+      - datris-net
+
+  mcp-server:
+    image: datrisai/datris-mcp-server:latest
+    #build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
+    container_name: mcp-server
+    ports:
+      - "3000:3000"
+    environment:
+      DATRIS_API_URL: http://datris:8080
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-http://host.docker.internal:11434}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      QDRANT_HOST: host.docker.internal
+      QDRANT_PORT: "6333"
+      WEAVIATE_HOST: host.docker.internal
+      WEAVIATE_PORT: "8079"
+      WEAVIATE_GRPC_PORT: "50051"
+      MILVUS_HOST: host.docker.internal
+      MILVUS_PORT: "19530"
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DATABASE: datris
+      PG_USER: postgres
+      PG_PASSWORD: postgres
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DATABASE: oss
+    depends_on:
+      - datris
+    networks:
+      - datris-net
+
+  # ================================================================
+  # Optional Vector Databases
+  # Uncomment whichever vector database you want to use.
+  # pgvector is already included via the PostgreSQL service above.
+  # ================================================================
+
+  # Qdrant - high-performance vector database
+  # qdrant:
+  #   image: qdrant/qdrant:latest
+  #   container_name: qdrant
+  #   ports:
+  #     - "6333:6333"
+  #     - "6334:6334"
+  #   networks:
+  #     - datris-net
+
+  # Weaviate - open-source vector database (port 8079 to avoid conflict with pipeline on 8080)
+  # weaviate:
+  #   image: cr.weaviate.io/semitechnologies/weaviate:latest
+  #   container_name: weaviate
+  #   ports:
+  #     - "8079:8080"
+  #     - "50051:50051"
+  #   networks:
+  #     - datris-net
+
+  # Chroma - lightweight vector database
+  # chroma:
+  #   image: chromadb/chroma:latest
+  #   container_name: chroma
+  #   ports:
+  #     - "8000:8000"
+  #   networks:
+  #     - datris-net
+
+  # Milvus - scalable vector database (requires etcd + minio dependencies)
+  # See https://milvus.io/docs/install_standalone-docker.md for full setup.
+  # Recommended: use the standalone embed script instead:
+  #   curl -sfL https://raw.githubusercontent.com/milvus-io/milvus/master/scripts/standalone_embed.sh -o standalone_embed.sh
+  #   bash standalone_embed.sh start
+
+  # ================================================================
+  # Optional: Ollama (local chat / CodeGen models)
+  # The bundled embedding model has moved to the `tei` service above.
+  # Re-enable this block (and the `ollama-data` volume at the top of
+  # the file) only if you want to run local chat models like llama3
+  # or qwen instead of using BYO Anthropic/OpenAI keys.
+  # After uncommenting + `docker compose up -d ollama`, point Datris
+  # at it via the AI Provider / CodeGen Provider dropdown in the
+  # Configuration tab (provider: ollama).
+  # NOTE: TEI takes host port 11434, so Ollama is mapped to 11435 here
+  # to avoid a conflict.
+  # ================================================================
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: ollama
+  #   ports:
+  #     - "11435:11434"
+  #   environment:
+  #     OLLAMA_NUM_PARALLEL: 4
+  #     OLLAMA_KEEP_ALIVE: 30m
+  #     OLLAMA_MAX_LOADED_MODELS: 2
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   networks:
+  #     - datris-net
+
+  # ================================================================
+  # Optional: Kafka + Zookeeper + kafka-ui
+  # Datris ships with kafka-clients in the assembly, so pipelines that
+  # use a Kafka source/destination can point at any external broker
+  # via the pipeline's Kafka secret. This bundled local broker is only
+  # needed if you want to test Kafka pipelines without spinning up a
+  # broker elsewhere.
+  # Re-enable all three services AND the volumes at the top of the file
+  # (kafka-data, zookeeper-data, zookeeper-log) to use locally.
+  # ================================================================
+  # zookeeper:
+  #   image: confluentinc/cp-zookeeper:7.6.0
+  #   container_name: zookeeper
+  #   ports:
+  #     - "2181:2181"
+  #   environment:
+  #     ZOOKEEPER_CLIENT_PORT: 2181
+  #     ZOOKEEPER_TICK_TIME: 2000
+  #     KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
+  #   volumes:
+  #     - zookeeper-data:/var/lib/zookeeper/data
+  #     - zookeeper-log:/var/lib/zookeeper/log
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+  #   networks:
+  #     - datris-net
+  #
+  # kafka:
+  #   image: confluentinc/cp-kafka:7.6.0
+  #   container_name: kafka
+  #   ports:
+  #     - "9092:9092"
+  #   depends_on:
+  #     zookeeper:
+  #       condition: service_healthy
+  #   environment:
+  #     KAFKA_BROKER_ID: 1
+  #     KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  #   volumes:
+  #     - kafka-data:/var/lib/kafka/data
+  #   networks:
+  #     - datris-net
+  #
+  # kafka-ui:
+  #   image: provectuslabs/kafka-ui:latest
+  #   container_name: kafka-ui
+  #   ports:
+  #     - "8085:8080"
+  #   depends_on:
+  #     - kafka
+  #   environment:
+  #     KAFKA_CLUSTERS_0_NAME: local
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+  #   networks:
+  #     - datris-net
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+      datris:
+        condition: service_started
+    configs:
+      - source: minio-init-sh
+        target: /minio-init.sh
+        mode: 0755
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    restart: "no"
+    networks:
+      - datris-net
+
+configs:
+  vault-init-sh:
+    content: |
+      #!/bin/sh
+      set -e
+
+      echo "Waiting for Vault to be ready..."
+      until vault status > /dev/null 2>&1; do
+        sleep 1
+      done
+
+      echo "Seeding Vault secrets..."
+
+      vault kv put secret/oss/minio accessKey=minioadmin secretKey=minioadmin
+      vault kv put secret/oss/activemq username=admin password=admin
+      vault kv put secret/oss/mongodb connectionString=mongodb://mongodb:27017 database=oss
+      # The UI API key — operator-supplied via DATRIS_UI_API_KEY in .env, or a
+      # stable fallback for fresh local installs. Seeded in two places so the
+      # auth layer recognizes it AND the operator can rotate it from the UI:
+      #   - oss/api-keys[ui] is the validation source (APIKeyValidator looks here)
+      #   - oss/ui-api-key is the operator-facing record (rotatable in Secrets UI;
+      #     on save, the server auto-mirrors the new value into oss/api-keys[ui])
+      UI_API_KEY_VALUE="${DATRIS_UI_API_KEY:-default-ui-key}"
+      vault kv put secret/oss/api-keys ui="${UI_API_KEY_VALUE}"
+      vault kv put secret/oss/ui-api-key apiKey="${UI_API_KEY_VALUE}"
+      vault kv put secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 username=postgres password=postgres
+      # kafka-producer is intentionally not seeded — the bundled Kafka service is
+      # now opt-in (see optional Kafka block in docker-compose.yml). Users who
+      # enable it can configure this secret via the Configuration tab or by hand:
+      #   vault kv put secret/oss/kafka-producer bootstrapServers=kafka:9092
+
+      # AI configuration — three independent, self-describing secrets.
+      # Each Vault secret carries provider/endpoint/model/apiKey/version inline so
+      # the resolver never derives the path from a YAML provider field.
+      #
+      # Provider selection:
+      #   1. AI_PROVIDER (anthropic|openai) is the explicit override — always wins.
+      #      Use this in .env to pin a choice when shell env vars (e.g. a global
+      #      OPENAI_API_KEY exported from your shell rc) would otherwise leak in
+      #      and silently flip the default on every rebuild.
+      #   2. If AI_PROVIDER is unset, fall back to "whichever key is present",
+      #      with OpenAI winning ties — preserves the historical default.
+      PROVIDER="${AI_PROVIDER:-}"
+      if [ -z "$PROVIDER" ]; then
+        if [ -n "${OPENAI_API_KEY:-}" ]; then
+          PROVIDER="openai"
+        elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+          PROVIDER="anthropic"
+        fi
+      fi
+
+      if [ "$PROVIDER" = "openai" ]; then
+        if [ -z "${OPENAI_API_KEY:-}" ]; then
+          echo "ERROR: AI_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
+          exit 1
+        fi
+        vault kv put secret/oss/ai-primary \
+          provider="openai" \
+          endpoint="https://api.openai.com/v1/chat/completions" \
+          model="${OPENAI_MODEL:-gpt-5.5}" \
+          apiKey="${OPENAI_API_KEY}"
+        vault kv put secret/oss/codegen \
+          provider="openai" \
+          endpoint="https://api.openai.com/v1/chat/completions" \
+          model="${CODEGEN_MODEL:-gpt-5.5}" \
+          apiKey="${OPENAI_API_KEY}"
+      elif [ "$PROVIDER" = "anthropic" ]; then
+        if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+          echo "ERROR: AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set." >&2
+          exit 1
+        fi
+        vault kv put secret/oss/ai-primary \
+          provider="anthropic" \
+          endpoint="https://api.anthropic.com/v1/messages" \
+          model="${ANTHROPIC_MODEL:-claude-sonnet-4-6}" \
+          apiKey="${ANTHROPIC_API_KEY}" \
+          version="2023-06-01"
+        vault kv put secret/oss/codegen \
+          provider="anthropic" \
+          endpoint="https://api.anthropic.com/v1/messages" \
+          model="${CODEGEN_MODEL:-claude-opus-4-8}" \
+          apiKey="${ANTHROPIC_API_KEY}" \
+          version="2023-06-01"
+      else
+        echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2
+        exit 1
+      fi
+
+      # Embedding slot — decoupled from AI_PROVIDER so users can mix-and-match
+      # (e.g. Anthropic for chat/codegen + OpenAI for embedding when bundled TEI
+      # is unreliable on a small host).
+      #
+      # Selection precedence:
+      #   1. EMBEDDING_PROVIDER (openai|tei|ollama) — explicit override.
+      #   2. Otherwise: AI_PROVIDER=openai → OpenAI embeddings;
+      #                 AI_PROVIDER=anthropic → bundled TEI (bge-m3, 1024-dim).
+      EMBEDDING_PROVIDER_RESOLVED="${EMBEDDING_PROVIDER:-}"
+      if [ -z "$EMBEDDING_PROVIDER_RESOLVED" ]; then
+        if [ "$PROVIDER" = "openai" ]; then
+          EMBEDDING_PROVIDER_RESOLVED="openai"
+        else
+          EMBEDDING_PROVIDER_RESOLVED="tei"
+        fi
+      fi
+
+      if [ "$EMBEDDING_PROVIDER_RESOLVED" = "openai" ]; then
+        if [ -z "${OPENAI_API_KEY:-}" ]; then
+          echo "ERROR: EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
+          exit 1
+        fi
+        vault kv put secret/oss/embedding \
+          provider="openai" \
+          endpoint="https://api.openai.com/v1/embeddings" \
+          model="${EMBEDDING_MODEL:-text-embedding-3-small}" \
+          apiKey="${OPENAI_API_KEY}"
+      elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "tei" ]; then
+        vault kv put secret/oss/embedding \
+          provider="tei" \
+          endpoint="${EMBEDDING_ENDPOINT:-http://tei:80/v1/embeddings}" \
+          model="${EMBEDDING_MODEL:-BAAI/bge-m3}" \
+          apiKey=""
+      elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "ollama" ]; then
+        vault kv put secret/oss/embedding \
+          provider="ollama" \
+          endpoint="${EMBEDDING_ENDPOINT:-http://ollama:11434/v1/embeddings}" \
+          model="${EMBEDDING_MODEL:-bge-m3}" \
+          apiKey=""
+      else
+        echo "ERROR: Unknown EMBEDDING_PROVIDER='$EMBEDDING_PROVIDER_RESOLVED'. Expected: openai, tei, or ollama." >&2
+        exit 1
+      fi
+
+      # Vector store secrets.
+      # Only pgvector is seeded by default — it rides on the bundled Postgres so
+      # it's always available. The other vector stores (qdrant, weaviate, milvus,
+      # chroma) are opt-in via the optional service blocks in docker-compose.yml.
+      # Seeding their secrets unconditionally would make the Configuration tab's
+      # Service Health card show them as "Down" instead of "Not Configured" when
+      # the user hasn't enabled them. Users who turn on an optional vector store
+      # can write its secret via the Configuration tab or by hand:
+      #   vault kv put secret/oss/qdrant   host="host.docker.internal" port="6334" apiKey=""
+      #   vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
+      #   vault kv put secret/oss/milvus   host="host.docker.internal" port="19530" apiKey=""
+      #   vault kv put secret/oss/chroma   host="host.docker.internal" port="8000"
+      vault kv put secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/datris" username="postgres" password="postgres"
+
+      echo "Vault secrets seeded successfully."
+  minio-init-sh:
+    content: |
+      #!/bin/bash
+      set -e
+
+      echo "Waiting for MinIO to be ready..."
+      until mc alias set myminio http://minio:9000 minioadmin minioadmin > /dev/null 2>&1; do
+        sleep 2
+      done
+
+      echo "Creating buckets..."
+      mc mb --ignore-existing myminio/oss-config
+      mc mb --ignore-existing myminio/oss-raw
+      mc mb --ignore-existing myminio/oss-raw-plus
+      mc mb --ignore-existing myminio/oss-temp
+
+      echo "Waiting for Pipeline server to be reachable..."
+      until bash -c 'echo > /dev/tcp/datris/8080' 2>/dev/null; do
+        sleep 3
+      done
+      echo "Pipeline server is reachable."
+
+      echo "Configuring MinIO webhook notification endpoint..."
+      mc admin config set myminio notify_webhook:1 \
+        endpoint=http://datris:8080/minio-events \
+        queue_limit=1000 \
+        queue_dir=/tmp/minio-events
+
+      echo "Restarting MinIO to apply notification config..."
+      mc admin service restart myminio --json 2>/dev/null || true
+
+      echo "Waiting for MinIO to come back..."
+      sleep 5
+      until mc alias set myminio http://minio:9000 minioadmin minioadmin > /dev/null 2>&1; do
+        sleep 2
+      done
+
+      echo "Setting up bucket event notifications on oss-raw..."
+      mc event remove myminio/oss-raw --force 2>/dev/null || true
+      mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .metadata.json --event put
+      mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.csv --event put
+      mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.json --event put
+      mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.xml --event put
+
+      echo "MinIO initialization complete."
+      echo ""
+      echo "============================================"
+      echo "  Datris Platform is ready!"
+      echo "============================================"
+      echo ""
+      echo "  Pipeline UI:     http://localhost:4200"
+      echo "  Pipeline API:    http://localhost:8080"
+      echo "  MCP Server:      http://localhost:3000/sse"
+      echo "  MinIO Console:   http://localhost:9001"
+      echo "  Kafka UI:        http://localhost:8085"
+      echo "  ActiveMQ:        http://localhost:8161"
+      echo "  Vault:           http://localhost:8200"
+      echo ""
+      echo "============================================"
+  datris-app-yaml:
+    content: |
+      # Docker Compose overrides. Spring loads this on top of the JAR-bundled
+      # application.yaml via --spring.config.additional-location (see docker-init.sh).
+      # Keep this file as small as possible — only set values that genuinely differ
+      # from the bundled defaults in localhost mode. Anything else inherits.
+      #
+      # To toggle auth / multi-tenancy / api-keys, do NOT add them here — set
+      # USE_USER_AUTH / USE_API_KEYS / MULTI_TENANT in your .env instead. They
+      # flow through docker-compose.yml as USEUSERAUTH / USEAPIKEYS / MULTITENANT
+      # env vars and Spring's relaxed binding overrides the YAML at runtime.
+
+      spring:
+        data:
+          mongodb:
+            uri: mongodb://mongodb:27017/datris
+
+      minio:
+        server: http://minio:9000
+
+      activemq:
+        server: tcp://activemq:61616
+
+      mongodb:
+        connectionString: mongodb://mongodb:27017
+
+      kafkaConsumer:
+        bootstrapServers: kafka:9092
