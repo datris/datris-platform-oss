@@ -1,16 +1,25 @@
 # Release Notes
 
-## v1.8.3 — June 4, 2026
+## v1.8.4 — June 7, 2026
 
-**Organize your catalog by chatting with it.**
+**A domain-neutral assistant — guidance that fits whatever data you work with.**
 
-- **Catalog assistant.** The Catalog tab has a new side-panel assistant for tidying things up. Ask it to group your taps and pipelines into catalogs, move items around, or suggest a cleaner structure — it lays out a plan first and only makes changes once you approve them, and the catalog updates as it works. It sticks to organizing: questions about your data go to Search, and running or fixing pipelines stays in Ops.
-- **Right where you're working.** The assistant lives in a collapsible right rail (toggle it with Cmd/Ctrl + backslash) so the catalog stays in view while you reorganize. Clicking **Describe to Assistant** on a catalog now opens this panel in place instead of jumping to another tab, and the conversation sticks around as you navigate away and back.
+- **No more finance-flavored examples.** The in-product assistant, the tap generator, and the prompt suggestions used to lean on stock-market wording — tickers, symbols, financial filings — in their examples and defaults. They're now domain-neutral, so the guidance and sample values match the data you're actually working with, whatever the domain.
+- **Generic search defaults.** Vector search now defaults to a `documents` collection (and a `Documents` class) instead of finance-specific names. If you already pass your own collection, table, or class name, nothing changes — only the placeholder defaults differ.
+- **Refreshed starter prompt fragments.** The built-in tap prompt fragments now describe general patterns — rate-limited APIs and APIs that require a User-Agent header — rather than specific named data providers.
 
 **Upgrading**
 
 - Existing installs: `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. No data migration needed.
 - The CLI: `brew upgrade datris`.
+
+---
+
+## v1.8.3 — June 4, 2026
+
+**Organize your catalog by chatting with it.**
+
+See [archived v1.8.3 release notes](release-notes/v1.8.3.md).
 
 ---
 
