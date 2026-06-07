@@ -1,0 +1,36 @@
+name: Standalone compose in sync
+
+# docker-compose.standalone.yml is generated from docker-compose.yml + docker/*
+# by scripts/build-standalone-compose.py. This guard regenerates it in CI and
+# fails if the committed file drifted, so the single-file install can't silently
+# fall behind the canonical compose file.
+
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - 'docker-compose.yml'
+      - 'docker/vault-init.sh'
+      - 'docker/minio-init.sh'
+      - 'docker/config/application.yaml'
+      - 'scripts/build-standalone-compose.py'
+      - 'docker-compose.standalone.yml'
+  pull_request:
+    paths: *paths
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Regenerate standalone compose
+        run: python3 scripts/build-standalone-compose.py
+
+      - name: Fail if it drifted from the committed file
+        run: |
+          if ! git diff --exit-code docker-compose.standalone.yml; then
+            echo "::error::docker-compose.standalone.yml is out of sync with its sources. Run 'python3 scripts/build-standalone-compose.py' and commit the result."
+            exit 1
+          fi
