@@ -61,16 +61,23 @@ else
   AKEY="${ANTHROPIC_API_KEY:-}"
   OKEY="${OPENAI_API_KEY:-}"
 
-  # Prompt only when no key was supplied via env and we have a terminal.
-  if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -r /dev/tty ]; then
+  # Detect a *usable* controlling terminal. `[ -r /dev/tty ]` is not enough: the
+  # device node can be readable yet fail to open ("Device not configured") when
+  # there's no controlling terminal (CI, some `curl | sh` contexts). Actually
+  # try to open it (error suppressed) so we fall back cleanly instead of aborting.
+  TTY=""
+  if { : < /dev/tty; } 2>/dev/null; then TTY="/dev/tty"; fi
+
+  # Prompt only when no key was supplied via env and we have a real terminal.
+  if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -n "$TTY" ]; then
     say ""
     say "Datris needs one AI provider key. Anthropic (Claude) is recommended —"
     say "CodeGen, AI data-quality rules, and NL→SQL are much better with Claude."
-    printf "  Anthropic API key (sk-ant-...), or press Enter to use OpenAI instead: " > /dev/tty
-    read -r AKEY < /dev/tty || AKEY=""
+    printf "  Anthropic API key (sk-ant-...), or press Enter to use OpenAI instead: " > "$TTY"
+    read -r AKEY < "$TTY" || AKEY=""
     if [ -z "$AKEY" ]; then
-      printf "  OpenAI API key (sk-...), or press Enter to skip for now: " > /dev/tty
-      read -r OKEY < /dev/tty || OKEY=""
+      printf "  OpenAI API key (sk-...), or press Enter to skip for now: " > "$TTY"
+      read -r OKEY < "$TTY" || OKEY=""
     fi
   fi
 
