@@ -28,6 +28,13 @@ ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*"; }
 die()  { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Mask a secret for display: short head + tail, middle hidden.
+mask() {
+  v="$1"; n=${#v}
+  [ "$n" -le 12 ] && { printf '****'; return; }
+  printf '%s...%s' "$(printf '%s' "$v" | cut -c1-7)" "$(printf '%s' "$v" | cut -c"$((n-3))"-"$n")"
+}
+
 # --- preflight ------------------------------------------------------------
 command -v docker >/dev/null 2>&1 || die "Docker is not installed. Get it at https://docs.docker.com/get-docker/"
 if docker compose version >/dev/null 2>&1; then
@@ -68,7 +75,26 @@ else
   TTY=""
   if { : < /dev/tty; } 2>/dev/null; then TTY="/dev/tty"; fi
 
-  # Prompt only when no key was supplied via env and we have a real terminal.
+  # If a provider key was inherited from the shell environment, never adopt it
+  # silently — a stray ANTHROPIC/OPENAI_API_KEY in a shell rc shouldn't decide
+  # your provider without you knowing. Announce what was found, and when
+  # interactive let the user keep it or ignore it and enter their own.
+  if [ -n "$AKEY" ] || [ -n "$OKEY" ]; then
+    [ -n "$AKEY" ] && say "Detected ANTHROPIC_API_KEY in your environment ($(mask "$AKEY")) — will use Anthropic/Claude."
+    [ -n "$OKEY" ] && say "Detected OPENAI_API_KEY in your environment ($(mask "$OKEY")) — will use OpenAI."
+    if [ -n "$TTY" ]; then
+      printf "  Use the detected key(s)? [Y/n] (n = ignore and enter your own): " > "$TTY"
+      ans=""
+      read -r ans < "$TTY" || ans=""
+      case "$ans" in
+        n*|N*) warn "Ignoring environment keys."; AKEY=""; OKEY="" ;;
+      esac
+    else
+      say "Non-interactive — using the detected key(s)."
+    fi
+  fi
+
+  # Prompt only when no key was supplied/kept and we have a real terminal.
   if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -n "$TTY" ]; then
     say ""
     say "Datris needs one AI provider key. Anthropic (Claude) is recommended —"
