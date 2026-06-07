@@ -105,7 +105,11 @@ fi
 
 say ""
 say "Pulling images and starting Datris (first run downloads ~a few GB)..."
-( cd "$DIR" && $COMPOSE pull && $COMPOSE up -d )
+# --remove-orphans keeps re-running this script a safe upgrade: a new version may
+# rename or drop a service (e.g. Ollama → TEI on the same port), and without the
+# flag the stale container holds the port and the new one fails to bind. It only
+# removes containers no longer in the compose file; named volumes (your data) survive.
+( cd "$DIR" && $COMPOSE pull && $COMPOSE up -d --remove-orphans )
 
 ok ""
 ok "Datris is starting up."

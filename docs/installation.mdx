@@ -9,45 +9,73 @@ description: "How to install and set up the Datris Data Platform"
 
 ## Quick Start
 
-### 1. Clone the repository
+All you need is Docker — no git checkout, no build tools. The installer pulls
+the pre-built images from Docker Hub, fetches the few runtime files Compose
+needs into a `./datris` directory, seeds a `.env`, and starts the full stack:
 
 ```bash
-git clone https://github.com/datris/datris-platform-oss.git
-cd datris-platform-oss
+curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
-### 2. Set your API keys
+It prompts for an AI provider key (Anthropic recommended; press Enter to use
+OpenAI instead), then runs everything. On first start, `vault-init` seeds your
+key into Vault. That's it — the platform is running.
+
+Prefer not to pipe a script to `sh`? Grab one self-contained Compose file
+instead (the init scripts and config are inlined, so nothing else is needed —
+requires Docker Compose ≥ 2.23):
 
 ```bash
-cp .env.example .env
+curl -O https://get.datris.ai/docker-compose.standalone.yml
+ANTHROPIC_API_KEY=sk-ant-... docker compose -f docker-compose.standalone.yml up -d
 ```
 
-Edit `.env` and add your API keys (at least one required for AI features):
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-proj-...
-```
-
-### 3. Start all services
-
-```bash
-docker compose up -d
-```
-
-Docker pulls the pre-built images from Docker Hub and starts the full stack. On first run, `vault-init` automatically seeds your API keys into Vault.
-
-### 4. Verify
+### Verify
 
 ```bash
 curl http://localhost:8080/api/v1/version
 ```
 
-That's it. The platform is running.
+<Accordion title="From source (for contributors)">
+Clone the repo and start from the checked-out compose file:
+
+```bash
+git clone https://github.com/datris/datris-platform-oss.git
+cd datris-platform-oss
+cp .env.example .env       # add ANTHROPIC_API_KEY and/or OPENAI_API_KEY
+docker compose up -d
+```
+
+This still pulls the pre-built images. To build the images yourself, see
+[Building from Source](#building-from-source) below.
+</Accordion>
 
 ## Upgrading
 
-If you already have Datris installed and want to upgrade to the latest version:
+Upgrading means two things: pulling the latest pre-built images **and**
+refreshing the Compose file itself, since a new release can rename, add, or drop
+services. How you do it depends on how you installed. In every case your data is
+preserved — it lives in Docker volumes that survive an upgrade.
+
+**Installer (the `curl … | sh` Quick Start):** just re-run the install command.
+It re-downloads the latest compose file and runtime scripts, leaves your `.env`
+and data untouched, pulls the new images, and restarts.
+
+```bash
+curl -fsSL https://get.datris.ai/install.sh | sh
+```
+
+**Single-file (`docker-compose.standalone.yml`):** re-download the file (it
+carries the latest topology and inlined scripts), then pull and restart.
+
+```bash
+curl -O https://get.datris.ai/docker-compose.standalone.yml
+docker compose -f docker-compose.standalone.yml pull
+docker compose -f docker-compose.standalone.yml up -d --remove-orphans
+```
+
+**From source (cloned repo):** pull the latest compose file from git, then pull
+images and restart.
 
 ```bash
 cd datris-platform-oss
@@ -56,10 +84,10 @@ docker compose pull
 docker compose up -d --remove-orphans
 ```
 
-This pulls the latest pre-built images from Docker Hub and restarts the services. No build tools required.
+No build tools required for any of these — the images come pre-built from Docker Hub.
 
 <Note>
-**Always pass `--remove-orphans` when upgrading.** Releases occasionally rename, remove, or repurpose service blocks in `docker-compose.yml` (e.g. v1.6.15 replaced the bundled Ollama service with TEI on the same host port `11434`). Without `--remove-orphans`, the previous version's container keeps running and holding the port, causing the new container to fail with `Bind for 0.0.0.0:<port> failed: port is already allocated`. The flag is safe — it only removes containers that are no longer defined in your current compose file. Volumes (and your data) are untouched.
+**Always pass `--remove-orphans` when upgrading manually.** (The installer does this for you.) Releases occasionally rename, remove, or repurpose service blocks in `docker-compose.yml` (e.g. v1.6.15 replaced the bundled Ollama service with TEI on the same host port `11434`). Without `--remove-orphans`, the previous version's container keeps running and holding the port, causing the new container to fail with `Bind for 0.0.0.0:<port> failed: port is already allocated`. The flag is safe — it only removes containers that are no longer defined in your current compose file. Volumes (and your data) are untouched.
 </Note>
 
 Your data is preserved across upgrades — Postgres pipelines, Vault secrets, MinIO buckets, MongoDB collections, and Kafka state all live in Docker volumes that survive `docker compose pull` and `docker compose up -d`.
@@ -76,7 +104,7 @@ Datris occasionally deprecates secret paths between versions (for example, v1.5.
 If you don't care about anything on this machine and want a completely fresh install — same data layout as a brand-new clone — wipe all volumes:
 
 ```bash
-cd datris-platform-oss
+cd datris            # your install dir: ./datris (installer), the standalone file's dir, or your clone
 docker compose down -v
 docker compose up -d
 ```
