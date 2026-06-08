@@ -21,14 +21,35 @@ It prompts for an AI provider key (Anthropic recommended; press Enter to use
 OpenAI instead), then runs everything. On first start, `vault-init` seeds your
 key into Vault. That's it — the platform is running.
 
+<Note>
+The `install.sh` installer is a POSIX shell script, so it runs on **macOS and
+Linux**. On **Windows**, run it from a POSIX shell — **WSL2** (recommended) or
+**Git Bash** — or skip the installer and use the single-file Compose option
+below, which works natively in PowerShell.
+</Note>
+
 Or, for a fully self-contained single file (no installer) — the init scripts
 and config are inlined, so nothing else is needed (requires Docker Compose
-≥ 2.23):
+≥ 2.23). This is the simplest path on **Windows**:
 
-```bash
+<CodeGroup>
+
+```bash macOS / Linux
 curl -O https://get.datris.ai/docker-compose.standalone.yml
 ANTHROPIC_API_KEY=sk-ant-... docker compose -f docker-compose.standalone.yml up -d
 ```
+
+```powershell Windows (PowerShell)
+curl.exe -O https://get.datris.ai/docker-compose.standalone.yml
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+docker compose -f docker-compose.standalone.yml up -d
+```
+
+</CodeGroup>
+
+In PowerShell, use `curl.exe` (the bundled `curl` alias maps to
+`Invoke-WebRequest` and takes different flags), and set the key with `$env:`
+since the inline `KEY=value command` syntax is bash-only.
 
 ### Verify
 

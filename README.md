@@ -26,21 +26,31 @@ You only need Docker. This pulls pre-built images and runtime files, seeds a
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
+> The `install.sh` installer is a POSIX shell script (macOS/Linux). On **Windows**, run it from **WSL2** or **Git Bash**, or use the single-file Compose option below, which works natively in PowerShell.
+
 <details>
-<summary>Single file, no installer</summary>
+<summary>Single file, no installer (works on Windows)</summary>
 
 A fully self-contained Compose file — the init scripts and config are inlined,
 so nothing else is needed (requires Docker Compose ≥ 2.23):
 
 ```bash
+# macOS / Linux
 curl -O https://get.datris.ai/docker-compose.standalone.yml
 ANTHROPIC_API_KEY=sk-ant-... docker compose -f docker-compose.standalone.yml up -d
+```
+
+```powershell
+# Windows (PowerShell) — use curl.exe, and set the key with $env:
+curl.exe -O https://get.datris.ai/docker-compose.standalone.yml
+$env:ANTHROPIC_API_KEY="sk-ant-..."
+docker compose -f docker-compose.standalone.yml up -d
 ```
 
 </details>
 
 <details>
-<summary>From source (for contributors)</summary>
+<summary>From a git clone</summary>
 
 ```bash
 git clone https://github.com/datris/datris-platform-oss.git
