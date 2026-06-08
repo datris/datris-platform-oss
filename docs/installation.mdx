@@ -36,8 +36,11 @@ ANTHROPIC_API_KEY=sk-ant-... docker compose -f docker-compose.standalone.yml up 
 curl http://localhost:8080/api/v1/version
 ```
 
-<Accordion title="From source (for contributors)">
-Clone the repo and start from the checked-out compose file:
+## Alternative: install from a git clone
+
+If you'd rather work from a checked-out repository — for example to track the
+source, customize `docker-compose.yml`, or contribute — clone the repo and start
+from the checked-out compose file:
 
 ```bash
 git clone https://github.com/datris/datris-platform-oss.git
@@ -46,9 +49,9 @@ cp .env.example .env       # add ANTHROPIC_API_KEY and/or OPENAI_API_KEY
 docker compose up -d
 ```
 
-This still pulls the pre-built images. To build the images yourself, see
-[Building from Source](#building-from-source) below.
-</Accordion>
+This still pulls the pre-built images from Docker Hub — no build tools required.
+To build the images yourself, see [Building from Source](#building-from-source)
+below.
 
 ## Upgrading
 
