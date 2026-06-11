@@ -320,21 +320,23 @@ object AgentLoop {
     }
 
     /** Lighter sibling model to fall back to under sustained overload.
-      * Only defined for Anthropic + Opus today — OpenAI and other providers
-      * return None and the caller surfaces the original error.
+      * Defined for Anthropic's top-tier models (Opus, Fable, Mythos) today —
+      * OpenAI and other providers return None and the caller surfaces the
+      * original error.
       *
-      * The Anthropic default (`claude-sonnet-4-6`) is only consulted on the
-      * Anthropic+Opus path, so an OpenAI-only deployment never carries a
+      * The Anthropic default (`claude-sonnet-4-6`) is only consulted on this
+      * Anthropic top-tier path, so an OpenAI-only deployment never carries a
       * Claude string in its config surface. Operator-overridable via
       * `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` so the fallback can be bumped
       * when a newer Sonnet ships without a recompile.
       *
       * Returns None when the override equals the current model (avoids a
-      * no-op retry if someone misconfigures it to the same Opus). */
+      * no-op retry if someone misconfigures it to the same model). */
     private def sonnetFallbackFor(cfg: AIConfig): Option[String] = {
         val provider = if (cfg.provider == null) "" else cfg.provider.toLowerCase
         val model    = if (cfg.model == null) "" else cfg.model.toLowerCase
-        if (provider == "anthropic" && model.contains("opus")) {
+        val isTopTier = model.contains("opus") || model.contains("fable") || model.contains("mythos")
+        if (provider == "anthropic" && isTopTier) {
             val fallback = sys.env.getOrElse("ANTHROPIC_OVERLOAD_FALLBACK_MODEL", "claude-sonnet-4-6").trim
             if (fallback.nonEmpty && fallback != cfg.model) Some(fallback) else None
         } else None

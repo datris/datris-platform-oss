@@ -45,7 +45,34 @@ object AIUtil {
      * Retries up to 5 times on transient status codes (429, 503, 529) with linear backoff.
      * Throws DatrisException on any other non-200 status.
      */
-    private def executeWithRetry(client: CloseableHttpClient, httpPostFactory: () => HttpPost): String = {
+    /** Translate a non-200 AI-provider error into a message a user or the
+      * Assistant agent can act on, naming the model where the failure is
+      * model-specific. Falls back to the raw status + body when the shape isn't
+      * recognized, so nothing is ever swallowed. `body` is the provider's raw
+      * response; `model` is the configured model id (may be null). */
+    private def explainAIError(status: Int, body: String, model: String): String = {
+        val b = if (body == null) "" else body
+        val lower = b.toLowerCase
+        val m = if (model == null || model.isEmpty) "the selected model" else "'" + model + "'"
+        if (status == 400 && lower.contains("retention")) {
+            "Model " + m + " requires standard (30-day) data retention on the Anthropic account and is not " +
+            "available under zero-data-retention. Pick a different model, or enable standard data retention " +
+            "on the Anthropic organization that owns this API key. (Provider response: " + b.take(400) + ")"
+        } else if (status == 400 && (lower.contains("temperature") || lower.contains("top_p") || lower.contains("top_k"))) {
+            "Model " + m + " does not accept sampling parameters (temperature/top_p/top_k). This is a request " +
+            "configuration issue, not a problem with your input. (Provider response: " + b.take(400) + ")"
+        } else if (status == 400 && (lower.contains("budget_tokens") || lower.contains("thinking"))) {
+            "Model " + m + " rejected the extended-thinking settings in this request. This is a request " +
+            "configuration issue, not a problem with your input. (Provider response: " + b.take(400) + ")"
+        } else if (status == 401 || status == 403) {
+            "The AI provider rejected the API key (status " + status + ") for model " + m + ". Check that the " +
+            "configured key is valid and has access to this model. (Provider response: " + b.take(400) + ")"
+        } else {
+            "AI API returned error status: " + status + ", body: " + b
+        }
+    }
+
+    private def executeWithRetry(client: CloseableHttpClient, httpPostFactory: () => HttpPost, modelLabel: String = null): String = {
         val maxRetries = 5
         var attempt = 0
         var result: String = null
@@ -62,7 +89,7 @@ object AIUtil {
                 logger.warn("AI API returned " + statusCode + " (transient), waiting " + waitSeconds + "s before retry " + attempt + " of " + maxRetries)
                 Thread.sleep(waitSeconds * 1000L)
             } else if (statusCode != 200) {
-                throw new DatrisException("AI API returned error status: " + statusCode + ", body: " + EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8))
+                throw new DatrisException(explainAIError(statusCode, EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8), modelLabel))
             } else {
                 result = EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
                 logger.info("AI API responded in " + elapsedMs + "ms, response length: " + result.length + " chars")
@@ -146,7 +173,7 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
-        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, endpoint))
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, endpoint), aiConfig.model)
     }
 
     // OpenAI reasoning / GPT-5 family models reject `max_tokens` and require
@@ -411,7 +438,7 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
-        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint), aiConfig.model)
     }
 
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)]): String =
@@ -461,7 +488,8 @@ object AIUtil {
         val requestObj = new JsonObject()
         requestObj.addProperty("model", aiConfig.model)
         addTokenLimit(requestObj, aiConfig.provider, aiConfig.model, maxTokens)
-        if (temperature >= 0) requestObj.addProperty("temperature", temperature)
+        // Fable/Opus 4.8/4.7 (and Mythos) reject sampling params — never send temperature there.
+        if (temperature >= 0 && !rejectsSamplingParams(aiConfig.model)) requestObj.addProperty("temperature", temperature)
         requestObj.add("messages", messagesArr)
 
         // For Anthropic, system instruction goes as a top-level field
@@ -473,7 +501,7 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
-        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint), aiConfig.model)
     }
 
     def callAI(prompt: String): String =
@@ -533,7 +561,7 @@ object AIUtil {
 
         val jsonBody = requestObj.toString
         val client = getClient(aiConfig.provider)
-        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint))
+        executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint), aiConfig.model)
     }
 
     /** Pull the web-search URLs the model consulted for this response, if any.
@@ -830,6 +858,20 @@ object AIUtil {
         m.contains("output_config")
     }
 
+    /** Anthropic removed sampling parameters (`temperature`/`top_p`/`top_k`) on the
+      * adaptive-thinking-only models — sending any of them returns a 400. Adaptive
+      * thinking doesn't need `temperature` anyway, so we simply omit it for these
+      * models. Older thinking-capable models (Sonnet 4.6, Opus 4.6, Haiku 4.5) still
+      * require/accept `temperature: 1.0` with thinking on, so their behavior is
+      * unchanged. Match the families that reject sampling params: Fable, Mythos,
+      * Opus 4.7, Opus 4.8 (and later Opus). */
+    private def rejectsSamplingParams(model: String): Boolean = {
+        if (model == null) return false
+        val m = model.toLowerCase
+        m.contains("fable") || m.contains("mythos") ||
+        m.contains("opus-4-7") || m.contains("opus-4-8")
+    }
+
     /** Issue exactly one Anthropic streaming request with the given thinking
       * form. Surfaces a DatrisException on non-200 status so the driver can
       * decide whether to retry with a different form. */
@@ -863,14 +905,14 @@ object AIUtil {
                 val outputCfg = new JsonObject()
                 outputCfg.addProperty("effort", "medium")
                 req.add("output_config", outputCfg)
-                req.addProperty("temperature", 1.0)
+                if (!rejectsSamplingParams(aiConfig.model)) req.addProperty("temperature", 1.0)
             case ThinkingForm.Enabled =>
                 val thinkingObj = new JsonObject()
                 thinkingObj.addProperty("type", "enabled")
                 val budget = Math.min(5000, Math.max(1024, maxTokens / 4))
                 thinkingObj.addProperty("budget_tokens", budget)
                 req.add("thinking", thinkingObj)
-                req.addProperty("temperature", 1.0)
+                if (!rejectsSamplingParams(aiConfig.model)) req.addProperty("temperature", 1.0)
             case ThinkingForm.Unsupported =>
                 // No thinking field at all.
         }
@@ -886,7 +928,7 @@ object AIUtil {
             val status = response.getStatusLine.getStatusCode
             if (status != 200) {
                 val body = EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
-                throw new DatrisException("Anthropic returned " + status + ": " + body.take(800))
+                throw new DatrisException(explainAIError(status, body, aiConfig.model))
             }
             val stream = response.getEntity.getContent
             try parseAnthropicSseStream(stream, sink, cancelled, httpPost)
@@ -1190,7 +1232,7 @@ object AIUtil {
         logger.info("Assistant: OpenAI Responses call, model=" + aiConfig.model + ", tools=" + tools.size +
             ", reasoning=" + attachReasoning + ", maxTokens=" + maxTokens + ", messages=" + messages.size)
 
-        val raw = executeWithRetry(sslClient, () => buildHttpPost(aiConfig, req.toString, endpoint))
+        val raw = executeWithRetry(sslClient, () => buildHttpPost(aiConfig, req.toString, endpoint), aiConfig.model)
         val response = JsonParser.parseString(raw).getAsJsonObject
         val output = response.getAsJsonArray("output")
         if (output == null) return AIToolResponse(Nil, wantsToolUse = false)
