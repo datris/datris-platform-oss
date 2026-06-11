@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.8.5" description="June 11, 2026">
+  **Claude Fable 5 — Anthropic's most capable model, now selectable.**
+
+  - **New model option.** Claude Fable 5 now appears in the model picker for both the in-product assistant and code generation, alongside the existing Claude and OpenAI choices. Pick it from Configuration when you want Anthropic's most capable model for demanding reasoning and long-horizon work.
+  - **A note on data retention.** Fable requires standard (30-day) data retention on the Anthropic account and isn't available on zero-data-retention organizations. If you bring your own Anthropic key on a zero-data-retention plan, choose a different model — you'll now see a clear message explaining why, instead of a generic error.
+  - **Clearer model errors.** When a model declines a request — wrong account settings, a rejected key, or unsupported options — the assistant now surfaces a plain-language explanation naming the model, rather than a raw provider error.
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. No data migration needed. The CLI: `brew upgrade datris`.
+</Update>
+
 <Update label="v1.8.4" description="June 7, 2026">
   **A domain-neutral assistant — guidance that fits whatever data you work with.**
 
