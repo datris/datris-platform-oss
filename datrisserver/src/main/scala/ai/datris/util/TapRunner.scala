@@ -60,6 +60,30 @@ object TapRunner {
             }
 
             if (result.recordCount == 0) {
+                // 0 records can be legitimate (nothing new since last run) OR it can be
+                // a silent misconfiguration: the secret exists but is missing a field the
+                // script reads, so the script ran unauthenticated and returned nothing.
+                // We only treat the latter as a failure — i.e. when the script requires a
+                // credential field the secret does not provide. A run that produced records
+                // never reaches here, so this can't second-guess a working tap.
+                if (result.missingSecretFields.nonEmpty) {
+                    val missingMsg =
+                        "Tap returned 0 records: its script reads credential field(s) that secret '" +
+                        tapConfig.secretName + "' does not provide — " + result.missingSecretFields.mkString(", ") +
+                        ". The script ran without those credentials and returned no data. Add the missing field(s) to " +
+                        "the secret (Configuration → Secrets), or update the script to match the secret."
+                    if (push) {
+                        val failedConfig = tapConfig.copy(
+                            lastRunStatus = "failure",
+                            lastRunTime = now,
+                            lastRunRecordCount = 0,
+                            lastRunError = missingMsg
+                        )
+                        TapConfigIO.write(failedConfig)
+                    }
+                    writeRunLog(tapConfig.name, now, "failure", 0, result.dataType, result.logs, missingMsg, mode, durationMs)
+                    return result.copy(error = missingMsg)
+                }
                 // Script ran cleanly but returned nothing. This is a legitimate
                 // outcome for polling taps (no new data since last run), incremental
                 // taps that have caught up, weekend/holiday market data, filters

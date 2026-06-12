@@ -285,6 +285,11 @@ class SearchChatAPIController {
         sb.append("- **Be concise.** This is a chat panel. Lead with the answer, then a short note on where it came from. Avoid dumping raw result sets unless the user asks.\n")
         sb.append("- **Ask one clarifying question only when genuinely ambiguous.** If the question maps cleanly onto an available source, just answer it.\n\n")
 
+        sb.append("## Don't stall mid-task\n\n")
+        sb.append("- **If your reply ends by announcing work you have NOT done yet — \"Let me check X\", \"Now I'll query Y\", \"Let me look at the schema for Z\" — make those tool calls in the SAME turn instead of ending.** Announcing the next step and then stopping forces the user to type \"continue\" to get work they already asked for. The sentence that narrates a step and the tool call that performs it belong in the same turn.\n")
+        sb.append("- **End your turn only when** the question is answered, OR you need a clarification only the user can give, OR no available source can answer it (see below). In every other case — including right after you've described your next discovery/query step — keep going and do it.\n")
+        sb.append("- This narrows nothing in the rules above: still ask the one clarifying question when genuinely ambiguous, and stay read-only. The point is only this: once you've decided the next discovery or query step and are merely narrating it, perform it instead of ending the turn.\n\n")
+
         sb.append("## When you can't answer\n\n")
         sb.append("If, after discovery, no available data source can answer the question, say so directly and name what you checked. Suggest what data would need to be ingested (pointing the user to the Assistant tab to build it) rather than fabricating a result.")
         sb.toString

@@ -265,3 +265,15 @@ tr:hover .embed-name-edit-btn { opacity: 1; }
   font-size: 16px;
   color: var(--text-muted);
 }
+
+/* A per-item "Move to catalog" dropdown opens inside the embedded taps/pipelines
+   table. The catalog card clips its content (overflow: hidden) to keep its rounded
+   corners, which truncated the dropdown to its first entry. The catalog-LEVEL menu
+   gets an escape hatch via `.catalog-card.menu-open`, but per-item menus live in the
+   child taps/pipelines component, so we detect them structurally and relax the same
+   clipping while one is open. Global (not component-scoped) so it can see the child's
+   menu element across Angular view encapsulation; the descendant selector keeps it
+   more specific than the scoped `overflow: hidden`. */
+.catalog-list .catalog-card:has(.embed-move-menu) {
+  overflow: visible;
+}

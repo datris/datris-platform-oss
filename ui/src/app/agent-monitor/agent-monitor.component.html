@@ -41,27 +41,27 @@
         <line *ngFor="let a of agents; trackBy: trackAgent"
               class="conn-line"
               [class.active]="a.active"
-              [attr.x1]="serverX + 36" [attr.y1]="serverY"
-              [attr.x2]="a.x - 28" [attr.y2]="a.y"/>
+              [attr.x1]="serverX + 50" [attr.y1]="serverY"
+              [attr.x2]="a.x - 38" [attr.y2]="a.y"/>
 
         <g [attr.transform]="'translate(' + serverX + ',' + serverY + ')'">
-          <circle r="58" fill="url(#serverGlow)"/>
-          <circle r="38" class="server-node"/>
-          <foreignObject x="-18" y="-18" width="36" height="36">
+          <circle r="80" fill="url(#serverGlow)"/>
+          <circle r="52" class="server-node"/>
+          <foreignObject x="-25" y="-25" width="50" height="50">
             <span xmlns="http://www.w3.org/1999/xhtml" class="material-icons server-icon">dns</span>
           </foreignObject>
-          <text y="64" class="node-label">MCP Server</text>
+          <text y="84" class="node-label">MCP Server</text>
         </g>
 
         <g *ngFor="let a of agents; trackBy: trackAgent"
            [attr.transform]="'translate(' + a.x + ',' + a.y + ')'">
-          <circle r="38" fill="url(#agentGlow)" [class.pulse-bg]="a.active"/>
-          <circle r="24" class="agent-node" [class.active]="a.active"/>
-          <foreignObject x="-12" y="-12" width="24" height="24">
+          <circle r="52" fill="url(#agentGlow)" [class.pulse-bg]="a.active"/>
+          <circle r="34" class="agent-node" [class.active]="a.active"/>
+          <foreignObject x="-17" y="-17" width="34" height="34">
             <span xmlns="http://www.w3.org/1999/xhtml" class="material-icons agent-icon">smart_toy</span>
           </foreignObject>
-          <text y="46" class="node-label">{{ agentLabel(a.session) }}</text>
-          <text y="60" class="node-sublabel">{{ a.session.call_count }} calls</text>
+          <text y="62" class="node-label">{{ agentLabel(a.session) }}</text>
+          <text y="80" class="node-sublabel">{{ a.session.call_count }} calls</text>
         </g>
 
         <text *ngIf="agents.length === 0"

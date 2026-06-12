@@ -275,7 +275,7 @@ export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecke
 
     const count = next.length;
     if (count > 0) {
-      const gap = Math.min(90, (this.canvasHeight - 80) / Math.max(count, 1));
+      const gap = Math.min(110, (this.canvasHeight - 80) / Math.max(count, 1));
       const totalHeight = gap * (count - 1);
       const startY = this.canvasHeight / 2 - totalHeight / 2;
       next.forEach((n, i) => n.y = startY + i * gap);

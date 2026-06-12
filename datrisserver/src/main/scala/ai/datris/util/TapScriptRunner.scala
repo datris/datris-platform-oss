@@ -15,7 +15,7 @@ import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.sys.process._
 
-case class TapScriptResult(records: String, recordCount: Int, error: String, logs: String = null, dataType: String = "json", columns: java.util.List[String] = null, publisherToken: String = null, pipelineTokens: java.util.List[String] = null)
+case class TapScriptResult(records: String, recordCount: Int, error: String, logs: String = null, dataType: String = "json", columns: java.util.List[String] = null, publisherToken: String = null, pipelineTokens: java.util.List[String] = null, missingSecretFields: Seq[String] = Nil)
 
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -103,15 +103,50 @@ object TapScriptRunner {
         // Populated once secretEnvVars is computed inside the try.
         var secretValuesForMasking: Seq[String] = Seq.empty
 
+        // Secret field(s) the script requires (reads from the env with no fallback)
+        // that the referenced secret does NOT provide. Carried out on TapScriptResult
+        // so TapRunner can turn an otherwise-graceful 0-record run into a failure with
+        // a precise cause. We do NOT fail before running on this — a successful run
+        // proves the script had what it needed, so the signal is only acted on when
+        // the run also produced no records (see TapRunner).
+        var detectedMissingSecretFields: Seq[String] = Nil
+
         try {
             Files.write(scriptFile, scriptContent.getBytes("UTF-8"))
             Files.write(wrapperFile, WRAPPER_TEMPLATE.getBytes("UTF-8"))
 
-            // Step 4: Load secrets as env vars if configured
+            // Step 4: Load secrets as env vars if configured.
+            // A tap that DECLARES a secret but whose secret is missing or empty is a
+            // misconfiguration, not a no-op: the script would run unauthenticated and
+            // typically returns 0 rows and exits cleanly, which would otherwise be
+            // recorded as a graceful `no_records` success — hiding the real cause (a
+            // deleted/empty credential). Fail loudly instead, mirroring how every other
+            // subsystem (StartupRunner, the vector loaders, etc.) treats a missing secret.
+            // Only the secret NAME appears in the message — never a value.
             val secretEnvVars: Seq[(String, String)] = if (tapConfig.secretName != null && tapConfig.secretName.nonEmpty) {
                 val secretPath = DatrisEnvironment.current.environment + "/" + tapConfig.secretName
                 logger.info("TapScriptRunner: loading secrets from: " + secretPath)
-                SecretsUtil.getSecretMap(secretPath).map(_.asScala.filterNot(_._1 == "_type").toSeq).getOrElse(Seq.empty)
+                val fields = SecretsUtil.getSecretMap(secretPath)
+                    .map(_.asScala.filterNot(_._1 == "_type").toSeq)
+                    .getOrElse(Seq.empty)
+                if (fields.isEmpty)
+                    throw new DatrisException(
+                        "Tap references secret '" + tapConfig.secretName + "' but no credentials were injected — " +
+                        "the secret is missing or empty in the vault. The script would run unauthenticated and silently " +
+                        "return no data. Recreate the secret under Configuration → Secrets with the field(s) the tap " +
+                        "expects, or update the tap to reference an existing secret.")
+                // The secret exists but may be missing a SPECIFIC field the script reads
+                // (e.g. it has FOO but the script needs POLYGON_API_KEY). We can't know
+                // per-tap required fields from a schema, so we infer them from the script's
+                // own no-fallback env reads. To stay false-positive-free we only flag when
+                // the secret provides NONE of those fields — an unambiguous wrong/stale
+                // secret. If it provides at least one, the rest are likely optional, so we
+                // stay quiet rather than risk failing a legitimate no-data run. Recorded
+                // here, acted on by TapRunner only if the run also returns 0 records.
+                val required = requiredSecretFields(scriptContent)
+                if (required.nonEmpty && required.intersect(fields.map(_._1).toSet).isEmpty)
+                    detectedMissingSecretFields = required.toSeq.sorted
+                fields
             } else Seq.empty
 
             // Always inject Datris platform env vars so scripts can call back into the platform.
@@ -224,7 +259,7 @@ object TapScriptRunner {
             logger.info("TapScriptRunner: dataType=" + dataType + ", fetched " + recordCount + " records" +
                 (if (columns != null) ", columns=" + columns else ""))
 
-            TapScriptResult(normalizedDataJson, recordCount, null, if (logs.nonEmpty) logs else null, dataType, columns)
+            TapScriptResult(normalizedDataJson, recordCount, null, if (logs.nonEmpty) logs else null, dataType, columns, missingSecretFields = detectedMissingSecretFields)
         } catch {
             case e: DatrisException =>
                 // DatrisException messages constructed inside this method are already
@@ -242,6 +277,39 @@ object TapScriptRunner {
             Files.deleteIfExists(scriptFile)
             Files.deleteIfExists(wrapperFile)
         }
+    }
+
+    /** Host/system environment variables a tap script might legitimately read that
+      * are NOT meant to come from its secret — never flagged as missing secret
+      * fields. Datris-injected vars (DATRIS_* prefix) are excluded separately. */
+    private val NonSecretEnvVars: Set[String] = Set(
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD", "LANG", "TERM",
+        "TZ", "TMPDIR", "TMP", "TEMP", "HOSTNAME", "PYTHONPATH", "PYTHONHOME",
+        "PYTHONUNBUFFERED", "VIRTUAL_ENV", "LD_LIBRARY_PATH", "SSL_CERT_FILE",
+        "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"
+    )
+
+    // A read is "required" only when the script provides no fallback: a subscript
+    // `os.environ["X"]` (raises KeyError if absent) or a single-argument
+    // `os.environ.get("X")` / `os.getenv("X")` (returns None — no default). A
+    // two-argument `.get("X", default)` supplies its own fallback and is treated
+    // as optional (the trailing `\s*\)` won't match a call that has a comma).
+    // Only literal string keys are detected; dynamically built names are left alone.
+    private val EnvSubscriptPattern = """os\.environ\[\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\]""".r
+    private val EnvGetPattern = """os\.(?:environ\.get|getenv)\(\s*["']([A-Za-z_][A-Za-z0-9_]*)["']\s*\)""".r
+
+    /** Secret field names a tap script requires: every no-fallback env read in the
+      * script, minus Datris-injected (DATRIS_*) and host/system variables. Used to
+      * catch a secret that EXISTS but lacks a field the script depends on, which
+      * would otherwise let the script run and return no data silently. Conservative
+      * by design — anything it can't see (computed names, defaulted reads) is not
+      * flagged, so it never invents a requirement. */
+    private[util] def requiredSecretFields(scriptContent: String): Set[String] = {
+        if (scriptContent == null) return Set.empty
+        val names =
+            EnvSubscriptPattern.findAllMatchIn(scriptContent).map(_.group(1)).toSet ++
+            EnvGetPattern.findAllMatchIn(scriptContent).map(_.group(1)).toSet
+        names.filterNot(n => n.startsWith("DATRIS_") || NonSecretEnvVars.contains(n))
     }
 
     private def installPackages(tapConfig: TapConfig): Unit = {

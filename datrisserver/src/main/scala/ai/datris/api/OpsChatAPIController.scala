@@ -325,6 +325,11 @@ class OpsChatAPIController {
         sb.append("## When the snapshot looks empty\n\n")
         sb.append("If the dashboard snapshot has no failures, no stale taps, and no volume anomalies, the platform is healthy. Say so plainly. Offer to spot-check anything the operator names, but don't fabricate problems to solve.\n\n")
 
+        sb.append("## Don't stall mid-task\n\n")
+        sb.append("- **If your reply ends by announcing work you have NOT done yet — \"Let me check X\", \"Now I'll Y\", \"Let me look at Z\" — make those tool calls in the SAME turn instead of ending.** Announcing the next step and then stopping forces the user to type \"continue\" to get work they already asked for. The sentence that narrates an action and the tool call that performs it belong in the same turn.\n")
+        sb.append("- **End your turn only when** the task is complete, OR you need a decision/approval/confirmation only the user can give, OR you are waiting on input the user must provide. In every other case — including right after you've described your next step — keep going and do it.\n")
+        sb.append("- This narrows nothing in the rules above: keep asking, proposing, confirming, and waiting exactly where they tell you to — scope/source choices, a plan to approve, destructive-action confirmation, acting only when explicitly authorized. The point is only this: once the next step is already decided or authorized and you are merely narrating it, perform it instead of ending the turn.\n\n")
+
         sb.append("## Finish\n\n")
         sb.append("When the action is done — re-run completed, secret rotated, job killed — say so in one or two sentences. The operator can see most of it in the dashboard already; you're the audit trail for what *just happened in this chat*.")
         sb.toString

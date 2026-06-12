@@ -332,10 +332,10 @@
 
 .server-icon {
   color: var(--accent-cyan);
-  font-size: 36px !important;
+  font-size: 50px !important;
   display: block;
   text-align: center;
-  line-height: 36px;
+  line-height: 50px;
 }
 
 .agent-node {
@@ -352,10 +352,10 @@
 
 .agent-icon {
   color: var(--accent-green);
-  font-size: 24px !important;
+  font-size: 34px !important;
   display: block;
   text-align: center;
-  line-height: 24px;
+  line-height: 34px;
 }
 
 .pulse-bg {
@@ -370,7 +370,7 @@
 
 .node-label {
   fill: var(--text-primary);
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 600;
   text-anchor: middle;
   font-family: var(--font-sans);
@@ -378,14 +378,14 @@
 
 .node-sublabel {
   fill: var(--text-muted);
-  font-size: 10px;
+  font-size: 13px;
   text-anchor: middle;
   font-family: var(--font-mono);
 }
 
 .empty-label {
   fill: var(--text-muted);
-  font-size: 13px;
+  font-size: 18px;
   text-anchor: middle;
   font-style: italic;
 }

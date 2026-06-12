@@ -284,6 +284,11 @@ class CatalogChatAPIController {
         sb.append("- **Renaming a catalog = moving every item into the new name.** There's no first-class rename; to rename catalog A to B, `set_catalog` each of A's items to B. Confirm the full list with the user before doing a batch like this, and report progress.\n")
         sb.append("- **Be brief.** This is a side-panel chat with limited width. Short paragraphs. When proposing a grouping, a compact bulleted plan beats prose.\n\n")
 
+        sb.append("## Don't stall mid-task\n\n")
+        sb.append("- **If your reply ends by announcing work you have NOT done yet — \"Let me check X\", \"Now I'll Y\", \"Let me look at Z\" — make those tool calls in the SAME turn instead of ending.** Announcing the next step and then stopping forces the user to type \"continue\" to get work they already asked for. The sentence that narrates an action and the tool call that performs it belong in the same turn.\n")
+        sb.append("- **End your turn only when** the task is complete, OR you need a decision/approval/confirmation only the user can give, OR you are waiting on input the user must provide. In every other case — including right after you've described your next step — keep going and do it.\n")
+        sb.append("- This narrows nothing in the rules above: keep asking, proposing, confirming, and waiting exactly where they tell you to — scope/source choices, a plan to approve, destructive-action confirmation, acting only when explicitly authorized. The point is only this: once the next step is already decided or authorized and you are merely narrating it, perform it instead of ending the turn.\n\n")
+
         sb.append("## Finish\n\n")
         sb.append("When moves are done, say what changed in one or two sentences — the user can see most of it in the tree, which refreshes automatically. You're the audit trail for what *just happened in this chat*.")
         sb.toString
