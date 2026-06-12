@@ -1,17 +1,26 @@
 # Release Notes
 
-## v1.8.5 — June 11, 2026
+## v1.8.6 — June 12, 2026
 
-**Claude Fable 5 — Anthropic's most capable model, now selectable.**
+**A more decisive assistant, and taps that tell you when a credential is missing.**
 
-- **New model option.** Claude Fable 5 now appears in the model picker for both the in-product assistant and code generation, alongside the existing Claude and OpenAI choices. Pick it from Configuration when you want Anthropic's most capable model for demanding reasoning and long-horizon work.
-- **A note on data retention.** Fable requires standard (30-day) data retention on the Anthropic account and isn't available on zero-data-retention organizations. If you bring your own Anthropic key on a zero-data-retention plan, choose a different model — you'll now see a clear message explaining why, instead of a generic error.
-- **Clearer model errors.** When a model declines a request — wrong account settings, a rejected key, or unsupported options — the assistant now surfaces a plain-language explanation naming the model, rather than a raw provider error.
+- **No more "type continue to keep going."** The in-product assistants (build, ops, catalog, and search) used to sometimes end a turn by announcing the next step and then stopping — making you nudge them to carry on. Now, when the assistant has already decided what to do next, it just does it, while still pausing where it genuinely needs your decision or approval.
+- **Taps surface missing credentials instead of silently returning nothing.** If a tap's API key or other credential has been deleted or is missing the field the tap needs, the run is now reported as a clear failure naming what's missing — rather than quietly completing with zero records and hiding the real cause. Runs that legitimately have no new data are unaffected.
+- **Clearer MCP activity graph.** The connection graph in the MCP Activity monitor now renders at a readable size.
+- **"Move to catalog" shows everything.** The per-item move menu in the Catalog now lists all your catalogs, not just the first one.
 
 **Upgrading**
 
 - Existing installs: `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. No data migration needed.
 - The CLI: `brew upgrade datris`.
+
+---
+
+## v1.8.5 — June 11, 2026
+
+**Claude Fable 5 — Anthropic's most capable model, now selectable.**
+
+See [archived v1.8.5 release notes](release-notes/v1.8.5.md).
 
 ---
 
