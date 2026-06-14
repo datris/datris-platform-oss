@@ -1,18 +1,24 @@
 # Release Notes
 
-## v1.8.6 — June 12, 2026
+## v1.8.7 — June 14, 2026
 
-**A more decisive assistant, and taps that tell you when a credential is missing.**
+**Drop a file into the Assistant and it builds the pipeline for you.**
 
-- **No more "type continue to keep going."** The in-product assistants (build, ops, catalog, and search) used to sometimes end a turn by announcing the next step and then stopping — making you nudge them to carry on. Now, when the assistant has already decided what to do next, it just does it, while still pausing where it genuinely needs your decision or approval.
-- **Taps surface missing credentials instead of silently returning nothing.** If a tap's API key or other credential has been deleted or is missing the field the tap needs, the run is now reported as a clear failure naming what's missing — rather than quietly completing with zero records and hiding the real cause. Runs that legitimately have no new data are unaffected.
-- **Clearer MCP activity graph.** The connection graph in the MCP Activity monitor now renders at a readable size.
-- **"Move to catalog" shows everything.** The per-item move menu in the Catalog now lists all your catalogs, not just the first one.
+- **Drag a file into the chat.** Attach a CSV, JSON, XML, or document right in the Assistant conversation. The assistant reads a sample, works out the shape, and proposes where to put it — then, once you confirm, creates the pipeline, loads your data, and reports how many rows landed. No wizard, no manual schema step.
+- **It confirms before it builds.** The assistant picks a sensible default destination for your file and names the alternatives, so you can steer it to Postgres, MongoDB, an object store, or a vector store before anything is created — and it asks about an upsert key if that makes sense for your data.
 
 **Upgrading**
 
 - Existing installs: `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. No data migration needed.
 - The CLI: `brew upgrade datris`.
+
+---
+
+## v1.8.6 — June 12, 2026
+
+**A more decisive assistant, and taps that tell you when a credential is missing.**
+
+See [archived v1.8.6 release notes](release-notes/v1.8.6.md).
 
 ---
 

@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.8.7" description="June 14, 2026">
+  **Drop a file into the Assistant and it builds the pipeline for you.**
+
+  - **Drag a file into the chat.** Attach a CSV, JSON, XML, or document right in the Assistant conversation. The assistant reads a sample, works out the shape, and proposes where to put it — then, once you confirm, creates the pipeline, loads your data, and reports how many rows landed. No wizard, no manual schema step.
+  - **It confirms before it builds.** The assistant picks a sensible default destination for your file and names the alternatives, so you can steer it to Postgres, MongoDB, an object store, or a vector store before anything is created — and it asks about an upsert key if that makes sense for your data.
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. No data migration needed. The CLI: `brew upgrade datris`.
+</Update>
+
 <Update label="v1.8.6" description="June 12, 2026">
   **A more decisive assistant, and taps that tell you when a credential is missing.**
 
