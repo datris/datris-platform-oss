@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { AssistantService, AssistantEvent, AssistantInit, ChatMessage } from '../assistant.service';
+import { AssistantService, AssistantEvent, AssistantInit, ChatMessage, StagedAttachment } from '../assistant.service';
 import { loadChatState, saveChatState, clearChatState } from '../shared/chat-persistence';
 
 /** Tool invocation inside an assistant turn. */
@@ -49,6 +49,9 @@ export type AssistantSegment = TextSegment | ToolCard | NoticeSegment;
 export interface UserTurn {
   role: 'user';
   text: string;
+  /** Files that rode along with this message (for transcript display). The
+   *  bytes live server-side keyed by `attachmentId`; this is metadata only. */
+  attachments?: StagedAttachment[];
 }
 
 export interface AssistantTurn {
@@ -83,6 +86,15 @@ export class AssistantStateService {
   turns: Turn[] = [];
   draft = '';
   streaming = false;
+
+  /** Files staged for the next message. Persist across turns (the agent may
+   *  ask a clarifying question before using the file), then auto-clear once a
+   *  create_pipeline / upload_data succeeds. Bytes live server-side; this is
+   *  metadata only. */
+  activeAttachments: StagedAttachment[] = [];
+  /** Transient staging state for the composer's drop zone. */
+  attachmentUploading = false;
+  attachmentError = '';
 
   // Active SSE subscription. Held by the service so route changes don't
   // unsubscribe and cancel the server-side agent loop.
@@ -130,11 +142,42 @@ export class AssistantStateService {
    *  opens the SSE stream, and dispatches events to mutate the assistant turn
    *  as they arrive. The subscription is held by the service so navigating
    *  away from the tab does NOT cancel it. */
+  /** Stage a dropped/selected file. Resolves to the handle; the caller may
+   *  ignore it (state is updated here). Rejects surface via `attachmentError`. */
+  stageFile(file: File): void {
+    this.attachmentError = '';
+    this.attachmentUploading = true;
+    this.api.stageAttachment(file).subscribe({
+      next: (att) => {
+        this.attachmentUploading = false;
+        // De-dupe by filename — re-dropping the same file replaces the prior stage.
+        this.activeAttachments = this.activeAttachments.filter(a => a.filename !== att.filename).concat(att);
+      },
+      error: (err) => {
+        this.attachmentUploading = false;
+        this.attachmentError = 'Could not attach file: ' +
+          (err?.error?.error || err?.message || 'unknown');
+      }
+    });
+  }
+
+  removeAttachment(attachmentId: string): void {
+    this.activeAttachments = this.activeAttachments.filter(a => a.attachmentId !== attachmentId);
+  }
+
+  clearAttachments(): void {
+    this.activeAttachments = [];
+    this.attachmentError = '';
+  }
+
   send(text: string): void {
     const trimmed = text.trim();
-    if (!trimmed || this.streaming) return;
+    // Allow sending a bare file with no text — the attachment carries the intent.
+    if (this.streaming) return;
+    if (!trimmed && this.activeAttachments.length === 0) return;
 
-    this.turns.push({ role: 'user', text: trimmed });
+    const sentAttachments = this.activeAttachments.slice();
+    this.turns.push({ role: 'user', text: trimmed, attachments: sentAttachments.length ? sentAttachments : undefined });
     const assistantTurn: AssistantTurn = {
       role: 'assistant',
       thinking: '',
@@ -155,7 +198,12 @@ export class AssistantStateService {
     const messages: ChatMessage[] = [];
     for (const t of this.turns) {
       if (t.role === 'user') {
-        messages.push({ role: 'user', content: t.text });
+        // An attachment-only turn has empty text; send a short non-empty
+        // placeholder so the wire content is never an empty string (which can
+        // 400 on replay). The server appends the file descriptor to the
+        // current turn regardless.
+        const content = t.text || (t.attachments?.length ? '(see attached file)' : '');
+        messages.push({ role: 'user', content });
       } else if (t === assistantTurn) {
         continue;
       } else {
@@ -169,7 +217,8 @@ export class AssistantStateService {
       }
     }
 
-    this.activeSub = this.api.chat(messages).subscribe({
+    const outboundAttachments = sentAttachments.map(a => ({ attachmentId: a.attachmentId }));
+    this.activeSub = this.api.chat(messages, outboundAttachments).subscribe({
       next: (evt) => this.handleEvent(evt, assistantTurn),
       error: (err) => {
         assistantTurn.errorMessage = err?.message || 'Connection error';
@@ -208,6 +257,7 @@ export class AssistantStateService {
     this.stop();
     this.turns = [];
     this.draft = '';
+    this.clearAttachments();
     clearChatState(AssistantStateService.STORAGE_KEY);
   }
 
@@ -250,6 +300,14 @@ export class AssistantStateService {
           card.result = evt.result;
           card.isError = evt.isError;
           card.status = evt.isError ? 'error' : 'ok';
+          // Drop the staged attachment only once the data has actually been
+          // LOADED (upload_data) — not after create_pipeline. The load step
+          // needs the same attachment, and create_pipeline can report ok at the
+          // tool level while still needing a retry, so clearing there would
+          // strip the file out from under the very next call.
+          if (!evt.isError && evt.name === 'upload_data' && this.activeAttachments.length) {
+            this.activeAttachments = [];
+          }
         }
         break;
       }

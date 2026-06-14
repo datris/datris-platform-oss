@@ -55,6 +55,12 @@ object AgentLoop {
       * Handled by AgentLoop directly — NOT dispatched to the MCP server. */
     val SyntheticSecretTool: String = "request_tap_secret_from_user"
 
+    /** Tools whose `content` (base64 file bytes) we resolve from a staged
+      * attachment when the model passes an `attachmentId` instead. The model
+      * can't emit a real file's bytes, so it references the staged handle and
+      * we substitute the bytes here, right before dispatching to MCP. */
+    private val AttachmentTools: Set[String] = Set("create_pipeline", "upload_data", "profile_data", "upload_config")
+
     /** Tool-result truncation cap. Anthropic charges by input tokens, and a
       * runaway 100KB result fed back as input for every subsequent iteration
       * blows out cost fast. The UI shows the full result via the SSE event;
@@ -73,7 +79,8 @@ object AgentLoop {
         maxIterations: Int,
         maxTokensPerCall: Int,
         cancelled: () => Boolean,
-        sink: LoopEvent => Unit
+        sink: LoopEvent => Unit,
+        attachments: Map[String, (String, Array[Byte])] = Map.empty
     ): Unit = {
         // Materialize the initial message list as content-block messages. We
         // grow it as iterations produce assistant turns + tool_result user turns.
@@ -148,7 +155,13 @@ object AgentLoop {
                                 isError = false)
                         } else {
                             try {
-                                val raw = MCPClient.callTool(t.name, t.input, apiKey)
+                                // Substitute staged file bytes for an attachmentId before
+                                // dispatching — the model never carries base64 in its tool
+                                // input, only the short handle. The SSE tool_use event shows
+                                // the model's original input (with attachmentId), so the
+                                // bytes never reach the UI transcript either.
+                                val toolInput = resolveAttachment(t.name, t.input, attachments)
+                                val raw = MCPClient.callTool(t.name, toolInput, apiKey)
                                 sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
                                 AIContentBlock.ToolResultBlock(t.id, truncate(raw), isError = false)
                             } catch {
@@ -195,6 +208,66 @@ object AgentLoop {
         case AIStreamEvent.ToolUseStart(id, name)          => out(LoopEvent.ToolUseStart(id, name))
         case AIStreamEvent.ToolUseComplete(id, name, in)   => out(LoopEvent.ToolUseComplete(id, name, in))
         case AIStreamEvent.Error(msg)                      => out(LoopEvent.Error(msg))
+    }
+
+    /** Substitute a staged file's real base64 `content` (and `filename` if
+      * absent) before dispatching a file tool to MCP.
+      *
+      * The model references a staged file by its short `attachmentId` handle.
+      * It can land in the tool input two ways: as an explicit `attachmentId`
+      * field, or — far more common, since the MCP schema only advertises
+      * `content` — as the `content` value set to the handle string (raw, or
+      * base64-wrapped). We recognize all three so a literal "put the id where
+      * content goes" never reaches the schema endpoint as garbage bytes.
+      *
+      * Returns the input unchanged when there's nothing to resolve, so non-file
+      * tools and genuine direct-content calls pass straight through. */
+    private def resolveAttachment(
+        toolName: String,
+        input: JsonObject,
+        attachments: Map[String, (String, Array[Byte])]
+    ): JsonObject = {
+        if (attachments.isEmpty || !AttachmentTools.contains(toolName)) return input
+
+        val id: Option[String] = attachmentIdFrom(input, attachments)
+        id.flatMap(i => attachments.get(i).map(i -> _)) match {
+            case Some((_, (filename, bytes))) =>
+                val out = input.deepCopy()
+                out.remove("attachmentId")
+                out.addProperty("content", java.util.Base64.getEncoder.encodeToString(bytes))
+                val hasFilename = out.has("filename") && !out.get("filename").isJsonNull && out.get("filename").getAsString.nonEmpty
+                if (!hasFilename) out.addProperty("filename", filename)
+                out
+            case None =>
+                // The model named an explicit attachmentId we don't hold — warn.
+                // (A `content` that simply isn't a handle is the normal
+                //  direct-content path and is silently left alone.)
+                if (input.has("attachmentId") && !input.get("attachmentId").isJsonNull)
+                    logger.warn("AgentLoop: tool '" + toolName + "' referenced unknown attachmentId '" +
+                        input.get("attachmentId").getAsString + "'")
+                input
+        }
+    }
+
+    /** Find a staged-attachment handle in a tool input. Checks the explicit
+      * `attachmentId` field first, then a `content` value that is itself a
+      * known handle (raw or base64-wrapped). Returns the matched key. */
+    private def attachmentIdFrom(input: JsonObject, attachments: Map[String, (String, Array[Byte])]): Option[String] = {
+        if (input.has("attachmentId") && !input.get("attachmentId").isJsonNull) {
+            val a = input.get("attachmentId").getAsString.trim
+            if (attachments.contains(a)) return Some(a)
+        }
+        if (input.has("content") && !input.get("content").isJsonNull) {
+            val c = input.get("content").getAsString.trim
+            if (attachments.contains(c)) return Some(c)
+            // Tolerate a model that base64-wrapped the handle before placing it
+            // in `content` (the schema says content is base64, so some will).
+            try {
+                val decoded = new String(java.util.Base64.getDecoder.decode(c), "UTF-8").trim
+                if (attachments.contains(decoded)) return Some(decoded)
+            } catch { case _: Exception => () }
+        }
+        None
     }
 
     /** Trim a tool result before feeding it back to the model. The UI shows the

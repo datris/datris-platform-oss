@@ -568,3 +568,101 @@
   color: #fff;
 }
 .composer-stop:hover { background: #e25c5c; box-shadow: 0 0 12px rgba(211, 74, 74, 0.3); }
+
+/* --- File attachments --- */
+
+/* Hidden native file input; triggered by the paperclip button. */
+.composer-file-input { display: none; }
+
+.composer-attach {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #9aa0ab;
+  cursor: pointer;
+  padding: 6px;
+  transition: color 0.2s, background 0.2s;
+}
+.composer-attach:hover:not(:disabled) { color: var(--accent-cyan); background: rgba(255, 255, 255, 0.06); }
+.composer-attach:disabled { opacity: 0.5; cursor: not-allowed; }
+.composer-attach-icon {
+  font-size: 20px !important;
+  width: 20px !important;
+  height: 20px !important;
+  line-height: 20px !important;
+}
+
+/* Drop-zone highlight while dragging a file over the composer. */
+.composer-dragover {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 1px var(--accent-cyan), 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+/* Row of staged-attachment chips above the composer. */
+.composer-attachments {
+  max-width: 768px;
+  margin: 0 auto 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Chips shown on sent user turns. */
+.user-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid #3a3f4a;
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 13px;
+  color: #d4d7de;
+  max-width: 320px;
+}
+.attachment-chip-icon {
+  font-size: 16px !important;
+  width: 16px !important;
+  height: 16px !important;
+  line-height: 16px !important;
+  color: var(--accent-cyan);
+}
+.attachment-chip-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-chip-meta {
+  color: #8b909b;
+  font-size: 12px;
+}
+.attachment-chip-remove {
+  background: transparent;
+  border: none;
+  color: #8b909b;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 0 0 2px;
+}
+.attachment-chip-remove:hover { color: #e25c5c; }
+.attachment-chip-sent { background: rgba(255, 255, 255, 0.05); }
+.attachment-chip-loading { color: #9aa0ab; }
+.attachment-error {
+  color: #e25c5c;
+  font-size: 13px;
+}

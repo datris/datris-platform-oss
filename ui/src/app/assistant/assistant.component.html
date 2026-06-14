@@ -43,7 +43,13 @@
 
           <!-- User turn: right-aligned, subtle container -->
           <div class="user-turn" *ngIf="turn.role === 'user'">
-            <div class="user-bubble">{{ turn.text }}</div>
+            <div class="user-bubble" *ngIf="turn.text">{{ turn.text }}</div>
+            <div class="user-attachments" *ngIf="turn.attachments?.length">
+              <span class="attachment-chip attachment-chip-sent" *ngFor="let a of turn.attachments">
+                <mat-icon class="attachment-chip-icon">description</mat-icon>
+                <span class="attachment-chip-name">{{ a.filename }}</span>
+              </span>
+            </div>
           </div>
 
           <!-- Assistant turn: full-column prose, no container -->
@@ -201,19 +207,46 @@
 
     <!-- Sticky composer -->
     <div class="composer-wrap">
-      <div class="composer">
+      <!-- Staged attachments + any staging error -->
+      <div class="composer-attachments" *ngIf="state.activeAttachments.length || state.attachmentUploading || state.attachmentError">
+        <span class="attachment-chip" *ngFor="let a of state.activeAttachments">
+          <mat-icon class="attachment-chip-icon">description</mat-icon>
+          <span class="attachment-chip-name">{{ a.filename }}</span>
+          <span class="attachment-chip-meta">{{ a.detectedType }}</span>
+          <button class="attachment-chip-remove" (click)="state.removeAttachment(a.attachmentId)" title="Remove">✕</button>
+        </span>
+        <span class="attachment-chip attachment-chip-loading" *ngIf="state.attachmentUploading">
+          <span class="dots-mini"><span></span><span></span><span></span></span>
+          <span class="attachment-chip-name">Staging file…</span>
+        </span>
+        <span class="attachment-error" *ngIf="state.attachmentError">{{ state.attachmentError }}</span>
+      </div>
+
+      <div class="composer"
+           [class.composer-dragover]="dragOver"
+           (dragover)="onDragOver($event)"
+           (dragleave)="onDragLeave($event)"
+           (drop)="onDrop($event)">
+        <input #fileInput type="file" class="composer-file-input" (change)="onFileSelected($event)" />
+        <button class="composer-attach"
+                *ngIf="!state.streaming"
+                [disabled]="state.attachmentUploading"
+                (click)="fileInput.click()"
+                title="Attach a file">
+          <mat-icon class="composer-attach-icon">attach_file</mat-icon>
+        </button>
         <textarea
           #composerEl
           class="composer-input"
           [(ngModel)]="state.draft"
           (keydown)="onComposerKeydown($event)"
           (input)="autoGrowComposer()"
-          placeholder="Describe the data you want to ingest…"
+          [placeholder]="state.activeAttachments.length ? 'Add an instruction, or just send the file…' : 'Describe the data you want to ingest…'"
           rows="1"
           [readonly]="state.streaming"></textarea>
         <button class="composer-btn"
                 *ngIf="!state.streaming"
-                [disabled]="!state.draft.trim()"
+                [disabled]="!state.draft.trim() && !state.activeAttachments.length"
                 (click)="send()">
           <mat-icon class="composer-btn-icon">auto_awesome</mat-icon>
           <span>Send</span>

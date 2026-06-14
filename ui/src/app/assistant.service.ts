@@ -22,6 +22,18 @@ export interface ChatMessage {
   content: string;
 }
 
+/** Metadata for a file staged via POST /api/v1/assistant/attachment. The raw
+ *  bytes stay server-side keyed by `attachmentId`; only this handle + sample
+ *  travel through the chat. The agent passes `attachmentId` to file tools and
+ *  the server substitutes the bytes. */
+export interface StagedAttachment {
+  attachmentId: string;
+  filename: string;
+  detectedType: string;
+  byteSize: number;
+  sample: string;
+}
+
 /** SSE event types streamed back from POST /api/v1/assistant/chat. The agent
  *  loop emits these in order; the component renders each one into the
  *  document-style chat layout. */
@@ -52,6 +64,16 @@ export class AssistantService {
     return this.http.get<AssistantInit>('/api/v1/assistant/init');
   }
 
+  /** Stage a dropped file server-side. Returns the handle + a content sample;
+   *  the bytes are cached server-side (tenant-scoped, TTL'd) and referenced by
+   *  `attachmentId` on the next chat turn. Uses HttpClient so the apiKey/auth
+   *  interceptors apply (unlike the SSE `chat` fetch path). */
+  stageAttachment(file: File): Observable<StagedAttachment> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<StagedAttachment>('/api/v1/assistant/attachment', form);
+  }
+
   /** Open a streaming chat connection. Uses `fetch` with a ReadableStream reader
    *  rather than the native EventSource because EventSource does not support
    *  POST bodies — the conversation history goes in the request body.
@@ -60,7 +82,7 @@ export class AssistantService {
    *  cancels the server-side agent loop (the AssistantAPIController's
    *  emitter.onCompletion / onError flips the cancellation flag).
    */
-  chat(messages: ChatMessage[]): Observable<AssistantEvent> {
+  chat(messages: ChatMessage[], attachments: { attachmentId: string }[] = []): Observable<AssistantEvent> {
     return new Observable<AssistantEvent>((observer: Observer<AssistantEvent>) => {
       const controller = new AbortController();
       const headers: Record<string, string> = {
@@ -81,7 +103,7 @@ export class AssistantService {
         method: 'POST',
         credentials: 'include',
         headers,
-        body: JSON.stringify({ messages }),
+        body: JSON.stringify({ messages, attachments }),
         signal: controller.signal
       }).then(async (response) => {
         if (!response.ok) {

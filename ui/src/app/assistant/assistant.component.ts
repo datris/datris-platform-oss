@@ -171,6 +171,38 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
     this.state.stop();
   }
 
+  // -------- File attachment (drag-drop + picker) --------
+
+  /** Highlight state for the composer drop zone. */
+  dragOver = false;
+
+  onFileSelected(e: Event): void {
+    const input = e.target as HTMLInputElement;
+    const file = input.files && input.files[0];
+    if (file) this.state.stageFile(file);
+    // Reset so re-selecting the same file fires `change` again.
+    input.value = '';
+  }
+
+  onDragOver(e: DragEvent): void {
+    if (this.state.streaming) return;
+    e.preventDefault();
+    this.dragOver = true;
+  }
+
+  onDragLeave(e: DragEvent): void {
+    e.preventDefault();
+    this.dragOver = false;
+  }
+
+  onDrop(e: DragEvent): void {
+    e.preventDefault();
+    this.dragOver = false;
+    if (this.state.streaming) return;
+    const file = e.dataTransfer?.files && e.dataTransfer.files[0];
+    if (file) this.state.stageFile(file);
+  }
+
   newChat(): void {
     this.state.newChat();
     requestAnimationFrame(() => this.composerEl?.nativeElement.focus());

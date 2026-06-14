@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AgentLoop, APIKeyValidator, MCPClient, SecretsUtil}
+import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, MCPClient, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -179,6 +179,27 @@ class AssistantAPIController {
             (role, content)
         }
 
+        // Resolve any files the user dropped into this turn. The UI staged the
+        // bytes server-side and sends just the handles here; we look each one
+        // up (scoped to this tenant), build a descriptor the model can read,
+        // and hand AgentLoop a handle→bytes map so it can substitute the real
+        // bytes when the model calls a file tool with the attachmentId.
+        val tenantEnv = DatrisEnvironment.current.environment
+        val attachmentIds: List[String] =
+            if (req.has("attachments") && req.get("attachments").isJsonArray)
+                req.getAsJsonArray("attachments").asScala.toList.flatMap { el =>
+                    val o = el.getAsJsonObject
+                    if (o.has("attachmentId") && !o.get("attachmentId").isJsonNull) Some(o.get("attachmentId").getAsString) else None
+                }
+            else Nil
+        val resolvedAttachments: List[AttachmentStore.Attachment] =
+            attachmentIds.flatMap(id => AttachmentStore.get(id, tenantEnv))
+        val attachmentMap: Map[String, (String, Array[Byte])] =
+            resolvedAttachments.map(a => a.id -> (a.filename, a.bytes)).toMap
+        val effectiveMessages: List[(String, String)] =
+            if (resolvedAttachments.isEmpty) userMessages
+            else appendAttachmentDescriptor(userMessages, buildAttachmentDescriptor(resolvedAttachments))
+
         val maxIterations: Int =
             if (req.has("maxIterations") && !req.get("maxIterations").isJsonNull) req.get("maxIterations").getAsInt
             else 50
@@ -212,7 +233,7 @@ class AssistantAPIController {
         AgentLoop.run(
             aiConfig = aiConfig,
             system = systemPrompt,
-            userMessages = userMessages,
+            userMessages = effectiveMessages,
             toolDefs = toolDefs,
             apiKey = uiKey,
             enableThinking = env.extendedThinking,
@@ -224,7 +245,8 @@ class AssistantAPIController {
                 // flag so the agent loop unwinds — avoids a broken-pipe write
                 // per remaining token delta.
                 if (!cancelled.get() && !AssistantSseSupport.emitLoopEvent(emitter, evt)) cancelled.set(true)
-            }
+            },
+            attachments = attachmentMap
         )
 
         // If the client already disconnected (a failed write flipped the
@@ -258,6 +280,13 @@ class AssistantAPIController {
         sb.append("- **Structured / semi-structured taps** (CSV, JSON, XML, API responses, table-shaped data) → **MongoDB** by default (flexible schema, tolerates shape drift across runs). **PostgreSQL** and **object store** (columnar files — Parquet or ORC) are equally supported alternatives. When proposing a destination for structured data, briefly name all three options in the question (e.g. \"MongoDB by default; PostgreSQL or object store also available — which do you prefer?\") so the user can pick. Do not silently default to MongoDB without mentioning the alternatives — the user may not know the other options exist.\n")
         sb.append("- **Document taps** (PDF, DOCX, HTML, plain text, anything destined for retrieval/RAG) → a **vector store** (pgvector, qdrant, weaviate, milvus, or chroma). Pick whichever the tenant already has configured; if multiple are available, pick pgvector by default.\n")
         sb.append("- When you propose a destination, state the destination type and the proposed name explicitly so the user can correct you before you build it.\n")
+        sb.append("\n")
+        sb.append("## Attached files (drag-and-drop)\n\n")
+        sb.append("- When the user drops a file into their message, an \"Attached file(s)\" block appears in that message listing each file's name, detected type, byte size, a content sample, and an `attachmentId`. Wherever a tool wants file `content` — `create_pipeline`, `upload_data`, `profile_data` — set the `content` argument to the file's `attachmentId` value (just the handle string, e.g. `content: \"<attachmentId>\"`). The platform substitutes the real bytes when the tool runs. Never paste, base64-encode, or fabricate file content yourself.\n")
+        sb.append("- Infer the source type from the sample and pick a sensible default destination: CSV/TSV → PostgreSQL, JSON → MongoDB, XML → PostgreSQL or MongoDB, documents (PDF/DOCX/TXT/HTML/MD) → a vector store (pgvector by default). Derive the pipeline name from the filename (short, lowercase-hyphenated, source-neutral) — the destination table/collection defaults to that name.\n")
+        sb.append("- **Confirm the destination before creating anything.** State your plan in one short line — pipeline name, detected type, and the default destination — and, for structured data, surface the alternatives the same way the destination-defaults rule above requires (e.g. \"I'll load `sales.csv` into PostgreSQL as table `sales`; MongoDB or an object store are also options — which do you want?\"). If upserts make sense, also ask for the natural-key column(s) or confirm append-only. Wait for the user's go-ahead before building.\n")
+        sb.append("- Once the user confirms: call `create_pipeline` (passing `attachmentId`), then `upload_data` (passing the SAME `attachmentId`) to load the full file, then monitor the load to completion via `get_job_status` exactly as in the run-monitoring rules below, and report the row/record count.\n")
+        sb.append("- Skip the data load only when the user asked merely to create the pipeline, profile the file, or inspect it — otherwise dropping a file means \"get this data into the platform.\"\n")
         sb.append("\n")
         sb.append("## Naming\n\n")
         sb.append("- **A tap and the pipeline it feeds should share the SAME name.** When you create both as a single deliverable, give them one name — do NOT append `-tap` / `-pipeline` suffixes, do NOT use one name with hyphens and another with underscores, do NOT bake the source/provider name into either one. Matching names make the tap↔pipeline linkage obvious in lists, search, and conversation. The destination table / collection name defaults to the pipeline name, so the table also ends up matching by default — one user-facing identifier for the whole flow.\n")
@@ -298,6 +327,31 @@ class AssistantAPIController {
         sb.append("## Safety + finish\n\n")
         sb.append("- **Destructive operations gate**: NEVER call `delete_tap`, `delete_pipeline`, `delete_tap_secret`, or `update_secret` on an existing secret without explicit user confirmation in the chat. If the user asks to delete or overwrite something, restate what will be removed and ask the user to confirm before proceeding.\n")
         sb.append("- When you finish, say so plainly in one or two sentences. The UI will surface clickable links to any tap or pipeline you created.\n")
+        sb.toString
+    }
+
+    /** Append the attachment descriptor to the user's latest message so the
+      * model sees the dropped file(s) in context. Falls back to a fresh user
+      * turn if (unexpectedly) the conversation doesn't end on a user message. */
+    private def appendAttachmentDescriptor(msgs: List[(String, String)], descriptor: String): List[(String, String)] = {
+        msgs.lastIndexWhere(_._1 == "user") match {
+            case -1 => msgs :+ ("user", descriptor)
+            case i  => msgs.updated(i, (msgs(i)._1, msgs(i)._2 + "\n\n" + descriptor))
+        }
+    }
+
+    /** Render the dropped files as a block the model can reason about: name,
+      * detected type, byte size, a content sample, and the `attachmentId` it
+      * passes to file tools in place of `content`. */
+    private def buildAttachmentDescriptor(attachments: List[AttachmentStore.Attachment]): String = {
+        val sb = new StringBuilder
+        sb.append("## Attached file(s)\n\n")
+        sb.append("The user attached the following file(s) to this message. To create a pipeline from, load, or profile a file, set the tool's `content` argument to the file's `attachmentId` value — just the handle string, e.g. `content: \"<attachmentId>\"`. The platform replaces that handle with the real file bytes when the tool runs. NEVER paste, base64-encode, or fabricate file content yourself.\n\n")
+        attachments.foreach { a =>
+            sb.append("- `").append(a.filename).append("` (").append(a.detectedType)
+                .append(", ").append(a.bytes.length).append(" bytes, attachmentId `").append(a.id).append("`)\n")
+            sb.append("  Sample:\n  ```\n").append(a.sample).append("\n  ```\n")
+        }
         sb.toString
     }
 
