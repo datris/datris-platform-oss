@@ -334,6 +334,8 @@ AI agents can manage taps via MCP:
 | `create_tap` | Create a tap from a plain-English instruction (AI generates the script), a user-provided script, or config only |
 | `create_tap_secret` | Create a tap secret the agent can then reference via `secret_name` on `create_tap`. Fails on name collision unless `overwrite=true`. Reserved AI-slot names are blocked. Agents can only overwrite secrets tagged `_type=tap` — human-owned secrets are refused. |
 | `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be deleted by an agent; human-owned secrets must be removed from Configuration → Secrets in the UI. |
+| `list_tap_secrets` | List the names of existing tap secrets (tagged `_type=tap`). Call before `create_tap_secret` to reuse a suitable existing secret instead of asking the user for credentials again. |
+| `get_tap_secret_fields` | Return the field names (keys only — never values) of an existing tap secret. Use after `list_tap_secrets` to verify a candidate secret has the keys the tap script will need. |
 | `list_taps` | List all taps with status, schedule, and last run info |
 | `get_tap` | Get full details of a single tap including its Python script |
 | `run_tap` | Execute a tap and push fetched data to the target pipeline. Response carries `persisted`, `persistedReason`, `recordCount`, `publisherToken`, `pipelineTokens` so the agent can confirm what landed. Records themselves are not returned — use `test_tap` to preview a script. |

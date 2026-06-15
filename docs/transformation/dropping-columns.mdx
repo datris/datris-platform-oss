@@ -52,6 +52,6 @@ In this example, `internal_code` and `created_at` are present in the source but 
 
 ## Notes
 
-- This feature works with delimited data only
+- Column dropping applies to delimited/CSV row data, where each row is projected to the destination columns. JSON and XML pipelines use a single raw `_json`/`_xml` document that passes through without per-column projection, so column dropping does not apply to them.
 - The destination schema field names must match source schema field names (case-insensitive)
 - Column order in the destination schema determines the output column order

@@ -17,7 +17,7 @@ Content-Type: multipart/form-data
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `file` | form-data | Yes | The configuration file to upload |
-| `type` | form-data | Yes | File type: `validation-schema` |
+| `type` | form-data | Yes | File type: `validation-schema` or `javascript` |
 
 The uploaded file is stored at `{env}-config/{type}/{filename}` in MinIO and can be referenced in pipeline configurations.
 

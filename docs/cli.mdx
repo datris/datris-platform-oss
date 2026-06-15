@@ -215,9 +215,9 @@ datris query-mongo events --projection '{"name": 1, "status": 1}'
 
 | Option | Description |
 |--------|-------------|
-| `--filter` | MongoDB filter JSON (default: `{}`) |
+| `--filter`, `-f` | MongoDB filter JSON (default: `{}`) |
 | `--projection` | Fields to include/exclude |
-| `--limit` | Max documents (default: 100) |
+| `--limit` | Max documents (default: 20) |
 | `--json` | Return raw JSON |
 
 ---
@@ -280,20 +280,25 @@ datris taps
 
 ### `datris tap create`
 
-Create a tap from a plain-English description.
+Create a tap. The `instruction` argument (a plain-English description) is optional — provide it to have AI generate the fetch script, or omit it and supply your own script with `--script` (or create a config-only tap with neither).
 
 ```bash
-datris tap create "<description>" --pipeline <name> [--name <tap-name>] [--cron "<expression>"] [--type structured|document]
+datris tap create ["<instruction>"] --pipeline <name> [--name <tap-name>] [--script <file>] [--cron "<expression>"] [--type structured|document]
 ```
+
+| Argument | Description |
+|---|---|
+| `instruction` | Optional plain-English description of the data to fetch. When provided, AI generates the script. Omit when using `--script` or creating a config-only tap |
 
 | Option | Description |
 |---|---|
-| `--pipeline`, `-p` | Target pipeline name (required) |
-| `--name`, `-n` | Tap name (default: derived from pipeline name) |
+| `--pipeline`, `-p` | Target pipeline name |
+| `--name`, `-n` | Tap name (default: derived from pipeline or instruction) |
 | `--cron` | CRON expression for scheduling (Quartz format) |
 | `--secret` | Vault secret name for credentials injected as env vars |
 | `--script` | Path to a Python script file with a `fetch()` function (skips AI generation) |
 | `--type` | `structured` (default) returns rows of records; `document` returns `{uri, filename, content}` dicts destined for a vector-store pipeline. See [Document Taps](/taps#document-taps) |
+| `--json` | Return raw JSON |
 
 **Examples:**
 ```bash
@@ -330,6 +335,66 @@ Or if the run succeeded but records weren't persisted (missing target pipeline, 
 ```
 
 Pass `--json` to get the full response including `mode`, `persisted`, `persistedReason`, `publisherToken`, and `pipelineTokens`.
+
+---
+
+### `datris tap show`
+
+Show full details of a tap, including its script. Prints the name, description, target pipeline, schedule, enabled state, secret, and last run/test results, followed by the stored script.
+
+```bash
+datris tap show <name>
+```
+
+| Option | Description |
+|---|---|
+| `--json` | Return raw JSON |
+
+---
+
+### `datris tap test`
+
+Test-run a tap without pushing the fetched records to the target pipeline. Reports the run status, record count, and data type.
+
+```bash
+datris tap test <name>
+```
+
+| Option | Description |
+|---|---|
+| `--json` | Return raw JSON |
+
+---
+
+### `datris tap logs`
+
+Show the run history for a tap — each entry's timestamp, status, mode (run or test), record count, duration, and any error.
+
+```bash
+datris tap logs <name>
+```
+
+| Option | Description |
+|---|---|
+| `--json` | Return raw JSON |
+
+---
+
+### `datris tap update`
+
+Update a tap's configuration without regenerating its script. Specify at least one option.
+
+```bash
+datris tap update <name> [--enabled | --disabled] [--cron "<expression>"] [--pipeline <name>] [--description "<text>"]
+```
+
+| Option | Description |
+|---|---|
+| `--enabled` / `--disabled` | Enable or disable the tap |
+| `--cron` | CRON expression for scheduling (Quartz format) |
+| `--pipeline`, `-p` | Target pipeline name |
+| `--description`, `-d` | New description |
+| `--json` | Return raw JSON |
 
 ---
 

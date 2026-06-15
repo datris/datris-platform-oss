@@ -27,6 +27,30 @@ The agent will reach for tools as it needs them: web search to find a source,
 when credentials are needed, `create_tap`, `test_tap`, `create_pipeline`, and
 so on.
 
+## Drop a file to build a pipeline
+
+You can drag a file straight into the chat — or attach one with the file
+picker — and the Assistant will build a pipeline around it for you. Drop a CSV,
+JSON, XML, or document file onto the chat window (or click the attach control
+and pick it), then describe what you want done with it.
+
+When you send a message with a file attached, the agent:
+
+1. **Reads a sample** of the file — a text extract from the attached content —
+   so it can see the columns and data shape.
+2. **Proposes a destination**, defaulting sensibly for the data and naming the
+   alternatives (Postgres, MongoDB, an object store, or a vector store) so you
+   can pick a different one.
+3. **Confirms before building** — it tells you what it's about to create and
+   waits for your go-ahead.
+4. **Asks about an upsert key** when relevant, so repeated loads update rows in
+   place instead of duplicating them.
+5. **Creates the pipeline, loads the data, and reports the result** — including
+   how many rows landed in the destination.
+
+This is the fastest path from "here's a file" to a working pipeline: no wizard,
+no manual schema entry — just drop it in and confirm.
+
 ## What you'll see in real time
 
 Three live layers in every assistant turn:
@@ -141,7 +165,7 @@ the full capability model.
 
 ## Limits
 
-- **25 iterations per turn.** The agent loop is hard-capped to bound cost. If
+- **50 iterations per turn.** The agent loop is hard-capped to bound cost. If
   the agent runs out of iterations, it stops and asks you to send a follow-up
   message to continue.
 - **No conversation history.** v1 is session-only — refreshing the tab clears

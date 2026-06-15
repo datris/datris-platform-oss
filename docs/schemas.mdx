@@ -196,8 +196,9 @@ A **destination schema** describes the data as it should be written to the targe
 Use a destination schema when you need to:
 
 - Widen a type (e.g., `int` to `bigint`) for the target table.
-- Rename a field between ingestion and storage.
 - Drop fields that should not reach the destination.
+
+Source and destination fields are matched by **name** (case-insensitive), not by position. A destination field that does not exist in the source is not "renamed" — it has no source value to carry, so it is written as `NULL`. To carry a value under a different column name, perform the rename in a transformation step before the destination is applied.
 
 ```json
 {
@@ -220,4 +221,4 @@ Use a destination schema when you need to:
 }
 ```
 
-When both schemas are present, the pipeline maps source fields to destination fields by position. Ensure the field count matches or use a transformation step to reconcile differences.
+When both schemas are present, the pipeline maps source fields to destination fields by **lowercased name**. Destination fields that have no matching source field are written as `NULL`. Use a transformation step to rename or reshape fields before the destination schema is applied.

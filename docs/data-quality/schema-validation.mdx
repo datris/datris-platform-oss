@@ -26,11 +26,13 @@ Set the `validationSchema` field in the `dataQuality` block to the filename of t
 
 ## Example Schema
 
+Validation uses the Everit `org.everit.json.schema` library (1.5.1), which implements **JSON Schema Draft 4 only**. The `$schema` URI is ignored, and Draft 07-only keywords (`const`, `if`/`then`/`else`, `propertyNames`, numeric `exclusiveMinimum`/`exclusiveMaximum` as values) are silently ignored rather than enforced. Write schemas to the Draft 4 specification.
+
 A JSON Schema file stored in MinIO at `{environment}-config/validation-schema/product_catalog_schema.json`:
 
 ```json
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "http://json-schema.org/draft-04/schema#",
   "type": "object",
   "required": ["product_id", "name", "price"],
   "properties": {

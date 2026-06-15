@@ -170,10 +170,14 @@ Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedpar
 | MongoDB | 27017 | Configuration and status store |
 | ActiveMQ | 61616 (broker), 8161 (console) | Message queue and notifications |
 | Vault | 8200 | Secrets management |
-| Kafka | 9092 | Streaming (optional) |
-| Kafka UI | 8085 | Kafka topic browser |
 | PostgreSQL | 5432 | Database destination + pgvector |
-| Zookeeper | 2181 | Kafka coordination |
+| Kafka | 9092 | Streaming — **optional, disabled by default** (uncomment in `docker-compose.yml` to run) |
+| Zookeeper | 2181 | Kafka coordination — **optional, disabled by default** (uncomment with Kafka) |
+| Kafka UI | 8085 | Kafka topic browser — **optional, disabled by default** (uncomment with Kafka) |
+
+<Note>
+Kafka, Zookeeper, and Kafka UI ship commented out in `docker-compose.yml`. Datris bundles `kafka-clients`, so pipelines that produce to or consume from an **external** Kafka work without these. Uncomment the Kafka/Zookeeper/kafka-ui service blocks (and their volumes) only if you want a local broker.
+</Note>
 
 ## Web UIs
 
@@ -184,7 +188,7 @@ Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedpar
 | **MCP Server (SSE)** | [http://localhost:3000/sse](http://localhost:3000/sse) | none |
 | **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin` |
 | **ActiveMQ Console** | [http://localhost:8161](http://localhost:8161) | `admin` / `admin` |
-| **Kafka UI** | [http://localhost:8085](http://localhost:8085) | none |
+| **Kafka UI** (optional) | [http://localhost:8085](http://localhost:8085) | none — only when the optional Kafka services are uncommented in `docker-compose.yml` |
 | **Vault UI** | [http://localhost:8200](http://localhost:8200) | Token: `root-token` |
 
 ## API Keys and AI Providers

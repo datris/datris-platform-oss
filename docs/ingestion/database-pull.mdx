@@ -64,7 +64,7 @@ Database sources are configured in the `databaseAttributes` section of a pipelin
 | `database` | No | Database name (if not in the JDBC URL) |
 | `schema` | No | Schema within the database |
 | `table` | Yes* | Table to pull data from (*unless `sqlOverride` is set) |
-| `timestampFieldName` | No | Column used for incremental pulls |
+| `timestampFieldName` | Yes* | Column used for incremental pulls. Effectively required — the generated query always appends this column and orders by it. |
 | `includeFields` | No | Array of column names to select; when omitted, all columns are selected |
 | `sqlOverride` | No | Custom SQL query that replaces the generated SELECT statement |
 | `outputDelimiter` | No | Delimiter for CSV output (default `,`) |
@@ -105,9 +105,9 @@ The `cronExpression` field accepts a Quartz cron string with six fields (seconds
 
 ## Incremental Pulls
 
-When `timestampFieldName` is set, the pipeline tracks the maximum value of that column after each pull. On the next execution, it adds a `WHERE {timestampFieldName} > {lastMaxValue}` clause to fetch only new or updated rows.
+Incremental extraction relies on `timestampFieldName`, which is effectively required: the generated `SELECT` always appends that column to the projection and orders the result by it (`ORDER BY {timestampFieldName}`). After each pull, the pipeline records the value of that column from the **last (highest-ordered) row returned** — this is the high-water mark. It is not computed with a `MAX()` aggregate; it is simply the timestamp of the final row in the ordered result set.
 
-The high-water mark is stored in MongoDB in the `{environment}-data-pull` collection. When `timestampFieldName` is omitted, every pull fetches the full table contents.
+On the next execution, the pipeline adds a `WHERE {timestampFieldName} > {lastValue}` clause to fetch only new or updated rows. The high-water mark is stored in MongoDB in the `{environment}-data-pull` collection.
 
 ## Custom SQL
 

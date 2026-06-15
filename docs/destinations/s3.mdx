@@ -14,7 +14,7 @@ The S3 destination writes Parquet or ORC files directly to AWS S3. It uses the s
 | Region                           | n/a (endpoint is explicit)     | Stored in the credentials secret           |
 | `path.style.access`              | true                           | false                                      |
 | `connection.ssl.enabled`         | false                          | true                                       |
-| Default bucket                   | `{environment}-raw`            | None — `destinationBucketOverride` required|
+| Default bucket                   | `{environment}-data`           | None — `destinationBucketOverride` required|
 
 S3A's per-bucket key syntax (`fs.s3a.bucket.<bucket>.*`) is what allows a single Spark session to write to both MinIO and AWS S3 in the same deployment without one set of credentials clobbering the other.
 

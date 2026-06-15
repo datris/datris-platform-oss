@@ -67,8 +67,8 @@ When `OPENAI_API_KEY` is set, all three slots are seeded against OpenAI:
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
-| `oss/ai-primary` | openai | `https://api.openai.com/v1/chat/completions` | `gpt-4.1` |
-| `oss/codegen` | openai | `https://api.openai.com/v1/chat/completions` | `gpt-5` |
+| `oss/ai-primary` | openai | `https://api.openai.com/v1/chat/completions` | `gpt-5.5` |
+| `oss/codegen` | openai | `https://api.openai.com/v1/chat/completions` | `gpt-5.5` |
 | `oss/embedding` | openai | `https://api.openai.com/v1/embeddings` | `text-embedding-3-small` |
 
 ### Anthropic path (with bundled embedding service)
@@ -103,8 +103,8 @@ Override the seeded models by setting these in `.env`:
 
 ```bash
 ANTHROPIC_MODEL=claude-sonnet-4-6
-OPENAI_MODEL=gpt-4.1
-CODEGEN_MODEL=claude-opus-4-8   # or gpt-5 if using OpenAI
+OPENAI_MODEL=gpt-5.5
+CODEGEN_MODEL=claude-opus-4-8   # or gpt-5.5 if using OpenAI
 ```
 
 ### Mix-and-match: Anthropic chat + OpenAI embeddings
@@ -238,7 +238,7 @@ OpenAI web search requires the **Responses API**. When the configured endpoint i
 **Highly recommended: Anthropic with the latest coding model for CodeGen.** Tap script generation, AI data quality rules, AI transformations, and NL→SQL all depend heavily on the model's coding ability — Claude produces dramatically better results than smaller or cheaper models. The same recommendation appears in the Configuration UI's CodeGen section and in `.env.example`.
 </Tip>
 
-CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot precisely so you can point them at a stronger model than the chatty default. With OpenAI the default is `gpt-5` for codegen vs `gpt-4.1` for general; with Anthropic the default is `claude-opus-4-8` for codegen vs `claude-sonnet-4-6` for general. Cheap chatty paths stay on the cheaper model so you only pay the upgrade on the calls that benefit.
+CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot precisely so you can point them at a stronger model than the chatty default. With OpenAI both slots default to `gpt-5.5`; with Anthropic the default is `claude-opus-4-8` for codegen vs `claude-sonnet-4-6` for general. Cheap chatty paths stay on the cheaper model so you only pay the upgrade on the calls that benefit.
 
 | Feature | Uses codegen slot? |
 |---|---|

@@ -636,7 +636,7 @@ paths:
                 limit:
                   type: integer
                   default: 100
-                  description: Maximum rows to return (max 1000)
+                  description: Maximum rows to return. Use -1 for unlimited (no row cap).
       responses:
         '200':
           description: Query results
@@ -673,7 +673,7 @@ paths:
                 limit:
                   type: integer
                   default: 20
-                  description: Maximum documents to return (max 1000)
+                  description: Maximum documents to return. Use -1 for unlimited (no row cap).
       responses:
         '200':
           description: Query results
@@ -730,7 +730,7 @@ paths:
                   description: Natural language search query
                 collection:
                   type: string
-                  default: financial_documents
+                  default: documents
                   description: Qdrant collection name
                 embeddingSecretName:
                   type: string
@@ -769,7 +769,7 @@ paths:
                   description: Natural language search query
                 className:
                   type: string
-                  default: FinancialDocuments
+                  default: Documents
                   description: Weaviate class name (PascalCase)
                 embeddingSecretName:
                   type: string
@@ -807,7 +807,7 @@ paths:
                   description: Natural language search query
                 collection:
                   type: string
-                  default: financial_documents
+                  default: documents
                   description: Milvus collection name
                 embeddingSecretName:
                   type: string
@@ -845,7 +845,7 @@ paths:
                   description: Natural language search query
                 collection:
                   type: string
-                  default: financial_documents
+                  default: documents
                   description: Chroma collection name
                 embeddingSecretName:
                   type: string
@@ -883,7 +883,7 @@ paths:
                   description: Natural language search query
                 table:
                   type: string
-                  default: financial_documents
+                  default: documents
                   description: PostgreSQL table name
                 schema:
                   type: string

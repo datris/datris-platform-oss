@@ -189,7 +189,7 @@ AI configuration is split into three independent slots, each pointing at its own
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
 | `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). |
-| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest available model — Anthropic gets `claude-opus-4-8`, OpenAI gets `gpt-5.4`. |
+| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest available model — Anthropic gets `claude-opus-4-8`, OpenAI gets `gpt-5.5`. |
 | `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled TEI sidecar serving `BAAI/bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
 
 Each Vault secret is self-describing and looks like:

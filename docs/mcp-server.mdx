@@ -97,6 +97,8 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | `get_tap_ledger` | Document taps only: read the ledger of discovered documents (URI, filename, status, hashes, timestamps). Pass `clear_uri` to force-reprocess one file, or `clear_all=true` to force a full re-scan |
 | `create_tap_secret` | Create or update a Vault secret for a tap to read as env vars (tagged `_type=tap`). Fails on collision unless `overwrite=true`. Reserved AI-provider names are blocked |
 | `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be removed — human-owned secrets must be deleted from Configuration → Secrets in the UI |
+| `list_tap_secrets` | List the names of existing tap secrets (secrets tagged `_type=tap`). Call before `create_tap_secret` to reuse a suitable existing secret rather than asking the user for credentials again |
+| `get_tap_secret_fields` | Return the field NAMES (keys only — never values) of an existing tap secret. Use after `list_tap_secrets` to verify a candidate secret has the keys the tap script will need |
 | `delete_tap` | Delete a tap and its stored script (also clears the ledger and staged MinIO objects for document taps) |
 
 For a document tap, `create_tap` **requires** the `target_pipeline` to have an `unstructuredAttributes` source and a vector-store destination (qdrant, pgvector, weaviate, milvus, or chroma). The server rejects mismatched pairings with HTTP 400.
@@ -134,6 +136,7 @@ uvx datris-mcp-server
 |------|----------|---------|
 | **stdio** | Claude Desktop, Claude Code, local agents | `python server.py` |
 | **SSE** | Docker, remote agents, web clients | `python server.py --sse --port 3000` |
+| **Streamable HTTP** | Remote agents using the streamable HTTP transport | `python server.py --streamable-http --port 3000` |
 
 ## Configuring Claude
 

@@ -48,7 +48,7 @@ POST /api/v1/search/qdrant
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `collection` | string | No | `financial_documents` | Qdrant collection name |
+| `collection` | string | No | `documents` | Qdrant collection name |
 | `qdrantSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `apiKey`). Uses server default if omitted. |
 
 ```bash
@@ -56,7 +56,7 @@ curl -X POST http://localhost:8080/api/v1/search/qdrant \
   -H "Content-Type: application/json" \
   -d '{
     "query": "quarterly revenue projections",
-    "collection": "financial_documents",
+    "collection": "documents",
     "qdrantSecretName": "oss/qdrant",
     "topK": 5
   }'
@@ -72,7 +72,7 @@ POST /api/v1/search/weaviate
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `className` | string | No | `FinancialDocuments` | Weaviate class name (PascalCase) |
+| `className` | string | No | `Documents` | Weaviate class name (PascalCase) |
 | `weaviateSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `scheme`, `apiKey`). Uses server default if omitted. |
 
 ```bash
@@ -80,7 +80,7 @@ curl -X POST http://localhost:8080/api/v1/search/weaviate \
   -H "Content-Type: application/json" \
   -d '{
     "query": "quarterly revenue projections",
-    "className": "FinancialDocuments",
+    "className": "Documents",
     "weaviateSecretName": "oss/weaviate",
     "topK": 5
   }'
@@ -96,7 +96,7 @@ POST /api/v1/search/milvus
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `collection` | string | No | `financial_documents` | Milvus collection name |
+| `collection` | string | No | `documents` | Milvus collection name |
 | `milvusSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `apiKey`). Uses server default if omitted. |
 
 ```bash
@@ -104,7 +104,7 @@ curl -X POST http://localhost:8080/api/v1/search/milvus \
   -H "Content-Type: application/json" \
   -d '{
     "query": "quarterly revenue projections",
-    "collection": "financial_documents",
+    "collection": "documents",
     "milvusSecretName": "oss/milvus",
     "topK": 5
   }'
@@ -120,7 +120,7 @@ POST /api/v1/search/chroma
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `collection` | string | No | `financial_documents` | Chroma collection name |
+| `collection` | string | No | `documents` | Chroma collection name |
 | `chromaSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`). Uses server default if omitted. |
 
 ```bash
@@ -128,7 +128,7 @@ curl -X POST http://localhost:8080/api/v1/search/chroma \
   -H "Content-Type: application/json" \
   -d '{
     "query": "quarterly revenue projections",
-    "collection": "financial_documents",
+    "collection": "documents",
     "chromaSecretName": "oss/chroma",
     "topK": 5
   }'
@@ -144,7 +144,7 @@ POST /api/v1/search/pgvector
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `table` | string | No | `financial_documents` | PostgreSQL table name |
+| `table` | string | No | `documents` | PostgreSQL table name |
 | `schema` | string | No | `public` | PostgreSQL schema |
 | `postgresSecretName` | string | No | Server default | Vault secret (must contain `jdbcUrl`, optionally `username`, `password`). Uses server default if omitted. |
 
@@ -153,7 +153,7 @@ curl -X POST http://localhost:8080/api/v1/search/pgvector \
   -H "Content-Type: application/json" \
   -d '{
     "query": "quarterly revenue projections",
-    "table": "financial_documents",
+    "table": "documents",
     "schema": "public",
     "postgresSecretName": "oss/pgvector",
     "topK": 5

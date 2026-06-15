@@ -85,9 +85,9 @@ The Vault label `ui` is reserved for the seeded fallback UI key (used in legacy 
 | `false` | `false` | Full anonymous. No prompts, no auth, no gating. **OSS default; fine for laptop dev.** |
 | `true` | `true` | UI gated by login; programmatic clients gated by key. **Recommended for shared installs.** |
 | `true` | `false` | UI gated by login; programmatic clients are anonymous. Workable, slightly odd. |
-| `false` | `true` | **Refused at boot.** No coherent auth mechanism for the browser. Pick a different combination. |
+| `false` | `true` | **Not recommended.** No coherent auth mechanism for the browser. Pick a different combination. |
 
-The fourth row is the trap. When you require strict auth for programmatic clients but no login for the UI, the browser has nothing to present. Set both flags together, or neither.
+The fourth row is the trap. When you require strict auth for programmatic clients but no login for the UI, the browser has nothing to present. API keys are intended to be used alongside user auth — set both flags together, or neither.
 
 ## Rotating a key
 

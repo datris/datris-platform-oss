@@ -28,7 +28,7 @@ Set `truncateBeforeWrite` to `true` to delete all documents from the target coll
 
 ## Transaction Support
 
-All write operations execute inside a MongoDB transaction. If any error occurs during the write, the transaction is aborted and no partial data is persisted.
+By default (`useTransaction: true`), all write operations execute inside a MongoDB transaction. If any error occurs during the write, the transaction is aborted and no partial data is persisted. Set `useTransaction: false` to disable transactional writes.
 
 ## Configuration Example
 

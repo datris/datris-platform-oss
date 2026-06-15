@@ -77,7 +77,7 @@ Set `USE_USER_AUTH=false` (or remove the line) and recreate the Datris container
 
 - Run Datris **behind HTTPS** before turning auth on. Sessions are cookie-based; without TLS, the login is exposed in transit.
 - Review your CORS allow-list (`cors.allowedOrigins` in `application.yaml`) — the default `"*"` is for local dev only.
-- Pair this with `USE_API_KEYS=true` for any shared install — user auth gates the **UI**, API-key gating handles programmatic clients (CLI, MCP, external scripts). Setting `USE_API_KEYS=true` without `USE_USER_AUTH=true` is [refused at boot](/api-keys#supported-configurations); the two are designed to compose.
+- Pair this with `USE_API_KEYS=true` for any shared install — user auth gates the **UI**, API-key gating handles programmatic clients (CLI, MCP, external scripts). API keys are meant to be used **alongside** user auth: enable the two together. Turning on `USE_API_KEYS=true` without `USE_USER_AUTH=true` leaves the browser with no coherent auth mechanism — see [supported configurations](/api-keys#supported-configurations); the two are designed to compose.
 
 ## Related
 

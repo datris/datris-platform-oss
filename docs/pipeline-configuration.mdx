@@ -102,6 +102,7 @@ You don't need to write JSON by hand — once you have the Datris Data Platform 
 |-------|------|-------------|
 | `dbName` | string | Database name associated with this schema (used by some destinations) |
 | `fields` | array | List of `{"name": "...", "type": "..."}` objects |
+| `schemaVersion` | int | Schema version (default `1`) |
 
 Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `double`, `decimal(p,s)`, `string`, `varchar(n)`, `char(n)`, `date`, `timestamp`
 
@@ -223,7 +224,7 @@ For S3-specific behavior — credentials secret format, per-bucket credential is
 | `useMongoDB` | boolean | false | Write to MongoDB |
 | `manageTableManually` | boolean | false | If false, auto-creates tables |
 | `truncateBeforeWrite` | boolean | false | Truncate table before loading |
-| `useTransaction` | boolean | false | Wrap in a transaction |
+| `useTransaction` | boolean | true | Wrap in a transaction |
 | `options` | array | null | Custom COPY options (e.g., `["FORMAT csv", "DELIMITER ','"]`) |
 
 ### Destination > Kafka
@@ -248,6 +249,8 @@ For S3-specific behavior — credentials secret format, per-bucket credential is
 | `endpoint` | string | Required | URL to POST data to |
 | `async` | boolean | false | If true, doesn't wait for response |
 | `bearerToken` | string | null | Authorization token |
+| `apiKey` | string | null | API key for authentication |
+| `timeoutSeconds` | int | 0 | Request timeout (seconds); 0 means unset |
 | `timeoutMs` | int | 300000 | Request timeout (milliseconds) |
 
 ### Destination > Qdrant

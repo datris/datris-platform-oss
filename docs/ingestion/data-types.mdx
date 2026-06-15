@@ -7,16 +7,18 @@ This reference lists every data type the pipeline supports, along with mappings 
 
 ## Type Reference
 
+The **PostgreSQL Type** column shows the literal type Datris emits in the generated `CREATE TABLE` DDL. Datris remaps only a few types to their canonical Postgres aliases (`tinyint`/`smallint` → `int2`, `float` → `float4`, `double` → `float8`, `string` → `text`); every other type is emitted verbatim.
+
 | Pipeline Type | Description | PostgreSQL Type | Spark Type |
 |---|---|---|---|
 | `boolean` | True or false | `boolean` | `BooleanType` |
-| `tinyint` | 8-bit signed integer (-128 to 127) | `smallint` | `ByteType` |
-| `smallint` | 16-bit signed integer (-32768 to 32767) | `smallint` | `ShortType` |
-| `int` | 32-bit signed integer | `integer` | `IntegerType` |
+| `tinyint` | 8-bit signed integer (-128 to 127) | `int2` | `ByteType` |
+| `smallint` | 16-bit signed integer (-32768 to 32767) | `int2` | `ShortType` |
+| `int` | 32-bit signed integer | `int` | `IntegerType` |
 | `bigint` | 64-bit signed integer | `bigint` | `LongType` |
-| `float` | 32-bit IEEE 754 floating point | `real` | `FloatType` |
-| `double` | 64-bit IEEE 754 floating point | `double precision` | `DoubleType` |
-| `decimal(p,s)` | Fixed-precision number with `p` total digits and `s` fractional digits | `numeric(p,s)` | `DecimalType(p,s)` |
+| `float` | 32-bit IEEE 754 floating point | `float4` | `FloatType` |
+| `double` | 64-bit IEEE 754 floating point | `float8` | `DoubleType` |
+| `decimal(p,s)` | Fixed-precision number with `p` total digits and `s` fractional digits | `decimal(p,s)` | `DecimalType(p,s)` |
 | `string` | Variable-length text, unbounded | `text` | `StringType` |
 | `varchar(n)` | Variable-length text up to `n` characters | `varchar(n)` | `StringType` |
 | `char(n)` | Fixed-length text of exactly `n` characters | `char(n)` | `StringType` |
@@ -61,32 +63,30 @@ All three string types map to `StringType` in Spark. The length constraint is en
 
 ## JSON and XML Special Types
 
-Fields whose names end with `_json` or `_xml` receive special handling during ingestion:
+JSON and XML pipelines are semi-structured: the source schema must contain **exactly one field**, named literally `_json` or `_xml` (matching the source file type), with type `string`. The validator rejects any schema with a different field count or a different field name.
 
-| Suffix | Behavior |
+| Field name | Behavior |
 |---|---|
-| `_json` | The field value is treated as a nested JSON document. Stored as a document in MongoDB (default destination for JSON), or as a `text` column in PostgreSQL. No schema validation is applied to the nested content. |
-| `_xml` | The field value is treated as an XML fragment. Stored as a `text` column in PostgreSQL or as a string in MongoDB. |
+| `_json` | The whole record is treated as a nested JSON document. Stored as a document in MongoDB (default destination for JSON), or as a native `json` column in PostgreSQL. No schema validation is applied to the nested content. |
+| `_xml` | The whole record is treated as an XML document. Stored as a native `xml` column in PostgreSQL, or as a string in MongoDB. |
 
-Declare these fields with type `string` in the schema:
+Declare the single field with type `string` in the schema:
 
 ```json
 {
   "fields": [
-    { "name": "id", "type": "bigint" },
-    { "name": "payload_json", "type": "string" },
-    { "name": "metadata_xml", "type": "string" }
+    { "name": "_json", "type": "string" }
   ]
 }
 ```
 
-During ingestion, the pipeline detects the `_json` and `_xml` suffixes and preserves the raw content without attempting to parse it into individual columns. This is useful for semi-structured data that should be queried with JSON or XML functions downstream.
+For XML, use the same shape with a single `_xml` field. During ingestion, the pipeline preserves the raw content without attempting to parse it into individual columns. This is useful for semi-structured data that should be queried with JSON or XML functions downstream.
 
 ## Type Coercion
 
 During ingestion, the pipeline converts field values from strings to the declared type:
 
-1. **Null or empty string** — stored as an empty string. The destination database handles null conversion.
-2. **Numeric types** (`int`, `bigint`, `float`, `double`, `decimal`, etc.) — the value is parsed using Scala's built-in conversion. If parsing fails (e.g., `"abc"` in an `int` column), the job fails with an error.
+1. **Null or empty string** — passed through unchanged (no type conversion is applied). The Postgres `COPY` layer then converts an empty field to `NULL`.
+2. **Numeric types** (`int`, `bigint`, `float`, `double`, `decimal`, etc.) — the value is parsed using Scala's built-in conversion. `decimal` is parsed via `toDouble` in the row-map path. If parsing fails (e.g., `"abc"` in an `int` column), the job fails with an error.
 3. **String types** (`string`, `varchar`, `char`) — stored as-is with no conversion.
 4. **Date and timestamp** — stored as the raw string value. The destination (PostgreSQL, Spark) handles date/timestamp parsing according to its own rules.

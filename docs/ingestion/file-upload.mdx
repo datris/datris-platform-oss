@@ -32,49 +32,57 @@ curl -X POST "http://localhost:9000/api/v1/pipeline/upload" \
 
 ## Response
 
-A successful upload returns HTTP 200 with a JSON body containing a `pipelineToken`:
+A successful upload returns HTTP 200 with a **bare string** body — the pipeline token itself (a unique UUID generated for the job), not a JSON object:
 
-```json
-{
-  "pipelineToken": "d4f8e1a2-7b3c-4e9f-a5d6-1c2b3e4f5a6b",
-  "status": "ACCEPTED"
-}
+```
+d4f8e1a2-7b3c-4e9f-a5d6-1c2b3e4f5a6b
 ```
 
-The `pipelineToken` is a unique UUID generated for each upload. Use it to track the job's processing status, view errors, or cancel the job.
+Use this token to track the job's processing status, view errors, or cancel the job.
+
+When a compressed archive contains multiple inner files that are submitted as separate jobs, the response is instead the literal string:
+
+```
+3 file(s) submitted
+```
 
 ## Compressed Files
 
-When the uploaded file has a compressed extension, the pipeline stages it to the MinIO raw bucket before processing:
+When the uploaded file has a compressed extension, the archive is extracted **in memory** and processed **synchronously** — nothing is staged to MinIO:
 
 | Extension | Handling |
 |---|---|
-| `.zip` | Staged to MinIO raw bucket, then extracted |
-| `.gz` | Staged to MinIO raw bucket, then decompressed |
-| `.tar` | Staged to MinIO raw bucket, then extracted |
-| `.jar` | Staged to MinIO raw bucket, then extracted |
+| `.zip` | Extracted in memory |
+| `.gz` | Decompressed in memory |
+| `.tar` | Extracted in memory |
+| `.jar` | Extracted in memory |
 
-Compressed archives may contain multiple data files. Each file inside the archive is processed as a separate unit against the same pipeline configuration.
+Compressed archives may contain multiple data files. Handling depends on the pipeline type:
+
+- **CSV pipelines** — when an archive contains multiple inner files, they are concatenated into a single job. The header is kept from the first file and stripped from the 2nd and later files. The response is the single pipeline token.
+- **Non-CSV pipelines, or single-file archives** — each inner file is submitted as its own job. With more than one file, the response is the `"N file(s) submitted"` string.
 
 ## Uncompressed Files
 
-Files without a recognized compressed extension (e.g., `.csv`, `.json`, `.xml`, `.xls`, `.pdf`, `.docx`, `.txt`, `etc`) are processed in-memory directly. They are not staged to MinIO.
+Files without a recognized compressed extension (e.g., `.csv`, `.json`, `.xml`, `.xls`, `.pdf`, `.docx`, `.txt`, `etc`) are read into memory and submitted directly. They are not staged to MinIO.
 
 ## Processing Flow
 
 1. The client sends the multipart request.
-2. The pipeline inspects the file extension.
-3. **Compressed path**: the file is written to the MinIO raw bucket under `{env}-raw/temp/{pipeline}/{filename}`. A background job picks it up, decompresses it, and feeds each inner file into the ingestion pipeline.
-4. **Uncompressed path**: the file contents are read into memory and passed directly to the ingestion pipeline.
-5. The pipeline returns the `pipelineToken` immediately. Processing continues asynchronously.
+2. The endpoint validates that the named `pipeline` is registered.
+3. The file bytes are read into memory and the extension is inspected.
+4. **Compressed path**: the archive is decompressed in memory. For CSV pipelines with multiple inner files, the files are concatenated (headers stripped after the first) and submitted as one job; otherwise each inner file is submitted individually.
+5. **Uncompressed path**: the file contents are passed directly to the ingestion pipeline.
+6. The endpoint returns the pipeline token (or the `"N file(s) submitted"` string).
 
 ## Error Responses
 
 | HTTP Status | Cause |
 |---|---|
-| 400 | Missing `pipeline` parameter or empty file |
-| 413 | File exceeds the configured upload size limit |
-| 500 | Pipeline not found, internal error, or processing failure |
+| 400 | Missing `pipeline` request parameter (Spring binding error) |
+| 500 | Pipeline not registered, empty file, internal error, or processing failure |
+
+The 500 response covers all errors handled by the controller, including an empty file and an unregistered pipeline. There is no explicit `413` handler; exceeding the configured multipart size limit produces Spring's default multipart-size error.
 
 ## Size Limits
 

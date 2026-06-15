@@ -23,6 +23,8 @@ curl http://localhost:8080/api/v1/version
   "environment": "oss",
   "multiTenant": "false",
   "hosted": "false",
+  "useUserAuth": "false",
+  "useApiKeys": "false",
   "postgresDatabase": "datris",
   "mongodbDatabase": "datris"
 }
@@ -34,5 +36,7 @@ curl http://localhost:8080/api/v1/version
 | `environment` | Environment name (e.g., `oss` for self-hosted, or tenant prefix for managed hosting) |
 | `multiTenant` | Whether the server is running in multi-tenant mode |
 | `hosted` | Whether this is a managed/hosted deployment |
+| `useUserAuth` | Whether user authentication is enabled |
+| `useApiKeys` | Whether API key authentication is enabled |
 | `postgresDatabase` | Canonical Postgres database name. User-facing; UI reads this as authoritative and doesn't let users edit it. |
 | `mongodbDatabase` | Canonical MongoDB database name (user-facing). In multi-tenant mode this is the tenant environment name; in single-tenant it comes from `mongodb.database` in application.yaml. Distinct from the internal platform database (`mongodb.internalDatabase`, default `oss`) which holds pipeline/tap configs and run state and is never surfaced in the UI. |
