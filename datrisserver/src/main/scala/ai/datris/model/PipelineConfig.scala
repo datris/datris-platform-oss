@@ -224,6 +224,10 @@ case class Database(
                        useTransaction: Boolean = true,
                        usePostgres: Boolean = false,
                        useMongoDB: Boolean = false,
+                       useSnowflake: Boolean = false,
+                       warehouse: String = null,             // Snowflake virtual warehouse to run COPY/MERGE on
+                       role: String = null,                  // Snowflake role to assume (optional)
+                       credentialsSecret: String = null,     // names a Platform-tab secret holding account/user/auth
                        options: java.util.List[String] = null
                    )
 

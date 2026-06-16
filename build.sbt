@@ -72,6 +72,7 @@ lazy val allDependencies = Seq(
     // Databases
     "org.postgresql" % "postgresql" % "42.7.7",
     "com.mysql" % "mysql-connector-j" % "8.4.0",
+    "net.snowflake" % "snowflake-jdbc" % "3.20.0",
 
     // Kafka
     "org.apache.kafka" % "kafka-clients" % "3.9.1",

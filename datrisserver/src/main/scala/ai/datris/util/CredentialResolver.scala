@@ -14,6 +14,18 @@ case class ResolvedObjectStoreCredentials(
     region: Option[String]
 )
 
+/** Snowflake destination credentials, resolved from a Platform-tab secret named
+ *  by `Database.credentialsSecret`. `account` lives in the secret (bound to the
+ *  credential, same call S3 makes for `region`). Auth is key-pair by default
+ *  (privateKey [+ passphrase]); password is the fallback. */
+case class ResolvedSnowflakeCredentials(
+    account: String,
+    user: String,
+    privateKey: Option[String],
+    privateKeyPassphrase: Option[String],
+    password: Option[String]
+)
+
 object CredentialResolver {
 
     def resolve(objectStore: ObjectStore): ResolvedObjectStoreCredentials = {
@@ -71,6 +83,43 @@ object CredentialResolver {
             secretKey = Some(secretKey),
             sessionToken = sessionToken,
             region = Some(region)
+        )
+    }
+
+    /** Resolve Snowflake destination credentials from the Platform-tab secret named
+     *  by `Database.credentialsSecret`. Mirrors resolveS3: same env-prefixed Vault
+     *  path, same case/underscore-insensitive field lookup, same actionable error
+     *  pointing the user at Configuration → Secrets → Platform. */
+    def resolveSnowflake(secretName: String): ResolvedSnowflakeCredentials = {
+        if (secretName == null || secretName.trim.isEmpty)
+            throw new DatrisException("Snowflake destination requires a credentialsSecret naming a Platform-tab secret (with fields account, user, and privateKey or password). Create it on Configuration → Secrets → Platform, then set it on the destination.")
+
+        val secretPath = DatrisEnvironment.current.environment + "/" + secretName
+        val secret = SecretsUtil.getSecretMap(secretPath)
+            .getOrElse(throw new DatrisException("Snowflake credentialsSecret not found in Secrets Manager at path '" + secretPath + "' (looked up by name '" + secretName + "'). Create it on Configuration → Secrets → Platform."))
+
+        def field(canonical: String, aliases: String*): Option[String] = {
+            val candidates = (canonical +: aliases).flatMap(n => Seq(n, n.toLowerCase, n.toUpperCase))
+            candidates.iterator.map(secret.get).find(_ != null)
+        }
+
+        val account = field("account", "SNOWFLAKE_ACCOUNT")
+            .getOrElse(throw new DatrisException("Snowflake credentialsSecret '" + secretName + "' is missing required field 'account' (e.g. xy12345.us-east-1). Account lives in the credentials secret so it stays bound to the credential that authorizes it."))
+        val user = field("user", "username", "SNOWFLAKE_USER")
+            .getOrElse(throw new DatrisException("Snowflake credentialsSecret '" + secretName + "' is missing required field 'user'."))
+        val privateKey = field("privateKey", "private_key", "private-key", "SNOWFLAKE_PRIVATE_KEY")
+        val privateKeyPassphrase = field("privateKeyPassphrase", "private_key_passphrase", "privateKeyPassword", "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
+        val password = field("password", "SNOWFLAKE_PASSWORD")
+
+        if (privateKey.isEmpty && password.isEmpty)
+            throw new DatrisException("Snowflake credentialsSecret '" + secretName + "' must contain either 'privateKey' (key-pair auth, recommended) or 'password' (fallback). Neither was found.")
+
+        ResolvedSnowflakeCredentials(
+            account = account,
+            user = user,
+            privateKey = privateKey,
+            privateKeyPassphrase = privateKeyPassphrase,
+            password = password
         )
     }
 }

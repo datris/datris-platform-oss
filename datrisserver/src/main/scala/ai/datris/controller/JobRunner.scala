@@ -144,6 +144,10 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     Some(runLoader("MongoDBLoader")(new MongoDBLoader(jobContextTransform).process()))
                 else None,
 
+                if (config.destination.database != null && config.destination.database.useSnowflake)
+                    Some(runLoader("SnowflakeLoader")(new SnowflakeLoader(jobContextTransform).process()))
+                else None,
+
                 if (config.destination.restEndpoint != null)
                     Some(runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextTransform, config.destination.restEndpoint).process()))
                 else None,

@@ -79,13 +79,6 @@ class Source:
 
 
 @dataclass
-class Snowflake:
-    warehouse: Optional[str] = None
-    sql_override: Optional[str] = None
-    create_semi_structured_field_as: Optional[str] = None
-
-
-@dataclass
 class Database:
     db_name: Optional[str] = None
     schema: Optional[str] = None
@@ -93,10 +86,7 @@ class Database:
     key_fields: list[str] = field(default_factory=list)
     manage_table_manually: Optional[bool] = None
     truncate_before_write: Optional[bool] = None
-    use_snowflake: Optional[bool] = None
-    use_redshift: Optional[bool] = None
     use_postgres: Optional[bool] = None
-    snowflake: Optional[Snowflake] = None
     options: list[str] = field(default_factory=list)
 
 

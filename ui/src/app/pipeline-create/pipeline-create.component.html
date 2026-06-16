@@ -441,6 +441,7 @@
           <optgroup label="Databases" *ngIf="sourceType !== 'unstructured'">
             <option value="postgres" *ngIf="sourceType === 'csv' || sourceType === 'xml'">PostgreSQL</option>
             <option value="mongodb" *ngIf="sourceType !== 'xml'">MongoDB</option>
+            <option value="snowflake" *ngIf="sourceType === 'csv' || sourceType === 'xml'">Snowflake</option>
           </optgroup>
           <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured' && sourceType !== 'xml'">
             <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO or S3)</option>
@@ -485,6 +486,53 @@
           <label class="form-label">Key Fields (optional)</label>
           <p class="form-hint">Select one or more destination columns that uniquely identify a row. Used for upserts. Hold Cmd/Ctrl to select multiple.</p>
           <select class="form-input" multiple [(ngModel)]="pgKeyFields" size="6">
+            <option *ngFor="let f of destSchemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" [(ngModel)]="dbTruncateBeforeWrite">
+            <span>Truncate before write</span>
+          </label>
+          <p class="form-hint">When enabled, the destination table is emptied (TRUNCATE) before each ingestion run. Use this for full snapshot replacements.</p>
+        </div>
+      </ng-container>
+
+      <!-- Snowflake -->
+      <ng-container *ngIf="destType === 'snowflake'">
+        <div class="form-row">
+          <label class="form-label">Credentials Secret</label>
+          <input class="form-input" [(ngModel)]="sfCredentialsSecret" placeholder="e.g. snowflake/acme-analytics">
+          <p class="form-hint">Name of a Platform-tab secret containing <code>account</code>, <code>user</code>, and <code>privateKey</code> (key-pair auth, recommended) or <code>password</code> (fallback). The <code>account</code> lives with the credential, not in the pipeline config. Create it on Configuration → Secrets → Platform if it doesn't exist yet.</p>
+        </div>
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Warehouse</label>
+            <input class="form-input" [(ngModel)]="sfWarehouse" placeholder="e.g. COMPUTE_WH">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Role (optional)</label>
+            <input class="form-input" [(ngModel)]="sfRole" placeholder="e.g. DATRIS_LOADER">
+          </div>
+        </div>
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Database</label>
+            <input class="form-input" [(ngModel)]="sfDbName" placeholder="e.g. ANALYTICS">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Schema</label>
+            <input class="form-input" [(ngModel)]="sfSchema" placeholder="e.g. PUBLIC">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Table</label>
+            <input class="form-input" [(ngModel)]="sfTable" placeholder="e.g. SALES">
+          </div>
+        </div>
+        <div class="form-row" *ngIf="destSchemaFields.length > 0 && destSchemaFields[0].name">
+          <label class="form-label">Key Fields (optional)</label>
+          <p class="form-hint">Select one or more destination columns that uniquely identify a row. Used for upserts (MERGE). Hold Cmd/Ctrl to select multiple.</p>
+          <select class="form-input" multiple [(ngModel)]="sfKeyFields" size="6">
             <option *ngFor="let f of destSchemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
           </select>
         </div>
