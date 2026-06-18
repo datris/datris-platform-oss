@@ -230,6 +230,12 @@ Tap secrets are tagged with `_type=tap` and only appear in the tap dropdown — 
 
 ## Running Taps
 
+<Note>
+Tap code runs in-process by default, and can optionally run in an isolated runner container
+that's separated from the platform's credentials and internal services. See
+[Tap Execution & Isolation](/tap-execution-isolation).
+</Note>
+
 ### Test Run (from UI)
 Click the play button on the taps list to open the Run page:
 - Shows the tap instruction

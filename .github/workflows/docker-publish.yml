@@ -88,3 +88,13 @@ jobs:
           tags: |
             ${{ env.DOCKERHUB_ORG }}/datris-mcp-server:${{ steps.tag.outputs.version }}
             ${{ env.DOCKERHUB_ORG }}/datris-mcp-server:latest
+
+      - name: Build and push datris-tap-runner
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: ./tap-runner
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.DOCKERHUB_ORG }}/datris-tap-runner:${{ steps.tag.outputs.version }}
+            ${{ env.DOCKERHUB_ORG }}/datris-tap-runner:latest

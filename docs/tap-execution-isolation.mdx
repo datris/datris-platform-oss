@@ -1,0 +1,149 @@
+---
+title: "Tap Execution & Isolation"
+description: "How tap code runs, and how Datris isolates it from platform internals"
+---
+
+A tap's `fetch()` is Python that Datris executes on your server. By default it runs
+in-process inside the server. For stronger separation, Datris can instead run each tap in a
+dedicated, isolated **runner** container, cut off from the platform's credentials and internal
+services.
+
+<Note>
+The isolated runner is **opt-in** (off by default). Enable it by setting `USE_TAP_RUNNER=true`.
+Tap behavior is identical either way — the same `fetch()` contract, the same environment
+variables, the same packages. The only difference is *where* the code runs and what it can reach.
+</Note>
+
+## Execution modes
+
+| | In-process (default) | Isolated runner (opt-in) |
+|---|---|---|
+| Where tap code runs | Inside the datris server container | A separate `datris-tap-runner` container |
+| Platform secrets reachable | Limited (see [always-on protections](#always-on-protections)) | **No** |
+| Internal services (database, object store, secrets store) reachable | Yes | **No** |
+| Internet + platform API reachable | Yes | Yes |
+| Extra packages | Installed in an isolated, throwaway environment | Installed in an isolated, throwaway environment |
+
+**In-process** mode (the default) runs tap code inside the server. Tap code in this mode
+shares the server's filesystem and network, so it can reach internal services. This is
+appropriate for a trusted, single-operator install where you author all taps yourself.
+
+In **isolated runner** mode (`USE_TAP_RUNNER=true`), tap code runs in a container that holds
+no platform credentials and sits on a network with no route to the platform's internal
+services. Even a misbehaving tap has nothing to read and nowhere to pivot — it can fetch from
+its source, install the packages it declares, call back into the Datris API, and return
+records. That is all. Enable it when you want defense-in-depth beyond the
+[always-on protections](#always-on-protections).
+
+## The runner container
+
+The isolated runner is a dedicated `datris-tap-runner` sidecar — a small, standalone container
+built from its **own minimal Python image** (not the server image). It is hardened to hold and
+grant as little as possible:
+
+- **No platform secrets.** The image carries no secrets-store credentials, no `.env` file, and
+  no AI/database credentials — there is nothing sensitive inside it to read.
+- **Network-isolated.** It runs on a dedicated network with **no route** to the platform's
+  internal services (database, object store, secrets store). It can reach the public internet
+  and the Datris API — nothing else internal.
+- **Non-root, read-only filesystem.** Tap code runs as an unprivileged user on a read-only root
+  filesystem, with all Linux capabilities dropped and privilege escalation disabled.
+- **Ephemeral scratch.** The only writable area is a small in-memory scratch space that is wiped
+  after every run, so nothing a tap writes — temp files, installed packages — survives into the
+  next run.
+
+This is **operating-system container isolation** — separate process, filesystem, and network
+namespaces sharing the host kernel. It is the right boundary for a self-hosted, single-operator
+deployment. It is *not* a virtual-machine boundary: a kernel-level container escape would cross
+it, so running fully untrusted, multi-tenant tap code calls for stronger per-run isolation — a
+user-space kernel such as [gVisor](https://gvisor.dev) (`runsc`), or a microVM (Firecracker /
+Kata).
+
+Datris does not ship or configure these. But because the runner is a standard OCI container,
+you can run it under a hardened runtime yourself if your host provides one — for example, with
+gVisor installed, run the `datris-tap-runner` container under `runsc` (Docker's
+`--runtime=runsc`, or `runtime: runsc` on the service). Datris hasn't validated this path, so
+treat it as an advanced, self-managed hardening step.
+
+## Always-on protections
+
+These apply in **both** modes, regardless of the runner setting:
+
+- **Platform secrets are never placed in a tap's environment.** The credentials the platform
+  uses for itself (secrets-store token, AI provider keys, database passwords) are stripped
+  from the tap's environment. A tap receives only Datris-injected variables (`DATRIS_*`), any
+  per-run parameters, and **its own configured secret** — nothing else.
+- **Extra packages install in isolation.** Packages a tap declares are installed into a
+  throwaway virtual environment, never into the system Python. The pre-installed common
+  packages remain available; the per-tap environment is discarded after the run.
+
+## Configuration
+
+Set these on the `datris` service (for example in your `.env`). Defaults work out of the box.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `USE_TAP_RUNNER` | `false` | Run taps in the isolated runner. Leave unset/`false` to run in-process. |
+| `TAP_RUNNER_URL` | `http://datris-tap-runner:8090` | Address of the runner service. |
+| `TAP_RUNNER_TOKEN` | _(compose default)_ | Shared token authenticating the server → runner call. **Set a strong value.** |
+| `TAP_RUNNER_CALLBACK_HOST` | `datris` | Host a tap uses to call back into the platform API from the runner. The datris service name on the shared network. |
+
+The runner is defined as the `datris-tap-runner` service in `docker-compose.yml`; a normal
+`docker compose up` starts it alongside the server, but taps only route to it when
+`USE_TAP_RUNNER=true`. To enable isolation, set the flag and recreate the `datris` container:
+
+```bash
+# enable the isolated runner, then recreate
+USE_TAP_RUNNER=true docker compose up -d datris
+```
+
+## What changes for tap authors
+
+Almost nothing. Taps fetch data and **return records**; the platform writes them to the
+destination pipeline. Reading a source over the internet, installing declared packages, using
+the tap's own secret, and calling the Datris API via `DATRIS_PLATFORM_HOST` / `DATRIS_PLATFORM_PORT`
+all work the same in both modes.
+
+The one thing to know: in **isolated runner** mode a tap cannot open a *direct* connection to
+the platform's internal database / object store by hostname — those live on a network the
+runner can't reach. This is intentional, and it's not how taps are meant to work anyway: a tap
+returns records and lets the pipeline handle the destination. If you have a legacy tap that
+connected directly to an internal service, run it in-process or rework it to return records.
+
+## Reading platform data from a tap
+
+A tap can read data already in Datris — for example a `stock_tickers` table — to drive its
+fetch. Do this through the **query API**, using the injected platform host and database name.
+The same code works in both execution modes, because `DATRIS_PLATFORM_HOST` is set correctly
+for each:
+
+```python
+import os, json, urllib.request
+
+def fetch():
+    host = os.environ["DATRIS_PLATFORM_HOST"]   # "localhost" in-process, "datris" in the runner
+    port = os.environ["DATRIS_PLATFORM_PORT"]
+    db   = os.environ["DATRIS_POSTGRES_DATABASE"]
+    req = urllib.request.Request(
+        f"http://{host}:{port}/api/v1/query/postgres",
+        data=json.dumps({"sql": "SELECT ticker FROM stock_tickers", "database": db}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    tickers = json.loads(urllib.request.urlopen(req).read())["results"]
+    # ...use tickers to drive the rest of fetch()...
+    return tickers
+```
+
+Use `/api/v1/query/mongodb` (or `/api/v1/query/natural`) the same way for Mongo-backed data.
+In the **isolated runner**, a tap **cannot** instead open a direct database connection (e.g. to
+`postgres:5432`) — internal services aren't reachable from the runner's network. Querying
+through the API is the supported path and works regardless of mode.
+
+## When to use which
+
+- **In-process (default)** — fine for a trusted single-operator install where you author all
+  taps yourself, or for a tap that needs direct access to an internal service. The
+  [always-on protections](#always-on-protections) still apply; internal services are reachable.
+- **Isolated runner (`USE_TAP_RUNNER=true`)** — enable for defense-in-depth: tap code stays
+  separated from platform credentials and internal services. Recommended if you run taps you
+  don't fully control, or simply want the extra boundary.
