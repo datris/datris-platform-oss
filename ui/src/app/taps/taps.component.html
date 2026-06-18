@@ -80,7 +80,7 @@
         <tr *ngFor="let tap of group.taps; trackBy: trackByTapName">
           <td>
             <ng-container *ngIf="editingName !== tap.name">
-              <a class="embed-name-link" [routerLink]="['/taps', tap.name, 'edit']">{{ tap.name }}</a>
+              <a class="embed-name-link" [title]="tap.name" [routerLink]="['/taps', tap.name, 'edit']">{{ tap.name }}</a>
               <button class="embed-name-edit-btn" *ngIf="auth.canWrite()" (click)="startEditName($event, tap)" title="Rename">
                 <span class="material-icons">edit</span>
               </button>

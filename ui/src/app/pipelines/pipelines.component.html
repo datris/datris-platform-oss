@@ -67,7 +67,7 @@
         <tr *ngFor="let ds of group.pipelines; trackBy: trackByPipelineName">
           <td>
             <ng-container *ngIf="editingName !== ds.name">
-              <a class="embed-name-link" [routerLink]="['/pipelines', ds.name, 'edit']">{{ ds.name }}</a>
+              <a class="embed-name-link" [title]="ds.name" [routerLink]="['/pipelines', ds.name, 'edit']">{{ ds.name }}</a>
               <button class="embed-name-edit-btn" *ngIf="auth.canWrite()" (click)="startEditName($event, ds)" title="Rename">
                 <span class="material-icons">edit</span>
               </button>
