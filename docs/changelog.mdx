@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.8.8" description="June 18, 2026">
+  **Stronger isolation for tap scripts, plus a catalog readability fix.**
+
+  - **Optional sandboxed execution for taps.** Tap scripts can run in a dedicated, isolated runner that's cut off from the platform's credentials and internal services — defense-in-depth for the code your taps execute. Opt-in; see the Tap Execution & Isolation guide.
+  - **Tighter defaults for tap scripts.** Platform credentials are kept out of tap code, and any extra packages a tap needs install in isolation rather than into the shared environment.
+  - **Catalog: full names on hover.** Long tap and pipeline names in the catalog are no longer cut off — hover to see the full name.
+
+  **Upgrading:** `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. No data migration needed. The CLI: `brew upgrade datris`.
+</Update>
+
 <Update label="v1.8.7" description="June 14, 2026">
   **Drop a file into the Assistant and it builds the pipeline for you.**
 
