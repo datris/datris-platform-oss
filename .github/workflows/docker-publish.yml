@@ -34,7 +34,10 @@ jobs:
         run: |
           curl -fL "https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz" | gzip -d > cs
           chmod +x cs
-          ./cs setup --yes --apps sbt
+          # Pin the sbt launcher to 1.x (matches project/build.properties). Bare `--apps sbt`
+          # now resolves sbt 2.x, which ignores build.properties for the meta-build and tries
+          # to fetch our sbt 1.x plugins as sbt2_3 cross-versions (not found).
+          ./cs setup --yes --apps sbt:1.12.5
           echo "$HOME/.local/share/coursier/bin" >> $GITHUB_PATH
 
       - name: Build server JAR
