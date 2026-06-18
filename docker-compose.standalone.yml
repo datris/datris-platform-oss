@@ -17,6 +17,11 @@
 networks:
   datris-net:
     driver: bridge
+  # Isolated network for tap execution (tap-execution-isolation Phase 3). The
+  # datris-tap-runner sits here with NO route to datris-net's secret services
+  # (vault, postgres, mongodb, minio). Only the datris server bridges both.
+  tap-net:
+    driver: bridge
 
 volumes:
   pip-cache:
@@ -210,6 +215,13 @@ services:
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
       JAVA_OPTS: "${JAVA_OPTS:--Xms512m -Xmx2g}"
+      # Tap execution isolation (Phase 3). When USE_TAP_RUNNER=true, tap fetch()
+      # code runs in the datris-tap-runner sidecar (no secrets, no Vault route)
+      # instead of in-process. Default false preserves the zero-dependency OSS
+      # quick-start. The shared token authenticates the server→runner call.
+      USE_TAP_RUNNER: "${USE_TAP_RUNNER:-false}"
+      TAP_RUNNER_URL: "http://datris-tap-runner:8090"
+      TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
     configs:
       - source: datris-app-yaml
         target: /config/application.yaml
@@ -217,6 +229,31 @@ services:
       - pip-cache:/root/.cache/pip
     networks:
       - datris-net
+      - tap-net
+
+  # Isolated tap execution sidecar (tap-execution-isolation Phase 3). Holds no
+  # platform secrets and lives only on tap-net (no route to vault/postgres/mongo/
+  # minio). Hardened: non-root (from image), read-only root FS, tmpfs scratch only,
+  # all capabilities dropped, no privilege escalation. Only used when the datris
+  # server has USE_TAP_RUNNER=true.
+  datris-tap-runner:
+    image: datrisai/datris-tap-runner:latest
+    #build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
+    container_name: datris-tap-runner
+    environment:
+      TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
+    read_only: true
+    # Scratch must allow exec: runtime-installed packages (venv interpreter, pip, and
+    # any C-extension .so) live here and must be loadable. Safe — the tap is already
+    # arbitrary Python; root FS stays read-only and scratch is wiped per run.
+    tmpfs:
+      - /tmp:size=512m,mode=1777,exec
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - tap-net
 
   ui:
     image: datrisai/datris-ui:latest
