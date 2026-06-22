@@ -5,7 +5,6 @@
 **Version history for taps and pipelines, plus a faster assistant.**
 
 - **Version history for taps and pipelines.** Every time you create or change a tap or pipeline, Datris saves a snapshot of it. Open **Version History** to see what changed and when, compare any two versions side by side, and roll back — or forward — to an earlier version. Nothing is ever overwritten; restoring a version simply adds a new one. AI agents can review, compare, and restore versions too.
-- **A snappier assistant.** The in-product assistants now run on a faster conversational model, while tap-script and code generation keep using the strongest coding model — so chat feels quicker without trading away code quality.
 - **Configuration that sticks.** AI provider and model changes made in the Configuration tab now save reliably and persist across restarts.
 
 **Upgrading**

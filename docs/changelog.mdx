@@ -7,7 +7,6 @@ description: "Release history for Datris"
   **Version history for taps and pipelines, plus a faster assistant.**
 
   - **Version history for taps and pipelines.** Every create or change to a tap or pipeline is now saved as a snapshot. Open Version History to see what changed and when, compare any two versions side by side, and roll back — or forward — to an earlier version. Nothing is overwritten; restoring simply adds a new version. AI agents can review, compare, and restore versions too.
-  - **A snappier assistant.** The in-product assistants now run on a faster conversational model, while tap-script and code generation keep using the strongest coding model — chat feels quicker without trading away code quality.
   - **Configuration that sticks.** AI provider and model changes in the Configuration tab now save reliably and persist across restarts.
 
   **Upgrading:** `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. Existing taps and pipelines are seeded into version history automatically on first start; no manual migration needed. The CLI: `brew upgrade datris`.
