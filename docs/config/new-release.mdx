@@ -19,6 +19,7 @@ Comment out the `image:` lines and uncomment the `#build:` lines for the service
 | `datris` (server) | ~122-123 | `#image: datrisai/datris-server:latest` → uncomment `build: .` |
 | `ui` | ~149-150 | `#image: datrisai/datris-ui:latest` → uncomment `build: ./ui` |
 | `mcp-server` | ~173-174 | `#image: datrisai/datris-mcp-server:latest` → uncomment `build: ./mcp-server` |
+| `datris-tap-runner` | ~221-222 | `#image: datrisai/datris-tap-runner:latest` → uncomment `build: ./tap-runner` |
 
 After testing, revert these changes before committing — the committed docker-compose.yml should use `image:` so users pull from Docker Hub.
 
@@ -85,7 +86,7 @@ git tag v{x.y.z}
 git push origin v{x.y.z}
 ```
 
-This triggers the GitHub Actions workflow that builds and pushes Docker images to Docker Hub (`datrisai/datris-server`, `datrisai/datris-ui`, `datrisai/datris-mcp-server`).
+This triggers the GitHub Actions workflow that builds and pushes Docker images to Docker Hub (`datrisai/datris-server`, `datrisai/datris-ui`, `datrisai/datris-mcp-server`, `datrisai/datris-tap-runner`).
 
 Wait for the GitHub Actions build to complete before proceeding.
 
@@ -112,7 +113,7 @@ gh workflow run "Build and Push Docker Images" --repo datris/datris-platform-oss
 Before moving on, verify all three `:{x.y.z}` tags landed:
 
 ```bash
-for r in datris-server datris-ui datris-mcp-server; do
+for r in datris-server datris-ui datris-mcp-server datris-tap-runner; do
   curl -sS "https://hub.docker.com/v2/repositories/datrisai/$r/tags/{x.y.z}/" \
     | python3 -c "import json,sys;d=json.load(sys.stdin);print(' ',d.get('name','?'),d.get('tag_status','MISSING'))"
 done
@@ -199,6 +200,7 @@ Confirm `isLatest: true` on the new version.
 # Docker images
 docker pull datrisai/datris-server:{x.y.z}
 docker pull datrisai/datris-ui:{x.y.z}
+docker pull datrisai/datris-tap-runner:{x.y.z}
 
 # CLI via Homebrew
 brew upgrade datris

@@ -1,7 +1,7 @@
 name := "datris-server"
 ThisBuild / organization := "ai.datris"
 ThisBuild / scalaVersion := "2.12.21"
-ThisBuild / version := "1.8.8"
+ThisBuild / version := "1.8.9"
 
 // Match the Docker runtime (eclipse-temurin:17-jre). Without this, javac uses the
 // build host's JDK (e.g. 25), producing class files the runtime can't load.
