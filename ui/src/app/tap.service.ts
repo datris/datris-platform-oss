@@ -93,4 +93,23 @@ export class TapService {
   getAvailableVectorStores(): Observable<string[]> {
     return this.http.get<string[]>('/api/v1/vector-stores/available');
   }
+
+  // --- Definition version history -------------------------------------------
+  getTapVersions(name: string): Observable<any[]> {
+    return this.http.get<any[]>('/api/v1/tap/versions?name=' + encodeURIComponent(name));
+  }
+
+  getTapVersion(name: string, version: number): Observable<any> {
+    return this.http.get<any>('/api/v1/tap/version?name=' + encodeURIComponent(name) + '&version=' + version);
+  }
+
+  diffTapVersions(name: string, version: number, against: number): Observable<any> {
+    return this.http.get<any>('/api/v1/tap/version/diff?name=' + encodeURIComponent(name) +
+      '&version=' + version + '&against=' + against);
+  }
+
+  restoreTapVersion(name: string, version: number): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/version/restore?name=' + encodeURIComponent(name) +
+      '&version=' + version, {});
+  }
 }

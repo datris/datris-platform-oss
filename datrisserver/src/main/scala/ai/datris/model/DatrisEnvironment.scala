@@ -24,6 +24,15 @@ object DatrisEnvironment {
         env.codegenAiConfig.getOrElse(env.aiConfig)
     }
 
+    /** Resolve which AIConfig the interactive chat agents (Assistant, Ops,
+      * Catalog, Search chat) run on. Chat uses the **primary** model — fast and
+      * conversational — while artifact generation (tap scripts, NL→SQL, AI
+      * DQ/transform, schema gen) uses [[aiConfigForCodegen]]. Kept as a separate
+      * accessor so the two can diverge (e.g. a future dedicated `ai.chat` slot)
+      * without touching every chat controller. Reads `.current` for per-request
+      * tenant resolution. */
+    def aiConfigForChat: AIConfig = current.aiConfig
+
     /** Build a tenant-specific environment by replacing the environment string
       * and all derived names, while keeping global infrastructure config.
       *
@@ -184,8 +193,19 @@ case class DatrisEnvironment(
                               hosted: Boolean = false,
                               useUserAuth: Boolean = false,
                               userTableName: String = null,
-                              userSessionTableName: String = null
+                              userSessionTableName: String = null,
+                              // Max definition versions retained per entity. Older
+                              // version records (and, for taps, their pinned script
+                              // objects) are pruned beyond this cap. Configurable.
+                              versionCap: Int = 50
                               ) {
+    /** Append-only definition-version collections. Derived from the live table
+      * names so they track per-tenant naming automatically (`<env>-tap-version`,
+      * `<env>-pipeline-version`) without separate wiring in StartupRunner /
+      * forEnvironment. */
+    def tapVersionTableName: String = tapTableName + "-version"
+    def pipelineVersionTableName: String = pipelineTableName + "-version"
+
     /** True for trial-droplet tenants. Trials have AI configuration locked at the
       * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention
       * is enforced by the website's provision-trial.ts which always assigns

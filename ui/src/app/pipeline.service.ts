@@ -46,4 +46,23 @@ export class PipelineService {
     if (header !== undefined) formData.append('header', String(header));
     return this.http.post<any>('/api/v1/pipeline/generate', formData);
   }
+
+  // --- Definition version history -------------------------------------------
+  getPipelineVersions(name: string): Observable<any[]> {
+    return this.http.get<any[]>('/api/v1/pipeline/versions?name=' + encodeURIComponent(name));
+  }
+
+  getPipelineVersion(name: string, version: number): Observable<any> {
+    return this.http.get<any>('/api/v1/pipeline/version?name=' + encodeURIComponent(name) + '&version=' + version);
+  }
+
+  diffPipelineVersions(name: string, version: number, against: number): Observable<any> {
+    return this.http.get<any>('/api/v1/pipeline/version/diff?name=' + encodeURIComponent(name) +
+      '&version=' + version + '&against=' + against);
+  }
+
+  restorePipelineVersion(name: string, version: number): Observable<any> {
+    return this.http.post<any>('/api/v1/pipeline/version/restore?name=' + encodeURIComponent(name) +
+      '&version=' + version, {});
+  }
 }

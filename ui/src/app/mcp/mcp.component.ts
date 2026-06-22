@@ -226,6 +226,46 @@ export class McpComponent implements OnInit {
       ],
       playgroundEnabled: true
     },
+    {
+      name: 'list_tap_versions',
+      description: 'List a tap\'s definition-change history (newest first): version, createdAt, createdBy, changeNote. The platform snapshots a tap\'s config + script on every create/update. Read-only. NOTE: an empty result means the tap hasn\'t been edited since versioning was enabled — not that it has no version. The current version number is the `version` field from list_taps / get_tap (≥ 1 for every tap).',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_tap_version',
+      description: 'View one historical snapshot of a tap\'s definition: the full config and the pinned Python script as they were at that version. Read-only; does not change the live tap.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' },
+        { name: 'version', type: 'integer', description: 'Version number to view (from list_tap_versions)', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'diff_tap_versions',
+      description: 'Compare two versions of a tap\'s definition. Returns a server-computed field-by-field config diff and a line-level script diff. Read-only. `version` is the selected/newer snapshot; `against` is the baseline to compare it to.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' },
+        { name: 'version', type: 'integer', description: 'Selected version', required: true, inputType: 'number' },
+        { name: 'against', type: 'integer', description: 'Baseline version to compare against', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'restore_tap_version',
+      description: 'Roll a tap back (or forward) to a prior definition version. APPEND-ONLY and SIDE-EFFECTING: reads the chosen snapshot and writes it as a NEW latest version (config + that version\'s script), preserving full history — nothing is overwritten. "Rolling forward" is the same call with a higher version number. Only call when the user explicitly asks to restore this specific tap to a specific version. Does NOT run the tap — report the new version and stop.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' },
+        { name: 'version', type: 'integer', description: 'Version to restore (becomes a new latest version)', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
     // --- Pipeline Management ---
     {
       name: 'list_pipelines',
@@ -335,6 +375,46 @@ export class McpComponent implements OnInit {
         { name: 'delimiter', type: 'string', description: 'CSV delimiter (default: comma)', required: false, inputType: 'text' },
         { name: 'header', type: 'boolean', description: 'Whether CSV has a header row (default: true)', required: false, inputType: 'text' },
         { name: 'sample_size', type: 'integer', description: 'Number of rows to sample for profiling (default: 200)', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'list_pipeline_versions',
+      description: 'List a pipeline\'s definition-change history (newest first): version, createdAt, createdBy, changeNote. The platform snapshots a pipeline\'s full config on every create/update. Read-only. NOTE: an empty result means the pipeline hasn\'t been edited since versioning was enabled — not that it has no version. The current version number is the `version` field from list_pipelines / get_pipeline (≥ 1 for every pipeline).',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the pipeline', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_pipeline_version',
+      description: 'View one historical snapshot of a pipeline\'s definition: the full config as it was at that version. Read-only; does not change the live pipeline.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the pipeline', required: true, inputType: 'text' },
+        { name: 'version', type: 'integer', description: 'Version number to view (from list_pipeline_versions)', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'diff_pipeline_versions',
+      description: 'Compare two versions of a pipeline\'s definition. Returns a server-computed field-by-field config diff. Read-only. `version` is the selected/newer snapshot; `against` is the baseline.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the pipeline', required: true, inputType: 'text' },
+        { name: 'version', type: 'integer', description: 'Selected version', required: true, inputType: 'number' },
+        { name: 'against', type: 'integer', description: 'Baseline version to compare against', required: true, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'restore_pipeline_version',
+      description: 'Roll a pipeline back (or forward) to a prior definition version. APPEND-ONLY and SIDE-EFFECTING: reads the chosen snapshot and writes it as a NEW latest version, preserving full history. "Rolling forward" is the same call with a higher version number. Only call when the user explicitly asks to restore this specific pipeline to a specific version. Report the new version and stop.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the pipeline', required: true, inputType: 'text' },
+        { name: 'version', type: 'integer', description: 'Version to restore (becomes a new latest version)', required: true, inputType: 'number' }
       ],
       playgroundEnabled: true
     },

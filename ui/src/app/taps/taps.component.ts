@@ -135,6 +135,9 @@ export class TapsComponent implements OnInit, OnDestroy {
     }
   }
 
+  // Version history modal state
+  historyTap = '';
+
   viewConfigTap = '';
   viewConfigJson = '';
   logsTap = '';
@@ -232,6 +235,19 @@ export class TapsComponent implements OnInit, OnDestroy {
   closeViewConfig(): void {
     this.viewConfigTap = '';
     this.viewConfigJson = '';
+  }
+
+  openHistory(event: Event, name: string): void {
+    event.stopPropagation();
+    this.historyTap = name;
+  }
+
+  closeHistory(): void {
+    this.historyTap = '';
+  }
+
+  onHistoryRestored(): void {
+    this.loadTaps();
   }
 
   openScriptEditor(event: Event, tap: any): void {

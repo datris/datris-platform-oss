@@ -30,5 +30,9 @@ case class TapConfig(
     createdAt: String = null,
     updatedAt: String = null,
     catalog: String = null,
-    createdByKeyLabel: String = null
+    createdByKeyLabel: String = null,
+    // Monotonic definition version. The live document is always the latest
+    // version N; immutable snapshots 1..N live in <env>-tap-version. Defaults
+    // to 1 so pre-versioning taps deserialize cleanly (absent field → 1).
+    version: Int = 1
 )

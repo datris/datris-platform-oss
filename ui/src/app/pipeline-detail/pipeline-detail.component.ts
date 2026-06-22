@@ -10,6 +10,7 @@ import { PipelineStatusService, PipelineStatusDetail } from '../pipeline-status.
 export class PipelineDetailComponent implements OnInit, OnDestroy {
   pipeline: string | null = '';
   pipelineStatusDetails: PipelineStatusDetail[] = [];
+  showHistory = false;
   private pipelineToken = '';
   private refreshInterval: any;
 
@@ -33,6 +34,18 @@ export class PipelineDetailComponent implements OnInit, OnDestroy {
 
   copyToClipboard(text: string): void {
     navigator.clipboard.writeText(text);
+  }
+
+  openHistory(): void {
+    this.showHistory = true;
+  }
+
+  closeHistory(): void {
+    this.showHistory = false;
+  }
+
+  onHistoryRestored(): void {
+    this.loadData();
   }
 
   private loadData(): void {

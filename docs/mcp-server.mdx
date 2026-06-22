@@ -26,6 +26,10 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 | `get_pipeline` | Get a specific pipeline configuration by name |
 | `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Supports three destination categories: structured (postgres, mongodb), object store (Parquet or ORC to MinIO / AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). For S3, set `provider: "s3"` and reference a Platform-tab `credentialsSecret`. Optional `catalog` to group related pipelines. |
 | `delete_pipeline` | Delete a pipeline and its destination data |
+| `list_pipeline_versions` | List a pipeline's definition-change history (newest first): `version`, `createdAt`, `createdBy`, `changeNote`. An **empty** result means it hasn't been edited since versioning was enabled — not that it has no version; the current number is the `version` field on `list_pipelines` / `get_pipeline` (≥ 1 for every pipeline) |
+| `get_pipeline_version` | View one historical snapshot of a pipeline's definition — the full config as it was at that version. Read-only |
+| `diff_pipeline_versions` | Compare two pipeline versions — server-computed field-by-field config diff. `version` is the selected/newer snapshot, `against` the baseline |
+| `restore_pipeline_version` | Roll a pipeline back (or forward) to a prior version. **Append-only**: writes the chosen snapshot as a new latest version; nothing is overwritten. "Rolling forward" is the same call with a higher version |
 | `upload_data` | Upload data (base64-encoded) to a pipeline for processing. New CSV columns are auto-added to the schema ([schema evolution](/schemas#schema-evolution)). Returns pipeline token. |
 | `get_job_status` | Get job status. Pass `pipeline_token` for a `{rollup, events}` response — poll `rollup.allDone`, then read `rollup.status` (`success` / `warning` / `error`) and per-job `lastError`. Pass `pipeline_name` for a paginated summary across recent jobs. |
 | `set_catalog` | Set or clear the catalog grouping label on an existing pipeline or tap. Pass exactly one of `pipeline` or `tap`. |
@@ -100,6 +104,10 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 | `list_tap_secrets` | List the names of existing tap secrets (secrets tagged `_type=tap`). Call before `create_tap_secret` to reuse a suitable existing secret rather than asking the user for credentials again |
 | `get_tap_secret_fields` | Return the field NAMES (keys only — never values) of an existing tap secret. Use after `list_tap_secrets` to verify a candidate secret has the keys the tap script will need |
 | `delete_tap` | Delete a tap and its stored script (also clears the ledger and staged MinIO objects for document taps) |
+| `list_tap_versions` | List a tap's definition-change history (newest first): `version`, `createdAt`, `createdBy`, `changeNote`. The platform snapshots a tap's config + script on every create/update. An **empty** result means the tap hasn't been edited since versioning was enabled — not that it has no version; the current number is the `version` field on `list_taps` / `get_tap` (≥ 1 for every tap) |
+| `get_tap_version` | View one historical snapshot of a tap's definition — the full config and the pinned Python script as they were at that version. Read-only |
+| `diff_tap_versions` | Compare two tap versions — server-computed field-by-field config diff plus a line-level script diff. `version` is the selected/newer snapshot, `against` the baseline |
+| `restore_tap_version` | Roll a tap back (or forward) to a prior version. **Append-only**: writes the chosen snapshot as a new latest version (config + that version's script); nothing is overwritten. "Rolling forward" is the same call with a higher version. Does **not** run the tap |
 
 For a document tap, `create_tap` **requires** the `target_pipeline` to have an `unstructuredAttributes` source and a vector-store destination (qdrant, pgvector, weaviate, milvus, or chroma). The server rejects mismatched pairings with HTTP 400.
 

@@ -7,8 +7,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
-import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
-import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException}
+import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
+import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
@@ -86,6 +86,7 @@ class PipelineAPIController {
 
     @PostMapping(path = Array("/pipeline"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def putPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                         @RequestParam(name = "changeNote", required = false) changeNote: String,
                          @RequestBody config: PipelineConfig,
                          request: HttpServletRequest): ResponseEntity[String] = {
         try {
@@ -105,8 +106,11 @@ class PipelineAPIController {
                 case None        => modifiedConfig
             }
 
-            // Write to NoSQL pipeline table
-            PipelineConfigIO.write(tagged)
+            // Definition-edit write → mints a new immutable version snapshot.
+            val existing = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
+            val note = if (changeNote != null && changeNote.nonEmpty) changeNote
+                       else if (existing != null) "updated" else "created"
+            PipelineConfigIO.writeVersioned(tagged, note, VersionActor.resolve(request))
 
             // If the source is a database, initialize the pipeline pull table
             if(modifiedConfig.source.databaseAttributes != null)
@@ -161,8 +165,16 @@ class PipelineAPIController {
             }
 
             // Delete the json configuration
-            if(deleteConfigBool)
+            if(deleteConfigBool) {
                 NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
+                // Hard-delete all definition-version snapshots for this pipeline
+                // (pipelines pin no scripts, so nothing to GC in object storage).
+                try {
+                    EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.pipelineVersionTableName, pipeline)
+                } catch {
+                    case ex: Exception => logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
+                }
+            }
 
             new ResponseEntity[String](HttpStatus.OK)
         }

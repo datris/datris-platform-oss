@@ -96,9 +96,9 @@ class AssistantAPIController {
             toolNames.foreach(toolNamesArr.add)
             payload.add("toolNames", toolNamesArr)
             payload.addProperty("workflowReference", workflowReference)
-            payload.addProperty("provider", Option(DatrisEnvironment.aiConfigForCodegen)
+            payload.addProperty("provider", Option(DatrisEnvironment.aiConfigForChat)
                 .map(_.provider.toLowerCase).getOrElse("unknown"))
-            payload.addProperty("model", Option(DatrisEnvironment.aiConfigForCodegen)
+            payload.addProperty("model", Option(DatrisEnvironment.aiConfigForChat)
                 .map(_.model).getOrElse(""))
             payload.addProperty("extendedThinking", DatrisEnvironment.current.extendedThinking)
 
@@ -206,9 +206,9 @@ class AssistantAPIController {
         val maxTokensPerCall: Int = 16000
 
         val env = DatrisEnvironment.current
-        val aiConfig = DatrisEnvironment.aiConfigForCodegen
+        val aiConfig = DatrisEnvironment.aiConfigForChat
         if (aiConfig == null)
-            throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the codegen secret is configured.")
+            throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the AI primary secret is configured.")
 
         // The UI identity for MCP-bound calls — same key the UI sends on
         // direct REST traffic from other tabs.

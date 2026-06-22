@@ -139,10 +139,19 @@ class StartupRunner extends ApplicationRunner {
     @Value("${hosted:false}")
     var hosted: Boolean = _
 
+    // Max definition versions retained per tap/pipeline before older snapshots
+    // (and their pinned script objects) are pruned. See tap-pipeline-versioning.
+    @Value("${versionCap:50}")
+    var versionCap: Int = _
+
     @Override
     def run(args: ApplicationArguments): Unit =  {
         initDatrisEnvironment()
         initUserAuth()
+        // Seed v1 definition snapshots for any pre-versioning taps/pipelines so
+        // their version history isn't empty. Idempotent — skips entities that
+        // already have version records.
+        ai.datris.util.VersionBackfill.run()
         if(kafkaConsumerEnabled)
             initKafkaConsumerRunner()
     }
@@ -241,7 +250,8 @@ class StartupRunner extends ApplicationRunner {
             hosted = hosted,
             useUserAuth = useUserAuth,
             userTableName = environment + "-user",
-            userSessionTableName = environment + "-user-session"
+            userSessionTableName = environment + "-user-session",
+            versionCap = versionCap
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

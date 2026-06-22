@@ -142,9 +142,9 @@ class SearchChatAPIController {
         val maxTokensPerCall: Int = 16000
 
         val env = DatrisEnvironment.current
-        val aiConfig = DatrisEnvironment.aiConfigForCodegen
+        val aiConfig = DatrisEnvironment.aiConfigForChat
         if (aiConfig == null)
-            throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the codegen secret is configured.")
+            throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the AI primary secret is configured.")
 
         val uiKey = resolveUiApiKey(apiKey)
 

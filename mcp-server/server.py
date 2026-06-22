@@ -255,7 +255,7 @@ def _activity_snapshot(since: float) -> dict[str, Any]:
         }
 
 server = Server("datris", instructions="""\
-Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, and vector stores — all driven by pipeline configurations that AI agents can create and manage programmatically.
+Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, object stores, and vector stores — all driven by configurations you create and manage programmatically. You don't just move data: you build the pipelines and taps, run and verify them, query the results back, manage credentials, and can view, diff, and roll definitions back to any prior version. Pipelines define how data is processed and where it lands; taps pull data into a pipeline from external APIs, websites, files, or databases, on demand or on a schedule.
 
 FIRST-RESPONSE RULE (read this before anything else):
 When the user makes ANY data-related ask — "I'm looking for X", "can you get me Y", "do you have Z", "I need data about W", "help me ingest...", or anything similar — your FIRST tool call MUST be `list_pipelines` AND `list_taps`. Do this BEFORE generating any text reply. Do this BEFORE suggesting external sources or APIs. Do this BEFORE asking clarifying scope questions. The user is connected to a Datris environment that likely already has the data they want — assume YES until your tool calls prove otherwise.
@@ -2090,6 +2090,145 @@ async def list_tools():
             }
         ),
         Tool(
+            name="list_tap_versions",
+            description=(
+                "List the change HISTORY of a tap's definition, newest first. Each entry has `version`, `createdAt`, "
+                "`createdBy`, and `changeNote`. The platform snapshots a tap's config + script every time it is "
+                "created or updated. Read-only. "
+                "IMPORTANT: an EMPTY result does NOT mean the tap has no version — it means the tap has not been "
+                "edited since versioning was enabled, so no change snapshots exist yet. The tap's CURRENT version "
+                "number is the `version` field on the tap itself (from `list_taps` or `get_tap`), which is at least 1 "
+                "for every tap. Use this tool for 'what changed and when'; use `list_taps`/`get_tap` for 'what version "
+                "is it on now'. "
+                "See also `get_tap_version`, `diff_tap_versions`, `restore_tap_version`."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Name of the tap"}},
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="get_tap_version",
+            description=(
+                "View one historical snapshot of a tap's definition: the full config and the pinned Python script "
+                "as they were at that version. Read-only; does not change the live tap. Get version numbers from "
+                "`list_tap_versions`."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the tap"},
+                    "version": {"type": "integer", "description": "Version number to view"}
+                },
+                "required": ["name", "version"]
+            }
+        ),
+        Tool(
+            name="diff_tap_versions",
+            description=(
+                "Compare two versions of a tap's definition. Returns a server-computed field-by-field config diff "
+                "and a line-level diff of the script. Read-only. `version` is the newer/selected snapshot; `against` "
+                "is the baseline to compare it to."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the tap"},
+                    "version": {"type": "integer", "description": "Selected version"},
+                    "against": {"type": "integer", "description": "Baseline version to compare against"}
+                },
+                "required": ["name", "version", "against"]
+            }
+        ),
+        Tool(
+            name="restore_tap_version",
+            description=(
+                "Roll a tap back (or forward) to a prior definition version. This is APPEND-ONLY and SIDE-EFFECTING: "
+                "it reads snapshot `version` and writes it as a NEW latest version (config + that version's script), "
+                "preserving the full history — nothing is overwritten or lost. 'Rolling forward' is the same call with "
+                "a higher version number. "
+                "Only call this when the operator has explicitly asked to restore/roll back this specific tap to a "
+                "specific version. It does NOT run the tap — after restoring, report the new version and stop; do not "
+                "chain into `run_tap` unless separately and explicitly asked."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the tap"},
+                    "version": {"type": "integer", "description": "Version to restore (becomes a new latest version)"}
+                },
+                "required": ["name", "version"]
+            }
+        ),
+        Tool(
+            name="list_pipeline_versions",
+            description=(
+                "List the change HISTORY of a pipeline's definition, newest first. Each entry has `version`, "
+                "`createdAt`, `createdBy`, and `changeNote`. The platform snapshots a pipeline's full config every "
+                "time it is created or updated. Read-only. "
+                "IMPORTANT: an EMPTY result does NOT mean the pipeline has no version — it means it has not been "
+                "edited since versioning was enabled. The CURRENT version number is the `version` field on the "
+                "pipeline itself (from `list_pipelines` or `get_pipeline`), at least 1 for every pipeline. Use this "
+                "tool for 'what changed and when'; use `list_pipelines`/`get_pipeline` for 'what version is it on now'. "
+                "See also `get_pipeline_version`, `diff_pipeline_versions`, `restore_pipeline_version`."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Name of the pipeline"}},
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="get_pipeline_version",
+            description=(
+                "View one historical snapshot of a pipeline's definition: the full config as it was at that version. "
+                "Read-only; does not change the live pipeline. Get version numbers from `list_pipeline_versions`."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the pipeline"},
+                    "version": {"type": "integer", "description": "Version number to view"}
+                },
+                "required": ["name", "version"]
+            }
+        ),
+        Tool(
+            name="diff_pipeline_versions",
+            description=(
+                "Compare two versions of a pipeline's definition. Returns a server-computed field-by-field config "
+                "diff. Read-only. `version` is the newer/selected snapshot; `against` is the baseline."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the pipeline"},
+                    "version": {"type": "integer", "description": "Selected version"},
+                    "against": {"type": "integer", "description": "Baseline version to compare against"}
+                },
+                "required": ["name", "version", "against"]
+            }
+        ),
+        Tool(
+            name="restore_pipeline_version",
+            description=(
+                "Roll a pipeline back (or forward) to a prior definition version. APPEND-ONLY and SIDE-EFFECTING: "
+                "reads snapshot `version` and writes it as a NEW latest version, preserving full history. 'Rolling "
+                "forward' is the same call with a higher version number. "
+                "Only call this when the operator has explicitly asked to restore/roll back this specific pipeline to "
+                "a specific version. Report the new version and stop."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Name of the pipeline"},
+                    "version": {"type": "integer", "description": "Version to restore (becomes a new latest version)"}
+                },
+                "required": ["name", "version"]
+            }
+        ),
+        Tool(
             name="wait_seconds",
             description=(
                 "Sleep for a fixed number of seconds, then return. Use this to pace polling against long-running "
@@ -2174,6 +2313,7 @@ def _dispatch(name: str, args: dict) -> str:
                         "destination": dest_kind,
                         "target": target,
                         "catalog": p.get("catalog"),
+                        "version": p.get("version"),
                     })
                 return json.dumps({"count": len(summary), "names": [s["name"] for s in summary], "pipelines": summary}, indent=2)
         except (json.JSONDecodeError, TypeError):
@@ -2697,6 +2837,7 @@ def _dispatch(name: str, args: dict) -> str:
                         "lastTestRunStatus": t.get("lastTestRunStatus"),
                         "lastTestRunTime": t.get("lastTestRunTime"),
                         "lastTestRunRecordCount": t.get("lastTestRunRecordCount"),
+                        "version": t.get("version"),
                     })
                 # Flat names array at the top — see comment on list_pipelines above.
                 # A 15-tap response that buries the user's tap at the bottom of a
@@ -2832,6 +2973,40 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps({"message": f"Tap '{args['name']}' updated", "tap": saved})
         except (json.JSONDecodeError, TypeError):
             return json.dumps({"message": f"Tap '{args['name']}' updated"})
+
+    elif name == "list_tap_versions":
+        from urllib.parse import quote
+        return _call("get", f"/api/v1/tap/versions?name={quote(args['name'])}")
+
+    elif name == "get_tap_version":
+        from urllib.parse import quote
+        return _call("get", f"/api/v1/tap/version?name={quote(args['name'])}&version={int(args['version'])}")
+
+    elif name == "diff_tap_versions":
+        from urllib.parse import quote
+        return _call("get", f"/api/v1/tap/version/diff?name={quote(args['name'])}"
+                            f"&version={int(args['version'])}&against={int(args['against'])}")
+
+    elif name == "restore_tap_version":
+        from urllib.parse import quote
+        return _call("post", f"/api/v1/tap/version/restore?name={quote(args['name'])}&version={int(args['version'])}")
+
+    elif name == "list_pipeline_versions":
+        from urllib.parse import quote
+        return _call("get", f"/api/v1/pipeline/versions?name={quote(args['name'])}")
+
+    elif name == "get_pipeline_version":
+        from urllib.parse import quote
+        return _call("get", f"/api/v1/pipeline/version?name={quote(args['name'])}&version={int(args['version'])}")
+
+    elif name == "diff_pipeline_versions":
+        from urllib.parse import quote
+        return _call("get", f"/api/v1/pipeline/version/diff?name={quote(args['name'])}"
+                            f"&version={int(args['version'])}&against={int(args['against'])}")
+
+    elif name == "restore_pipeline_version":
+        from urllib.parse import quote
+        return _call("post", f"/api/v1/pipeline/version/restore?name={quote(args['name'])}&version={int(args['version'])}")
 
     elif name == "wait_seconds":
         # Clamp to a safe range; the LLM occasionally asks for absurd values.

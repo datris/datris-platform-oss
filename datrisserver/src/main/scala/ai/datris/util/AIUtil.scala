@@ -767,8 +767,9 @@ object AIUtil {
             case "anthropic" => anthropicStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink, cancelled)
             case "openai"    => openaiNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
             case other       =>
-                throw new DatrisException("Provider '" + other + "' is not yet supported by the in-product Assistant. " +
-                    "Configure ai.codegen with provider=anthropic or provider=openai to use the Assistant tab.")
+                throw new DatrisException("Provider '" + other + "' is not yet supported for chat. " +
+                    "The chat assistants run on the AI Primary provider — set it to Anthropic or OpenAI in Configuration. " +
+                    "(Ollama chat support is planned; Ollama already works for the CodeGen provider.)")
         }
     }
 

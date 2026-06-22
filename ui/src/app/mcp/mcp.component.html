@@ -21,15 +21,21 @@
     <p class="discovery-intro">When an AI agent connects to Datris via MCP, it receives these instructions:</p>
 
     <div class="discovery-description">
-      <p>Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, and vector stores &mdash; all driven by pipeline configurations that AI agents can create and manage programmatically.</p>
+      <p>Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, object stores, and vector stores &mdash; all driven by configurations that AI agents create and manage programmatically over MCP. Agents don&rsquo;t just move data: they build the pipelines and taps, run and verify them, query the results back, manage credentials, and can view, diff, and roll definitions back to any prior version.</p>
+      <p>Two building blocks do the work:</p>
+      <ul>
+        <li><strong>Pipelines</strong> &mdash; define how data is processed and where it lands.</li>
+        <li><strong>Taps</strong> &mdash; pull data <em>into</em> a pipeline from external APIs, websites, files, or databases &mdash; on demand or on a schedule. A tap is a Python script (AI-generated from a plain-English instruction, or supplied directly) that the platform runs and feeds to its target pipeline.</li>
+      </ul>
       <p>A pipeline defines a complete data processing flow:</p>
       <ul>
         <li><strong>Source</strong> &mdash; file format (CSV, JSON, XML, PDF, Word, Excel, PowerPoint, HTML, Markdown, and more), schema with field names and types</li>
         <li><strong>Data Quality</strong> &mdash; header validation, AI-powered rules, and schema validation</li>
         <li><strong>Transformation</strong> &mdash; deduplication, trimming, and AI transforms</li>
         <li><strong>Preprocessor</strong> &mdash; optional REST endpoint called before processing</li>
-        <li><strong>Destination</strong> &mdash; PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoint, or vector databases (Qdrant, Weaviate, Milvus, Chroma, pgvector) with embedding configuration</li>
+        <li><strong>Destination</strong> &mdash; PostgreSQL, MongoDB, Kafka, ActiveMQ, REST endpoint, object store (Parquet or ORC to MinIO / AWS S3), or vector databases (Qdrant, Weaviate, Milvus, Chroma, pgvector) with embedding configuration</li>
       </ul>
+      <p>Once data lands, agents query it back in place &mdash; SQL and MongoDB queries, natural-language&nbsp;&rarr;&nbsp;SQL, object-store reads, and semantic vector search &mdash; without leaving the conversation.</p>
     </div>
 
     <div class="discovery-workflow">

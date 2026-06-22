@@ -1,0 +1,113 @@
+<!-- Version History Modal -->
+<div class="modal-overlay" (click)="close()">
+  <div class="vh-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Version History: {{ name }}</h2>
+      <button class="modal-close" (click)="close()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p class="vh-note">
+        Restoring a version is append-only — it creates a new latest version, nothing is lost.
+        It does not run the {{ isTap ? 'tap' : 'pipeline' }}.
+      </p>
+
+      <div class="vh-success" *ngIf="successMessage">{{ successMessage }}</div>
+      <div class="vh-error" *ngIf="error">{{ error }}</div>
+
+      <div class="logs-loading" *ngIf="loading">Loading...</div>
+      <div class="logs-empty" *ngIf="!loading && versions.length === 0">No version history yet.</div>
+
+      <table class="vh-table" *ngIf="!loading && versions.length > 0">
+        <thead>
+          <tr>
+            <th>Version</th>
+            <th>When</th>
+            <th>By</th>
+            <th>Note</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let v of versions"
+              class="vh-row"
+              [class.vh-row-selected]="selectedVersion === v.version"
+              (click)="selectVersion(v.version)">
+            <td class="vh-version">v{{ v.version }}</td>
+            <td>{{ v.createdAt }}</td>
+            <td>{{ v.createdBy || '—' }}</td>
+            <td class="vh-note-cell">{{ v.changeNote || '—' }}</td>
+            <td class="vh-actions">
+              <button class="btn-secondary vh-restore-btn"
+                      (click)="restore(v.version); $event.stopPropagation()"
+                      [disabled]="restoring"
+                      title="Restore this version">
+                <span class="material-icons">restore</span>
+                Restore
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Selected snapshot detail -->
+      <div class="vh-detail" *ngIf="selectedVersion !== null">
+        <div class="vh-detail-header">
+          <h3 class="vh-detail-title">Version {{ selectedVersion }}</h3>
+          <div class="vh-compare">
+            <label class="vh-compare-label">Compare against</label>
+            <select class="vh-compare-select"
+                    [value]="diffAgainst === null ? '' : diffAgainst"
+                    (change)="onDiffAgainstChange($any($event.target).value)">
+              <option value="">— none —</option>
+              <option *ngFor="let v of otherVersions()" [value]="v.version">v{{ v.version }}</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="logs-loading" *ngIf="snapshotLoading">Loading snapshot...</div>
+
+        <!-- Diff view -->
+        <div class="vh-diff" *ngIf="diffAgainst !== null">
+          <div class="logs-loading" *ngIf="diffLoading">Loading diff...</div>
+          <div *ngIf="!diffLoading && diff">
+            <div class="vh-subtitle">Config changes (v{{ diff.from }} → v{{ diff.to }})</div>
+            <div class="vh-diff-empty" *ngIf="!diff.config || diff.config.length === 0">No config differences.</div>
+            <div class="vh-diff-list" *ngIf="diff.config && diff.config.length > 0">
+              <div class="vh-diff-row" *ngFor="let c of diff.config" [ngClass]="changeClass(c.change)">
+                <span class="vh-diff-path">{{ c.path }}</span>
+                <span class="vh-diff-vals">
+                  <span class="vh-diff-before">{{ c.before === null || c.before === undefined ? '∅' : c.before }}</span>
+                  <span class="vh-diff-arrow">→</span>
+                  <span class="vh-diff-after">{{ c.after === null || c.after === undefined ? '∅' : c.after }}</span>
+                </span>
+              </div>
+            </div>
+
+            <div *ngIf="isTap && diff.script">
+              <div class="vh-subtitle">Script changes</div>
+              <div class="vh-diff-empty" *ngIf="!diff.script.lines || diff.script.lines.length === 0">No script differences.</div>
+              <pre class="vh-script-diff" *ngIf="diff.script.lines && diff.script.lines.length > 0"><span
+                *ngFor="let line of diff.script.lines" class="vh-script-line" [ngClass]="lineClass(line.type)">{{ linePrefix(line.type) }} {{ line.text }}
+</span></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Snapshot view (no diff target selected) -->
+        <div class="vh-snapshot" *ngIf="diffAgainst === null && !snapshotLoading && snapshot">
+          <div class="vh-subtitle">Config</div>
+          <pre class="config-json">{{ snapshotJson }}</pre>
+          <div *ngIf="isTap && snapshotScript">
+            <div class="vh-subtitle">Script</div>
+            <pre class="config-json">{{ snapshotScript }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" (click)="close()">Close</button>
+    </div>
+  </div>
+</div>

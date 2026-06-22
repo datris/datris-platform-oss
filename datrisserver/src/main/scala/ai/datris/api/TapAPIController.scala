@@ -7,8 +7,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder, JsonElement, JsonNull, JsonParser}
-import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
-import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException}
+import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
+import ai.datris.model.{TapConfig, DatrisEnvironment, DatrisException, EntityVersion}
 import ai.datris.util._
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
@@ -209,6 +209,7 @@ class TapAPIController {
 
     @PostMapping(path = Array("/tap"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def createOrUpdateTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                          @RequestParam(name = "changeNote", required = false) changeNote: String,
                           @RequestBody tapConfig: TapConfig,
                           request: HttpServletRequest): ResponseEntity[String] = {
         try {
@@ -269,10 +270,14 @@ class TapAPIController {
                     createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull
                 )
 
-            TapConfigIO.write(configToSave)
+            // Definition-edit write → mints a new immutable version snapshot.
+            // (Status churn from TapRunner stays on plain TapConfigIO.write.)
+            val note = if (changeNote != null && changeNote.nonEmpty) changeNote
+                       else if (existing != null) "updated" else "created"
+            val saved = TapConfigIO.writeVersioned(configToSave, note, VersionActor.resolve(request))
 
             val gson = new Gson
-            new ResponseEntity[String](gson.toJson(configToSave), HttpStatus.OK)
+            new ResponseEntity[String](gson.toJson(saved), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -328,6 +333,17 @@ class TapAPIController {
                 }
             } catch {
                 case ex: Exception => logger.warn("Tap run-log cleanup failed for " + name + ": " + ex.getMessage)
+            }
+
+            // Definition versions: hard-delete every snapshot for this tap AND
+            // GC the script objects they pinned (now that we have the index to
+            // do it cleanly). deleteScript is idempotent, so re-deleting the
+            // current scriptPath removed above is harmless.
+            try {
+                EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.tapVersionTableName, name)
+                    .foreach(TapScriptGenerator.deleteScript)
+            } catch {
+                case ex: Exception => logger.warn("Tap version cleanup failed for " + name + ": " + ex.getMessage)
             }
 
             TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)

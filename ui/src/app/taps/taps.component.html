@@ -117,6 +117,7 @@
                  confirm widget can render inline without crowding the cell. -->
             <ng-container *ngIf="deleteTarget !== tap.name">
               <button class="embed-action-btn" (click)="viewLogs($event, tap.name)" title="Run history"><span class="material-icons">history</span></button>
+              <button class="embed-action-btn" (click)="openHistory($event, tap.name)" title="Version history"><span class="material-icons">manage_history</span></button>
               <button class="embed-action-btn" (click)="editTap($event, tap.name)" title="Edit" *ngIf="auth.canWrite()"><span class="material-icons">edit</span></button>
               <button class="embed-action-btn" (click)="runTap($event, tap.name)" title="Test run" *ngIf="auth.canWrite()"><span class="material-icons">play_arrow</span></button>
               <span class="embed-move-wrap" *ngIf="auth.canWrite() && moveTargets().length > 0">
@@ -216,6 +217,9 @@
             </button>
             <button class="action-btn history-btn" (click)="viewLogs($event, tap.name)" title="Run history">
               <span class="material-icons">history</span>
+            </button>
+            <button class="action-btn history-btn" (click)="openHistory($event, tap.name)" title="Version history">
+              <span class="material-icons">manage_history</span>
             </button>
             <button class="action-btn ledger-btn" *ngIf="tap.tapType === 'document'"
                     (click)="viewLedger($event, tap.name)" title="Document ledger">
@@ -472,3 +476,12 @@
     </div>
   </div>
 </div>
+
+<!-- Version History Modal -->
+<app-version-history
+  *ngIf="historyTap"
+  entityType="tap"
+  [name]="historyTap"
+  (closed)="closeHistory()"
+  (restored)="onHistoryRestored()">
+</app-version-history>

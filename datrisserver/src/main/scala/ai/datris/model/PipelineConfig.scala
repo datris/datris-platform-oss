@@ -15,7 +15,10 @@ case class PipelineConfig(
                             transformation: Transformation = null,
                             destination: Destination = null,
                             catalog: String = null,
-                            createdByKeyLabel: String = null
+                            createdByKeyLabel: String = null,
+                            // Monotonic definition version; immutable snapshots
+                            // 1..N live in <env>-pipeline-version. Absent field → 1.
+                            version: Int = 1
                         )
 
 case class Source(

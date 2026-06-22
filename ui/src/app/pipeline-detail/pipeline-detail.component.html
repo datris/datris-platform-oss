@@ -1,6 +1,12 @@
 <div class="container">
   <a class="back-link" routerLink="/data/ingestion">&#8592; Back to Data Ingestion</a>
-  <h1 class="dataset-title">{{ pipeline }}</h1>
+  <div class="detail-header">
+    <h1 class="dataset-title">{{ pipeline }}</h1>
+    <button class="version-history-btn" (click)="openHistory()" *ngIf="pipeline">
+      <span class="material-icons">manage_history</span>
+      Version history
+    </button>
+  </div>
   <div class="table-container">
     <table>
       <thead>
@@ -41,3 +47,12 @@
     </table>
   </div>
 </div>
+
+<!-- Version History Modal -->
+<app-version-history
+  *ngIf="showHistory && pipeline"
+  entityType="pipeline"
+  [name]="pipeline"
+  (closed)="closeHistory()"
+  (restored)="onHistoryRestored()">
+</app-version-history>

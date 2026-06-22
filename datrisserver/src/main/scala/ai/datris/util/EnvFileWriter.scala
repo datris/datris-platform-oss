@@ -33,6 +33,13 @@ import org.slf4j.{Logger, LoggerFactory}
 object EnvFileWriter {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
+    // Serializes the read-modify-write. A single AI-config save fires up to four
+    // concurrent PUTs (ai-primary, codegen, embedding, web-search), each mirroring
+    // different keys into the SAME .env. Without this lock they race: each reads
+    // the file, edits its keys, and writes back — last writer wins and silently
+    // drops the others' changes (and `currentTimeMillis()` temp names collide).
+    private val writeLock = new AnyRef
+
     /** Update the named KEY=VALUE pairs in `filePath`. Returns true on success,
       * false on any failure (file missing, no write permission, etc.). */
     def update(filePath: String, updates: Map[String, String]): Boolean = {
@@ -51,7 +58,8 @@ object EnvFileWriter {
         }
         if (updates.isEmpty) return true
 
-        try {
+        writeLock.synchronized {
+          try {
             val existing = {
                 val src = scala.io.Source.fromFile(file, StandardCharsets.UTF_8.name())
                 try src.getLines().toVector finally src.close()
@@ -81,24 +89,38 @@ object EnvFileWriter {
                     withSpacer ++ toAppend
                 }
 
-            // Atomic replace via tmp file + rename.
-            val tmpName = file.getName + ".tmp." + System.currentTimeMillis()
-            val tmp = new File(file.getParentFile, tmpName)
-            Files.write(tmp.toPath, (finalLines.mkString("\n") + "\n").getBytes(StandardCharsets.UTF_8))
+            val content = (finalLines.mkString("\n") + "\n").getBytes(StandardCharsets.UTF_8)
+
+            // Prefer an atomic temp-file + rename (crash-safe). This needs the
+            // PARENT DIRECTORY to be writable. With a single-file bind mount
+            // (`./.env:/datris/.env`) the file is writable but its directory is
+            // not, so creating the sibling temp file throws AccessDenied — fall
+            // back to writing the file in place. Less crash-safe, but it's the
+            // only option for a single-file mount, and the writeLock above keeps
+            // concurrent saves from interleaving. The unique temp name (PID +
+            // nanoTime) avoids cross-thread collisions on the atomic path.
+            val tmp = new File(file.getParentFile, file.getName + ".tmp." + System.nanoTime())
             try {
-                Files.move(tmp.toPath, file.toPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                Files.write(tmp.toPath, content)
+                try Files.move(tmp.toPath, file.toPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                catch { case _: java.nio.file.AtomicMoveNotSupportedException =>
+                    Files.move(tmp.toPath, file.toPath, StandardCopyOption.REPLACE_EXISTING) }
             } catch {
-                case _: java.nio.file.AtomicMoveNotSupportedException =>
-                    Files.move(tmp.toPath, file.toPath, StandardCopyOption.REPLACE_EXISTING)
+                case _: java.nio.file.AccessDeniedException =>
+                    // Single-file bind mount: directory not writable, file is. Write in place.
+                    try Files.deleteIfExists(tmp.toPath) catch { case _: Exception => () }
+                    logger.info("EnvFileWriter: atomic temp-file replace denied (likely a single-file bind mount); writing " + filePath + " in place")
+                    Files.write(file.toPath, content)
             }
 
             val updatedKeys = (seen ++ toAppend.map(_.takeWhile(_ != '='))).toList.sorted
             logger.info("EnvFileWriter: updated " + updatedKeys.size + " key(s) in " + filePath + ": " + updatedKeys.mkString(", "))
             true
-        } catch {
+          } catch {
             case e: Exception =>
                 logger.warn("EnvFileWriter: failed to update " + filePath + ": " + e.getClass.getSimpleName + ": " + e.getMessage)
                 false
+          }
         }
     }
 

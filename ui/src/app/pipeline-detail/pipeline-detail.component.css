@@ -17,6 +17,37 @@
   color: var(--accent-cyan);
 }
 
+/* Header row: title + version-history action */
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.version-history-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 14px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.version-history-btn:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+.version-history-btn .material-icons {
+  font-size: 18px;
+}
+
 /* Dataset title with gradient */
 .dataset-title {
   font-size: 28px;

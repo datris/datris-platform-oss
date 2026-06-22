@@ -63,6 +63,11 @@ object CapabilityRoutes {
         Route("POST",   "/api/v1/pipeline/profile",    "metadata", "read"),
         Route("GET",    "/api/v1/pipeline/status",     "job",      "read"),
         Route("DELETE", "/api/v1/pipeline/status",     "job",      "kill"),
+        // Pipeline definition versions (read/diff = read; restore = update)
+        Route("GET",    "/api/v1/pipeline/versions",      "pipeline", "read"),
+        Route("GET",    "/api/v1/pipeline/version",       "pipeline", "read"),
+        Route("GET",    "/api/v1/pipeline/version/diff",  "pipeline", "read"),
+        Route("POST",   "/api/v1/pipeline/version/restore", "pipeline", "update"),
 
         // Taps
         Route("GET",    "/api/v1/tap",                 "tap",      "read"),
@@ -81,6 +86,11 @@ object CapabilityRoutes {
         Route("GET",    "/api/v1/tap/ledger",          "tap",      "read"),
         Route("DELETE", "/api/v1/tap/ledger",          "tap",      "update"),
         Route("GET",    "/api/v1/tap/logs",            "job",      "read"),
+        // Tap definition versions (read/diff = read; restore = update)
+        Route("GET",    "/api/v1/tap/versions",        "tap",      "read"),
+        Route("GET",    "/api/v1/tap/version",         "tap",      "read"),
+        Route("GET",    "/api/v1/tap/version/diff",     "tap",      "read"),
+        Route("POST",   "/api/v1/tap/version/restore",  "tap",      "update"),
 
         // Tap prompts (curated tap-building hints)
         Route("GET",    "/api/v1/tap-prompts",         "tap",      "read"),
