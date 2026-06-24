@@ -22,20 +22,38 @@ Only the latest minor version receives security updates. See
 Datris is intentionally simple. We document the model honestly here so operators
 can make informed decisions about how to deploy it.
 
-### Authentication & authorization
-- **Authentication**: a single static API key per environment, sent as the
-  `x-api-key` header and validated against HashiCorp Vault.
-- **Authorization / RBAC**: **none today.** Any caller with a valid API key can
-  perform any action within their tenant. There are no users, roles, or
-  per-resource permissions.
+There are two independent authentication paths: an **API key** for programmatic
+clients and **user accounts** for the web UI.
+
+- **API keys (programmatic clients)**: a static API key per environment, sent as
+  the `x-api-key` header and validated against HashiCorp Vault. This is how the
+  CLI and MCP server authenticate. Enabled via `useApiKeys`.
+- **User accounts (web UI)**: humans log in with a username + password. Passwords
+  are hashed with **BCrypt** (cost factor 12) and stored in MongoDB; the platform
+  never stores plaintext passwords. The user-auth path is gated by the
+  `useUserAuth` flag (off by default in the OSS build, so existing deployments are
+  unchanged). On first boot a default `admin` account exists with no password and
+  is forced through a set-password flow before it can do anything.
+- **Sessions**: successful login issues an opaque, `SecureRandom`-generated token
+  stored in a `datris-session` cookie (`HttpOnly`, `SameSite=Strict`, 8-hour TTL).
+  Sessions live in MongoDB with a TTL index that auto-purges expired tokens. The
+  cookie's `Secure` flag is off in the container because TLS is terminated at the
+  nginx edge — keep that reverse proxy in front in production.
+- **Authorization / RBAC**: when `useUserAuth` is enabled, three roles are
+  enforced — **admin**, **editor**, **viewer**. The default rule is: any
+  logged-in role may read (GET); writes (POST/PUT/PATCH/DELETE) require admin or
+  editor; sensitive operations such as user management require admin. When
+  `useUserAuth` is off, role enforcement is a no-op and any caller with a valid
+  API key can perform any action within their tenant.
 - **Multi-tenancy**: when enabled, tenants are isolated at the **database level**
   (separate Postgres databases, separate object-store buckets). This is
-  infrastructure isolation, not user-level isolation.
-- **Sessions, MFA, password policies**: not applicable — there are no user
-  accounts.
+  infrastructure isolation that sits beneath the user/role model above.
+- **MFA, password complexity, account lockout**: not implemented. Passwords have
+  a minimum length only.
 
-If you need OIDC/SSO/RBAC for an enterprise deployment, please open a discussion;
-this is on the roadmap but not yet implemented.
+**OIDC / SSO is not yet implemented** — there is no external identity-provider
+integration today. If you need OIDC/SSO for an enterprise deployment, please open
+a discussion; it's on the roadmap.
 
 ### Secrets management
 - All secrets are stored in **HashiCorp Vault** (KV v2).
@@ -74,8 +92,11 @@ A safe self-hosted Datris deployment requires the operator to:
 5. Enable encryption at rest on MinIO, MongoDB, and Kafka per their respective
    docs.
 6. Rotate the `x-api-key` value periodically.
-7. Run an external WAF and rate limiter.
-8. Monitor `docker logs` (or pipe to your log aggregator) for unauthorized
+7. For multi-user deployments, enable `useUserAuth`, set a password on the
+   default `admin` account immediately, and assign the least-privileged role
+   (viewer/editor) appropriate to each user.
+8. Run an external WAF and rate limiter.
+9. Monitor `docker logs` (or pipe to your log aggregator) for unauthorized
    access attempts.
 
 ## Repository Hardening
