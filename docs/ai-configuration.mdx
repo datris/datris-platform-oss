@@ -53,7 +53,7 @@ The resolver reads each secret at the configured path and uses whatever it finds
 
 ## Quick Start with `.env`
 
-`docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env`. Set **either** `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`:
+On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set **either** `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`:
 
 ```bash
 # .env
@@ -138,36 +138,27 @@ When `EMBEDDING_PROVIDER` is unset, embedding follows `AI_PROVIDER`: `anthropic`
 
 When you save AI configuration from the Configuration UI, the server reloads the `ai-primary` and `codegen` configs from Vault immediately — **no restart required**. The next AI call uses the updated provider, model, and endpoint. The `embedding` config is read from Vault on each request and also requires no restart.
 
-## `.env` Writeback (Single-Tenant)
+## How Configuration Persists
 
-Vault runs in **dev mode** in the OSS docker-compose stack — its data is in-memory and lost on every container restart. `vault-init.sh` re-seeds the secrets from `.env` on each boot. To keep UI changes from being clobbered, the server mirrors AI saves back to `.env` automatically:
+Vault stores its data on a durable Docker volume (`vault-data`), so secrets, AI provider and model choices, and other Configuration-tab changes **survive restarts and rebuilds** — `docker compose up --build`, `down && up`, and host reboots all keep your settings.
 
-| Section saved | Keys written to `.env` |
-|---|---|
-| AI Primary (Anthropic) | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` |
-| AI Primary (OpenAI) | `OPENAI_API_KEY`, `OPENAI_MODEL` |
-| CodeGen (Anthropic) | `ANTHROPIC_API_KEY`, `CODEGEN_MODEL` |
-| CodeGen (OpenAI) | `OPENAI_API_KEY`, `CODEGEN_MODEL` |
-| Embedding (OpenAI) | `OPENAI_API_KEY`, `EMBEDDING_MODEL` |
-| Embedding (TEI / Ollama) | `EMBEDDING_MODEL` |
-| Web Search (Anthropic) | `ANTHROPIC_API_KEY` |
-| Web Search (OpenAI) | `OPENAI_API_KEY` |
+`.env` is a **first-boot seed only**. The first time Vault initializes, `vault-init.sh` seeds the secrets from `.env`. After that, Vault persists on disk and the **Configuration tab is the source of truth** — editing a value in `.env` later has no effect. To change AI configuration after the first boot, use the Configuration tab (saves go to Vault and stick).
 
-Nothing else is touched — comments, ordering, and unrelated keys are preserved. Writes are atomic (tmp file + rename).
+<Note>
+**Upgrading from an older release — one-time step.** Earlier versions kept Vault data in memory only, so any secret you had set **only** in the UI — **including tap connection secrets** — is not carried into the new on-disk store and must be re-entered once after upgrading. Secrets supplied through `.env` are re-seeded automatically. After this one-time step, everything persists across future rebuilds.
+</Note>
 
-This is **single-tenant only**. Multi-tenant deployments don't have a per-tenant `.env`, so writeback is skipped automatically (`multiTenant: "true"`). Tenant secret edits persist via Vault's per-tenant paths instead.
+### Re-seeding from `.env`
 
-The bind mount lives in `docker-compose.yml`:
+To discard the persisted Vault data and seed fresh from `.env` again (a clean reset), remove the volume:
 
-```yaml
-datris:
-  environment:
-    DATRIS_ENV_FILE_PATH: /datris/.env
-  volumes:
-    - ./.env:/datris/.env:rw
+```bash
+docker compose down
+docker volume rm datris-platform-oss_vault-data   # the project-name prefix may differ
+docker compose up -d
 ```
 
-If you remove the mount or unset `DATRIS_ENV_FILE_PATH`, the writeback silently no-ops — Vault saves still work, they just won't survive a restart.
+The next boot re-initializes Vault and seeds from `.env`.
 
 ## Setting Secrets Manually
 

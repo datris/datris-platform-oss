@@ -3,6 +3,14 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.8.10" description="June 24, 2026">
+  **Your secrets and configuration now persist across restarts and rebuilds.**
+
+  - **Settings that stick.** Connection secrets, AI provider and model choices, and other changes you make in the Configuration tab now survive a rebuild (`docker compose up --build`), a restart, and host reboots. Previously some of these could quietly revert on a rebuild because they were held only in memory — now they're stored durably, and the Configuration tab is the source of truth.
+
+  **Upgrading — one-time, please read:** with this release the secrets store moves from in-memory to durable on-disk storage. Any secret you had set **only** in the app's UI — **including tap connection secrets** — does not carry over and must be entered once more after upgrading. From then on your secrets persist across every future rebuild and restart. (Settings supplied through your environment configuration are restored automatically.) Existing installs: `docker compose pull && docker compose up -d`. The CLI: `brew upgrade datris`.
+</Update>
+
 <Update label="v1.8.9" description="June 22, 2026">
   **Version history for taps and pipelines, plus a faster assistant.**
 

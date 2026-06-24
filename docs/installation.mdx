@@ -219,7 +219,7 @@ Where `{env}` is the environment name (default: `oss`). See [Configuration Refer
 
 ### Vault
 
-The `vault-init` container seeds Vault with default secrets for all services (MinIO, ActiveMQ, MongoDB, PostgreSQL, Kafka) plus your AI provider API keys from `.env`. Vault runs in dev mode with root token `root-token`.
+On first boot, the `vault-init` container seeds Vault with default secrets for the bundled services (MinIO, ActiveMQ, MongoDB, PostgreSQL) plus your AI provider API keys from `.env`. Vault uses durable file storage on the `vault-data` volume, so secrets — including any you add later in the Configuration tab or via taps — **persist across restarts and rebuilds**. `.env` is the first-boot seed only; after that the Configuration tab is the source of truth. See [How Configuration Persists](/ai-configuration#how-configuration-persists) for details and the clean-reset path.
 
 ### Vector Databases
 

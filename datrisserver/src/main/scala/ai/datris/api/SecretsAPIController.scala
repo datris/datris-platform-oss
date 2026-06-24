@@ -10,7 +10,7 @@ import com.google.gson.{Gson, JsonParser}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
 import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{APIKeyValidator, EnvFileWriter, SecretsUtil}
+import ai.datris.util.{APIKeyValidator, SecretsUtil}
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -260,11 +260,9 @@ class SecretsAPIController {
                     logger.info("AI configuration reloaded from Vault after PUT /secrets/" + name)
                 }
 
-                // Mirror AI changes back to .env so they survive a Docker restart
-                // (Vault runs in dev mode = in-memory; vault-init.sh re-seeds from
-                // .env on each boot). Single-tenant only — multi-tenant tenants
-                // don't have a per-tenant .env. Failures are logged, not fatal.
-                writeBackToEnvFile(name, incoming)
+                // No .env write-back: Vault now persists on a disk-backed volume
+                // (see docker/vault.hcl + vault-bootstrap.sh), so UI saves stick
+                // across restarts directly. `.env` is first-boot seed only.
 
                 new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
             }
@@ -311,64 +309,6 @@ class SecretsAPIController {
         val normalized = fieldName.toLowerCase.replaceAll("[_-]", "")
         if (ALWAYS_PLAIN.contains(normalized)) false
         else SENSITIVE_MARKERS.exists(marker => normalized.contains(marker))
-    }
-
-    /** Mirror an AI secret save back to the host `.env` file so the change persists
-      * across `docker compose down && up` (dev-mode Vault is in-memory; vault-init.sh
-      * re-seeds from .env on each boot, which would otherwise overwrite UI changes).
-      *
-      * Scope is intentionally narrow — only the keys vault-init.sh actually consumes:
-      *   - ANTHROPIC_API_KEY, OPENAI_API_KEY (the provider keys)
-      *   - ANTHROPIC_MODEL, OPENAI_MODEL, CODEGEN_MODEL, EMBEDDING_MODEL (model overrides)
-      * No infrastructure values, no AI_PROVIDER override, nothing else.
-      *
-      * Gating:
-      *   - Only on AI sections (ai-primary, codegen, embedding, web-search)
-      *   - Only single-tenant (multi-tenant tenants don't share one .env)
-      *   - Only when DATRIS_ENV_FILE_PATH is configured AND the file exists
-      *   - apiKey is only mirrored when actually present in the incoming map (skipped
-      *     when masked-preservation cleared it or the user picked Ollama). */
-    private def writeBackToEnvFile(name: String, incoming: java.util.Map[String, Object]): Unit = {
-        if (!Set("ai-primary", "codegen", "embedding", "web-search").contains(name)) return
-        if (DatrisEnvironment.values.multiTenant) return
-
-        val envFilePath = sys.env.getOrElse("DATRIS_ENV_FILE_PATH", "")
-        if (envFilePath.isEmpty) return
-
-        val provider = Option(incoming.get("provider")).map(_.asInstanceOf[String].toLowerCase).getOrElse("")
-        val model    = Option(incoming.get("model")).map(_.asInstanceOf[String]).filter(_.nonEmpty).getOrElse("")
-        val apiKey   = Option(incoming.get("apiKey")).map(_.asInstanceOf[String]).filter(_.nonEmpty).getOrElse("")
-
-        val updates = scala.collection.mutable.Map.empty[String, String]
-
-        name match {
-            case "ai-primary" =>
-                if (provider == "anthropic") {
-                    if (apiKey.nonEmpty) updates("ANTHROPIC_API_KEY") = apiKey
-                    if (model.nonEmpty)  updates("ANTHROPIC_MODEL")   = model
-                } else if (provider == "openai") {
-                    if (apiKey.nonEmpty) updates("OPENAI_API_KEY") = apiKey
-                    if (model.nonEmpty)  updates("OPENAI_MODEL")   = model
-                }
-            case "codegen" =>
-                if (model.nonEmpty) updates("CODEGEN_MODEL") = model
-                if (apiKey.nonEmpty && provider == "anthropic") updates("ANTHROPIC_API_KEY") = apiKey
-                if (apiKey.nonEmpty && provider == "openai")    updates("OPENAI_API_KEY")    = apiKey
-            case "embedding" =>
-                if (model.nonEmpty) updates("EMBEDDING_MODEL") = model
-                if (apiKey.nonEmpty && provider == "openai") updates("OPENAI_API_KEY") = apiKey
-                // tei / ollama embedding has no apiKey to mirror
-            case "web-search" =>
-                if (apiKey.nonEmpty && provider == "anthropic") updates("ANTHROPIC_API_KEY") = apiKey
-                if (apiKey.nonEmpty && provider == "openai")    updates("OPENAI_API_KEY")    = apiKey
-            case _ => ()
-        }
-
-        if (updates.nonEmpty) {
-            val keysOnly = updates.keys.toList.sorted.mkString(", ")
-            logger.info("PUT /secrets/" + name + ": mirroring to " + envFilePath + " (keys: " + keysOnly + ")")
-            EnvFileWriter.update(envFilePath, updates.toMap)
-        }
     }
 
     /** Copy a new UI-identity key value into the `ui` slot of oss/api-keys so

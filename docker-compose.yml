@@ -10,6 +10,7 @@ networks:
 volumes:
   pip-cache:
   tei-data:
+  vault-data:        # persists Vault secrets across container recreation (drops dev mode)
   # kafka-data:        # uncomment if re-enabling the optional Kafka service below
   # zookeeper-data:    # uncomment if re-enabling the optional Kafka service below
   # zookeeper-log:     # uncomment if re-enabling the optional Kafka service below
@@ -73,13 +74,22 @@ services:
     container_name: vault
     ports:
       - "8200:8200"
-    environment:
-      VAULT_DEV_ROOT_TOKEN_ID: root-token
-      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    # File storage on a named volume — secrets PERSIST across container
+    # recreation (`--build`, `down && up`, host reboot). Replaces dev mode,
+    # which kept everything in memory and wiped it on every restart. The
+    # init/unseal lifecycle is handled by docker/vault-bootstrap.sh.
+    command: ["vault", "server", "-config=/vault/config/vault.hcl"]
     cap_add:
       - IPC_LOCK
+    volumes:
+      - vault-data:/vault/file
+      - ./docker/vault.hcl:/vault/config/vault.hcl:ro
+    # A non-dev Vault boots SEALED and reports 501 (uninitialized) / 503
+    # (sealed) on /sys/health. The query params make those states count as
+    # healthy so vault-bootstrap can start and unseal it. Once unsealed it's a
+    # normal 200.
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8200/v1/sys/health"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8200/v1/sys/health?uninitcode=200&sealedcode=200&standbycode=200"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -94,7 +104,9 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: root-token
+      # No static VAULT_TOKEN — a non-dev Vault generates a random root token at
+      # init. vault-bootstrap.sh reads it from the init file on the shared
+      # vault-data volume and mints a fixed-id `root-token` token for the server.
       DATRIS_UI_API_KEY: ${DATRIS_UI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -107,8 +119,12 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}
     volumes:
+      # Shares vault-data so bootstrap can read/write the init file (unseal key
+      # + root token) and unseal the same storage the vault service uses.
+      - vault-data:/vault/file
+      - ./docker/vault-bootstrap.sh:/vault-bootstrap.sh
       - ./docker/vault-init.sh:/vault-init.sh
-    entrypoint: ["/bin/sh", "/vault-init.sh"]
+    entrypoint: ["/bin/sh", "/vault-bootstrap.sh"]
     restart: "no"
     networks:
       - datris-net
@@ -160,6 +176,9 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
+      # The server authenticates with this token id. vault-bootstrap.sh mints a
+      # token with the fixed id `root-token` (the real root token is random on a
+      # non-dev Vault), so this value is unchanged from the old dev-mode setup.
       VAULT_TOKEN: root-token
       # Auth / multi-tenancy toggles. Defaults preserve OSS single-tenant behavior;
       # flip these in your .env to enable user auth, API-key gating, or multi-tenant
@@ -186,13 +205,6 @@ services:
       # keys never leak across tenants.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # Path inside the container to the host .env file (mounted below). When
-      # the user saves changes in the AI Configuration UI, the server mirrors
-      # the relevant keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, *_MODEL) back to
-      # this file so they survive a `docker compose down && up` (Vault is in
-      # dev mode = in-memory, and vault-init.sh re-seeds from .env on each
-      # boot). Single-tenant only.
-      DATRIS_ENV_FILE_PATH: /datris/.env
       # JVM heap sizing for the datris-server process. Default fits an 8GB
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
@@ -206,7 +218,6 @@ services:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
     volumes:
       - ./docker/config:/config
-      - ./.env:/datris/.env:rw
       - pip-cache:/root/.cache/pip
     networks:
       - datris-net

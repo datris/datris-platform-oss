@@ -60,6 +60,9 @@ docs/config/
 .terraform
 .terraform/
 *.hcl
+# ...but the Vault config IS source and must be committed (bind-mounted by
+# docker-compose.yml and inlined into the standalone bundle).
+!docker/vault.hcl
 
 # minio
 minio/

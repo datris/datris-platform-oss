@@ -22,6 +22,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # (config-name, source-path-relative-to-root)
 INLINE = [
+    ("vault-hcl", "docker/vault.hcl"),
+    ("vault-bootstrap-sh", "docker/vault-bootstrap.sh"),
     ("vault-init-sh", "docker/vault-init.sh"),
     ("minio-init-sh", "docker/minio-init.sh"),
     ("datris-app-yaml", "docker/config/application.yaml"),
@@ -32,12 +34,36 @@ INLINE = [
 # shape, the matching fails loudly instead of producing a broken standalone.
 REPLACEMENTS = [
     (
+        # vault: inline vault.hcl as a config, keep the vault-data named volume
+        # (it persists Vault storage and the init file across restarts).
         "    volumes:\n"
+        "      - vault-data:/vault/file\n"
+        "      - ./docker/vault.hcl:/vault/config/vault.hcl:ro\n",
+        "    configs:\n"
+        "      - source: vault-hcl\n"
+        "        target: /vault/config/vault.hcl\n"
+        "        mode: 0644\n"
+        "    volumes:\n"
+        "      - vault-data:/vault/file\n",
+    ),
+    (
+        # vault-init: inline both scripts as configs, keep the shared vault-data
+        # named volume (bootstrap reads/writes the init file there).
+        "    volumes:\n"
+        "      # Shares vault-data so bootstrap can read/write the init file (unseal key\n"
+        "      # + root token) and unseal the same storage the vault service uses.\n"
+        "      - vault-data:/vault/file\n"
+        "      - ./docker/vault-bootstrap.sh:/vault-bootstrap.sh\n"
         "      - ./docker/vault-init.sh:/vault-init.sh\n",
         "    configs:\n"
+        "      - source: vault-bootstrap-sh\n"
+        "        target: /vault-bootstrap.sh\n"
+        "        mode: 0755\n"
         "      - source: vault-init-sh\n"
         "        target: /vault-init.sh\n"
-        "        mode: 0755\n",
+        "        mode: 0755\n"
+        "    volumes:\n"
+        "      - vault-data:/vault/file\n",
     ),
     (
         "    volumes:\n"
@@ -48,12 +74,9 @@ REPLACEMENTS = [
         "        mode: 0755\n",
     ),
     (
-        # datris: inline the config override, drop the rw .env mount (the
-        # UI key-mirroring feature needs a host file and is single-tenant
-        # convenience only), keep the pip-cache named volume.
+        # datris: inline the config override, keep the pip-cache named volume.
         "    volumes:\n"
         "      - ./docker/config:/config\n"
-        "      - ./.env:/datris/.env:rw\n"
         "      - pip-cache:/root/.cache/pip\n",
         "    configs:\n"
         "      - source: datris-app-yaml\n"
@@ -67,8 +90,9 @@ HEADER = (
     "# ============================================================\n"
     "# GENERATED FILE — DO NOT EDIT BY HAND.\n"
     "# Produced by scripts/build-standalone-compose.py from:\n"
-    "#   docker-compose.yml + docker/vault-init.sh\n"
-    "#   + docker/minio-init.sh + docker/config/application.yaml\n"
+    "#   docker-compose.yml + docker/vault.hcl + docker/vault-bootstrap.sh\n"
+    "#   + docker/vault-init.sh + docker/minio-init.sh\n"
+    "#   + docker/config/application.yaml\n"
     "#\n"
     "# A single self-contained Compose file: no repo checkout, no bind\n"
     "# mounts. The init scripts and config are inlined below under the\n"
@@ -102,6 +126,14 @@ def main():
     blocks = ["configs:"]
     for name, path in INLINE:
         content = (ROOT / path).read_text().rstrip("\n")
+        # Escape `$` as `$$` so Compose does NOT interpolate inline config
+        # content at file-load time. Without this, shell variables in the
+        # inlined scripts (e.g. `$INIT_FILE`, `$NF`, `$(...)` command
+        # substitutions) get replaced with blank strings, silently corrupting
+        # the materialized scripts. The container shell / app expands these at
+        # runtime instead, using its own `environment:` block — identical to
+        # how the bind-mounted docker-compose.yml reads the scripts from disk.
+        content = content.replace("$", "$$")
         blocks.append(f"  {name}:")
         blocks.append("    content: |")
         blocks.append(indent(content, 6))

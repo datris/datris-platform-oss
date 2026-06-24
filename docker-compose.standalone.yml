@@ -1,8 +1,9 @@
 # ============================================================
 # GENERATED FILE — DO NOT EDIT BY HAND.
 # Produced by scripts/build-standalone-compose.py from:
-#   docker-compose.yml + docker/vault-init.sh
-#   + docker/minio-init.sh + docker/config/application.yaml
+#   docker-compose.yml + docker/vault.hcl + docker/vault-bootstrap.sh
+#   + docker/vault-init.sh + docker/minio-init.sh
+#   + docker/config/application.yaml
 #
 # A single self-contained Compose file: no repo checkout, no bind
 # mounts. The init scripts and config are inlined below under the
@@ -26,6 +27,7 @@ networks:
 volumes:
   pip-cache:
   tei-data:
+  vault-data:        # persists Vault secrets across container recreation (drops dev mode)
   # kafka-data:        # uncomment if re-enabling the optional Kafka service below
   # zookeeper-data:    # uncomment if re-enabling the optional Kafka service below
   # zookeeper-log:     # uncomment if re-enabling the optional Kafka service below
@@ -89,13 +91,25 @@ services:
     container_name: vault
     ports:
       - "8200:8200"
-    environment:
-      VAULT_DEV_ROOT_TOKEN_ID: root-token
-      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    # File storage on a named volume — secrets PERSIST across container
+    # recreation (`--build`, `down && up`, host reboot). Replaces dev mode,
+    # which kept everything in memory and wiped it on every restart. The
+    # init/unseal lifecycle is handled by docker/vault-bootstrap.sh.
+    command: ["vault", "server", "-config=/vault/config/vault.hcl"]
     cap_add:
       - IPC_LOCK
+    configs:
+      - source: vault-hcl
+        target: /vault/config/vault.hcl
+        mode: 0644
+    volumes:
+      - vault-data:/vault/file
+    # A non-dev Vault boots SEALED and reports 501 (uninitialized) / 503
+    # (sealed) on /sys/health. The query params make those states count as
+    # healthy so vault-bootstrap can start and unseal it. Once unsealed it's a
+    # normal 200.
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8200/v1/sys/health"]
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8200/v1/sys/health?uninitcode=200&sealedcode=200&standbycode=200"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -110,7 +124,9 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: root-token
+      # No static VAULT_TOKEN — a non-dev Vault generates a random root token at
+      # init. vault-bootstrap.sh reads it from the init file on the shared
+      # vault-data volume and mints a fixed-id `root-token` token for the server.
       DATRIS_UI_API_KEY: ${DATRIS_UI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -123,10 +139,15 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}
     configs:
+      - source: vault-bootstrap-sh
+        target: /vault-bootstrap.sh
+        mode: 0755
       - source: vault-init-sh
         target: /vault-init.sh
         mode: 0755
-    entrypoint: ["/bin/sh", "/vault-init.sh"]
+    volumes:
+      - vault-data:/vault/file
+    entrypoint: ["/bin/sh", "/vault-bootstrap.sh"]
     restart: "no"
     networks:
       - datris-net
@@ -178,6 +199,9 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
+      # The server authenticates with this token id. vault-bootstrap.sh mints a
+      # token with the fixed id `root-token` (the real root token is random on a
+      # non-dev Vault), so this value is unchanged from the old dev-mode setup.
       VAULT_TOKEN: root-token
       # Auth / multi-tenancy toggles. Defaults preserve OSS single-tenant behavior;
       # flip these in your .env to enable user auth, API-key gating, or multi-tenant
@@ -204,13 +228,6 @@ services:
       # keys never leak across tenants.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # Path inside the container to the host .env file (mounted below). When
-      # the user saves changes in the AI Configuration UI, the server mirrors
-      # the relevant keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, *_MODEL) back to
-      # this file so they survive a `docker compose down && up` (Vault is in
-      # dev mode = in-memory, and vault-init.sh re-seeds from .env on each
-      # boot). Single-tenant only.
-      DATRIS_ENV_FILE_PATH: /datris/.env
       # JVM heap sizing for the datris-server process. Default fits an 8GB
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
@@ -443,6 +460,148 @@ services:
       - datris-net
 
 configs:
+  vault-hcl:
+    content: |
+      # Datris Vault configuration — file storage backend.
+      #
+      # Replaces dev mode so secrets, AI providers/models, tap secrets, and UI
+      # Configuration changes SURVIVE `docker compose up --build` / `down && up` /
+      # host reboot. Everything here is Vault Community Edition (free) — no
+      # Enterprise features.
+      #
+      # Lifecycle (handled by docker/vault-bootstrap.sh): a non-dev Vault boots
+      # SEALED and must be initialized once and unsealed on every start. The
+      # bootstrap stores the generated unseal key + root token on this same
+      # `vault-data` volume and auto-unseals from it on every boot. That is no more
+      # secure than the old known `root-token`, but it is appropriate for the
+      # local / single-tenant box Datris ships as.
+
+      # /vault/file (not /vault/data): this dir exists in the image owned by the
+      # vault user (uid 100), so a fresh named volume mounted here inherits writable
+      # ownership. /vault/data does not exist in the image — a volume there is
+      # root-owned and the vault process (which drops to uid 100) cannot write to it.
+      storage "file" {
+        path = "/vault/file"
+      }
+
+      listener "tcp" {
+        address     = "0.0.0.0:8200"
+        tls_disable = "true"   # TLS terminates upstream (nginx / load balancer); intra-compose traffic only
+      }
+
+      # Redirect address used inside the compose network.
+      api_addr = "http://vault:8200"
+
+      ui = true
+  vault-bootstrap-sh:
+    content: |
+      #!/bin/sh
+      set -e
+
+      # Datris Vault bootstrap — runs in the vault-init container before seeding.
+      #
+      # Dev mode used to hide all of this (auto-init, auto-unseal, known root token).
+      # With file storage Vault boots SEALED and must be initialized once and
+      # unsealed on every start. This script:
+      #   1. waits for Vault to be reachable,
+      #   2. initializes it on first run (storing the unseal key + root token on the
+      #      shared vault-data volume),
+      #   3. unseals it from the stored Shamir key,
+      #   4. enables KV v2 at secret/ (dev mode did this implicitly),
+      #   5. mints a fixed-id token so the datris server's `VAULT_TOKEN: root-token`
+      #      keeps working unchanged,
+      #   6. hands off to vault-init.sh for create-if-absent seeding.
+      #
+      # Everything after first run is idempotent: secrets persist on the volume, so
+      # reboots only unseal + re-mint the server token (if absent) and skip seeding
+      # of any path that already exists.
+
+      INIT_FILE=/vault/file/datris-init.txt
+      SERVER_TOKEN_ID="$${DATRIS_VAULT_TOKEN:-root-token}"
+
+      echo "vault-bootstrap: waiting for Vault to respond..."
+      # `vault status` exit codes: 0 = unsealed, 2 = sealed (both mean reachable),
+      # 1 = not reachable yet. Capture the code inside the `else` (where $$? still
+      # holds the condition's status) — a bare `vault status; code=$$?` would trip
+      # `set -e` and abort before we could read the code, since sealed/unreachable
+      # are non-zero and that's the whole state we're waiting through.
+      while true; do
+        if vault status >/dev/null 2>&1; then
+          break
+        else
+          code=$$?
+          [ "$$code" -eq 2 ] && break
+        fi
+        sleep 1
+      done
+
+      # 1. Initialize on first run only. `operator init -status` exits 0 if already
+      #    initialized, 2 if not.
+      if vault operator init -status >/dev/null 2>&1; then
+        echo "vault-bootstrap: Vault already initialized."
+      else
+        echo "vault-bootstrap: initializing Vault (first run)..."
+        # Single Shamir key — appropriate for the local / single-tenant box.
+        vault operator init -key-shares=1 -key-threshold=1 > "$$INIT_FILE"
+        chmod 600 "$$INIT_FILE" 2>/dev/null || true
+      fi
+
+      if [ ! -f "$$INIT_FILE" ]; then
+        echo "vault-bootstrap: ERROR: $$INIT_FILE missing — cannot recover root token." >&2
+        echo "vault-bootstrap: delete the vault-data volume to re-initialize from scratch." >&2
+        exit 1
+      fi
+
+      UNSEAL_KEY=$$(grep -i 'Unseal Key 1:' "$$INIT_FILE" | awk '{print $$NF}')
+      ROOT_TOKEN=$$(grep -i 'Initial Root Token:' "$$INIT_FILE" | awk '{print $$NF}')
+
+      if [ -z "$$ROOT_TOKEN" ]; then
+        echo "vault-bootstrap: ERROR: could not read root token from $$INIT_FILE." >&2
+        exit 1
+      fi
+
+      # 2/3. Unseal if sealed.
+      SEALED=$$(vault status 2>/dev/null | awk '/^Sealed/ {print $$2}')
+      if [ "$$SEALED" = "true" ]; then
+        if [ -n "$$UNSEAL_KEY" ]; then
+          echo "vault-bootstrap: unsealing Vault..."
+          vault operator unseal "$$UNSEAL_KEY" >/dev/null
+        else
+          echo "vault-bootstrap: ERROR: Vault sealed but no Shamir unseal key found in $$INIT_FILE." >&2
+          exit 1
+        fi
+      fi
+
+      export VAULT_TOKEN="$$ROOT_TOKEN"
+
+      # 4. Enable KV v2 at secret/ (dev mode mounted this automatically).
+      if ! vault secrets list 2>/dev/null | grep -q '^secret/'; then
+        echo "vault-bootstrap: enabling KV v2 at secret/..."
+        vault secrets enable -path=secret -version=2 kv >/dev/null
+      fi
+
+      # 5. Policy + fixed-id token for the datris server. The server authenticates
+      #    with `VAULT_TOKEN: root-token` (unchanged from dev mode) — we mint a
+      #    token with that exact id so nothing downstream has to change.
+      vault policy write datris - >/dev/null <<'EOF'
+      path "secret/*" {
+        capabilities = ["create", "read", "update", "delete", "list"]
+      }
+      EOF
+
+      if ! VAULT_TOKEN="$$SERVER_TOKEN_ID" vault token lookup >/dev/null 2>&1; then
+        echo "vault-bootstrap: creating datris server token (id=$$SERVER_TOKEN_ID)..."
+        # Orphan + periodic so it survives reboots without a parent and is exempt from
+        # the system max-TTL. The 10-year period makes it effectively non-expiring on
+        # a long-running box without anyone renewing it — matching the old dev-mode
+        # root-token (which never expired). bootstrap also re-mints it on any restart
+        # if it's somehow missing, so this self-heals.
+        vault token create -id="$$SERVER_TOKEN_ID" -policy=datris -orphan -period=87600h >/dev/null
+      fi
+
+      # 6. Seed (create-if-absent). vault-init.sh inherits VAULT_TOKEN from the env.
+      echo "vault-bootstrap: handing off to vault-init.sh for seeding..."
+      exec /bin/sh /vault-init.sh
   vault-init-sh:
     content: |
       #!/bin/sh
@@ -453,21 +612,44 @@ configs:
         sleep 1
       done
 
-      echo "Seeding Vault secrets..."
+      # Create-if-absent seeding. With persistent (non-dev) Vault, secrets survive
+      # restarts, so seeding must NOT overwrite a path that already holds a value —
+      # otherwise the .env defaults would clobber the user's persisted UI changes on
+      # every reboot. Each path is seeded only when it does not yet exist: on a fresh
+      # volume that's every path, on a reboot that's none.
+      seed_if_absent() {
+        _path="$$1"
+        shift
+        if vault kv get "$$_path" > /dev/null 2>&1; then
+          echo "  $$_path already present — keeping persisted value"
+          return 0
+        fi
+        echo "  seeding $$_path"
+        vault kv put "$$_path" "$$@"
+      }
 
-      vault kv put secret/oss/minio accessKey=minioadmin secretKey=minioadmin
-      vault kv put secret/oss/activemq username=admin password=admin
-      vault kv put secret/oss/mongodb connectionString=mongodb://mongodb:27017 database=oss
+      # Does a path already hold a value? (Used to skip whole blocks whose seeding
+      # would otherwise run provider validation that can fail on reboot when the
+      # operator has since removed keys from .env — .env is first-boot seed only.)
+      exists() {
+        vault kv get "$$1" > /dev/null 2>&1
+      }
+
+      echo "Seeding Vault secrets (create-if-absent)..."
+
+      seed_if_absent secret/oss/minio accessKey=minioadmin secretKey=minioadmin
+      seed_if_absent secret/oss/activemq username=admin password=admin
+      seed_if_absent secret/oss/mongodb connectionString=mongodb://mongodb:27017 database=oss
       # The UI API key — operator-supplied via DATRIS_UI_API_KEY in .env, or a
       # stable fallback for fresh local installs. Seeded in two places so the
       # auth layer recognizes it AND the operator can rotate it from the UI:
       #   - oss/api-keys[ui] is the validation source (APIKeyValidator looks here)
       #   - oss/ui-api-key is the operator-facing record (rotatable in Secrets UI;
       #     on save, the server auto-mirrors the new value into oss/api-keys[ui])
-      UI_API_KEY_VALUE="${DATRIS_UI_API_KEY:-default-ui-key}"
-      vault kv put secret/oss/api-keys ui="${UI_API_KEY_VALUE}"
-      vault kv put secret/oss/ui-api-key apiKey="${UI_API_KEY_VALUE}"
-      vault kv put secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 username=postgres password=postgres
+      UI_API_KEY_VALUE="$${DATRIS_UI_API_KEY:-default-ui-key}"
+      seed_if_absent secret/oss/api-keys ui="$${UI_API_KEY_VALUE}"
+      seed_if_absent secret/oss/ui-api-key apiKey="$${UI_API_KEY_VALUE}"
+      seed_if_absent secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 username=postgres password=postgres
       # kafka-producer is intentionally not seeded — the bundled Kafka service is
       # now opt-in (see optional Kafka block in docker-compose.yml). Users who
       # enable it can configure this secret via the Configuration tab or by hand:
@@ -477,101 +659,113 @@ configs:
       # Each Vault secret carries provider/endpoint/model/apiKey/version inline so
       # the resolver never derives the path from a YAML provider field.
       #
-      # Provider selection:
-      #   1. AI_PROVIDER (anthropic|openai) is the explicit override — always wins.
-      #      Use this in .env to pin a choice when shell env vars (e.g. a global
-      #      OPENAI_API_KEY exported from your shell rc) would otherwise leak in
-      #      and silently flip the default on every rebuild.
-      #   2. If AI_PROVIDER is unset, fall back to "whichever key is present",
-      #      with OpenAI winning ties — preserves the historical default.
-      PROVIDER="${AI_PROVIDER:-}"
-      if [ -z "$PROVIDER" ]; then
-        if [ -n "${OPENAI_API_KEY:-}" ]; then
-          PROVIDER="openai"
-        elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-          PROVIDER="anthropic"
-        fi
-      fi
-
-      if [ "$PROVIDER" = "openai" ]; then
-        if [ -z "${OPENAI_API_KEY:-}" ]; then
-          echo "ERROR: AI_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
-          exit 1
-        fi
-        vault kv put secret/oss/ai-primary \
-          provider="openai" \
-          endpoint="https://api.openai.com/v1/chat/completions" \
-          model="${OPENAI_MODEL:-gpt-5.5}" \
-          apiKey="${OPENAI_API_KEY}"
-        vault kv put secret/oss/codegen \
-          provider="openai" \
-          endpoint="https://api.openai.com/v1/chat/completions" \
-          model="${CODEGEN_MODEL:-gpt-5.5}" \
-          apiKey="${OPENAI_API_KEY}"
-      elif [ "$PROVIDER" = "anthropic" ]; then
-        if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-          echo "ERROR: AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set." >&2
-          exit 1
-        fi
-        vault kv put secret/oss/ai-primary \
-          provider="anthropic" \
-          endpoint="https://api.anthropic.com/v1/messages" \
-          model="${ANTHROPIC_MODEL:-claude-sonnet-4-6}" \
-          apiKey="${ANTHROPIC_API_KEY}" \
-          version="2023-06-01"
-        vault kv put secret/oss/codegen \
-          provider="anthropic" \
-          endpoint="https://api.anthropic.com/v1/messages" \
-          model="${CODEGEN_MODEL:-claude-opus-4-8}" \
-          apiKey="${ANTHROPIC_API_KEY}" \
-          version="2023-06-01"
+      # Skip the whole block once ai-primary AND codegen exist: with persistence
+      # these survive reboots, and re-running the provider resolution below would
+      # fail when the operator has removed keys from .env (now first-boot seed only).
+      if exists secret/oss/ai-primary && exists secret/oss/codegen; then
+        echo "  secret/oss/ai-primary + secret/oss/codegen already present — skipping AI seed"
       else
-        echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2
-        exit 1
+        # Provider selection:
+        #   1. AI_PROVIDER (anthropic|openai) is the explicit override — always wins.
+        #      Use this in .env to pin a choice when shell env vars (e.g. a global
+        #      OPENAI_API_KEY exported from your shell rc) would otherwise leak in
+        #      and silently flip the default on every rebuild.
+        #   2. If AI_PROVIDER is unset, fall back to "whichever key is present",
+        #      with OpenAI winning ties — preserves the historical default.
+        PROVIDER="$${AI_PROVIDER:-}"
+        if [ -z "$$PROVIDER" ]; then
+          if [ -n "$${OPENAI_API_KEY:-}" ]; then
+            PROVIDER="openai"
+          elif [ -n "$${ANTHROPIC_API_KEY:-}" ]; then
+            PROVIDER="anthropic"
+          fi
+        fi
+
+        if [ "$$PROVIDER" = "openai" ]; then
+          if [ -z "$${OPENAI_API_KEY:-}" ]; then
+            echo "ERROR: AI_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
+            exit 1
+          fi
+          seed_if_absent secret/oss/ai-primary \
+            provider="openai" \
+            endpoint="https://api.openai.com/v1/chat/completions" \
+            model="$${OPENAI_MODEL:-gpt-5.5}" \
+            apiKey="$${OPENAI_API_KEY}"
+          seed_if_absent secret/oss/codegen \
+            provider="openai" \
+            endpoint="https://api.openai.com/v1/chat/completions" \
+            model="$${CODEGEN_MODEL:-gpt-5.5}" \
+            apiKey="$${OPENAI_API_KEY}"
+        elif [ "$$PROVIDER" = "anthropic" ]; then
+          if [ -z "$${ANTHROPIC_API_KEY:-}" ]; then
+            echo "ERROR: AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set." >&2
+            exit 1
+          fi
+          seed_if_absent secret/oss/ai-primary \
+            provider="anthropic" \
+            endpoint="https://api.anthropic.com/v1/messages" \
+            model="$${ANTHROPIC_MODEL:-claude-sonnet-4-6}" \
+            apiKey="$${ANTHROPIC_API_KEY}" \
+            version="2023-06-01"
+          seed_if_absent secret/oss/codegen \
+            provider="anthropic" \
+            endpoint="https://api.anthropic.com/v1/messages" \
+            model="$${CODEGEN_MODEL:-claude-opus-4-8}" \
+            apiKey="$${ANTHROPIC_API_KEY}" \
+            version="2023-06-01"
+        else
+          echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2
+          exit 1
+        fi
       fi
 
       # Embedding slot — decoupled from AI_PROVIDER so users can mix-and-match
       # (e.g. Anthropic for chat/codegen + OpenAI for embedding when bundled TEI
       # is unreliable on a small host).
       #
-      # Selection precedence:
-      #   1. EMBEDDING_PROVIDER (openai|tei|ollama) — explicit override.
-      #   2. Otherwise: AI_PROVIDER=openai → OpenAI embeddings;
-      #                 AI_PROVIDER=anthropic → bundled TEI (bge-m3, 1024-dim).
-      EMBEDDING_PROVIDER_RESOLVED="${EMBEDDING_PROVIDER:-}"
-      if [ -z "$EMBEDDING_PROVIDER_RESOLVED" ]; then
-        if [ "$PROVIDER" = "openai" ]; then
-          EMBEDDING_PROVIDER_RESOLVED="openai"
-        else
-          EMBEDDING_PROVIDER_RESOLVED="tei"
+      # Skip once present (same first-boot-seed-only reasoning as the AI block).
+      if exists secret/oss/embedding; then
+        echo "  secret/oss/embedding already present — skipping embedding seed"
+      else
+        # Selection precedence:
+        #   1. EMBEDDING_PROVIDER (openai|tei|ollama) — explicit override.
+        #   2. Otherwise: AI_PROVIDER=openai → OpenAI embeddings;
+        #                 AI_PROVIDER=anthropic → bundled TEI (bge-m3, 1024-dim).
+        EMBEDDING_PROVIDER_RESOLVED="$${EMBEDDING_PROVIDER:-}"
+        if [ -z "$$EMBEDDING_PROVIDER_RESOLVED" ]; then
+          if [ "$${PROVIDER:-}" = "openai" ]; then
+            EMBEDDING_PROVIDER_RESOLVED="openai"
+          else
+            EMBEDDING_PROVIDER_RESOLVED="tei"
+          fi
         fi
-      fi
 
-      if [ "$EMBEDDING_PROVIDER_RESOLVED" = "openai" ]; then
-        if [ -z "${OPENAI_API_KEY:-}" ]; then
-          echo "ERROR: EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
+        if [ "$$EMBEDDING_PROVIDER_RESOLVED" = "openai" ]; then
+          if [ -z "$${OPENAI_API_KEY:-}" ]; then
+            echo "ERROR: EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
+            exit 1
+          fi
+          seed_if_absent secret/oss/embedding \
+            provider="openai" \
+            endpoint="https://api.openai.com/v1/embeddings" \
+            model="$${EMBEDDING_MODEL:-text-embedding-3-small}" \
+            apiKey="$${OPENAI_API_KEY}"
+        elif [ "$$EMBEDDING_PROVIDER_RESOLVED" = "tei" ]; then
+          seed_if_absent secret/oss/embedding \
+            provider="tei" \
+            endpoint="$${EMBEDDING_ENDPOINT:-http://tei:80/v1/embeddings}" \
+            model="$${EMBEDDING_MODEL:-BAAI/bge-m3}" \
+            apiKey=""
+        elif [ "$$EMBEDDING_PROVIDER_RESOLVED" = "ollama" ]; then
+          seed_if_absent secret/oss/embedding \
+            provider="ollama" \
+            endpoint="$${EMBEDDING_ENDPOINT:-http://ollama:11434/v1/embeddings}" \
+            model="$${EMBEDDING_MODEL:-bge-m3}" \
+            apiKey=""
+        else
+          echo "ERROR: Unknown EMBEDDING_PROVIDER='$$EMBEDDING_PROVIDER_RESOLVED'. Expected: openai, tei, or ollama." >&2
           exit 1
         fi
-        vault kv put secret/oss/embedding \
-          provider="openai" \
-          endpoint="https://api.openai.com/v1/embeddings" \
-          model="${EMBEDDING_MODEL:-text-embedding-3-small}" \
-          apiKey="${OPENAI_API_KEY}"
-      elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "tei" ]; then
-        vault kv put secret/oss/embedding \
-          provider="tei" \
-          endpoint="${EMBEDDING_ENDPOINT:-http://tei:80/v1/embeddings}" \
-          model="${EMBEDDING_MODEL:-BAAI/bge-m3}" \
-          apiKey=""
-      elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "ollama" ]; then
-        vault kv put secret/oss/embedding \
-          provider="ollama" \
-          endpoint="${EMBEDDING_ENDPOINT:-http://ollama:11434/v1/embeddings}" \
-          model="${EMBEDDING_MODEL:-bge-m3}" \
-          apiKey=""
-      else
-        echo "ERROR: Unknown EMBEDDING_PROVIDER='$EMBEDDING_PROVIDER_RESOLVED'. Expected: openai, tei, or ollama." >&2
-        exit 1
       fi
 
       # Vector store secrets.
@@ -586,7 +780,7 @@ configs:
       #   vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
       #   vault kv put secret/oss/milvus   host="host.docker.internal" port="19530" apiKey=""
       #   vault kv put secret/oss/chroma   host="host.docker.internal" port="8000"
-      vault kv put secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/datris" username="postgres" password="postgres"
+      seed_if_absent secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/datris" username="postgres" password="postgres"
 
       echo "Vault secrets seeded successfully."
   minio-init-sh:
