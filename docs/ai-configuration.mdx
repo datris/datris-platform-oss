@@ -144,6 +144,8 @@ Vault stores its data on a durable Docker volume (`vault-data`), so secrets, AI 
 
 `.env` is a **first-boot seed only**. The first time Vault initializes, `vault-init.sh` seeds the secrets from `.env`. After that, Vault persists on disk and the **Configuration tab is the source of truth** — editing a value in `.env` later has no effect. To change AI configuration after the first boot, use the Configuration tab (saves go to Vault and stick).
 
+This applies to everything stored in Vault (AI config and connection secrets). Deployment-level settings like `JAVA_OPTS` and `USE_USER_AUTH` work the opposite way — they're plain container env vars read on every boot, so `.env` edits *do* take effect on a container recreate. See [Changing Settings After Install](/configuration-reference#changing-settings-after-install) for the full two-bucket breakdown.
+
 <Note>
 **Upgrading from an older release — one-time step.** Earlier versions kept Vault data in memory only, so any secret you had set **only** in the UI — **including tap connection secrets** — is not carried into the new on-disk store and must be re-entered once after upgrading. Secrets supplied through `.env` are re-seeded automatically. After this one-time step, everything persists across future rebuilds.
 </Note>

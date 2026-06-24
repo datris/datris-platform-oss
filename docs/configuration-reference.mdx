@@ -5,6 +5,35 @@ description: "Complete configuration reference"
 
 The pipeline server is configured via `application.yaml` (or `application.properties`). This page documents all available properties.
 
+## Changing Settings After Install
+
+Datris settings fall into **two buckets**, and which bucket a setting is in determines how you change it after the first install. Editing the wrong place — or restarting the wrong way — is the most common source of "I changed it and nothing happened."
+
+### Bucket 1 — Configuration tab (Vault-backed)
+
+AI provider / model / API keys, the embedding slot, and all connection secrets (Postgres, MongoDB, MinIO, vector stores, API keys) are stored in Vault and **edited in the Configuration tab**.
+
+`.env` seeds these **only on the very first boot**. After that, Vault persists on disk and the **Configuration tab is the source of truth** — editing the corresponding `.env` value later has **no effect**. Saves in the tab go straight to Vault and take effect right away (AI config hot-reloads in-process; other secrets are picked up on next use), with no restart needed.
+
+To deliberately throw away the persisted config and re-seed from `.env`, wipe the Vault volume — see [How Configuration Persists](/ai-configuration#how-configuration-persists).
+
+### Bucket 2 — Container environment variables (`.env`, read every boot)
+
+The deployment-level settings in the [Container Environment Variables](#container-environment-variables) table — `JAVA_OPTS`, `TAP_MAX_OUTPUT_MB`, `USE_USER_AUTH`, `USE_API_KEYS`, `CAPABILITY_ENFORCEMENT`, the tap-runner vars, etc. — are **not** Vault-seeded. They're plain container env vars read **fresh on every boot**, so changing them in `.env` after install works normally:
+
+```bash
+# 1. Edit the value in .env, then:
+docker compose up -d datris
+```
+
+`up -d` recreates the `datris` container with the new environment. (Use `--force-recreate datris` if Compose doesn't detect the change.)
+
+<Warning>
+Do **not** use `docker compose restart` to apply an `.env` change. `restart` reuses the existing container with its **old** environment, so your edit is silently ignored. Always use `up -d` (which recreates the container) or a `down` / `up`.
+</Warning>
+
+**Enabling `USE_USER_AUTH` is a clean toggle.** A default `admin` user is pre-seeded on every startup, so after you recreate the container your first login (username `admin`, blank password) simply prompts you to set a password — there's no separate provisioning step and no lockout risk. See [User Authentication](/user-auth) for the full walkthrough.
+
 ## Full Reference
 
 ### Spring Boot
