@@ -34,6 +34,7 @@ const FALLBACK: ModelCatalog = {
     ],
     openai: [
       { value: 'gpt-5.5', label: 'GPT-5.5 (recommended)', recommended: true },
+      { value: 'gpt-5.5-pro', label: 'GPT-5.5 Pro' },
       { value: 'gpt-5.4', label: 'GPT-5.4' },
       { value: 'gpt-5.4-pro', label: 'GPT-5.4 Pro' },
       { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
@@ -51,6 +52,7 @@ const FALLBACK: ModelCatalog = {
     ],
     openai: [
       { value: 'gpt-5.5', label: 'GPT-5.5 (recommended)', recommended: true },
+      { value: 'gpt-5.5-pro', label: 'GPT-5.5 Pro' },
       { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
       { value: 'gpt-5.4', label: 'GPT-5.4' },
       { value: 'gpt-5.4-pro', label: 'GPT-5.4 Pro' },
