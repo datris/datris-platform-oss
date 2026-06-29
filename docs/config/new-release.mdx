@@ -98,6 +98,10 @@ The tag push in step 6 triggers the GitHub Actions workflow that builds multi-pl
 gh run list --repo datris/datris-platform-oss --limit 3
 ```
 
+<Warning>
+**`gh run watch --exit-status` can exit 0 while the run is still in progress** — a transient network error (e.g. `failed to get annotations: connection reset by peer`) makes it return early. The multi-arch build pushes `datris-server` + `datris-ui` first and `datris-mcp-server` + `datris-tap-runner` later, so a false exit can look done while two images' `:{x.y.z}` tags still 404. Always confirm with `gh run view <id> --repo datris/datris-platform-oss --json status,conclusion` — only `status: completed` + `conclusion: success` is real — before trusting the watch.
+</Warning>
+
 If the build was not triggered (e.g., cancelled + rerun), trigger it manually. **Always pass `-f tag={x.y.z}`** — without it the workflow defaults to `tag=latest`, which pushes only `:latest` images and no `:{x.y.z}` version tags. The MCP Registry publish needs the version-tagged image to exist, so skipping this input breaks step 10.
 
 ```bash
@@ -189,10 +193,10 @@ mcp-publisher publish
 Verify:
 
 ```bash
-curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.datris/datris"
+curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.datris/datris&version=latest"
 ```
 
-Confirm `isLatest: true` on the new version.
+Confirm `isLatest: true` on the new version. **Always pass `&version=latest`** — the bare `?search=` query is paginated and returns historical versions without surfacing the newest entry or its `isLatest` flag, which makes a successful publish look like it failed.
 
 ## 11. Verify Everything
 
@@ -210,8 +214,8 @@ datris --version
 pipx install datris-mcp-server=={x.y.z} --force
 datris --version
 
-# MCP Registry
-curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.datris/datris" | python3 -m json.tool | grep isLatest
+# MCP Registry (always pass &version=latest — the bare search is paginated and hides the newest version)
+curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.datris/datris&version=latest" | python3 -m json.tool | grep isLatest
 
 # Trial Droplet — DISABLED (no longer in use; step 9 is commented out)
 # curl -s https://api.trial.datris.ai/api/v1/version
