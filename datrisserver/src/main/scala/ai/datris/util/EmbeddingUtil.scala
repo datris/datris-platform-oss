@@ -61,7 +61,18 @@ object EmbeddingUtil {
         if (endpoint == null) throw new DatrisException("'endpoint' not found in embedding secret: " + secretName)
         val model = secret.get("model")
         if (model == null) throw new DatrisException("'model' not found in embedding secret: " + secretName)
-        val apiKey = Option(secret.get("apiKey")).getOrElse("")
+        // Resolve the key through the same per-provider store / env-var fallback as the
+        // chat slots, so an OpenAI embedding endpoint keeps working after the user
+        // switches the embedding provider away and back (the slot's inline apiKey can
+        // be cleared on a provider switch; the shared {env}/ai-keys store is durable).
+        // Bundled providers (Ollama, TEI) need no key and pass through as "".
+        val rawKey = Option(secret.get("apiKey")).getOrElse("")
+        val provider = Option(secret.get("provider")).map(_.trim.toLowerCase).getOrElse("")
+        val apiKey =
+            if (provider == "openai" || provider == "anthropic")
+                AIUtil.resolveApiKey(rawKey, provider, ai.datris.model.DatrisEnvironment.values.multiTenant,
+                    secretName.takeWhile(_ != '/'))
+            else rawKey
         val batchSize = Option(secret.get("batchSize"))
             .filter(_.nonEmpty)
             .flatMap(s => scala.util.Try(s.toInt).toOption)

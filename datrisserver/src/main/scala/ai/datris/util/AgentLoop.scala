@@ -61,6 +61,24 @@ object AgentLoop {
       * we substitute the bytes here, right before dispatching to MCP. */
     private val AttachmentTools: Set[String] = Set("create_pipeline", "upload_data", "profile_data", "upload_config")
 
+    /** Max consecutive auto-continues after a max_tokens cutoff before yielding to
+      * the user, so a genuinely unbounded answer can't loop indefinitely. */
+    private val MaxAutoContinues: Int = 3
+
+    /** Strip thinking blocks that lack a signature before replaying the assistant
+      * turn back to Anthropic. A complete thinking block always carries a
+      * signature; an unsigned one only appears when max_tokens truncated the turn
+      * mid-reasoning, and Anthropic rejects unsigned thinking blocks with a 400.
+      * If stripping leaves the turn empty, substitute a minimal text block so the
+      * assistant turn stays well-formed. */
+    private def sanitizeForReplay(content: List[AIContentBlock]): List[AIContentBlock] = {
+        val filtered = content.filter {
+            case t: AIContentBlock.ThinkingBlock => t.signature != null && t.signature.trim.nonEmpty
+            case _ => true
+        }
+        if (filtered.isEmpty) List(AIContentBlock.TextBlock("…")) else filtered
+    }
+
     /** Tool-result truncation cap. Anthropic charges by input tokens, and a
       * runaway 100KB result fed back as input for every subsequent iteration
       * blows out cost fast. The UI shows the full result via the SSE event;
@@ -96,6 +114,10 @@ object AgentLoop {
         try {
             var iter = 0
             var continue = true
+            // Consecutive auto-continues triggered by max_tokens cutoffs. Bounded so a
+            // pathologically long answer can't loop forever; reset whenever the model
+            // makes real progress (emits a tool call).
+            var autoContinues = 0
             while (continue && iter < maxIterations && !cancelled()) {
                 iter += 1
                 sink(LoopEvent.IterationStart)
@@ -117,16 +139,35 @@ object AgentLoop {
                     return
                 }
 
-                // Append the assistant turn verbatim (preserves thinking signatures
-                // for Anthropic reasoning continuity).
-                messages = messages :+ ("assistant", response.content)
+                // Append the assistant turn (preserves thinking signatures for
+                // Anthropic reasoning continuity). On Anthropic, drop any thinking
+                // block missing a signature — a turn cut off mid-reasoning by
+                // max_tokens yields an unsigned thinking block, which the next
+                // request would reject with a 400.
+                val assistantContent =
+                    if (aiConfig.provider != null && aiConfig.provider.toLowerCase == "anthropic")
+                        sanitizeForReplay(response.content)
+                    else response.content
+                messages = messages :+ ("assistant", assistantContent)
 
                 // If the model wants to use tools, execute each one and append a
-                // user turn with tool_result blocks. Otherwise we're done.
+                // user turn with tool_result blocks. Otherwise we're done — UNLESS
+                // the turn was cut off at the output-length limit, in which case we
+                // auto-continue (bounded) instead of silently returning control to
+                // the user, who would otherwise have to type "continue".
                 val toolUses = response.content.collect { case t: AIContentBlock.ToolUseBlock => t }
                 if (toolUses.isEmpty) {
-                    continue = false
+                    if (response.stopReason == "max_tokens" && autoContinues < MaxAutoContinues) {
+                        autoContinues += 1
+                        sink(LoopEvent.Notice("Response reached the length limit — continuing automatically…"))
+                        messages = messages :+ ("user", List[AIContentBlock](AIContentBlock.TextBlock(
+                            "Your previous response was cut off at the output length limit. " +
+                            "Continue exactly where you left off — do not repeat what you already said.")))
+                    } else {
+                        continue = false
+                    }
                 } else {
+                    autoContinues = 0
                     var stopAfterBatch = false
                     val resultBlocks = toolUses.map { t =>
                         if (cancelled()) {

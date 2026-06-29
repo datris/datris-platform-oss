@@ -193,17 +193,25 @@ object AIUtil {
 
     /** Resolve an apiKey for an AI provider section. Used by every AI-config loader
       * (ai-primary, codegen, embedding, web-search) so the same fallback applies
-      * uniformly:
+      * uniformly, in priority order:
       *
-      *   1. The secret's own `apiKey` if non-empty (Vault-stored, the normal path)
-      *   2. The matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var, but ONLY
+      *   1. The shared per-provider key store at `{env}/ai-keys` (fields
+      *      `anthropicApiKey` / `openaiApiKey`). This is the authoritative home for
+      *      provider keys — they live here independent of which slot uses each
+      *      provider, so switching a slot's provider back and forth never loses the
+      *      other provider's key. Matches the UI's "enter each key once" model.
+      *   2. The slot secret's own inline `apiKey` if non-empty — legacy / pre-store
+      *      deployments that stored the key on the slot itself.
+      *   3. The matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var, but ONLY
       *      in single-tenant mode — env vars hold the platform's keys, and in
       *      multi-tenant deployments those keys belong to Datris, not to each
       *      tenant. Multi-tenant tenants must provide their own keys explicitly.
       *
-      * Returns the empty string when neither is available; callers decide whether
+      * Returns the empty string when none is available; callers decide whether
       * that's fatal (ai-primary) or skippable (web-search). */
-    def resolveApiKey(rawKey: String, provider: String, multiTenant: Boolean): String = {
+    def resolveApiKey(rawKey: String, provider: String, multiTenant: Boolean, env: String): String = {
+        val storeKey = providerKeyFromStore(env, provider)
+        if (storeKey.nonEmpty) return storeKey
         if (rawKey != null && rawKey.nonEmpty) return rawKey
         if (multiTenant) return ""
         provider.toLowerCase match {
@@ -211,6 +219,25 @@ object AIUtil {
             case "openai"    => sys.env.getOrElse("OPENAI_API_KEY", "")
             case _           => ""
         }
+    }
+
+    /** Read a provider's key from the shared per-provider key store `{env}/ai-keys`.
+      * Field names are `anthropicApiKey` / `openaiApiKey`. Returns "" when the store
+      * doesn't exist, the field is absent/empty, or the provider has no shared key
+      * concept (e.g. Ollama). Never throws — a Vault hiccup just falls through to the
+      * next resolution tier. */
+    def providerKeyFromStore(env: String, provider: String): String = {
+        val field = provider.toLowerCase match {
+            case "anthropic" => "anthropicApiKey"
+            case "openai"    => "openaiApiKey"
+            case _           => return ""
+        }
+        try {
+            SecretsUtil.getSecretMap(env + "/ai-keys")
+                .flatMap(m => Option(m.get(field)))
+                .filter(_.nonEmpty)
+                .getOrElse("")
+        } catch { case _: Exception => "" }
     }
 
     /** Whether web search is enabled at all. Independent of which provider runs the
@@ -720,8 +747,16 @@ object AIUtil {
     /** Final result of a single streaming call: the assembled content blocks plus
       * a flag indicating whether the model wants to call tools (stop_reason ==
       * "tool_use" for Anthropic, presence of tool_use blocks for OpenAI). The
-      * AgentLoop uses `wantsToolUse` to decide whether to recurse. */
-    case class AIToolResponse(content: List[AIContentBlock], wantsToolUse: Boolean)
+      * AgentLoop uses `wantsToolUse` to decide whether to recurse.
+      *
+      * `stopReason` carries the provider's normalized stop reason so the loop can
+      * tell a genuine end-of-turn (`end_turn` / "") from an output-length cutoff
+      * (`max_tokens`). The latter must NOT be treated as "done" — with extended
+      * thinking, the model can exhaust the token budget mid-reasoning before
+      * emitting any text or tool call, producing an empty turn that would
+      * otherwise look finished. Defaults to "" so non-streaming/legacy
+      * construction sites compile unchanged. */
+    case class AIToolResponse(content: List[AIContentBlock], wantsToolUse: Boolean, stopReason: String = "")
 
     /** Whether a given AIConfig supports extended thinking — Anthropic Claude 4.x. */
     def supportsExtendedThinking(aiConfig: AIConfig): Boolean = {
@@ -1112,7 +1147,7 @@ object AIUtil {
             }
         }.toList
 
-        AIToolResponse(content, wantsToolUse = stopReason == "tool_use")
+        AIToolResponse(content, wantsToolUse = stopReason == "tool_use", stopReason = stopReason)
     }
 
     /** Mutable accumulator for a single content block while streaming. */
@@ -1284,7 +1319,18 @@ object AIUtil {
                 case _ => // ignore
             }
         }
-        AIToolResponse(blocks.toList, wantsToolUse = hasToolUse)
+        // Normalize OpenAI's truncation signal to the same "max_tokens" reason the
+        // Anthropic path uses, so AgentLoop's auto-continue applies uniformly. The
+        // Responses API marks a length cutoff as status="incomplete" with
+        // incomplete_details.reason="max_output_tokens".
+        val openAiStopReason =
+            if (response.has("status") && response.get("status").getAsString == "incomplete" &&
+                response.has("incomplete_details") && !response.get("incomplete_details").isJsonNull &&
+                response.getAsJsonObject("incomplete_details").has("reason") &&
+                response.getAsJsonObject("incomplete_details").get("reason").getAsString == "max_output_tokens")
+                "max_tokens"
+            else ""
+        AIToolResponse(blocks.toList, wantsToolUse = hasToolUse, stopReason = openAiStopReason)
     }
 
     private def openaiInputArray(messages: Seq[(String, List[AIContentBlock])]): JsonArray = {

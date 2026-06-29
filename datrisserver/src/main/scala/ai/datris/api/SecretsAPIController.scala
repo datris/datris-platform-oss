@@ -212,10 +212,21 @@ class SecretsAPIController {
                 // apiKey, which would fail with 401 at runtime. Drop the preserved key
                 // so the loader either picks it up from the env-var fallback (single
                 // tenant) or fails closed (multi-tenant — tenant must re-enter).
+                //
+                // BUT only clear a *preserved* (masked/absent) key — never a fresh key
+                // the user typed for the NEW provider in this same request. The
+                // masked-preservation step above can't tell the two apart, so we look
+                // at the raw request: a real, non-masked apiKey means the user is
+                // switching provider AND supplying the new provider's key at once.
                 if (Set("ai-primary", "codegen", "embedding", "web-search").contains(name)) {
                     val incomingProvider = Option(incoming.get("provider")).map(_.asInstanceOf[String].toLowerCase).getOrElse("")
                     val existingProvider = existing.get("provider").map(_.toLowerCase).getOrElse("")
-                    if (existingProvider.nonEmpty && incomingProvider.nonEmpty && existingProvider != incomingProvider) {
+                    val rawRequestApiKey =
+                        if (json.has("apiKey") && json.get("apiKey").isJsonPrimitive) json.get("apiKey").getAsString
+                        else ""
+                    val freshApiKeyProvided = rawRequestApiKey.nonEmpty && rawRequestApiKey != "••••••••"
+                    if (existingProvider.nonEmpty && incomingProvider.nonEmpty &&
+                        existingProvider != incomingProvider && !freshApiKeyProvided) {
                         logger.info("PUT /secrets/" + name + ": provider changed from '" + existingProvider + "' to '" + incomingProvider + "' — clearing preserved apiKey (will resolve from env var if available)")
                         incoming.remove("apiKey")
                     }
@@ -255,7 +266,7 @@ class SecretsAPIController {
                 // Hot-reload AI config when an AI secret changes — no restart required.
                 // web-search rides the same reload because reloadAiConfig() refreshes the
                 // webSearchConfig field too.
-                if (Set("ai-primary", "codegen", "web-search").contains(name)) {
+                if (Set("ai-primary", "codegen", "web-search", "ai-keys").contains(name)) {
                     DatrisEnvironment.reloadAiConfig()
                     logger.info("AI configuration reloaded from Vault after PUT /secrets/" + name)
                 }

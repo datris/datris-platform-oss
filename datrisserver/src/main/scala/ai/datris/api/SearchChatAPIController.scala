@@ -139,7 +139,7 @@ class SearchChatAPIController {
         val maxIterations: Int =
             if (req.has("maxIterations") && !req.get("maxIterations").isJsonNull) req.get("maxIterations").getAsInt
             else 50
-        val maxTokensPerCall: Int = 16000
+        val maxTokensPerCall: Int = 32000
 
         val env = DatrisEnvironment.current
         val aiConfig = DatrisEnvironment.aiConfigForChat

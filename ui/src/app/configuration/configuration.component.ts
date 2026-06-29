@@ -274,7 +274,7 @@ export class ConfigurationComponent implements OnInit {
     // Four independent direct GETs by known names. 404 = no per-tenant override = use defaults.
     this.resetSectionState();
 
-    let pending = 4;
+    let pending = 5;
     const done = () => { pending--; if (pending === 0) this.loading = false; };
 
     const recordKeyForProvider = (provider: string, apiKey: string) => {
@@ -388,6 +388,23 @@ export class ConfigurationComponent implements OnInit {
         done();
       },
       error: () => { this.embeddingEndpoint = this.endpointFor(this.embeddingProvider, 'embedding'); done(); }
+    });
+
+    // Shared per-provider key store — the authoritative source for the right-hand
+    // "Your API Keys" panel. Keys live here independent of which slot uses each
+    // provider, so a provider has its key shown even when no section currently
+    // uses it (the "enter once, switch freely" model). Values arrive masked
+    // (••••••••); masked round-trips and preserves the stored key on save.
+    this.http.get<any>('/api/v1/secrets/ai-keys').subscribe({
+      next: (data) => {
+        const fields = data && data.fields;
+        if (fields) {
+          if (fields.anthropicApiKey) this.anthropicApiKey = fields.anthropicApiKey;
+          if (fields.openaiApiKey) this.openaiApiKey = fields.openaiApiKey;
+        }
+        done();
+      },
+      error: () => { done(); }
     });
   }
 
@@ -581,6 +598,20 @@ export class ConfigurationComponent implements OnInit {
     this.error = '';
 
     const tasks: Promise<any>[] = [];
+
+    // Shared per-provider key store — the durable home for provider keys,
+    // independent of which slot uses each provider. This is what makes switching
+    // a slot's provider back and forth non-destructive: each provider's key
+    // persists on its own. Send only non-empty panel values so an unset provider
+    // isn't cleared; masked (••••••••) values are preserved server-side.
+    {
+      const keysBody: any = {};
+      if (this.anthropicApiKey) keysBody.anthropicApiKey = this.anthropicApiKey;
+      if (this.openaiApiKey) keysBody.openaiApiKey = this.openaiApiKey;
+      if (Object.keys(keysBody).length > 0) {
+        tasks.push(this.http.put('/api/v1/secrets/ai-keys', keysBody, { responseType: 'text' }).toPromise());
+      }
+    }
 
     const useEndpoint = (typed: string, fallback: string) => (typed && typed.trim()) ? typed.trim() : fallback;
 

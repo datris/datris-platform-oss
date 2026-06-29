@@ -110,7 +110,7 @@ object DatrisEnvironment {
                 val rawKey   = map.getOrElse("apiKey", "")
                 val apiKey =
                     if (provider.toLowerCase == "ollama") rawKey
-                    else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant)
+                    else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant, path.takeWhile(_ != '/'))
                 if (provider.isEmpty || endpoint.isEmpty || (apiKey.isEmpty && provider.toLowerCase != "ollama")) None
                 else Some(AIConfig(
                     provider,
@@ -141,7 +141,7 @@ object DatrisEnvironment {
                     val rawKey   = map.getOrElse("apiKey", "")
                     val version  = map.getOrElse("version", "")
                     val maxUses  = try map.getOrElse("maxUses", "3").trim.toInt catch { case _: Exception => 3 }
-                    val apiKey   = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant)
+                    val apiKey   = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant, path.takeWhile(_ != '/'))
                     Some(WebSearchConfig(enabled, provider, endpoint, model, apiKey, version, maxUses))
                 }
             }

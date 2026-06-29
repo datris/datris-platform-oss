@@ -343,9 +343,9 @@ class StartupRunner extends ApplicationRunner {
                 val rawKey   = Option(secret.get("apiKey")).getOrElse("")
                 val version  = Option(secret.get("version")).getOrElse("")
                 val maxUses  = try Option(secret.get("maxUses")).map(_.trim.toInt).getOrElse(3) catch { case _: Exception => 3 }
-                val apiKey = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant)
+                val apiKey = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant, DatrisEnvironment.values.environment)
                 if (apiKey != rawKey && apiKey.nonEmpty)
-                    logger.info("Web search apiKey resolved from " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")
+                    logger.info("Web search apiKey resolved from the shared key store or " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")
                 Some(WebSearchConfig(enabled, provider, endpoint, model, apiKey, version, maxUses))
             }
         }
@@ -390,9 +390,9 @@ class StartupRunner extends ApplicationRunner {
         // Ollama doesn't need a key; everyone else needs one.
         val apiKey =
             if (provider.toLowerCase == "ollama") rawKey
-            else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant)
+            else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant, DatrisEnvironment.values.environment)
         if (apiKey != rawKey && apiKey.nonEmpty)
-            logger.info("AI " + label + " apiKey resolved from " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")
+            logger.info("AI " + label + " apiKey resolved from the shared key store or " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")
         if (apiKey.isEmpty && provider.toLowerCase != "ollama") {
             if (required) throw new DatrisException("'apiKey' not found in AI " + label + " secret: " + secretName +
                 " and no " + provider.toUpperCase + "_API_KEY environment variable is set")
