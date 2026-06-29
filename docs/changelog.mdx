@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.8.11" description="June 29, 2026">
+  **Switch AI providers freely, and an assistant that finishes the job.**
+
+  - **Switch providers without losing your keys.** Your Anthropic and OpenAI API keys are now kept per provider, so you can change the provider for any section — AI, CodeGen, or Embedding — and switch back later without re-entering the key you already saved. Enter each provider's key once and mix providers however you like.
+  - **The assistant runs to completion.** Longer assistant replies that used to stop partway — leaving you to type "continue" — now finish on their own.
+
+  **Upgrading:** Existing installs: `docker compose pull && docker compose up -d`. Keys you've already entered carry over; no re-entry needed. The CLI: `brew upgrade datris`.
+</Update>
+
 <Update label="v1.8.10" description="June 24, 2026">
   **Your secrets and configuration now persist across restarts and rebuilds.**
 
