@@ -233,6 +233,8 @@ object TapScriptGenerator {
         // recovery paths (/tap/diagnose and /tap/fix) where the model has demonstrably gotten
         // something wrong and current docs add real value.
         val codegenCfg = DatrisEnvironment.aiConfigForCodegen
+        logger.info("TapScriptGenerator: generating with provider '" + codegenCfg.provider +
+            "', model '" + codegenCfg.model + "' for tap: " + tapName)
         val baseSystemPrompt = if (tapType == "document") DOCUMENT_SYSTEM_PROMPT else SYSTEM_PROMPT
         val systemPrompt = TapPromptInjector.augment(baseSystemPrompt, description)
         val responseText = AIUtil.callAIWithSystem(systemPrompt, userPrompt, codegenCfg)

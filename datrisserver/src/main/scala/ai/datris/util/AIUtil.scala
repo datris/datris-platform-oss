@@ -900,12 +900,13 @@ object AIUtil {
       * models. Older thinking-capable models (Sonnet 4.6, Opus 4.6, Haiku 4.5) still
       * require/accept `temperature: 1.0` with thinking on, so their behavior is
       * unchanged. Match the families that reject sampling params: Fable, Mythos,
-      * Opus 4.7, Opus 4.8 (and later Opus). */
+      * Opus 4.7, Opus 4.8 (and later Opus), Sonnet 5 (and later Sonnet). */
     private def rejectsSamplingParams(model: String): Boolean = {
         if (model == null) return false
         val m = model.toLowerCase
         m.contains("fable") || m.contains("mythos") ||
-        m.contains("opus-4-7") || m.contains("opus-4-8")
+        m.contains("opus-4-7") || m.contains("opus-4-8") ||
+        m.contains("sonnet-5")
     }
 
     /** Issue exactly one Anthropic streaming request with the given thinking
