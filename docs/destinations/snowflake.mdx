@@ -78,7 +78,7 @@ On **Configuration → Secrets → Platform**, create a secret (for example `sno
 
 | Field                  | Required | Notes                                                                    |
 |------------------------|----------|--------------------------------------------------------------------------|
-| `account`              | yes      | Account identifier, e.g. `xy12345.us-east-1` or `myorg-myaccount`        |
+| `account`              | yes      | Account identifier, e.g. `myorg-myaccount` or `xy12345.us-east-1`. Pasting the full account URL (`https://myorg-myaccount.snowflakecomputing.com`) also works — Datris strips the protocol and domain |
 | `user`                 | yes      | The service user, e.g. `DATRIS_SVC`                                      |
 | `privateKey`           | yes      | Full contents of `rsa_key.p8`, including the BEGIN/END lines             |
 | `privateKeyPassphrase` | no       | Only if the private key is encrypted                                     |

@@ -72,7 +72,7 @@ class SnowflakeLoader(jobContext: JobContext) {
                     properties.setProperty("password", creds.password.get)
             }
 
-            val jdbcUrl = "jdbc:snowflake://" + creds.account + ".snowflakecomputing.com/"
+            val jdbcUrl = "jdbc:snowflake://" + normalizeAccount(creds.account) + ".snowflakecomputing.com/"
             statusUtil.info("processing", "jdbc url: " + jdbcUrl)
             conn = DriverManager.getConnection(jdbcUrl, properties)
             statusUtil.info("processing", "Snowflake connection acquired")
@@ -350,6 +350,21 @@ class SnowflakeLoader(jobContext: JobContext) {
         if (config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null)
             config.source.fileAttributes.csvAttributes.delimiter
         else ","
+
+    /** The secret's `account` field should be a bare account identifier
+     *  (`orgname-accountname` or `locator.region`), but Snowsight's copy
+     *  buttons hand out the full account URL — and a doubled
+     *  `<host>.snowflakecomputing.com.snowflakecomputing.com` still resolves
+     *  via wildcard DNS, failing later with an opaque HTTP 404 at session
+     *  open. Accept any of the shapes: strip the protocol, the
+     *  snowflakecomputing.com suffix, and trailing slashes; swap underscores
+     *  for hyphens (required in hostnames per Snowflake's URL rules). */
+    private def normalizeAccount(raw: String): String =
+        raw.trim
+            .replaceFirst("(?i)^[a-z]+://", "")
+            .replaceFirst("(?i)\\.snowflakecomputing\\.(com|cn).*$", "")
+            .stripSuffix("/")
+            .replace('_', '-')
 
     /** Secret values are entered through single-line form fields, which strip
      *  the newlines out of a pasted PEM — and the driver's PemReader requires
