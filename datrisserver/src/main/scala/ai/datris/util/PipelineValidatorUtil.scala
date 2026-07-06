@@ -212,8 +212,16 @@ object PipelineValidatorUtil {
             }
 
             if(!config.destination.database.usePostgres &&
-                !config.destination.database.useMongoDB) {
-                throw new DatrisException("For the 'destination.database' section, you must select either usePostgres or useMongoDB")
+                !config.destination.database.useMongoDB &&
+                !config.destination.database.useSnowflake) {
+                throw new DatrisException("For the 'destination.database' section, you must select either usePostgres, useMongoDB, or useSnowflake")
+            }
+
+            if(config.destination.database.useSnowflake) {
+                if(config.destination.database.credentialsSecret == null)
+                    throw new DatrisException("When 'destination.database.useSnowflake' is true, 'credentialsSecret' is required — the name of a Platform secret holding 'account', 'user', and 'privateKey' (or 'password'). Create it on Configuration → Secrets → Platform")
+                if(config.destination.database.warehouse == null)
+                    throw new DatrisException("When 'destination.database.useSnowflake' is true, 'warehouse' is required — the Snowflake virtual warehouse that runs the load")
             }
         }
 
