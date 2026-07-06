@@ -1,0 +1,165 @@
+---
+title: "Snowflake Destination"
+description: "Send data to Snowflake with per-pipeline credentials"
+---
+
+The Snowflake destination bulk-loads data using Snowflake's native `PUT` → `COPY INTO` path: the pipeline output is staged onto the target table's internal stage and copied in, with gzip compression handled automatically on the wire. When `keyFields` is set, the loader upserts via `MERGE` instead. No Snowflake stages need to be created — the loader uses the table stage (`@%table`) that every Snowflake table has implicitly.
+
+Unlike the bundled PostgreSQL and MongoDB destinations, Snowflake is an external target: credentials are per-pipeline, referenced by name through `credentialsSecret` — the same model as the [S3 destination](/destinations/s3). Different pipelines can write to different Snowflake accounts.
+
+## One-time Snowflake setup
+
+This is the recommended long-term setup for connecting Datris to a company Snowflake account: a dedicated **service user** with **key-pair authentication**, a least-privilege role, and an isolated warehouse. Key-pair auth is Snowflake's recommended method for programmatic access — it never expires, needs no network policy, and supports zero-downtime rotation.
+
+### 1. Generate a key pair
+
+On any machine you trust (the keys are yours, not Snowflake's):
+
+```bash
+openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt
+openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+```
+
+To encrypt the private key at rest, drop `-nocrypt` and remember the passphrase — you'll store it in the secret as `privateKeyPassphrase`.
+
+### 2. Create the role, warehouse, and service user
+
+Run as `ACCOUNTADMIN` (or a role with the equivalent grants):
+
+```sql
+-- Least-privilege role for Datris loads
+CREATE ROLE IF NOT EXISTS DATRIS_LOADER;
+
+-- Dedicated warehouse so Datris load cost is isolated and visible
+CREATE WAREHOUSE IF NOT EXISTS DATRIS_WH
+  WAREHOUSE_SIZE = XSMALL
+  AUTO_SUSPEND = 60
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE;
+
+GRANT USAGE ON WAREHOUSE DATRIS_WH TO ROLE DATRIS_LOADER;
+
+-- Target database/schema privileges (adjust names to your environment)
+GRANT USAGE ON DATABASE ANALYTICS TO ROLE DATRIS_LOADER;
+GRANT USAGE, CREATE TABLE ON SCHEMA ANALYTICS.PUBLIC TO ROLE DATRIS_LOADER;
+-- Only needed if you want Datris to auto-create the schema itself:
+GRANT CREATE SCHEMA ON DATABASE ANALYTICS TO ROLE DATRIS_LOADER;
+
+-- Service user: no password, no MFA prompts — key-pair only
+CREATE USER IF NOT EXISTS DATRIS_SVC
+  TYPE = SERVICE
+  DEFAULT_ROLE = DATRIS_LOADER
+  DEFAULT_WAREHOUSE = DATRIS_WH
+  RSA_PUBLIC_KEY = '<contents of rsa_key.pub without the BEGIN/END lines>';
+
+GRANT ROLE DATRIS_LOADER TO USER DATRIS_SVC;
+```
+
+Tables auto-created by Datris are owned by `DATRIS_LOADER`, so no further table grants are needed. If you manage tables yourself (`manageTableManually: true`), also grant `SELECT, INSERT, UPDATE, DELETE` on those tables to `DATRIS_LOADER` — `MERGE` upserts and truncation need all four.
+
+`TYPE = SERVICE` marks the user as a machine identity: password login is disabled and MFA does not apply, which is exactly what you want for an unattended integration.
+
+### 3. Create the platform secret in Datris
+
+On **Configuration → Secrets → Platform**, create a secret (for example `snowflake/analytics`) with:
+
+| Field                  | Required | Notes                                                                    |
+|------------------------|----------|--------------------------------------------------------------------------|
+| `account`              | yes      | Account identifier, e.g. `xy12345.us-east-1` or `myorg-myaccount`        |
+| `user`                 | yes      | The service user, e.g. `DATRIS_SVC`                                      |
+| `privateKey`           | yes      | Full contents of `rsa_key.p8`, including the BEGIN/END lines             |
+| `privateKeyPassphrase` | no       | Only if the private key is encrypted                                     |
+| `password`             | no       | Fallback when no `privateKey` is present — see below                     |
+
+The `account` lives in the secret rather than the pipeline config so it stays bound to the credential that authorizes it. If a required field is missing, the load fails at resolve time with an explicit error naming the secret and the field.
+
+### Key rotation
+
+Snowflake users hold two public-key slots, so rotation has no downtime: generate a new pair, register it with `ALTER USER DATRIS_SVC SET RSA_PUBLIC_KEY_2 = '<new public key>'`, update the Datris secret's `privateKey` to the new private key, then clear the old slot with `ALTER USER DATRIS_SVC UNSET RSA_PUBLIC_KEY`.
+
+### Alternative: programmatic access token (PAT)
+
+For a quick evaluation you can skip the key pair: generate a PAT in Snowsight (**Settings → Authentication → Programmatic access tokens**) and store it in the secret's `password` field instead of `privateKey`. Be aware of the trade-offs before relying on one long-term: PATs expire (one year at most), and Snowflake refuses PAT authentication unless the account or user has an active **network policy** allowing the caller's IP. Key-pair auth has neither constraint.
+
+## Configuration
+
+```json
+{
+  "name": "orders_pipeline",
+  "source": { "..." : "..." },
+  "destination": {
+    "database": {
+      "useSnowflake": true,
+      "credentialsSecret": "snowflake/analytics",
+      "warehouse": "DATRIS_WH",
+      "role": "DATRIS_LOADER",
+      "dbName": "ANALYTICS",
+      "schema": "PUBLIC",
+      "table": "ORDERS",
+      "keyFields": ["ORDER_ID"]
+    }
+  }
+}
+```
+
+### Field reference
+
+| Field                 | Required | Default | Description                                                        |
+|-----------------------|----------|---------|--------------------------------------------------------------------|
+| `useSnowflake`        | yes      | `false` | Must be `true` to enable the Snowflake destination                 |
+| `credentialsSecret`   | yes      |         | Name of the Platform secret holding `account`/`user`/auth          |
+| `warehouse`           | yes      |         | Virtual warehouse that runs the `COPY`/`MERGE`                     |
+| `role`                | no       |         | Role to assume; omit to use the user's default role                |
+| `dbName`              | yes      |         | Target database                                                    |
+| `schema`              | yes      |         | Target schema                                                      |
+| `table`               | yes      |         | Target table                                                       |
+| `manageTableManually` | no       | `false` | If `true`, skip auto-creation of the table                         |
+| `truncateBeforeWrite` | no       | `false` | Empty the table before loading (see semantics below)               |
+| `keyFields`           | no       |         | Natural-key columns; switches the load to a `MERGE` upsert         |
+| `useTransaction`      | no       | `true`  | Wrap the load in a transaction                                     |
+
+`warehouse` and `role` are per-pipeline on purpose: a light feed can run on an extra-small warehouse while a wide table gets a larger one, without touching the credential.
+
+Identifiers are case-preserved — Datris quotes `dbName`, `schema`, and `table` exactly as written. Snowflake's convention is uppercase; write them uppercase unless the objects were created with quoted lowercase names.
+
+## Table Management
+
+When `manageTableManually` is `false` (the default), the pipeline auto-creates the schema and table if they don't exist, with a `PRIMARY KEY` constraint on `keyFields` when set. Schema changes are additive: new columns in the pipeline schema are added with `ALTER TABLE ... ADD COLUMN`; columns are never dropped or retyped.
+
+## Type Mapping
+
+| Source Type          | Snowflake Type  |
+|----------------------|-----------------|
+| `string`             | `VARCHAR`       |
+| `int` / `integer` / `tinyint` / `smallint` / `bigint` | `NUMBER(38,0)` |
+| `float` / `double`   | `FLOAT`         |
+| `boolean`            | `BOOLEAN`       |
+| `date`               | `DATE`          |
+| `timestamp`          | `TIMESTAMP_NTZ` |
+| `_json`              | `VARIANT`       |
+| `_xml`               | `VARCHAR`       |
+
+Other types (`decimal(p,s)`, `varchar(n)`, `char(n)`) pass through as-is. Semi-structured `_json` columns land as `VARIANT` (parsed with `PARSE_JSON` during the `COPY`), so JSON payloads are natively queryable in Snowflake rather than stored as text.
+
+## Truncate Before Write
+
+Set `truncateBeforeWrite` to `true` to replace the full table contents on each run. The mechanism depends on `useTransaction`:
+
+- **`useTransaction: true` (default):** rows are removed with `DELETE FROM` inside the load transaction. If the load fails, the delete rolls back and the previous rows survive — a failed run never leaves the table empty.
+- **`useTransaction: false`:** rows are removed with `TRUNCATE TABLE`, which is faster on very large tables but commits immediately (Snowflake DDL auto-commits) — a failure after the truncate leaves the table empty until the next successful run.
+
+## Primary Key and Upsert
+
+Specify one or more columns in `keyFields` to define the natural key. When set (and `truncateBeforeWrite` is `false`), the loader stages the batch into a session-temporary table and issues a `MERGE` on the key columns: matched rows are updated, unmatched rows are inserted. The same rows can be loaded across runs without duplicates.
+
+Upsert semantics match the PostgreSQL destination: on match, non-key columns are overwritten in full, including `NULL`s. If a single batch contains duplicate key values, Snowflake rejects the `MERGE` as non-deterministic — deduplicate upstream.
+
+When `keyFields` is empty, the loader uses a straight `COPY INTO` — the fastest path, for append-only ingestion.
+
+## Warehouse Behavior
+
+The loader assumes `AUTO_RESUME = TRUE` on the warehouse (Snowflake's default): a suspended warehouse resumes itself when the `COPY`/`MERGE` arrives. Datris never issues `ALTER WAREHOUSE ... RESUME`, so the loader role does not need the `OPERATE` privilege. If your warehouse is deliberately configured with `AUTO_RESUME = FALSE`, resume it before the pipeline runs.
+
+## Completion Notification
+
+A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.

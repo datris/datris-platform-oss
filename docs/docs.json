@@ -63,6 +63,7 @@
             "pages": [
               "destinations/postgres",
               "destinations/mongodb",
+              "destinations/snowflake",
               "destinations/kafka",
               "destinations/object-store",
               "destinations/s3",
