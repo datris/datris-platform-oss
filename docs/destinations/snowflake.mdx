@@ -32,8 +32,10 @@ The script is self-contained: it creates everything Datris needs, including a de
 -- Everything below needs account-level privileges
 USE ROLE ACCOUNTADMIN;
 
--- Least-privilege role for Datris loads
+-- Least-privilege role for Datris loads, attached to the admin hierarchy
+-- so tables Datris creates stay manageable by your admins
 CREATE ROLE IF NOT EXISTS DATRIS_LOADER;
+GRANT ROLE DATRIS_LOADER TO ROLE SYSADMIN;
 
 -- Dedicated database for Datris pipeline output
 CREATE DATABASE IF NOT EXISTS DATRIS;
