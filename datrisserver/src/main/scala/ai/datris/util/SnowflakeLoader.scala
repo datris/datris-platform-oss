@@ -74,7 +74,18 @@ class SnowflakeLoader(jobContext: JobContext) {
 
             val jdbcUrl = "jdbc:snowflake://" + normalizeAccount(creds.account) + ".snowflakecomputing.com/"
             statusUtil.info("processing", "jdbc url: " + jdbcUrl)
-            conn = DriverManager.getConnection(jdbcUrl, properties)
+            conn = try {
+                DriverManager.getConnection(jdbcUrl, properties)
+            } catch {
+                // The driver reports a nonexistent account hostname as an opaque
+                // "communication error ... HTTP status=404".
+                case e: java.sql.SQLException if e.getMessage != null && e.getMessage.contains("404") =>
+                    throw new DatrisException("No Snowflake account answers at " + jdbcUrl +
+                        " (HTTP 404). The credentials secret's 'account' field must be the full account identifier — " +
+                        "usually 'orgname-accountname'. An account name alone (missing the org prefix) causes exactly this. " +
+                        "Find it in Snowsight via SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME(). " +
+                        "Underlying driver error: " + e.getMessage)
+            }
             statusUtil.info("processing", "Snowflake connection acquired")
             if (db.useTransaction)
                 conn.setAutoCommit(false)
