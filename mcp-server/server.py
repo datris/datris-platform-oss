@@ -631,7 +631,7 @@ Call `check_service_health` first to verify the target service is available.
 }
 ```
 
-Snowflake is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `account`, `user`, and `privateKey` for key-pair auth or `password` as fallback). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields` — same flow as the S3 credentials secret below; the agent cannot create it. `warehouse` and `dbName` have no defaults — ask the user. `schema` defaults to `PUBLIC`. Identifiers are case-preserved (Snowflake convention is uppercase). `keyFields` upserts via `MERGE`; there is no query tool for Snowflake — the user queries their own account.
+Snowflake is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `account`, `user`, and `privateKey` for key-pair auth or `password` as fallback). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields` — same flow as the S3 credentials secret below; the agent cannot create it. `warehouse` and `dbName` have no defaults — ask the user. `schema` defaults to `PUBLIC`. Simple identifiers resolve case-insensitively (`datris` finds the `DATRIS` database — standard Snowflake folding); names with hyphens or spaces are quoted case-sensitively, so prefer underscore table names. `keyFields` upserts via `MERGE`; there is no query tool for Snowflake — the user queries their own account.
 
 ### objectStore — MinIO (default) or AWS S3
 
@@ -1201,7 +1201,7 @@ async def list_tools():
                     },
                     "schema": {
                         "type": "string",
-                        "description": "Destination schema. Only applies to destination=snowflake (default: PUBLIC). Snowflake identifiers are case-preserved — the platform convention is uppercase."
+                        "description": "Destination schema. Only applies to destination=snowflake (default: PUBLIC). Simple identifiers resolve case-insensitively (folded to uppercase, standard Snowflake behavior); names with hyphens/spaces are quoted case-sensitively."
                     },
                     "warehouse": {
                         "type": "string",

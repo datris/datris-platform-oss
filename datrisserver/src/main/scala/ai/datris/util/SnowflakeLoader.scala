@@ -196,7 +196,7 @@ class SnowflakeLoader(jobContext: JobContext) {
 
     /** Insert path: PUT onto the table stage, COPY INTO the target. */
     private def copyInsert(statement: Statement, dataFile: Path): Unit = {
-        val stage = "@%" + quote(db.table)
+        val stage = "@%" + ident(db.table)
         putFile(statement, dataFile, stage)
         val copied = copyStagedInto(statement, qualifiedTable(), stage, copyFields())
         statusUtil.info("processing", "Rows loaded into target: " + copied)
@@ -207,7 +207,7 @@ class SnowflakeLoader(jobContext: JobContext) {
     private def mergeInto(statement: Statement, dataFile: Path): Unit = {
         val targetRef = qualifiedTable()
         val stgName = "DATRIS_STG_" + UUID.randomUUID().toString.replace("-", "_")
-        val stgRef = quote(stgName)
+        val stgRef = ident(stgName)
         try {
             statement.execute(s"CREATE TEMPORARY TABLE $stgRef LIKE $targetRef")
             statusUtil.info("processing", "Staging table created: " + stgName)
@@ -222,14 +222,14 @@ class SnowflakeLoader(jobContext: JobContext) {
             val colNames = fields.map(_.name)
             val nonKey = colNames.filterNot(c => keySet.contains(c.toLowerCase))
 
-            val onClause = keyNames.map(k => s"t.${quote(k)} = s.${quote(k)}").mkString(" AND ")
-            val insertCols = colNames.map(quote).mkString(", ")
-            val insertVals = colNames.map(c => "s." + quote(c)).mkString(", ")
+            val onClause = keyNames.map(k => s"t.${ident(k)} = s.${ident(k)}").mkString(" AND ")
+            val insertCols = colNames.map(ident).mkString(", ")
+            val insertVals = colNames.map(c => "s." + ident(c)).mkString(", ")
 
             val merge = new StringBuilder()
             merge.append(s"MERGE INTO $targetRef t USING $stgRef s ON $onClause ")
             if (nonKey.nonEmpty) {
-                val setClause = nonKey.map(c => s"t.${quote(c)} = s.${quote(c)}").mkString(", ")
+                val setClause = nonKey.map(c => s"t.${ident(c)} = s.${ident(c)}").mkString(", ")
                 merge.append(s"WHEN MATCHED THEN UPDATE SET $setClause ")
             }
             merge.append(s"WHEN NOT MATCHED THEN INSERT ($insertCols) VALUES ($insertVals)")
@@ -255,7 +255,7 @@ class SnowflakeLoader(jobContext: JobContext) {
      *  into the VARIANT; otherwise a straight positional COPY. PURGE clears the
      *  stage afterward. Returns rows loaded. */
     private def copyStagedInto(statement: Statement, tableRef: String, stage: String, fields: Seq[SchemaField]): Long = {
-        val colList = fields.map(f => quote(f.name)).mkString(", ")
+        val colList = fields.map(f => ident(f.name)).mkString(", ")
         val hasVariant = fields.exists(f => f.name.equalsIgnoreCase("_json"))
 
         val fileFormat = "FILE_FORMAT = (TYPE = CSV FIELD_OPTIONALLY_ENCLOSED_BY = '\"' " +
@@ -302,12 +302,12 @@ class SnowflakeLoader(jobContext: JobContext) {
         val sql = new StringBuilder()
         sql.append("CREATE TABLE IF NOT EXISTS " + qualifiedTable() + " (")
         config.destination.schemaProperties.fields.forEach(field => {
-            sql.append(quote(field.name) + " " + snowflakeType(field) + ", ")
+            sql.append(ident(field.name) + " " + snowflakeType(field) + ", ")
         })
         sql.setLength(sql.length - 2)
 
         if (db.keyFields != null && !db.keyFields.isEmpty) {
-            val keys = db.keyFields.asScala.map(quote).mkString(", ")
+            val keys = db.keyFields.asScala.map(ident).mkString(", ")
             sql.append(", PRIMARY KEY (" + keys + ")")
         }
         sql.append(")")
@@ -319,13 +319,14 @@ class SnowflakeLoader(jobContext: JobContext) {
         statement.execute(sql.toString())
 
         // Additive schema evolution: add any new columns the table doesn't have yet.
-        // Identifiers are created quoted (case-preserved), so match information_schema
-        // on the exact configured names; read the result by position — the Snowflake
-        // driver matches result labels case-sensitively and returns COLUMN_NAME.
+        // Match information_schema on the effective stored names (unquoted
+        // identifiers fold to uppercase, quoted ones keep exact case); read the
+        // result by position — the Snowflake driver matches result labels
+        // case-sensitively and returns COLUMN_NAME.
         val existing = scala.collection.mutable.Set[String]()
         val rs = statement.executeQuery(
             s"""SELECT column_name FROM ${ident(db.dbName)}.information_schema.columns
-               |WHERE table_schema = '${sqlLiteral(db.schema)}' AND table_name = '${sqlLiteral(db.table)}'""".stripMargin)
+               |WHERE table_schema = '${sqlLiteral(effectiveName(db.schema))}' AND table_name = '${sqlLiteral(effectiveName(db.table))}'""".stripMargin)
         try {
             while (rs.next()) existing.add(rs.getString(1).toLowerCase)
         } finally {
@@ -334,7 +335,7 @@ class SnowflakeLoader(jobContext: JobContext) {
 
         config.destination.schemaProperties.fields.forEach(field => {
             if (!existing.contains(field.name.toLowerCase)) {
-                val alter = s"ALTER TABLE ${qualifiedTable()} ADD COLUMN IF NOT EXISTS ${quote(field.name)} ${snowflakeType(field)}"
+                val alter = s"ALTER TABLE ${qualifiedTable()} ADD COLUMN IF NOT EXISTS ${ident(field.name)} ${snowflakeType(field)}"
                 statusUtil.info("processing", "Schema evolution: " + alter)
                 statement.execute(alter)
             }
@@ -406,13 +407,22 @@ class SnowflakeLoader(jobContext: JobContext) {
         s"-----BEGIN $label-----\n$wrapped\n-----END $label-----\n"
     }
 
-    /** Double-quote a Snowflake identifier (preserves case, matches the CSV
-     *  header / COPY column list exactly). */
+    /** Emit a Snowflake identifier. Simple names (letters/digits/underscore/$,
+     *  not digit-leading) go UNQUOTED so Snowflake folds them to uppercase —
+     *  the convention every Snowflake tool follows, and what lets a config
+     *  that says `datris` find the DATRIS database. Anything else (hyphens,
+     *  spaces, punctuation) is double-quoted and case-sensitive. */
+    private def ident(identifier: String): String =
+        if (isSimpleIdent(identifier)) identifier else quote(identifier)
+    private def isSimpleIdent(s: String): Boolean = s.matches("[A-Za-z_][A-Za-z0-9_$]*")
+    /** The name information_schema stores for an identifier as `ident` emits it:
+     *  unquoted names fold to uppercase, quoted names keep their exact case. */
+    private def effectiveName(s: String): String =
+        if (isSimpleIdent(s)) s.toUpperCase else s
     private def quote(identifier: String): String = "\"" + identifier.replace("\"", "\"\"") + "\""
     private def sqlLiteral(value: String): String = value.replace("'", "''")
-    private def ident(identifier: String): String = quote(identifier)
-    private def schemaRef(): String = quote(db.dbName) + "." + quote(db.schema)
-    private def qualifiedTable(): String = quote(db.dbName) + "." + quote(db.schema) + "." + quote(db.table)
+    private def schemaRef(): String = ident(db.dbName) + "." + ident(db.schema)
+    private def qualifiedTable(): String = ident(db.dbName) + "." + ident(db.schema) + "." + ident(db.table)
 
     private def sendNotification(): Unit = {
         val notification = Notification(

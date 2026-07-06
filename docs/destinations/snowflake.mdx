@@ -135,7 +135,7 @@ For a quick evaluation you can skip the key pair: generate a PAT in Snowsight (*
 
 `warehouse` and `role` are per-pipeline on purpose: a light feed can run on an extra-small warehouse while a wide table gets a larger one, without touching the credential.
 
-Identifiers are case-preserved — Datris quotes `dbName`, `schema`, and `table` exactly as written. Snowflake's convention is uppercase; write them uppercase unless the objects were created with quoted lowercase names.
+Identifiers follow Snowflake's normal resolution rules: simple names (letters, digits, underscores) are passed unquoted, so `datris` and `DATRIS` both resolve to the uppercase `DATRIS` database — the same behavior as every other Snowflake tool. Names containing other characters (hyphens, spaces) are quoted and matched case-sensitively.
 
 ## Table Management
 
