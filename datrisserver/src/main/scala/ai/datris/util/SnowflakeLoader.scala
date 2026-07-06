@@ -319,12 +319,15 @@ class SnowflakeLoader(jobContext: JobContext) {
         statement.execute(sql.toString())
 
         // Additive schema evolution: add any new columns the table doesn't have yet.
+        // Identifiers are created quoted (case-preserved), so match information_schema
+        // on the exact configured names; read the result by position — the Snowflake
+        // driver matches result labels case-sensitively and returns COLUMN_NAME.
         val existing = scala.collection.mutable.Set[String]()
         val rs = statement.executeQuery(
             s"""SELECT column_name FROM ${ident(db.dbName)}.information_schema.columns
-               |WHERE table_schema = '${db.schema.toUpperCase}' AND table_name = '${db.table.toUpperCase}'""".stripMargin)
+               |WHERE table_schema = '${sqlLiteral(db.schema)}' AND table_name = '${sqlLiteral(db.table)}'""".stripMargin)
         try {
-            while (rs.next()) existing.add(rs.getString("column_name").toLowerCase)
+            while (rs.next()) existing.add(rs.getString(1).toLowerCase)
         } finally {
             rs.close()
         }
@@ -406,6 +409,7 @@ class SnowflakeLoader(jobContext: JobContext) {
     /** Double-quote a Snowflake identifier (preserves case, matches the CSV
      *  header / COPY column list exactly). */
     private def quote(identifier: String): String = "\"" + identifier.replace("\"", "\"\"") + "\""
+    private def sqlLiteral(value: String): String = value.replace("'", "''")
     private def ident(identifier: String): String = quote(identifier)
     private def schemaRef(): String = quote(db.dbName) + "." + quote(db.schema)
     private def qualifiedTable(): String = quote(db.dbName) + "." + quote(db.schema) + "." + quote(db.table)
