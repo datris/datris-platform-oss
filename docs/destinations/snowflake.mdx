@@ -22,13 +22,21 @@ openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
 
 To encrypt the private key at rest, drop `-nocrypt` and remember the passphrase — you'll store it in the secret as `privateKeyPassphrase`.
 
-### 2. Create the role, warehouse, and service user
+### 2. Create the database, role, warehouse, and service user
 
-Run as `ACCOUNTADMIN` (or a role with the equivalent grants):
+In Snowsight (app.snowflake.com), open **Projects → Workspaces** and create a SQL file, paste the script below, replace the public-key placeholder, then **select all and Run All** — the run button alone executes only the statement under the cursor.
+
+The script is self-contained: it creates everything Datris needs, including a dedicated `DATRIS` database. Every statement is idempotent (`IF NOT EXISTS` / `GRANT`), so re-running it is safe. Rename `DATRIS` throughout if you'd rather load an existing database.
 
 ```sql
+-- Everything below needs account-level privileges
+USE ROLE ACCOUNTADMIN;
+
 -- Least-privilege role for Datris loads
 CREATE ROLE IF NOT EXISTS DATRIS_LOADER;
+
+-- Dedicated database for Datris pipeline output
+CREATE DATABASE IF NOT EXISTS DATRIS;
 
 -- Dedicated warehouse so Datris load cost is isolated and visible
 CREATE WAREHOUSE IF NOT EXISTS DATRIS_WH
@@ -39,11 +47,11 @@ CREATE WAREHOUSE IF NOT EXISTS DATRIS_WH
 
 GRANT USAGE ON WAREHOUSE DATRIS_WH TO ROLE DATRIS_LOADER;
 
--- Target database/schema privileges (adjust names to your environment)
-GRANT USAGE ON DATABASE ANALYTICS TO ROLE DATRIS_LOADER;
-GRANT USAGE, CREATE TABLE ON SCHEMA ANALYTICS.PUBLIC TO ROLE DATRIS_LOADER;
--- Only needed if you want Datris to auto-create the schema itself:
-GRANT CREATE SCHEMA ON DATABASE ANALYTICS TO ROLE DATRIS_LOADER;
+-- Database/schema privileges
+GRANT USAGE ON DATABASE DATRIS TO ROLE DATRIS_LOADER;
+GRANT USAGE, CREATE TABLE ON SCHEMA DATRIS.PUBLIC TO ROLE DATRIS_LOADER;
+-- Lets Datris auto-create additional schemas beyond PUBLIC:
+GRANT CREATE SCHEMA ON DATABASE DATRIS TO ROLE DATRIS_LOADER;
 
 -- Service user: no password, no MFA prompts — key-pair only
 CREATE USER IF NOT EXISTS DATRIS_SVC
@@ -53,7 +61,12 @@ CREATE USER IF NOT EXISTS DATRIS_SVC
   RSA_PUBLIC_KEY = '<contents of rsa_key.pub without the BEGIN/END lines>';
 
 GRANT ROLE DATRIS_LOADER TO USER DATRIS_SVC;
+
+-- Verify: should show a fingerprint in RSA_PUBLIC_KEY_FP
+DESC USER DATRIS_SVC;
 ```
+
+The final `DESC USER` is the success check — a value in the `RSA_PUBLIC_KEY_FP` row confirms the key registered.
 
 Tables auto-created by Datris are owned by `DATRIS_LOADER`, so no further table grants are needed. If you manage tables yourself (`manageTableManually: true`), also grant `SELECT, INSERT, UPDATE, DELETE` on those tables to `DATRIS_LOADER` — `MERGE` upserts and truncation need all four.
 
@@ -61,7 +74,7 @@ Tables auto-created by Datris are owned by `DATRIS_LOADER`, so no further table 
 
 ### 3. Create the platform secret in Datris
 
-On **Configuration → Secrets → Platform**, create a secret (for example `snowflake/analytics`) with:
+On **Configuration → Secrets → Platform**, create a secret (for example `snowflake`) with:
 
 | Field                  | Required | Notes                                                                    |
 |------------------------|----------|--------------------------------------------------------------------------|
@@ -90,10 +103,10 @@ For a quick evaluation you can skip the key pair: generate a PAT in Snowsight (*
   "destination": {
     "database": {
       "useSnowflake": true,
-      "credentialsSecret": "snowflake/analytics",
+      "credentialsSecret": "snowflake",
       "warehouse": "DATRIS_WH",
       "role": "DATRIS_LOADER",
-      "dbName": "ANALYTICS",
+      "dbName": "DATRIS",
       "schema": "PUBLIC",
       "table": "ORDERS",
       "keyFields": ["ORDER_ID"]
