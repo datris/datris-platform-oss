@@ -59,12 +59,13 @@ class SnowflakeLoader(jobContext: JobContext) {
             // Password is the fallback when no private key is present.
             creds.privateKey match {
                 case Some(pem) =>
+                    val normalizedPem = normalizePrivateKeyPem(pem, creds.privateKeyPassphrase.isDefined)
                     keyFile = Files.createTempFile("snowflake-key-", ".p8")
                     keyFile.toFile.deleteOnExit()
                     Files.setPosixFilePermissions(keyFile, java.util.EnumSet.of(
                         java.nio.file.attribute.PosixFilePermission.OWNER_READ,
                         java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
-                    Files.write(keyFile, pem.getBytes(StandardCharsets.UTF_8))
+                    Files.write(keyFile, normalizedPem.getBytes(StandardCharsets.UTF_8))
                     properties.setProperty("private_key_file", keyFile.toAbsolutePath.toString)
                     creds.privateKeyPassphrase.foreach(p => properties.setProperty("private_key_file_pwd", p))
                 case None =>
@@ -349,6 +350,32 @@ class SnowflakeLoader(jobContext: JobContext) {
         if (config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null)
             config.source.fileAttributes.csvAttributes.delimiter
         else ","
+
+    /** Secret values are entered through single-line form fields, which strip
+     *  the newlines out of a pasted PEM — and the driver's PemReader requires
+     *  strict PEM framing, so the stored key fails with "readPemObject()
+     *  returned null". Rebuild it: honor literal \n sequences, pull the base64
+     *  body out from between the BEGIN/END markers (or treat the whole value
+     *  as the body when the markers are missing), and re-wrap at 64 columns. */
+    private def normalizePrivateKeyPem(raw: String, hasPassphrase: Boolean): String = {
+        val withNewlines = raw.trim.replace("\\n", "\n")
+        val headerRe = "-----BEGIN ([A-Z0-9 ]+?)-----".r
+        val label = headerRe.findFirstMatchIn(withNewlines).map(_.group(1)).getOrElse("PRIVATE KEY")
+
+        if (label == "RSA PRIVATE KEY")
+            throw new DatrisException("Snowflake 'privateKey' is a PKCS#1 key (BEGIN RSA PRIVATE KEY), which the Snowflake driver does not accept. Convert it to PKCS#8 first: openssl pkcs8 -topk8 -nocrypt -in <key-file>")
+        if (label == "ENCRYPTED PRIVATE KEY" && !hasPassphrase)
+            throw new DatrisException("Snowflake 'privateKey' is encrypted (BEGIN ENCRYPTED PRIVATE KEY) but the secret has no 'privateKeyPassphrase' field. Add the passphrase to the secret, or store an unencrypted PKCS#8 key")
+
+        val body = "-----(BEGIN|END) [A-Z0-9 ]+?-----".r
+            .replaceAllIn(withNewlines, "")
+            .replaceAll("\\s", "")
+        if (body.isEmpty)
+            throw new DatrisException("Snowflake 'privateKey' has no key material after the PEM header — re-paste the full contents of the key file (the form field may have truncated it)")
+
+        val wrapped = body.grouped(64).mkString("\n")
+        s"-----BEGIN $label-----\n$wrapped\n-----END $label-----\n"
+    }
 
     /** Double-quote a Snowflake identifier (preserves case, matches the CSV
      *  header / COPY column list exactly). */

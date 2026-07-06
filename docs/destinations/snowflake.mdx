@@ -86,6 +86,8 @@ On **Configuration → Secrets → Platform**, create a secret (for example `sno
 
 The `account` lives in the secret rather than the pipeline config so it stays bound to the credential that authorizes it. If a required field is missing, the load fails at resolve time with an explicit error naming the secret and the field.
 
+Paste the key file's entire contents into `privateKey` — don't worry about formatting. The secret form is a single-line field that strips line breaks from the paste; Datris reconstructs the strict PEM framing the Snowflake driver requires, so a flattened key (or even just the base64 body without the BEGIN/END lines) works. What it cannot accept is a PKCS#1 key (`BEGIN RSA PRIVATE KEY` — convert with `openssl pkcs8 -topk8 -nocrypt`) or an encrypted key without `privateKeyPassphrase`; both fail with an error saying exactly that.
+
 ### Key rotation
 
 Snowflake users hold two public-key slots, so rotation has no downtime: generate a new pair, register it with `ALTER USER DATRIS_SVC SET RSA_PUBLIC_KEY_2 = '<new public key>'`, update the Datris secret's `privateKey` to the new private key, then clear the old slot with `ALTER USER DATRIS_SVC UNSET RSA_PUBLIC_KEY`.
