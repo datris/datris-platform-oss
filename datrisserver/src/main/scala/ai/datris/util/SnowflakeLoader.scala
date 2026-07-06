@@ -161,8 +161,16 @@ class SnowflakeLoader(jobContext: JobContext) {
         // Truncate AFTER create-if-not-exists so first-run pipelines with
         // truncateBeforeWrite=true don't fail against a not-yet-existing table.
         if (db.truncateBeforeWrite) {
-            statusUtil.info("processing", "'truncateBeforeWrite' is set, truncating table")
-            statement.execute("TRUNCATE TABLE " + qualifiedTable())
+            if (db.useTransaction) {
+                // TRUNCATE is DDL in Snowflake and implicitly commits, so a COPY
+                // failure after it would leave the table empty. DELETE is DML and
+                // rolls back with the rest of the load.
+                statusUtil.info("processing", "'truncateBeforeWrite' is set, deleting existing rows (DELETE — rolls back if the load fails)")
+                statement.execute("DELETE FROM " + qualifiedTable())
+            } else {
+                statusUtil.info("processing", "'truncateBeforeWrite' is set, truncating table")
+                statement.execute("TRUNCATE TABLE " + qualifiedTable())
+            }
         }
 
         // Same routing as Postgres: keyFields + not-truncating => upsert (MERGE);
