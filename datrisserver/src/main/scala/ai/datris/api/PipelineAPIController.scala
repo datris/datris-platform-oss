@@ -269,6 +269,25 @@ class PipelineAPIController {
             }
         }
 
+        // Snowflake — DROP TABLE in the external account, connecting with the
+        // pipeline's own credentialsSecret/warehouse/role (the loader role owns
+        // the tables it created, so it is allowed to drop them).
+        if (dest.database != null && dest.database.useSnowflake) {
+            try {
+                SnowflakeConnectionUtil.withConnection(dest.database) { conn =>
+                    val stmt = conn.createStatement()
+                    try {
+                        stmt.execute("DROP TABLE IF EXISTS " + SnowflakeConnectionUtil.qualifiedTable(dest.database))
+                        logger.info("Dropped Snowflake table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
+                    } finally {
+                        stmt.close()
+                    }
+                }
+            } catch {
+                case e: Exception => logger.warn("Failed to drop Snowflake table: " + e.getMessage)
+            }
+        }
+
         // pgvector — DROP TABLE
         if (dest.pgvector != null) {
             try {
