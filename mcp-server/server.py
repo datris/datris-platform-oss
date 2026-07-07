@@ -262,7 +262,7 @@ When the user makes ANY data-related ask — "I'm looking for X", "can you get m
 
 After those calls return, anchor your reply in what exists: "There's already a `<name>` pipeline doing X — does that cover your need, or do you want to extend it / add Y / pick a different source?" Only enumerate external API options after you've confirmed nothing in the platform already covers the ask. A generic options menu drawn from training data wastes the user's time when the answer is sitting in their own environment.
 
-If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, `query_objectstore` (Parquet/ORC files in MinIO or AWS S3), or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
+If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, `query_objectstore` (Parquet/ORC files in MinIO or AWS S3), `query_snowflake` (Snowflake destinations), or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
 
 How to find a "relevant pipeline" in the list response: the response begins with a `names` array — scan EVERY entry (the match may be at the end of a long list) for any name whose substring matches a keyword from the user's request. Hyphens, underscores, and case are interchangeable for matching. If any name matches, the pipeline EXISTS — do not announce "I don't see any …" or ask the user to clarify scope, provider, schedule, or data shape. Call the destination's query tool. Only when zero names match should you treat the resource as missing. When the user's data is already in the platform, query it and show what's there — do not collect setup parameters for a pipeline that already exists.
 
@@ -309,7 +309,7 @@ Required workflow:
      Option B — Create a tap: use create_tap to provide an instruction (AI generates the script) or your own Python script that fetches data from an external source and pushes it into the pipeline automatically. See Tap workflow below.
   4. Monitor: call get_job_status with the pipelineToken returned from upload_data and poll until `rollup.allDone` is true. You MUST wait for that before querying.
   5. If `rollup.status` is `error` or `warning`: read `rollup.jobs[].lastError` for the failing process and description. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
-  6. Query & search: use query_postgres, query_mongodb for structured data; query_objectstore for Parquet/ORC files in MinIO or S3; search_qdrant, search_pgvector, etc. for vector search
+  6. Query & search: use query_postgres, query_mongodb for structured data; query_objectstore for Parquet/ORC files in MinIO or S3; query_snowflake for Snowflake destinations (also covers metadata via SHOW/DESCRIBE); search_qdrant, search_pgvector, etc. for vector search
   7. RAG: pass search results as context to ai_answer with the user's question
 
 Tap workflow (for step 3 Option B):
@@ -432,7 +432,7 @@ PIPELINE_CONFIG_REFERENCE = """\
 6. Call `create_pipeline` with the config.
 7. Call `upload_data` ONCE with your full data (base64-encoded) and the pipeline name. Do not pre-chunk — vector destinations chunk server-side, structured pipelines accept the whole file as one batch.
 8. Call `get_job_status` with the pipelineToken returned from `upload_data` to monitor processing. Poll until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`).
-9. Query or search the data: `query_postgres`, `query_mongodb`, `query_objectstore`, `search_qdrant`, `search_pgvector`, etc.
+9. Query or search the data: `query_postgres`, `query_mongodb`, `query_objectstore`, `query_snowflake`, `search_qdrant`, `search_pgvector`, etc.
 10. For RAG: pass search results as context to `ai_answer` with the user's question.
 
 ---
@@ -631,7 +631,7 @@ Call `check_service_health` first to verify the target service is available.
 }
 ```
 
-Snowflake is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `account`, `user`, and `privateKey` for key-pair auth or `password` as fallback). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields` — same flow as the S3 credentials secret below; the agent cannot create it. `warehouse` and `dbName` have no defaults — ask the user. `schema` defaults to `PUBLIC`. Simple identifiers resolve case-insensitively (`datris` finds the `DATRIS` database — standard Snowflake folding); names with hyphens or spaces are quoted case-sensitively, so prefer underscore table names. `keyFields` upserts via `MERGE`; there is no query tool for Snowflake — the user queries their own account.
+Snowflake is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `account`, `user`, and `privateKey` for key-pair auth or `password` as fallback). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields` — same flow as the S3 credentials secret below; the agent cannot create it. `warehouse` and `dbName` have no defaults — ask the user. `schema` defaults to `PUBLIC`. Simple identifiers resolve case-insensitively (`datris` finds the `DATRIS` database — standard Snowflake folding); names with hyphens or spaces are quoted case-sensitively, so prefer underscore table names. `keyFields` upserts via `MERGE`. Read back / verify loads with `query_snowflake` (pipeline-scoped; SELECT plus SHOW/DESCRIBE for metadata discovery).
 
 ### objectStore — MinIO (default) or AWS S3
 
@@ -1556,6 +1556,31 @@ async def list_tools():
             }
         ),
         Tool(
+            name="query_snowflake",
+            description=(
+                "Run a read-only query against the Snowflake account a pipeline loads into. "
+                "Pass the pipeline name; the server resolves the account, credentials, warehouse, and role from "
+                "the pipeline's config — same connection the loader uses, credentials never leave the server. "
+                "Only works for pipelines whose destination is Snowflake (database with useSnowflake=true). "
+                "Allowed statements: SELECT (WITH/CTE), SHOW, and DESCRIBE — LIMIT is auto-appended to SELECTs. "
+                "Omit `sql` to preview the pipeline's destination table (the 'did my load land?' check). "
+                "Metadata discovery uses the same tool — there are no separate list_snowflake_* tools: "
+                "`SHOW DATABASES`, `SHOW SCHEMAS IN DATABASE <db>`, `SHOW TABLES IN SCHEMA <db>.<schema>`, "
+                "`DESCRIBE TABLE <db>.<schema>.<table>`, or query <db>.information_schema.columns. "
+                "Queries run on the customer's configured warehouse (which costs them compute) — keep them "
+                "targeted and let the default LIMIT stand unless the user asks for more."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a Snowflake destination."},
+                    "sql": {"type": "string", "description": "Read-only statement: SELECT/WITH, SHOW, or DESCRIBE. Omit to preview the pipeline's destination table."},
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
+                },
+                "required": ["pipeline"]
+            }
+        ),
+        Tool(
             name="query_mongodb",
             description="Query a MongoDB collection with optional filter and projection. Use list_mongodb_databases and list_mongodb_collections first to discover available data. Returns matching documents as JSON.",
             inputSchema={
@@ -2340,6 +2365,16 @@ def _dispatch(name: str, args: dict) -> str:
                     if isinstance(dest, dict) and dest_kind and isinstance(dest.get(dest_kind), dict):
                         d = dest[dest_kind]
                         target = d.get("tableName") or d.get("collectionName") or d.get("topic") or d.get("bucket") or d.get("indexName")
+                        # "database" is ambiguous — resolve the sub-type so the agent
+                        # picks the matching query tool without a get_pipeline call.
+                        if dest_kind == "database":
+                            if d.get("useSnowflake"):
+                                dest_kind = "snowflake"
+                            elif d.get("useMongoDB"):
+                                dest_kind = "mongodb"
+                            elif d.get("usePostgres"):
+                                dest_kind = "postgres"
+                            target = target or d.get("table")
                     summary.append({
                         "name": p.get("name"),
                         "destination": dest_kind,
@@ -2631,6 +2666,14 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("limit"):
             payload["limit"] = args["limit"]
         return _call("post", "/api/v1/query/postgres", json=payload)
+
+    elif name == "query_snowflake":
+        payload = {"pipeline": args["pipeline"]}
+        if args.get("sql"):
+            payload["sql"] = args["sql"]
+        if args.get("limit") is not None:
+            payload["limit"] = args["limit"]
+        return _call("post", "/api/v1/query/snowflake", json=payload)
 
     elif name == "query_mongodb":
         payload = {"collection": args["collection"]}

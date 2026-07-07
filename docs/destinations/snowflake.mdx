@@ -173,6 +173,12 @@ Upsert semantics match the PostgreSQL destination: on match, non-key columns are
 
 When `keyFields` is empty, the loader uses a straight `COPY INTO` — the fastest path, for append-only ingestion.
 
+## Querying from Datris
+
+The Assistant (and any MCP client) can read the destination back with the `query_snowflake` tool — useful for verifying a load landed and for answering questions over the data without leaving Datris. Queries are pipeline-scoped: the tool takes a pipeline name, and the server connects with that pipeline's credentials secret, warehouse, and role. Credentials never leave the server, and only read-only statements are accepted — `SELECT` (with `LIMIT` applied automatically), plus `SHOW` and `DESCRIBE` for discovering databases, schemas, tables, and columns.
+
+Queries run on the pipeline's configured warehouse and consume Snowflake compute like any other query. Results are capped at 100 rows by default.
+
 ## Warehouse Behavior
 
 The loader assumes `AUTO_RESUME = TRUE` on the warehouse (Snowflake's default): a suspended warehouse resumes itself when the `COPY`/`MERGE` arrives. Datris never issues `ALTER WAREHOUSE ... RESUME`, so the loader role does not need the `OPERATE` privilege. If your warehouse is deliberately configured with `AUTO_RESUME = FALSE`, resume it before the pipeline runs.
