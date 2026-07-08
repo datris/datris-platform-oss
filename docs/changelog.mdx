@@ -3,6 +3,20 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.9.0" description="July 8, 2026">
+  **Snowflake destination — load, upsert, and query your Snowflake account.**
+
+  - **Load into Snowflake.** Point any structured pipeline at your own Snowflake account and Datris bulk-loads it: tables are created automatically, the schema evolves as new columns appear, and natural-key upserts keep scheduled re-runs duplicate-free. Available in the pipeline wizard and through the AI assistant.
+  - **Secure by default.** Connects with key-pair authentication under a dedicated service user and least-privilege role you control; credentials live in a platform secret, never in pipeline configs. The [Snowflake destination guide](/destinations/snowflake) includes a copy-paste setup script that creates everything — role, warehouse, database, service user — in one run.
+  - **Forgiving setup.** Pasted private keys and account URLs are cleaned up automatically in whatever shape they arrive, and connection problems come back as plain-language errors that say exactly what to fix.
+  - **The assistant can verify and query Snowflake.** Ask it to confirm a load landed or answer questions over the data — read-only, using the pipeline's own credentials — and it can browse your databases, tables, and columns along the way.
+  - **Watch the assistant work.** Long assistant turns now show live progress: a size counter while it composes larger pieces of work, a running glimpse of its reasoning, and a continuous activity indicator between steps — no more silent pauses.
+  - **Faster pipeline creation.** The assistant sends only a small schema sample when creating pipelines, trimming minutes off longer build conversations.
+  - **Cleaner deletes.** Removing a pipeline together with its data now also cleans up the table it created in Snowflake.
+
+  **Upgrading:** Existing installs: `docker compose pull && docker compose up -d`. The CLI: `brew upgrade datris`. Using Snowflake requires a one-time setup in your Snowflake account — see the [Snowflake destination guide](/destinations/snowflake).
+</Update>
+
 <Update label="v1.8.12" description="July 1, 2026">
   **Claude Sonnet 5 support.**
 
