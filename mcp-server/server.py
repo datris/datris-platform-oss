@@ -301,7 +301,7 @@ NEVER rules:
 
 Required workflow:
   1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
-  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb, snowflake) and OBJECTSTORE (Parquet/ORC writes to MinIO or AWS S3), pass sample data (base64-encoded) + filename so the schema is auto-detected — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets.
+  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb, snowflake) and OBJECTSTORE (Parquet/ORC writes to MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets.
      create_pipeline UPSERTS by name: if a pipeline with the same name already exists, the call REPLACES its config in place — the data already in the destination is NOT touched. To change a knob (keyFields, truncate, codegen_rule, etc.) on an existing pipeline, just call create_pipeline again with the same name and the new settings. You do NOT need to delete first.
      Common knobs: keyFields (list of column names that act as a natural key for dedupe/upsert on every run), truncate (wipe the destination before each run), codegen_rule (AI-powered data quality), codegen_transform (AI-powered transformation).
   3. Ingest data (choose one):
@@ -427,7 +427,7 @@ PIPELINE_CONFIG_REFERENCE = """\
 
 1. Call `list_pipelines` to check if the pipeline already exists.
 2. If it exists, data may already be in the destination. Use metadata tools (`list_postgres_tables`, `list_mongodb_collections`, `list_qdrant_collections`, etc.) to discover it and query/search directly. Only re-ingest if the data is stale or needs updating.
-3. If the pipeline does not exist, call `create_pipeline`. Structured destinations (postgres, mongodb, snowflake) need sample data (base64) for schema auto-detection; snowflake also needs credentialsSecret + warehouse + database. Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
+3. If the pipeline does not exist, call `create_pipeline`. Structured destinations (postgres, mongodb, snowflake) need a tiny sample for schema auto-detection — content_text with header + 3-5 rows, never a full dataset; snowflake also needs credentialsSecret + warehouse + database. Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
 5. Call `check_service_health` to verify the target destination service is available.
 6. Call `create_pipeline` with the config.
 7. Call `upload_data` ONCE with your full data (base64-encoded) and the pipeline name. Do not pre-chunk — vector destinations chunk server-side, structured pipelines accept the whole file as one batch.
@@ -1170,13 +1170,17 @@ async def list_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. THREE destination categories: STRUCTURED (postgres, mongodb, snowflake) — send a small sample file and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database. OBJECTSTORE (objectstore — writes Parquet/ORC to MinIO or AWS S3) — same shape as structured (CSV-only, sample file required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint). Do NOT base64 the document just to satisfy this call — that's wasted tokens; send the document later via upload_data.",
+            description="Create a pipeline. THREE destination categories: STRUCTURED (postgres, mongodb, snowflake) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database. OBJECTSTORE (objectstore — writes Parquet/ORC to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "content": {
                         "type": "string",
-                        "description": "Base64-encoded sample data file content. REQUIRED for structured destinations (postgres, mongodb) AND for objectstore (CSV only — schema auto-detected from the sample). OMIT for vector destinations — the file goes through upload_data after this call returns."
+                        "description": "Base64-encoded sample data. Prefer content_text instead — it's the same thing without you having to base64-encode. Only use this form when you already have base64 in hand (e.g. relaying an attachment). OMIT for vector destinations — the file goes through upload_data after this call returns."
+                    },
+                    "content_text": {
+                        "type": "string",
+                        "description": "Plain-text sample data (the server base64-encodes it for you) — the preferred way to pass the sample for structured destinations (postgres, mongodb, snowflake) and objectstore. Header row + 3-5 representative rows ONLY; never a full dataset (the sample is used solely for schema auto-detection). Ignored if content is also set. OMIT for vector destinations."
                     },
                     "filename": {
                         "type": "string",
@@ -2348,7 +2352,7 @@ def _dispatch(name: str, args: dict) -> str:
         try:
             pipelines = json.loads(result)
             if not pipelines or (isinstance(pipelines, list) and len(pipelines) == 0):
-                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations (postgres, mongodb, snowflake) and objectstore (Parquet/ORC to MinIO or S3) pass sample data (base64) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
+                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations (postgres, mongodb, snowflake) and objectstore (Parquet/ORC to MinIO or S3) pass a tiny plain-text sample via content_text (header + 3-5 rows) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
             if isinstance(pipelines, list):
                 # Summarize each pipeline to (name, destination kind, table/collection,
                 # catalog). Returning the FULL nested config for every pipeline pushes
@@ -2452,14 +2456,20 @@ def _dispatch(name: str, args: dict) -> str:
             # schema detection. ObjectStore is CSV-only at the validator level and
             # writes a typed Parquet/ORC schema, so it needs the same schema-detection
             # round-trip as postgres/mongodb.
-            if not args.get("content") or not filename:
-                return json.dumps({"error": "content and filename are required for non-vector destinations (used for schema auto-detection)"})
+            # content_text lets the model write the sample as plain text; encoding
+            # it here saves ~33% of the model's output tokens vs. emitting base64.
+            content_b64 = args.get("content")
+            if not content_b64 and args.get("content_text"):
+                import base64
+                content_b64 = base64.b64encode(args["content_text"].encode("utf-8")).decode("ascii")
+            if not content_b64 or not filename:
+                return json.dumps({"error": "content (base64) or content_text (plain), plus filename, are required for non-vector destinations (used for schema auto-detection). A header row plus 3-5 sample rows is enough."})
             gen_data = {"pipeline": pipeline_name, "allStrings": "true"}
             if args.get("delimiter"):
                 gen_data["delimiter"] = args["delimiter"]
             header = args.get("header", True)
             gen_data["header"] = str(header).lower()
-            gen_result = _upload_content("/api/v1/pipeline/generate", args["content"], filename, gen_data)
+            gen_result = _upload_content("/api/v1/pipeline/generate", content_b64, filename, gen_data)
             try:
                 config = json.loads(gen_result)
             except json.JSONDecodeError:
