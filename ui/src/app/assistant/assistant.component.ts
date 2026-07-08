@@ -265,6 +265,19 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
     turn.thinkingExpanded = !turn.thinkingExpanded;
   }
 
+  /** Live tail of the streaming reasoning, flattened to one line for the
+   *  collapsed thinking row — shows WHAT the model is working through. */
+  thinkingTicker(turn: AssistantTurn): string {
+    const flat = turn.thinking.replace(/\s+/g, ' ').trim();
+    return flat.length > 90 ? '…' + flat.slice(-90) : flat;
+  }
+
+  /** Human-readable size of the tool input streamed so far. */
+  inputSize(card: ToolCard): string {
+    const n = card.inputChars || 0;
+    return n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
+  }
+
   formatJson(value: any): string {
     if (value === null || value === undefined) return '';
     try {

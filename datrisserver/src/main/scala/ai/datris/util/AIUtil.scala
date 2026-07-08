@@ -740,6 +740,11 @@ object AIUtil {
         case class  ThinkingDelta(text: String)               extends AIStreamEvent
         case class  TextDelta(text: String)                   extends AIStreamEvent
         case class  ToolUseStart(id: String, name: String)    extends AIStreamEvent
+        /** Progress while the model composes a tool call's input (Anthropic
+          * `input_json_delta`). Carries only the delta size — enough for the UI
+          * to show a live byte counter on the running tool card during long
+          * compositions (big samples, generated scripts). */
+        case class  InputDelta(id: String, chars: Int)        extends AIStreamEvent
         case class  ToolUseComplete(id: String, name: String, input: JsonObject) extends AIStreamEvent
         case class  Error(message: String)                    extends AIStreamEvent
     }
@@ -1098,7 +1103,10 @@ object AIUtil {
                                     case "signature_delta" =>
                                         b.signature.append(delta.get("signature").getAsString)
                                     case "input_json_delta" =>
-                                        b.text.append(delta.get("partial_json").getAsString)
+                                        val pj = delta.get("partial_json").getAsString
+                                        b.text.append(pj)
+                                        if (b.kind == "tool_use" && b.toolId != null)
+                                            sink(AIStreamEvent.InputDelta(b.toolId, pj.length))
                                     case _ => // ignore
                                 }
 

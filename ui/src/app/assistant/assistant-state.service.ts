@@ -13,6 +13,9 @@ export interface ToolCard {
   isError: boolean;
   status: 'running' | 'ok' | 'error';
   expanded: boolean;
+  /** Cumulative size of the tool input streamed so far. Only meaningful while
+   *  status is 'running' — drives the live "composing (N KB)" counter. */
+  inputChars?: number;
   /** Populated when the agent called `request_tap_secret_from_user`. The UI
    *  renders an inline credentials form using these fields. */
   secretRequest?: {
@@ -289,6 +292,11 @@ export class AssistantStateService {
           expanded: false
         });
         break;
+      case 'input_delta': {
+        const card = this.findToolCard(turn, evt.id);
+        if (card) card.inputChars = (card.inputChars || 0) + evt.chars;
+        break;
+      }
       case 'tool_use': {
         const card = this.findToolCard(turn, evt.id);
         if (card) card.input = evt.input;

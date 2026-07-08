@@ -64,6 +64,9 @@
                 <span class="thinking-label">{{ reasoningLabel }}</span>
                 <span class="thinking-caret">{{ turn.thinkingExpanded ? '▾' : '▸' }}</span>
                 <span class="thinking-spinner" *ngIf="!turn.done">…</span>
+                <!-- Live tail of the reasoning while it streams, so the collapsed
+                     row shows WHAT it's thinking about, not just that it is. -->
+                <span class="thinking-ticker" *ngIf="!turn.done && !turn.thinkingExpanded">{{ thinkingTicker(turn) }}</span>
               </button>
               <div class="thinking-content" *ngIf="turn.thinkingExpanded">{{ turn.thinking }}</div>
             </div>
@@ -82,6 +85,9 @@
                   <span class="tool-caret">{{ seg.expanded ? '▾' : '▸' }}</span>
                   <span class="tool-icon">{{ toolLabel(seg).icon }}</span>
                   <span class="tool-label">{{ toolLabel(seg).label }}</span>
+                  <!-- Live size counter while the model streams the tool input —
+                       turns minutes of silent dots into visible progress. -->
+                  <span class="tool-composing" *ngIf="seg.status === 'running' && seg.inputChars">composing {{ inputSize(seg) }}</span>
                   <span class="tool-status"
                                             [class.tool-status-ok]="seg.status === 'ok'"
                                             [class.tool-status-error]="seg.status === 'error'">

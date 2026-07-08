@@ -35,6 +35,9 @@ object AgentLoop {
         case class  ThinkingDelta(text: String)                          extends LoopEvent
         case class  TextDelta(text: String)                              extends LoopEvent
         case class  ToolUseStart(id: String, name: String)               extends LoopEvent
+        /** Progress while the model composes a tool call's input — the UI shows
+          * a live size counter on the running tool card. */
+        case class  InputDelta(id: String, chars: Int)                   extends LoopEvent
         case class  ToolUseComplete(id: String, name: String, input: JsonObject) extends LoopEvent
         case class  ToolResult(id: String, name: String, result: String, isError: Boolean) extends LoopEvent
         /** Synthetic tool: agent is asking the user to provide a tap secret via a UI
@@ -247,6 +250,7 @@ object AgentLoop {
         case AIStreamEvent.ThinkingDelta(t)                => out(LoopEvent.ThinkingDelta(t))
         case AIStreamEvent.TextDelta(t)                    => out(LoopEvent.TextDelta(t))
         case AIStreamEvent.ToolUseStart(id, name)          => out(LoopEvent.ToolUseStart(id, name))
+        case AIStreamEvent.InputDelta(id, chars)           => out(LoopEvent.InputDelta(id, chars))
         case AIStreamEvent.ToolUseComplete(id, name, in)   => out(LoopEvent.ToolUseComplete(id, name, in))
         case AIStreamEvent.Error(msg)                      => out(LoopEvent.Error(msg))
     }

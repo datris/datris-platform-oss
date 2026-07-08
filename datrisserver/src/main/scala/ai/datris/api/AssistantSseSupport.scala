@@ -40,6 +40,12 @@ object AssistantSseSupport {
                 obj.addProperty("id", id)
                 obj.addProperty("name", name)
                 sendEvent(emitter, "tool_use_start", obj)
+            case AgentLoop.LoopEvent.InputDelta(id, chars) =>
+                val obj = new JsonObject()
+                obj.addProperty("type", "input_delta")
+                obj.addProperty("id", id)
+                obj.addProperty("chars", chars)
+                sendEvent(emitter, "input_delta", obj)
             case AgentLoop.LoopEvent.ToolUseComplete(id, name, input) =>
                 val obj = new JsonObject()
                 obj.addProperty("type", "tool_use")

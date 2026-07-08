@@ -42,6 +42,9 @@ export type AssistantEvent =
   | { type: 'thinking_delta'; text: string }
   | { type: 'text_delta'; text: string }
   | { type: 'tool_use_start'; id: string; name: string }
+  /** Progress while the model composes a tool call's input — `chars` is the
+   *  size of one streamed chunk; accumulate for a live size counter. */
+  | { type: 'input_delta'; id: string; chars: number }
   | { type: 'tool_use'; id: string; name: string; input: any }
   | { type: 'tool_result'; id: string; name: string; result: string; isError: boolean }
   /** Synthetic event: agent called `request_tap_secret_from_user`. The UI renders

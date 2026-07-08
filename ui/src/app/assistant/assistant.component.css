@@ -233,6 +233,17 @@
   0%, 100% { opacity: 0.3; }
   50% { opacity: 1; }
 }
+/* Live one-line tail of the streaming reasoning on the collapsed row. */
+.thinking-ticker {
+  margin-left: 4px;
+  opacity: 0.55;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 480px;
+  min-width: 0;
+}
 .thinking-content {
   margin-top: 6px;
   white-space: pre-wrap;
@@ -287,6 +298,13 @@
 }
 .tool-status-ok      { color: #6ad88a; }
 .tool-status-error   { color: #ff7373; }
+/* Live size counter while the model streams a tool call's input. */
+.tool-composing {
+  color: #8a8e96;
+  font-style: italic;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
 
 /* Inline three-dot pulsing indicator for in-flight tool calls. Each dot has
    its own animation-delay so motion is obvious even when the page is
