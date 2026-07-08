@@ -265,6 +265,12 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
     turn.thinkingExpanded = !turn.thinkingExpanded;
   }
 
+  /** True while any tool card in the turn is still running — its own dots
+   *  cover the activity, so the turn-level streaming indicator hides. */
+  hasRunningTool(turn: AssistantTurn): boolean {
+    return turn.segments.some(s => s.kind === 'tool' && s.status === 'running');
+  }
+
   /** Live tail of the streaming reasoning, flattened to one line for the
    *  collapsed thinking row — shows WHAT the model is working through. */
   thinkingTicker(turn: AssistantTurn): string {

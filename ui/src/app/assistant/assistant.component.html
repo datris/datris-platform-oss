@@ -187,8 +187,11 @@
               </div>
             </ng-container>
 
-            <!-- Streaming indicator while the loop is still going -->
-            <div class="streaming-indicator" *ngIf="!turn.done && state.streaming && turn.segments.length === 0 && !turn.thinking">
+            <!-- Streaming indicator while the loop is still going. Shown for the
+                 whole life of the turn EXCEPT while a tool card is running (its
+                 own dots cover that) — in particular it bridges the silent gap
+                 after a tool completes while the model digests the result. -->
+            <div class="streaming-indicator" *ngIf="!turn.done && state.streaming && !hasRunningTool(turn)">
               <span class="dots"><span></span><span></span><span></span></span>
             </div>
 
