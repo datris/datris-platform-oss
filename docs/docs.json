@@ -64,6 +64,7 @@
               "destinations/postgres",
               "destinations/mongodb",
               "destinations/snowflake",
+              "destinations/databricks",
               "destinations/kafka",
               "destinations/object-store",
               "destinations/s3",

@@ -442,6 +442,7 @@
             <option value="postgres" *ngIf="sourceType === 'csv' || sourceType === 'xml'">PostgreSQL</option>
             <option value="mongodb" *ngIf="sourceType !== 'xml'">MongoDB</option>
             <option value="snowflake" *ngIf="sourceType === 'csv' || sourceType === 'xml'">Snowflake</option>
+            <option value="databricks" *ngIf="sourceType === 'csv' || sourceType === 'xml'">Databricks</option>
           </optgroup>
           <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured' && sourceType !== 'xml'">
             <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO or S3)</option>
@@ -542,6 +543,48 @@
             <span>Truncate before write</span>
           </label>
           <p class="form-hint">When enabled, the destination table is emptied (TRUNCATE) before each ingestion run. Use this for full snapshot replacements.</p>
+        </div>
+      </ng-container>
+
+      <!-- Databricks -->
+      <ng-container *ngIf="destType === 'databricks'">
+        <div class="form-row">
+          <label class="form-label">Credentials Secret</label>
+          <input class="form-input" [(ngModel)]="dbxCredentialsSecret" placeholder="e.g. databricks/acme-lakehouse">
+          <p class="form-hint">Name of a Platform-tab secret containing <code>host</code> (the workspace hostname), plus <code>clientId</code> and <code>clientSecret</code> (service principal OAuth, recommended) or <code>token</code> (personal access token, fallback). Create it on Configuration → Secrets → Platform if it doesn't exist yet.</p>
+        </div>
+        <div class="form-row">
+          <label class="form-label">SQL Warehouse ID</label>
+          <input class="form-input" [(ngModel)]="dbxWarehouse" placeholder="e.g. 1a2b3c4d5e6f7a8b">
+          <p class="form-hint">The warehouse ID from SQL Warehouses → your warehouse → Connection details — the trailing segment of the HTTP path (<code>/sql/1.0/warehouses/&lt;id&gt;</code>), not the warehouse name. Pasting the full HTTP path also works.</p>
+        </div>
+        <div class="form-row-inline">
+          <div class="form-field">
+            <label class="form-label">Catalog</label>
+            <input class="form-input" [(ngModel)]="dbxCatalog" placeholder="e.g. datris">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Schema</label>
+            <input class="form-input" [(ngModel)]="dbxSchema" placeholder="e.g. default">
+          </div>
+          <div class="form-field">
+            <label class="form-label">Table</label>
+            <input class="form-input" [(ngModel)]="dbxTable" placeholder="e.g. sales">
+          </div>
+        </div>
+        <div class="form-row" *ngIf="destSchemaFields.length > 0 && destSchemaFields[0].name">
+          <label class="form-label">Key Fields (optional)</label>
+          <p class="form-hint">Select one or more destination columns that uniquely identify a row. Used for upserts (MERGE). Hold Cmd/Ctrl to select multiple.</p>
+          <select class="form-input" multiple [(ngModel)]="dbxKeyFields" size="6">
+            <option *ngFor="let f of destSchemaFields" [value]="f.name" [disabled]="!f.name">{{ f.name }}</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="checkbox-row">
+            <input type="checkbox" [(ngModel)]="dbTruncateBeforeWrite">
+            <span>Truncate before write</span>
+          </label>
+          <p class="form-hint">When enabled, the table contents are replaced atomically on each ingestion run (INSERT OVERWRITE — a failed run leaves the previous data intact). Use this for full snapshot replacements.</p>
         </div>
       </ng-container>
 

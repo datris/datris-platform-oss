@@ -211,10 +211,18 @@ object PipelineValidatorUtil {
                 })
             }
 
-            if(!config.destination.database.usePostgres &&
-                !config.destination.database.useMongoDB &&
-                !config.destination.database.useSnowflake) {
-                throw new DatrisException("For the 'destination.database' section, you must select either usePostgres, useMongoDB, or useSnowflake")
+            // Exactly one engine: the flags share dbName/schema/table/warehouse,
+            // whose meanings differ per engine, and JobRunner dispatches each
+            // flag independently — two flags true would run two loaders against
+            // the same destination block.
+            val engineFlags = Seq(
+                config.destination.database.usePostgres,
+                config.destination.database.useMongoDB,
+                config.destination.database.useSnowflake,
+                config.destination.database.useDatabricks).count(identity)
+            if(engineFlags != 1) {
+                throw new DatrisException("For the 'destination.database' section, you must select exactly one of usePostgres, useMongoDB, useSnowflake, or useDatabricks" +
+                    (if (engineFlags > 1) " — multiple are currently set" else ""))
             }
 
             if(config.destination.database.useSnowflake) {
@@ -222,6 +230,13 @@ object PipelineValidatorUtil {
                     throw new DatrisException("When 'destination.database.useSnowflake' is true, 'credentialsSecret' is required — the name of a Platform secret holding 'account', 'user', and 'privateKey' (or 'password'). Create it on Configuration → Secrets → Platform")
                 if(config.destination.database.warehouse == null)
                     throw new DatrisException("When 'destination.database.useSnowflake' is true, 'warehouse' is required — the Snowflake virtual warehouse that runs the load")
+            }
+
+            if(config.destination.database.useDatabricks) {
+                if(config.destination.database.credentialsSecret == null)
+                    throw new DatrisException("When 'destination.database.useDatabricks' is true, 'credentialsSecret' is required — the name of a Platform secret holding 'host', plus 'clientId'/'clientSecret' (service principal OAuth) or 'token' (personal access token). Create it on Configuration → Secrets → Platform")
+                if(config.destination.database.warehouse == null)
+                    throw new DatrisException("When 'destination.database.useDatabricks' is true, 'warehouse' is required — the Databricks SQL warehouse ID (SQL Warehouses → Connection details, the trailing segment of the HTTP path)")
             }
         }
 

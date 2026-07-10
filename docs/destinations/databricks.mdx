@@ -1,0 +1,197 @@
+---
+title: "Databricks Destination"
+description: "Send data to Unity Catalog managed Delta tables with per-pipeline credentials"
+---
+
+The Databricks destination loads data into **Unity Catalog managed Delta tables** through a SQL warehouse: the pipeline output is staged into a Unity Catalog volume, then loaded with a single atomic SQL statement — `COPY INTO` for inserts, `MERGE` when `keyFields` is set, or `INSERT OVERWRITE` when `truncateBeforeWrite` is set. Every load is one Delta commit, so a failed run never leaves the table half-written or empty. Tables land governed and immediately queryable in the workspace — notebooks, dashboards, Genie, and lineage all see them natively.
+
+Unlike the bundled PostgreSQL and MongoDB destinations, Databricks is an external target: credentials are per-pipeline, referenced by name through `credentialsSecret` — the same model as the [Snowflake](/destinations/snowflake) and [S3](/destinations/s3) destinations. Different pipelines can write to different Databricks workspaces.
+
+Serverless SQL warehouses work out of the box and are the recommended compute — nothing runs in your cloud account and there is no cluster to manage.
+
+## One-time Databricks setup
+
+This is the recommended long-term setup for connecting Datris to a company Databricks workspace: a dedicated **service principal** with **OAuth machine-to-machine (M2M)** authentication and least-privilege grants on one catalog. A service principal is Databricks' recommended identity for unattended integrations — it is not tied to any employee's account and its access is scoped by Unity Catalog grants you control.
+
+### 1. Create a service principal and OAuth secret
+
+In the workspace, go to **Settings → Identity and access → Service principals** (or the account console for account-wide principals):
+
+1. **Add service principal** — name it e.g. `datris-writer`.
+2. Open it and generate an **OAuth secret**. Copy the **Client ID** (the principal's application ID) and the **Secret** — the secret is shown only once.
+
+### 2. Note the SQL warehouse ID and grant access
+
+Open **SQL Warehouses → your warehouse → Connection details**. The **warehouse ID** is the trailing segment of the **HTTP path** — a 16-character hex string, **not** the warehouse's display name:
+
+```
+HTTP path:     /sql/1.0/warehouses/a1b2c3d4e5f67890
+Warehouse ID:                      a1b2c3d4e5f67890
+```
+
+This ID is what goes in the destination's `warehouse` field. (Pasting the whole HTTP path into Datris also works — the ID is extracted automatically.)
+
+On the warehouse's **Permissions**, grant the service principal **Can use**.
+
+A serverless warehouse with a short auto-stop (5–10 minutes) is ideal: it starts in seconds when a load arrives and costs nothing while idle.
+
+### 3. Grant catalog access
+
+Catalog names vary by workspace: long-standing accounts often have a catalog named `main`, but new and trial/express workspaces typically ship one named `workspace` instead — check what yours has before granting:
+
+```sql
+SHOW CATALOGS;
+```
+
+The script below creates a dedicated `datris` catalog so the grants don't depend on what already exists (a new catalog automatically contains a `default` schema, which Datris loads into). Run it in the **SQL editor** as a workspace admin (or metastore admin) — every statement is idempotent, so re-running is safe.
+
+One gotcha: `GRANT` identifies a service principal by its **application ID** — the same UUID as the client ID from step 1 — *not* by its display name. Granting to `datris-writer` fails with `PRINCIPAL_DOES_NOT_EXIST` even though the principal exists. Replace `<sp-application-id>` below with the UUID:
+
+```sql
+-- Dedicated catalog for Datris pipeline output. Requires metastore default
+-- storage (standard on serverless/express workspaces). If you'd rather load
+-- an existing catalog — or you lack CREATE CATALOG rights — skip this line
+-- and replace `datris` below with a name from SHOW CATALOGS.
+CREATE CATALOG IF NOT EXISTS datris;
+
+-- <sp-application-id> = the service principal's application/client ID (UUID),
+-- shown on its page under Settings → Identity and access → Service principals.
+GRANT USE CATALOG ON CATALOG datris TO `<sp-application-id>`;
+GRANT USE SCHEMA, CREATE TABLE, CREATE VOLUME, SELECT, MODIFY
+  ON SCHEMA datris.default TO `<sp-application-id>`;
+
+-- Optional: lets Datris auto-create additional schemas beyond `default`
+GRANT CREATE SCHEMA ON CATALOG datris TO `<sp-application-id>`;
+
+-- Recommended: let your own users read what Datris loads. Tables are OWNED
+-- by the service principal that created them, and Unity Catalog gives no
+-- implicit access to anyone else — not even workspace admins — so without
+-- this, your first SELECT fails with INSUFFICIENT_PERMISSIONS. Granting at
+-- the schema level covers current AND future tables. Use a specific email
+-- instead of `account users` to scope it down.
+GRANT USE CATALOG ON CATALOG datris TO `account users`;
+GRANT USE SCHEMA, SELECT ON SCHEMA datris.default TO `account users`;
+```
+
+Tables and the staging volume auto-created by Datris are owned by the service principal, so no further grants are needed. If you manage tables yourself (`manageTableManually: true`), also pre-create the staging volume and grant access:
+
+```sql
+CREATE VOLUME IF NOT EXISTS datris.default.datris_staging;
+GRANT READ VOLUME, WRITE VOLUME ON VOLUME datris.default.datris_staging TO `<sp-application-id>`;
+```
+
+### 4. Create the platform secret in Datris
+
+On **Configuration → Secrets → Platform**, create a secret (for example `databricks`) with:
+
+| Field          | Required | Notes                                                                    |
+|----------------|----------|--------------------------------------------------------------------------|
+| `host`         | yes      | Workspace hostname, e.g. `dbc-a1b2c3d4-e5f6.cloud.databricks.com`. Pasting the full workspace URL also works — Datris strips the protocol and path |
+| `clientId`     | yes*     | The service principal's client ID (application ID)                       |
+| `clientSecret` | yes*     | The OAuth secret generated in step 1                                     |
+| `token`        | no       | Personal access token — fallback when no `clientId`/`clientSecret` is present, see below |
+
+*Either the `clientId`/`clientSecret` pair or `token` must be present.
+
+The `host` lives in the secret rather than the pipeline config so it stays bound to the credential that authorizes it. If a required field is missing, the load fails at resolve time with an explicit error naming the secret and the field.
+
+### Secret rotation
+
+OAuth secrets have a fixed lifetime (up to two years; you choose at creation). A service principal can hold up to five secrets at once, so rotation has no downtime: generate a new secret, update the Datris secret's `clientSecret`, then delete the old one in Databricks.
+
+### Alternative: personal access token (PAT)
+
+For a quick evaluation you can skip the service principal: generate a PAT (**Settings → Developer → Access tokens**) and store it in the secret's `token` field. Be aware of the trade-offs before relying on one long-term: a PAT authenticates as *you*, inherits *your* permissions, and expires. A service principal with scoped grants is the right identity for an unattended integration.
+
+## Configuration
+
+```json
+{
+  "name": "orders_pipeline",
+  "source": { "..." : "..." },
+  "destination": {
+    "database": {
+      "useDatabricks": true,
+      "credentialsSecret": "databricks",
+      "warehouse": "1a2b3c4d5e6f7a8b",
+      "dbName": "datris",
+      "schema": "default",
+      "table": "orders",
+      "keyFields": ["order_id"]
+    }
+  }
+}
+```
+
+### Field reference
+
+| Field                 | Required | Default | Description                                                        |
+|-----------------------|----------|---------|--------------------------------------------------------------------|
+| `useDatabricks`       | yes      | `false` | Must be `true` to enable the Databricks destination                |
+| `credentialsSecret`   | yes      |         | Name of the Platform secret holding `host` + auth                  |
+| `warehouse`           | yes      |         | SQL warehouse **ID** — the 16-char hex trailing segment of the HTTP path in **SQL Warehouses → Connection details** (`/sql/1.0/warehouses/<id>`), not the warehouse's display name. A pasted full HTTP path is accepted too |
+| `dbName`              | yes      |         | Target **Unity Catalog catalog**                                   |
+| `schema`              | yes      |         | Target schema                                                      |
+| `table`               | yes      |         | Target table                                                       |
+| `manageTableManually` | no       | `false` | If `true`, skip auto-creation of the schema, table, and staging volume |
+| `truncateBeforeWrite` | no       | `false` | Replace the table contents atomically on each run                  |
+| `keyFields`           | no       |         | Natural-key columns; switches the load to a `MERGE` upsert         |
+
+Note that `dbName` names the Unity Catalog **catalog** — Databricks uses three-level names (`catalog.schema.table`), and `dbName`/`schema`/`table` map onto them in order.
+
+Identifiers follow Unity Catalog's normal resolution rules: names are case-insensitive and stored lowercase, so `Orders` and `orders` are the same table. Names containing characters beyond letters, digits, and underscores are backtick-quoted automatically; prefer simple underscore names.
+
+`useTransaction` has no effect on Databricks — Delta has no multi-statement transactions. It doesn't need one: every load path here is a single atomic Delta commit, which is a stronger guarantee than a transaction around a multi-statement load.
+
+## Staging Volume
+
+Loads stage through a Unity Catalog volume named `datris_staging`, auto-created in the target schema on first run. Each run uploads one uniquely-named file and removes it when the load finishes — the volume is empty between runs. The volume is shared by every pipeline loading that schema and is left in place when a pipeline is deleted. With `manageTableManually: true` the volume is not auto-created; pre-create it as shown in the setup section.
+
+## Table Management
+
+When `manageTableManually` is `false` (the default), the pipeline auto-creates the schema, staging volume, and table if they don't exist. When `keyFields` is set, key columns are created `NOT NULL` with an informational `PRIMARY KEY` constraint (Unity Catalog primary keys document the key but are not enforced — the `MERGE` provides the actual dedupe). Schema changes are additive: new columns in the pipeline schema are added with `ALTER TABLE ... ADD COLUMN`; columns are never dropped or retyped.
+
+**Who can read the tables:** tables are owned by the service principal that created them, and Unity Catalog grants no implicit access to anyone else — not even workspace admins. If your own `SELECT` fails with `INSUFFICIENT_PERMISSIONS`, grant your users read access at the schema level (covers current and future tables): `GRANT USE SCHEMA, SELECT ON SCHEMA <catalog>.<schema> TO ...` — included as the "Recommended" block in the setup script above.
+
+## Type Mapping
+
+| Source Type          | Databricks Type |
+|----------------------|-----------------|
+| `string`             | `STRING`        |
+| `int` / `integer` / `tinyint` / `smallint` | `INT` |
+| `bigint`             | `BIGINT`        |
+| `float`              | `FLOAT`         |
+| `double`             | `DOUBLE`        |
+| `boolean`            | `BOOLEAN`       |
+| `date`               | `DATE`          |
+| `timestamp`          | `TIMESTAMP`     |
+| `_json`              | `VARIANT`       |
+| `_xml`               | `STRING`        |
+
+Other types (`decimal(p,s)`) pass through as-is. Semi-structured `_json` columns land as `VARIANT` (parsed with `PARSE_JSON` during the load), so JSON payloads are natively queryable with Databricks' `:` path syntax rather than stored as text.
+
+## Truncate Before Write
+
+Set `truncateBeforeWrite` to `true` to replace the full table contents on each run. The loader uses `INSERT OVERWRITE`, which swaps the contents in **one atomic Delta commit**: readers never observe an empty table mid-load, and if the load fails the previous rows survive untouched. (Previous versions of the data also remain available through Delta time travel, subject to the table's retention settings.)
+
+## Primary Key and Upsert
+
+Specify one or more columns in `keyFields` to define the natural key. When set (and `truncateBeforeWrite` is `false`), the loader issues a `MERGE` on the key columns directly from the staged file: matched rows are updated, unmatched rows are inserted. The same rows can be loaded across runs without duplicates.
+
+Upsert semantics match the PostgreSQL and Snowflake destinations: on match, non-key columns are overwritten in full, including `NULL`s. If a single batch contains duplicate key values, Delta rejects the `MERGE` as non-deterministic — deduplicate upstream.
+
+When `keyFields` is empty, the loader uses a straight `COPY INTO` — the fastest path, for append-only ingestion.
+
+## Querying from Datris
+
+The Assistant (and any MCP client) can read the destination back with the `query_databricks` tool — useful for verifying a load landed and for answering questions over the data without leaving Datris. Queries are pipeline-scoped: the tool takes a pipeline name, and the server connects with that pipeline's credentials secret, warehouse, and catalog. Credentials never leave the server, and only read-only statements are accepted — `SELECT` (with `LIMIT` applied automatically), plus `SHOW` and `DESCRIBE` for discovering catalogs, schemas, tables, and columns.
+
+Queries run on the pipeline's configured SQL warehouse and consume Databricks compute like any other query. Results are capped at 100 rows by default.
+
+## Warehouse Behavior
+
+A stopped SQL warehouse auto-starts when a load or query arrives. Serverless warehouses start in seconds; classic warehouses can take several minutes, during which the connection waits. The run's status log notes when a start may be in progress. Loads are batch-shaped and infrequent, so a short auto-stop keeps warehouse cost minimal.
+
+## Completion Notification
+
+A pipeline notification is published to ActiveMQ on completion. See [Notifications](/notifications) for details.

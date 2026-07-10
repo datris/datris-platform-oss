@@ -76,7 +76,7 @@ async def _connect():
     await _post_client.post(_endpoint, json={
         "jsonrpc": "2.0", "id": init_id,
         "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": "1.9.0"}},
+        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": "1.10.0"}},
     })
     await asyncio.wait_for(_responses.get(), 10)
     await _post_client.post(_endpoint, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -139,7 +139,7 @@ def b64_file(path):
 # ── CLI Commands ──────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option(version="1.9.0")
+@click.version_option(version="1.10.0")
 def cli():
     """Datris CLI — The Agent-Native Data Platform"""
     pass
@@ -163,6 +163,8 @@ def pipelines(json_output):
             d = p.get("destination", {})
             if d.get("database", {}).get("usePostgres"): dest = "→ PostgreSQL"
             elif d.get("database", {}).get("useMongoDB"): dest = "→ MongoDB"
+            elif d.get("database", {}).get("useSnowflake"): dest = "→ Snowflake"
+            elif d.get("database", {}).get("useDatabricks"): dest = "→ Databricks"
             elif d.get("pgvector"): dest = "→ pgvector"
             elif d.get("qdrant"): dest = "→ Qdrant"
             elif d.get("weaviate"): dest = "→ Weaviate"
@@ -176,15 +178,18 @@ def pipelines(json_output):
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--pipeline", "-p", default=None, help="Pipeline name (default: derived from filename)")
-@click.option("--dest", "-d", default="postgres", type=click.Choice(["postgres", "mongodb", "qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Destination type")
+@click.option("--dest", "-d", default="postgres", type=click.Choice(["postgres", "mongodb", "snowflake", "databricks", "qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Destination type")
 @click.option("--table", "-t", default=None, help="Table/collection name (default: pipeline name)")
-@click.option("--database", default="datris", help="Database name")
+@click.option("--database", default="datris", help="Database name (for snowflake: the Snowflake database; for databricks: the Unity Catalog name — required for both)")
+@click.option("--schema", default=None, help="Destination schema (snowflake default: PUBLIC; databricks default: default)")
+@click.option("--warehouse", default=None, help="Snowflake warehouse name, or Databricks SQL warehouse ID (required for those destinations)")
+@click.option("--credentials-secret", default=None, help="Platform secret holding destination credentials (required for snowflake and databricks)")
 @click.option("--ai-validate", default=None, help="AI data quality rule (plain English, e.g. 'all prices must be positive')")
 @click.option("--ai-transform", default=None, help="AI transformation instruction (plain English, e.g. 'convert dates to YYYY/MM/DD')")
 @click.option("--ai-analyze", default=None, help="Ask a question about the data after ingestion (plain English)")
 @click.option("--catalog", default=None, help="Catalog label to group this pipeline with related pipelines (e.g. 'openclaw'). Only applied when creating a new pipeline.")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
-def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform, ai_analyze, catalog, json_output):
+def ingest(file, pipeline, dest, table, database, schema, warehouse, credentials_secret, ai_validate, ai_transform, ai_analyze, catalog, json_output):
     """Create a pipeline and ingest a data file."""
     content = b64_file(file)
     filename = os.path.basename(file)
@@ -216,6 +221,12 @@ def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform, ai_
             args["table"] = table
         if database != "datris":
             args["database"] = database
+        if schema:
+            args["schema"] = schema
+        if warehouse:
+            args["warehouse"] = warehouse
+        if credentials_secret:
+            args["credentialsSecret"] = credentials_secret
         if ai_validate:
             args["codegen_rule"] = ai_validate
         if ai_transform:
@@ -276,10 +287,10 @@ def ingest(file, pipeline, dest, table, database, ai_validate, ai_transform, ai_
     # Run AI analysis if requested
     if ai_analyze:
         table_name = table or pipeline
-        _run_analyze(ai_analyze, table_name, dest, json_output)
+        _run_analyze(ai_analyze, table_name, dest, json_output, pipeline=pipeline)
 
 
-def _run_analyze(question, table, dest, json_output, top_k=5):
+def _run_analyze(question, table, dest, json_output, top_k=5, pipeline=None):
     """Shared analyze logic for ingest --ai-analyze and datris analyze."""
     click.echo(f"  Analyzing: {question}")
 
@@ -292,6 +303,27 @@ def _run_analyze(question, table, dest, json_output, top_k=5):
         sql = query_result.get("sql", "")
         if sql:
             click.echo(f"  SQL: {sql}")
+        if not results:
+            click.echo("  No results found.")
+            return
+        context = json.dumps(results, indent=2)
+        click.echo(f"  Generating AI answer...")
+        answer_result = mcp("ai_answer", {"query": question, "context": context})
+        answer = answer_result.get("answer", answer_result.get("text", str(answer_result)))
+        click.echo(f"\n  {answer}")
+
+    elif dest in ("snowflake", "databricks"):
+        # Pipeline-scoped query tools — the pipeline config carries the
+        # connection (credentials never leave the server).
+        if not pipeline:
+            click.echo(f"  Error: --pipeline is required to analyze a {dest} destination (the pipeline selects the connection)")
+            return
+        tool = "query_snowflake" if dest == "snowflake" else "query_databricks"
+        query_result = mcp(tool, {"pipeline": pipeline, "limit": 100})
+        if json_output:
+            click.echo(json.dumps(query_result, indent=2))
+            return
+        results = query_result.get("results", [])
         if not results:
             click.echo("  No results found.")
             return
@@ -345,12 +377,13 @@ def _run_analyze(question, table, dest, json_output, top_k=5):
 @cli.command()
 @click.argument("question")
 @click.option("--table", "-t", required=True, help="Table/collection name")
-@click.option("--dest", "-d", default="postgres", type=click.Choice(["postgres", "mongodb", "qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Data source type")
+@click.option("--dest", "-d", default="postgres", type=click.Choice(["postgres", "mongodb", "snowflake", "databricks", "qdrant", "weaviate", "milvus", "chroma", "pgvector"]), help="Data source type")
+@click.option("--pipeline", "-p", default=None, help="Pipeline name (required for snowflake/databricks — the pipeline selects the connection)")
 @click.option("--top-k", "-k", default=5, help="Number of search results (vector stores only)")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON instead of AI narrative")
-def analyze(question, table, dest, top_k, json_output):
+def analyze(question, table, dest, pipeline, top_k, json_output):
     """Ask a question about your data using AI."""
-    _run_analyze(question, table, dest, json_output, top_k)
+    _run_analyze(question, table, dest, json_output, top_k, pipeline=pipeline)
 
 
 @cli.command()
@@ -770,7 +803,7 @@ def version(json_output):
         click.echo(json.dumps(result, indent=2))
         return
     click.echo(f"  Server: {result.get('text', result) if isinstance(result, dict) else result}")
-    click.echo(f"  CLI: 1.9.0")
+    click.echo(f"  CLI: 1.10.0")
 
 
 def main():

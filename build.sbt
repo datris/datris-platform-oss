@@ -1,7 +1,7 @@
 name := "datris-server"
 ThisBuild / organization := "ai.datris"
 ThisBuild / scalaVersion := "2.12.21"
-ThisBuild / version := "1.9.0"
+ThisBuild / version := "1.10.0"
 
 // Match the Docker runtime (eclipse-temurin:17-jre). Without this, javac uses the
 // build host's JDK (e.g. 25), producing class files the runtime can't load.
@@ -73,6 +73,10 @@ lazy val allDependencies = Seq(
     "org.postgresql" % "postgresql" % "42.7.7",
     "com.mysql" % "mysql-connector-j" % "8.4.0",
     "net.snowflake" % "snowflake-jdbc" % "3.20.0",
+    // Databricks OSS JDBC driver (Apache 2.0) — an uber jar with its own deps
+    // shaded under com.databricks.jdbc.internal.*, so it can't collide with
+    // Spark's arrow/netty. Used by DatabricksLoader / DatabricksQueryUtil.
+    "com.databricks" % "databricks-jdbc" % "3.4.1",
 
     // Kafka
     "org.apache.kafka" % "kafka-clients" % "3.9.1",

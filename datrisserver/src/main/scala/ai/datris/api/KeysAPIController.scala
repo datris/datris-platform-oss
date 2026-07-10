@@ -438,7 +438,7 @@ object KeysAPIController {
         ("secret",    Seq("read", "write"),                              Seq("_type", "owner")),
         ("document",  Seq("upload"),                                     Seq("collection", "destination_kind")),
         ("search",    Seq("vector"),                                     Seq("collection")),
-        ("query",     Seq("postgres", "mongodb", "natural"),              Seq("database")),
+        ("query",     Seq("postgres", "mongodb", "objectstore", "snowflake", "databricks", "natural"), Seq("database")),
         ("job",       Seq("read", "kill"),                               Seq("owner")),
         ("metadata",  Seq("read"),                                       Seq.empty),
         ("config",    Seq("read", "write"),                              Seq.empty),

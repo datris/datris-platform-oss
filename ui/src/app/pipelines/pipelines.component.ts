@@ -294,6 +294,8 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     const dests: string[] = [];
     if (dataset.destination.database?.usePostgres) dests.push('PostgreSQL');
     if (dataset.destination.database?.useMongoDB) dests.push('MongoDB');
+    if (dataset.destination.database?.useSnowflake) dests.push('Snowflake');
+    if (dataset.destination.database?.useDatabricks) dests.push('Databricks');
     if (dataset.destination.objectStore) dests.push('Object Store');
     if (dataset.destination.kafka) dests.push('Kafka');
     if (dataset.destination.activeMQ) dests.push('ActiveMQ');

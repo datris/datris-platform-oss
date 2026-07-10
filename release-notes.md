@@ -1,22 +1,30 @@
 # Release Notes
 
-## v1.9.0 — July 8, 2026
+## v1.10.0 — July 9, 2026
 
-**Snowflake destination — load, upsert, and query your Snowflake account.**
+**Databricks destination — load, upsert, and query your Databricks workspace.**
 
-- **Load into Snowflake.** Point any structured pipeline at your own Snowflake account and Datris bulk-loads it: tables are created automatically, the schema evolves as new columns appear, and natural-key upserts keep scheduled re-runs duplicate-free. Available in the pipeline wizard and through the AI assistant.
-- **Secure by default.** Connects with key-pair authentication under a dedicated service user and least-privilege role you control; credentials live in a platform secret, never in pipeline configs. The docs include a copy-paste setup script that creates everything — role, warehouse, database, service user — in one run.
-- **Forgiving setup.** Pasted private keys and account URLs are cleaned up automatically in whatever shape they arrive, and connection problems come back as plain-language errors that say exactly what to fix.
-- **The assistant can verify and query Snowflake.** Ask it to confirm a load landed or answer questions over the data — read-only, using the pipeline's own credentials — and it can browse your databases, tables, and columns along the way.
-- **Watch the assistant work.** Long assistant turns now show live progress: a size counter while it composes larger pieces of work, a running glimpse of its reasoning, and a continuous activity indicator between steps — no more silent pauses.
-- **Faster pipeline creation.** The assistant sends only a small schema sample when creating pipelines, trimming minutes off longer build conversations.
-- **Cleaner deletes.** Removing a pipeline together with its data now also cleans up the table it created in Snowflake.
+- **Load into Databricks.** Point any structured pipeline at your own Databricks workspace and Datris loads it as governed Delta tables in Unity Catalog: tables are created automatically, the schema evolves as new columns appear, and natural-key upserts keep scheduled re-runs duplicate-free. Loaded tables are immediately queryable across the workspace — notebooks, dashboards, and lineage all see them natively. Available in the pipeline wizard and through the AI assistant.
+- **Secure by default.** Connects as a dedicated service principal you control, with least-privilege access to a single catalog; credentials live in a platform secret, never in pipeline configs. The docs include a copy-paste grant script. Works out of the box with serverless SQL warehouses — nothing runs in your cloud account and there's no cluster to manage.
+- **Safe full refreshes.** Pipelines that replace their table on each run swap the contents atomically — readers never see a half-loaded or empty table, and a failed run leaves the previous data intact.
+- **Forgiving setup.** Pasted workspace URLs and warehouse connection paths are cleaned up automatically in whatever shape they arrive, and connection problems come back as plain-language errors that say exactly what to fix.
+- **The assistant can verify and query Databricks.** Ask it to confirm a load landed or answer questions over the data — read-only, using the pipeline's own credentials — and it can browse your catalogs, schemas, tables, and columns along the way.
+- **Cleaner deletes.** Removing a pipeline together with its data also cleans up the table it created in Databricks.
+- **CLI catch-up.** `datris ingest` can now target Snowflake and Databricks directly, and pipeline listings label Snowflake and Databricks destinations.
 
 **Upgrading**
 
 - Existing installs: `docker compose pull && docker compose up -d`.
 - The CLI: `brew upgrade datris`.
-- Using Snowflake requires a one-time setup in your Snowflake account — see the [Snowflake destination guide](https://docs.datris.ai/destinations/snowflake).
+- Using Databricks requires a one-time setup in your workspace — see the [Databricks destination guide](https://docs.datris.ai/destinations/databricks).
+
+---
+
+## v1.9.0 — July 8, 2026
+
+**Snowflake destination — load, upsert, and query your Snowflake account.**
+
+See [archived v1.9.0 release notes](release-notes/v1.9.0.md).
 
 ---
 

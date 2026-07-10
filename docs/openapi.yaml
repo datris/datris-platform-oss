@@ -409,6 +409,8 @@ paths:
                   description: |
                     Destination configuration (database, objectStore, kafka, activeMQ, restEndpoint, qdrant, weaviate, milvus, chroma, pgvector).
 
+                    The database destination selects its engine with exactly one of `usePostgres`, `useMongoDB`, `useSnowflake`, or `useDatabricks`. Snowflake and Databricks additionally take `credentialsSecret` (a Platform secret) and `warehouse` (Snowflake warehouse name / Databricks SQL warehouse ID); for Databricks, `dbName` names the Unity Catalog catalog.
+
                     objectStore supports two providers via the `provider` field: `minio` (default, uses the built-in MinIO credentials) and `s3` (AWS S3). For `provider: s3`, set `destinationBucketOverride` (required), `credentialsSecret` (Vault secret with `accessKey`/`secretKey`/`region` and optional `sessionToken`), and optionally `endpoint` (must be https://). Region lives in the credentials secret, not on the objectStore config.
       responses:
         '200':

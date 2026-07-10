@@ -225,9 +225,10 @@ case class Database(
                        usePostgres: Boolean = false,
                        useMongoDB: Boolean = false,
                        useSnowflake: Boolean = false,
-                       warehouse: String = null,             // Snowflake virtual warehouse to run COPY/MERGE on
+                       useDatabricks: Boolean = false,       // dbName = Unity Catalog catalog
+                       warehouse: String = null,             // Snowflake virtual warehouse name, or Databricks SQL warehouse ID
                        role: String = null,                  // Snowflake role to assume (optional)
-                       credentialsSecret: String = null,     // names a Platform-tab secret holding account/user/auth
+                       credentialsSecret: String = null,     // names a Platform-tab secret holding account/user/auth (Snowflake) or host + clientId/clientSecret or token (Databricks)
                        options: java.util.List[String] = null
                    )
 

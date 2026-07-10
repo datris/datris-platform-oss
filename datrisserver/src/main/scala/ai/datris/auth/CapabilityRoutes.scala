@@ -109,6 +109,8 @@ object CapabilityRoutes {
         Route("POST",   "/api/v1/query/postgres",      "query",    "postgres"),
         Route("POST",   "/api/v1/query/mongodb",       "query",    "mongodb"),
         Route("POST",   "/api/v1/query/objectstore",   "query",    "objectstore"),
+        Route("POST",   "/api/v1/query/snowflake",     "query",    "snowflake"),
+        Route("POST",   "/api/v1/query/databricks",    "query",    "databricks"),
         Route("POST",   "/api/v1/query/natural",       "query",    "natural"),
         Route("POST",   "/api/v1/ai/answer",           "query",    "natural"),
         Route("POST",   "/api/v1/job/kill",            "job",      "kill"),

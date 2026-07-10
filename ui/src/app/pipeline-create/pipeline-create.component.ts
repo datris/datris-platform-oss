@@ -106,6 +106,12 @@ export class PipelineCreateComponent implements OnInit {
   sfSchema = 'PUBLIC';
   sfTable = '';
   sfKeyFields: string[] = [];
+  dbxCredentialsSecret = '';
+  dbxWarehouse = '';
+  dbxCatalog = '';
+  dbxSchema = 'default';
+  dbxTable = '';
+  dbxKeyFields: string[] = [];
   mongoKeyFields: string[] = [];
   kafkaTopic = '';
   amqQueue = '';
@@ -296,6 +302,15 @@ export class PipelineCreateComponent implements OnInit {
       this.sfCredentialsSecret = dest.database.credentialsSecret || '';
       this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
       this.sfKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
+    } else if (dest?.database?.useDatabricks) {
+      this.destType = 'databricks';
+      this.dbxCatalog = dest.database.dbName || '';
+      this.dbxSchema = dest.database.schema || 'default';
+      this.dbxTable = dest.database.table || '';
+      this.dbxWarehouse = dest.database.warehouse || '';
+      this.dbxCredentialsSecret = dest.database.credentialsSecret || '';
+      this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
+      this.dbxKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
     } else if (dest?.objectStore) {
       this.destType = 'objectstore';
       this.osPrefix = dest.objectStore.prefixKey || '';
@@ -437,8 +452,8 @@ export class PipelineCreateComponent implements OnInit {
   onSourceTypeChange(): void {
     if (this.sourceType === 'json') {
       this.schemaFields = [{ name: '_json', type: 'string' }];
-      // JSON can't go to PostgreSQL, Snowflake, or Object Store
-      if (this.destType === 'postgres' || this.destType === 'snowflake' || this.destType === 'objectstore') {
+      // JSON can't go to PostgreSQL, Snowflake, Databricks, or Object Store
+      if (this.destType === 'postgres' || this.destType === 'snowflake' || this.destType === 'databricks' || this.destType === 'objectstore') {
         this.destType = 'mongodb';
       }
     } else if (this.sourceType === 'xml') {
@@ -793,6 +808,12 @@ export class PipelineCreateComponent implements OnInit {
         if (!this.sfDbName.trim()) { this.error = 'Database name is required'; return; }
         if (!this.sfSchema.trim()) { this.error = 'Schema is required'; return; }
         if (!this.sfTable.trim()) { this.error = 'Table name is required'; return; }
+      } else if (this.destType === 'databricks') {
+        if (!this.dbxCredentialsSecret.trim()) { this.error = 'Credentials secret is required for Databricks'; return; }
+        if (!this.dbxWarehouse.trim()) { this.error = 'SQL warehouse ID is required'; return; }
+        if (!this.dbxCatalog.trim()) { this.error = 'Catalog is required'; return; }
+        if (!this.dbxSchema.trim()) { this.error = 'Schema is required'; return; }
+        if (!this.dbxTable.trim()) { this.error = 'Table name is required'; return; }
       } else if (this.destType === 'objectstore') {
         if (!this.osPrefix.trim()) { this.error = 'Key is required'; return; }
         if (this.osProvider === 's3') {
@@ -1034,6 +1055,21 @@ export class PipelineCreateComponent implements OnInit {
       const sfKeys = this.sfKeyFields.filter(k => k && k.trim());
       if (sfKeys.length > 0) sfDb.keyFields = sfKeys;
       config.destination.database = sfDb;
+    } else if (this.destType === 'databricks') {
+      // Preserve case — Databricks backtick-quotes non-simple identifiers;
+      // sanitizeIdentifier would lowercase them.
+      const dbxDb: any = {
+        dbName: this.dbxCatalog.trim(),
+        schema: this.dbxSchema.trim(),
+        table: this.dbxTable.trim(),
+        warehouse: this.dbxWarehouse.trim(),
+        credentialsSecret: this.dbxCredentialsSecret.trim(),
+        useDatabricks: true,
+        truncateBeforeWrite: this.dbTruncateBeforeWrite
+      };
+      const dbxKeys = this.dbxKeyFields.filter(k => k && k.trim());
+      if (dbxKeys.length > 0) dbxDb.keyFields = dbxKeys;
+      config.destination.database = dbxDb;
     } else if (this.destType === 'objectstore') {
       const os: any = { prefixKey: this.osPrefix, fileFormat: this.osFormat, deleteBeforeWrite: this.osDeleteBeforeWrite };
       if (this.osBucket.trim()) os.destinationBucketOverride = this.osBucket.trim();

@@ -288,6 +288,26 @@ class PipelineAPIController {
             }
         }
 
+        // Databricks — DROP TABLE in the external workspace, connecting with
+        // the pipeline's own credentialsSecret/warehouse (the service principal
+        // owns the tables it created, so it is allowed to drop them). The
+        // shared datris_staging volume is left alone — other pipelines use it.
+        if (dest.database != null && dest.database.useDatabricks) {
+            try {
+                DatabricksConnectionUtil.withConnection(dest.database) { conn =>
+                    val stmt = conn.createStatement()
+                    try {
+                        stmt.execute("DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))
+                        logger.info("Dropped Databricks table: " + dest.database.dbName + "." + dest.database.schema + "." + dest.database.table)
+                    } finally {
+                        stmt.close()
+                    }
+                }
+            } catch {
+                case e: Exception => logger.warn("Failed to drop Databricks table: " + e.getMessage)
+            }
+        }
+
         // pgvector — DROP TABLE
         if (dest.pgvector != null) {
             try {

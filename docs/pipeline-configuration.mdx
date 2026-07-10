@@ -219,13 +219,20 @@ For S3-specific behavior — credentials secret format, per-bucket credential is
 | `dbName` | string | Required | Database name |
 | `schema` | string | Required | Schema name |
 | `table` | string | Required | Table name |
-| `keyFields` | array | null | Primary key columns (enables upsert for MongoDB) |
+| `keyFields` | array | null | Natural-key columns (enables upsert on PostgreSQL, MongoDB, Snowflake, and Databricks) |
 | `usePostgres` | boolean | false | Write to PostgreSQL |
 | `useMongoDB` | boolean | false | Write to MongoDB |
+| `useSnowflake` | boolean | false | Write to the user's Snowflake account — see [Snowflake Destination](/destinations/snowflake) |
+| `useDatabricks` | boolean | false | Write a Unity Catalog managed Delta table in the user's Databricks workspace — see [Databricks Destination](/destinations/databricks) |
+| `warehouse` | string | null | Snowflake virtual warehouse name, or Databricks SQL warehouse ID (required for those destinations) |
+| `role` | string | null | Snowflake role to assume (optional, Snowflake only) |
+| `credentialsSecret` | string | null | Platform secret holding destination credentials (required for Snowflake and Databricks) |
 | `manageTableManually` | boolean | false | If false, auto-creates tables |
-| `truncateBeforeWrite` | boolean | false | Truncate table before loading |
-| `useTransaction` | boolean | true | Wrap in a transaction |
+| `truncateBeforeWrite` | boolean | false | Truncate table before loading (atomic replace on Databricks) |
+| `useTransaction` | boolean | true | Wrap in a transaction (Postgres/Snowflake; no effect on Databricks — each load is one atomic Delta commit) |
 | `options` | array | null | Custom COPY options (e.g., `["FORMAT csv", "DELIMITER ','"]`) |
+
+Exactly one of `usePostgres`, `useMongoDB`, `useSnowflake`, or `useDatabricks` must be `true`. For Databricks, `dbName` names the Unity Catalog **catalog**.
 
 ### Destination > Kafka
 

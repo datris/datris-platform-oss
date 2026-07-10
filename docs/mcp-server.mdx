@@ -24,7 +24,7 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 |------|-------------|
 | `list_pipelines` | List all registered pipeline configurations |
 | `get_pipeline` | Get a specific pipeline configuration by name |
-| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Supports three destination categories: structured (postgres, mongodb), object store (Parquet or ORC to MinIO / AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). For S3, set `provider: "s3"` and reference a Platform-tab `credentialsSecret`. Optional `catalog` to group related pipelines. |
+| `create_pipeline` | Create a pipeline from sample data (base64-encoded). Schema is auto-detected. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks), object store (Parquet or ORC to MinIO / AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). For S3, set `provider: "s3"` and reference a Platform-tab `credentialsSecret`; Snowflake and Databricks likewise take a Platform-tab `credentialsSecret` plus a warehouse and database/catalog. Optional `catalog` to group related pipelines. |
 | `delete_pipeline` | Delete a pipeline and its destination data |
 | `list_pipeline_versions` | List a pipeline's definition-change history (newest first): `version`, `createdAt`, `createdBy`, `changeNote`. An **empty** result means it hasn't been edited since versioning was enabled — not that it has no version; the current number is the `version` field on `list_pipelines` / `get_pipeline` (≥ 1 for every pipeline) |
 | `get_pipeline_version` | View one historical snapshot of a pipeline's definition — the full config as it was at that version. Read-only |

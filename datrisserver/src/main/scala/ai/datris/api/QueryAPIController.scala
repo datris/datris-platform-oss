@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder}
 import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
-import ai.datris.util.{AIUtil, APIKeyValidator, ObjectStoreQueryUtil, PostgresQueryUtil, MongoDBQueryUtil, SecretsRetrieverUtil, SnowflakeQueryUtil}
+import ai.datris.util.{AIUtil, APIKeyValidator, DatabricksQueryUtil, ObjectStoreQueryUtil, PostgresQueryUtil, MongoDBQueryUtil, SecretsRetrieverUtil, SnowflakeQueryUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -161,6 +161,42 @@ class QueryAPIController {
         catch {
             case e: DatrisException =>
                 logger.warn("query/snowflake: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @PostMapping(path = Array("/query/databricks"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def queryDatabricks(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
+                        @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint POST /query/databricks called")
+            APIKeyValidator.validate(apiKey)
+
+            val pipelineName = Option(body.get("pipeline")).map(_.toString)
+                .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
+            val sql = Option(body.get("sql")).map(_.toString)
+            val limit = Option(body.get("limit")).map {
+                case d: java.lang.Double  => d.intValue()
+                case i: java.lang.Integer => i.intValue()
+                case other                => other.toString.toInt
+            }.getOrElse(100)
+
+            val result = DatabricksQueryUtil.query(pipelineName, sql, limit)
+
+            val gson = new GsonBuilder().serializeNulls().create()
+            val response = new java.util.LinkedHashMap[String, Any]()
+            response.put("pipeline", pipelineName)
+            response.put("sql", result.sql)
+            response.put("results", result.results)
+            response.put("count", result.results.size())
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        }
+        catch {
+            case e: DatrisException =>
+                logger.warn("query/databricks: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

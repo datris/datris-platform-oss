@@ -262,7 +262,7 @@ When the user makes ANY data-related ask — "I'm looking for X", "can you get m
 
 After those calls return, anchor your reply in what exists: "There's already a `<name>` pipeline doing X — does that cover your need, or do you want to extend it / add Y / pick a different source?" Only enumerate external API options after you've confirmed nothing in the platform already covers the ask. A generic options menu drawn from training data wastes the user's time when the answer is sitting in their own environment.
 
-If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, `query_objectstore` (Parquet/ORC files in MinIO or AWS S3), `query_snowflake` (Snowflake destinations), or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
+If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, `query_objectstore` (Parquet/ORC files in MinIO or AWS S3), `query_snowflake` (Snowflake destinations), `query_databricks` (Databricks destinations), or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
 
 How to find a "relevant pipeline" in the list response: the response begins with a `names` array — scan EVERY entry (the match may be at the end of a long list) for any name whose substring matches a keyword from the user's request. Hyphens, underscores, and case are interchangeable for matching. If any name matches, the pipeline EXISTS — do not announce "I don't see any …" or ask the user to clarify scope, provider, schedule, or data shape. Call the destination's query tool. Only when zero names match should you treat the resource as missing. When the user's data is already in the platform, query it and show what's there — do not collect setup parameters for a pipeline that already exists.
 
@@ -301,7 +301,7 @@ NEVER rules:
 
 Required workflow:
   1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
-  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb, snowflake) and OBJECTSTORE (Parquet/ORC writes to MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets.
+  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb, snowflake, databricks) and OBJECTSTORE (Parquet/ORC writes to MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets. For databricks, credentialsSecret AND warehouse (SQL warehouse ID) AND database (Unity Catalog name) are required — same secret discovery via list_platform_secrets.
      create_pipeline UPSERTS by name: if a pipeline with the same name already exists, the call REPLACES its config in place — the data already in the destination is NOT touched. To change a knob (keyFields, truncate, codegen_rule, etc.) on an existing pipeline, just call create_pipeline again with the same name and the new settings. You do NOT need to delete first.
      Common knobs: keyFields (list of column names that act as a natural key for dedupe/upsert on every run), truncate (wipe the destination before each run), codegen_rule (AI-powered data quality), codegen_transform (AI-powered transformation).
   3. Ingest data (choose one):
@@ -309,7 +309,7 @@ Required workflow:
      Option B — Create a tap: use create_tap to provide an instruction (AI generates the script) or your own Python script that fetches data from an external source and pushes it into the pipeline automatically. See Tap workflow below.
   4. Monitor: call get_job_status with the pipelineToken returned from upload_data and poll until `rollup.allDone` is true. You MUST wait for that before querying.
   5. If `rollup.status` is `error` or `warning`: read `rollup.jobs[].lastError` for the failing process and description. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
-  6. Query & search: use query_postgres, query_mongodb for structured data; query_objectstore for Parquet/ORC files in MinIO or S3; query_snowflake for Snowflake destinations (also covers metadata via SHOW/DESCRIBE); search_qdrant, search_pgvector, etc. for vector search
+  6. Query & search: use query_postgres, query_mongodb for structured data; query_objectstore for Parquet/ORC files in MinIO or S3; query_snowflake for Snowflake destinations and query_databricks for Databricks destinations (both also cover metadata via SHOW/DESCRIBE); search_qdrant, search_pgvector, etc. for vector search
   7. RAG: pass search results as context to ai_answer with the user's question
 
 Tap workflow (for step 3 Option B):
@@ -427,12 +427,12 @@ PIPELINE_CONFIG_REFERENCE = """\
 
 1. Call `list_pipelines` to check if the pipeline already exists.
 2. If it exists, data may already be in the destination. Use metadata tools (`list_postgres_tables`, `list_mongodb_collections`, `list_qdrant_collections`, etc.) to discover it and query/search directly. Only re-ingest if the data is stale or needs updating.
-3. If the pipeline does not exist, call `create_pipeline`. Structured destinations (postgres, mongodb, snowflake) need a tiny sample for schema auto-detection — content_text with header + 3-5 rows, never a full dataset; snowflake also needs credentialsSecret + warehouse + database. Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
+3. If the pipeline does not exist, call `create_pipeline`. Structured destinations (postgres, mongodb, snowflake, databricks) need a tiny sample for schema auto-detection — content_text with header + 3-5 rows, never a full dataset; snowflake also needs credentialsSecret + warehouse + database, and databricks needs credentialsSecret + warehouse (SQL warehouse ID) + database (Unity Catalog name). Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
 5. Call `check_service_health` to verify the target destination service is available.
 6. Call `create_pipeline` with the config.
 7. Call `upload_data` ONCE with your full data (base64-encoded) and the pipeline name. Do not pre-chunk — vector destinations chunk server-side, structured pipelines accept the whole file as one batch.
 8. Call `get_job_status` with the pipelineToken returned from `upload_data` to monitor processing. Poll until `rollup.allDone` is true, then read `rollup.status` (`success` | `warning` | `error`).
-9. Query or search the data: `query_postgres`, `query_mongodb`, `query_objectstore`, `query_snowflake`, `search_qdrant`, `search_pgvector`, etc.
+9. Query or search the data: `query_postgres`, `query_mongodb`, `query_objectstore`, `query_snowflake`, `query_databricks`, `search_qdrant`, `search_pgvector`, etc.
 10. For RAG: pass search results as context to `ai_answer` with the user's question.
 
 ---
@@ -632,6 +632,25 @@ Call `check_service_health` first to verify the target service is available.
 ```
 
 Snowflake is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `account`, `user`, and `privateKey` for key-pair auth or `password` as fallback). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields` — same flow as the S3 credentials secret below; the agent cannot create it. `warehouse` and `dbName` have no defaults — ask the user. `schema` defaults to `PUBLIC`. Simple identifiers resolve case-insensitively (`datris` finds the `DATRIS` database — standard Snowflake folding); names with hyphens or spaces are quoted case-sensitively, so prefer underscore table names. `keyFields` upserts via `MERGE`. Read back / verify loads with `query_snowflake` (pipeline-scoped; SELECT plus SHOW/DESCRIBE for metadata discovery).
+
+### database — Databricks (loads a Unity Catalog managed Delta table in the user's Databricks workspace)
+
+```json
+"destination": {
+  "database": {
+    "dbName": "<unity-catalog-name>",
+    "schema": "default",
+    "table": "my_table",
+    "useDatabricks": true,
+    "credentialsSecret": "<platform-secret-name>",
+    "warehouse": "<sql-warehouse-id>",
+    "keyFields": ["id"],
+    "truncateBeforeWrite": false
+  }
+}
+```
+
+Databricks is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `host` — the workspace hostname — plus `clientId`/`clientSecret` for service-principal OAuth, or `token` for a personal access token). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields`; the agent cannot create it. `dbName` is the Unity Catalog CATALOG (not a database) and `warehouse` is the SQL warehouse ID (from the warehouse's Connection details — the trailing segment of the HTTP path, not the warehouse name); neither has a default — ask the user. `schema` defaults to `default`. Identifiers resolve case-insensitively (Unity Catalog stores names lowercase); names with hyphens or spaces are backtick-quoted, so prefer underscore table names. `keyFields` upserts via `MERGE`; `truncateBeforeWrite` replaces the table contents atomically each run. Data stages through an auto-created `datris_staging` volume in the target schema. Read back / verify loads with `query_databricks` (pipeline-scoped; SELECT plus SHOW/DESCRIBE for metadata discovery).
 
 ### objectStore — MinIO (default) or AWS S3
 
@@ -1170,7 +1189,7 @@ async def list_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. THREE destination categories: STRUCTURED (postgres, mongodb, snowflake) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database. OBJECTSTORE (objectstore — writes Parquet/ORC to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
+            description="Create a pipeline. THREE destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token), warehouse (the SQL warehouse ID), and database (the Unity Catalog name). OBJECTSTORE (objectstore — writes Parquet/ORC to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1180,7 +1199,7 @@ async def list_tools():
                     },
                     "content_text": {
                         "type": "string",
-                        "description": "Plain-text sample data (the server base64-encodes it for you) — the preferred way to pass the sample for structured destinations (postgres, mongodb, snowflake) and objectstore. Header row + 3-5 representative rows ONLY; never a full dataset (the sample is used solely for schema auto-detection). Ignored if content is also set. OMIT for vector destinations."
+                        "description": "Plain-text sample data (the server base64-encodes it for you) — the preferred way to pass the sample for structured destinations (postgres, mongodb, snowflake, databricks) and objectstore. Header row + 3-5 representative rows ONLY; never a full dataset (the sample is used solely for schema auto-detection). Ignored if content is also set. OMIT for vector destinations."
                     },
                     "filename": {
                         "type": "string",
@@ -1192,8 +1211,8 @@ async def list_tools():
                     },
                     "destination": {
                         "type": "string",
-                        "enum": ["postgres", "mongodb", "snowflake", "objectstore", "qdrant", "weaviate", "milvus", "chroma", "pgvector"],
-                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). Use 'objectstore' for Parquet/ORC writes to MinIO (default provider) or AWS S3 (set provider=s3). Use 'snowflake' to load the user's Snowflake account — requires credentialsSecret, warehouse, and database."
+                        "enum": ["postgres", "mongodb", "snowflake", "databricks", "objectstore", "qdrant", "weaviate", "milvus", "chroma", "pgvector"],
+                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). Use 'objectstore' for Parquet/ORC writes to MinIO (default provider) or AWS S3 (set provider=s3). Use 'snowflake' to load the user's Snowflake account — requires credentialsSecret, warehouse, and database. Use 'databricks' to load a Unity Catalog managed Delta table in the user's Databricks workspace — requires credentialsSecret, warehouse (SQL warehouse ID), and database (Unity Catalog name)."
                     },
                     "table": {
                         "type": "string",
@@ -1201,15 +1220,15 @@ async def list_tools():
                     },
                     "database": {
                         "type": "string",
-                        "description": "Destination database name (default: datris). Ignored for objectstore. REQUIRED for snowflake — there is no default Snowflake database; ask the user which one to load."
+                        "description": "Destination database name (default: datris). Ignored for objectstore. REQUIRED for snowflake — there is no default Snowflake database; ask the user which one to load. REQUIRED for databricks — it names the Unity Catalog CATALOG; there is no default, ask the user."
                     },
                     "schema": {
                         "type": "string",
-                        "description": "Destination schema. Only applies to destination=snowflake (default: PUBLIC). Simple identifiers resolve case-insensitively (folded to uppercase, standard Snowflake behavior); names with hyphens/spaces are quoted case-sensitively."
+                        "description": "Destination schema. Applies to destination=snowflake (default: PUBLIC) and destination=databricks (default: default). Simple identifiers resolve case-insensitively; names with hyphens/spaces are quoted (double quotes on Snowflake, backticks on Databricks)."
                     },
                     "warehouse": {
                         "type": "string",
-                        "description": "Snowflake virtual warehouse that runs the load (e.g. DATRIS_WH). REQUIRED for destination=snowflake; ignored otherwise."
+                        "description": "Compute that runs the load. For destination=snowflake: the virtual warehouse NAME (e.g. DATRIS_WH). For destination=databricks: the SQL warehouse ID from the warehouse's Connection details — the trailing segment of the HTTP path /sql/1.0/warehouses/<id> — NOT the warehouse name. REQUIRED for both; ignored otherwise."
                     },
                     "role": {
                         "type": "string",
@@ -1226,11 +1245,11 @@ async def list_tools():
                     "keyFields": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Only applies to postgres, mongodb, and snowflake destinations. Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. On Postgres this triggers a staging + INSERT…ON CONFLICT path; on Mongo it uses upsertJSON; on Snowflake it uses MERGE via a temp staging table. NOTE: on conflict, ALL non-key columns from the incoming row overwrite the existing row, including NULLs (true upsert semantics, not non-null merge). If your source emits partial rows, coalesce upstream. Omit to append on every run (default behavior)."
+                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Only applies to postgres, mongodb, snowflake, and databricks destinations. Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. On Postgres this triggers a staging + INSERT…ON CONFLICT path; on Mongo it uses upsertJSON; on Snowflake it uses MERGE via a temp staging table; on Databricks it uses MERGE directly from the staged file. NOTE: on conflict, ALL non-key columns from the incoming row overwrite the existing row, including NULLs (true upsert semantics, not non-null merge). If your source emits partial rows, coalesce upstream. Omit to append on every run (default behavior)."
                     },
                     "truncate": {
                         "type": "boolean",
-                        "description": "Optional. When true, the destination table/collection is truncated before each run, so only the latest run's data is kept. Only applies to postgres, mongodb, and snowflake destinations. Default false (append). Mutually useful with — but distinct from — keyFields: truncate wipes everything each run, keyFields upserts per natural key."
+                        "description": "Optional. When true, the destination table/collection is truncated before each run, so only the latest run's data is kept. Only applies to postgres, mongodb, snowflake, and databricks destinations (on Databricks the replace is a single atomic Delta commit). Default false (append). Mutually useful with — but distinct from — keyFields: truncate wipes everything each run, keyFields upserts per natural key."
                     },
                     "bucket": {
                         "type": "string",
@@ -1270,7 +1289,7 @@ async def list_tools():
                     },
                     "credentialsSecret": {
                         "type": "string",
-                        "description": "Name of an existing PLATFORM secret holding destination credentials. For objectstore + provider=s3: fields accessKey, secretKey, region (optionally sessionToken); REQUIRED unless Datris runs in AWS with an instance role. For snowflake: fields account, user, and privateKey (key-pair auth) or password; ALWAYS required. Discover candidates via list_platform_secrets and verify field shape via get_platform_secret_fields. The agent cannot create this secret — if none exists, ask the user to create one on Configuration → Secrets → Platform."
+                        "description": "Name of an existing PLATFORM secret holding destination credentials. For objectstore + provider=s3: fields accessKey, secretKey, region (optionally sessionToken); REQUIRED unless Datris runs in AWS with an instance role. For snowflake: fields account, user, and privateKey (key-pair auth) or password; ALWAYS required. For databricks: fields host, plus clientId/clientSecret (service-principal OAuth) or token (personal access token); ALWAYS required. Discover candidates via list_platform_secrets and verify field shape via get_platform_secret_fields. The agent cannot create this secret — if none exists, ask the user to create one on Configuration → Secrets → Platform."
                     },
                     "codegen_rule": {
                         "type": "string",
@@ -1578,6 +1597,32 @@ async def list_tools():
                 "type": "object",
                 "properties": {
                     "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a Snowflake destination."},
+                    "sql": {"type": "string", "description": "Read-only statement: SELECT/WITH, SHOW, or DESCRIBE. Omit to preview the pipeline's destination table."},
+                    "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
+                },
+                "required": ["pipeline"]
+            }
+        ),
+        Tool(
+            name="query_databricks",
+            description=(
+                "Run a read-only query against the Databricks workspace a pipeline loads into. "
+                "Pass the pipeline name; the server resolves the workspace, credentials, SQL warehouse, and catalog from "
+                "the pipeline's config — same connection the loader uses, credentials never leave the server. "
+                "Only works for pipelines whose destination is Databricks (database with useDatabricks=true). "
+                "Allowed statements: SELECT (WITH/CTE), SHOW, and DESCRIBE — LIMIT is auto-appended to SELECTs. "
+                "Omit `sql` to preview the pipeline's destination table (the 'did my load land?' check). "
+                "Metadata discovery uses the same tool — there are no separate list_databricks_* tools: "
+                "`SHOW CATALOGS`, `SHOW SCHEMAS IN <catalog>`, `SHOW TABLES IN <catalog>.<schema>`, "
+                "`DESCRIBE TABLE <catalog>.<schema>.<table>`, or query <catalog>.information_schema.columns. "
+                "Queries run on the customer's SQL warehouse (which costs them compute) — keep them "
+                "targeted and let the default LIMIT stand unless the user asks for more. If the warehouse is "
+                "stopped, the first query auto-starts it and may take longer."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline": {"type": "string", "description": "Pipeline name (from list_pipelines). Must have a Databricks destination."},
                     "sql": {"type": "string", "description": "Read-only statement: SELECT/WITH, SHOW, or DESCRIBE. Omit to preview the pipeline's destination table."},
                     "limit": {"type": "integer", "description": "Maximum rows to return (default: 100). Pass -1 for unlimited."}
                 },
@@ -2352,7 +2397,7 @@ def _dispatch(name: str, args: dict) -> str:
         try:
             pipelines = json.loads(result)
             if not pipelines or (isinstance(pipelines, list) and len(pipelines) == 0):
-                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations (postgres, mongodb, snowflake) and objectstore (Parquet/ORC to MinIO or S3) pass a tiny plain-text sample via content_text (header + 3-5 rows) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
+                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations (postgres, mongodb, snowflake, databricks) and objectstore (Parquet/ORC to MinIO or S3) pass a tiny plain-text sample via content_text (header + 3-5 rows) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
             if isinstance(pipelines, list):
                 # Summarize each pipeline to (name, destination kind, table/collection,
                 # catalog). Returning the FULL nested config for every pipeline pushes
@@ -2374,6 +2419,8 @@ def _dispatch(name: str, args: dict) -> str:
                         if dest_kind == "database":
                             if d.get("useSnowflake"):
                                 dest_kind = "snowflake"
+                            elif d.get("useDatabricks"):
+                                dest_kind = "databricks"
                             elif d.get("useMongoDB"):
                                 dest_kind = "mongodb"
                             elif d.get("usePostgres"):
@@ -2424,6 +2471,15 @@ def _dispatch(name: str, args: dict) -> str:
                 return json.dumps({"error": "destination=snowflake requires 'warehouse' — the Snowflake virtual warehouse that runs the load. Ask the user which warehouse to use."})
             if not args.get("database"):
                 return json.dumps({"error": "destination=snowflake requires 'database' — there is no default Snowflake database. Ask the user which database to load into."})
+
+        # Validate databricks-specific params before doing any work.
+        if dest_type == "databricks":
+            if not args.get("credentialsSecret"):
+                return json.dumps({"error": "destination=databricks requires 'credentialsSecret' — a Platform secret with fields host, plus clientId/clientSecret (service-principal OAuth) or token (personal access token). Discover candidates via list_platform_secrets; if none exists, ask the user to create one on Configuration → Secrets → Platform."})
+            if not args.get("warehouse"):
+                return json.dumps({"error": "destination=databricks requires 'warehouse' — the SQL warehouse ID (SQL Warehouses → Connection details, the trailing segment of the HTTP path), not the warehouse name. Ask the user which warehouse to use."})
+            if not args.get("database"):
+                return json.dumps({"error": "destination=databricks requires 'database' — the Unity Catalog name to load into. There is no default; ask the user."})
 
         # Validate objectstore-specific params before doing any work.
         if is_objectstore:
@@ -2499,6 +2555,18 @@ def _dispatch(name: str, args: dict) -> str:
                 "warehouse": args["warehouse"],
             }
             if args.get("role"): db_cfg["role"] = args["role"]
+            if key_fields: db_cfg["keyFields"] = key_fields
+            if truncate:   db_cfg["truncateBeforeWrite"] = True
+            dest["database"] = db_cfg
+        elif dest_type == "databricks":
+            db_cfg = {
+                "dbName": db_name,
+                "schema": args.get("schema") or "default",
+                "table": table_name,
+                "useDatabricks": True,
+                "credentialsSecret": args["credentialsSecret"],
+                "warehouse": args["warehouse"],
+            }
             if key_fields: db_cfg["keyFields"] = key_fields
             if truncate:   db_cfg["truncateBeforeWrite"] = True
             dest["database"] = db_cfg
@@ -2684,6 +2752,14 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("limit") is not None:
             payload["limit"] = args["limit"]
         return _call("post", "/api/v1/query/snowflake", json=payload)
+
+    elif name == "query_databricks":
+        payload = {"pipeline": args["pipeline"]}
+        if args.get("sql"):
+            payload["sql"] = args["sql"]
+        if args.get("limit") is not None:
+            payload["limit"] = args["limit"]
+        return _call("post", "/api/v1/query/databricks", json=payload)
 
     elif name == "query_mongodb":
         payload = {"collection": args["collection"]}

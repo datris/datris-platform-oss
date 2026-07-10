@@ -20,7 +20,7 @@ The Assistant is open-ended. Some examples:
 - *"Pull current weather data from a public API and create a pipeline for it."*
 - *"Ingest the most recent NYC taxi trip data into a pipeline."*
 - *"List the taps that are currently scheduled and tell me which haven't run in over a week."*
-- *"Show me the rows in the `weather` pipeline."* (works for MongoDB, PostgreSQL, **Object Store (Parquet / ORC)**, or vector destinations — the agent picks the right query tool for the destination)
+- *"Show me the rows in the `weather` pipeline."* (works for MongoDB, PostgreSQL, Snowflake, Databricks, **Object Store (Parquet / ORC)**, or vector destinations — the agent picks the right query tool for the destination)
 
 The agent will reach for tools as it needs them: web search to find a source,
 `list_taps` / `list_pipelines` to check for existing work, `create_tap_secret`
@@ -39,7 +39,8 @@ When you send a message with a file attached, the agent:
 1. **Reads a sample** of the file — a text extract from the attached content —
    so it can see the columns and data shape.
 2. **Proposes a destination**, defaulting sensibly for the data and naming the
-   alternatives (Postgres, MongoDB, an object store, or a vector store) so you
+   alternatives (Postgres, MongoDB, an object store, Snowflake, Databricks, or a
+   vector store) so you
    can pick a different one.
 3. **Confirms before building** — it tells you what it's about to create and
    waits for your go-ahead.
