@@ -3,6 +3,21 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.11.0" description="July 13, 2026">
+  **Choose your databases at install — run less, connect what you already have.**
+
+  - **Pick and choose at install.** The installer now asks which databases and stores you want instead of installing everything. Each can run bundled, connect to a service you already operate, or be skipped — and pressing Enter at every prompt still gives the standard full install.
+  - **Bring your own infrastructure.** Point Datris at an existing Postgres, Kafka, or managed vector store (Qdrant, Weaviate, Chroma, Milvus) during install, and optionally store Snowflake or Databricks destination credentials up front so pipelines can use them on day one.
+  - **Lighter installs.** Skipping the bundled semantic-search server avoids a multi-gigabyte model download — the installer recommends OpenAI embeddings, which need no local container and cost pennies. Vector stores and a local Kafka test broker are now a one-line opt-in instead of commented-out YAML.
+  - **Both AI providers, each at its best.** The installer asks for an Anthropic key (chat, code generation, AI data quality) and an OpenAI key (embeddings) — both optional, with sensible behavior when only one is present.
+  - **Everything knows what's installed.** The pipeline wizard greys out destinations that aren't available, the AI assistant offers only the destinations your deployment actually has, and creating a pipeline against a missing database returns a clear explanation instead of a timeout.
+  - **Install-time validation.** After first boot the installer checks every store you configured — bundled or external — and reports each by name, so a mistyped hostname or bad credential surfaces immediately.
+  - **Change your mind anytime.** Enable or disable any store after install with a one-line edit and a restart. Disabling keeps the data; re-enabling brings it back.
+  - **Safer upgrades.** Upgrading an existing install never changes which services run — everything you had keeps running, no action required. Data services now use durable named storage, so containers can be removed and recreated without losing data.
+
+  **Upgrading:** Re-run the installer, or `docker compose pull && docker compose up -d --remove-orphans` after refreshing the compose file. Your current services and data are preserved automatically. See [Installation](/installation) for the new options.
+</Update>
+
 <Update label="v1.10.0" description="July 9, 2026">
   **Databricks destination — load, upsert, and query your Databricks workspace.**
 

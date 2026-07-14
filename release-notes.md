@@ -1,22 +1,29 @@
 # Release Notes
 
+## v1.11.0 — July 13, 2026
+
+**Choose your databases at install — run less, connect what you already have.**
+
+- **Pick and choose at install.** The installer now asks which databases and stores you want instead of installing everything. Each can run bundled, connect to a service you already operate, or be skipped — and pressing Enter at every prompt still gives the standard full install.
+- **Bring your own infrastructure.** Point Datris at an existing Postgres, Kafka, or managed vector store (Qdrant, Weaviate, Chroma, Milvus) during install, and optionally store Snowflake or Databricks destination credentials up front so pipelines can use them on day one.
+- **Lighter installs.** Skipping the bundled semantic-search server avoids a multi-gigabyte model download — the installer recommends OpenAI embeddings, which need no local container and cost pennies. Vector stores and a local Kafka test broker are now a one-line opt-in instead of commented-out YAML.
+- **Both AI providers, each at its best.** The installer asks for an Anthropic key (chat, code generation, AI data quality) and an OpenAI key (embeddings) — both optional, with sensible behavior when only one is present.
+- **Everything knows what's installed.** The pipeline wizard greys out destinations that aren't available, the AI assistant offers only the destinations your deployment actually has, and creating a pipeline against a missing database returns a clear explanation instead of a timeout.
+- **Install-time validation.** After first boot the installer checks every store you configured — bundled or external — and reports each by name, so a mistyped hostname or bad credential surfaces immediately, not mid-pipeline next week.
+- **Change your mind anytime.** Enable or disable any store after install with a one-line edit and a restart. Disabling keeps the data; re-enabling brings it back.
+- **Safer upgrades.** Upgrading an existing install never changes which services run — everything you had keeps running, no action required. Data services now use durable named storage, so containers can be removed and recreated without losing data.
+
+**Upgrading**
+
+- Existing installs: re-run the installer, or `docker compose pull && docker compose up -d --remove-orphans` after refreshing the compose file. Your current services and data are preserved automatically.
+
+---
+
 ## v1.10.0 — July 9, 2026
 
 **Databricks destination — load, upsert, and query your Databricks workspace.**
 
-- **Load into Databricks.** Point any structured pipeline at your own Databricks workspace and Datris loads it as governed Delta tables in Unity Catalog: tables are created automatically, the schema evolves as new columns appear, and natural-key upserts keep scheduled re-runs duplicate-free. Loaded tables are immediately queryable across the workspace — notebooks, dashboards, and lineage all see them natively. Available in the pipeline wizard and through the AI assistant.
-- **Secure by default.** Connects as a dedicated service principal you control, with least-privilege access to a single catalog; credentials live in a platform secret, never in pipeline configs. The docs include a copy-paste grant script. Works out of the box with serverless SQL warehouses — nothing runs in your cloud account and there's no cluster to manage.
-- **Safe full refreshes.** Pipelines that replace their table on each run swap the contents atomically — readers never see a half-loaded or empty table, and a failed run leaves the previous data intact.
-- **Forgiving setup.** Pasted workspace URLs and warehouse connection paths are cleaned up automatically in whatever shape they arrive, and connection problems come back as plain-language errors that say exactly what to fix.
-- **The assistant can verify and query Databricks.** Ask it to confirm a load landed or answer questions over the data — read-only, using the pipeline's own credentials — and it can browse your catalogs, schemas, tables, and columns along the way.
-- **Cleaner deletes.** Removing a pipeline together with its data also cleans up the table it created in Databricks.
-- **CLI catch-up.** `datris ingest` can now target Snowflake and Databricks directly, and pipeline listings label Snowflake and Databricks destinations.
-
-**Upgrading**
-
-- Existing installs: `docker compose pull && docker compose up -d`.
-- The CLI: `brew upgrade datris`.
-- Using Databricks requires a one-time setup in your workspace — see the [Databricks destination guide](https://docs.datris.ai/destinations/databricks).
+See [archived v1.10.0 release notes](release-notes/v1.10.0.md).
 
 ---
 
