@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{APIKeyValidator, SecretsRetrieverUtil, SecretsUtil}
+import ai.datris.util.{APIKeyValidator, CredentialResolver, PostgresQueryUtil, SecretsRetrieverUtil, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -49,6 +49,46 @@ class HealthCheckAPIController {
                 val status = checkVectorDB(name, secretName)
                 if ("up" == status.get("status")) available.add(name)
             }
+
+            val gson = new Gson
+            new ResponseEntity[String](gson.toJson(available), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    /**
+     * Structured destinations that are usable in this deployment. Drives the
+     * pipeline wizard's / Assistant's destination picker now that install-time
+     * selection can disable bundled services. Two availability semantics on
+     * purpose: the self-hosted destinations (mongodb, postgres, objectstore)
+     * are live-probed — the compose stack seeds their Vault secrets even when
+     * a service is disabled, so "secret is present" is not a reliable signal;
+     * the external SaaS destinations (snowflake, databricks) have no local
+     * service to probe, so presence of complete credentials in some Platform
+     * secret is the signal. Snowflake/Databricks credentialsSecret names are
+     * user-chosen per pipeline, so we scan every Platform secret rather than
+     * look up a fixed name.
+     */
+    @GetMapping(path = Array("/destinations/available"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def listAvailableDestinations(@RequestHeader(name = "x-api-key", required = false) apiKey: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /destinations/available called")
+            APIKeyValidator.validate(apiKey)
+
+            val env = DatrisEnvironment.current
+            val available = new java.util.ArrayList[String]()
+            if ("up" == checkMongoDB().get("status")) available.add("mongodb")
+            if ("up" == checkPostgres(env.postgresSecretName).get("status")) available.add("postgres")
+            if ("up" == checkMinIO().get("status")) available.add("objectstore")
+
+            val platformSecrets = SecretsRetrieverUtil.platformSecrets()
+            if (platformSecrets.exists { case (_, fields) => CredentialResolver.hasSnowflakeCredentials(fields) })
+                available.add("snowflake")
+            if (platformSecrets.exists { case (_, fields) => CredentialResolver.hasDatabricksCredentials(fields) })
+                available.add("databricks")
 
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(available), HttpStatus.OK)
@@ -116,34 +156,12 @@ class HealthCheckAPIController {
     }
 
     private def checkPostgres(secretName: String): java.util.Map[String, String] = {
-        try {
-            if (secretName == null || secretName.isEmpty) return statusNotConfigured()
-            val secrets = SecretsRetrieverUtil.postgresSecrets()
-            Class.forName("org.postgresql.Driver")
-
-            val properties = new Properties()
-            properties.setProperty("user", secrets.username)
-            properties.setProperty("password", secrets.password)
-            properties.setProperty("loginTimeout", "2")
-
-            val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
-            val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/datris"
-
-            var conn: Connection = null
-            try {
-                conn = DriverManager.getConnection(jdbcUrl, properties)
-                conn.setReadOnly(true)
-                val stmt = conn.createStatement()
-                stmt.setQueryTimeout(5)
-                val rs = stmt.executeQuery("SELECT 1")
-                rs.close()
-                stmt.close()
-                statusUp()
-            } finally {
-                if (conn != null) conn.close()
-            }
-        } catch {
-            case e: Exception => statusDown(e.getMessage)
+        if (secretName == null || secretName.isEmpty) return statusNotConfigured()
+        // Probe body lives in PostgresQueryUtil.probeError so the
+        // create-pipeline pre-validation uses the exact same reachability test.
+        PostgresQueryUtil.probeError() match {
+            case None          => statusUp()
+            case Some(message) => statusDown(message)
         }
     }
 

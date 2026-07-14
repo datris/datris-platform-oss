@@ -95,6 +95,7 @@ docs/config/commands.mdx
 docs/config/ec2-ollama.mdx
 docs/config/mcp-registry.mdx
 docs/config/hosted-datris-plan.md
+plans/
 docs/plans/
 docs/config/new-release.mdx
 

@@ -28,6 +28,12 @@ export class PipelineService {
     return this.http.post('/api/v1/pipeline', config, { responseType: 'text' });
   }
 
+  // Structured destinations installed on this instance. Mirrors
+  // TapService.getAvailableVectorStores (/api/v1/vector-stores/available).
+  getAvailableDestinations(): Observable<string[]> {
+    return this.http.get<string[]>('/api/v1/destinations/available');
+  }
+
   uploadConfigFile(file: File, type: string): Observable<any> {
     const formData = new FormData();
     formData.append('file', file);

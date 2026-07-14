@@ -28,9 +28,18 @@ volumes:
   pip-cache:
   tei-data:
   vault-data:        # persists Vault secrets across container recreation (drops dev mode)
-  # kafka-data:        # uncomment if re-enabling the optional Kafka service below
-  # zookeeper-data:    # uncomment if re-enabling the optional Kafka service below
-  # zookeeper-log:     # uncomment if re-enabling the optional Kafka service below
+  # Named data volumes for the three stateful stores. These MUST be named:
+  # anonymous volumes survive a plain recreate but are orphaned (left behind,
+  # not reattached) whenever the container is removed — `down` + `up`, or a
+  # store disabled via its *_ENABLED gate and later re-enabled. Named volumes
+  # reattach every time, which is what makes disable → re-enable lossless.
+  postgres-data:
+  mongodb-data:
+  mongodb-configdb:
+  minio-data:
+  kafka-data:        # used by the opt-in kafka profile (COMPOSE_PROFILES=kafka)
+  zookeeper-data:    # used by the opt-in kafka profile
+  zookeeper-log:     # used by the opt-in kafka profile
   # ollama-data:       # uncomment if re-enabling the optional Ollama service below
 
 services:
@@ -44,6 +53,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -66,14 +77,27 @@ services:
     container_name: mongodb
     ports:
       - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+      - mongodb-configdb:/data/configdb
     networks:
       - datris-net
 
   postgres:
     image: pgvector/pgvector:pg16
     container_name: postgres
+    # Opt-OUT gate (install-time database selection). Absent var → 1 → runs,
+    # so every pre-existing .env keeps its postgres on upgrade. Set
+    # POSTGRES_ENABLED=0 in .env to skip the bundled container (e.g. when
+    # using an external Postgres — see POSTGRES_JDBC_URL in .env.example).
+    # Never gate existing services with profiles: a missing COMPOSE_PROFILES
+    # can't be defaulted from this file and would silently drop the service.
+    deploy:
+      replicas: ${POSTGRES_ENABLED:-1}
     ports:
       - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -138,6 +162,33 @@ services:
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-}
+      # External / optional stores (install-time database selection). All are
+      # first-boot seeds consumed by vault-init.sh: postgres vars fall back to
+      # the bundled container's coordinates; the others seed their secret only
+      # when set (unset → store stays unconfigured, exactly like today).
+      POSTGRES_JDBC_URL: ${POSTGRES_JDBC_URL:-}
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      QDRANT_HOST: ${QDRANT_HOST:-}
+      QDRANT_PORT: ${QDRANT_PORT:-}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      WEAVIATE_HOST: ${WEAVIATE_HOST:-}
+      WEAVIATE_PORT: ${WEAVIATE_PORT:-}
+      WEAVIATE_API_KEY: ${WEAVIATE_API_KEY:-}
+      CHROMA_HOST: ${CHROMA_HOST:-}
+      CHROMA_PORT: ${CHROMA_PORT:-}
+      MILVUS_HOST: ${MILVUS_HOST:-}
+      MILVUS_PORT: ${MILVUS_PORT:-}
+      MILVUS_API_KEY: ${MILVUS_API_KEY:-}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-}
+      SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+      SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+      SNOWFLAKE_PRIVATE_KEY: ${SNOWFLAKE_PRIVATE_KEY:-}
+      SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+      DATABRICKS_HOST: ${DATABRICKS_HOST:-}
+      DATABRICKS_CLIENT_ID: ${DATABRICKS_CLIENT_ID:-}
+      DATABRICKS_CLIENT_SECRET: ${DATABRICKS_CLIENT_SECRET:-}
+      DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
     configs:
       - source: vault-bootstrap-sh
         target: /vault-bootstrap.sh
@@ -156,6 +207,11 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
     platform: linux/amd64   # TEI publishes amd64 only; arm64 hosts run under Docker's QEMU translation
     container_name: tei
+    # Opt-OUT gate: absent var → 1 → runs (backward safe). Set TEI_ENABLED=0
+    # to skip the local embedding server — recommended when using OpenAI
+    # embeddings (EMBEDDING_PROVIDER=openai), which needs no local container.
+    deploy:
+      replicas: ${TEI_ENABLED:-1}
     ports:
       - "11434:80"   # external port preserved so any prior EMBEDDING_ENDPOINT overrides keep working
     command: --model-id BAAI/bge-m3 --max-batch-tokens 8192
@@ -184,6 +240,9 @@ services:
     container_name: datris
     ports:
       - "8080:8080"
+    # No depends_on for postgres/tei: both are optional (replicas-gated above)
+    # and lazily connected by the server — a service_healthy condition on a
+    # replicas-0 service would block startup forever. Required core only.
     depends_on:
       vault-init:
         condition: service_completed_successfully
@@ -193,10 +252,6 @@ services:
         condition: service_started
       mongodb:
         condition: service_started
-      postgres:
-        condition: service_healthy
-      tei:
-        condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
       # The server authenticates with this token id. vault-bootstrap.sh mints a
@@ -315,43 +370,49 @@ services:
       - datris-net
 
   # ================================================================
-  # Optional Vector Databases
-  # Uncomment whichever vector database you want to use.
+  # Optional Vector Databases — opt-IN via compose profiles.
+  # Enable in .env, e.g.:  COMPOSE_PROFILES=qdrant  (comma-separate for more)
+  # Profiles (not replicas gates) are correct here BECAUSE these services
+  # never ran by default — default-off can't drop anything on upgrade, and
+  # profile-inactive services are skipped by `docker compose pull`.
   # pgvector is already included via the PostgreSQL service above.
   # ================================================================
 
   # Qdrant - high-performance vector database
-  # qdrant:
-  #   image: qdrant/qdrant:latest
-  #   container_name: qdrant
-  #   ports:
-  #     - "6333:6333"
-  #     - "6334:6334"
-  #   networks:
-  #     - datris-net
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    profiles: ["qdrant"]
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks:
+      - datris-net
 
   # Weaviate - open-source vector database (port 8079 to avoid conflict with pipeline on 8080)
-  # weaviate:
-  #   image: cr.weaviate.io/semitechnologies/weaviate:latest
-  #   container_name: weaviate
-  #   ports:
-  #     - "8079:8080"
-  #     - "50051:50051"
-  #   networks:
-  #     - datris-net
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:latest
+    container_name: weaviate
+    profiles: ["weaviate"]
+    ports:
+      - "8079:8080"
+      - "50051:50051"
+    networks:
+      - datris-net
 
   # Chroma - lightweight vector database
-  # chroma:
-  #   image: chromadb/chroma:latest
-  #   container_name: chroma
-  #   ports:
-  #     - "8000:8000"
-  #   networks:
-  #     - datris-net
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: chroma
+    profiles: ["chroma"]
+    ports:
+      - "8000:8000"
+    networks:
+      - datris-net
 
-  # Milvus - scalable vector database (requires etcd + minio dependencies)
-  # See https://milvus.io/docs/install_standalone-docker.md for full setup.
-  # Recommended: use the standalone embed script instead:
+  # Milvus - scalable vector database (requires etcd + minio dependencies), so
+  # it is NOT bundled as a profile. Point Datris at an external/standalone
+  # Milvus instead. See https://milvus.io/docs/install_standalone-docker.md:
   #   curl -sfL https://raw.githubusercontent.com/milvus-io/milvus/master/scripts/standalone_embed.sh -o standalone_embed.sh
   #   bash standalone_embed.sh start
 
@@ -382,65 +443,67 @@ services:
   #     - datris-net
 
   # ================================================================
-  # Optional: Kafka + Zookeeper + kafka-ui
-  # Datris ships with kafka-clients in the assembly, so pipelines that
-  # use a Kafka source/destination can point at any external broker
-  # via the pipeline's Kafka secret. This bundled local broker is only
-  # needed if you want to test Kafka pipelines without spinning up a
-  # broker elsewhere.
-  # Re-enable all three services AND the volumes at the top of the file
-  # (kafka-data, zookeeper-data, zookeeper-log) to use locally.
+  # Optional: Kafka + Zookeeper + kafka-ui — opt-IN via the `kafka` profile
+  # (COMPOSE_PROFILES=kafka in .env). Datris ships with kafka-clients in the
+  # assembly, so pipelines that use a Kafka source/destination can point at
+  # any external broker via the pipeline's Kafka secret (Confluent Cloud /
+  # MSK is the expected production shape — see KAFKA_BOOTSTRAP_SERVERS in
+  # .env.example). This bundled local broker is only for testing Kafka
+  # pipelines without spinning up a broker elsewhere.
   # ================================================================
-  # zookeeper:
-  #   image: confluentinc/cp-zookeeper:7.6.0
-  #   container_name: zookeeper
-  #   ports:
-  #     - "2181:2181"
-  #   environment:
-  #     ZOOKEEPER_CLIENT_PORT: 2181
-  #     ZOOKEEPER_TICK_TIME: 2000
-  #     KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
-  #   volumes:
-  #     - zookeeper-data:/var/lib/zookeeper/data
-  #     - zookeeper-log:/var/lib/zookeeper/log
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 10
-  #   networks:
-  #     - datris-net
-  #
-  # kafka:
-  #   image: confluentinc/cp-kafka:7.6.0
-  #   container_name: kafka
-  #   ports:
-  #     - "9092:9092"
-  #   depends_on:
-  #     zookeeper:
-  #       condition: service_healthy
-  #   environment:
-  #     KAFKA_BROKER_ID: 1
-  #     KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-  #   volumes:
-  #     - kafka-data:/var/lib/kafka/data
-  #   networks:
-  #     - datris-net
-  #
-  # kafka-ui:
-  #   image: provectuslabs/kafka-ui:latest
-  #   container_name: kafka-ui
-  #   ports:
-  #     - "8085:8080"
-  #   depends_on:
-  #     - kafka
-  #   environment:
-  #     KAFKA_CLUSTERS_0_NAME: local
-  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-  #   networks:
-  #     - datris-net
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    profiles: ["kafka"]
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep -q imok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - datris-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    profiles: ["kafka"]
+    ports:
+      - "9092:9092"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - datris-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    profiles: ["kafka"]
+    ports:
+      - "8085:8080"
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    networks:
+      - datris-net
 
   minio-init:
     image: minio/mc:latest
@@ -649,11 +712,44 @@ configs:
       UI_API_KEY_VALUE="$${DATRIS_UI_API_KEY:-default-ui-key}"
       seed_if_absent secret/oss/api-keys ui="$${UI_API_KEY_VALUE}"
       seed_if_absent secret/oss/ui-api-key apiKey="$${UI_API_KEY_VALUE}"
-      seed_if_absent secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 username=postgres password=postgres
-      # kafka-producer is intentionally not seeded — the bundled Kafka service is
-      # now opt-in (see optional Kafka block in docker-compose.yml). Users who
-      # enable it can configure this secret via the Configuration tab or by hand:
+      # Postgres: env vars (installer-written, for an external Postgres) fall back
+      # to the bundled container's coordinates — absent vars reproduce today's seed.
+      # POSTGRES_JDBC_URL is the BASE url (no database segment), matching the
+      # bundled format; the destination database is a per-pipeline/config setting.
+      seed_if_absent secret/oss/postgres \
+        jdbcUrl="$${POSTGRES_JDBC_URL:-jdbc:postgresql://postgres:5432}" \
+        username="$${POSTGRES_USER:-postgres}" \
+        password="$${POSTGRES_PASSWORD:-postgres}"
+
+      # kafka-producer: seeded only when a broker list is supplied (installer or
+      # operator) — bundled test broker (kafka:9092 with COMPOSE_PROFILES=kafka) or
+      # an external one. Unset → not seeded, exactly like before, so the health
+      # card shows "Not Configured" rather than "Down". Manual alternative:
       #   vault kv put secret/oss/kafka-producer bootstrapServers=kafka:9092
+      if [ -n "$${KAFKA_BOOTSTRAP_SERVERS:-}" ]; then
+        seed_if_absent secret/oss/kafka-producer bootstrapServers="$${KAFKA_BOOTSTRAP_SERVERS}"
+      fi
+
+      # Snowflake / Databricks destination credentials — seeded as ordinary
+      # (non-tap) secrets, so they appear as human-owned Platform secrets that
+      # pipelines reference via credentialsSecret (agents can discover but never
+      # modify them). Seeded only when the anchor field is present; field names
+      # match CredentialResolver's canonical spellings. Warehouse/catalog/database
+      # are per-pipeline settings and deliberately NOT stored here.
+      if [ -n "$${SNOWFLAKE_ACCOUNT:-}" ]; then
+        seed_if_absent secret/oss/snowflake \
+          account="$${SNOWFLAKE_ACCOUNT}" \
+          user="$${SNOWFLAKE_USER:-}" \
+          privateKey="$${SNOWFLAKE_PRIVATE_KEY:-}" \
+          password="$${SNOWFLAKE_PASSWORD:-}"
+      fi
+      if [ -n "$${DATABRICKS_HOST:-}" ]; then
+        seed_if_absent secret/oss/databricks \
+          host="$${DATABRICKS_HOST}" \
+          clientId="$${DATABRICKS_CLIENT_ID:-}" \
+          clientSecret="$${DATABRICKS_CLIENT_SECRET:-}" \
+          token="$${DATABRICKS_TOKEN:-}"
+      fi
 
       # AI configuration — three independent, self-describing secrets.
       # Each Vault secret carries provider/endpoint/model/apiKey/version inline so
@@ -769,18 +865,35 @@ configs:
       fi
 
       # Vector store secrets.
-      # Only pgvector is seeded by default — it rides on the bundled Postgres so
-      # it's always available. The other vector stores (qdrant, weaviate, milvus,
-      # chroma) are opt-in via the optional service blocks in docker-compose.yml.
-      # Seeding their secrets unconditionally would make the Configuration tab's
-      # Service Health card show them as "Down" instead of "Not Configured" when
-      # the user hasn't enabled them. Users who turn on an optional vector store
-      # can write its secret via the Configuration tab or by hand:
-      #   vault kv put secret/oss/qdrant   host="host.docker.internal" port="6334" apiKey=""
-      #   vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
-      #   vault kv put secret/oss/milvus   host="host.docker.internal" port="19530" apiKey=""
-      #   vault kv put secret/oss/chroma   host="host.docker.internal" port="8000"
-      seed_if_absent secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/datris" username="postgres" password="postgres"
+      # pgvector is seeded by default — it rides on the (bundled or external)
+      # Postgres so it's available whenever Postgres is. The other vector stores
+      # (qdrant, weaviate, milvus, chroma) are seeded ONLY when their HOST var is
+      # set (installer-written: the compose service name for a bundled profile
+      # service, or a real hostname for a managed/cloud instance). Seeding them
+      # unconditionally would make the Configuration tab's Service Health card
+      # show them as "Down" instead of "Not Configured" when the user hasn't
+      # enabled them. Manual alternative stays available:
+      #   vault kv put secret/oss/qdrant host="host.docker.internal" port="6334" apiKey=""
+      seed_if_absent secret/oss/pgvector \
+        jdbcUrl="$${POSTGRES_JDBC_URL:-jdbc:postgresql://postgres:5432}/datris" \
+        username="$${POSTGRES_USER:-postgres}" \
+        password="$${POSTGRES_PASSWORD:-postgres}"
+      if [ -n "$${QDRANT_HOST:-}" ]; then
+        seed_if_absent secret/oss/qdrant \
+          host="$${QDRANT_HOST}" port="$${QDRANT_PORT:-6334}" apiKey="$${QDRANT_API_KEY:-}"
+      fi
+      if [ -n "$${WEAVIATE_HOST:-}" ]; then
+        seed_if_absent secret/oss/weaviate \
+          host="$${WEAVIATE_HOST}" port="$${WEAVIATE_PORT:-8079}" apiKey="$${WEAVIATE_API_KEY:-}"
+      fi
+      if [ -n "$${MILVUS_HOST:-}" ]; then
+        seed_if_absent secret/oss/milvus \
+          host="$${MILVUS_HOST}" port="$${MILVUS_PORT:-19530}" apiKey="$${MILVUS_API_KEY:-}"
+      fi
+      if [ -n "$${CHROMA_HOST:-}" ]; then
+        seed_if_absent secret/oss/chroma \
+          host="$${CHROMA_HOST}" port="$${CHROMA_PORT:-8000}"
+      fi
 
       echo "Vault secrets seeded successfully."
   minio-init-sh:

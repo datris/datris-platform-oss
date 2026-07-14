@@ -10,7 +10,7 @@ import com.google.gson.{Gson, JsonParser}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
 import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
-import ai.datris.util.{APIKeyValidator, SecretsUtil}
+import ai.datris.util.{APIKeyValidator, SecretsRetrieverUtil, SecretsUtil}
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -82,15 +82,7 @@ class SecretsAPIController {
                 // type=platform → all secrets NOT tagged _type=tap (mirrors the
                 // UI's Platform tab). Any other value → exact-match on _type.
                 if ("platform".equals(secretType)) {
-                    allSecrets.filter(name => {
-                        val secretMap = SecretsUtil.getSecretMap(env + "/" + name)
-                        // Include when the secret has no _type (most platform
-                        // secrets predate the tag) or when _type != "tap".
-                        secretMap.exists(m => {
-                            val t = m.get("_type")
-                            t == null || !"tap".equals(t)
-                        })
-                    })
+                    SecretsRetrieverUtil.platformSecrets().map(_._1)
                 } else {
                     allSecrets.filter(name => {
                         val secretMap = SecretsUtil.getSecretMap(env + "/" + name)

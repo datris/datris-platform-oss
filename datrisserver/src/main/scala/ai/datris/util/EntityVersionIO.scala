@@ -14,7 +14,7 @@ import ai.datris.model.EntityVersion
   * (`entityName|version`) and `entityName`, mirroring the `<env>-tap-log`
   * idiom so they can be queried by entity and deleted/pruned by key.
   *
-  * See docs/plans/tap-pipeline-versioning.md. */
+  * See plans/tap-pipeline-versioning.md. */
 object EntityVersionIO {
 
     private def gson = new Gson

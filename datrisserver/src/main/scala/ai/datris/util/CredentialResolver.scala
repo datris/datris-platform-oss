@@ -49,6 +49,30 @@ object CredentialResolver {
         candidates.iterator.map(secret.get).find(_ != null)
     }
 
+    /** True when `secret` holds a complete set of Snowflake credentials —
+     *  account AND user AND (privateKey OR password) — under any of the alias
+     *  spellings resolveSnowflake accepts. Presence check only, no connection
+     *  attempt. Used by GET /destinations/available, which cannot know the
+     *  user-chosen credentialsSecret name and so scans every Platform secret
+     *  for one that would satisfy resolveSnowflake. */
+    def hasSnowflakeCredentials(secret: java.util.Map[String, String]): Boolean = {
+        secretField(secret, "account", "SNOWFLAKE_ACCOUNT").isDefined &&
+            secretField(secret, "user", "username", "SNOWFLAKE_USER").isDefined &&
+            (secretField(secret, "privateKey", "private_key", "private-key", "SNOWFLAKE_PRIVATE_KEY").isDefined ||
+                secretField(secret, "password", "SNOWFLAKE_PASSWORD").isDefined)
+    }
+
+    /** True when `secret` holds a complete set of Databricks credentials —
+     *  host AND ((clientId AND clientSecret) OR token) — under any of the
+     *  alias spellings resolveDatabricks accepts. Presence check only; same
+     *  Platform-secret scan rationale as hasSnowflakeCredentials. */
+    def hasDatabricksCredentials(secret: java.util.Map[String, String]): Boolean = {
+        secretField(secret, "host", "server", "hostname", "workspaceUrl", "workspace_url", "DATABRICKS_HOST").isDefined &&
+            ((secretField(secret, "clientId", "client_id", "client-id", "DATABRICKS_CLIENT_ID").isDefined &&
+                secretField(secret, "clientSecret", "client_secret", "client-secret", "DATABRICKS_CLIENT_SECRET").isDefined) ||
+                secretField(secret, "token", "pat", "personalAccessToken", "personal_access_token", "access_token", "DATABRICKS_TOKEN").isDefined)
+    }
+
     def resolve(objectStore: ObjectStore): ResolvedObjectStoreCredentials = {
         val provider = Option(objectStore.provider).getOrElse("minio").toLowerCase
         provider match {

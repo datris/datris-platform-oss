@@ -438,14 +438,18 @@
       <div class="form-row">
         <label class="form-label">Destination Type</label>
         <select class="form-input" [(ngModel)]="destType" (ngModelChange)="onDestTypeChange()">
+          <!-- Structured destinations not returned by /api/v1/destinations/available
+               render disabled with a "Not installed" annotation. They stay visible
+               (never hidden), and if the availability call fails we fail open:
+               everything is enabled — see isDestAvailable(). -->
           <optgroup label="Databases" *ngIf="sourceType !== 'unstructured'">
-            <option value="postgres" *ngIf="sourceType === 'csv' || sourceType === 'xml'">PostgreSQL</option>
-            <option value="mongodb" *ngIf="sourceType !== 'xml'">MongoDB</option>
-            <option value="snowflake" *ngIf="sourceType === 'csv' || sourceType === 'xml'">Snowflake</option>
-            <option value="databricks" *ngIf="sourceType === 'csv' || sourceType === 'xml'">Databricks</option>
+            <option value="postgres" *ngIf="sourceType === 'csv' || sourceType === 'xml'" [disabled]="!isDestAvailable('postgres')">PostgreSQL{{ isDestAvailable('postgres') ? '' : ' — Not installed' }}</option>
+            <option value="mongodb" *ngIf="sourceType !== 'xml'" [disabled]="!isDestAvailable('mongodb')">MongoDB{{ isDestAvailable('mongodb') ? '' : ' — Not installed' }}</option>
+            <option value="snowflake" *ngIf="sourceType === 'csv' || sourceType === 'xml'" [disabled]="!isDestAvailable('snowflake')">Snowflake{{ isDestAvailable('snowflake') ? '' : ' — Not installed' }}</option>
+            <option value="databricks" *ngIf="sourceType === 'csv' || sourceType === 'xml'" [disabled]="!isDestAvailable('databricks')">Databricks{{ isDestAvailable('databricks') ? '' : ' — Not installed' }}</option>
           </optgroup>
           <optgroup label="Storage & Messaging" *ngIf="sourceType !== 'unstructured' && sourceType !== 'xml'">
-            <option value="objectstore" *ngIf="sourceType === 'csv'">Object Store (MinIO or S3)</option>
+            <option value="objectstore" *ngIf="sourceType === 'csv'" [disabled]="!isDestAvailable('objectstore')">Object Store (MinIO or S3){{ isDestAvailable('objectstore') ? '' : ' — Not installed' }}</option>
             <option value="kafka" *ngIf="healthService.isAvailable('kafka')">Kafka</option>
             <option value="activemq">ActiveMQ</option>
             <option value="restendpoint">REST Endpoint</option>
@@ -458,6 +462,13 @@
             <option value="pgvector">pgvector</option>
           </optgroup>
         </select>
+        <!-- Selected destination no longer installed (e.g. editing an older
+             pipeline). Keep it selected — never auto-switch — and let the
+             user decide. -->
+        <p class="form-hint dest-not-installed" *ngIf="selectedDestUnavailable()">
+          <span class="material-icons">warning_amber</span>
+          Not installed — this destination isn't available on this Datris instance. You can keep it selected, but runs will fail until it is installed.
+        </p>
       </div>
 
       <!-- PostgreSQL -->

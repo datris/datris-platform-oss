@@ -37,6 +37,44 @@ object PostgresQueryUtil {
         "TRUNCATE", "GRANT", "REVOKE", "COPY", "CALL", "EXECUTE", "EXEC"
     )
 
+    /** Lightweight reachability probe: connect with a short login timeout and
+     *  run SELECT 1. Returns None when Postgres answers, Some(error message)
+     *  when it is down or its secret is missing. Shared by the /health and
+     *  /destinations/available endpoints and the create-pipeline
+     *  pre-validation so "postgres is available" always means the same thing
+     *  everywhere. */
+    def probeError(): Option[String] = {
+        try {
+            val secrets = SecretsRetrieverUtil.postgresSecrets()
+            Class.forName("org.postgresql.Driver")
+
+            val properties = new Properties()
+            properties.setProperty("user", secrets.username)
+            properties.setProperty("password", secrets.password)
+            properties.setProperty("loginTimeout", "2")
+
+            // Append a database name when the URL has none (same pattern as query()).
+            val afterProtocol = secrets.jdbcUrl.replaceFirst("^jdbc:postgresql://", "")
+            val jdbcUrl = if (afterProtocol.contains("/")) secrets.jdbcUrl else secrets.jdbcUrl + "/datris"
+
+            var conn: Connection = null
+            try {
+                conn = DriverManager.getConnection(jdbcUrl, properties)
+                conn.setReadOnly(true)
+                val stmt = conn.createStatement()
+                stmt.setQueryTimeout(5)
+                val rs = stmt.executeQuery("SELECT 1")
+                rs.close()
+                stmt.close()
+                None
+            } finally {
+                if (conn != null) conn.close()
+            }
+        } catch {
+            case e: Exception => Some(e.getMessage)
+        }
+    }
+
     def query(sql: String, database: String = null, limit: Int = DEFAULT_LIMIT): java.util.List[java.util.Map[String, Any]] = {
         validateQuery(sql)
 

@@ -43,11 +43,44 @@ seed_if_absent secret/oss/mongodb connectionString=mongodb://mongodb:27017 datab
 UI_API_KEY_VALUE="${DATRIS_UI_API_KEY:-default-ui-key}"
 seed_if_absent secret/oss/api-keys ui="${UI_API_KEY_VALUE}"
 seed_if_absent secret/oss/ui-api-key apiKey="${UI_API_KEY_VALUE}"
-seed_if_absent secret/oss/postgres jdbcUrl=jdbc:postgresql://postgres:5432 username=postgres password=postgres
-# kafka-producer is intentionally not seeded — the bundled Kafka service is
-# now opt-in (see optional Kafka block in docker-compose.yml). Users who
-# enable it can configure this secret via the Configuration tab or by hand:
+# Postgres: env vars (installer-written, for an external Postgres) fall back
+# to the bundled container's coordinates — absent vars reproduce today's seed.
+# POSTGRES_JDBC_URL is the BASE url (no database segment), matching the
+# bundled format; the destination database is a per-pipeline/config setting.
+seed_if_absent secret/oss/postgres \
+  jdbcUrl="${POSTGRES_JDBC_URL:-jdbc:postgresql://postgres:5432}" \
+  username="${POSTGRES_USER:-postgres}" \
+  password="${POSTGRES_PASSWORD:-postgres}"
+
+# kafka-producer: seeded only when a broker list is supplied (installer or
+# operator) — bundled test broker (kafka:9092 with COMPOSE_PROFILES=kafka) or
+# an external one. Unset → not seeded, exactly like before, so the health
+# card shows "Not Configured" rather than "Down". Manual alternative:
 #   vault kv put secret/oss/kafka-producer bootstrapServers=kafka:9092
+if [ -n "${KAFKA_BOOTSTRAP_SERVERS:-}" ]; then
+  seed_if_absent secret/oss/kafka-producer bootstrapServers="${KAFKA_BOOTSTRAP_SERVERS}"
+fi
+
+# Snowflake / Databricks destination credentials — seeded as ordinary
+# (non-tap) secrets, so they appear as human-owned Platform secrets that
+# pipelines reference via credentialsSecret (agents can discover but never
+# modify them). Seeded only when the anchor field is present; field names
+# match CredentialResolver's canonical spellings. Warehouse/catalog/database
+# are per-pipeline settings and deliberately NOT stored here.
+if [ -n "${SNOWFLAKE_ACCOUNT:-}" ]; then
+  seed_if_absent secret/oss/snowflake \
+    account="${SNOWFLAKE_ACCOUNT}" \
+    user="${SNOWFLAKE_USER:-}" \
+    privateKey="${SNOWFLAKE_PRIVATE_KEY:-}" \
+    password="${SNOWFLAKE_PASSWORD:-}"
+fi
+if [ -n "${DATABRICKS_HOST:-}" ]; then
+  seed_if_absent secret/oss/databricks \
+    host="${DATABRICKS_HOST}" \
+    clientId="${DATABRICKS_CLIENT_ID:-}" \
+    clientSecret="${DATABRICKS_CLIENT_SECRET:-}" \
+    token="${DATABRICKS_TOKEN:-}"
+fi
 
 # AI configuration — three independent, self-describing secrets.
 # Each Vault secret carries provider/endpoint/model/apiKey/version inline so
@@ -163,17 +196,34 @@ else
 fi
 
 # Vector store secrets.
-# Only pgvector is seeded by default — it rides on the bundled Postgres so
-# it's always available. The other vector stores (qdrant, weaviate, milvus,
-# chroma) are opt-in via the optional service blocks in docker-compose.yml.
-# Seeding their secrets unconditionally would make the Configuration tab's
-# Service Health card show them as "Down" instead of "Not Configured" when
-# the user hasn't enabled them. Users who turn on an optional vector store
-# can write its secret via the Configuration tab or by hand:
-#   vault kv put secret/oss/qdrant   host="host.docker.internal" port="6334" apiKey=""
-#   vault kv put secret/oss/weaviate host="host.docker.internal" port="8079" apiKey=""
-#   vault kv put secret/oss/milvus   host="host.docker.internal" port="19530" apiKey=""
-#   vault kv put secret/oss/chroma   host="host.docker.internal" port="8000"
-seed_if_absent secret/oss/pgvector jdbcUrl="jdbc:postgresql://postgres:5432/datris" username="postgres" password="postgres"
+# pgvector is seeded by default — it rides on the (bundled or external)
+# Postgres so it's available whenever Postgres is. The other vector stores
+# (qdrant, weaviate, milvus, chroma) are seeded ONLY when their HOST var is
+# set (installer-written: the compose service name for a bundled profile
+# service, or a real hostname for a managed/cloud instance). Seeding them
+# unconditionally would make the Configuration tab's Service Health card
+# show them as "Down" instead of "Not Configured" when the user hasn't
+# enabled them. Manual alternative stays available:
+#   vault kv put secret/oss/qdrant host="host.docker.internal" port="6334" apiKey=""
+seed_if_absent secret/oss/pgvector \
+  jdbcUrl="${POSTGRES_JDBC_URL:-jdbc:postgresql://postgres:5432}/datris" \
+  username="${POSTGRES_USER:-postgres}" \
+  password="${POSTGRES_PASSWORD:-postgres}"
+if [ -n "${QDRANT_HOST:-}" ]; then
+  seed_if_absent secret/oss/qdrant \
+    host="${QDRANT_HOST}" port="${QDRANT_PORT:-6334}" apiKey="${QDRANT_API_KEY:-}"
+fi
+if [ -n "${WEAVIATE_HOST:-}" ]; then
+  seed_if_absent secret/oss/weaviate \
+    host="${WEAVIATE_HOST}" port="${WEAVIATE_PORT:-8079}" apiKey="${WEAVIATE_API_KEY:-}"
+fi
+if [ -n "${MILVUS_HOST:-}" ]; then
+  seed_if_absent secret/oss/milvus \
+    host="${MILVUS_HOST}" port="${MILVUS_PORT:-19530}" apiKey="${MILVUS_API_KEY:-}"
+fi
+if [ -n "${CHROMA_HOST:-}" ]; then
+  seed_if_absent secret/oss/chroma \
+    host="${CHROMA_HOST}" port="${CHROMA_PORT:-8000}"
+fi
 
 echo "Vault secrets seeded successfully."

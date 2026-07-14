@@ -44,6 +44,23 @@ object SecretsRetrieverUtil {
         )
     }
 
+    /** Name → fields for every Platform-tab secret in the current environment:
+     *  all secrets NOT tagged _type=tap. Secrets without a _type predate the
+     *  tag and count as platform. Single source of the filter behind the UI's
+     *  Platform tab, the type=platform branch of GET /secrets, and the
+     *  external-SaaS credential scan on GET /destinations/available. */
+    def platformSecrets(): List[(String, java.util.Map[String, String])] = {
+        val env = DatrisEnvironment.current.environment
+        SecretsUtil.listSecrets(env).flatMap(name => {
+            SecretsUtil.getSecretMap(env + "/" + name)
+                .filter(m => {
+                    val t = m.get("_type")
+                    t == null || !"tap".equals(t)
+                })
+                .map(m => (name, m))
+        })
+    }
+
     def mongoDbSecrets(): MongoDBSecrets = {
         val dbSecret = SecretsUtil.getSecretMap(DatrisEnvironment.current.mongoDbSecretName)
             .getOrElse(throw new DatrisException("Could not retrieve database information from Secrets Manager, secret name: " + DatrisEnvironment.current.mongoDbSecretName))

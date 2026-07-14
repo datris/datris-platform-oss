@@ -254,7 +254,102 @@ def _activity_snapshot(since: float) -> dict[str, Any]:
             "calls": calls,
         }
 
-server = Server("datris", instructions="""\
+# ---------------------------------------------------------------------------
+# Destination availability — INJECTION, NOT INSTRUCTION
+#
+# Install-time selection can disable bundled services (e.g. run without
+# Postgres) and Snowflake/Databricks are configured optionally, so the set of
+# structured destinations worth OFFERING varies per deployment. The rule:
+# never tell the model "check availability before offering" — a conditional
+# offer flickers, because at question-time the model hasn't checked and the
+# options silently vanish. Instead the harness resolves availability HERE and
+# bakes the concrete list into the instruction text; the model unconditionally
+# offers everything its instructions name. Any literal example enumerating
+# destinations must be rendered from this same list — the model mimics an
+# example's enumeration over the prose rule.
+#
+# FAIL-OPEN: on any error/timeout fetching availability, use the FULL
+# five-destination set. A blip must never hide destinations.
+# ---------------------------------------------------------------------------
+
+ALL_STRUCTURED_DESTINATIONS = ("postgres", "mongodb", "objectstore", "snowflake", "databricks")
+# The subset that create_pipeline treats as the STRUCTURED (database) category —
+# objectstore is its own category in the instruction texts.
+_STRUCTURED_DB_DESTINATIONS = ("postgres", "mongodb", "snowflake", "databricks")
+
+DESTINATIONS_CACHE_TTL_SECS = 60
+DESTINATIONS_FETCH_TIMEOUT_SECS = 3
+
+_dest_cache: dict[str, Any] = {"names": None, "fetched_at": 0.0}
+_dest_cache_lock = threading.Lock()
+
+
+def _available_structured_destinations() -> list[str]:
+    """Structured destinations available in this deployment, per
+    GET /api/v1/destinations/available. Cached in-process for
+    DESTINATIONS_CACHE_TTL_SECS. Never raises and never returns an empty
+    list — any fetch/parse problem fails open to ALL_STRUCTURED_DESTINATIONS."""
+    now = time.time()
+    with _dest_cache_lock:
+        cached = _dest_cache["names"]
+        if cached is not None and (now - _dest_cache["fetched_at"]) < DESTINATIONS_CACHE_TTL_SECS:
+            return cached
+
+    names = None
+    try:
+        resp = requests.get(
+            f"{DATRIS_API_URL}/api/v1/destinations/available",
+            headers=_headers(),
+            timeout=DESTINATIONS_FETCH_TIMEOUT_SECS,
+        )
+        if resp.status_code == 200:
+            parsed = json.loads(resp.text)
+            if isinstance(parsed, list):
+                filtered = [n for n in ALL_STRUCTURED_DESTINATIONS if n in parsed]
+                if filtered:
+                    names = filtered
+    except Exception:
+        names = None
+    if names is None:
+        # Fail open — a blip must never hide destinations.
+        names = list(ALL_STRUCTURED_DESTINATIONS)
+
+    with _dest_cache_lock:
+        _dest_cache["names"] = names
+        _dest_cache["fetched_at"] = time.time()
+    return names
+
+
+def _structured_db_destinations_text(names: list[str]) -> str:
+    """Comma-joined database-category subset, e.g. 'postgres, mongodb'.
+    Falls back to the full subset rather than rendering an empty list."""
+    subset = [n for n in _STRUCTURED_DB_DESTINATIONS if n in names]
+    return ", ".join(subset or _STRUCTURED_DB_DESTINATIONS)
+
+
+def _structured_offer_destinations_text(names: list[str]) -> str:
+    """Comma-joined full offer set (all five categories), canonical order."""
+    subset = [n for n in ALL_STRUCTURED_DESTINATIONS if n in names]
+    return ", ".join(subset or ALL_STRUCTURED_DESTINATIONS)
+
+
+def _render_destination_templates(text: str, names: list[str] | None = None) -> str:
+    """Substitute the destination-list placeholders in an instruction text.
+    With names=None, resolves availability (cached, fail-open)."""
+    if names is None:
+        names = _available_structured_destinations()
+    return (
+        text
+        .replace("{{STRUCTURED_DB_DESTINATIONS}}", _structured_db_destinations_text(names))
+        .replace("{{STRUCTURED_OFFER_DESTINATIONS}}", _structured_offer_destinations_text(names))
+    )
+
+
+def _render_instructions() -> str:
+    return _render_destination_templates(_INSTRUCTIONS_TEMPLATE)
+
+
+_INSTRUCTIONS_TEMPLATE = """\
 Datris is the first AI Agent-Native Data Platform. It ingests, validates, transforms, and routes data to databases, message queues, object stores, and vector stores — all driven by configurations you create and manage programmatically. You don't just move data: you build the pipelines and taps, run and verify them, query the results back, manage credentials, and can view, diff, and roll definitions back to any prior version. Pipelines define how data is processed and where it lands; taps pull data into a pipeline from external APIs, websites, files, or databases, on demand or on a schedule.
 
 FIRST-RESPONSE RULE (read this before anything else):
@@ -287,6 +382,9 @@ NEVER narrate a create / update / delete / run operation as completed unless the
   - When the verification call FINDS the resource (the pipeline / tap / collection / table is present in the list response), it exists — full stop. Do NOT retract a previous-turn claim that it was created, do NOT apologize for confabulating, and do NOT re-create it. Skim the response for the name you're looking for; if it's there, treat it as real and move on to the user's current ask. The EVIDENCE RULE prevents fake claims of success — it does NOT require retracting true claims just because they happened in a previous turn.
 The user trusts your narrative as a proxy for the platform state. Confabulating "done" when only some of it is done corrupts that trust and creates failure modes (a cron set on a tap whose pipeline doesn't exist; a "run now" call against a pipeline that was never created). Be honest about what happened in THIS turn, even if it's less than the user asked for — they can redirect, but only if your report is true.
 
+DESTINATION OFFERING RULE (structured data):
+The structured destinations available in this deployment are: {{STRUCTURED_OFFER_DESTINATIONS}}. When the user wants to ingest structured/tabular data and has not named a destination, offer exactly this set — name every one of them in your question, with no silent defaults and no destinations outside this list. This list was resolved by the platform and baked into this text at session start — do NOT probe or re-check availability before offering, and do NOT drop an option just because you haven't seen it used yet. (If the user explicitly asks about a destination that is not in the list, you may still explain how it works and what configuring it requires.)
+
 A pipeline config has two required sections: source and destination. Keep configs simple: source + destination only.
 
 NEVER rules:
@@ -301,7 +399,7 @@ NEVER rules:
 
 Required workflow:
   1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
-  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations (postgres, mongodb, snowflake, databricks) and OBJECTSTORE (Parquet/ORC writes to MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets. For databricks, credentialsSecret AND warehouse (SQL warehouse ID) AND database (Unity Catalog name) are required — same secret discovery via list_platform_secrets.
+  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations ({{STRUCTURED_DB_DESTINATIONS}}) and OBJECTSTORE (Parquet/ORC writes to MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets. For databricks, credentialsSecret AND warehouse (SQL warehouse ID) AND database (Unity Catalog name) are required — same secret discovery via list_platform_secrets.
      create_pipeline UPSERTS by name: if a pipeline with the same name already exists, the call REPLACES its config in place — the data already in the destination is NOT touched. To change a knob (keyFields, truncate, codegen_rule, etc.) on an existing pipeline, just call create_pipeline again with the same name and the new settings. You do NOT need to delete first.
      Common knobs: keyFields (list of column names that act as a natural key for dedupe/upsert on every run), truncate (wipe the destination before each run), codegen_rule (AI-powered data quality), codegen_transform (AI-powered transformation).
   3. Ingest data (choose one):
@@ -336,7 +434,16 @@ Long-form references — read on demand to verify your mental model:
 
 Do NOT call check_service_health as part of the normal workflow — it is slow. Only use it for diagnostics if something fails.
 Do NOT call update_secret unless you need to configure AI provider keys and they are not already set.
-""")
+"""
+
+# Instructions are delivered per session via create_initialization_options(),
+# which reads server.instructions at session start. The import-time value uses
+# the fail-open full set (no network call during import); every transport
+# entry point (stdio, /sse, /mcp) refreshes server.instructions from the
+# cached availability fetch just before the session initializes, so a cache
+# refresh reaches new sessions.
+server = Server("datris", instructions=_render_destination_templates(
+    _INSTRUCTIONS_TEMPLATE, list(ALL_STRUCTURED_DESTINATIONS)))
 
 
 def _effective_api_key() -> str:
@@ -427,7 +534,7 @@ PIPELINE_CONFIG_REFERENCE = """\
 
 1. Call `list_pipelines` to check if the pipeline already exists.
 2. If it exists, data may already be in the destination. Use metadata tools (`list_postgres_tables`, `list_mongodb_collections`, `list_qdrant_collections`, etc.) to discover it and query/search directly. Only re-ingest if the data is stale or needs updating.
-3. If the pipeline does not exist, call `create_pipeline`. Structured destinations (postgres, mongodb, snowflake, databricks) need a tiny sample for schema auto-detection — content_text with header + 3-5 rows, never a full dataset; snowflake also needs credentialsSecret + warehouse + database, and databricks needs credentialsSecret + warehouse (SQL warehouse ID) + database (Unity Catalog name). Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
+3. If the pipeline does not exist, call `create_pipeline`. Structured destinations ({{STRUCTURED_DB_DESTINATIONS}}) need a tiny sample for schema auto-detection — content_text with header + 3-5 rows, never a full dataset; snowflake also needs credentialsSecret + warehouse + database, and databricks needs credentialsSecret + warehouse (SQL warehouse ID) + database (Unity Catalog name). Vector destinations (pgvector/qdrant/weaviate/milvus/chroma) need only pipeline name + destination — no sample content; the document goes through `upload_data`.
 5. Call `check_service_health` to verify the target destination service is available.
 6. Call `create_pipeline` with the config.
 7. Call `upload_data` ONCE with your full data (base64-encoded) and the pipeline name. Do not pre-chunk — vector destinations chunk server-side, structured pipelines accept the whole file as one batch.
@@ -1151,7 +1258,10 @@ async def list_resources():
 @server.read_resource()
 async def read_resource(uri):
     if str(uri) == "datris://pipeline-config-reference":
-        return PIPELINE_CONFIG_REFERENCE
+        # Rendered per read (not at import) so the destination list tracks the
+        # availability cache. to_thread keeps the availability fetch's blocking
+        # `requests` call off the event loop (same rationale as call_tool).
+        return await asyncio.to_thread(_render_destination_templates, PIPELINE_CONFIG_REFERENCE)
     if str(uri) == "datris://tap-workflow-reference":
         return TAP_WORKFLOW_REFERENCE
     raise ValueError(f"Unknown resource: {uri}")
@@ -2397,7 +2507,10 @@ def _dispatch(name: str, args: dict) -> str:
         try:
             pipelines = json.loads(result)
             if not pipelines or (isinstance(pipelines, list) and len(pipelines) == 0):
-                return json.dumps({"pipelines": [], "message": "No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations (postgres, mongodb, snowflake, databricks) and objectstore (Parquet/ORC to MinIO or S3) pass a tiny plain-text sample via content_text (header + 3-5 rows) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
+                # Destination list is injected from resolved availability —
+                # see the "INJECTION, NOT INSTRUCTION" block up top.
+                db_dests = _structured_db_destinations_text(_available_structured_destinations())
+                return json.dumps({"pipelines": [], "message": f"No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations ({db_dests}) and objectstore (Parquet/ORC to MinIO or S3) pass a tiny plain-text sample via content_text (header + 3-5 rows) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
             if isinstance(pipelines, list):
                 # Summarize each pipeline to (name, destination kind, table/collection,
                 # catalog). Returning the FULL nested config for every pipeline pushes
@@ -3215,6 +3328,10 @@ def _dispatch(name: str, args: dict) -> str:
 async def run_stdio():
     from mcp.server.stdio import stdio_server
     async with stdio_server() as (read_stream, write_stream):
+        # Refresh the instructions' baked-in destination list for this session
+        # (create_initialization_options reads server.instructions). to_thread
+        # keeps the availability fetch's blocking `requests` call off the loop.
+        server.instructions = await asyncio.to_thread(_render_instructions)
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
@@ -3296,6 +3413,10 @@ async def run_sse(port: int):
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
                 try:
+                    # Refresh the instructions' baked-in destination list for
+                    # this session (create_initialization_options reads
+                    # server.instructions at session start).
+                    server.instructions = await asyncio.to_thread(_render_instructions)
                     async with sse.connect_sse(scope, receive, send) as streams:
                         await server.run(streams[0], streams[1], server.create_initialization_options())
                 finally:
@@ -3326,6 +3447,11 @@ async def run_sse(port: int):
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
                 try:
+                    # Stateless streamable HTTP builds a fresh session per POST
+                    # and reads server.instructions via
+                    # create_initialization_options — refresh it first so the
+                    # baked-in destination list tracks availability.
+                    server.instructions = await asyncio.to_thread(_render_instructions)
                     await streamable_mgr.handle_request(scope, receive, send)
                 finally:
                     _activity_session_close(sess_id)
@@ -3375,6 +3501,9 @@ async def run_streamable_http(port: int):
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
                 try:
+                    # Same instructions refresh as run_sse's /mcp branch — the
+                    # stateless manager reads server.instructions per session.
+                    server.instructions = await asyncio.to_thread(_render_instructions)
                     await session_manager.handle_request(scope, receive, send)
                 finally:
                     _activity_session_close(sess_id)

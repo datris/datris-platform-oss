@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation._
 
 /** Definition-version history: list / view / diff / restore for taps and
   * pipelines. Backed by the append-only `<env>-tap-version` /
-  * `<env>-pipeline-version` collections (see docs/plans/tap-pipeline-versioning.md).
+  * `<env>-pipeline-version` collections (see plans/tap-pipeline-versioning.md).
   * Diff is computed server-side and returned ready-to-render.
   *
   * Distinct from [[VersionAPIController]], which serves the server BUILD version

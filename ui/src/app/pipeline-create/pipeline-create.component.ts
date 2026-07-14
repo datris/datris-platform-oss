@@ -84,6 +84,11 @@ export class PipelineCreateComponent implements OnInit {
 
   // Step 7 — Destination
   destType = 'postgres';
+  // Structured destinations installed on this instance, from
+  // /api/v1/destinations/available. null = unknown (not loaded yet, or the
+  // call failed). FAIL-OPEN: when null, every destination renders enabled —
+  // a transient availability blip must never hide options from the user.
+  availableDestinations: string[] | null = null;
   pgDbName = 'datris';
   dbTruncateBeforeWrite = false;
   pgSchema = 'public';
@@ -155,6 +160,15 @@ export class PipelineCreateComponent implements OnInit {
           this.schemaDbName = data.environment || 'datris';
         }
       }
+    });
+
+    // Which structured destinations are installed (mirrors the document-tap
+    // wizard's vector-store availability check on modal open).
+    this.pipelineService.getAvailableDestinations().subscribe({
+      next: (dests) => this.availableDestinations = dests || null,
+      // Fail-open: on error/timeout keep null so all destinations stay
+      // enabled — an availability blip must never hide options.
+      error: () => this.availableDestinations = null
     });
 
     // Load taps for "Create from Tap" option + extract catalogs. Catalogs
@@ -436,6 +450,25 @@ export class PipelineCreateComponent implements OnInit {
       chroma: 'oss/chroma', pgvector: 'oss/pgvector'
     };
     return defaults[this.destType] || '';
+  }
+
+  /** True when the structured destination is installed on this instance.
+   *  FAIL-OPEN: an unknown availability list (call pending or failed) enables
+   *  everything — a blip must never hide options. Only the five structured
+   *  destinations are gated; other types always return true. */
+  isDestAvailable(name: string): boolean {
+    if (this.availableDestinations === null) return true;
+    const structured = ['mongodb', 'postgres', 'objectstore', 'snowflake', 'databricks'];
+    if (!structured.includes(name)) return true;
+    return this.availableDestinations.includes(name);
+  }
+
+  /** The currently selected destination is structured but not installed.
+   *  We deliberately do NOT auto-switch the selection (e.g. when editing a
+   *  pipeline whose destination was uninstalled) — keep it selected and let
+   *  the user decide. */
+  selectedDestUnavailable(): boolean {
+    return !this.isDestAvailable(this.destType);
   }
 
   onDestTypeChange(): void {

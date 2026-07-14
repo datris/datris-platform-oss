@@ -17,9 +17,34 @@ needs into a `./datris` directory, seeds a `.env`, and starts the full stack:
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
-It prompts for an AI provider key (Anthropic recommended; press Enter to use
-OpenAI instead), then runs everything. On first start, `vault-init` seeds your
-key into Vault. That's it — the platform is running.
+The installer walks you through a short setup — press Enter at every prompt
+for a standard install:
+
+1. **AI keys.** Anthropic (recommended for chat, CodeGen, AI data quality,
+   NL→SQL) and OpenAI (recommended for semantic-search embeddings). Both are
+   optional and each is one Enter to skip.
+2. **Databases and stores.** Pick what to run — each can be **bundled** (a
+   local container), **external** (point at a service you already have), or
+   **skipped**:
+   - **Postgres** — structured destination + pgvector (default: bundled)
+   - **Semantic search embeddings** — OpenAI `text-embedding-3-small`
+     (recommended: no 2.2 GB model download, no resident container) or the
+     bundled local TEI server for data that can't leave the machine
+   - **Vector stores** — qdrant, weaviate, chroma (default: none)
+   - **Kafka** — local test broker or external (default: none)
+   - **Snowflake / Databricks** — optionally store destination credentials
+     now so pipelines can use them on day one
+
+It prints an install summary, starts the stack, and then checks every store
+you configured — a mistyped external hostname or credential shows up right
+there by name, not later mid-pipeline. On first start, `vault-init` seeds
+your keys and store credentials into Vault.
+
+**Changing your mind later** is one line in `./datris/.env` — for example
+`POSTGRES_ENABLED=0`, `COMPOSE_PROFILES=qdrant,kafka`, or
+`EMBEDDING_PROVIDER=openai` — followed by `docker compose up -d`. Disabling a
+store removes its container but keeps its data volume, so re-enabling
+restores the data. The `.env.example` comments document every knob.
 
 <Note>
 The `install.sh` installer is a POSIX shell script, so it runs on **macOS and
@@ -151,11 +176,18 @@ After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secr
 
 ## Volumes
 
-The `datris` service uses one named Docker volume that is created automatically by `docker compose up` — no user action required:
+All stateful services use named Docker volumes, created automatically by `docker compose up` — no user action required:
 
 | Volume | Mounted at | Purpose |
 |---|---|---|
-| `pip-cache` | `/root/.cache/pip` | Caches downloaded pip wheel files so tap-installed packages don't have to be re-downloaded |
+| `postgres-data` | postgres `/var/lib/postgresql/data` | Pipeline data landed in Postgres + pgvector collections |
+| `mongodb-data` / `mongodb-configdb` | mongodb `/data/db`, `/data/configdb` | All pipeline, tap, and platform configuration |
+| `minio-data` | minio `/data` | Object storage — uploads, configs, pipeline output |
+| `vault-data` | vault `/vault/file` | Secrets (persist across restarts) |
+| `tei-data` | tei `/data` | The bundled embedding model (~2.2 GB) |
+| `pip-cache` | datris `/root/.cache/pip` | Caches downloaded pip wheel files so tap-installed packages don't have to be re-downloaded |
+
+Because these are **named** volumes, they re-attach whenever a container is recreated or a store is disabled (`POSTGRES_ENABLED=0`) and later re-enabled — disable → re-enable is lossless. If you upgraded from a version where the data services used anonymous volumes, the first `up -d` after this change starts the stores on fresh named volumes; the installer-era data lives on in the old anonymous volumes (visible via `docker volume ls -f dangling=true`) and can be copied across with `docker run --rm -v <old>:/src:ro -v <new>:/dst alpine cp -a /src/. /dst/`.
 
 Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`, `boto3`, `google-cloud-storage`, `azure-storage-blob`, `openpyxl`, `pyyaml`, `python-dateutil`, `pytz`) are baked into the image. When a tap needs something extra (e.g. `yfinance`), pip downloads it on first run (~30 seconds) and caches the wheel in `pip-cache`. Subsequent container restarts re-run `pip install` for those extras, but the install is near-instant because the wheel is already cached locally.
 
@@ -170,13 +202,15 @@ Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedpar
 | MongoDB | 27017 | Configuration and status store |
 | ActiveMQ | 61616 (broker), 8161 (console) | Message queue and notifications |
 | Vault | 8200 | Secrets management |
-| PostgreSQL | 5432 | Database destination + pgvector |
-| Kafka | 9092 | Streaming — **optional, disabled by default** (uncomment in `docker-compose.yml` to run) |
-| Zookeeper | 2181 | Kafka coordination — **optional, disabled by default** (uncomment with Kafka) |
-| Kafka UI | 8085 | Kafka topic browser — **optional, disabled by default** (uncomment with Kafka) |
+| PostgreSQL | 5432 | Database destination + pgvector — **optional** (`POSTGRES_ENABLED=0` to disable, or point at an external Postgres) |
+| TEI | 11434 | Bundled embedding server — **optional** (`TEI_ENABLED=0` to disable; recommended alternative: OpenAI embeddings) |
+| Qdrant | 6333/6334 | Vector store — **opt-in** (`COMPOSE_PROFILES=qdrant`) |
+| Weaviate | 8079, 50051 | Vector store — **opt-in** (`COMPOSE_PROFILES=weaviate`) |
+| Chroma | 8000 | Vector store — **opt-in** (`COMPOSE_PROFILES=chroma`) |
+| Kafka | 9092 | Streaming — **opt-in** (`COMPOSE_PROFILES=kafka`; includes Zookeeper on 2181 and Kafka UI on 8085) |
 
 <Note>
-Kafka, Zookeeper, and Kafka UI ship commented out in `docker-compose.yml`. Datris bundles `kafka-clients`, so pipelines that produce to or consume from an **external** Kafka work without these. Uncomment the Kafka/Zookeeper/kafka-ui service blocks (and their volumes) only if you want a local broker.
+**Optional vs opt-in.** Services that ship enabled (Postgres, TEI) are disabled with an explicit `*_ENABLED=0` in `.env` — an `.env` without these lines keeps them running, so upgrades never silently drop a service you were using. Brand-new services (vector stores, Kafka) activate via `COMPOSE_PROFILES`. Datris bundles `kafka-clients`, so pipelines that talk to an **external** Kafka don't need the local broker at all — set `KAFKA_BOOTSTRAP_SERVERS` in `.env` instead. One teardown nuance: `docker compose down` ignores inactive profiles, so for a full teardown use `docker compose --profile "*" down`.
 </Note>
 
 ## Web UIs
@@ -188,7 +222,7 @@ Kafka, Zookeeper, and Kafka UI ship commented out in `docker-compose.yml`. Datri
 | **MCP Server (SSE)** | [http://localhost:3000/sse](http://localhost:3000/sse) | none |
 | **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin` |
 | **ActiveMQ Console** | [http://localhost:8161](http://localhost:8161) | `admin` / `admin` |
-| **Kafka UI** (optional) | [http://localhost:8085](http://localhost:8085) | none — only when the optional Kafka services are uncommented in `docker-compose.yml` |
+| **Kafka UI** (opt-in) | [http://localhost:8085](http://localhost:8085) | none — only with `COMPOSE_PROFILES=kafka` |
 | **Vault UI** | [http://localhost:8200](http://localhost:8200) | Token: `root-token` |
 
 ## API Keys and AI Providers
@@ -219,16 +253,22 @@ Where `{env}` is the environment name (default: `oss`). See [Configuration Refer
 
 ### Vault
 
-On first boot, the `vault-init` container seeds Vault with default secrets for the bundled services (MinIO, ActiveMQ, MongoDB, PostgreSQL) plus your AI provider API keys from `.env`. Vault uses durable file storage on the `vault-data` volume, so secrets — including any you add later in the Configuration tab or via taps — **persist across restarts and rebuilds**. `.env` is the first-boot seed only; after that the Configuration tab is the source of truth. See [How Configuration Persists](/ai-configuration#how-configuration-persists) for details and the clean-reset path.
+On first boot, the `vault-init` container seeds Vault with default secrets for the bundled services (MinIO, ActiveMQ, MongoDB, PostgreSQL) plus your AI provider API keys and any external-store credentials (Kafka, vector stores, Snowflake, Databricks) from `.env`. Vault uses durable file storage on the `vault-data` volume, so secrets — including any you add later in the Configuration tab or via taps — **persist across restarts and rebuilds**. `.env` is the first-boot seed only; after that the Configuration tab is the source of truth. See [How Configuration Persists](/ai-configuration#how-configuration-persists) for details and the clean-reset path.
 
 ### Vector Databases
 
-pgvector is included by default via the PostgreSQL service. To add other vector databases, uncomment the relevant sections in `docker-compose.yml`:
+pgvector is included whenever Postgres is enabled (bundled or external). The others are one line in `.env`:
 
-- **Qdrant** — high-performance vector database
-- **Weaviate** — open-source vector database
-- **Chroma** — lightweight, single container
-- **Milvus** — scalable vector database (requires separate setup)
+- **Qdrant** — high-performance vector database: `COMPOSE_PROFILES=qdrant`
+- **Weaviate** — open-source vector database: `COMPOSE_PROFILES=weaviate`
+- **Chroma** — lightweight, single container: `COMPOSE_PROFILES=chroma`
+- **Milvus** — scalable vector database; runs external-only (it needs its own etcd/minio stack — see the Milvus standalone install), then set `MILVUS_HOST`/`MILVUS_PORT` in `.env`
+
+Combine profiles with commas: `COMPOSE_PROFILES=qdrant,kafka`. To use a managed/cloud vector store instead of a bundled one, skip the profile and set the store's `*_HOST` / `*_PORT` / `*_API_KEY` variables in `.env` (first boot seeds the credentials into Vault; afterwards manage them in Configuration → Secrets).
+
+### External databases and stores
+
+Every optional store can point at infrastructure you already run instead of a bundled container — the installer asks, or set the variables in `.env` before first boot: `POSTGRES_JDBC_URL`/`POSTGRES_USER`/`POSTGRES_PASSWORD` (with `POSTGRES_ENABLED=0`), `KAFKA_BOOTSTRAP_SERVERS`, vector-store `*_HOST` variables, and `SNOWFLAKE_*` / `DATABRICKS_*` destination credentials. These are **first-boot seeds**: vault-init writes them into Vault create-if-absent, and from then on Configuration → Secrets is the source of truth. The platform's availability probes treat external stores exactly like bundled ones — the pipeline wizard and the Assistant offer whatever is actually reachable.
 
 ## Configuration
 

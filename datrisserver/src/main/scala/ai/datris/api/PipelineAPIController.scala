@@ -95,6 +95,25 @@ class PipelineAPIController {
 
             val withDefaults = PipelineValidatorUtil.applyDefaults(config)
             PipelineValidatorUtil.validate(withDefaults)
+
+            // Postgres is install-time optional (POSTGRES_ENABLED=0 skips the
+            // bundled container), so a postgres destination can be selected in a
+            // deployment where no Postgres is reachable. Probe now — same probe
+            // as /health and /destinations/available — and reject the save with
+            // an actionable 400 instead of letting the first run die in the
+            // loader. Postgres only: mongodb/minio are required core services,
+            // and Snowflake/Databricks already fail with actionable
+            // CredentialResolver errors when their credentials are missing.
+            if (withDefaults.destination != null && withDefaults.destination.database != null &&
+                withDefaults.destination.database.usePostgres) {
+                val probeFailure = PostgresQueryUtil.probeError()
+                if (probeFailure.isDefined) {
+                    logger.warn("POST /pipeline rejected: postgres destination selected but Postgres is unreachable: " + probeFailure.get)
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                        "{\"error\": \"Postgres is not installed/reachable in this deployment. Enable it in .env (POSTGRES_ENABLED=1) or point POSTGRES_JDBC_URL at an external Postgres, then re-run 'docker compose up -d' — or choose another destination.\"}")
+                }
+            }
+
             val modifiedConfig = PipelineValidatorUtil.modify(withDefaults)
 
             // Stamp the issuing key's label so `owner=self` capabilities can

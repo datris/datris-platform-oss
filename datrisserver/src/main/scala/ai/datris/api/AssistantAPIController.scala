@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, MCPClient, SecretsUtil}
+import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, DestinationAvailabilityUtil, MCPClient, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -255,6 +255,34 @@ class AssistantAPIController {
         if (!cancelled.get()) { try emitter.complete() catch { case _: Exception => () } }
     }
 
+    /** Prompt-facing display names for the canonical destination names
+      * emitted by DestinationAvailabilityUtil. */
+    private val destinationDisplayNames = Map(
+        "mongodb"     -> "MongoDB",
+        "postgres"    -> "PostgreSQL",
+        "objectstore" -> "object store",
+        "snowflake"   -> "Snowflake",
+        "databricks"  -> "Databricks"
+    )
+
+    /** Longer blurbs used the first time each destination is named in the
+      * destination-defaults rule. */
+    private val destinationBlurbs = Map(
+        "mongodb"     -> "**MongoDB** (flexible schema, tolerates shape drift across runs)",
+        "postgres"    -> "**PostgreSQL**",
+        "objectstore" -> "**object store** (columnar files — Parquet or ORC)",
+        "snowflake"   -> "**Snowflake** (loads the user's own Snowflake account)",
+        "databricks"  -> "**Databricks** (loads a Unity Catalog managed Delta table in the user's own workspace)"
+    )
+
+    /** "A, B, or C" — or-join used inside literal prompt examples. */
+    private def orJoin(items: Seq[String]): String = items match {
+        case Seq()     => ""
+        case Seq(a)    => a
+        case Seq(a, b) => a + " or " + b
+        case many      => many.init.mkString(", ") + ", or " + many.last
+    }
+
     private def buildSystemPrompt(workflowReference: String, tenantEnv: String): String = {
         val sb = new StringBuilder
         if (workflowReference != null && workflowReference.nonEmpty) {
@@ -276,15 +304,71 @@ class AssistantAPIController {
         sb.append("- **The `fields` list on `request_tap_secret_from_user` is for TRUE SECRETS ONLY.** Include only values the user would refuse to paste into a chat: API keys, passwords, OAuth tokens, signing keys, private certificates. Do NOT include configuration values (regions, locations, account/project/tenant IDs, base URLs, endpoint URLs, container/bucket/database names, table/collection names, schemas, identifiers the user has already shared in conversation) — those belong in the tap script (hardcoded) or as `run_tap(params=...)` (per-run), NOT in the secret. Before composing `fields`, scan the conversation: anything the user has already volunteered belongs in code/config; only the values the user has NOT mentioned and SHOULD NOT type into chat belong on the form. The 'is this a secret?' test: would the user reasonably refuse to type this value into chat? If yes, it's a secret; if no, it's config.\n")
         sb.append("- Placeholder values like `DATABASE_NAME`, `SCHEMA_NAME` in pipeline configs are substituted automatically by the platform. Don't worry about filling them in literally.\n")
         sb.append("\n")
+
+        // INJECTION, NOT INSTRUCTION (see DestinationAvailabilityUtil): the
+        // harness resolves which structured destinations this deployment has
+        // and bakes the concrete list into the prompt — including every
+        // literal EXAMPLE that enumerates destinations, because the model
+        // mimics an example's enumeration over the prose rule. The model is
+        // never told to check availability before offering (conditional
+        // offers flicker); it unconditionally offers exactly what the prompt
+        // names. Fails open to the full five-destination set on any error.
+        val structuredDests = DestinationAvailabilityUtil.availableStructuredDestinations()
+        val defaultDest = if (structuredDests.contains("mongodb")) "mongodb" else structuredDests.head
+        val altDests = structuredDests.filterNot(_ == defaultDest)
+
         sb.append("## Destination defaults (apply unless the user explicitly asks for something else)\n\n")
-        sb.append("- **Structured / semi-structured taps** (CSV, JSON, XML, API responses, table-shaped data) → **MongoDB** by default (flexible schema, tolerates shape drift across runs). **PostgreSQL**, **object store** (columnar files — Parquet or ORC), **Snowflake** (loads the user's own Snowflake account), and **Databricks** (loads a Unity Catalog managed Delta table in the user's own workspace) are equally supported alternatives. When proposing a destination for structured data, briefly name every one of these options in the question (e.g. \"MongoDB by default; PostgreSQL, object store, Snowflake, or Databricks also available — which do you prefer?\") so the user can pick. Do not silently default to MongoDB without mentioning the alternatives — the user may not know the other options exist. Snowflake requires a `credentialsSecret` platform secret (account/user/key) plus a warehouse and database: when the user picks it, discover the secret via `list_platform_secrets` and ask for the rest — do NOT require any of that to exist before offering it. Databricks likewise requires a `credentialsSecret` platform secret (host, plus clientId/clientSecret or token) plus a SQL warehouse ID (`warehouse`) and Unity Catalog catalog (`database`): same flow — discover the secret, ask for the rest, never require it up front.\n")
+        sb.append("- **Structured / semi-structured taps** (CSV, JSON, XML, API responses, table-shaped data) → ")
+        sb.append(destinationBlurbs(defaultDest)).append(" by default.")
+        if (altDests.nonEmpty) {
+            sb.append(" ").append(altDests.map(destinationBlurbs).mkString(", "))
+            sb.append(if (altDests.size == 1) " is an equally supported alternative." else " are equally supported alternatives.")
+            sb.append(" When proposing a destination for structured data, briefly name every one of these options in the question (e.g. \"")
+            sb.append(destinationDisplayNames(defaultDest)).append(" by default; ")
+            sb.append(orJoin(altDests.map(destinationDisplayNames)))
+            sb.append(" also available — which do you prefer?\") so the user can pick. Do not silently default to ")
+            sb.append(destinationDisplayNames(defaultDest))
+            sb.append(" without mentioning the alternatives — the user may not know the other options exist.")
+        } else {
+            sb.append(" It is the only structured destination configured in this deployment, so there are no alternatives to offer.")
+        }
+        if (structuredDests.contains("snowflake"))
+            sb.append(" Snowflake requires a `credentialsSecret` platform secret (account/user/key) plus a warehouse and database: when the user picks it, discover the secret via `list_platform_secrets` and ask for the rest — do NOT require any of that to exist before offering it.")
+        if (structuredDests.contains("databricks"))
+            sb.append(" Databricks requires a `credentialsSecret` platform secret (host, plus clientId/clientSecret or token) plus a SQL warehouse ID (`warehouse`) and Unity Catalog catalog (`database`): same flow — discover the secret via `list_platform_secrets`, ask for the rest, never require any of it up front.")
+        sb.append("\n")
         sb.append("- **Document taps** (PDF, DOCX, HTML, plain text, anything destined for retrieval/RAG) → a **vector store** (pgvector, qdrant, weaviate, milvus, or chroma). Pick whichever the tenant already has configured; if multiple are available, pick pgvector by default.\n")
         sb.append("- When you propose a destination, state the destination type and the proposed name explicitly so the user can correct you before you build it.\n")
         sb.append("\n")
         sb.append("## Attached files (drag-and-drop)\n\n")
         sb.append("- When the user drops a file into their message, an \"Attached file(s)\" block appears in that message listing each file's name, detected type, byte size, a content sample, and an `attachmentId`. Wherever a tool wants file `content` — `create_pipeline`, `upload_data`, `profile_data` — set the `content` argument to the file's `attachmentId` value (just the handle string, e.g. `content: \"<attachmentId>\"`). The platform substitutes the real bytes when the tool runs. Never paste, base64-encode, or fabricate file content yourself.\n")
-        sb.append("- Infer the source type from the sample and pick a sensible default destination: CSV/TSV → PostgreSQL, JSON → MongoDB, XML → PostgreSQL or MongoDB, documents (PDF/DOCX/TXT/HTML/MD) → a vector store (pgvector by default). Derive the pipeline name from the filename (short, lowercase-hyphenated, source-neutral) — the destination table/collection defaults to that name.\n")
-        sb.append("- **Confirm the destination before creating anything.** State your plan in one short line — pipeline name, detected type, and the default destination — and, for structured data, surface the alternatives the same way the destination-defaults rule above requires (e.g. \"I'll load `sales.csv` into PostgreSQL as table `sales`; MongoDB, object store, Snowflake, or Databricks are also options — which do you want?\"). If upserts make sense, also ask for the natural-key column(s) or confirm append-only. Wait for the user's go-ahead before building.\n")
+        // Same injection rule as the destination-defaults section: the
+        // per-file-type defaults and the literal example below are rendered
+        // from the resolved availability list, never hardcoded.
+        val csvDefaultDest  = if (structuredDests.contains("postgres")) "postgres" else defaultDest
+        val jsonDefaultDest = if (structuredDests.contains("mongodb")) "mongodb" else defaultDest
+        val xmlDefault = Seq("postgres", "mongodb").filter(structuredDests.contains).map(destinationDisplayNames) match {
+            case Seq() => destinationDisplayNames(defaultDest)
+            case names => orJoin(names)
+        }
+        sb.append("- Infer the source type from the sample and pick a sensible default destination: CSV/TSV → ")
+        sb.append(destinationDisplayNames(csvDefaultDest)).append(", JSON → ")
+        sb.append(destinationDisplayNames(jsonDefaultDest)).append(", XML → ")
+        sb.append(xmlDefault)
+        sb.append(", documents (PDF/DOCX/TXT/HTML/MD) → a vector store (pgvector by default). Derive the pipeline name from the filename (short, lowercase-hyphenated, source-neutral) — the destination table/collection defaults to that name.\n")
+        val exampleAlts = structuredDests.filterNot(_ == csvDefaultDest).map(destinationDisplayNames)
+        sb.append("- **Confirm the destination before creating anything.** State your plan in one short line — pipeline name, detected type, and the default destination")
+        if (exampleAlts.nonEmpty) {
+            sb.append(" — and, for structured data, surface the alternatives the same way the destination-defaults rule above requires (e.g. \"I'll load `sales.csv` into ")
+            sb.append(destinationDisplayNames(csvDefaultDest)).append(" as table `sales`; ")
+            sb.append(orJoin(exampleAlts))
+            sb.append(if (exampleAlts.size == 1) " is also an option" else " are also options")
+            sb.append(" — which do you want?\").")
+        } else {
+            sb.append(" (e.g. \"I'll load `sales.csv` into ")
+            sb.append(destinationDisplayNames(csvDefaultDest)).append(" as table `sales` — OK?\").")
+        }
+        sb.append(" If upserts make sense, also ask for the natural-key column(s) or confirm append-only. Wait for the user's go-ahead before building.\n")
         sb.append("- Once the user confirms: call `create_pipeline` (passing `attachmentId`), then `upload_data` (passing the SAME `attachmentId`) to load the full file, then monitor the load to completion via `get_job_status` exactly as in the run-monitoring rules below, and report the row/record count.\n")
         sb.append("- Skip the data load only when the user asked merely to create the pipeline, profile the file, or inspect it — otherwise dropping a file means \"get this data into the platform.\"\n")
         sb.append("\n")

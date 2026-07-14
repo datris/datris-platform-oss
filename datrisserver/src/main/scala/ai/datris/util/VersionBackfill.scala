@@ -16,7 +16,7 @@ import org.slf4j.LoggerFactory
   * waiting for the lazy seed that only fires on the first edit.
   *
   * Idempotent: an entity that already has any version record is skipped, so this
-  * is safe to run on every boot. See docs/plans/tap-pipeline-versioning.md. */
+  * is safe to run on every boot. See plans/tap-pipeline-versioning.md. */
 object VersionBackfill {
     private val logger = LoggerFactory.getLogger(getClass)
     private val gson = new Gson

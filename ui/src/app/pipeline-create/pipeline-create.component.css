@@ -102,6 +102,20 @@
   margin: 0 0 10px 0;
 }
 
+/* Selected destination not installed on this instance — same amber palette
+   as .info-box.warn. */
+.form-hint.dest-not-installed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: #fbbf24;
+}
+
+.form-hint.dest-not-installed .material-icons {
+  font-size: 16px;
+}
+
 .form-label {
   display: block;
   font-size: 12px;

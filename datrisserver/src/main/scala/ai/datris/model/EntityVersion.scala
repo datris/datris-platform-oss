@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 /** One immutable snapshot of a tap or pipeline *definition* at a point in time.
   * Lives in the append-only `<env>-tap-version` / `<env>-pipeline-version`
   * collections. The live config document is always the latest version N; these
-  * records hold 1..N. See docs/plans/tap-pipeline-versioning.md.
+  * records hold 1..N. See plans/tap-pipeline-versioning.md.
   *
   * Stored flat (not nested under `value`) so the collection can be queried by
   * `entityName` and pruned/deleted by `key`, mirroring the `<env>-tap-log`
