@@ -1,21 +1,24 @@
 # Release Notes
 
+## v1.11.1 — July 14, 2026
+
+**Installer hardening.**
+
+- **Clear guidance when a previous installation is in the way.** If containers from an earlier Datris install (in another directory) would block a new one, the installer now detects this before downloading anything and prints exactly what is blocking, where it lives, and how to remove or upgrade it — instead of failing mid-start with a Docker error.
+- **API keys are no longer echoed.** The installer reads provider keys with input hidden (like passwords) and confirms with a masked preview, so keys never land in your terminal scrollback.
+- **Best model out of the box.** Fresh installs that choose Anthropic now default to Claude Opus 4.8 — Anthropic's strongest model — for chat, NL→SQL, and analysis, matching what code generation already used. Existing installs keep their configured model; you can change it anytime in the Configuration tab.
+
+**Upgrading**
+
+- Existing installs: nothing to do — these changes only affect the installer itself.
+
+---
+
 ## v1.11.0 — July 13, 2026
 
 **Choose your databases at install — run less, connect what you already have.**
 
-- **Pick and choose at install.** The installer now asks which databases and stores you want instead of installing everything. Each can run bundled, connect to a service you already operate, or be skipped — and pressing Enter at every prompt still gives the standard full install.
-- **Bring your own infrastructure.** Point Datris at an existing Postgres, Kafka, or managed vector store (Qdrant, Weaviate, Chroma, Milvus) during install, and optionally store Snowflake or Databricks destination credentials up front so pipelines can use them on day one.
-- **Lighter installs.** Skipping the bundled semantic-search server avoids a multi-gigabyte model download — the installer recommends OpenAI embeddings, which need no local container and cost pennies. Vector stores and a local Kafka test broker are now a one-line opt-in instead of commented-out YAML.
-- **Both AI providers, each at its best.** The installer asks for an Anthropic key (chat, code generation, AI data quality) and an OpenAI key (embeddings) — both optional, with sensible behavior when only one is present.
-- **Everything knows what's installed.** The pipeline wizard greys out destinations that aren't available, the AI assistant offers only the destinations your deployment actually has, and creating a pipeline against a missing database returns a clear explanation instead of a timeout.
-- **Install-time validation.** After first boot the installer checks every store you configured — bundled or external — and reports each by name, so a mistyped hostname or bad credential surfaces immediately, not mid-pipeline next week.
-- **Change your mind anytime.** Enable or disable any store after install with a one-line edit and a restart. Disabling keeps the data; re-enabling brings it back.
-- **Safer upgrades.** Upgrading an existing install never changes which services run — everything you had keeps running, no action required. Data services now use durable named storage, so containers can be removed and recreated without losing data.
-
-**Upgrading**
-
-- Existing installs: re-run the installer, or `docker compose pull && docker compose up -d --remove-orphans` after refreshing the compose file. Your current services and data are preserved automatically.
+See [archived v1.11.0 release notes](release-notes/v1.11.0.md).
 
 ---
 

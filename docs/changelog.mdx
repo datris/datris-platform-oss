@@ -3,6 +3,14 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.11.1" description="July 14, 2026">
+  **Installer hardening.**
+
+  - **Clear guidance when a previous installation is in the way.** If containers from an earlier Datris install (in another directory) would block a new one, the installer detects this before downloading anything and prints exactly what is blocking, where it lives, and how to remove or upgrade it.
+  - **API keys are no longer echoed.** The installer reads provider keys with input hidden and confirms with a masked preview, so keys never land in your terminal scrollback.
+  - **Best model out of the box.** Fresh installs choosing Anthropic default to Claude Opus 4.8 for chat, NL→SQL, and analysis — matching code generation. Existing installs keep their configured model.
+</Update>
+
 <Update label="v1.11.0" description="July 13, 2026">
   **Choose your databases at install — run less, connect what you already have.**
 

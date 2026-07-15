@@ -128,10 +128,15 @@ else
       echo "ERROR: AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set." >&2
       exit 1
     fi
+    # Fresh installs default ai-primary to Opus: strongest chat/NL→SQL model,
+    # matching the codegen default below (decided 2026-07-14). Existing vaults
+    # keep whatever they have (seed_if_absent); ANTHROPIC_MODEL still overrides.
+    # Sustained-overload downgrades are handled at runtime via
+    # ANTHROPIC_OVERLOAD_FALLBACK_MODEL.
     seed_if_absent secret/oss/ai-primary \
       provider="anthropic" \
       endpoint="https://api.anthropic.com/v1/messages" \
-      model="${ANTHROPIC_MODEL:-claude-sonnet-4-6}" \
+      model="${ANTHROPIC_MODEL:-claude-opus-4-8}" \
       apiKey="${ANTHROPIC_API_KEY}" \
       version="2023-06-01"
     seed_if_absent secret/oss/codegen \

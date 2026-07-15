@@ -63,6 +63,41 @@ command -v curl >/dev/null 2>&1 || die "curl is required."
 say "Installing Datris into $DIR (ref: $REF)"
 mkdir -p "$DIR"
 
+# --- container-name conflict preflight ---------------------------------------
+# Every Datris service uses a fixed container_name, so a PREVIOUS install in a
+# different directory (a different compose project) blocks this one from
+# creating its containers — and the failure would otherwise surface only after
+# pulling gigabytes of images. Detect it up front and explain the way out.
+# Skipped under DATRIS_NO_START (nothing will be created).
+if [ "${DATRIS_NO_START:-}" != "1" ]; then
+  PROJECT=$(basename "$(cd "$DIR" && pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g; s/^[_-]*//')
+  CONFLICTS=""
+  for name in minio activemq mongodb postgres vault vault-init tei datris datris-tap-runner ui mcp-server minio-init qdrant weaviate chroma zookeeper kafka kafka-ui; do
+    if docker inspect "$name" >/dev/null 2>&1; then
+      owner=$(docker inspect "$name" --format '{{index .Config.Labels "com.docker.compose.project"}}' 2>/dev/null)
+      [ "$owner" = "$PROJECT" ] && continue
+      owner_dir=$(docker inspect "$name" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null)
+      CONFLICTS="${CONFLICTS}  ${name}  (project: ${owner:-none — created outside compose}${owner_dir:+, dir: $owner_dir})
+"
+    fi
+  done
+  if [ -n "$CONFLICTS" ]; then
+    warn "Found containers from a previous Datris installation that block this one:"
+    printf '%s' "$CONFLICTS" >&2
+    warn ""
+    warn "To proceed, remove the old installation first:"
+    warn "  cd <its directory above> && docker compose --profile \"*\" down"
+    warn "or remove the containers directly:"
+    warn "  docker rm -f$(printf '%s' "$CONFLICTS" | awk '{printf " %s", $1}')"
+    warn ""
+    warn "NOTE: if the old installation predates v1.11.0 and holds data you care"
+    warn "about, its data lives on anonymous volumes — removing containers orphans"
+    warn "(does not delete) that data, but the new install will NOT see it. Copy it"
+    warn "out first, or install into the OLD directory instead to upgrade in place."
+    die "container name conflict — resolve the above and re-run"
+  fi
+fi
+
 # --- fetch runtime files --------------------------------------------------
 for f in $FILES; do
   mkdir -p "$DIR/$(dirname "$f")"
@@ -147,13 +182,17 @@ else
     say ""
     say "Datris uses two AI providers, each best at a different job. Both are"
     say "optional, but you'll want at least one."
+    # Keys are read with echo OFF (like passwords) so they never land in the
+    # terminal scrollback; a masked confirmation is printed instead.
     if [ -z "$AKEY" ]; then
-      ask "  Anthropic API key (sk-ant-...) — powers chat, CodeGen, AI data quality, NL→SQL (recommended), or Enter to skip: "
+      ask_hidden "  Anthropic API key (sk-ant-...) — powers chat, CodeGen, AI data quality, NL→SQL (recommended), or Enter to skip (input hidden): "
       AKEY="$ANS"
+      [ -n "$AKEY" ] && say "  Anthropic key received ($(mask "$AKEY"))."
     fi
     if [ -z "$OKEY" ]; then
-      ask "  OpenAI API key (sk-...) — powers semantic-search embeddings (recommended; Anthropic doesn't offer embeddings), or Enter to skip: "
+      ask_hidden "  OpenAI API key (sk-...) — powers semantic-search embeddings (recommended; Anthropic doesn't offer embeddings), or Enter to skip (input hidden): "
       OKEY="$ANS"
+      [ -n "$OKEY" ] && say "  OpenAI key received ($(mask "$OKEY"))."
     fi
   fi
 
