@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.11.2" description="July 21, 2026">
+  **Reliability and hardening.**
+
+  - **Faster repeated queries.** Postgres connections are now pooled and reused across pipeline loads and interactive queries instead of being opened fresh each time.
+  - **Connection details are masked in logs.** Database connection information no longer appears in logs or job status output.
+  - **More stable long-running deployments.** Fixed several resource leaks in file ingestion and data-reading paths that could slowly accumulate open connections.
+  - **Clearer diagnostics.** Many background failures that were previously silent are now logged with context.
+  - **Every release is now test-gated.** An automated test suite runs on every change and before every release build.
+</Update>
+
 <Update label="v1.11.1" description="July 14, 2026">
   **Installer hardening.**
 
