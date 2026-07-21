@@ -5,152 +5,118 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
-import ai.datris.model.{JobContext, DatrisEnvironment, DatrisException}
+import com.google.gson.{JsonArray, JsonObject, JsonParser}
+import ai.datris.model.{ChunkingConfig, DatrisEnvironment, DatrisException, JobContext}
 import org.apache.http.client.methods.{HttpGet, HttpPost}
 import org.apache.http.entity.StringEntity
-import org.apache.http.impl.client.HttpClients
+import org.apache.http.impl.client.{CloseableHttpClient, HttpClients}
 import org.apache.http.util.EntityUtils
-import org.slf4j.{Logger, LoggerFactory}
 
-import java.util.UUID
 import scala.collection.JavaConverters._
 
-class ChromaLoader(jobContext: JobContext) {
-    private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private val config = jobContext.config
-    private val statusUtil = jobContext.statusUtil
+object ChromaLoader {
+
+    /** Chroma is driven over raw HTTP; the "client" is the pooled HTTP client plus
+      * the collections endpoint and the collection id resolved by ensureCollection.
+      */
+    final class ChromaSession(val http: CloseableHttpClient, val collectionsPath: String) {
+        var collectionId: String = _
+    }
+}
+
+class ChromaLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext) {
+    import ChromaLoader.ChromaSession
+    import VectorLoaderBase.EmbeddedRow
+
     private val chromaConfig = config.destination.chroma
-    private val UPSERT_BATCH_SIZE = 100
 
-    def process(): Unit = {
-        statusUtil.overrideProcessName(this.getClass.getSimpleName)
-        statusUtil.info("begin", "Process started")
+    override type Client = ChromaSession
 
-        if (jobContext.data.rawBytes == null)
-            throw new DatrisException(
-                "Chroma destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration."
-            )
+    override protected def destinationType: String = "chroma"
+    override protected def secretDisplayName: String = "Chroma"
+    override protected def collectionName: String = chromaConfig.collectionName
+    override protected def configuredChunking: ChunkingConfig = chromaConfig.chunking
+    override protected def embeddingSecretNameFromConfig: String = chromaConfig.embeddingSecretName
+    override protected def destinationSecretNameFromConfig: String = chromaConfig.chromaSecretName
+    override protected def tenantSecretNameOverride: String = DatrisEnvironment.current.chromaSecretName
 
-        // Extract text from the document
-        val filename = if (jobContext.metadata != null) jobContext.metadata.dataFileName else ""
-        val documentText = TextExtractorUtil.extractText(jobContext.data.rawBytes, filename)
-        if (documentText.isEmpty)
-            throw new DatrisException("No text could be extracted from the uploaded file: " + filename)
-
-        statusUtil.info("processing", "Extracted " + documentText.length + " characters from: " + filename)
-
-        // Chunk the document
-        val chunkingConfig = if (chromaConfig.chunking != null) chromaConfig.chunking
-        else new ai.datris.model.ChunkingConfig()
-        val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
-        statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
-
-        // Get configs — use tenant secret names if in multi-tenant mode
-        val embeddingSecretName =
-            if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else chromaConfig.embeddingSecretName
-        val chromaSecretName =
-            if (DatrisEnvironment.current.chromaSecretName != null) DatrisEnvironment.current.chromaSecretName else chromaConfig.chromaSecretName
-        val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
-        val chromaSecret = SecretsUtil.getSecretMap(chromaSecretName)
-            .getOrElse(throw new DatrisException("Chroma secret not found: " + chromaSecretName))
-        val host = chromaSecret.get("host")
+    override protected def openClient(secret: java.util.Map[String, String]): ChromaSession = {
+        val host = secret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Chroma secret: " + chromaConfig.chromaSecretName)
-        val port = Option(chromaSecret.get("port")).getOrElse("8000")
+        val port = Option(secret.get("port")).getOrElse("8000")
         val baseUrl = "http://" + host + ":" + port
 
         val collectionsPath = baseUrl + "/api/v2/tenants/default_tenant/databases/default_database/collections"
         statusUtil.info("processing", "Connecting to Chroma at " + baseUrl)
 
-        val client = HttpClients.createDefault()
+        new ChromaSession(HttpClients.createDefault(), collectionsPath)
+    }
 
-        try {
-            // Ensure collection exists
-            val collectionId = ensureCollection(client, collectionsPath, chromaConfig.collectionName)
+    override protected def closeClient(client: ChromaSession): Unit = client.http.close()
 
-            // Verify embedding dim matches any vectors already in the collection.
-            // Chroma doesn't expose a fixed dim in metadata — it's inferred from
-            // the first upsert. Probe one object and compare. Empty collection =>
-            // skip (first write will set the dim naturally).
-            val dimension = EmbeddingUtil.embeddingDimension(embeddingConfig)
-            verifyCollectionDimension(client, collectionsPath, collectionId, chromaConfig.collectionName, dimension)
+    override protected def ensureCollection(client: ChromaSession, dimension: Int): Unit = {
+        client.collectionId = resolveOrCreateCollection(client, chromaConfig.collectionName)
 
-            // Batch: embed + upsert. globalChunkIdx is the row's chunk_index AND
-            // part of the deterministic PK seed; it advances per fitted chunk
-            // because TokenGuard's split mode can fan one input chunk into N.
-            var totalUpserted = 0
-            var globalChunkIdx = 0
-            chunks.grouped(UPSERT_BATCH_SIZE).foreach { batch =>
-                val embedded = EmbeddingUtil.generateEmbeddings(batch, embeddingConfig)
+        // Verify embedding dim matches any vectors already in the collection.
+        // Chroma doesn't expose a fixed dim in metadata — it's inferred from
+        // the first upsert. Probe one object and compare. Empty collection =>
+        // skip (first write will set the dim naturally).
+        verifyCollectionDimension(client, chromaConfig.collectionName, dimension)
+    }
 
-                val idsArray = new JsonArray()
-                val embeddingsArray = new JsonArray()
-                val documentsArray = new JsonArray()
-                val metadatasArray = new JsonArray()
+    override protected def upsertBatch(client: ChromaSession, rows: List[EmbeddedRow], filename: String): Unit = {
+        val idsArray = new JsonArray()
+        val embeddingsArray = new JsonArray()
+        val documentsArray = new JsonArray()
+        val metadatasArray = new JsonArray()
 
-                embedded.foreach { case EmbeddingUtil.EmbeddedChunk(chunkText, embedding) =>
-                    val chunkIdx = globalChunkIdx
-                    val objectId = UUID.nameUUIDFromBytes(
-                        (jobContext.pipelineToken + "_" + chunkIdx).getBytes
-                    ).toString
+        rows.foreach { row =>
+            idsArray.add(row.id.toString)
+            documentsArray.add(row.text)
 
-                    idsArray.add(objectId)
-                    documentsArray.add(chunkText)
+            // Embedding array
+            val embArray = new JsonArray()
+            row.embedding.foreach(v => embArray.add(v))
+            embeddingsArray.add(embArray)
 
-                    // Embedding array
-                    val embArray = new JsonArray()
-                    embedding.foreach(v => embArray.add(v))
-                    embeddingsArray.add(embArray)
-
-                    // Metadata
-                    val meta = new JsonObject()
-                    meta.addProperty("chunk_index", chunkIdx)
-                    meta.addProperty("source_pipeline", config.name)
-                    meta.addProperty("filename", filename)
-                    if (chromaConfig.metadata != null) {
-                        chromaConfig.metadata.asScala.foreach { case (key, v) =>
-                            if (v != null) meta.addProperty(key, v)
-                        }
-                    }
-                    metadatasArray.add(meta)
-                    globalChunkIdx += 1
+            // Metadata
+            val meta = new JsonObject()
+            meta.addProperty("chunk_index", row.chunkIndex)
+            meta.addProperty("source_pipeline", config.name)
+            meta.addProperty("filename", filename)
+            if (chromaConfig.metadata != null) {
+                chromaConfig.metadata.asScala.foreach { case (key, v) =>
+                    if (v != null) meta.addProperty(key, v)
                 }
-
-                val payload = new JsonObject()
-                payload.add("ids", idsArray)
-                payload.add("embeddings", embeddingsArray)
-                payload.add("documents", documentsArray)
-                payload.add("metadatas", metadatasArray)
-
-                val post = new HttpPost(collectionsPath + "/" + collectionId + "/upsert")
-                post.setHeader("Content-Type", "application/json")
-                post.setEntity(new StringEntity(payload.toString, "UTF-8"))
-
-                val response = client.execute(post)
-                try {
-                    val statusCode = response.getStatusLine.getStatusCode
-                    if (statusCode < 200 || statusCode >= 300) {
-                        val body = EntityUtils.toString(response.getEntity)
-                        throw new DatrisException("Chroma upsert failed (HTTP " + statusCode + "): " + body)
-                    }
-                } finally {
-                    response.close()
-                }
-
-                totalUpserted += embedded.size
-                statusUtil.info("processing", "Upserted " + totalUpserted + " chunks (input chunks: " + chunks.size + ")")
             }
+            metadatasArray.add(meta)
+        }
 
-            sendNotification()
-            statusUtil.info("end", "Process completed, " + totalUpserted + " chunks upserted to collection: " + chromaConfig.collectionName)
+        val payload = new JsonObject()
+        payload.add("ids", idsArray)
+        payload.add("embeddings", embeddingsArray)
+        payload.add("documents", documentsArray)
+        payload.add("metadatas", metadatasArray)
+
+        val post = new HttpPost(client.collectionsPath + "/" + client.collectionId + "/upsert")
+        post.setHeader("Content-Type", "application/json")
+        post.setEntity(new StringEntity(payload.toString, "UTF-8"))
+
+        val response = client.http.execute(post)
+        try {
+            val statusCode = response.getStatusLine.getStatusCode
+            if (statusCode < 200 || statusCode >= 300) {
+                val body = EntityUtils.toString(response.getEntity)
+                throw new DatrisException("Chroma upsert failed (HTTP " + statusCode + "): " + body)
+            }
         } finally {
-            client.close()
+            response.close()
         }
     }
 
-    private def ensureCollection(client: org.apache.http.impl.client.CloseableHttpClient, collectionsPath: String, collectionName: String): String = {
+    private def resolveOrCreateCollection(client: ChromaSession, collectionName: String): String = {
         // Try to get collection first
-        getCollectionId(client, collectionsPath, collectionName).foreach(id => return id)
+        getCollectionId(client, collectionName).foreach(id => return id)
 
         // Create collection. Use get_or_create=true so Chroma servers that support
         // the flag return the existing collection's id when another concurrent
@@ -166,11 +132,11 @@ class ChromaLoader(jobContext: JobContext) {
         metadataObj.addProperty("hnsw:space", "cosine")
         payload.add("metadata", metadataObj)
 
-        val post = new HttpPost(collectionsPath)
+        val post = new HttpPost(client.collectionsPath)
         post.setHeader("Content-Type", "application/json")
         post.setEntity(new StringEntity(payload.toString, "UTF-8"))
 
-        val response = client.execute(post)
+        val response = client.http.execute(post)
         try {
             val statusCode = response.getStatusLine.getStatusCode
             val body = EntityUtils.toString(response.getEntity)
@@ -179,7 +145,7 @@ class ChromaLoader(jobContext: JobContext) {
                 return json.get("id").getAsString
             }
             // Create failed — another runner may have raced us in. Re-check before erroring.
-            getCollectionId(client, collectionsPath, collectionName) match {
+            getCollectionId(client, collectionName) match {
                 case Some(id) => id
                 case None => throw new DatrisException("Failed to create Chroma collection: " + body)
             }
@@ -188,27 +154,21 @@ class ChromaLoader(jobContext: JobContext) {
         }
     }
 
-    private def verifyCollectionDimension(
-        client: org.apache.http.impl.client.CloseableHttpClient,
-        collectionsPath: String,
-        collectionId: String,
-        collectionName: String,
-        dimension: Int
-    ): Unit = {
+    private def verifyCollectionDimension(client: ChromaSession, collectionName: String, dimension: Int): Unit = {
         val payload = new JsonObject()
         payload.addProperty("limit", 1)
         val include = new JsonArray()
         include.add("embeddings")
         payload.add("include", include)
 
-        val post = new HttpPost(collectionsPath + "/" + collectionId + "/get")
+        val post = new HttpPost(client.collectionsPath + "/" + client.collectionId + "/get")
         post.setHeader("Content-Type", "application/json")
         post.setEntity(new StringEntity(payload.toString, "UTF-8"))
         val response =
-            try client.execute(post)
+            try client.http.execute(post)
             catch {
                 case e: Exception =>
-                    logger.debug("Dimension-probe of Chroma collection \"" + collectionName + "\" failed — skipping dimension verification", e)
+                    logger.debug("Chroma dimension-probe request failed for collection \"" + collectionName + "\" — skipping dimension verification", e)
                     return
             }
         try {
@@ -235,9 +195,9 @@ class ChromaLoader(jobContext: JobContext) {
         }
     }
 
-    private def getCollectionId(client: org.apache.http.impl.client.CloseableHttpClient, collectionsPath: String, collectionName: String): Option[String] = {
-        val get = new HttpGet(collectionsPath + "/" + collectionName)
-        val response = client.execute(get)
+    private def getCollectionId(client: ChromaSession, collectionName: String): Option[String] = {
+        val get = new HttpGet(client.collectionsPath + "/" + collectionName)
+        val response = client.http.execute(get)
         try {
             if (response.getStatusLine.getStatusCode == 200) {
                 val body = EntityUtils.toString(response.getEntity)
@@ -249,24 +209,5 @@ class ChromaLoader(jobContext: JobContext) {
                 logger.warn("Failed to parse Chroma collection lookup response for \"" + collectionName + "\" — treating collection as absent", e)
                 None
         } finally { response.close() }
-    }
-
-    private def sendNotification(): Unit = {
-        val attributes = Map(
-            "database" -> "",
-            "schema" -> "",
-            "pipeline" -> config.name,
-            "destination" -> "chroma",
-            "table" -> chromaConfig.collectionName
-        )
-        val notification = Map(
-            "pipeline" -> config.name,
-            "publisherToken" -> jobContext.pipelineToken,
-            "pipelineToken" -> jobContext.pipelineToken,
-            "destination" -> "chroma",
-            "collection" -> chromaConfig.collectionName
-        )
-        val gson = new Gson()
-        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, gson.toJson(notification.asJava), attributes)
     }
 }
