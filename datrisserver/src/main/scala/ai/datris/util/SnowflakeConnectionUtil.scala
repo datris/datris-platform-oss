@@ -59,8 +59,8 @@ object SnowflakeConnectionUtil {
             }
 
             val jdbcUrl = "jdbc:snowflake://" + normalizeAccount(creds.account) + ".snowflakecomputing.com/"
-            logger.info("Snowflake jdbc url: " + jdbcUrl)
-            onInfo("jdbc url: " + jdbcUrl)
+            logger.info("Snowflake jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
+            onInfo("jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
             conn = try {
                 DriverManager.getConnection(jdbcUrl, properties)
             } catch {

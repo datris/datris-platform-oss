@@ -1,8 +1,11 @@
 package ai.datris.util
 
 import io.github.jopenlibs.vault.{Vault, VaultConfig}
+import org.slf4j.{Logger, LoggerFactory}
 
 class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
+
+    private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     override def getSecretMap(secretName: String): Option[java.util.Map[String, String]] = {
         try {
@@ -12,7 +15,7 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
             else Some(data)
         } catch {
             case e: Exception =>
-                e.printStackTrace()
+                logger.error("Vault read failed for secret path: secret/" + secretName, e)
                 None
         }
     }
@@ -32,7 +35,7 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
             }
         } catch {
             case e: Exception =>
-                e.printStackTrace()
+                logger.error("Vault list failed for path: secret/" + path, e)
                 List.empty
         }
     }

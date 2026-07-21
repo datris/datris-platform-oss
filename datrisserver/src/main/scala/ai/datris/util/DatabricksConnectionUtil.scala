@@ -61,8 +61,8 @@ object DatabricksConnectionUtil {
             }
 
             val jdbcUrl = "jdbc:databricks://" + normalizeHost(creds.host) + ":443"
-            logger.info("Databricks jdbc url: " + jdbcUrl + " httpPath: " + httpPath)
-            onInfo("jdbc url: " + jdbcUrl + " httpPath: " + httpPath)
+            logger.info("Databricks jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + " httpPath: " + httpPath)
+            onInfo("jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl) + " httpPath: " + httpPath)
             // getConnection blocks while a stopped warehouse auto-starts — classic
             // warehouses can take minutes, serverless seconds. Say so up front, since
             // there is no driver callback to report it from.

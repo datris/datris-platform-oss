@@ -44,7 +44,7 @@ class PostgresLoader(jobContext: JobContext) {
             properties.setProperty("user", secrets.username)
             properties.setProperty("password", secrets.password)
             val jdbcUrl = secrets.jdbcUrl + "/" + dbName
-            statusUtil.info("processing", "jdbc url: " + jdbcUrl)
+            statusUtil.info("processing", "jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
             conn = DriverManager.getConnection(jdbcUrl, properties)
             statusUtil.info("processing", "Postgres connection acquired")
             if (config.destination.database.useTransaction)

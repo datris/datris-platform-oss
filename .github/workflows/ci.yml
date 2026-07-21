@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Java 17 and SBT
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
+
+      - name: Install SBT via Coursier
+        run: |
+          curl -fL "https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz" | gzip -d > cs
+          chmod +x cs
+          # Pin the sbt launcher to 1.x (matches project/build.properties). Bare `--apps sbt`
+          # now resolves sbt 2.x, which ignores build.properties for the meta-build and tries
+          # to fetch our sbt 1.x plugins as sbt2_3 cross-versions (not found).
+          ./cs setup --yes --apps sbt:1.12.5
+          echo "$HOME/.local/share/coursier/bin" >> $GITHUB_PATH
+
+      - name: Format check and test
+        run: sbt scalafmtCheckAll test

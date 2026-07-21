@@ -35,7 +35,7 @@ object PGVectorSearchUtil {
         val username = Option(pgSecret.get("username")).getOrElse("postgres")
         val password = Option(pgSecret.get("password")).getOrElse("")
 
-        logger.info("Searching pgvector table: " + schema + "." + table + " at " + jdbcUrl)
+        logger.info("Searching pgvector table: " + schema + "." + table + " at " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
 
         Class.forName("org.postgresql.Driver")
         val props = new Properties()

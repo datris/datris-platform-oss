@@ -45,7 +45,23 @@ lazy val datrisserver = project
             "org.apache.hadoop" % "hadoop-client-runtime" % "3.3.4"
         ),
         buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion, sbtVersion),
-        buildInfoPackage := "ai.datris.build.sbt"
+        buildInfoPackage := "ai.datris.build.sbt",
+        libraryDependencies ++= Seq(
+            "org.scalatest"     %% "scalatest"    % "3.2.19"   % Test,
+            "org.scalatestplus" %% "mockito-5-12" % "3.2.19.0" % Test
+        ),
+        Test / fork := true,
+        // Spark 3.5 on JDK 17 --add-opens; harmless for pure tests. The bytebuddy
+        // flag lets mockito mock JDK interfaces on JVMs newer than it knows about
+        // (e.g. a Java 25 dev machine); no-op where the JVM is already supported.
+        Test / javaOptions ++= Seq(
+            "-Dnet.bytebuddy.experimental=true",
+            "--add-opens=java.base/java.lang=ALL-UNNAMED",
+            "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+            "--add-opens=java.base/java.nio=ALL-UNNAMED",
+            "--add-opens=java.base/java.util=ALL-UNNAMED",
+            "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+        )
     )
 
 lazy val allDependencies = Seq(

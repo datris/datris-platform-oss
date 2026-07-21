@@ -62,7 +62,7 @@ class PGVectorLoader(jobContext: JobContext) {
         props.setProperty("user", username)
         props.setProperty("password", password)
 
-        statusUtil.info("processing", "Connecting to PostgreSQL at " + jdbcUrl)
+        statusUtil.info("processing", "Connecting to PostgreSQL at " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
         val conn = DriverManager.getConnection(jdbcUrl, props)
 
         try {
