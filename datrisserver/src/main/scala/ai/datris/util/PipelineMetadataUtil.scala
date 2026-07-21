@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{PipelineMetadata, DatrisEnvironment, DatrisException}
@@ -18,67 +18,64 @@ import scala.util.control.Breaks._
 
 class PipelineMetadataUtil(statusUtil: StatusUtil) {
     def read(bucket: String, key: String): PipelineMetadata = {
-        if(key.endsWith(".metadata.json")) {
+        if (key.endsWith(".metadata.json")) {
             // Read the metadata file and create the PipelineMetadata object
             val json = ObjectStoreUtil.readBucketObject(bucket, key).getOrElse(
-                throw new DatrisException("Could not read metadata file: " + key + ", from bucket: " + bucket))
+                throw new DatrisException("Could not read metadata file: " + key + ", from bucket: " + bucket)
+            )
             val gson = new Gson
             val metadata = gson.fromJson(json, classOf[PipelineMetadata])
             if (metadata == null)
                 throw new DatrisException("Could not parse json metadata in the file: " + key)
-            if(metadata.dataFilePath != null)
+            if (metadata.dataFilePath != null)
                 metadata.copy(bulkUpload = true)
             else
                 metadata.copy(bulkUpload = false)
-        }
-        else if(key.toLowerCase.endsWith(".zip") ||
+        } else if (
+            key.toLowerCase.endsWith(".zip") ||
             key.toLowerCase.endsWith(".gz") ||
             key.toLowerCase.endsWith(".tar") ||
-            key.toLowerCase.endsWith(".jar"))
-        {
+            key.toLowerCase.endsWith(".jar")
+        ) {
             uncompress(bucket, key)
-        }
-        else {
+        } else {
             // Pull the metadata from the data filename.  [pipeline-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]
             try {
                 val filename = key.substring(key.lastIndexOf('/') + 1)
                 val filepath = "s3://" + bucket + "/" + key.substring(0, key.lastIndexOf('/')) + "/"
                 val (pipeline, publisherToken) = parsePipelinePublisherTokenFromKey(key)
-                PipelineMetadata(pipeline,
-                    filename,
-                    filepath,
-                    publisherToken,
-                    bulkUpload = false)
+                PipelineMetadata(pipeline, filename, filepath, publisherToken, bulkUpload = false)
             } catch {
                 case e: Exception =>
-                    throw new DatrisException("Could not parse the pipeline and/or filename from the bucket key name.  The format required: [pipeline-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]")
+                    throw new DatrisException(
+                        "Could not parse the pipeline and/or filename from the bucket key name.  The format required: [pipeline-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]"
+                    )
             }
         }
     }
 
     def getFiles(metadata: PipelineMetadata): List[String] = {
-        if(metadata.bulkUpload) {
+        if (metadata.bulkUpload) {
             statusUtil.info("processing", "Bulk file upload")
             val keys = ObjectStoreUtil.listObjects(ObjectStoreUtil.getBucket(metadata.dataFilePath), ObjectStoreUtil.getKey(metadata.dataFilePath))
             keys.map(key => "s3://" + ObjectStoreUtil.getBucket(metadata.dataFilePath) + "/" + key)
                 .filterNot(_.endsWith("/"))
                 .filterNot(_.endsWith(".metadata.json"))
-        }
-        else
+        } else
             List(metadata.dataFilePath + metadata.dataFileName)
     }
 
     private def uncompress(bucket: String, key: String): PipelineMetadata = {
-        statusUtil.info("processing","Uncompressing bucket: " + bucket + ", key: " + key)
+        statusUtil.info("processing", "Uncompressing bucket: " + bucket + ", key: " + key)
 
         val (pipeline, publisherToken) = parsePipelinePublisherTokenFromKey(key)
-        statusUtil.info("processing","Pipeline name: " + pipeline)
+        statusUtil.info("processing", "Pipeline name: " + pipeline)
 
         val inputStream = ObjectStoreUtil.getInputStream(bucket, key)
         val tempWriteDirectory = "s3://" + DatrisEnvironment.current.environment + "-raw/temp/" + UUID.randomUUID().toString + "/"
 
         // .gz files extract to only one file
-        if(key.toLowerCase.endsWith(".gz")) {
+        if (key.toLowerCase.endsWith(".gz")) {
             val bufferedInputStream = new BufferedInputStream(inputStream)
             val gZipInputStream = new GzipCompressorInputStream(bufferedInputStream)
             val byteArray = gZipInputStream.readAllBytes()
@@ -87,8 +84,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
 
             bufferedInputStream.close()
             gZipInputStream.close()
-        }
-        else {
+        } else {
             val bufferedInputStream = new BufferedInputStream(inputStream)
             val archiveInputStream: ArchiveInputStream[_ <: org.apache.commons.compress.archivers.ArchiveEntry] = {
                 try {
@@ -101,18 +97,19 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
 
             // Write out all of the files in the archive to the temp directory
             breakable {
-                while(true) {
+                while (true) {
                     val archiveEntry = archiveInputStream.getNextEntry
-                    if(archiveEntry == null)
+                    if (archiveEntry == null)
                         break
 
                     // Ignore directories and junk entries for compressed files
-                    if(! archiveEntry.isDirectory &&
-                        ! archiveEntry.getName.startsWith("__MAC") &&
-                        ! archiveEntry.getName.startsWith("META-INF") &&
-                        ! archiveEntry.getName.startsWith("./._"))
-                    {
-                        statusUtil.info("processing","Archive file: " + archiveEntry.getName)
+                    if (
+                        !archiveEntry.isDirectory &&
+                        !archiveEntry.getName.startsWith("__MAC") &&
+                        !archiveEntry.getName.startsWith("META-INF") &&
+                        !archiveEntry.getName.startsWith("./._")
+                    ) {
+                        statusUtil.info("processing", "Archive file: " + archiveEntry.getName)
                         val byteArray = archiveInputStream.readAllBytes()
                         writeArchivedFile(byteArray, tempWriteDirectory)
                     }
@@ -127,7 +124,8 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
             null,
             tempWriteDirectory,
             publisherToken,
-            bulkUpload = true)
+            bulkUpload = true
+        )
     }
 
     private def writeArchivedFile(byteArray: Array[Byte], writeDirectory: String): Unit = {
@@ -135,7 +133,7 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
 
         // Write the temp file name
         val tempFilename = UUID.randomUUID().toString + ".tmp"
-        statusUtil.info("processing","Writing archive file to : " + writeDirectory + tempFilename)
+        statusUtil.info("processing", "Writing archive file to : " + writeDirectory + tempFilename)
         ObjectStoreUtil.writeBucketObjectFromStream(
             ObjectStoreUtil.getBucket(writeDirectory),
             ObjectStoreUtil.getKey(writeDirectory + tempFilename),

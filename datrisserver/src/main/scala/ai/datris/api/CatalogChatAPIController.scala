@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
@@ -45,11 +45,14 @@ class CatalogChatAPIController {
 
     // Dedicated executor sized like the other chats — interactive, and a
     // curation pass can spend tens of seconds across a list + move sequence.
-    private val chatExecutor = Executors.newFixedThreadPool(16, (r: Runnable) => {
-        val t = new Thread(r, "catalog-chat-" + System.nanoTime())
-        t.setDaemon(true)
-        t
-    })
+    private val chatExecutor = Executors.newFixedThreadPool(
+        16,
+        (r: Runnable) => {
+            val t = new Thread(r, "catalog-chat-" + System.nanoTime())
+            t.setDaemon(true)
+            t
+        }
+    )
 
     private val cancelFlags: ConcurrentHashMap[Long, java.util.concurrent.atomic.AtomicBoolean] = new ConcurrentHashMap()
 
@@ -62,21 +65,20 @@ class CatalogChatAPIController {
         val secretPath = DatrisEnvironment.current.environment + "/ui-api-key"
         SecretsUtil.getSecretMap(secretPath).flatMap(m => Option(m.get("apiKey"))) match {
             case Some(v) if v != null && v.nonEmpty => v
-            case _                                  => userApiKey
+            case _ => userApiKey
         }
     }
 
     @PostMapping(path = Array("/catalog-chat/chat"), produces = Array(MediaType.TEXT_EVENT_STREAM_VALUE))
-    def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-             @RequestBody body: String): SseEmitter = {
+    def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): SseEmitter = {
         val emitter = new SseEmitter(TimeUnit.MINUTES.toMillis(30))
         val emitterId = System.identityHashCode(emitter).toLong
         val cancelled = new java.util.concurrent.atomic.AtomicBoolean(false)
         cancelFlags.put(emitterId, cancelled)
 
         emitter.onCompletion(() => { cancelled.set(true); cancelFlags.remove(emitterId); () })
-        emitter.onTimeout   (() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
-        emitter.onError     (_  => { cancelled.set(true); cancelFlags.remove(emitterId); () })
+        emitter.onTimeout(() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
+        emitter.onError(_ => { cancelled.set(true); cancelFlags.remove(emitterId); () })
 
         // Same ThreadLocal capture rationale as the other chat controllers —
         // session-authed requests need UserContext/TenantContext re-set on the
@@ -94,10 +96,10 @@ class CatalogChatAPIController {
                 } catch {
                     case e: Exception =>
                         try {
-                            AssistantSseSupport.sendEvent(emitter, "error",
-                                AssistantSseSupport.makeEvent("error", "message", e.getMessage))
+                            AssistantSseSupport.sendEvent(emitter, "error", AssistantSseSupport.makeEvent("error", "message", e.getMessage))
                         } catch { case _: Exception => () }
-                        try emitter.complete() catch { case _: Exception => () }
+                        try emitter.complete()
+                        catch { case _: Exception => () }
                 } finally {
                     UserContext.clear()
                     TenantContext.clear()
@@ -108,10 +110,7 @@ class CatalogChatAPIController {
         emitter
     }
 
-    private def runChat(apiKey: String,
-                        body: String,
-                        emitter: SseEmitter,
-                        cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
+    private def runChat(apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
         if (messagesArr == null || messagesArr.size() == 0)
@@ -154,7 +153,7 @@ class CatalogChatAPIController {
         // user message. Cheapest possible cadence — the inventory is small.
         val withContext: List[(String, String)] = contextSnapshot match {
             case Some(ctx) => ("user", renderContextMessage(ctx)) :: userMessages
-            case None      => userMessages
+            case None => userMessages
         }
 
         logger.info("Catalog chat starting: tenant=" + env.environment + ", provider=" + aiConfig.provider +
@@ -182,7 +181,10 @@ class CatalogChatAPIController {
         // If the client already disconnected (a failed write flipped the
         // cancel flag), skip complete() — flushing to a dead socket would log
         // another spurious broken pipe. The container finalizes the response.
-        if (!cancelled.get()) { try emitter.complete() catch { case _: Exception => () } }
+        if (!cancelled.get()) {
+            try emitter.complete()
+            catch { case _: Exception => () }
+        }
     }
 
     /** Curation tools first, then the rest. This isn't filtering — the agent
@@ -224,9 +226,9 @@ class CatalogChatAPIController {
                 val tapCount = intOpt(c, "tapCount").getOrElse(0)
                 val pipelineCount = intOpt(c, "pipelineCount").getOrElse(0)
                 sb.append("  - `").append(name).append("` (")
-                  .append(tapCount).append(" tap").append(if (tapCount != 1) "s" else "")
-                  .append(", ").append(pipelineCount).append(" pipeline").append(if (pipelineCount != 1) "s" else "")
-                  .append(")\n")
+                    .append(tapCount).append(" tap").append(if (tapCount != 1) "s" else "")
+                    .append(", ").append(pipelineCount).append(" pipeline").append(if (pipelineCount != 1) "s" else "")
+                    .append(")\n")
                 val taps = Option(c.getAsJsonArray("taps")).map(_.asScala.toList.map(_.getAsString)).getOrElse(Nil)
                 if (taps.nonEmpty) sb.append("      taps: ").append(taps.mkString(", ")).append("\n")
                 val pipelines = Option(c.getAsJsonArray("pipelines")).map(_.asScala.toList.map(_.getAsString)).getOrElse(Nil)
@@ -239,7 +241,7 @@ class CatalogChatAPIController {
             val focus = ctx.getAsJsonObject("focus")
             strOpt(focus, "name").foreach { fname =>
                 sb.append("The user opened this chat focused on the `").append(fname).append("` catalog. ")
-                  .append("Treat that catalog as the subject of their request unless they say otherwise.\n\n")
+                    .append("Treat that catalog as the subject of their request unless they say otherwise.\n\n")
             }
         }
 
@@ -259,38 +261,70 @@ class CatalogChatAPIController {
         val sb = new StringBuilder
         sb.append("# Datris Catalog Assistant\n\n")
         sb.append("You are the Catalog curation assistant for tenant `").append(tenantEnv).append("`. ")
-        sb.append("The user is looking at the Catalog page inside the Datris UI — their taps and pipelines grouped into named catalogs, plus an `Uncataloged` group for anything unassigned. ")
-        sb.append("When a catalog snapshot is provided as the leading user message in this conversation, treat it as ground truth for what the user is looking at *right now*. ")
+        sb.append(
+            "The user is looking at the Catalog page inside the Datris UI — their taps and pipelines grouped into named catalogs, plus an `Uncataloged` group for anything unassigned. "
+        )
+        sb.append(
+            "When a catalog snapshot is provided as the leading user message in this conversation, treat it as ground truth for what the user is looking at *right now*. "
+        )
         sb.append("When no snapshot is provided, call `list_taps` and `list_pipelines` to discover what exists.\n\n")
 
         sb.append("## Mission\n\n")
         sb.append("Your job is to help the user ORGANIZE what already exists — not to build, run, or search data:\n")
         sb.append("- **Describe & summarize.** Explain what's in a catalog, what's sitting in Uncataloged, and how the inventory is structured.\n")
         sb.append("- **Propose groupings.** Suggest sensible catalogs (by source, domain, owner, lifecycle) and which taps/pipelines belong in each.\n")
-        sb.append("- **Move & rename on request.** Reassign taps and pipelines between catalogs with `set_catalog`. Suggest renames where names are unclear or inconsistent.\n")
+        sb.append(
+            "- **Move & rename on request.** Reassign taps and pipelines between catalogs with `set_catalog`. Suggest renames where names are unclear or inconsistent.\n"
+        )
         sb.append("- **Tidy up.** Flag redundant, near-empty, or inconsistently named catalogs and propose how to consolidate.\n\n")
 
         sb.append("## Stay in your lane\n\n")
-        sb.append("- **Discovery/answering questions about the *data itself* is the Search tab's job.** If the user wants to query rows, search documents, or get an answer from their data, point them to Search rather than doing it here.\n")
-        sb.append("- **Running, killing, retrying, and recovering pipelines is the Ops tab's job.** If the user wants to run a tap, kill a job, or diagnose a failure, point them to the Ops chat.\n")
+        sb.append(
+            "- **Discovery/answering questions about the *data itself* is the Search tab's job.** If the user wants to query rows, search documents, or get an answer from their data, point them to Search rather than doing it here.\n"
+        )
+        sb.append(
+            "- **Running, killing, retrying, and recovering pipelines is the Ops tab's job.** If the user wants to run a tap, kill a job, or diagnose a failure, point them to the Ops chat.\n"
+        )
         sb.append("- **Building new taps/pipelines from scratch is the Assistant tab's job.** You organize existing items; you don't create new data flows.\n")
-        sb.append("You technically have other tools available — use them only if an organizing task genuinely needs a quick read (e.g. `get_tap` to see a tap's source before suggesting a grouping). Don't drift into the other modes' work.\n\n")
+        sb.append(
+            "You technically have other tools available — use them only if an organizing task genuinely needs a quick read (e.g. `get_tap` to see a tap's source before suggesting a grouping). Don't drift into the other modes' work.\n\n"
+        )
 
         sb.append("## Behavior rules\n\n")
-        sb.append("- **Propose before you move.** Catalogs are a user-chosen convention. Lay out your suggested grouping in plain language FIRST and let the user approve it. Do NOT call `set_catalog` proactively or speculatively — assigning a taxonomy the user didn't ask for is worse than doing nothing.\n")
-        sb.append("- **Mutate only on an explicit, item-specific go-ahead.** `set_catalog` changes the user's organization. Call it only when the user's most recent message clearly authorizes that specific move — \"yes, do it\", \"move X into Y\", \"go ahead with that plan\". Vague replies (\"sounds good\", \"and?\", \"what else\") are NOT authorization to start moving things; ask which moves to apply.\n")
-        sb.append("- **`set_catalog` takes exactly one of `tap` or `pipeline`.** Pass the item name and the target `catalog`. Omit `catalog` (or pass an empty string) to clear it — that moves the item to Uncataloged. One call per item; report what you moved.\n")
-        sb.append("- **Watch for name clashes.** A catalog the user browses shouldn't contain two items with the same name. If a proposed move would collide with an existing item in the target catalog, call it out and suggest a rename instead of moving blindly.\n")
-        sb.append("- **Renaming a catalog = moving every item into the new name.** There's no first-class rename; to rename catalog A to B, `set_catalog` each of A's items to B. Confirm the full list with the user before doing a batch like this, and report progress.\n")
-        sb.append("- **Be brief.** This is a side-panel chat with limited width. Short paragraphs. When proposing a grouping, a compact bulleted plan beats prose.\n\n")
+        sb.append(
+            "- **Propose before you move.** Catalogs are a user-chosen convention. Lay out your suggested grouping in plain language FIRST and let the user approve it. Do NOT call `set_catalog` proactively or speculatively — assigning a taxonomy the user didn't ask for is worse than doing nothing.\n"
+        )
+        sb.append(
+            "- **Mutate only on an explicit, item-specific go-ahead.** `set_catalog` changes the user's organization. Call it only when the user's most recent message clearly authorizes that specific move — \"yes, do it\", \"move X into Y\", \"go ahead with that plan\". Vague replies (\"sounds good\", \"and?\", \"what else\") are NOT authorization to start moving things; ask which moves to apply.\n"
+        )
+        sb.append(
+            "- **`set_catalog` takes exactly one of `tap` or `pipeline`.** Pass the item name and the target `catalog`. Omit `catalog` (or pass an empty string) to clear it — that moves the item to Uncataloged. One call per item; report what you moved.\n"
+        )
+        sb.append(
+            "- **Watch for name clashes.** A catalog the user browses shouldn't contain two items with the same name. If a proposed move would collide with an existing item in the target catalog, call it out and suggest a rename instead of moving blindly.\n"
+        )
+        sb.append(
+            "- **Renaming a catalog = moving every item into the new name.** There's no first-class rename; to rename catalog A to B, `set_catalog` each of A's items to B. Confirm the full list with the user before doing a batch like this, and report progress.\n"
+        )
+        sb.append(
+            "- **Be brief.** This is a side-panel chat with limited width. Short paragraphs. When proposing a grouping, a compact bulleted plan beats prose.\n\n"
+        )
 
         sb.append("## Don't stall mid-task\n\n")
-        sb.append("- **If your reply ends by announcing work you have NOT done yet — \"Let me check X\", \"Now I'll Y\", \"Let me look at Z\" — make those tool calls in the SAME turn instead of ending.** Announcing the next step and then stopping forces the user to type \"continue\" to get work they already asked for. The sentence that narrates an action and the tool call that performs it belong in the same turn.\n")
-        sb.append("- **End your turn only when** the task is complete, OR you need a decision/approval/confirmation only the user can give, OR you are waiting on input the user must provide. In every other case — including right after you've described your next step — keep going and do it.\n")
-        sb.append("- This narrows nothing in the rules above: keep asking, proposing, confirming, and waiting exactly where they tell you to — scope/source choices, a plan to approve, destructive-action confirmation, acting only when explicitly authorized. The point is only this: once the next step is already decided or authorized and you are merely narrating it, perform it instead of ending the turn.\n\n")
+        sb.append(
+            "- **If your reply ends by announcing work you have NOT done yet — \"Let me check X\", \"Now I'll Y\", \"Let me look at Z\" — make those tool calls in the SAME turn instead of ending.** Announcing the next step and then stopping forces the user to type \"continue\" to get work they already asked for. The sentence that narrates an action and the tool call that performs it belong in the same turn.\n"
+        )
+        sb.append(
+            "- **End your turn only when** the task is complete, OR you need a decision/approval/confirmation only the user can give, OR you are waiting on input the user must provide. In every other case — including right after you've described your next step — keep going and do it.\n"
+        )
+        sb.append(
+            "- This narrows nothing in the rules above: keep asking, proposing, confirming, and waiting exactly where they tell you to — scope/source choices, a plan to approve, destructive-action confirmation, acting only when explicitly authorized. The point is only this: once the next step is already decided or authorized and you are merely narrating it, perform it instead of ending the turn.\n\n"
+        )
 
         sb.append("## Finish\n\n")
-        sb.append("When moves are done, say what changed in one or two sentences — the user can see most of it in the tree, which refreshes automatically. You're the audit trail for what *just happened in this chat*.")
+        sb.append(
+            "When moves are done, say what changed in one or two sentences — the user can see most of it in the tree, which refreshes automatically. You're the audit trail for what *just happened in this chat*."
+        )
         sb.toString
     }
 }

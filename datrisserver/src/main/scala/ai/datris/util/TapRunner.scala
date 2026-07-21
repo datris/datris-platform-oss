@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, TapConfig, TapDocumentLedger, TapRunLog}
 import ai.datris.controller.{JobRunner, StreamNotifier}
@@ -69,9 +69,9 @@ object TapRunner {
                 if (result.missingSecretFields.nonEmpty) {
                     val missingMsg =
                         "Tap returned 0 records: its script reads credential field(s) that secret '" +
-                        tapConfig.secretName + "' does not provide — " + result.missingSecretFields.mkString(", ") +
-                        ". The script ran without those credentials and returned no data. Add the missing field(s) to " +
-                        "the secret (Configuration → Secrets), or update the script to match the secret."
+                            tapConfig.secretName + "' does not provide — " + result.missingSecretFields.mkString(", ") +
+                            ". The script ran without those credentials and returned no data. Add the missing field(s) to " +
+                            "the secret (Configuration → Secrets), or update the script to match the secret."
                     if (push) {
                         val failedConfig = tapConfig.copy(
                             lastRunStatus = "failure",
@@ -106,10 +106,13 @@ object TapRunner {
             }
 
             // Push to pipeline if requested, records exist, and a target pipeline is configured
-            val (processedCount, pipelineTokens) = if (push && result.records != null && result.recordCount > 0 &&
-                tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty) {
-                feedPipeline(tapConfig, result, publisherToken)
-            } else (result.recordCount, new java.util.ArrayList[String]())
+            val (processedCount, pipelineTokens) =
+                if (
+                    push && result.records != null && result.recordCount > 0 &&
+                    tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
+                ) {
+                    feedPipeline(tapConfig, result, publisherToken)
+                } else (result.recordCount, new java.util.ArrayList[String]())
 
             if (push) {
                 val successConfig = tapConfig.copy(
@@ -145,9 +148,18 @@ object TapRunner {
         }
     }
 
-    private def writeRunLog(tapName: String, runTime: String, status: String, recordCount: Int,
-                            dataType: String, logs: String, error: String, mode: String, durationMs: Long,
-                            publisherToken: String = null): Unit = {
+    private def writeRunLog(
+        tapName: String,
+        runTime: String,
+        status: String,
+        recordCount: Int,
+        dataType: String,
+        logs: String,
+        error: String,
+        mode: String,
+        durationMs: Long,
+        publisherToken: String = null
+    ): Unit = {
         try {
             val log = TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, mode, durationMs, publisherToken)
             val gson = new Gson
@@ -157,8 +169,7 @@ object TapRunner {
             // Old rows without created_at are simply absent from the new endpoint;
             // they'll roll off the dashboard window naturally.
             val nowMs: java.lang.Long = System.currentTimeMillis()
-            NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", gson.toJson(log),
-                "created_at", nowMs)
+            NoSQLDbUtil.putItemJSON(DatrisEnvironment.current.tapLogTableName, "key", key, "value", gson.toJson(log), "created_at", nowMs)
         } catch {
             case e: Exception =>
                 logger.warn("Failed to write tap run log: " + e.getMessage)
@@ -181,7 +192,8 @@ object TapRunner {
 
         val (bytes, filename) = if (pipelineExpectsCsv) {
             val delimiter = if (pipelineConfig.source.fileAttributes.csvAttributes.delimiter != null)
-                pipelineConfig.source.fileAttributes.csvAttributes.delimiter else ","
+                pipelineConfig.source.fileAttributes.csvAttributes.delimiter
+            else ","
             try {
                 val csv = jsonToCsv(result.records, delimiter)
                 (csv.getBytes("UTF-8"), "tap-" + tapConfig.name + ".csv")
@@ -298,23 +310,9 @@ object TapRunner {
                             case prev => prev.firstSeenAt
                         }
 
-                        TapDocumentLedgerIO.write(ledgerTable, TapDocumentLedger(
-                            uri = uri,
-                            tapName = tapConfig.name,
-                            stagedPath = stagedKey,
-                            filename = filename,
-                            contentHash = contentHash,
-                            firstSeenAt = firstSeen,
-                            lastSeenAt = now,
-                            status = "staged",
-                            metadata = metadata
-                        ))
-
-                        try {
-                            val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, publisherToken)
-                            GlobalJobContext.addJobContext(jobContext)
-                            tokens.add(jobContext.pipelineToken)
-                            TapDocumentLedgerIO.write(ledgerTable, TapDocumentLedger(
+                        TapDocumentLedgerIO.write(
+                            ledgerTable,
+                            TapDocumentLedger(
                                 uri = uri,
                                 tapName = tapConfig.name,
                                 stagedPath = stagedKey,
@@ -322,14 +320,18 @@ object TapRunner {
                                 contentHash = contentHash,
                                 firstSeenAt = firstSeen,
                                 lastSeenAt = now,
-                                status = "processed",
+                                status = "staged",
                                 metadata = metadata
-                            ))
-                            processed += 1
-                        } catch {
-                            case e: Exception =>
-                                logger.warn("TapRunner: pipeline submission failed for uri=" + uri + ": " + e.getMessage)
-                                TapDocumentLedgerIO.write(ledgerTable, TapDocumentLedger(
+                            )
+                        )
+
+                        try {
+                            val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, publisherToken)
+                            GlobalJobContext.addJobContext(jobContext)
+                            tokens.add(jobContext.pipelineToken)
+                            TapDocumentLedgerIO.write(
+                                ledgerTable,
+                                TapDocumentLedger(
                                     uri = uri,
                                     tapName = tapConfig.name,
                                     stagedPath = stagedKey,
@@ -337,9 +339,28 @@ object TapRunner {
                                     contentHash = contentHash,
                                     firstSeenAt = firstSeen,
                                     lastSeenAt = now,
-                                    status = "failed",
+                                    status = "processed",
                                     metadata = metadata
-                                ))
+                                )
+                            )
+                            processed += 1
+                        } catch {
+                            case e: Exception =>
+                                logger.warn("TapRunner: pipeline submission failed for uri=" + uri + ": " + e.getMessage)
+                                TapDocumentLedgerIO.write(
+                                    ledgerTable,
+                                    TapDocumentLedger(
+                                        uri = uri,
+                                        tapName = tapConfig.name,
+                                        stagedPath = stagedKey,
+                                        filename = filename,
+                                        contentHash = contentHash,
+                                        firstSeenAt = firstSeen,
+                                        lastSeenAt = now,
+                                        status = "failed",
+                                        metadata = metadata
+                                    )
+                                )
                                 failed += 1
                         }
                     }

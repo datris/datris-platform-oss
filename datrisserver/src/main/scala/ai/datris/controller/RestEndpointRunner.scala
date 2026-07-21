@@ -3,7 +3,7 @@ package ai.datris.controller
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{DatrisException, RestEndpoint}

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{Capability, DatrisEnvironment, DatrisException, ResolvedKey, User, UserContext}
 import com.google.common.cache.CacheBuilder
@@ -31,27 +31,26 @@ object APIKeyValidator {
         .build[String, ResolvedKey]()
 
     def validate(apiKey: String): Unit = {
-        if(DatrisEnvironment.values.multiTenant) {
+        if (DatrisEnvironment.values.multiTenant) {
             // In multi-tenant mode, validation is handled by TenantInterceptor
             return
         }
-        if(DatrisEnvironment.values.useApiKeys) {
+        if (DatrisEnvironment.values.useApiKeys) {
             // Session-cookie auth bypass: if SessionAuthenticator already
             // established UserContext on this request, the caller is an
             // authenticated browser user — no x-api-key required. API keys
             // remain mandatory for programmatic clients (CLI, MCP, external
             // agents) that don't carry a session cookie.
-            if(UserContext.get().isDefined) return
+            if (UserContext.get().isDefined) return
 
-            if(apiKey == null)
+            if (apiKey == null)
                 throw new DatrisException("x-api-key does not exist or is invalid")
-
 
             val apiKeysMap = ai.datris.util.SecretsUtil.getSecretMap(DatrisEnvironment.values.apiKeysSecretName)
                 .getOrElse(throw new DatrisException("The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"))
             val apiKeys = apiKeysMap.asScala.map { case (key, value) => value }.toList
 
-            if(! apiKeys.contains(apiKey))
+            if (!apiKeys.contains(apiKey))
                 throw new DatrisException("Invalid x-api-key: " + apiKey)
         }
     }
@@ -59,8 +58,8 @@ object APIKeyValidator {
     /** Validates the API key and resolves the tenant environment name.
       * Returns Some(environmentName) when multiTenant is true, None otherwise. */
     def validateAndResolve(apiKey: String): Option[String] = {
-        if(DatrisEnvironment.values.multiTenant) {
-            if(apiKey == null || apiKey.isEmpty)
+        if (DatrisEnvironment.values.multiTenant) {
+            if (apiKey == null || apiKey.isEmpty)
                 return None // No API key — fall back to global environment
 
             val mappings = ai.datris.util.SecretsUtil.getSecretMap("api-key-mappings")
@@ -124,7 +123,8 @@ object APIKeyValidator {
         // Single-tenant with API keys enabled: find the label by value.
         val keysMap = SecretsUtil.getSecretMap(DatrisEnvironment.values.apiKeysSecretName)
             .getOrElse(throw new DatrisException(
-                "The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"))
+                "The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"
+            ))
         val label = keysMap.asScala
             .find { case (_, v) => v == apiKey }
             .map(_._1)
@@ -201,12 +201,23 @@ object APIKeyValidator {
             Seq(Capability.FullAccess)
         case User.RoleEditor =>
             Seq(
-                "pipeline:read", "pipeline:create", "pipeline:update", "pipeline:delete", "pipeline:run",
-                "tap:read", "tap:create", "tap:update", "tap:delete", "tap:run",
+                "pipeline:read",
+                "pipeline:create",
+                "pipeline:update",
+                "pipeline:delete",
+                "pipeline:run",
+                "tap:read",
+                "tap:create",
+                "tap:update",
+                "tap:delete",
+                "tap:run",
                 "document:upload",
                 "search:vector",
-                "query:postgres", "query:mongodb", "query:natural",
-                "job:read", "job:kill",
+                "query:postgres",
+                "query:mongodb",
+                "query:natural",
+                "job:read",
+                "job:kill",
                 "metadata:read",
                 "config:read",
                 "mcp:tool"
@@ -216,7 +227,9 @@ object APIKeyValidator {
                 "pipeline:read",
                 "tap:read",
                 "search:vector",
-                "query:postgres", "query:mongodb", "query:natural",
+                "query:postgres",
+                "query:mongodb",
+                "query:natural",
                 "job:read",
                 "metadata:read",
                 "config:read"

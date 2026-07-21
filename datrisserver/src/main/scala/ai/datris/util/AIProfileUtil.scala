@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.slf4j.{Logger, LoggerFactory}

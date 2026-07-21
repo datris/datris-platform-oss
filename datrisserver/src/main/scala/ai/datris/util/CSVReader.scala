@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import org.apache.commons.csv.{CSVFormat, CSVParser}
 
@@ -11,7 +11,15 @@ import java.io.{InputStreamReader, InputStream}
 import scala.collection.JavaConverters._
 
 class CSVReader {
-    def readFromStream(inputStream: InputStream, header: Boolean, delimiter: String, columnList: List[String], columnFilter: List[String], trimColumns: Boolean = false, removeHeader: Boolean = false): String = {
+    def readFromStream(
+        inputStream: InputStream,
+        header: Boolean,
+        delimiter: String,
+        columnList: List[String],
+        columnFilter: List[String],
+        trimColumns: Boolean = false,
+        removeHeader: Boolean = false
+    ): String = {
         val columnNumbers = columnFilter.flatMap(filteredColumn => {
             columnList.zipWithIndex.flatMap { case (column, index) =>
                 if (filteredColumn.equalsIgnoreCase(column)) Some(index) else None
@@ -37,7 +45,15 @@ class CSVReader {
             rows.mkString("\n")
     }
 
-    def readFile(url: String, header: Boolean, delimiter: String, columnList: List[String], columnFilter: List[String], trimColumns: Boolean = false, removeHeader: Boolean = false): String = {
+    def readFile(
+        url: String,
+        header: Boolean,
+        delimiter: String,
+        columnList: List[String],
+        columnFilter: List[String],
+        trimColumns: Boolean = false,
+        removeHeader: Boolean = false
+    ): String = {
         // Determine the column #'s to read
         val columnNumbers = columnFilter.flatMap(filteredColumn => {
             columnList.zipWithIndex.flatMap { case (column, index) =>
@@ -63,7 +79,7 @@ class CSVReader {
             }).mkString(delimiter)
         }).toList
 
-        if(header && removeHeader)
+        if (header && removeHeader)
             rows.tail.mkString("\n")
         else
             rows.mkString("\n")

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{Notification, DatrisEnvironment, DatrisException}
@@ -42,9 +42,11 @@ object KafkaLoader {
                     if (secrets.username != null && secrets.password != null) {
                         props.put("sasl.mechanism", "PLAIN")
                         props.put("security.protocol", "SASL_PLAINTEXT")
-                        props.put("sasl.jaas.config",
+                        props.put(
+                            "sasl.jaas.config",
                             "org.apache.kafka.common.security.plain.PlainLoginModule required username=\"" +
-                                secrets.username + "\" password=\"" + secrets.password + "\";")
+                                secrets.username + "\" password=\"" + secrets.password + "\";"
+                        )
                     }
 
                     sharedProducer = new KafkaProducer[String, String](props)
@@ -94,10 +96,12 @@ class KafkaLoader(jobContext: JobContext) {
         val keyIndex = if (keyField != null) header.indexWhere(_.equalsIgnoreCase(keyField)) else -1
 
         val delimiter = {
-            if (config.source != null
+            if (
+                config.source != null
                 && config.source.fileAttributes != null
                 && config.source.fileAttributes.csvAttributes != null
-                && config.source.fileAttributes.csvAttributes.delimiter != null)
+                && config.source.fileAttributes.csvAttributes.delimiter != null
+            )
                 config.source.fileAttributes.csvAttributes.delimiter
             else
                 ","

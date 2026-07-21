@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
@@ -26,20 +26,18 @@ class PipelineAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[PipelineAPIController])
 
     @GetMapping(path = Array("/pipeline"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                         @RequestParam pipeline: String): ResponseEntity[String] = {
+    def getPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam pipeline: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /pipeline called with pipeline: " + pipeline)
             APIKeyValidator.validate(apiKey)
 
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
-            if(config == null)
+            if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
             val gson = new Gson
             val json = gson.toJson(config)
             new ResponseEntity[String](json, HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -47,8 +45,7 @@ class PipelineAPIController {
     }
 
     @GetMapping(path = Array("/pipelines"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getPipelines(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     request: HttpServletRequest): ResponseEntity[String] = {
+    def getPipelines(@RequestHeader(name = "x-api-key", required = false) apiKey: String, request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /pipelines called")
             APIKeyValidator.validate(apiKey)
@@ -76,8 +73,7 @@ class PipelineAPIController {
             val gson = new Gson
             val json = gson.toJson(filteredConfigs.asJava)
             new ResponseEntity[String](json, HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -85,10 +81,12 @@ class PipelineAPIController {
     }
 
     @PostMapping(path = Array("/pipeline"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def putPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                         @RequestParam(name = "changeNote", required = false) changeNote: String,
-                         @RequestBody config: PipelineConfig,
-                         request: HttpServletRequest): ResponseEntity[String] = {
+    def putPipeline(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(name = "changeNote", required = false) changeNote: String,
+        @RequestBody config: PipelineConfig,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /pipeline with pipeline name: " + config.name)
             APIKeyValidator.validate(apiKey)
@@ -104,13 +102,16 @@ class PipelineAPIController {
             // loader. Postgres only: mongodb/minio are required core services,
             // and Snowflake/Databricks already fail with actionable
             // CredentialResolver errors when their credentials are missing.
-            if (withDefaults.destination != null && withDefaults.destination.database != null &&
-                withDefaults.destination.database.usePostgres) {
+            if (
+                withDefaults.destination != null && withDefaults.destination.database != null &&
+                withDefaults.destination.database.usePostgres
+            ) {
                 val probeFailure = PostgresQueryUtil.probeError()
                 if (probeFailure.isDefined) {
                     logger.warn("POST /pipeline rejected: postgres destination selected but Postgres is unreachable: " + probeFailure.get)
                     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                        "{\"error\": \"Postgres is not installed/reachable in this deployment. Enable it in .env (POSTGRES_ENABLED=1) or point POSTGRES_JDBC_URL at an external Postgres, then re-run 'docker compose up -d' — or choose another destination.\"}")
+                        "{\"error\": \"Postgres is not installed/reachable in this deployment. Enable it in .env (POSTGRES_ENABLED=1) or point POSTGRES_JDBC_URL at an external Postgres, then re-run 'docker compose up -d' — or choose another destination.\"}"
+                    )
                 }
             }
 
@@ -122,22 +123,21 @@ class PipelineAPIController {
             // match `owner=self` for anyone, which is intended.
             val tagged = ResolvedKeyAccess.keyLabel(request) match {
                 case Some(label) => modifiedConfig.copy(createdByKeyLabel = label)
-                case None        => modifiedConfig
+                case None => modifiedConfig
             }
 
             // Definition-edit write → mints a new immutable version snapshot.
             val existing = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
             val note = if (changeNote != null && changeNote.nonEmpty) changeNote
-                       else if (existing != null) "updated" else "created"
+            else if (existing != null) "updated" else "created"
             PipelineConfigIO.writeVersioned(tagged, note, VersionActor.resolve(request))
 
             // If the source is a database, initialize the pipeline pull table
-            if(modifiedConfig.source.databaseAttributes != null)
+            if (modifiedConfig.source.databaseAttributes != null)
                 PipelinePullTableUtil.initialize(modifiedConfig.name, modifiedConfig.source.databaseAttributes.cronExpression)
 
             new ResponseEntity[String](HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -145,17 +145,19 @@ class PipelineAPIController {
     }
 
     @DeleteMapping(path = Array("/pipeline"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def deletePipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                            @RequestParam pipeline: String,
-                            @RequestParam(defaultValue = "true") deleteData: String,
-                            @RequestParam(defaultValue = "true") deleteConfig: String,
-                            request: HttpServletRequest): ResponseEntity[String] = {
+    def deletePipeline(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam pipeline: String,
+        @RequestParam(defaultValue = "true") deleteData: String,
+        @RequestParam(defaultValue = "true") deleteConfig: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /pipeline with pipeline name: " + pipeline + ", deleteData: " + deleteData + ", deleteConfig: " + deleteConfig)
             APIKeyValidator.validate(apiKey)
 
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
-            if(config == null)
+            if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
             // Scope check: a key with `pipeline:delete:owner=self` may only
@@ -170,11 +172,11 @@ class PipelineAPIController {
             val deleteConfigBool = deleteConfig.equalsIgnoreCase("true")
             val deleteDataBool = deleteData.equalsIgnoreCase("true") || deleteConfigBool
 
-            if(deleteConfigBool && config.source.databaseAttributes != null)
+            if (deleteConfigBool && config.source.databaseAttributes != null)
                 PipelinePullTableUtil.deleteEntryIfExists(config.name)
 
             // Clean up destination data
-            if(deleteDataBool && config.destination != null) {
+            if (deleteDataBool && config.destination != null) {
                 cleanupDestinationData(config)
                 // Wipe document-tap ledgers/staged files for any tap targeting this
                 // pipeline. The ledger records "already-processed URIs"; leaving it
@@ -184,7 +186,7 @@ class PipelineAPIController {
             }
 
             // Delete the json configuration
-            if(deleteConfigBool) {
+            if (deleteConfigBool) {
                 NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
                 // Hard-delete all definition-version snapshots for this pipeline
                 // (pipelines pin no scripts, so nothing to GC in object storage).
@@ -196,8 +198,7 @@ class PipelineAPIController {
             }
 
             new ResponseEntity[String](HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -219,7 +220,7 @@ class PipelineAPIController {
             val taps = TapConfigIO.readAll(env.tapTableName)
             val affected = taps.filter(t =>
                 t != null && "document" == t.tapType &&
-                t.targetPipeline != null && t.targetPipeline == pipelineName
+                    t.targetPipeline != null && t.targetPipeline == pipelineName
             )
             if (affected.isEmpty) return
             affected.foreach { tap =>
@@ -277,7 +278,7 @@ class PipelineAPIController {
                 val client = com.mongodb.client.MongoClients.create(settings)
                 try {
                     val dbName = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-                        else if (dest.database.dbName != null) dest.database.dbName else "datris"
+                    else if (dest.database.dbName != null) dest.database.dbName else "datris"
                     client.getDatabase(dbName).getCollection(dest.database.table).drop()
                     logger.info("Dropped MongoDB collection: " + dbName + "." + dest.database.table)
                 } finally {
@@ -470,7 +471,8 @@ class PipelineAPIController {
                     val host = Option(secretMap.get("host")).getOrElse("")
                     if (host.nonEmpty) {
                         val port = Option(secretMap.get("port")).getOrElse("8000")
-                        val url = "http://" + host + ":" + port + "/api/v2/tenants/default_tenant/databases/default_database/collections/" + dest.chroma.collectionName
+                        val url =
+                            "http://" + host + ":" + port + "/api/v2/tenants/default_tenant/databases/default_database/collections/" + dest.chroma.collectionName
                         val connection = new java.net.URL(url).openConnection().asInstanceOf[java.net.HttpURLConnection]
                         connection.setRequestMethod("DELETE")
                         connection.setConnectTimeout(5000)

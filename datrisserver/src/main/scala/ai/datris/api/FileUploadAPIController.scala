@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import ai.datris.model.{GlobalJobContext, DatrisEnvironment, DatrisException}
@@ -26,12 +26,15 @@ class FileUploadAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileUploadAPIController])
 
     @PostMapping(path = Array("/pipeline/upload"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def uploadRawFile(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                      @RequestPart("file") multipartFile: MultipartFile,
-                      @RequestParam("pipeline") pipeline: String,
-                      @RequestParam(required = false) publishertoken: String): ResponseEntity[String] = {
+    def uploadRawFile(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestPart("file") multipartFile: MultipartFile,
+        @RequestParam("pipeline") pipeline: String,
+        @RequestParam(required = false) publishertoken: String
+    ): ResponseEntity[String] = {
         try {
-            logger.info("API endpoint POST /pipeline/upload called for pipeline: " + pipeline + ", filename: " + multipartFile.getOriginalFilename + ", publishertoken: " + publishertoken)
+            logger.info("API endpoint POST /pipeline/upload called for pipeline: " + pipeline + ", filename: " + multipartFile
+                .getOriginalFilename + ", publishertoken: " + publishertoken)
             APIKeyValidator.validate(apiKey)
 
             // Validate pipeline is registered before processing
@@ -61,10 +64,12 @@ class FileUploadAPIController {
                         while (true) {
                             val entry = archiveIn.getNextEntry
                             if (entry == null) break
-                            if (!entry.isDirectory &&
+                            if (
+                                !entry.isDirectory &&
                                 !entry.getName.startsWith("__MAC") &&
                                 !entry.getName.startsWith("META-INF") &&
-                                !entry.getName.startsWith("./._")) {
+                                !entry.getName.startsWith("./._")
+                            ) {
                                 // Read entry bytes using a buffer — readAllBytes() can over-read on archive streams
                                 val buffer = new java.io.ByteArrayOutputStream()
                                 val buf = new Array[Byte](8192)
@@ -135,16 +140,14 @@ class FileUploadAPIController {
                 GlobalJobContext.addJobContext(jobContext)
                 new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 try {
                     val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
                     statusUtil.setFilename(pipeline)
                     statusUtil.error("end", e.getMessage)
-                }
-                catch {
+                } catch {
                     case _: Exception => // ignore status write failures
                 }
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -152,12 +155,14 @@ class FileUploadAPIController {
     }
 
     @PostMapping(path = Array("/pipeline/generate"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def generateAiPipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                          @RequestPart("file") multipartFile: MultipartFile,
-                          @RequestParam(required = false) pipeline: String,
-                          @RequestParam(required = false) delimiter: String,
-                          @RequestParam(required = false) header: Boolean,
-                          @RequestParam(required = false, defaultValue = "false") allStrings: String): ResponseEntity[String] = {
+    def generateAiPipeline(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestPart("file") multipartFile: MultipartFile,
+        @RequestParam(required = false) pipeline: String,
+        @RequestParam(required = false) delimiter: String,
+        @RequestParam(required = false) header: Boolean,
+        @RequestParam(required = false, defaultValue = "false") allStrings: String
+    ): ResponseEntity[String] = {
         try {
             val filename = multipartFile.getOriginalFilename
             val pipelineName = {
@@ -166,7 +171,7 @@ class FileUploadAPIController {
                 else {
                     val name = filename.lastIndexOf('.') match {
                         case -1 => filename
-                        case i  => filename.substring(0, i)
+                        case i => filename.substring(0, i)
                     }
                     name.toLowerCase.replaceAll("[^a-z0-9_]", "_")
                 }
@@ -191,8 +196,7 @@ class FileUploadAPIController {
                 }
             }
             new ResponseEntity[String](json, HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -200,11 +204,13 @@ class FileUploadAPIController {
     }
 
     @PostMapping(path = Array("/pipeline/profile"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def profilePipeline(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestPart("file") multipartFile: MultipartFile,
-                       @RequestParam(required = false, defaultValue = ",") delimiter: String,
-                       @RequestParam(required = false, defaultValue = "true") header: Boolean,
-                       @RequestParam(required = false, defaultValue = "200") sampleSize: Int): ResponseEntity[String] = {
+    def profilePipeline(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestPart("file") multipartFile: MultipartFile,
+        @RequestParam(required = false, defaultValue = ",") delimiter: String,
+        @RequestParam(required = false, defaultValue = "true") header: Boolean,
+        @RequestParam(required = false, defaultValue = "200") sampleSize: Int
+    ): ResponseEntity[String] = {
         try {
             val filename = multipartFile.getOriginalFilename
             logger.info("API endpoint POST /pipeline/profile called, filename: " + filename)
@@ -216,8 +222,7 @@ class FileUploadAPIController {
             val fileContent = new String(multipartFile.getBytes, "UTF-8")
             val json = AIProfileUtil.profile(fileContent, filename, delimiter, header, sampleSize)
             new ResponseEntity[String](json, HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))

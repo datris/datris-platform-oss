@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.bson.Document
@@ -22,11 +22,13 @@ object MongoDBQueryUtil {
     // Operators that allow arbitrary JavaScript execution
     private val BLOCKED_OPERATORS = Set("$where", "$function", "$accumulator")
 
-    def query(collection: String,
-              filter: java.util.Map[String, Any] = new java.util.HashMap[String, Any](),
-              projection: java.util.Map[String, Any] = null,
-              limit: Int = DEFAULT_LIMIT,
-              database: String = null): java.util.List[String] = {
+    def query(
+        collection: String,
+        filter: java.util.Map[String, Any] = new java.util.HashMap[String, Any](),
+        projection: java.util.Map[String, Any] = null,
+        limit: Int = DEFAULT_LIMIT,
+        database: String = null
+    ): java.util.List[String] = {
 
         if (collection == null || collection.trim.isEmpty)
             throw new DatrisException("MongoDB collection name cannot be empty")
@@ -57,7 +59,7 @@ object MongoDBQueryUtil {
             val coll = db.getCollection(collection)
 
             val filterDoc = if (filter != null && !filter.isEmpty) Document.parse(new com.google.gson.Gson().toJson(filter))
-                else new Document()
+            else new Document()
 
             var cursor = coll.find(filterDoc)
 

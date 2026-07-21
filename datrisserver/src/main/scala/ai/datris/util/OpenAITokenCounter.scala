@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.knuddels.jtokkit.Encodings
 import com.knuddels.jtokkit.api.{Encoding, EncodingType, IntArrayList}
@@ -52,9 +52,9 @@ object OpenAITokenCounter {
     def matches(model: String): Boolean = {
         val m = Option(model).getOrElse("").toLowerCase
         m.startsWith("text-embedding-3") ||
-            m.startsWith("text-embedding-ada") ||
-            m.startsWith("gpt-") ||
-            m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4")
+        m.startsWith("text-embedding-ada") ||
+        m.startsWith("gpt-") ||
+        m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4")
     }
 
     def encodingFor(model: String): Encoding = {

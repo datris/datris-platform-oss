@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.DatrisException
 import org.slf4j.{Logger, LoggerFactory}
@@ -17,6 +17,7 @@ import org.slf4j.{Logger, LoggerFactory}
  * (jtokkit, HF) without touching the guard or the embedding path.
  */
 trait TokenCounter {
+
     /** Estimate or exact token count for `text`. Implementations must be O(n) and pure. */
     def count(text: String): Int
 
@@ -48,6 +49,7 @@ trait TokenCounter {
  * chunk that would have fit than to send one that wouldn't.
  */
 final class HeuristicTokenCounter(ratio: Double) extends TokenCounter {
+
     /** Effective chars-per-token; exposed so split-mode can size character-boundary pieces. */
     val charsPerToken: Double = if (ratio <= 0.0) 2.0 else ratio
     override def count(text: String): Int =
@@ -57,6 +59,7 @@ final class HeuristicTokenCounter(ratio: Double) extends TokenCounter {
 }
 
 object TokenCounterRegistry {
+
     /**
      * Pick a counter for `model`. Dispatch order:
      *   1. Explicit `tokenizerHint` ("openai" | "heuristic") wins if set.
@@ -70,12 +73,12 @@ object TokenCounterRegistry {
      */
     def forModel(model: String, tokenizerHint: Option[String], ratio: Double): TokenCounter = {
         tokenizerHint.map(_.toLowerCase) match {
-            case Some("openai")    => new OpenAITokenCounter(model)
+            case Some("openai") => new OpenAITokenCounter(model)
             case Some("heuristic") => new HeuristicTokenCounter(ratio)
-            case Some(other)       =>
+            case Some(other) =>
                 throw new DatrisException("Unknown tokenizer hint: '" + other + "'. Valid: openai, heuristic")
             case None if OpenAITokenCounter.matches(model) => new OpenAITokenCounter(model)
-            case None              => new HeuristicTokenCounter(ratio)
+            case None => new HeuristicTokenCounter(ratio)
         }
     }
 }
@@ -95,12 +98,12 @@ object TokenGuard {
         case object Split extends Mode
 
         def parse(s: String): Mode = Option(s).map(_.trim.toLowerCase).getOrElse("") match {
-            case "" | "split"   => Split
-            case "truncate"     => Truncate
-            case "fail"         => Fail
-            case other          => throw new DatrisException(
-                "Unknown TokenGuard oversize mode: '" + other + "'. Valid: truncate, fail, split"
-            )
+            case "" | "split" => Split
+            case "truncate" => Truncate
+            case "fail" => Fail
+            case other => throw new DatrisException(
+                    "Unknown TokenGuard oversize mode: '" + other + "'. Valid: truncate, fail, split"
+                )
         }
     }
 
@@ -255,7 +258,7 @@ object TokenGuard {
     private def splitHeuristic(text: String, counter: TokenCounter, capTokens: Int, outerCeilingChars: Long): List[String] = {
         val ratio = counter match {
             case h: HeuristicTokenCounter => h.charsPerToken
-            case _                        => 2.0
+            case _ => 2.0
         }
         // 90% safety so we don't ride the boundary; the back-off loop below catches misses.
         val targetChars = Math.max(1, (capTokens * ratio * 0.90).toInt)

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import io.qdrant.client.QdrantClient
 import io.qdrant.client.QdrantGrpcClient
@@ -16,8 +16,13 @@ import scala.collection.JavaConverters._
 object QdrantSearchUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
-    def search(query: String, collection: String, embeddingSecretName: String,
-               qdrantSecretName: String, topK: Int = 5): java.util.List[java.util.Map[String, Any]] = {
+    def search(
+        query: String,
+        collection: String,
+        embeddingSecretName: String,
+        qdrantSecretName: String,
+        topK: Int = 5
+    ): java.util.List[java.util.Map[String, Any]] = {
 
         if (query == null || query.trim.isEmpty)
             throw new DatrisException("Search query cannot be empty")

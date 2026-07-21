@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import java.sql.{ResultSet, Types}
 import scala.collection.mutable.ListBuffer
@@ -27,10 +27,10 @@ object SQLUtil {
                         convertIfNull(resultSet.getLong(index))
                     case Types.NUMERIC | Types.DECIMAL =>
                         val value = convertIfNull(resultSet.getBigDecimal(index))
-                        if(value.isBlank)
+                        if (value.isBlank)
                             value
                         else
-                            BigDecimal(value).toInt.toString    // Remove scientific notation
+                            BigDecimal(value).toInt.toString // Remove scientific notation
                     case Types.REAL =>
                         convertIfNull(resultSet.getFloat(index))
                     case Types.FLOAT | Types.DOUBLE =>
@@ -54,7 +54,7 @@ object SQLUtil {
     }
 
     private def convertIfNull(value: Any): String = {
-        if(value == null)
+        if (value == null)
             ""
         else
             value.toString

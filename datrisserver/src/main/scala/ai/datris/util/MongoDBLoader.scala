@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{Gson, JsonParser}
 import ai.datris.model.{Notification, DatrisEnvironment, DatrisException}
@@ -21,8 +21,11 @@ class MongoDBLoader(jobContext: JobContext) {
     def process(): Unit = {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
 
-        statusUtil.info("begin", "Loading data into MongoDB database: " +
-            config.destination.database.dbName + ", collection: " + config.destination.database.table)
+        statusUtil.info(
+            "begin",
+            "Loading data into MongoDB database: " +
+                config.destination.database.dbName + ", collection: " + config.destination.database.table
+        )
 
         val secrets = SecretsRetrieverUtil.mongoDbSecrets()
         val collectionName = config.destination.database.table
@@ -75,24 +78,33 @@ class MongoDBLoader(jobContext: JobContext) {
 
     private def validateJsonSchema(): Unit = {
         // Follow the Pipeline pattern: check schemaProperties for _json field
-        if (config.destination.schemaProperties == null
+        if (
+            config.destination.schemaProperties == null
             || config.destination.schemaProperties.fields == null
             || !config.destination.schemaProperties.fields.asScala
-            .exists(field => field.name.compareToIgnoreCase("_json") == 0)) {
+                .exists(field => field.name.compareToIgnoreCase("_json") == 0)
+        ) {
             throw new DatrisException("Schema must contain a '_json' field for semi-structured data ingestion into MongoDB")
         }
     }
 
     private def getEveryRowContainsObject: Boolean = {
-        if (config.source != null
+        if (
+            config.source != null
             && config.source.fileAttributes != null
-            && config.source.fileAttributes.jsonAttributes != null)
+            && config.source.fileAttributes.jsonAttributes != null
+        )
             config.source.fileAttributes.jsonAttributes.everyRowContainsObject
         else
             true // Default to true
     }
 
-    private def loadJsonDocuments(dbUtil: MongoDBUtil, collectionName: String, everyRowContainsObject: Boolean, session: com.mongodb.client.ClientSession): Long = {
+    private def loadJsonDocuments(
+        dbUtil: MongoDBUtil,
+        collectionName: String,
+        everyRowContainsObject: Boolean,
+        session: com.mongodb.client.ClientSession
+    ): Long = {
         val rawData = jobContext.data.rawData
         if (rawData == null || rawData.trim.isEmpty)
             throw new DatrisException("No raw JSON data found in the dataset")
@@ -118,8 +130,11 @@ class MongoDBLoader(jobContext: JobContext) {
         val hasConfiguredKeys = config.destination.database.keyFields != null && !config.destination.database.keyFields.isEmpty
         var count: Long = 0
         if (hasConfiguredKeys) {
-            statusUtil.info("processing", "Using key fields for upsert: " +
-                config.destination.database.keyFields.asScala.mkString(", "))
+            statusUtil.info(
+                "processing",
+                "Using key fields for upsert: " +
+                    config.destination.database.keyFields.asScala.mkString(", ")
+            )
             jsonBlobs.foreach(json => {
                 dbUtil.upsertJSON(collectionName, config.destination.database.keyFields, json, session)
                 count += 1
@@ -166,8 +181,11 @@ class MongoDBLoader(jobContext: JobContext) {
         var count: Long = 0
         if (hasConfiguredKeys) {
             // Upsert using the configured key fields - supports compound keys
-            statusUtil.info("processing", "Using key fields for upsert: " +
-                config.destination.database.keyFields.asScala.mkString(", "))
+            statusUtil.info(
+                "processing",
+                "Using key fields for upsert: " +
+                    config.destination.database.keyFields.asScala.mkString(", ")
+            )
 
             jsonBlobs.foreach(json => {
                 dbUtil.upsertJSON(collectionName, config.destination.database.keyFields, json)

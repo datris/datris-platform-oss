@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder
 
@@ -16,6 +16,8 @@ object PasswordHasher {
 
     def verify(plain: String, hash: String): Boolean = {
         if (plain == null || hash == null || hash.isEmpty) false
-        else try encoder.matches(plain, hash) catch { case _: Exception => false }
+        else
+            try encoder.matches(plain, hash)
+            catch { case _: Exception => false }
     }
 }

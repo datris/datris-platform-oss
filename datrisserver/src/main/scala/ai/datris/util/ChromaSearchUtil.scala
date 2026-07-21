@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.DatrisException
@@ -18,8 +18,13 @@ import scala.collection.JavaConverters._
 object ChromaSearchUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
-    def search(query: String, collection: String, embeddingSecretName: String,
-               chromaSecretName: String, topK: Int = 5): java.util.List[java.util.Map[String, Any]] = {
+    def search(
+        query: String,
+        collection: String,
+        embeddingSecretName: String,
+        chromaSecretName: String,
+        topK: Int = 5
+    ): java.util.List[java.util.Map[String, Any]] = {
 
         if (query == null || query.trim.isEmpty)
             throw new DatrisException("Search query cannot be empty")
@@ -43,15 +48,16 @@ object ChromaSearchUtil {
             // Get collection ID
             val get = new HttpGet(collectionsPath + "/" + collection)
             val getResponse = httpClient.execute(get)
-            val collectionId = try {
-                val statusCode = getResponse.getStatusLine.getStatusCode
-                if (statusCode != 200)
-                    throw new DatrisException("Chroma collection not found: " + collection)
-                val body = EntityUtils.toString(getResponse.getEntity)
-                JsonParser.parseString(body).getAsJsonObject.get("id").getAsString
-            } finally {
-                getResponse.close()
-            }
+            val collectionId =
+                try {
+                    val statusCode = getResponse.getStatusLine.getStatusCode
+                    if (statusCode != 200)
+                        throw new DatrisException("Chroma collection not found: " + collection)
+                    val body = EntityUtils.toString(getResponse.getEntity)
+                    JsonParser.parseString(body).getAsJsonObject.get("id").getAsString
+                } finally {
+                    getResponse.close()
+                }
 
             // Build query request
             val embeddingsArray = new JsonArray()

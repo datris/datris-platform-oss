@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
@@ -31,37 +31,42 @@ class EntityVersionAPIController {
     // ---- taps -------------------------------------------------------------
 
     @GetMapping(path = Array("/tap/versions"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def listTapVersions(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                        @RequestParam name: String): ResponseEntity[String] = handle {
+    def listTapVersions(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         listResponse(DatrisEnvironment.current.tapVersionTableName, name)
     }
 
     @GetMapping(path = Array("/tap/version"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTapVersion(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                      @RequestParam name: String,
-                      @RequestParam version: Int): ResponseEntity[String] = handle {
+    def getTapVersion(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        @RequestParam version: Int
+    ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         EntityVersionIO.get(DatrisEnvironment.current.tapVersionTableName, name, version) match {
             case Some(v) => ok(snapshotJson(v, withScript = true))
-            case None    => notFound("tap", name, version)
+            case None => notFound("tap", name, version)
         }
     }
 
     @GetMapping(path = Array("/tap/version/diff"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def diffTapVersion(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestParam name: String,
-                       @RequestParam version: Int,
-                       @RequestParam against: Int): ResponseEntity[String] = handle {
+    def diffTapVersion(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        @RequestParam version: Int,
+        @RequestParam against: Int
+    ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         diffResponse(DatrisEnvironment.current.tapVersionTableName, name, against, version, withScript = true)
     }
 
     @PostMapping(path = Array("/tap/version/restore"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def restoreTapVersion(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                          @RequestParam name: String,
-                          @RequestParam version: Int,
-                          request: HttpServletRequest): ResponseEntity[String] = handle {
+    def restoreTapVersion(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        @RequestParam version: Int,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         val env = DatrisEnvironment.current
         EntityVersionIO.get(env.tapVersionTableName, name, version) match {
@@ -75,16 +80,25 @@ class EntityVersionAPIController {
                         snap.copy(
                             createdAt = live.createdAt,
                             createdByKeyLabel = live.createdByKeyLabel,
-                            lastRunStatus = live.lastRunStatus, lastRunTime = live.lastRunTime,
-                            lastRunRecordCount = live.lastRunRecordCount, lastRunError = live.lastRunError,
-                            lastRunDataType = live.lastRunDataType, lastRunColumns = live.lastRunColumns,
-                            lastTestRunStatus = live.lastTestRunStatus, lastTestRunTime = live.lastTestRunTime,
-                            lastTestRunRecordCount = live.lastTestRunRecordCount, lastTestRunError = live.lastTestRunError,
-                            lastTestRunDataType = live.lastTestRunDataType, lastTestRunColumns = live.lastTestRunColumns
+                            lastRunStatus = live.lastRunStatus,
+                            lastRunTime = live.lastRunTime,
+                            lastRunRecordCount = live.lastRunRecordCount,
+                            lastRunError = live.lastRunError,
+                            lastRunDataType = live.lastRunDataType,
+                            lastRunColumns = live.lastRunColumns,
+                            lastTestRunStatus = live.lastTestRunStatus,
+                            lastTestRunTime = live.lastTestRunTime,
+                            lastTestRunRecordCount = live.lastTestRunRecordCount,
+                            lastTestRunError = live.lastTestRunError,
+                            lastTestRunDataType = live.lastTestRunDataType,
+                            lastTestRunColumns = live.lastTestRunColumns
                         )
                     else snap
                 val saved = TapConfigIO.writeVersioned(
-                    restored, "restored from version " + version, VersionActor.resolve(request))
+                    restored,
+                    "restored from version " + version,
+                    VersionActor.resolve(request)
+                )
                 ok(gson.toJson(saved))
         }
     }
@@ -92,37 +106,42 @@ class EntityVersionAPIController {
     // ---- pipelines --------------------------------------------------------
 
     @GetMapping(path = Array("/pipeline/versions"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def listPipelineVersions(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                             @RequestParam name: String): ResponseEntity[String] = handle {
+    def listPipelineVersions(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         listResponse(DatrisEnvironment.current.pipelineVersionTableName, name)
     }
 
     @GetMapping(path = Array("/pipeline/version"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getPipelineVersion(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                           @RequestParam name: String,
-                           @RequestParam version: Int): ResponseEntity[String] = handle {
+    def getPipelineVersion(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        @RequestParam version: Int
+    ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         EntityVersionIO.get(DatrisEnvironment.current.pipelineVersionTableName, name, version) match {
             case Some(v) => ok(snapshotJson(v, withScript = false))
-            case None    => notFound("pipeline", name, version)
+            case None => notFound("pipeline", name, version)
         }
     }
 
     @GetMapping(path = Array("/pipeline/version/diff"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def diffPipelineVersion(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                            @RequestParam name: String,
-                            @RequestParam version: Int,
-                            @RequestParam against: Int): ResponseEntity[String] = handle {
+    def diffPipelineVersion(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        @RequestParam version: Int,
+        @RequestParam against: Int
+    ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         diffResponse(DatrisEnvironment.current.pipelineVersionTableName, name, against, version, withScript = false)
     }
 
     @PostMapping(path = Array("/pipeline/version/restore"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def restorePipelineVersion(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                               @RequestParam name: String,
-                               @RequestParam version: Int,
-                               request: HttpServletRequest): ResponseEntity[String] = handle {
+    def restorePipelineVersion(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        @RequestParam version: Int,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = handle {
         APIKeyValidator.validate(apiKey)
         val env = DatrisEnvironment.current
         EntityVersionIO.get(env.pipelineVersionTableName, name, version) match {
@@ -133,7 +152,10 @@ class EntityVersionAPIController {
                 val restored =
                     if (live != null) snap.copy(createdByKeyLabel = live.createdByKeyLabel) else snap
                 val saved = PipelineConfigIO.writeVersioned(
-                    restored, "restored from version " + version, VersionActor.resolve(request))
+                    restored,
+                    "restored from version " + version,
+                    VersionActor.resolve(request)
+                )
                 ok(gson.toJson(saved))
         }
     }
@@ -168,8 +190,7 @@ class EntityVersionAPIController {
         o.toString
     }
 
-    private def diffResponse(table: String, name: String, against: Int, version: Int,
-                             withScript: Boolean): ResponseEntity[String] = {
+    private def diffResponse(table: String, name: String, against: Int, version: Int, withScript: Boolean): ResponseEntity[String] = {
         val kind = if (withScript) "tap" else "pipeline"
         val from = EntityVersionIO.get(table, name, against)
         val to = EntityVersionIO.get(table, name, version)
@@ -224,7 +245,8 @@ class EntityVersionAPIController {
 
     private def notFound(kind: String, name: String, version: Int): ResponseEntity[String] =
         ResponseEntity.status(HttpStatus.NOT_FOUND).body[String](
-            "{\"error\": \"No version " + version + " for " + kind + " '" + name + "'\"}")
+            "{\"error\": \"No version " + version + " for " + kind + " '" + name + "'\"}"
+        )
 
     private def handle(body: => ResponseEntity[String]): ResponseEntity[String] = {
         try body

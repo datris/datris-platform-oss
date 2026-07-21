@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException, TapConfig}
 import org.slf4j.{Logger, LoggerFactory}
@@ -21,7 +21,17 @@ import scala.concurrent.{Await, Future}
 import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
 
-case class TapScriptResult(records: String, recordCount: Int, error: String, logs: String = null, dataType: String = "json", columns: java.util.List[String] = null, publisherToken: String = null, pipelineTokens: java.util.List[String] = null, missingSecretFields: Seq[String] = Nil)
+case class TapScriptResult(
+    records: String,
+    recordCount: Int,
+    error: String,
+    logs: String = null,
+    dataType: String = "json",
+    columns: java.util.List[String] = null,
+    publisherToken: String = null,
+    pipelineTokens: java.util.List[String] = null,
+    missingSecretFields: Seq[String] = Nil
+)
 
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -94,7 +104,9 @@ object TapScriptRunner {
         val env = DatrisEnvironment.current.environment
         val bucketName = env + "-config"
         val scriptContent = ObjectStoreUtil.readBucketObject(bucketName, tapConfig.scriptPath).getOrElse(
-            throw new DatrisException("Tap script is missing from object storage (path: " + tapConfig.scriptPath + "). Open Edit Tap and regenerate the script, or paste a new one.")
+            throw new DatrisException(
+                "Tap script is missing from object storage (path: " + tapConfig.scriptPath + "). Open Edit Tap and regenerate the script, or paste a new one."
+            )
         )
 
         // Step 2: Write script and wrapper to temp files
@@ -136,9 +148,10 @@ object TapScriptRunner {
                 if (fields.isEmpty)
                     throw new DatrisException(
                         "Tap references secret '" + tapConfig.secretName + "' but no credentials were injected — " +
-                        "the secret is missing or empty in the vault. The script would run unauthenticated and silently " +
-                        "return no data. Recreate the secret under Configuration → Secrets with the field(s) the tap " +
-                        "expects, or update the tap to reference an existing secret.")
+                            "the secret is missing or empty in the vault. The script would run unauthenticated and silently " +
+                            "return no data. Recreate the secret under Configuration → Secrets with the field(s) the tap " +
+                            "expects, or update the tap to reference an existing secret."
+                    )
                 // The secret exists but may be missing a SPECIFIC field the script reads
                 // (e.g. it has FOO but the script needs POLYGON_API_KEY). We can't know
                 // per-tap required fields from a schema, so we infer them from the script's
@@ -188,7 +201,8 @@ object TapScriptRunner {
                 else if (ParamKeyPattern.findFirstIn(key).isEmpty)
                     throw new DatrisException(
                         "Invalid tap param key '" + key + "'. Keys must match [A-Za-z_][A-Za-z0-9_]* " +
-                        "so they map cleanly onto env var names. Got: " + key)
+                            "so they map cleanly onto env var names. Got: " + key
+                    )
                 else Some("DATRIS_TAP_PARAM_" + key -> (if (v == null) "" else v))
             }
             val allEnvVars = platformEnvVars ++ testLimitEnvVars ++ paramEnvVars ++ secretEnvVars
@@ -229,11 +243,11 @@ object TapScriptRunner {
                 val actualMB = rawOutput.length / (1024 * 1024)
                 throw new DatrisException(
                     "Tap script output exceeded the " + DatrisEnvironment.current.tapMaxOutputMB +
-                    " MB limit (got ~" + actualMB + " MB). The whole batch is buffered in memory before " +
-                    "loading to the pipeline, so very large fetches risk OOM-ing the server. " +
-                    "Reduce the source range — e.g., a shorter date window, smaller page size, " +
-                    "or per-record/per-day chunks — and call run_tap again. " +
-                    "Multiple smaller runs all land in the same destination pipeline."
+                        " MB limit (got ~" + actualMB + " MB). The whole batch is buffered in memory before " +
+                        "loading to the pipeline, so very large fetches risk OOM-ing the server. " +
+                        "Reduce the source range — e.g., a shorter date window, smaller page size, " +
+                        "or per-record/per-day chunks — and call run_tap again. " +
+                        "Multiple smaller runs all land in the same destination pipeline."
                 )
             }
 
@@ -282,7 +296,15 @@ object TapScriptRunner {
             logger.info("TapScriptRunner: dataType=" + dataType + ", fetched " + recordCount + " records" +
                 (if (columns != null) ", columns=" + columns else ""))
 
-            TapScriptResult(normalizedDataJson, recordCount, null, if (logs.nonEmpty) logs else null, dataType, columns, missingSecretFields = detectedMissingSecretFields)
+            TapScriptResult(
+                normalizedDataJson,
+                recordCount,
+                null,
+                if (logs.nonEmpty) logs else null,
+                dataType,
+                columns,
+                missingSecretFields = detectedMissingSecretFields
+            )
         } catch {
             case e: DatrisException =>
                 // DatrisException messages constructed inside this method are already
@@ -307,10 +329,29 @@ object TapScriptRunner {
       * are NOT meant to come from its secret — never flagged as missing secret
       * fields. Datris-injected vars (DATRIS_* prefix) are excluded separately. */
     private val NonSecretEnvVars: Set[String] = Set(
-        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD", "LANG", "TERM",
-        "TZ", "TMPDIR", "TMP", "TEMP", "HOSTNAME", "PYTHONPATH", "PYTHONHOME",
-        "PYTHONUNBUFFERED", "VIRTUAL_ENV", "LD_LIBRARY_PATH", "SSL_CERT_FILE",
-        "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "PWD",
+        "OLDPWD",
+        "LANG",
+        "TERM",
+        "TZ",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "HOSTNAME",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUNBUFFERED",
+        "VIRTUAL_ENV",
+        "LD_LIBRARY_PATH",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE"
     )
 
     // A read is "required" only when the script provides no fallback: a subscript
@@ -332,7 +373,7 @@ object TapScriptRunner {
         if (scriptContent == null) return Set.empty
         val names =
             EnvSubscriptPattern.findAllMatchIn(scriptContent).map(_.group(1)).toSet ++
-            EnvGetPattern.findAllMatchIn(scriptContent).map(_.group(1)).toSet
+                EnvGetPattern.findAllMatchIn(scriptContent).map(_.group(1)).toSet
         names.filterNot(n => n.startsWith("DATRIS_") || NonSecretEnvVars.contains(n))
     }
 
@@ -418,9 +459,13 @@ object TapScriptRunner {
       * wrapper, per-run env (allEnvVars: platform DATRIS_*, params, the tap's own secret) and any
       * declared packages; returns (stdout, stderr) with the same contract as executeWithTimeout.
       * The runner installs packages and runs the wrapper itself, so no local venv/temp files. */
-    private def executeViaRunner(script: String, envVars: Seq[(String, String)],
-                                 packages: java.util.List[String], timeoutSec: Int,
-                                 secretValues: Seq[String]): (String, String) = {
+    private def executeViaRunner(
+        script: String,
+        envVars: Seq[(String, String)],
+        packages: java.util.List[String],
+        timeoutSec: Int,
+        secretValues: Seq[String]
+    ): (String, String) = {
         val payload = new JsonObject()
         payload.addProperty("script", script)
         payload.addProperty("wrapper", WRAPPER_TEMPLATE)
@@ -475,7 +520,14 @@ object TapScriptRunner {
         }
     }
 
-    private def executeWithTimeout(python: String, wrapperPath: String, scriptPath: String, timeoutSec: Int, envVars: Seq[(String, String)] = Seq.empty, secretValues: Seq[String] = Seq.empty): (String, String) = {
+    private def executeWithTimeout(
+        python: String,
+        wrapperPath: String,
+        scriptPath: String,
+        timeoutSec: Int,
+        envVars: Seq[(String, String)] = Seq.empty,
+        secretValues: Seq[String] = Seq.empty
+    ): (String, String) = {
         val stdout = new StringBuilder
         val stderr = new StringBuilder
 
@@ -508,7 +560,8 @@ object TapScriptRunner {
             val t = new Thread(new Runnable {
                 override def run(): Unit = {
                     val reader = new java.io.BufferedReader(
-                        new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8))
+                        new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8)
+                    )
                     try {
                         var line = reader.readLine()
                         while (line != null) { sb.append(line).append("\n"); line = reader.readLine() }

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException, ObjectStore}
 
@@ -57,9 +57,9 @@ object CredentialResolver {
      *  for one that would satisfy resolveSnowflake. */
     def hasSnowflakeCredentials(secret: java.util.Map[String, String]): Boolean = {
         secretField(secret, "account", "SNOWFLAKE_ACCOUNT").isDefined &&
-            secretField(secret, "user", "username", "SNOWFLAKE_USER").isDefined &&
-            (secretField(secret, "privateKey", "private_key", "private-key", "SNOWFLAKE_PRIVATE_KEY").isDefined ||
-                secretField(secret, "password", "SNOWFLAKE_PASSWORD").isDefined)
+        secretField(secret, "user", "username", "SNOWFLAKE_USER").isDefined &&
+        (secretField(secret, "privateKey", "private_key", "private-key", "SNOWFLAKE_PRIVATE_KEY").isDefined ||
+            secretField(secret, "password", "SNOWFLAKE_PASSWORD").isDefined)
     }
 
     /** True when `secret` holds a complete set of Databricks credentials —
@@ -68,17 +68,17 @@ object CredentialResolver {
      *  Platform-secret scan rationale as hasSnowflakeCredentials. */
     def hasDatabricksCredentials(secret: java.util.Map[String, String]): Boolean = {
         secretField(secret, "host", "server", "hostname", "workspaceUrl", "workspace_url", "DATABRICKS_HOST").isDefined &&
-            ((secretField(secret, "clientId", "client_id", "client-id", "DATABRICKS_CLIENT_ID").isDefined &&
-                secretField(secret, "clientSecret", "client_secret", "client-secret", "DATABRICKS_CLIENT_SECRET").isDefined) ||
-                secretField(secret, "token", "pat", "personalAccessToken", "personal_access_token", "access_token", "DATABRICKS_TOKEN").isDefined)
+        ((secretField(secret, "clientId", "client_id", "client-id", "DATABRICKS_CLIENT_ID").isDefined &&
+            secretField(secret, "clientSecret", "client_secret", "client-secret", "DATABRICKS_CLIENT_SECRET").isDefined) ||
+            secretField(secret, "token", "pat", "personalAccessToken", "personal_access_token", "access_token", "DATABRICKS_TOKEN").isDefined)
     }
 
     def resolve(objectStore: ObjectStore): ResolvedObjectStoreCredentials = {
         val provider = Option(objectStore.provider).getOrElse("minio").toLowerCase
         provider match {
             case "minio" => resolveMinIO()
-            case "s3"    => resolveS3(objectStore.credentialsSecret)
-            case other   => throw new DatrisException("Unknown objectStore.provider: '" + other + "'. Expected 'minio' or 's3'.")
+            case "s3" => resolveS3(objectStore.credentialsSecret)
+            case other => throw new DatrisException("Unknown objectStore.provider: '" + other + "'. Expected 'minio' or 's3'.")
         }
     }
 
@@ -107,14 +107,22 @@ object CredentialResolver {
         // the environment prefix here.
         val secretPath = DatrisEnvironment.current.environment + "/" + secretName
         val secret = SecretsUtil.getSecretMap(secretPath)
-            .getOrElse(throw new DatrisException("S3 credentialsSecret not found in Secrets Manager at path '" + secretPath + "' (looked up by name '" + secretName + "'). Create it on Configuration → Secrets → Platform."))
+            .getOrElse(throw new DatrisException(
+                "S3 credentialsSecret not found in Secrets Manager at path '" + secretPath + "' (looked up by name '" + secretName + "'). Create it on Configuration → Secrets → Platform."
+            ))
         def field(canonical: String, aliases: String*): Option[String] = secretField(secret, canonical, aliases: _*)
         val accessKey = field("accessKey", "access_key", "access-key", "AWS_ACCESS_KEY", "AWS_ACCESS_KEY_ID")
-            .getOrElse(throw new DatrisException("S3 credentialsSecret '" + secretName + "' is missing required field 'accessKey' (also accepted: AWS_ACCESS_KEY, AWS_ACCESS_KEY_ID, access_key)"))
+            .getOrElse(throw new DatrisException(
+                "S3 credentialsSecret '" + secretName + "' is missing required field 'accessKey' (also accepted: AWS_ACCESS_KEY, AWS_ACCESS_KEY_ID, access_key)"
+            ))
         val secretKey = field("secretKey", "secret_key", "secret-key", "AWS_SECRET_KEY", "AWS_SECRET_ACCESS_KEY")
-            .getOrElse(throw new DatrisException("S3 credentialsSecret '" + secretName + "' is missing required field 'secretKey' (also accepted: AWS_SECRET_KEY, AWS_SECRET_ACCESS_KEY, secret_key)"))
+            .getOrElse(throw new DatrisException(
+                "S3 credentialsSecret '" + secretName + "' is missing required field 'secretKey' (also accepted: AWS_SECRET_KEY, AWS_SECRET_ACCESS_KEY, secret_key)"
+            ))
         val region = field("region", "AWS_REGION", "aws_region")
-            .getOrElse(throw new DatrisException("S3 credentialsSecret '" + secretName + "' is missing required field 'region' (also accepted: AWS_REGION). Region lives in the credentials secret alongside accessKey/secretKey so it stays bound to the credential that authorizes it."))
+            .getOrElse(throw new DatrisException(
+                "S3 credentialsSecret '" + secretName + "' is missing required field 'region' (also accepted: AWS_REGION). Region lives in the credentials secret alongside accessKey/secretKey so it stays bound to the credential that authorizes it."
+            ))
         val sessionToken = field("sessionToken", "session_token", "AWS_SESSION_TOKEN")
         ResolvedObjectStoreCredentials(
             accessKey = Some(accessKey),
@@ -130,16 +138,22 @@ object CredentialResolver {
      *  pointing the user at Configuration → Secrets → Platform. */
     def resolveSnowflake(secretName: String): ResolvedSnowflakeCredentials = {
         if (secretName == null || secretName.trim.isEmpty)
-            throw new DatrisException("Snowflake destination requires a credentialsSecret naming a Platform-tab secret (with fields account, user, and privateKey or password). Create it on Configuration → Secrets → Platform, then set it on the destination.")
+            throw new DatrisException(
+                "Snowflake destination requires a credentialsSecret naming a Platform-tab secret (with fields account, user, and privateKey or password). Create it on Configuration → Secrets → Platform, then set it on the destination."
+            )
 
         val secretPath = DatrisEnvironment.current.environment + "/" + secretName
         val secret = SecretsUtil.getSecretMap(secretPath)
-            .getOrElse(throw new DatrisException("Snowflake credentialsSecret not found in Secrets Manager at path '" + secretPath + "' (looked up by name '" + secretName + "'). Create it on Configuration → Secrets → Platform."))
+            .getOrElse(throw new DatrisException(
+                "Snowflake credentialsSecret not found in Secrets Manager at path '" + secretPath + "' (looked up by name '" + secretName + "'). Create it on Configuration → Secrets → Platform."
+            ))
 
         def field(canonical: String, aliases: String*): Option[String] = secretField(secret, canonical, aliases: _*)
 
         val account = field("account", "SNOWFLAKE_ACCOUNT")
-            .getOrElse(throw new DatrisException("Snowflake credentialsSecret '" + secretName + "' is missing required field 'account' (e.g. xy12345.us-east-1). Account lives in the credentials secret so it stays bound to the credential that authorizes it."))
+            .getOrElse(throw new DatrisException(
+                "Snowflake credentialsSecret '" + secretName + "' is missing required field 'account' (e.g. xy12345.us-east-1). Account lives in the credentials secret so it stays bound to the credential that authorizes it."
+            ))
         val user = field("user", "username", "SNOWFLAKE_USER")
             .getOrElse(throw new DatrisException("Snowflake credentialsSecret '" + secretName + "' is missing required field 'user'."))
         val privateKey = field("privateKey", "private_key", "private-key", "SNOWFLAKE_PRIVATE_KEY")
@@ -147,7 +161,9 @@ object CredentialResolver {
         val password = field("password", "SNOWFLAKE_PASSWORD")
 
         if (privateKey.isEmpty && password.isEmpty)
-            throw new DatrisException("Snowflake credentialsSecret '" + secretName + "' must contain either 'privateKey' (key-pair auth, recommended) or 'password' (fallback). Neither was found.")
+            throw new DatrisException(
+                "Snowflake credentialsSecret '" + secretName + "' must contain either 'privateKey' (key-pair auth, recommended) or 'password' (fallback). Neither was found."
+            )
 
         ResolvedSnowflakeCredentials(
             account = account,
@@ -164,22 +180,30 @@ object CredentialResolver {
      *  same actionable errors pointing at Configuration → Secrets → Platform. */
     def resolveDatabricks(secretName: String): ResolvedDatabricksCredentials = {
         if (secretName == null || secretName.trim.isEmpty)
-            throw new DatrisException("Databricks destination requires a credentialsSecret naming a Platform-tab secret (with fields host, and clientId/clientSecret or token). Create it on Configuration → Secrets → Platform, then set it on the destination.")
+            throw new DatrisException(
+                "Databricks destination requires a credentialsSecret naming a Platform-tab secret (with fields host, and clientId/clientSecret or token). Create it on Configuration → Secrets → Platform, then set it on the destination."
+            )
 
         val secretPath = DatrisEnvironment.current.environment + "/" + secretName
         val secret = SecretsUtil.getSecretMap(secretPath)
-            .getOrElse(throw new DatrisException("Databricks credentialsSecret not found in Secrets Manager at path '" + secretPath + "' (looked up by name '" + secretName + "'). Create it on Configuration → Secrets → Platform."))
+            .getOrElse(throw new DatrisException(
+                "Databricks credentialsSecret not found in Secrets Manager at path '" + secretPath + "' (looked up by name '" + secretName + "'). Create it on Configuration → Secrets → Platform."
+            ))
 
         def field(canonical: String, aliases: String*): Option[String] = secretField(secret, canonical, aliases: _*)
 
         val host = field("host", "server", "hostname", "workspaceUrl", "workspace_url", "DATABRICKS_HOST")
-            .getOrElse(throw new DatrisException("Databricks credentialsSecret '" + secretName + "' is missing required field 'host' — the workspace hostname (e.g. dbc-a1b2c3d4-e5f6.cloud.databricks.com). Host lives in the credentials secret so it stays bound to the credential that authorizes it."))
+            .getOrElse(throw new DatrisException(
+                "Databricks credentialsSecret '" + secretName + "' is missing required field 'host' — the workspace hostname (e.g. dbc-a1b2c3d4-e5f6.cloud.databricks.com). Host lives in the credentials secret so it stays bound to the credential that authorizes it."
+            ))
         val clientId = field("clientId", "client_id", "client-id", "DATABRICKS_CLIENT_ID")
         val clientSecret = field("clientSecret", "client_secret", "client-secret", "DATABRICKS_CLIENT_SECRET")
         val token = field("token", "pat", "personalAccessToken", "personal_access_token", "access_token", "DATABRICKS_TOKEN")
 
         if ((clientId.isEmpty || clientSecret.isEmpty) && token.isEmpty)
-            throw new DatrisException("Databricks credentialsSecret '" + secretName + "' must contain either 'clientId' and 'clientSecret' (service principal OAuth, recommended) or 'token' (personal access token, fallback). Neither pair was found.")
+            throw new DatrisException(
+                "Databricks credentialsSecret '" + secretName + "' must contain either 'clientId' and 'clientSecret' (service principal OAuth, recommended) or 'token' (personal access token, fallback). Neither pair was found."
+            )
 
         ResolvedDatabricksCredentials(
             host = host,

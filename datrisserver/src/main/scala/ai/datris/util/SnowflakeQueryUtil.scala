@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model._
 import org.slf4j.{Logger, LoggerFactory}
@@ -29,9 +29,23 @@ object SnowflakeQueryUtil {
     // movement and session verbs. USE is blocked so a query can't re-point the
     // session at another database/role than the pipeline's config.
     private val BLOCKED_KEYWORDS = Set(
-        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
-        "TRUNCATE", "GRANT", "REVOKE", "CALL", "EXECUTE", "EXEC",
-        "PUT", "REMOVE", "COPY", "MERGE", "USE"
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "TRUNCATE",
+        "GRANT",
+        "REVOKE",
+        "CALL",
+        "EXECUTE",
+        "EXEC",
+        "PUT",
+        "REMOVE",
+        "COPY",
+        "MERGE",
+        "USE"
     )
 
     case class SnowflakeQueryResult(sql: String, results: java.util.List[java.util.Map[String, Any]])
@@ -61,7 +75,7 @@ object SnowflakeQueryUtil {
             u.startsWith("SELECT") || u.startsWith("WITH")
         }
         val finalSql = if (!isSelect || unlimited) normalized
-            else appendLimitIfNeeded(normalized, effectiveLimit)
+        else appendLimitIfNeeded(normalized, effectiveLimit)
 
         logger.info("Executing read-only Snowflake query for pipeline '" + pipelineName + "': " + finalSql)
 

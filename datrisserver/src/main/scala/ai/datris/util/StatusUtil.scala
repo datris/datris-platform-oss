@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model._
@@ -38,17 +38,17 @@ class StatusUtil {
     }
 
     def setPipelineToken(pipelineToken: String): Unit = {
-        if(pipelineToken != null)
+        if (pipelineToken != null)
             this.pipelineToken = Some(pipelineToken)
     }
 
     def setPublisherToken(publisherToken: String): Unit = {
-        if(publisherToken != null)
+        if (publisherToken != null)
             this.publisherToken = Some(publisherToken)
     }
 
     def setFilename(filename: String): Unit = {
-        if(filename != null)
+        if (filename != null)
             this.filename = Some(filename)
     }
 
@@ -57,12 +57,12 @@ class StatusUtil {
     }
 
     def setRecordCount(recordCount: Int): Unit = {
-        if(recordCount >= 0)
+        if (recordCount >= 0)
             this.recordCount = recordCount
     }
 
     def setDataType(dataType: String): Unit = {
-        if(dataType != null)
+        if (dataType != null)
             this.dataType = Some(dataType)
     }
 
@@ -90,13 +90,8 @@ class StatusUtil {
             case _ => throw new InvalidParameterException("Invalid code.  Code must be one of the following: info, warning, error")
         }
 
-        val status = Status(processName.getOrElse(""),
-            publisherToken.getOrElse(""),
-            pipelineToken.getOrElse(""),
-            filename.getOrElse(""),
-            state,
-            code,
-            description)
+        val status =
+            Status(processName.getOrElse(""), publisherToken.getOrElse(""), pipelineToken.getOrElse(""), filename.getOrElse(""), state, code, description)
 
         writeToNoSQLDb(status)
 
@@ -104,13 +99,13 @@ class StatusUtil {
         val message = pipelineToken.getOrElse("") + ": " + description
         code match {
             case "info" =>
-                if(state.compareTo("processing") == 0)
+                if (state.compareTo("processing") == 0)
                     logger.info(message)
             case "warning" =>
-                if(state.compareTo("processing") == 0)
+                if (state.compareTo("processing") == 0)
                     logger.warn(message)
             case "error" =>
-                if(state.compareTo("processing") == 0)
+                if (state.compareTo("processing") == 0)
                     logger.error(message)
         }
     }
@@ -130,14 +125,14 @@ class StatusUtil {
         // Query for the pipeline token in the pipeline status summary table
         val statusSummaryList = NoSQLDbUtil.queryJSONItemsByKey(tableName + "-summary", "pipeline_token", status.pipelineToken)
 
-        if(statusSummaryList != null && statusSummaryList.nonEmpty) {
+        if (statusSummaryList != null && statusSummaryList.nonEmpty) {
             // If the summary record exists, update it
             val pipelineStatusSummaryTable = gson.fromJson(statusSummaryList.head, classOf[PipelineStatusSummaryTable])
             val pipelineStatusSummary = pipelineStatusSummaryTable.json
 
             val (elapsed, timedout) = ElapsedTimeUtil.getElapsedTime(nowInMillis - pipelineStatusSummary.createdAt)
             val totalTime = {
-                if(timedout)
+                if (timedout)
                     "timed out"
                 else
                     elapsed
@@ -150,8 +145,10 @@ class StatusUtil {
                     false
                 else if (timedout)
                     false
-                else if (status.processName.compareToIgnoreCase("JobRunner") == 0
-                    && status.state.compareToIgnoreCase("end") == 0)
+                else if (
+                    status.processName.compareToIgnoreCase("JobRunner") == 0
+                    && status.state.compareToIgnoreCase("end") == 0
+                )
                     false
                 else
                     true
@@ -188,7 +185,8 @@ class StatusUtil {
                 this.dataType.orElse(Option(pipelineStatusSummary.dataType)).orNull
             )
 
-            NoSQLDbUtil.updateItemJSON(tableName + "-summary",
+            NoSQLDbUtil.updateItemJSON(
+                tableName + "-summary",
                 "pipeline_token",
                 pipelineToken.orNull,
                 "json",
@@ -196,8 +194,7 @@ class StatusUtil {
                 "created_at",
                 pipelineStatusSummaryTable.created_at
             )
-        }
-        else {
+        } else {
             // Summary record does not exist, create it
             val statusSummary = PipelineStatusSummary(
                 nowTimestamp.toString,
@@ -214,8 +211,10 @@ class StatusUtil {
                 this.dataType.orNull
             )
 
-            NoSQLDbUtil.putItemJSON(tableName + "-summary",
-                "pipeline_token", pipelineToken.orNull,
+            NoSQLDbUtil.putItemJSON(
+                tableName + "-summary",
+                "pipeline_token",
+                pipelineToken.orNull,
                 "json",
                 gson.toJson(statusSummary),
                 "created_at",
@@ -250,22 +249,14 @@ class StatusUtil {
             } else null
         }
 
-        NoSQLDbUtil.putItemJSON(tableName,
-            "pipeline_token", pipelineToken.orNull,
-            "json",
-            gson.toJson(pipelineStatus),
-            "created_at",
-            nowInMillis,
-            extra
-        )
+        NoSQLDbUtil.putItemJSON(tableName, "pipeline_token", pipelineToken.orNull, "json", gson.toJson(pipelineStatus), "created_at", nowInMillis, extra)
     }
 
     private def getPipelineName(filename: String, pipelineToken: String): String = {
-        if(filename != null && filename.contains(".pipeline.")) {
+        if (filename != null && filename.contains(".pipeline.")) {
             val tokens = filename.split("\\.")
             tokens(0)
-        }
-        else if(pipelineToken != null) {
+        } else if (pipelineToken != null) {
             // metadata.json file ingestion
             val rawValue = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata").getOrElse(
                 throw new DatrisException("Internal error, pipelineToken: " + pipelineToken + " was not found in the NoSQL table")
@@ -274,8 +265,7 @@ class StatusUtil {
             val gson = new Gson
             val metadata = gson.fromJson(jsonMetadata, classOf[PipelineMetadata])
             metadata.pipeline
-        }
-        else
+        } else
             null
     }
 }
@@ -283,7 +273,7 @@ class StatusUtil {
 object StatusUtil {
     private var _statusUtil: StatusUtil = _
     def init(tableName: String, processName: String): Unit =
-        _statusUtil  = new StatusUtil().init(tableName, processName)
+        _statusUtil = new StatusUtil().init(tableName, processName)
 
     def overrideProcessName(processName: String): Unit =
         _statusUtil.overrideProcessName(processName)
@@ -307,17 +297,17 @@ object StatusUtil {
         _statusUtil.setDataType(dataType)
 
     def info(state: String, description: String): Unit = {
-        if(_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
+        if (_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
         _statusUtil.send(state, "info", description)
     }
 
     def warn(state: String, description: String): Unit = {
-        if(_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
+        if (_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
         _statusUtil.send(state, "warning", description)
     }
 
     def error(state: String, description: String): Unit = {
-        if(_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
+        if (_statusUtil == null) throw new IllegalStateException("StatusUtil.init() must be called before use")
         _statusUtil.send(state, "error", description)
     }
 }

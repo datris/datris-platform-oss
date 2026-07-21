@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, EntityVersion}
@@ -44,16 +44,19 @@ object VersionBackfill {
         TapConfigIO.readAll(env.tapTableName).foreach { tap =>
             if (tap != null && EntityVersionIO.latestVersion(table, tap.name) == 0) {
                 val v = if (tap.version > 0) tap.version else 1
-                EntityVersionIO.append(table, EntityVersion(
-                    key = EntityVersionIO.docKey(tap.name, v),
-                    entityName = tap.name,
-                    version = v,
-                    config = gson.toJson(tap),
-                    scriptPath = tap.scriptPath,
-                    changeNote = "(seeded from pre-versioning state)",
-                    createdAt = if (tap.updatedAt != null) tap.updatedAt else now(env),
-                    createdBy = "system"
-                ))
+                EntityVersionIO.append(
+                    table,
+                    EntityVersion(
+                        key = EntityVersionIO.docKey(tap.name, v),
+                        entityName = tap.name,
+                        version = v,
+                        config = gson.toJson(tap),
+                        scriptPath = tap.scriptPath,
+                        changeNote = "(seeded from pre-versioning state)",
+                        createdAt = if (tap.updatedAt != null) tap.updatedAt else now(env),
+                        createdBy = "system"
+                    )
+                )
                 seeded += 1
             }
         }
@@ -67,16 +70,19 @@ object VersionBackfill {
         PipelineConfigIO.readAll(env.pipelineTableName).foreach { pipeline =>
             if (pipeline != null && EntityVersionIO.latestVersion(table, pipeline.name) == 0) {
                 val v = if (pipeline.version > 0) pipeline.version else 1
-                EntityVersionIO.append(table, EntityVersion(
-                    key = EntityVersionIO.docKey(pipeline.name, v),
-                    entityName = pipeline.name,
-                    version = v,
-                    config = gson.toJson(pipeline),
-                    scriptPath = null,
-                    changeNote = "(seeded from pre-versioning state)",
-                    createdAt = now(env),
-                    createdBy = "system"
-                ))
+                EntityVersionIO.append(
+                    table,
+                    EntityVersion(
+                        key = EntityVersionIO.docKey(pipeline.name, v),
+                        entityName = pipeline.name,
+                        version = v,
+                        config = gson.toJson(pipeline),
+                        scriptPath = null,
+                        changeNote = "(seeded from pre-versioning state)",
+                        createdAt = now(env),
+                        createdBy = "system"
+                    )
+                )
                 seeded += 1
             }
         }

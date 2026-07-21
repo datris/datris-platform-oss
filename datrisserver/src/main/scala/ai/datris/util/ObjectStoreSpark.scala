@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, ObjectStore}
 import org.apache.spark.sql.SparkSession
@@ -36,9 +36,7 @@ object ObjectStoreSpark {
       *  http://minio:9000 (set by SparkSessionManager for the built-in MinIO)
       *  leaks into the S3 path and S3A tries to talk to MinIO with an AWS
       *  bucket name — hangs on connect / SSL until the request times out. */
-    def applyPerBucketConfig(spark: SparkSession,
-                             bucket: String,
-                             objectStore: ObjectStore): Unit = {
+    def applyPerBucketConfig(spark: SparkSession, bucket: String, objectStore: ObjectStore): Unit = {
         val hadoopConf = spark.sparkContext.hadoopConfiguration
         val creds = CredentialResolver.resolve(objectStore)
 
@@ -70,7 +68,9 @@ object ObjectStoreSpark {
                 "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
             hadoopConf.set(s"fs.s3a.bucket.$bucket.aws.credentials.provider", providerClass)
 
-            logger.info(s"S3A per-bucket config for s3a://$bucket/: endpoint=$effectiveEndpoint, region=${creds.region.getOrElse("<unset>")}, provider=$providerClass")
+            logger.info(
+                s"S3A per-bucket config for s3a://$bucket/: endpoint=$effectiveEndpoint, region=${creds.region.getOrElse("<unset>")}, provider=$providerClass"
+            )
         }
     }
 }

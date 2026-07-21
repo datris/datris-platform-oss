@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import io.minio._
 import io.minio.errors.ErrorResponseException
@@ -175,7 +175,7 @@ class MinIOUtility(val client: MinioClient) extends ObjectStoreUtility {
 
 object MinIOUtilBuilder {
     def build(): ObjectStoreUtility = {
-        val endpoint  = DatrisEnvironment.current.minIOConfig.endpoint
+        val endpoint = DatrisEnvironment.current.minIOConfig.endpoint
         val accessKey = DatrisEnvironment.current.minIOConfig.accessKey
         val secretKey = DatrisEnvironment.current.minIOConfig.secretKey
 

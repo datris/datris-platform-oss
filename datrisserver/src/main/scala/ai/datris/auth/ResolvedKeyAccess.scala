@@ -3,7 +3,7 @@ package ai.datris.auth
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.config.TenantInterceptor
 import ai.datris.model.ResolvedKey
@@ -20,7 +20,7 @@ object ResolvedKeyAccess {
         if (request == null) return None
         request.getAttribute(TenantInterceptor.ResolvedKeyAttr) match {
             case rk: ResolvedKey => Some(rk)
-            case _               => None
+            case _ => None
         }
     }
 

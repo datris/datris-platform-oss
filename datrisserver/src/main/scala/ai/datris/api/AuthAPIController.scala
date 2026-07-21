@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.config.{RequiresRole, SessionAuthenticator}
 import ai.datris.model.{DatrisEnvironment, User, UserContext}
@@ -34,10 +34,9 @@ class AuthAPIController {
     def me(): ResponseEntity[String] = {
         UserContext.get() match {
             case Some(u) => ResponseEntity.ok(gson.toJson(toMeResponse(u)))
-            case None    => ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("""{"error":"Not authenticated"}""")
+            case None => ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("""{"error":"Not authenticated"}""")
         }
     }
-
 
     @PostMapping(path = Array("/login"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def login(@RequestBody body: String, response: HttpServletResponse): ResponseEntity[String] = {

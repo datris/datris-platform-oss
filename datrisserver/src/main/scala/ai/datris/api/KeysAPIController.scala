@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
@@ -363,7 +363,7 @@ class KeysAPIController {
         val wellKnownPath: Option[String] = label match {
             case "ui" => Some(DatrisEnvironment.current.environment + "/ui-api-key")
             // Add future well-known labels here: cli, external-mcp, etc.
-            case _    => None
+            case _ => None
         }
         wellKnownPath.foreach { path =>
             val existing = SecretsUtil.getSecretMap(path).map(_.asScala.toMap).getOrElse(Map.empty[String, String])
@@ -433,16 +433,16 @@ object KeysAPIController {
       * `Capability.parse` allows. Resources whose scope list is empty
       * accept no scope qualifiers. */
     private val CapabilitiesCatalog: Seq[(String, Seq[String], Seq[String])] = Seq(
-        ("pipeline",  Seq("read", "create", "update", "delete", "run"),  Seq("catalog", "owner")),
-        ("tap",       Seq("read", "create", "update", "delete", "run"),  Seq("catalog", "owner")),
-        ("secret",    Seq("read", "write"),                              Seq("_type", "owner")),
-        ("document",  Seq("upload"),                                     Seq("collection", "destination_kind")),
-        ("search",    Seq("vector"),                                     Seq("collection")),
-        ("query",     Seq("postgres", "mongodb", "objectstore", "snowflake", "databricks", "natural"), Seq("database")),
-        ("job",       Seq("read", "kill"),                               Seq("owner")),
-        ("metadata",  Seq("read"),                                       Seq.empty),
-        ("config",    Seq("read", "write"),                              Seq.empty),
-        ("mcp",       Seq("tool"),                                       Seq.empty)
+        ("pipeline", Seq("read", "create", "update", "delete", "run"), Seq("catalog", "owner")),
+        ("tap", Seq("read", "create", "update", "delete", "run"), Seq("catalog", "owner")),
+        ("secret", Seq("read", "write"), Seq("_type", "owner")),
+        ("document", Seq("upload"), Seq("collection", "destination_kind")),
+        ("search", Seq("vector"), Seq("collection")),
+        ("query", Seq("postgres", "mongodb", "objectstore", "snowflake", "databricks", "natural"), Seq("database")),
+        ("job", Seq("read", "kill"), Seq("owner")),
+        ("metadata", Seq("read"), Seq.empty),
+        ("config", Seq("read", "write"), Seq.empty),
+        ("mcp", Seq("tool"), Seq.empty)
     )
 
     /** Capability templates the Keys-UI wizard offers as starting points.

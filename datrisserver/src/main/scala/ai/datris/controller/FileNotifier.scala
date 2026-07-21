@@ -3,7 +3,7 @@ package ai.datris.controller
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
@@ -40,7 +40,7 @@ class FileNotifier {
             statusUtil.info("begin", "Data received, bucket: " + bucket + ", key: " + key)
 
             val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, metadata.pipeline)
-            if(config == null)
+            if (config == null)
                 throw new DatrisException("Pipeline: " + metadata.pipeline + " is not configured in the NoSQL database")
 
             // Read the data into memory (includes schema evolution)
@@ -53,7 +53,7 @@ class FileNotifier {
         } catch {
             case e: Exception =>
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
-                throw new DatrisException("FileNotifier error: " +Throwables.getStackTraceAsString(e))
+                throw new DatrisException("FileNotifier error: " + Throwables.getStackTraceAsString(e))
         }
     }
 }

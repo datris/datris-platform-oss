@@ -3,16 +3,13 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.DatrisEnvironment
 import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
-case class TapOptimizeResult(script: String,
-                             packages: java.util.List[String],
-                             scriptPath: String,
-                             changes: java.util.List[String])
+case class TapOptimizeResult(script: String, packages: java.util.List[String], scriptPath: String, changes: java.util.List[String])
 
 object TapScriptOptimizer {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -68,13 +65,15 @@ object TapScriptOptimizer {
      * When no useful optimization is possible, returns the input script unchanged
      * with an empty `changes` list and the same scriptPath.
      */
-    def optimize(tapName: String,
-                 script: String,
-                 recordCount: Int,
-                 durationMs: Long,
-                 logs: String,
-                 oldScriptPath: String,
-                 priorIterations: List[ai.datris.model.IterationRecord] = Nil): TapOptimizeResult = {
+    def optimize(
+        tapName: String,
+        script: String,
+        recordCount: Int,
+        durationMs: Long,
+        logs: String,
+        oldScriptPath: String,
+        priorIterations: List[ai.datris.model.IterationRecord] = Nil
+    ): TapOptimizeResult = {
         val rateStats = if (recordCount > 0 && durationMs > 0)
             s" (~${durationMs / recordCount} ms/record)"
         else ""
@@ -113,22 +112,23 @@ object TapScriptOptimizer {
             if (start >= 0 && end > start) cleaned.substring(start, end + 1) else cleaned
         }
 
-        val (optimizedScript, packages, changes) = try {
-            val gson = new Gson
-            val result = gson.fromJson(jsonStr, classOf[java.util.Map[String, Any]])
-            val s = Option(result.get("script")).map(_.toString).getOrElse(script)
-            val p = toStringList(result.get("packages"))
-            val c = toStringList(result.get("changes"))
-            (s, p, c)
-        } catch {
-            case _: Exception =>
-                logger.info("AI optimize response was not JSON, returning original script unchanged")
-                (script, new java.util.ArrayList[String](), new java.util.ArrayList[String]())
-        }
+        val (optimizedScript, packages, changes) =
+            try {
+                val gson = new Gson
+                val result = gson.fromJson(jsonStr, classOf[java.util.Map[String, Any]])
+                val s = Option(result.get("script")).map(_.toString).getOrElse(script)
+                val p = toStringList(result.get("packages"))
+                val c = toStringList(result.get("changes"))
+                (s, p, c)
+            } catch {
+                case _: Exception =>
+                    logger.info("AI optimize response was not JSON, returning original script unchanged")
+                    (script, new java.util.ArrayList[String](), new java.util.ArrayList[String]())
+            }
 
         val noChange = changes.isEmpty || optimizedScript == script
         val scriptPath = if (noChange) oldScriptPath
-            else TapScriptGenerator.storeScript(tapName, optimizedScript, oldScriptPath)
+        else TapScriptGenerator.storeScript(tapName, optimizedScript, oldScriptPath)
 
         TapOptimizeResult(optimizedScript, packages, scriptPath, changes)
     }

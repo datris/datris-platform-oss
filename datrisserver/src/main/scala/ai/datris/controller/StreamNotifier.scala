@@ -3,7 +3,7 @@ package ai.datris.controller
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
@@ -38,7 +38,13 @@ class StreamNotifier {
             val metadata = PipelineMetadata(pipeline, filename, null, Option(publisherToken).getOrElse(pipelineToken), bulkUpload = false)
             val gson = new Gson
             // Must persist metadata before any statusUtil calls so getPipelineName can resolve the pipeline token
-            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", gson.toJson(metadata))
+            NoSQLDbUtil.setItemNameValue(
+                DatrisEnvironment.current.archivedMetadataTableName,
+                "pipeline_token",
+                pipelineToken,
+                "metadata",
+                gson.toJson(metadata)
+            )
 
             statusUtil.info("begin", "Stream data received, pipeline: " + pipeline + ", filename: " + filename)
             statusUtil.info("processing", "Total data size: " + byteArray.length.toString)
@@ -100,17 +106,16 @@ class StreamNotifier {
             }
 
             if (rows.isEmpty)
-                throw new DatrisException("No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row.")
+                throw new DatrisException(
+                    "No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row."
+                )
 
             (Data(size, header, config.source.schemaProperties.fields.asScala.toList, rows, null), config)
-        }
-        else if (config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
+        } else if (config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
             (Data(size, null, null, null, new String(byteArray, "UTF-8")), config)
-        }
-        else if (config.source.fileAttributes.unstructuredAttributes != null) {
+        } else if (config.source.fileAttributes.unstructuredAttributes != null) {
             (Data(size, null, null, null, null, byteArray), config)
-        }
-        else
+        } else
             throw new DatrisException("StreamNotifier: unsupported file type in pipeline config for pipeline: " + config.name)
     }
 
@@ -141,7 +146,7 @@ class StreamNotifier {
         } catch {
             case e: Exception =>
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
-                throw new DatrisException("FileNotifier error: " +Throwables.getStackTraceAsString(e))
+                throw new DatrisException("FileNotifier error: " + Throwables.getStackTraceAsString(e))
         }
     }
 }

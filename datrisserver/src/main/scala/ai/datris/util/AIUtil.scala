@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException}
@@ -29,7 +29,8 @@ object AIUtil {
             SSLContext.getDefault,
             Array("TLSv1.2"),
             null,
-            SSLConnectionSocketFactory.getDefaultHostnameVerifier)
+            SSLConnectionSocketFactory.getDefaultHostnameVerifier
+        )
         HttpClients.custom().setSSLSocketFactory(sslsf).build()
     }
 
@@ -56,17 +57,17 @@ object AIUtil {
         val m = if (model == null || model.isEmpty) "the selected model" else "'" + model + "'"
         if (status == 400 && lower.contains("retention")) {
             "Model " + m + " requires standard (30-day) data retention on the Anthropic account and is not " +
-            "available under zero-data-retention. Pick a different model, or enable standard data retention " +
-            "on the Anthropic organization that owns this API key. (Provider response: " + b.take(400) + ")"
+                "available under zero-data-retention. Pick a different model, or enable standard data retention " +
+                "on the Anthropic organization that owns this API key. (Provider response: " + b.take(400) + ")"
         } else if (status == 400 && (lower.contains("temperature") || lower.contains("top_p") || lower.contains("top_k"))) {
             "Model " + m + " does not accept sampling parameters (temperature/top_p/top_k). This is a request " +
-            "configuration issue, not a problem with your input. (Provider response: " + b.take(400) + ")"
+                "configuration issue, not a problem with your input. (Provider response: " + b.take(400) + ")"
         } else if (status == 400 && (lower.contains("budget_tokens") || lower.contains("thinking"))) {
             "Model " + m + " rejected the extended-thinking settings in this request. This is a request " +
-            "configuration issue, not a problem with your input. (Provider response: " + b.take(400) + ")"
+                "configuration issue, not a problem with your input. (Provider response: " + b.take(400) + ")"
         } else if (status == 401 || status == 403) {
             "The AI provider rejected the API key (status " + status + ") for model " + m + ". Check that the " +
-            "configured key is valid and has access to this model. (Provider response: " + b.take(400) + ")"
+                "configured key is valid and has access to this model. (Provider response: " + b.take(400) + ")"
         } else {
             "AI API returned error status: " + status + ", body: " + b
         }
@@ -112,7 +113,7 @@ object AIUtil {
             case "ollama" =>
                 if (aiConfig.apiKey != null && aiConfig.apiKey.nonEmpty)
                     httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
-            case _ =>  // anthropic
+            case _ => // anthropic
                 httpPost.addHeader("x-api-key", aiConfig.apiKey)
                 val v = if (aiConfig.version != null && aiConfig.version.nonEmpty) aiConfig.version else "2023-06-01"
                 httpPost.addHeader("anthropic-version", v)
@@ -139,7 +140,7 @@ object AIUtil {
         if (ep == null || ep.isEmpty) "https://api.openai.com/v1/responses"
         else if (ep.toLowerCase.contains("/v1/responses")) ep
         else ep.replaceFirst("/v1/chat/completions$", "/v1/responses")
-               .replaceFirst("/v1/completions$", "/v1/responses")
+            .replaceFirst("/v1/completions$", "/v1/responses")
     }
 
     private def callResponsesApi(
@@ -151,7 +152,8 @@ object AIUtil {
         useWebSearch: Boolean = false
     ): String = {
         val endpoint = responsesEndpointFor(aiConfig)
-        logger.info("Calling OpenAI Responses API, endpoint: " + endpoint + ", model: " + aiConfig.model + ", messages: " + messages.size + ", maxTokens: " + maxTokens + ", webSearch: " + useWebSearch)
+        logger.info("Calling OpenAI Responses API, endpoint: " + endpoint + ", model: " + aiConfig.model + ", messages: " + messages
+            .size + ", maxTokens: " + maxTokens + ", webSearch: " + useWebSearch)
 
         val inputArr = new JsonArray()
         messages.foreach { case (role, content) =>
@@ -181,8 +183,10 @@ object AIUtil {
     // with both the legacy (gpt-4*, gpt-3.5*) and newer parameter contracts.
     private def openAiTokenField(model: String): String = {
         val m = if (model == null) "" else model.toLowerCase
-        if (m.startsWith("gpt-5") || m.startsWith("o1") || m.startsWith("o3") ||
-            m.startsWith("o4") || m.startsWith("o5")) "max_completion_tokens"
+        if (
+            m.startsWith("gpt-5") || m.startsWith("o1") || m.startsWith("o3") ||
+            m.startsWith("o4") || m.startsWith("o5")
+        ) "max_completion_tokens"
         else "max_tokens"
     }
 
@@ -216,8 +220,8 @@ object AIUtil {
         if (multiTenant) return ""
         provider.toLowerCase match {
             case "anthropic" => sys.env.getOrElse("ANTHROPIC_API_KEY", "")
-            case "openai"    => sys.env.getOrElse("OPENAI_API_KEY", "")
-            case _           => ""
+            case "openai" => sys.env.getOrElse("OPENAI_API_KEY", "")
+            case _ => ""
         }
     }
 
@@ -229,8 +233,8 @@ object AIUtil {
     def providerKeyFromStore(env: String, provider: String): String = {
         val field = provider.toLowerCase match {
             case "anthropic" => "anthropicApiKey"
-            case "openai"    => "openaiApiKey"
-            case _           => return ""
+            case "openai" => "openaiApiKey"
+            case _ => return ""
         }
         try {
             SecretsUtil.getSecretMap(env + "/ai-keys")
@@ -257,8 +261,8 @@ object AIUtil {
 
         val provider = aiConfig.provider.toLowerCase
         val configProvider = ws.get.provider
-        if (configProvider != provider) return false                    // out-of-band path
-        if (provider == "openai" && !usesResponsesApi(aiConfig)) return false  // Chat Completions can't carry the tool
+        if (configProvider != provider) return false // out-of-band path
+        if (provider == "openai" && !usesResponsesApi(aiConfig)) return false // Chat Completions can't carry the tool
         provider == "anthropic" || provider == "openai"
     }
 
@@ -269,7 +273,7 @@ object AIUtil {
     private def attachWebSearchToolAnthropic(requestObj: JsonObject, aiConfig: AIConfig, useWebSearch: Boolean): Unit = {
         if (!useWebSearch || !canAttachNativeWebSearch(aiConfig) || aiConfig.provider.toLowerCase != "anthropic") return
         val tools = new JsonArray()
-        val tool  = new JsonObject()
+        val tool = new JsonObject()
         tool.addProperty("type", "web_search_20250305")
         tool.addProperty("name", "web_search")
         tool.addProperty("max_uses", DatrisEnvironment.current.webSearchConfig.get.maxUses)
@@ -281,7 +285,7 @@ object AIUtil {
     private def attachWebSearchToolResponses(requestObj: JsonObject, aiConfig: AIConfig, useWebSearch: Boolean): Unit = {
         if (!useWebSearch || !canAttachNativeWebSearch(aiConfig) || aiConfig.provider.toLowerCase != "openai") return
         val tools = new JsonArray()
-        val tool  = new JsonObject()
+        val tool = new JsonObject()
         tool.addProperty("type", "web_search")
         tools.add(tool)
         requestObj.add("tools", tools)
@@ -316,7 +320,7 @@ object AIUtil {
         else if (canAttachNativeWebSearch(aiConfig)) WebSearchPlan.Native
         else runWebSearch(searchQuery) match {
             case Some(r) => WebSearchPlan.Injected(r.notes, r.citations)
-            case None    => WebSearchPlan.Off
+            case None => WebSearchPlan.Off
         }
     }
 
@@ -356,15 +360,15 @@ object AIUtil {
         val searchAiConfig = AIConfig(
             provider = ws.provider,
             endpoint = if (ws.endpoint.nonEmpty) ws.endpoint else defaultEndpointFor(ws.provider),
-            model    = if (ws.model.nonEmpty) ws.model else defaultModelFor(ws.provider),
-            apiKey   = ws.apiKey,
-            version  = ws.version
+            model = if (ws.model.nonEmpty) ws.model else defaultModelFor(ws.provider),
+            apiKey = ws.apiKey,
+            version = ws.version
         )
 
         val systemPrompt =
             "You are a research assistant. Use the web_search tool to gather current, accurate information " +
-            "relevant to the user's request. Return a concise summary of what you found, with the most useful " +
-            "facts called out plainly. Always cite your sources via the tool's citation mechanism."
+                "relevant to the user's request. Return a concise summary of what you found, with the most useful " +
+                "facts called out plainly. Always cite your sources via the tool's citation mechanism."
 
         try {
             logger.info("runWebSearch: making out-of-band search call, provider=" + ws.provider + ", model=" + searchAiConfig.model)
@@ -386,8 +390,8 @@ object AIUtil {
 
     private def defaultEndpointFor(provider: String): String = provider.toLowerCase match {
         case "anthropic" => "https://api.anthropic.com/v1/messages"
-        case "openai"    => "https://api.openai.com/v1/responses"
-        case _           => ""
+        case "openai" => "https://api.openai.com/v1/responses"
+        case _ => ""
     }
 
     /** Default model for web-search runs. Both providers are picked for SPEED of
@@ -397,8 +401,8 @@ object AIUtil {
       * model field if you want a different one. */
     private def defaultModelFor(provider: String): String = provider.toLowerCase match {
         case "anthropic" => "claude-sonnet-4-6"
-        case "openai"    => "gpt-5.5"
-        case _           => ""
+        case "openai" => "gpt-5.5"
+        case _ => ""
     }
 
     def maxInputChars(): Int = {
@@ -436,7 +440,8 @@ object AIUtil {
         if (usesResponsesApi(aiConfig))
             return callResponsesApi(systemPrompt, Seq("user" -> userPrompt), aiConfig, 8192, -1.0, useWebSearch)
 
-        logger.info("Calling AI with custom system prompt, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", webSearch: " + useWebSearch)
+        logger.info("Calling AI with custom system prompt, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig
+            .model + ", webSearch: " + useWebSearch)
 
         val messagesArr = new JsonArray()
 
@@ -486,14 +491,22 @@ object AIUtil {
     def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int, temperature: Double): String =
         callAIWithMessages(systemPrompt, messages, aiConfig, maxTokens, temperature, useWebSearch = false)
 
-    def callAIWithMessages(systemPrompt: String, messages: Seq[(String, String)], aiConfig: AIConfig, maxTokens: Int, temperature: Double, useWebSearch: Boolean): String = {
+    def callAIWithMessages(
+        systemPrompt: String,
+        messages: Seq[(String, String)],
+        aiConfig: AIConfig,
+        maxTokens: Int,
+        temperature: Double,
+        useWebSearch: Boolean
+    ): String = {
         if (aiConfig == null)
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the Vault secret is configured.")
 
         if (usesResponsesApi(aiConfig))
             return callResponsesApi(systemPrompt, messages, aiConfig, maxTokens, temperature, useWebSearch)
 
-        logger.info("Calling AI with conversation, " + messages.size + " messages, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", maxTokens: " + maxTokens + ", webSearch: " + useWebSearch)
+        logger.info("Calling AI with conversation, " + messages.size + " messages, endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig
+            .provider + ", model: " + aiConfig.model + ", maxTokens: " + maxTokens + ", webSearch: " + useWebSearch)
 
         val messagesArr = new JsonArray()
 
@@ -557,7 +570,8 @@ object AIUtil {
         if (usesResponsesApi(aiConfig))
             return callResponsesApi(systemInstruction, Seq("user" -> prompt), aiConfig, 8192, -1.0, useWebSearch)
 
-        logger.info("Calling AI endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig.model + ", prompt length: " + prompt.length + " chars, webSearch: " + useWebSearch)
+        logger.info("Calling AI endpoint: " + aiConfig.endpoint + ", provider: " + aiConfig.provider + ", model: " + aiConfig
+            .model + ", prompt length: " + prompt.length + " chars, webSearch: " + useWebSearch)
 
         val messagesArr = new JsonArray()
 
@@ -736,17 +750,18 @@ object AIUtil {
       * one to an SSE event of the same name. */
     sealed trait AIStreamEvent
     object AIStreamEvent {
-        case object IterationStart                            extends AIStreamEvent
-        case class  ThinkingDelta(text: String)               extends AIStreamEvent
-        case class  TextDelta(text: String)                   extends AIStreamEvent
-        case class  ToolUseStart(id: String, name: String)    extends AIStreamEvent
+        case object IterationStart extends AIStreamEvent
+        case class ThinkingDelta(text: String) extends AIStreamEvent
+        case class TextDelta(text: String) extends AIStreamEvent
+        case class ToolUseStart(id: String, name: String) extends AIStreamEvent
+
         /** Progress while the model composes a tool call's input (Anthropic
           * `input_json_delta`). Carries only the delta size — enough for the UI
           * to show a live byte counter on the running tool card during long
           * compositions (big samples, generated scripts). */
-        case class  InputDelta(id: String, chars: Int)        extends AIStreamEvent
-        case class  ToolUseComplete(id: String, name: String, input: JsonObject) extends AIStreamEvent
-        case class  Error(message: String)                    extends AIStreamEvent
+        case class InputDelta(id: String, chars: Int) extends AIStreamEvent
+        case class ToolUseComplete(id: String, name: String, input: JsonObject) extends AIStreamEvent
+        case class Error(message: String) extends AIStreamEvent
     }
 
     /** Final result of a single streaming call: the assembled content blocks plus
@@ -805,8 +820,8 @@ object AIUtil {
 
         aiConfig.provider.toLowerCase match {
             case "anthropic" => anthropicStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink, cancelled)
-            case "openai"    => openaiNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
-            case other       =>
+            case "openai" => openaiNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
+            case other =>
                 throw new DatrisException("Provider '" + other + "' is not yet supported for chat. " +
                     "The chat assistants run on the AI Primary provider — set it to Anthropic or OpenAI in Configuration. " +
                     "(Ollama chat support is planned; Ollama already works for the CodeGen provider.)")
@@ -826,8 +841,8 @@ object AIUtil {
       * lifetime of the JVM. */
     private sealed trait ThinkingForm
     private object ThinkingForm {
-        case object Adaptive    extends ThinkingForm
-        case object Enabled     extends ThinkingForm
+        case object Adaptive extends ThinkingForm
+        case object Enabled extends ThinkingForm
         case object Unsupported extends ThinkingForm
     }
     private val thinkingFormCache: java.util.concurrent.ConcurrentHashMap[String, ThinkingForm] =
@@ -956,7 +971,7 @@ object AIUtil {
                 req.add("thinking", thinkingObj)
                 if (!rejectsSamplingParams(aiConfig.model)) req.addProperty("temperature", 1.0)
             case ThinkingForm.Unsupported =>
-                // No thinking field at all.
+            // No thinking field at all.
         }
 
         val jsonBody = req.toString
@@ -1054,7 +1069,8 @@ object AIUtil {
         // Anthropic detects within ~one packet and uses to halt token generation —
         // without it, the connection might linger on a socket buffer.
         if (cancelled()) {
-            try httpPost.abort() catch { case _: Throwable => () }
+            try httpPost.abort()
+            catch { case _: Throwable => () }
             throw new DatrisException("Cancelled by user")
         }
 
@@ -1062,7 +1078,8 @@ object AIUtil {
         while (line != null) {
             if (cancelled()) {
                 logger.info("Anthropic streaming cancelled mid-response — aborting connection to stop token generation")
-                try httpPost.abort() catch { case _: Throwable => () }
+                try httpPost.abort()
+                catch { case _: Throwable => () }
                 throw new DatrisException("Cancelled by user")
             }
             if (line.startsWith("data:")) {
@@ -1128,7 +1145,6 @@ object AIUtil {
                                     stopReason = delta.get("stop_reason").getAsString
 
                             case "message_stop" => // handled by loop exit
-
                             case "error" =>
                                 val err = if (evt.has("error")) evt.getAsJsonObject("error").toString else payload
                                 sink(AIStreamEvent.Error(err))
@@ -1185,7 +1201,7 @@ object AIUtil {
         if (model == null) return false
         val m = model.toLowerCase
         m.startsWith("gpt-5") || m.startsWith("o1") || m.startsWith("o3") ||
-        m.startsWith("o4")    || m.startsWith("o5")
+        m.startsWith("o4") || m.startsWith("o5")
     }
 
     private def isOpenAiReasoningError(msg: String): Boolean = {
@@ -1219,7 +1235,7 @@ object AIUtil {
         val cached = Option(openaiReasoningSupportedCache.get(cacheKey))
         val attachReasoningFirstTry: Boolean = cached match {
             case Some(b) => b.booleanValue()
-            case None    => likelyReasoningModel(aiConfig.model)
+            case None => likelyReasoningModel(aiConfig.model)
         }
 
         try {
@@ -1315,7 +1331,7 @@ object AIUtil {
                     }
                 case "function_call" =>
                     val id = if (item.has("call_id")) item.get("call_id").getAsString
-                            else if (item.has("id")) item.get("id").getAsString else java.util.UUID.randomUUID().toString
+                    else if (item.has("id")) item.get("id").getAsString else java.util.UUID.randomUUID().toString
                     val name = if (item.has("name")) item.get("name").getAsString else ""
                     val argsStr = if (item.has("arguments")) item.get("arguments").getAsString else "{}"
                     val args =
@@ -1333,10 +1349,12 @@ object AIUtil {
         // Responses API marks a length cutoff as status="incomplete" with
         // incomplete_details.reason="max_output_tokens".
         val openAiStopReason =
-            if (response.has("status") && response.get("status").getAsString == "incomplete" &&
+            if (
+                response.has("status") && response.get("status").getAsString == "incomplete" &&
                 response.has("incomplete_details") && !response.get("incomplete_details").isJsonNull &&
                 response.getAsJsonObject("incomplete_details").has("reason") &&
-                response.getAsJsonObject("incomplete_details").get("reason").getAsString == "max_output_tokens")
+                response.getAsJsonObject("incomplete_details").get("reason").getAsString == "max_output_tokens"
+            )
                 "max_tokens"
             else ""
         AIToolResponse(blocks.toList, wantsToolUse = hasToolUse, stopReason = openAiStopReason)
@@ -1367,9 +1385,9 @@ object AIUtil {
                     o.addProperty("content", text)
                     arr.add(o)
                 case AIContentBlock.ThinkingBlock(_, _) =>
-                    // Don't forward thinking to OpenAI — it's an Anthropic concept and
-                    // OpenAI ignores or rejects it. The summary will be re-derived on
-                    // the next call.
+                // Don't forward thinking to OpenAI — it's an Anthropic concept and
+                // OpenAI ignores or rejects it. The summary will be re-derived on
+                // the next call.
             }
         }
         arr

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.DatrisEnvironment
 import org.quartz.CronExpression
@@ -32,7 +32,10 @@ object TapScheduler {
                     // fallback means "fire on the next valid cron time from now".
                     val anchor: Date = {
                         def parseOpt(s: String): Option[Date] =
-                            Option(s).filter(_.nonEmpty).flatMap(v => try Some(sdf.parse(v)) catch { case _: Exception => None })
+                            Option(s).filter(_.nonEmpty).flatMap(v =>
+                                try Some(sdf.parse(v))
+                                catch { case _: Exception => None }
+                            )
                         parseOpt(tap.lastRunTime)
                             .orElse(parseOpt(tap.updatedAt))
                             .orElse(parseOpt(tap.createdAt))

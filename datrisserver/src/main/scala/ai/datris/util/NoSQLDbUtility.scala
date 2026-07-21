@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 trait NoSQLDbUtility {
     def getItemsKeysByKeyName(tableName: String, keyName: String): List[String]
@@ -14,9 +14,26 @@ trait NoSQLDbUtility {
 
     def getItemJSON(tableName: String, keyName: String, key: String, valueName: String): Option[String]
 
-    def putItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null, extraFields: java.util.Map[String, AnyRef] = null): Unit
+    def putItemJSON(
+        tableName: String,
+        keyName: String,
+        key: String,
+        valueName: String,
+        value: String,
+        sortKeyName: String = null,
+        sortKeyValue: Number = null,
+        extraFields: java.util.Map[String, AnyRef] = null
+    ): Unit
 
-    def updateItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null): Unit
+    def updateItemJSON(
+        tableName: String,
+        keyName: String,
+        key: String,
+        valueName: String,
+        value: String,
+        sortKeyName: String = null,
+        sortKeyValue: Number = null
+    ): Unit
 
     def deleteItemJSON(tableName: String, keyName: String, key: String, sortKeyName: String = null, sortKeyValue: Number = null): Unit
 

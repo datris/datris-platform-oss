@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, DatrisException}
@@ -33,8 +33,19 @@ object PostgresQueryUtil {
 
     // Keywords that indicate write operations — checked as whole words (case-insensitive)
     private val BLOCKED_KEYWORDS = Set(
-        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
-        "TRUNCATE", "GRANT", "REVOKE", "COPY", "CALL", "EXECUTE", "EXEC"
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "TRUNCATE",
+        "GRANT",
+        "REVOKE",
+        "COPY",
+        "CALL",
+        "EXECUTE",
+        "EXEC"
     )
 
     /** Lightweight reachability probe: connect with a short login timeout and
@@ -79,7 +90,7 @@ object PostgresQueryUtil {
         validateQuery(sql)
 
         val effectiveDb = if (database != null && database.nonEmpty) database
-            else DatrisEnvironment.current.postgresDatabase
+        else DatrisEnvironment.current.postgresDatabase
 
         // `limit < 0` is the "unlimited" sentinel used by tap scripts. `limit == 0`
         // or missing falls back to the preview default. Unlimited leaves the SQL
@@ -87,7 +98,7 @@ object PostgresQueryUtil {
         val unlimited = limit < 0
         val effectiveLimit = if (unlimited) -1 else if (limit > 0) limit else DEFAULT_LIMIT
         val finalSql = if (unlimited) sql.trim.stripSuffix(";")
-            else appendLimitIfNeeded(sql.trim.stripSuffix(";"), effectiveLimit)
+        else appendLimitIfNeeded(sql.trim.stripSuffix(";"), effectiveLimit)
 
         logger.info("Executing read-only query: " + finalSql)
 

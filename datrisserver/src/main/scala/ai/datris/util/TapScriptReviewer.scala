@@ -3,17 +3,13 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.DatrisEnvironment
 import com.google.gson.Gson
 import org.slf4j.{Logger, LoggerFactory}
 
-case class TapReviewResult(script: String,
-                           packages: java.util.List[String],
-                           scriptPath: String,
-                           changes: java.util.List[String],
-                           rewritten: Boolean)
+case class TapReviewResult(script: String, packages: java.util.List[String], scriptPath: String, changes: java.util.List[String], rewritten: Boolean)
 
 object TapScriptReviewer {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -60,13 +56,15 @@ object TapScriptReviewer {
       * contains signals that the script itself should change (rate limits, deprecations,
       * pagination hints, schema/auth warnings), regenerate the script and persist the new
       * version to MinIO. Otherwise return the input script unchanged with rewritten=false. */
-    def review(tapName: String,
-               script: String,
-               recordCount: Int,
-               durationMs: Long,
-               logs: String,
-               oldScriptPath: String,
-               priorIterations: List[ai.datris.model.IterationRecord] = Nil): TapReviewResult = {
+    def review(
+        tapName: String,
+        script: String,
+        recordCount: Int,
+        durationMs: Long,
+        logs: String,
+        oldScriptPath: String,
+        priorIterations: List[ai.datris.model.IterationRecord] = Nil
+    ): TapReviewResult = {
 
         val logsSection = {
             val trimmed = Option(logs).getOrElse("").trim
@@ -101,19 +99,20 @@ object TapScriptReviewer {
             if (start >= 0 && end > start) cleaned.substring(start, end + 1) else cleaned
         }
 
-        val (rewritten, reviewedScript, packages, changes) = try {
-            val gson = new Gson
-            val result = gson.fromJson(jsonStr, classOf[java.util.Map[String, Any]])
-            val r = Option(result.get("rewritten")).exists(_.toString.toLowerCase == "true")
-            val s = Option(result.get("script")).map(_.toString).filter(_.trim.nonEmpty).getOrElse(script)
-            val p = toStringList(result.get("packages"))
-            val c = toStringList(result.get("changes"))
-            (r, s, p, c)
-        } catch {
-            case _: Exception =>
-                logger.info("TapScriptReviewer: AI response was not parseable JSON, treating as no-op")
-                (false, script, new java.util.ArrayList[String](), new java.util.ArrayList[String]())
-        }
+        val (rewritten, reviewedScript, packages, changes) =
+            try {
+                val gson = new Gson
+                val result = gson.fromJson(jsonStr, classOf[java.util.Map[String, Any]])
+                val r = Option(result.get("rewritten")).exists(_.toString.toLowerCase == "true")
+                val s = Option(result.get("script")).map(_.toString).filter(_.trim.nonEmpty).getOrElse(script)
+                val p = toStringList(result.get("packages"))
+                val c = toStringList(result.get("changes"))
+                (r, s, p, c)
+            } catch {
+                case _: Exception =>
+                    logger.info("TapScriptReviewer: AI response was not parseable JSON, treating as no-op")
+                    (false, script, new java.util.ArrayList[String](), new java.util.ArrayList[String]())
+            }
 
         if (!rewritten || reviewedScript == script) {
             logger.info(s"TapScriptReviewer: no functional changes needed for tap '$tapName'")

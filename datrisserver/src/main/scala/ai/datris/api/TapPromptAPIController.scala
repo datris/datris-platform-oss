@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
@@ -37,8 +37,7 @@ class TapPromptAPIController {
     }
 
     @GetMapping(path = Array("/tap-prompts/{key}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getFragment(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                    @PathVariable key: String): ResponseEntity[String] = {
+    def getFragment(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @PathVariable key: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap-prompts/" + key + " called")
             APIKeyValidator.validate(apiKey)
@@ -58,8 +57,7 @@ class TapPromptAPIController {
     }
 
     @PostMapping(path = Array("/tap-prompts"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def saveFragment(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestBody body: String): ResponseEntity[String] = {
+    def saveFragment(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /tap-prompts called")
             APIKeyValidator.validate(apiKey)
@@ -88,8 +86,10 @@ class TapPromptAPIController {
     }
 
     @PostMapping(path = Array("/tap-prompts/suggest"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def suggestContent(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def suggestContent(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /tap-prompts/suggest called")
             APIKeyValidator.validate(apiKey)
@@ -144,8 +144,7 @@ class TapPromptAPIController {
     }
 
     @DeleteMapping(path = Array("/tap-prompts/{key}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def deleteFragment(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @PathVariable key: String): ResponseEntity[String] = {
+    def deleteFragment(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @PathVariable key: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /tap-prompts/" + key + " called")
             APIKeyValidator.validate(apiKey)

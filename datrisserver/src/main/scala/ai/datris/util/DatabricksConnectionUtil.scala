@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model._
 import org.slf4j.{Logger, LoggerFactory}
@@ -67,11 +67,12 @@ object DatabricksConnectionUtil {
             // warehouses can take minutes, serverless seconds. Say so up front, since
             // there is no driver callback to report it from.
             onInfo("Connecting — if the SQL warehouse is stopped it auto-starts now (serverless: seconds, classic: up to a few minutes)")
-            conn = try {
-                DriverManager.getConnection(jdbcUrl, properties)
-            } catch {
-                case e: Exception => throw translateConnectError(e, jdbcUrl, db.warehouse, creds)
-            }
+            conn =
+                try {
+                    DriverManager.getConnection(jdbcUrl, properties)
+                } catch {
+                    case e: Exception => throw translateConnectError(e, jdbcUrl, db.warehouse, creds)
+                }
             onInfo("Databricks connection acquired")
             f(conn)
         } finally {
@@ -98,11 +99,11 @@ object DatabricksConnectionUtil {
                 "Underlying driver error: " + messages)
         else if (messages.contains("invalid_client") || messages.contains("401") || messages.toLowerCase.contains("unauthorized"))
             new DatrisException((if (creds.clientId.isDefined)
-                "Databricks OAuth M2M authentication failed — verify the secret's 'clientId'/'clientSecret', that the " +
-                    "service principal has been added to this workspace, and that its OAuth secret has not expired. "
-            else
-                "Databricks token authentication failed — verify the secret's 'token' is a current personal access token " +
-                    "for this workspace. ") + "Underlying driver error: " + messages)
+                                     "Databricks OAuth M2M authentication failed — verify the secret's 'clientId'/'clientSecret', that the " +
+                                         "service principal has been added to this workspace, and that its OAuth secret has not expired. "
+                                 else
+                                     "Databricks token authentication failed — verify the secret's 'token' is a current personal access token " +
+                                         "for this workspace. ") + "Underlying driver error: " + messages)
         else if (messages.contains("503") || messages.toLowerCase.contains("timed out") || messages.toLowerCase.contains("timeout"))
             new DatrisException("Databricks connection timed out — the SQL warehouse may still be auto-starting " +
                 "(classic warehouses can take several minutes; serverless starts in seconds). Retry once it is RUNNING. " +
@@ -130,7 +131,7 @@ object DatabricksConnectionUtil {
         val warehouseIdRe = "(?i)warehouses/([0-9a-f]+)".r
         warehouseIdRe.findFirstMatchIn(trimmed) match {
             case Some(m) => "/sql/1.0/warehouses/" + m.group(1).toLowerCase
-            case None    => "/sql/1.0/warehouses/" + trimmed.toLowerCase
+            case None => "/sql/1.0/warehouses/" + trimmed.toLowerCase
         }
     }
 
@@ -141,6 +142,7 @@ object DatabricksConnectionUtil {
     def ident(identifier: String): String =
         if (isSimpleIdent(identifier)) identifier else quote(identifier)
     def isSimpleIdent(s: String): Boolean = s.matches("[A-Za-z_][A-Za-z0-9_]*")
+
     /** The name information_schema stores: Unity Catalog lowercases object
      *  names regardless of quoting, so compare lowercase on both sides. */
     def effectiveName(s: String): String = s.toLowerCase

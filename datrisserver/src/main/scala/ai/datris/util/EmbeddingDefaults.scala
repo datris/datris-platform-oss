@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 /**
  * Per-model max input-token limits for common embedding providers. Used by
@@ -27,38 +27,38 @@ object EmbeddingDefaults {
     // (prefix, maxTokens). First match wins; iteration order is insertion order.
     private val table: Seq[(String, Int)] = Seq(
         // OpenAI
-        "text-embedding-3-small"            -> 8192,
-        "text-embedding-3-large"            -> 8192,
-        "text-embedding-ada-002"            -> 8191,
+        "text-embedding-3-small" -> 8192,
+        "text-embedding-3-large" -> 8192,
+        "text-embedding-ada-002" -> 8191,
         // Cohere
-        "embed-english-v3.0"                -> 512,
-        "embed-multilingual-v3.0"           -> 512,
-        "embed-english-light-v3.0"          -> 512,
-        "embed-multilingual-light-v3.0"     -> 512,
+        "embed-english-v3.0" -> 512,
+        "embed-multilingual-v3.0" -> 512,
+        "embed-english-light-v3.0" -> 512,
+        "embed-multilingual-light-v3.0" -> 512,
         // Voyage
-        "voyage-3-lite"                     -> 32000,
-        "voyage-3"                          -> 32000,
-        "voyage-large-2"                    -> 16000,
-        "voyage-code-2"                     -> 16000,
+        "voyage-3-lite" -> 32000,
+        "voyage-3" -> 32000,
+        "voyage-large-2" -> 16000,
+        "voyage-code-2" -> 16000,
         // Google Vertex
-        "text-embedding-004"                -> 2048,
-        "text-embedding-005"                -> 2048,
-        "gecko"                             -> 2048,
+        "text-embedding-004" -> 2048,
+        "text-embedding-005" -> 2048,
+        "gecko" -> 2048,
         // BAAI
-        "bge-m3"                            -> 8192,
-        "bge-large-en-v1.5"                 -> 512,
-        "bge-base-en-v1.5"                  -> 512,
+        "bge-m3" -> 8192,
+        "bge-large-en-v1.5" -> 512,
+        "bge-base-en-v1.5" -> 512,
         // Nomic
-        "nomic-embed-text-v1.5"             -> 8192,
-        "nomic-embed-text-v2"               -> 8192,
+        "nomic-embed-text-v1.5" -> 8192,
+        "nomic-embed-text-v2" -> 8192,
         // Intfloat E5
-        "e5-large-v2"                       -> 512,
-        "multilingual-e5-large"             -> 512,
+        "e5-large-v2" -> 512,
+        "multilingual-e5-large" -> 512,
         // Sentence Transformers
-        "all-minilm-l6-v2"                  -> 256,
-        "all-mpnet-base-v2"                 -> 256,
+        "all-minilm-l6-v2" -> 256,
+        "all-mpnet-base-v2" -> 256,
         // Mistral
-        "mistral-embed"                     -> 8192
+        "mistral-embed" -> 8192
     )
 
     /** Resolve the raw (pre-safety-margin) cap for a model. */

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{PipelineConfig, PipelineMetadata, DatrisException, SchemaField}
 import ai.datris.model.Data
@@ -19,13 +19,18 @@ object DataUtil {
      * Schema evolution: detect new/missing columns and update config.
      * Returns (updatedConfig, updatedSchemaColumns, presentColumns, missingColumns).
      */
-    def evolveSchema(sourceColumns: List[String], config: PipelineConfig, statusUtil: StatusUtil): (PipelineConfig, List[String], List[String], List[String]) = {
+    def evolveSchema(
+        sourceColumns: List[String],
+        config: PipelineConfig,
+        statusUtil: StatusUtil
+    ): (PipelineConfig, List[String], List[String], List[String]) = {
         var updatedConfig = config
         var schemaColumns = config.source.schemaProperties.fields.asScala.map(_.name).toList
 
         // Detect new columns in the CSV that are not in the schema (additive schema evolution)
         val newColumns = sourceColumns.filterNot(col =>
-            schemaColumns.exists(_.equalsIgnoreCase(col)))
+            schemaColumns.exists(_.equalsIgnoreCase(col))
+        )
 
         if (newColumns.nonEmpty) {
             logger.info("Schema evolved: added fields [" + newColumns.mkString(", ") + "] to pipeline " + config.name)
@@ -55,7 +60,8 @@ object DataUtil {
 
         // Detect missing schema columns in the CSV header
         val missingColumns = schemaColumns.filterNot(col =>
-            sourceColumns.exists(_.equalsIgnoreCase(col)))
+            sourceColumns.exists(_.equalsIgnoreCase(col))
+        )
 
         if (missingColumns.nonEmpty) {
             // Fail if any missing column is a key field
@@ -69,8 +75,9 @@ object DataUtil {
             if (missingKeyFields.nonEmpty) {
                 throw new DatrisException(
                     "CSV is missing required key field(s): " + missingKeyFields.mkString(", ") +
-                    ". CSV columns: " + sourceColumns.mkString(", ") +
-                    ". Expected columns: " + schemaColumns.mkString(", "))
+                        ". CSV columns: " + sourceColumns.mkString(", ") +
+                        ". Expected columns: " + schemaColumns.mkString(", ")
+                )
             }
 
             statusUtil.info("processing", "CSV is missing columns (will be NULL in destination): " + missingColumns.mkString(", "))
@@ -78,7 +85,8 @@ object DataUtil {
 
         // Only columns that exist in the CSV
         val presentColumns = schemaColumns.filter(col =>
-            sourceColumns.exists(_.equalsIgnoreCase(col)))
+            sourceColumns.exists(_.equalsIgnoreCase(col))
+        )
 
         (updatedConfig, schemaColumns, presentColumns, missingColumns)
     }
@@ -87,9 +95,9 @@ object DataUtil {
         val files = new PipelineMetadataUtil(statusUtil).getFiles(metadata)
         val size = getSize(bucket, key, metadata)
 
-        if(config.source.fileAttributes.csvAttributes != null) {
+        if (config.source.fileAttributes.csvAttributes != null) {
             val trimColumns = {
-                if(config.transformation != null && config.transformation.trimColumnWhitespace)
+                if (config.transformation != null && config.transformation.trimColumnWhitespace)
                     true
                 else
                     false
@@ -101,15 +109,15 @@ object DataUtil {
                     val firstFileUrl = files.head
                     val reader = ObjectStoreUtil.getBufferedReader(
                         ObjectStoreUtil.getBucket(firstFileUrl),
-                        ObjectStoreUtil.getKey(firstFileUrl))
+                        ObjectStoreUtil.getKey(firstFileUrl)
+                    )
                     try {
                         val headerLine = reader.readLine()
                         headerLine.split(Pattern.quote(config.source.fileAttributes.csvAttributes.delimiter)).map(_.toLowerCase).toList
                     } finally {
                         reader.close()
                     }
-                }
-                else
+                } else
                     config.source.schemaProperties.fields.asScala.map(_.name).toList
             }
 
@@ -120,29 +128,31 @@ object DataUtil {
             val data = files.zipWithIndex.flatMap { case (fileUrl, index) =>
                 val rows = {
                     if (index == 0) {
-                        val data = new CSVReader().readFile(fileUrl,
-                                resolvedConfig.source.fileAttributes.csvAttributes.header,
-                                resolvedConfig.source.fileAttributes.csvAttributes.delimiter,
-                                sourceColumns,      // actual CSV column order
-                                presentColumns,     // only columns present in CSV
-                                trimColumns = trimColumns)
+                        val data = new CSVReader().readFile(
+                            fileUrl,
+                            resolvedConfig.source.fileAttributes.csvAttributes.header,
+                            resolvedConfig.source.fileAttributes.csvAttributes.delimiter,
+                            sourceColumns, // actual CSV column order
+                            presentColumns, // only columns present in CSV
+                            trimColumns = trimColumns
+                        )
                             .split("\n")
                             .toList
-                        if(resolvedConfig.source.fileAttributes.csvAttributes.header) {
+                        if (resolvedConfig.source.fileAttributes.csvAttributes.header) {
                             header = if (missingColumns.isEmpty) schemaColumns else presentColumns
                             data.tail
-                        }
-                        else
+                        } else
                             data
-                    }
-                    else {
-                        new CSVReader().readFile(fileUrl,
-                                resolvedConfig.source.fileAttributes.csvAttributes.header,
-                                resolvedConfig.source.fileAttributes.csvAttributes.delimiter,
-                                sourceColumns,
-                                presentColumns,
-                                trimColumns = trimColumns,
-                                removeHeader = true)
+                    } else {
+                        new CSVReader().readFile(
+                            fileUrl,
+                            resolvedConfig.source.fileAttributes.csvAttributes.header,
+                            resolvedConfig.source.fileAttributes.csvAttributes.delimiter,
+                            sourceColumns,
+                            presentColumns,
+                            trimColumns = trimColumns,
+                            removeHeader = true
+                        )
                             .split("\n")
                             .toList
                     }
@@ -150,18 +160,18 @@ object DataUtil {
                 rows
             }
             if (data.isEmpty)
-                throw new DatrisException("No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row.")
+                throw new DatrisException(
+                    "No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row."
+                )
 
             val headerWithSchema = resolvedConfig.source.schemaProperties.fields.asScala.toList
             (Data(size, header, headerWithSchema, data, null), resolvedConfig)
-        }
-        else if(config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
+        } else if (config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
             val fileUrl = files.head
             val rawData = ObjectStoreUtil.readBucketObject(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
                 .getOrElse(throw new DatrisException("Error reading source file: " + fileUrl))
             (Data(size, null, null, null, rawData), config)
-        }
-        else if(config.source.fileAttributes.unstructuredAttributes != null) {
+        } else if (config.source.fileAttributes.unstructuredAttributes != null) {
             val fileUrl = files.head
             val inputStream = ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
             try {
@@ -170,8 +180,7 @@ object DataUtil {
             } finally {
                 inputStream.close()
             }
-        }
-        else
+        } else
             throw new DatrisException("Unsupported file type in pipeline config for pipeline: " + config.name)
     }
 
@@ -180,12 +189,10 @@ object DataUtil {
         val objectMetadata = ObjectStoreUtil.getObjectMetadata(bucket, key)
         val objectSize = {
             // Bulk file ingestion?
-            if(metadata.dataFilePath != null) {
-                val summaries = ObjectStoreUtil.listSummaries(ObjectStoreUtil.getBucket(metadata.dataFilePath),
-                    ObjectStoreUtil.getKey(metadata.dataFilePath))
+            if (metadata.dataFilePath != null) {
+                val summaries = ObjectStoreUtil.listSummaries(ObjectStoreUtil.getBucket(metadata.dataFilePath), ObjectStoreUtil.getKey(metadata.dataFilePath))
                 summaries.map(_.size).sum
-            }
-            else
+            } else
                 objectMetadata.contentLength
         }
 

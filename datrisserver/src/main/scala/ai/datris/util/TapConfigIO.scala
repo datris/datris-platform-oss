@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{TapConfig, DatrisEnvironment, EntityVersion}
@@ -54,32 +54,38 @@ object TapConfigIO {
         // Lazy seed: no snapshots yet but a pre-edit config exists → snapshot it.
         if (baseVersion == 0 && existing != null) {
             val seedVersion = if (existing.version > 0) existing.version else 1
-            EntityVersionIO.append(versionTable, EntityVersion(
-                key = EntityVersionIO.docKey(tapConfig.name, seedVersion),
-                entityName = tapConfig.name,
-                version = seedVersion,
-                config = gson.toJson(existing),
-                scriptPath = existing.scriptPath,
-                changeNote = "(seeded from pre-versioning state)",
-                createdAt = if (existing.updatedAt != null) existing.updatedAt else now,
-                createdBy = "system"
-            ))
+            EntityVersionIO.append(
+                versionTable,
+                EntityVersion(
+                    key = EntityVersionIO.docKey(tapConfig.name, seedVersion),
+                    entityName = tapConfig.name,
+                    version = seedVersion,
+                    config = gson.toJson(existing),
+                    scriptPath = existing.scriptPath,
+                    changeNote = "(seeded from pre-versioning state)",
+                    createdAt = if (existing.updatedAt != null) existing.updatedAt else now,
+                    createdBy = "system"
+                )
+            )
             baseVersion = seedVersion
         }
 
         val nextVersion = baseVersion + 1
         val versioned = tapConfig.copy(version = nextVersion)
         write(versioned)
-        EntityVersionIO.append(versionTable, EntityVersion(
-            key = EntityVersionIO.docKey(tapConfig.name, nextVersion),
-            entityName = tapConfig.name,
-            version = nextVersion,
-            config = gson.toJson(versioned),
-            scriptPath = versioned.scriptPath,
-            changeNote = changeNote,
-            createdAt = now,
-            createdBy = actor
-        ))
+        EntityVersionIO.append(
+            versionTable,
+            EntityVersion(
+                key = EntityVersionIO.docKey(tapConfig.name, nextVersion),
+                entityName = tapConfig.name,
+                version = nextVersion,
+                config = gson.toJson(versioned),
+                scriptPath = versioned.scriptPath,
+                changeNote = changeNote,
+                createdAt = now,
+                createdBy = actor
+            )
+        )
 
         // Retention cap: prune old snapshots and GC their now-unreferenced scripts.
         EntityVersionIO.prune(versionTable, tapConfig.name, env.versionCap)

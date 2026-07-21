@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{DatrisEnvironment, DatrisException}
@@ -24,21 +24,21 @@ class Transformation(jobContext: JobContext) {
         statusUtil.info("begin", "Process started")
 
         val jobContextDD = {
-            if(config.transformation.deduplicate)
+            if (config.transformation.deduplicate)
                 deduplicate(jobContext)
             else
                 jobContext
         }
 
         val jobContextRF = {
-            if(config.transformation.rowFunctions != null)
+            if (config.transformation.rowFunctions != null)
                 runRowFunctions(jobContextDD)
             else
                 jobContextDD
         }
 
         val jobContextAI = {
-            if(config.transformation.aiTransformation != null)
+            if (config.transformation.aiTransformation != null)
                 runAITransformation(jobContextRF)
             else
                 jobContextRF
@@ -53,15 +53,13 @@ class Transformation(jobContext: JobContext) {
 
         val distinct = jobContext.data.rows.distinct
         val deduped = jobContext.data.rows.size - distinct.size
-        if(deduped > 0) {
+        if (deduped > 0) {
             statusUtil.info("processing", deduped.toString + " rows were duplicates and removed")
             val newData = jobContext.data.copy(rows = distinct)
             jobContext.copy(data = newData)
-        }
-        else
+        } else
             jobContext
     }
-
 
     private def runRowFunctions(jobContextRF: JobContext): JobContext = {
         var currentContext = jobContextRF
@@ -94,7 +92,8 @@ class Transformation(jobContext: JobContext) {
             }
             statusUtil.info("processing", "Running row function: javascript, using script: " + url)
             ObjectStoreUtil.readBucketObject(ObjectStoreUtil.getBucket(url), ObjectStoreUtil.getKey(url)).getOrElse(
-                throw new DatrisException("Javascript file not found using the first parameter of the row function: " + filePath))
+                throw new DatrisException("Javascript file not found using the first parameter of the row function: " + filePath)
+            )
         }
 
         var removed: Long = 0
@@ -128,7 +127,10 @@ class Transformation(jobContext: JobContext) {
 
         val endpointUrl = rowFunction.parameters.get(0)
         val mode = if (rowFunction.parameters.size() > 1) rowFunction.parameters.get(1).toLowerCase else "row"
-        val timeoutMs = if (rowFunction.parameters.size() > 2) try { rowFunction.parameters.get(2).toInt } catch { case _: NumberFormatException => 30000 } else 30000
+        val timeoutMs = if (rowFunction.parameters.size() > 2)
+            try { rowFunction.parameters.get(2).toInt }
+            catch { case _: NumberFormatException => 30000 }
+        else 30000
         val bearerToken = if (rowFunction.parameters.size() > 3 && rowFunction.parameters.get(3).nonEmpty) rowFunction.parameters.get(3) else null
         val apiKey = if (rowFunction.parameters.size() > 4 && rowFunction.parameters.get(4).nonEmpty) rowFunction.parameters.get(4) else null
         val delimiter = config.source.fileAttributes.csvAttributes.delimiter
@@ -166,9 +168,16 @@ class Transformation(jobContext: JobContext) {
         }
     }
 
-    private def callRestTransformRow(endpointUrl: String, pipelineName: String, pipelineToken: String,
-                                     columnMap: mutable.ListMap[String, Any], timeoutMs: Int,
-                                     bearerToken: String, apiKey: String, delimiter: String): String = {
+    private def callRestTransformRow(
+        endpointUrl: String,
+        pipelineName: String,
+        pipelineToken: String,
+        columnMap: mutable.ListMap[String, Any],
+        timeoutMs: Int,
+        bearerToken: String,
+        apiKey: String,
+        delimiter: String
+    ): String = {
         val gson = new Gson()
         val payload = mutable.ListMap[String, Any](
             "pipelineName" -> pipelineName,
@@ -207,9 +216,16 @@ class Transformation(jobContext: JobContext) {
         }).toList.mkString(delimiter)
     }
 
-    private def callRestTransformBatch(endpointUrl: String, pipelineName: String, pipelineToken: String,
-                                       rowMaps: List[java.util.Map[String, Any]], timeoutMs: Int,
-                                       bearerToken: String, apiKey: String, delimiter: String): List[String] = {
+    private def callRestTransformBatch(
+        endpointUrl: String,
+        pipelineName: String,
+        pipelineToken: String,
+        rowMaps: List[java.util.Map[String, Any]],
+        timeoutMs: Int,
+        bearerToken: String,
+        apiKey: String,
+        delimiter: String
+    ): List[String] = {
         val gson = new Gson()
         val wrapper = mutable.ListMap[String, Any](
             "pipelineName" -> pipelineName,

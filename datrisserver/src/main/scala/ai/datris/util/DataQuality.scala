@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException}
 import ai.datris.model._
@@ -19,8 +19,8 @@ class DataQuality(jobContext: JobContext) {
         statusUtil.info("begin", "Process started")
 
         // Validate the header of the file(s) for delimited files (if it has a header)
-        if(config.dataQuality.validateFileHeader) {
-            if(config.source.fileAttributes.csvAttributes != null && config.source.fileAttributes.csvAttributes.header) {
+        if (config.dataQuality.validateFileHeader) {
+            if (config.source.fileAttributes.csvAttributes != null && config.source.fileAttributes.csvAttributes.header) {
                 statusUtil.info("processing", "Validating the incoming file header(s)")
 
                 validateHeader(jobContext.data.header, jobContext.config)
@@ -28,23 +28,23 @@ class DataQuality(jobContext: JobContext) {
         }
 
         // Validation schema?
-        if(config.dataQuality.validationSchema != null) {
+        if (config.dataQuality.validationSchema != null) {
             val schemaFileUrl = {
-                if(config.dataQuality.validationSchema.startsWith("s3://"))
+                if (config.dataQuality.validationSchema.startsWith("s3://"))
                     config.dataQuality.validationSchema
                 else
                     "s3://" + DatrisEnvironment.current.environment + "-config/validation-schema/" + config.dataQuality.validationSchema
             }
 
             statusUtil.info("processing", "Validating the incoming data for pipeline: " + config.name + ", against the validation schema: " + schemaFileUrl)
-            if(config.source.fileAttributes.jsonAttributes != null)
+            if (config.source.fileAttributes.jsonAttributes != null)
                 SchemaValidationUtil.validateJson(jobContext.data.rawData, schemaFileUrl)
-            else if(config.source.fileAttributes.xmlAttributes != null)
+            else if (config.source.fileAttributes.xmlAttributes != null)
                 SchemaValidationUtil.validateXml(jobContext.data.rawData, schemaFileUrl)
         }
 
         // AI rule (CodeGen)?
-        if(config.dataQuality.aiRule != null)
+        if (config.dataQuality.aiRule != null)
             runAIRule(jobContext.data)
 
         statusUtil.info("end", "Process completed successfully")
@@ -137,7 +137,9 @@ class DataQuality(jobContext: JobContext) {
         if (errorCount > 0) {
             val errorDetails = errors.take(100).mkString("\n")
             val suffix = if (errorCount > 100) "\n... and " + (errorCount - 100) + " more error(s)" else ""
-            throw new DatrisException("Aborting processing this pipeline, " + errorCount.toString + " error(s) were found while performing data quality rules:\n" + errorDetails + suffix)
+            throw new DatrisException(
+                "Aborting processing this pipeline, " + errorCount.toString + " error(s) were found while performing data quality rules:\n" + errorDetails + suffix
+            )
         }
         if (warningCount > 0)
             statusUtil.warn("processing", warnings.mkString("\n"))

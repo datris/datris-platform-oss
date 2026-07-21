@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
@@ -47,11 +47,14 @@ class SearchChatAPIController {
     // Dedicated executor, sized like the assistant/ops chats — search chats
     // are interactive and can spend tens of seconds across a discovery +
     // query tool sequence.
-    private val chatExecutor = Executors.newFixedThreadPool(16, (r: Runnable) => {
-        val t = new Thread(r, "search-chat-" + System.nanoTime())
-        t.setDaemon(true)
-        t
-    })
+    private val chatExecutor = Executors.newFixedThreadPool(
+        16,
+        (r: Runnable) => {
+            val t = new Thread(r, "search-chat-" + System.nanoTime())
+            t.setDaemon(true)
+            t
+        }
+    )
 
     private val cancelFlags: ConcurrentHashMap[Long, java.util.concurrent.atomic.AtomicBoolean] = new ConcurrentHashMap()
 
@@ -64,21 +67,20 @@ class SearchChatAPIController {
         val secretPath = DatrisEnvironment.current.environment + "/ui-api-key"
         SecretsUtil.getSecretMap(secretPath).flatMap(m => Option(m.get("apiKey"))) match {
             case Some(v) if v != null && v.nonEmpty => v
-            case _                                  => userApiKey
+            case _ => userApiKey
         }
     }
 
     @PostMapping(path = Array("/search-chat/chat"), produces = Array(MediaType.TEXT_EVENT_STREAM_VALUE))
-    def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-             @RequestBody body: String): SseEmitter = {
+    def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): SseEmitter = {
         val emitter = new SseEmitter(TimeUnit.MINUTES.toMillis(30))
         val emitterId = System.identityHashCode(emitter).toLong
         val cancelled = new java.util.concurrent.atomic.AtomicBoolean(false)
         cancelFlags.put(emitterId, cancelled)
 
         emitter.onCompletion(() => { cancelled.set(true); cancelFlags.remove(emitterId); () })
-        emitter.onTimeout   (() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
-        emitter.onError     (_  => { cancelled.set(true); cancelFlags.remove(emitterId); () })
+        emitter.onTimeout(() => { cancelled.set(true); cancelFlags.remove(emitterId); emitter.complete(); () })
+        emitter.onError(_ => { cancelled.set(true); cancelFlags.remove(emitterId); () })
 
         // Same ThreadLocal capture rationale as the other chat controllers —
         // session-authed requests need UserContext/TenantContext re-set on the
@@ -96,10 +98,10 @@ class SearchChatAPIController {
                 } catch {
                     case e: Exception =>
                         try {
-                            AssistantSseSupport.sendEvent(emitter, "error",
-                                AssistantSseSupport.makeEvent("error", "message", e.getMessage))
+                            AssistantSseSupport.sendEvent(emitter, "error", AssistantSseSupport.makeEvent("error", "message", e.getMessage))
                         } catch { case _: Exception => () }
-                        try emitter.complete() catch { case _: Exception => () }
+                        try emitter.complete()
+                        catch { case _: Exception => () }
                 } finally {
                     UserContext.clear()
                     TenantContext.clear()
@@ -110,10 +112,7 @@ class SearchChatAPIController {
         emitter
     }
 
-    private def runChat(apiKey: String,
-                        body: String,
-                        emitter: SseEmitter,
-                        cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
+    private def runChat(apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
         if (messagesArr == null || messagesArr.size() == 0)
@@ -160,7 +159,7 @@ class SearchChatAPIController {
         // the dashboard-snapshot injection in OpsChatAPIController.
         val withContext: List[(String, String)] = catalogScope match {
             case Some(cat) => ("user", renderCatalogScopeMessage(cat)) :: userMessages
-            case None      => userMessages
+            case None => userMessages
         }
 
         logger.info("Search chat starting: tenant=" + env.environment + ", provider=" + aiConfig.provider +
@@ -188,7 +187,10 @@ class SearchChatAPIController {
         // If the client already disconnected (a failed write flipped the
         // cancel flag), skip complete() — flushing to a dead socket would log
         // another spurious broken pipe. The container finalizes the response.
-        if (!cancelled.get()) { try emitter.complete() catch { case _: Exception => () } }
+        if (!cancelled.get()) {
+            try emitter.complete()
+            catch { case _: Exception => () }
+        }
     }
 
     /** Read-only tools the search agent is allowed to call. Anything not on
@@ -265,33 +267,57 @@ class SearchChatAPIController {
         sb.append("Your job is discovery and retrieval: figure out where the relevant data lives, query or search it, and answer in plain language.\n\n")
 
         sb.append("## You are READ-ONLY\n\n")
-        sb.append("You can only discover, inspect, query, and search. You have no tools to create, modify, delete, run, or ingest anything — and you must not claim you can. ")
-        sb.append("If the user asks to build a pipeline, ingest new data, run a tap, or change configuration, tell them that's the Assistant tab's job and stay on the search task.\n\n")
+        sb.append(
+            "You can only discover, inspect, query, and search. You have no tools to create, modify, delete, run, or ingest anything — and you must not claim you can. "
+        )
+        sb.append(
+            "If the user asks to build a pipeline, ingest new data, run a tap, or change configuration, tell them that's the Assistant tab's job and stay on the search task.\n\n"
+        )
 
         sb.append("## How to work\n\n")
-        sb.append("1. **Learn what exists first.** Before answering any data question, call `list_pipelines` and `list_taps` so you know what data sources are available. Treat cataloged and uncataloged sources equally — data with no catalog assigned is just as real and queryable; never skip it.\n")
-        sb.append("2. **Inspect structure before querying.** Use the metadata tools (`list_postgres_schemas`/`list_postgres_tables`/`list_postgres_columns`, `list_mongodb_collections`, and the vector `list_*` tools) to confirm the shape of a source before you query it.\n")
+        sb.append(
+            "1. **Learn what exists first.** Before answering any data question, call `list_pipelines` and `list_taps` so you know what data sources are available. Treat cataloged and uncataloged sources equally — data with no catalog assigned is just as real and queryable; never skip it.\n"
+        )
+        sb.append(
+            "2. **Inspect structure before querying.** Use the metadata tools (`list_postgres_schemas`/`list_postgres_tables`/`list_postgres_columns`, `list_mongodb_collections`, and the vector `list_*` tools) to confirm the shape of a source before you query it.\n"
+        )
         sb.append("3. **Pick the right access path for the question:**\n")
-        sb.append("   - Structured/analytical questions over a relational table → `query_natural` (you give it the question + table) or `query_postgres` (you write the read-only SQL).\n")
+        sb.append(
+            "   - Structured/analytical questions over a relational table → `query_natural` (you give it the question + table) or `query_postgres` (you write the read-only SQL).\n"
+        )
         sb.append("   - Document/collection lookups → `query_mongodb`.\n")
         sb.append("   - File-based sources behind a pipeline → `query_objectstore`.\n")
         sb.append("   - Semantic / meaning-based retrieval ('find things about X') → the `search_*` tool matching the available vector store.\n")
         sb.append("   - To turn retrieved rows or chunks into a written answer → `ai_answer`.\n")
-        sb.append("4. **Answer with citations.** State which pipeline, table, or collection each part of your answer came from, so the user can trust and reproduce it. If you ran SQL, show it briefly.\n\n")
+        sb.append(
+            "4. **Answer with citations.** State which pipeline, table, or collection each part of your answer came from, so the user can trust and reproduce it. If you ran SQL, show it briefly.\n\n"
+        )
 
         sb.append("## Behavior rules\n\n")
-        sb.append("- **Don't guess at data you didn't read.** If a query returns nothing or the relevant source doesn't exist, say so plainly rather than inventing an answer.\n")
+        sb.append(
+            "- **Don't guess at data you didn't read.** If a query returns nothing or the relevant source doesn't exist, say so plainly rather than inventing an answer.\n"
+        )
         sb.append("- **Prefer the scoped catalog when one is provided** (see the leading scope message, if any), but say when you had to look outside it.\n")
-        sb.append("- **Be concise.** This is a chat panel. Lead with the answer, then a short note on where it came from. Avoid dumping raw result sets unless the user asks.\n")
+        sb.append(
+            "- **Be concise.** This is a chat panel. Lead with the answer, then a short note on where it came from. Avoid dumping raw result sets unless the user asks.\n"
+        )
         sb.append("- **Ask one clarifying question only when genuinely ambiguous.** If the question maps cleanly onto an available source, just answer it.\n\n")
 
         sb.append("## Don't stall mid-task\n\n")
-        sb.append("- **If your reply ends by announcing work you have NOT done yet — \"Let me check X\", \"Now I'll query Y\", \"Let me look at the schema for Z\" — make those tool calls in the SAME turn instead of ending.** Announcing the next step and then stopping forces the user to type \"continue\" to get work they already asked for. The sentence that narrates a step and the tool call that performs it belong in the same turn.\n")
-        sb.append("- **End your turn only when** the question is answered, OR you need a clarification only the user can give, OR no available source can answer it (see below). In every other case — including right after you've described your next discovery/query step — keep going and do it.\n")
-        sb.append("- This narrows nothing in the rules above: still ask the one clarifying question when genuinely ambiguous, and stay read-only. The point is only this: once you've decided the next discovery or query step and are merely narrating it, perform it instead of ending the turn.\n\n")
+        sb.append(
+            "- **If your reply ends by announcing work you have NOT done yet — \"Let me check X\", \"Now I'll query Y\", \"Let me look at the schema for Z\" — make those tool calls in the SAME turn instead of ending.** Announcing the next step and then stopping forces the user to type \"continue\" to get work they already asked for. The sentence that narrates a step and the tool call that performs it belong in the same turn.\n"
+        )
+        sb.append(
+            "- **End your turn only when** the question is answered, OR you need a clarification only the user can give, OR no available source can answer it (see below). In every other case — including right after you've described your next discovery/query step — keep going and do it.\n"
+        )
+        sb.append(
+            "- This narrows nothing in the rules above: still ask the one clarifying question when genuinely ambiguous, and stay read-only. The point is only this: once you've decided the next discovery or query step and are merely narrating it, perform it instead of ending the turn.\n\n"
+        )
 
         sb.append("## When you can't answer\n\n")
-        sb.append("If, after discovery, no available data source can answer the question, say so directly and name what you checked. Suggest what data would need to be ingested (pointing the user to the Assistant tab to build it) rather than fabricating a result.")
+        sb.append(
+            "If, after discovery, no available data source can answer the question, say so directly and name what you checked. Suggest what data would need to be ingested (pointing the user to the Assistant tab to build it) rather than fabricating a result."
+        )
         sb.toString
     }
 }

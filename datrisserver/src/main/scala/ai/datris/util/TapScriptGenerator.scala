@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
 import com.google.gson.Gson
@@ -12,7 +12,12 @@ import org.slf4j.{Logger, LoggerFactory}
 import java.util.UUID
 import scala.collection.JavaConverters._
 
-case class TapGenerateResult(script: String, packages: java.util.List[String], scriptPath: String, injectedPrompts: java.util.List[String] = new java.util.ArrayList[String]())
+case class TapGenerateResult(
+    script: String,
+    packages: java.util.List[String],
+    scriptPath: String,
+    injectedPrompts: java.util.List[String] = new java.util.ArrayList[String]()
+)
 
 object TapScriptGenerator {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -209,7 +214,13 @@ object TapScriptGenerator {
      * @param tapType     "structured" (default) or "document" — chooses the system prompt
      * @return TapGenerateResult with script content, packages, and MinIO path
      */
-    def generate(description: String, tapName: String, oldScriptPath: String = null, secretName: String = null, tapType: String = "structured"): TapGenerateResult = {
+    def generate(
+        description: String,
+        tapName: String,
+        oldScriptPath: String = null,
+        secretName: String = null,
+        tapType: String = "structured"
+    ): TapGenerateResult = {
         logger.info("TapScriptGenerator: generating script for tap: " + tapName)
 
         if (!DatrisEnvironment.current.aiEnabled)
@@ -319,10 +330,11 @@ object TapScriptGenerator {
             }.getOrElse {
                 // Final fallback: treat the original cleaned response as a raw script.
                 // Try to unwrap a JSON string literal first in case the LLM returned "..." form.
-                val unwrapped = try {
-                    val s = gson.fromJson(cleaned, classOf[String])
-                    if (s != null && s.nonEmpty) s else cleaned
-                } catch { case _: Exception => cleaned }
+                val unwrapped =
+                    try {
+                        val s = gson.fromJson(cleaned, classOf[String])
+                        if (s != null && s.nonEmpty) s else cleaned
+                    } catch { case _: Exception => cleaned }
                 logger.warn("TapScriptGenerator: retry also failed — treating as raw script (length: " + unwrapped.length + ")")
                 (unwrapped, new java.util.ArrayList[String]())
             }
@@ -339,8 +351,9 @@ object TapScriptGenerator {
         if (!hasFetchFunction(script))
             throw new DatrisException(
                 "AI returned a script that doesn't define a `fetch()` function. " +
-                "This usually means the model returned narrative text instead of code. " +
-                "Try regenerating, or paste your own script via 'I Have My Own Code'.")
+                    "This usually means the model returned narrative text instead of code. " +
+                    "Try regenerating, or paste your own script via 'I Have My Own Code'."
+            )
 
         // Store script in MinIO (cleanup old)
         val scriptPath = storeScript(tapName, script, oldScriptPath)

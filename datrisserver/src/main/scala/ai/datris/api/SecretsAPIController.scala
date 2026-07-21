@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonParser}
@@ -33,7 +33,9 @@ class SecretsAPIController {
     // wanted visible) are recoverable via the Edit flow; false negatives (a
     // credential leaking in plain text on the Configuration screen) are not.
     private val SENSITIVE_MARKERS = Seq(
-        "password", "passwd", "pwd",
+        "password",
+        "passwd",
+        "pwd",
         "secret",
         "token",
         "key",
@@ -48,9 +50,8 @@ class SecretsAPIController {
     // this list tight — add only for fields the platform itself writes (not
     // user-supplied field names).
     private val ALWAYS_PLAIN = Set(
-        "createdbykeylabel"  // matches "key" but stores a label, not a credential value
+        "createdbykeylabel" // matches "key" but stores a label, not a credential value
     )
-
 
     private val LOCKED_AI_SLOTS_ON_TRIAL = Set("ai-primary", "codegen", "embedding")
 
@@ -64,13 +65,16 @@ class SecretsAPIController {
         if (DatrisEnvironment.current.isTrial && LOCKED_AI_SLOTS_ON_TRIAL.contains(name)) {
             Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](
                 "{\"error\": \"AI configuration is locked on the trial. " +
-                "Visit https://datris.ai/dashboard to upgrade to a dedicated instance.\"}"))
+                    "Visit https://datris.ai/dashboard to upgrade to a dedicated instance.\"}"
+            ))
         } else None
     }
 
     @GetMapping(path = Array("/secrets"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def listSecrets(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                    @RequestParam(required = false, name = "type") secretType: String): ResponseEntity[String] = {
+    def listSecrets(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(required = false, name = "type") secretType: String
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /secrets called" + (if (secretType != null) ", type=" + secretType else ""))
             APIKeyValidator.validate(apiKey)
@@ -93,8 +97,7 @@ class SecretsAPIController {
 
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(secrets.asJava), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -102,8 +105,7 @@ class SecretsAPIController {
     }
 
     @GetMapping(path = Array("/secrets/{name}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getSecret(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                  @PathVariable name: String): ResponseEntity[String] = {
+    def getSecret(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @PathVariable name: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
@@ -132,8 +134,7 @@ class SecretsAPIController {
                 case None =>
                     ResponseEntity.status(HttpStatus.NOT_FOUND).body[String]("{\"error\": \"Secret not found: " + name + "\"}")
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -141,10 +142,12 @@ class SecretsAPIController {
     }
 
     @PutMapping(path = Array("/secrets/{name}"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def putSecret(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                  @PathVariable name: String,
-                  @RequestBody body: String,
-                  request: HttpServletRequest): ResponseEntity[String] = {
+    def putSecret(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable name: String,
+        @RequestBody body: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint PUT /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
@@ -165,7 +168,7 @@ class SecretsAPIController {
                 // MCP path — both retained for defense in depth.
                 val existingType = existing.get("_type").getOrElse("")
                 val scopeContext = if (existingType.nonEmpty) Map("_type" -> existingType)
-                                   else Map.empty[String, String]
+                else Map.empty[String, String]
                 CapabilityCheck.assertScope(request, "secret", "write", scopeContext)
 
                 val json = JsonParser.parseString(body).getAsJsonObject
@@ -217,9 +220,13 @@ class SecretsAPIController {
                         if (json.has("apiKey") && json.get("apiKey").isJsonPrimitive) json.get("apiKey").getAsString
                         else ""
                     val freshApiKeyProvided = rawRequestApiKey.nonEmpty && rawRequestApiKey != "••••••••"
-                    if (existingProvider.nonEmpty && incomingProvider.nonEmpty &&
-                        existingProvider != incomingProvider && !freshApiKeyProvided) {
-                        logger.info("PUT /secrets/" + name + ": provider changed from '" + existingProvider + "' to '" + incomingProvider + "' — clearing preserved apiKey (will resolve from env var if available)")
+                    if (
+                        existingProvider.nonEmpty && incomingProvider.nonEmpty &&
+                        existingProvider != incomingProvider && !freshApiKeyProvided
+                    ) {
+                        logger.info(
+                            "PUT /secrets/" + name + ": provider changed from '" + existingProvider + "' to '" + incomingProvider + "' — clearing preserved apiKey (will resolve from env var if available)"
+                        )
                         incoming.remove("apiKey")
                     }
                 }
@@ -234,7 +241,8 @@ class SecretsAPIController {
                         incoming.put("createdByKeyLabel", prior)
                     case None =>
                         ResolvedKeyAccess.keyLabel(request).foreach(label =>
-                            incoming.put("createdByKeyLabel", label))
+                            incoming.put("createdByKeyLabel", label)
+                        )
                 }
 
                 SecretsUtil.writeSecret(secretPath, incoming)
@@ -269,8 +277,7 @@ class SecretsAPIController {
 
                 new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -278,9 +285,11 @@ class SecretsAPIController {
     }
 
     @DeleteMapping(path = Array("/secrets/{name}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def deleteSecret(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @PathVariable name: String,
-                     request: HttpServletRequest): ResponseEntity[String] = {
+    def deleteSecret(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
@@ -294,14 +303,13 @@ class SecretsAPIController {
                 val existing = SecretsUtil.getSecretMap(secretPath).map(_.asScala).getOrElse(scala.collection.mutable.Map.empty[String, String])
                 val existingType = existing.get("_type").getOrElse("")
                 val scopeContext = if (existingType.nonEmpty) Map("_type" -> existingType)
-                                   else Map.empty[String, String]
+                else Map.empty[String, String]
                 CapabilityCheck.assertScope(request, "secret", "write", scopeContext)
 
                 SecretsUtil.deleteSecret(secretPath)
                 new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))

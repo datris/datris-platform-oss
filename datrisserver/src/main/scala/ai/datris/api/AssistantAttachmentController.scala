@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{Gson, JsonObject}
 import ai.datris.model.{DatrisEnvironment, DatrisException}
@@ -36,8 +36,7 @@ class AssistantAttachmentController {
     private val SampleMaxLines: Int = 50
 
     @PostMapping(path = Array("/assistant/attachment"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def stage(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-              @RequestPart("file") file: MultipartFile): ResponseEntity[String] = {
+    def stage(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestPart("file") file: MultipartFile): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
 
@@ -48,7 +47,8 @@ class AssistantAttachmentController {
             if (bytes.length > MaxBytes)
                 return new ResponseEntity[String](
                     "{\"error\":\"File too large to attach (" + bytes.length + " bytes; limit " + MaxBytes + ").\"}",
-                    HttpStatus.PAYLOAD_TOO_LARGE)
+                    HttpStatus.PAYLOAD_TOO_LARGE
+                )
 
             val tenantEnv = DatrisEnvironment.current.environment
             val (detectedType, sample) = extractSample(filename, bytes)
@@ -80,13 +80,13 @@ class AssistantAttachmentController {
     private def extractSample(filename: String, bytes: Array[Byte]): (String, String) = {
         val ext = filename.lastIndexOf('.') match {
             case -1 => ""
-            case i  => filename.substring(i + 1).toLowerCase
+            case i => filename.substring(i + 1).toLowerCase
         }
         ext match {
-            case "csv" | "tsv"                  => ("CSV (structured)", headLines(bytes))
-            case "json" | "ndjson"              => ("JSON (structured)", headChars(bytes))
-            case "xml"                          => ("XML (structured)", headChars(bytes))
-            case "txt" | "md" | "html" | "htm"  => ("document (unstructured text)", headChars(bytes))
+            case "csv" | "tsv" => ("CSV (structured)", headLines(bytes))
+            case "json" | "ndjson" => ("JSON (structured)", headChars(bytes))
+            case "xml" => ("XML (structured)", headChars(bytes))
+            case "txt" | "md" | "html" | "htm" => ("document (unstructured text)", headChars(bytes))
             case "pdf" | "docx" | "doc" | "pptx" | "xlsx" =>
                 ("document (unstructured)", "(binary ." + ext + " document, " + bytes.length + " bytes — text not extracted; route to a vector store)")
             case _ =>

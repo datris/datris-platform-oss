@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{JsonArray, JsonElement, JsonObject, JsonParser}
 
@@ -66,10 +66,10 @@ object VersionDiff {
         keys.flatMap { k =>
             (before.get(k), after.get(k)) match {
                 case (Some(b), Some(a)) if b != a => Some(FieldChange(k, b, a, "changed"))
-                case (Some(_), Some(_))           => None
-                case (None, Some(a))              => Some(FieldChange(k, null, a, "added"))
-                case (Some(b), None)              => Some(FieldChange(k, b, null, "removed"))
-                case (None, None)                 => None
+                case (Some(_), Some(_)) => None
+                case (None, Some(a)) => Some(FieldChange(k, null, a, "added"))
+                case (Some(b), None) => Some(FieldChange(k, b, null, "removed"))
+                case (None, None) => None
             }
         }
     }

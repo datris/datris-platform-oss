@@ -3,7 +3,7 @@ package ai.datris
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 package object util {
     lazy val ObjectStoreUtil: ObjectStoreUtility = MinIOUtilBuilder.build()

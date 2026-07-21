@@ -3,12 +3,21 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder}
 import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
-import ai.datris.util.{AIUtil, APIKeyValidator, DatabricksQueryUtil, ObjectStoreQueryUtil, PostgresQueryUtil, MongoDBQueryUtil, SecretsRetrieverUtil, SnowflakeQueryUtil}
+import ai.datris.util.{
+    AIUtil,
+    APIKeyValidator,
+    DatabricksQueryUtil,
+    ObjectStoreQueryUtil,
+    PostgresQueryUtil,
+    MongoDBQueryUtil,
+    SecretsRetrieverUtil,
+    SnowflakeQueryUtil
+}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -21,8 +30,10 @@ class QueryAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[QueryAPIController])
 
     @PostMapping(path = Array("/query/postgres"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def queryPostgres(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                      @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def queryPostgres(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/postgres called")
             APIKeyValidator.validate(apiKey)
@@ -30,7 +41,7 @@ class QueryAPIController {
             val sql = Option(body.get("sql")).map(_.toString)
                 .getOrElse(throw new ai.datris.model.DatrisException("'sql' parameter is required"))
             val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-                else Option(body.get("database")).map(_.toString).getOrElse(DatrisEnvironment.current.postgresDatabase)
+            else Option(body.get("database")).map(_.toString).getOrElse(DatrisEnvironment.current.postgresDatabase)
             val limit = Option(body.get("limit")).map {
                 case d: java.lang.Double => d.intValue()
                 case i: java.lang.Integer => i.intValue()
@@ -44,8 +55,7 @@ class QueryAPIController {
             response.put("results", results)
             response.put("count", results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -53,8 +63,10 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/query/mongodb"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def queryMongoDB(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def queryMongoDB(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/mongodb called")
             APIKeyValidator.validate(apiKey)
@@ -74,7 +86,7 @@ class QueryAPIController {
             }.getOrElse(20)
 
             val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-                else Option(body.get("database")).map(_.toString).orNull
+            else Option(body.get("database")).map(_.toString).orNull
             val results = MongoDBQueryUtil.query(collection, filter, projection, limit, database)
 
             // Parse each JSON string back into an object for proper nesting
@@ -87,8 +99,7 @@ class QueryAPIController {
             response.put("results", parsedResults)
             response.put("count", parsedResults.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -96,8 +107,10 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/query/objectstore"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def queryObjectStore(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                         @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def queryObjectStore(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/objectstore called")
             APIKeyValidator.validate(apiKey)
@@ -105,9 +118,9 @@ class QueryAPIController {
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double  => d.intValue()
+                case d: java.lang.Double => d.intValue()
                 case i: java.lang.Integer => i.intValue()
-                case other                => other.toString.toInt
+                case other => other.toString.toInt
             }.getOrElse(100)
 
             val result = ObjectStoreQueryUtil.query(pipelineName, limit)
@@ -121,8 +134,7 @@ class QueryAPIController {
             response.put("results", result.rows)
             response.put("count", result.rows.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: DatrisException =>
                 logger.warn("query/objectstore: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -133,8 +145,10 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/query/snowflake"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def querySnowflake(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def querySnowflake(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/snowflake called")
             APIKeyValidator.validate(apiKey)
@@ -143,9 +157,9 @@ class QueryAPIController {
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             val sql = Option(body.get("sql")).map(_.toString)
             val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double  => d.intValue()
+                case d: java.lang.Double => d.intValue()
                 case i: java.lang.Integer => i.intValue()
-                case other                => other.toString.toInt
+                case other => other.toString.toInt
             }.getOrElse(100)
 
             val result = SnowflakeQueryUtil.query(pipelineName, sql, limit)
@@ -157,8 +171,7 @@ class QueryAPIController {
             response.put("results", result.results)
             response.put("count", result.results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: DatrisException =>
                 logger.warn("query/snowflake: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -169,8 +182,10 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/query/databricks"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def queryDatabricks(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                        @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def queryDatabricks(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/databricks called")
             APIKeyValidator.validate(apiKey)
@@ -179,9 +194,9 @@ class QueryAPIController {
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             val sql = Option(body.get("sql")).map(_.toString)
             val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double  => d.intValue()
+                case d: java.lang.Double => d.intValue()
                 case i: java.lang.Integer => i.intValue()
-                case other                => other.toString.toInt
+                case other => other.toString.toInt
             }.getOrElse(100)
 
             val result = DatabricksQueryUtil.query(pipelineName, sql, limit)
@@ -193,8 +208,7 @@ class QueryAPIController {
             response.put("results", result.results)
             response.put("count", result.results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: DatrisException =>
                 logger.warn("query/databricks: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -205,8 +219,10 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/query/natural"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def queryNatural(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def queryNatural(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /query/natural called")
             APIKeyValidator.validate(apiKey)
@@ -216,7 +232,7 @@ class QueryAPIController {
             val table = Option(body.get("table")).map(_.toString)
                 .getOrElse(throw new DatrisException("'table' parameter is required"))
             val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-                else Option(body.get("database")).map(_.toString).getOrElse(DatrisEnvironment.current.postgresDatabase)
+            else Option(body.get("database")).map(_.toString).getOrElse(DatrisEnvironment.current.postgresDatabase)
             val schema = Option(body.get("schema")).map(_.toString).getOrElse("public")
             val limit = Option(body.get("limit")).map {
                 case d: java.lang.Double => d.intValue()
@@ -260,8 +276,7 @@ class QueryAPIController {
             response.put("results", results)
             response.put("count", results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -269,8 +284,7 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/job/kill"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def killJob(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def killJob(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /job/kill called")
             APIKeyValidator.validate(apiKey)
@@ -285,8 +299,7 @@ class QueryAPIController {
             response.put("status", "cancelled")
             response.put("pipelineToken", pipelineToken)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -294,8 +307,7 @@ class QueryAPIController {
     }
 
     @PostMapping(path = Array("/ai/answer"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def aiAnswer(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                 @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def aiAnswer(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /ai/answer called")
             APIKeyValidator.validate(apiKey)
@@ -317,8 +329,7 @@ class QueryAPIController {
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("answer", answer)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))

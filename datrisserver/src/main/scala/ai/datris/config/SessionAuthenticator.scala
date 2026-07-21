@@ -3,7 +3,7 @@ package ai.datris.config
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, UserContext}
 import ai.datris.util.{SessionStore, UserStore}

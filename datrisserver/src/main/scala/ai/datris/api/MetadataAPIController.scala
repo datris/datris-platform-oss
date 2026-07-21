@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
@@ -88,15 +88,13 @@ class MetadataAPIController {
                 // Multi-tenant: only show the tenant's isolated database
                 List(tenantPostgresDb())
             } else {
-                val results = queryPostgres("postgres",
-                    "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres') ORDER BY datname"
-                )
+                val results =
+                    queryPostgres("postgres", "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres') ORDER BY datname")
                 results.map(_.get("datname").toString)
             }
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(databases.asJava), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -104,25 +102,27 @@ class MetadataAPIController {
     }
 
     @GetMapping(path = Array("/metadata/postgres/schemas"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getPostgresSchemas(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                           @RequestParam(defaultValue = "") database: String): ResponseEntity[String] = {
+    def getPostgresSchemas(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(defaultValue = "") database: String
+    ): ResponseEntity[String] = {
         try {
             val dbName = if (DatrisEnvironment.current.multiTenant) tenantPostgresDb()
-                else if (database != null && database.nonEmpty) database
-                else DatrisEnvironment.current.postgresDatabase
+            else if (database != null && database.nonEmpty) database
+            else DatrisEnvironment.current.postgresDatabase
             logger.info("API endpoint GET /metadata/postgres/schemas called, database: " + dbName)
             APIKeyValidator.validate(apiKey)
 
-            val results = queryPostgres(dbName,
+            val results = queryPostgres(
+                dbName,
                 "SELECT schema_name FROM information_schema.schemata " +
-                "WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast') " +
-                "ORDER BY schema_name"
+                    "WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast') " +
+                    "ORDER BY schema_name"
             )
             val schemas = results.map(_.get("schema_name").toString)
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(schemas.asJava), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -130,44 +130,45 @@ class MetadataAPIController {
     }
 
     @GetMapping(path = Array("/metadata/postgres/tables"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getPostgresTables(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                          @RequestParam(defaultValue = "") database: String,
-                          @RequestParam(defaultValue = "public") schema: String,
-                          @RequestParam(defaultValue = "false") vectorOnly: String): ResponseEntity[String] = {
+    def getPostgresTables(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(defaultValue = "") database: String,
+        @RequestParam(defaultValue = "public") schema: String,
+        @RequestParam(defaultValue = "false") vectorOnly: String
+    ): ResponseEntity[String] = {
         try {
             val dbName = if (DatrisEnvironment.current.multiTenant) tenantPostgresDb()
-                else if (database != null && database.nonEmpty) database
-                else DatrisEnvironment.current.postgresDatabase
+            else if (database != null && database.nonEmpty) database
+            else DatrisEnvironment.current.postgresDatabase
             logger.info("API endpoint GET /metadata/postgres/tables called, database: " + dbName + ", schema: " + schema + ", vectorOnly: " + vectorOnly)
             APIKeyValidator.validate(apiKey)
 
             val sql = if (vectorOnly.equalsIgnoreCase("true")) {
                 // Only return tables that have an 'embedding' column (pgvector tables)
                 "SELECT DISTINCT t.table_name FROM information_schema.tables t " +
-                "JOIN information_schema.columns c ON t.table_name = c.table_name AND t.table_schema = c.table_schema " +
-                "WHERE t.table_schema = '" + schema.replace("'", "''") + "' " +
-                "AND t.table_type = 'BASE TABLE' " +
-                "AND c.column_name = 'embedding' " +
-                "ORDER BY t.table_name"
+                    "JOIN information_schema.columns c ON t.table_name = c.table_name AND t.table_schema = c.table_schema " +
+                    "WHERE t.table_schema = '" + schema.replace("'", "''") + "' " +
+                    "AND t.table_type = 'BASE TABLE' " +
+                    "AND c.column_name = 'embedding' " +
+                    "ORDER BY t.table_name"
             } else {
                 // Exclude tables that have an 'embedding' column (pgvector tables)
                 "SELECT table_name FROM information_schema.tables " +
-                "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
-                "AND table_type = 'BASE TABLE' " +
-                "AND table_name NOT IN (" +
+                    "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
+                    "AND table_type = 'BASE TABLE' " +
+                    "AND table_name NOT IN (" +
                     "SELECT DISTINCT table_name FROM information_schema.columns " +
                     "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
                     "AND column_name = 'embedding'" +
-                ") " +
-                "ORDER BY table_name"
+                    ") " +
+                    "ORDER BY table_name"
             }
 
             val results = queryPostgres(dbName, sql)
             val tables = results.map(_.get("table_name").toString)
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(tables.asJava), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -175,22 +176,25 @@ class MetadataAPIController {
     }
 
     @GetMapping(path = Array("/metadata/postgres/columns"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getPostgresColumns(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                           @RequestParam(defaultValue = "") database: String,
-                           @RequestParam(defaultValue = "public") schema: String,
-                           @RequestParam table: String): ResponseEntity[String] = {
+    def getPostgresColumns(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(defaultValue = "") database: String,
+        @RequestParam(defaultValue = "public") schema: String,
+        @RequestParam table: String
+    ): ResponseEntity[String] = {
         try {
             val dbName = if (DatrisEnvironment.current.multiTenant) tenantPostgresDb()
-                else if (database != null && database.nonEmpty) database
-                else DatrisEnvironment.current.postgresDatabase
+            else if (database != null && database.nonEmpty) database
+            else DatrisEnvironment.current.postgresDatabase
             logger.info("API endpoint GET /metadata/postgres/columns called, database: " + dbName + ", schema: " + schema + ", table: " + table)
             APIKeyValidator.validate(apiKey)
 
-            val results = queryPostgres(dbName,
+            val results = queryPostgres(
+                dbName,
                 "SELECT column_name, data_type FROM information_schema.columns " +
-                "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
-                "AND table_name = '" + table.replace("'", "''") + "' " +
-                "ORDER BY ordinal_position"
+                    "WHERE table_schema = '" + schema.replace("'", "''") + "' " +
+                    "AND table_name = '" + table.replace("'", "''") + "' " +
+                    "ORDER BY ordinal_position"
             )
             val columns = results.map { row =>
                 val col = new java.util.LinkedHashMap[String, String]()
@@ -200,8 +204,7 @@ class MetadataAPIController {
             }
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(columns.asJava), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -237,8 +240,7 @@ class MetadataAPIController {
             } finally {
                 client.close()
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -246,8 +248,10 @@ class MetadataAPIController {
     }
 
     @GetMapping(path = Array("/metadata/mongodb/collections"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getMongoCollections(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                            @RequestParam(required = false) database: String): ResponseEntity[String] = {
+    def getMongoCollections(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(required = false) database: String
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /metadata/mongodb/collections called, database: " + database)
             APIKeyValidator.validate(apiKey)
@@ -296,8 +300,7 @@ class MetadataAPIController {
             } finally {
                 client.close()
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -342,8 +345,7 @@ class MetadataAPIController {
             } finally {
                 client.close()
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -403,8 +405,7 @@ class MetadataAPIController {
             } finally {
                 httpClient.close()
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -449,8 +450,7 @@ class MetadataAPIController {
             } finally {
                 client.close()
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -506,8 +506,7 @@ class MetadataAPIController {
             } finally {
                 httpClient.close()
             }
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))

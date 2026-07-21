@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{Notification, DatrisEnvironment}
@@ -24,7 +24,7 @@ class PostgresLoader(jobContext: JobContext) {
 
     /** In multi-tenant mode, use the tenant's isolated database; otherwise use the pipeline config value. */
     private val dbName: String = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
-        else config.destination.database.dbName
+    else config.destination.database.dbName
 
     def process(): Unit = {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
@@ -123,7 +123,10 @@ class PostgresLoader(jobContext: JobContext) {
             statusUtil.info("processing", "Dropped columns (will be NULL in destination): " + missing.mkString(", "))
         }
 
-        statusUtil.info("processing", "Projecting " + sourceFields.size + " source columns to " + projectedDest.size + " destination columns: " + projectedDest.map(_.name).mkString(", "))
+        statusUtil.info(
+            "processing",
+            "Projecting " + sourceFields.size + " source columns to " + projectedDest.size + " destination columns: " + projectedDest.map(_.name).mkString(", ")
+        )
 
         rows.map { row =>
             val columns = row.split(delimiter, -1).toList
@@ -134,12 +137,12 @@ class PostgresLoader(jobContext: JobContext) {
     private def copyInto(conn: Connection, statement: Statement, fileUrl: String): Unit = {
         statusUtil.info("processing", "Copying data into " + config.destination.database.table)
 
-        if(!config.destination.database.manageTableManually)
+        if (!config.destination.database.manageTableManually)
             createTableIfUndefined(statement, config.destination.database.table)
 
         // Truncate AFTER create-if-not-exists so first-run pipelines with truncateBeforeWrite=true
         // don't fail against a not-yet-existing table.
-        if(config.destination.database.truncateBeforeWrite) {
+        if (config.destination.database.truncateBeforeWrite) {
             statusUtil.info("processing", "'truncateTableBeforeWrite' is set to true, truncating table")
             statement.execute("truncate table \"" + dbName + "\".\"" + config.destination.database.schema + "\".\"" + config.destination.database.table + "\"")
         }
@@ -179,11 +182,10 @@ class PostgresLoader(jobContext: JobContext) {
         sql.append(" FROM STDIN (")
 
         // Append the options (i.e. DELIMITER ',', FORMAT csv, etc)
-        if(config.destination.database.options != null) {
+        if (config.destination.database.options != null) {
             val options = config.destination.database.options.asScala.mkString(", ")
             sql.append(options)
-        }
-        else {
+        } else {
             // Postgres CSV format treats unquoted empty fields as NULL by default,
             // which is what every standard CSV exporter expects. Sources with
             // non-empty NULL placeholders (e.g. some sources use "." as a NULL placeholder) should normalize them
@@ -263,11 +265,12 @@ class PostgresLoader(jobContext: JobContext) {
 
             statusUtil.info("processing", "Copy command (staging): " + copySql.toString())
             val inputStream = ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
-            val rowsCopied = try {
-                new CopyManager(conn.asInstanceOf[BaseConnection]).copyIn(copySql.mkString, inputStream)
-            } finally {
-                inputStream.close()
-            }
+            val rowsCopied =
+                try {
+                    new CopyManager(conn.asInstanceOf[BaseConnection]).copyIn(copySql.mkString, inputStream)
+                } finally {
+                    inputStream.close()
+                }
             statusUtil.info("processing", "Rows copied to staging: " + rowsCopied)
 
             // Upsert: INSERT...SELECT ON CONFLICT. If every column in the load
@@ -346,7 +349,7 @@ class PostgresLoader(jobContext: JobContext) {
         // later changes keyFields (index is droppable without disturbing
         // anything else).
         val safeColPart = keyFieldNames.map(_.toLowerCase.replaceAll("[^a-z0-9_]", "_")).mkString("_")
-        val indexName = ("datris_uniq_" + tableName + "_" + safeColPart).take(63)  // Postgres identifier limit
+        val indexName = ("datris_uniq_" + tableName + "_" + safeColPart).take(63) // Postgres identifier limit
         val cols = keyFieldNames.map(k => "\"" + k + "\"").mkString(", ")
         val createIdx = s"""CREATE UNIQUE INDEX IF NOT EXISTS "$indexName" ON "$dbName"."$schema"."$tableName" ($cols)"""
         statusUtil.info("processing", "Adding unique index to enable keyFields upsert: " + createIdx)
@@ -360,12 +363,13 @@ class PostgresLoader(jobContext: JobContext) {
                 // a clear error with remediation hints.
                 throw new DatrisException(
                     "Cannot enable keyFields upsert on '" + tableName + "': the existing table " +
-                    "already contains rows that violate the proposed unique key (" +
-                    keyFieldNames.mkString(", ") + "). Resolve before retrying: " +
-                    "(a) deduplicate the existing rows manually, " +
-                    "(b) set truncateBeforeWrite=true to wipe and reload, " +
-                    "or (c) choose a different keyFields combination that's actually unique. " +
-                    "Underlying Postgres error: " + e.getMessage)
+                        "already contains rows that violate the proposed unique key (" +
+                        keyFieldNames.mkString(", ") + "). Resolve before retrying: " +
+                        "(a) deduplicate the existing rows manually, " +
+                        "(b) set truncateBeforeWrite=true to wipe and reload, " +
+                        "or (c) choose a different keyFields combination that's actually unique. " +
+                        "Underlying Postgres error: " + e.getMessage
+                )
         }
     }
 
@@ -380,19 +384,19 @@ class PostgresLoader(jobContext: JobContext) {
         config.destination.schemaProperties.fields.forEach(field => {
             sql.append("\"" + field.name + "\" ")
             // Force the semi-structured field type to SUPER
-            if(field.name.compareToIgnoreCase("_json") == 0)
+            if (field.name.compareToIgnoreCase("_json") == 0)
                 sql.append("json, ")
-            else if(field.name.compareToIgnoreCase("_xml") == 0)
+            else if (field.name.compareToIgnoreCase("_xml") == 0)
                 sql.append("xml, ")
-            else if(field.`type`.compareToIgnoreCase("tinyint") == 0)
+            else if (field.`type`.compareToIgnoreCase("tinyint") == 0)
                 sql.append("int2, ")
-            else if(field.`type`.compareToIgnoreCase("smallint") == 0)
+            else if (field.`type`.compareToIgnoreCase("smallint") == 0)
                 sql.append("int2, ")
-            else if(field.`type`.compareToIgnoreCase("float") == 0)
+            else if (field.`type`.compareToIgnoreCase("float") == 0)
                 sql.append("float4, ")
-            else if(field.`type`.compareToIgnoreCase("double") == 0)
+            else if (field.`type`.compareToIgnoreCase("double") == 0)
                 sql.append("float8, ")
-            else if(field.`type`.compareToIgnoreCase("string") == 0)
+            else if (field.`type`.compareToIgnoreCase("string") == 0)
                 sql.append("text, ")
             else
                 sql.append(field.`type` + ", ")
@@ -400,7 +404,7 @@ class PostgresLoader(jobContext: JobContext) {
         sql.setLength(sql.length - 2)
 
         // Keys?
-        if(config.destination.database.keyFields != null) {
+        if (config.destination.database.keyFields != null) {
             sql.append(", primary key (")
             config.destination.database.keyFields.forEach(field => {
                 sql.append(field + ", ")
@@ -424,7 +428,8 @@ class PostgresLoader(jobContext: JobContext) {
         val existingColumnsRs = statement.executeQuery(
             s"""SELECT column_name FROM information_schema.columns
                |WHERE table_catalog = '$dbName' AND table_schema = '${config.destination.database.schema}'
-               |AND table_name = '$tableName'""".stripMargin)
+               |AND table_name = '$tableName'""".stripMargin
+        )
         val existingColumns = scala.collection.mutable.Set[String]()
         while (existingColumnsRs.next()) {
             existingColumns.add(existingColumnsRs.getString("column_name").toLowerCase)
@@ -434,7 +439,8 @@ class PostgresLoader(jobContext: JobContext) {
         config.destination.schemaProperties.fields.forEach(field => {
             if (!existingColumns.contains(field.name.toLowerCase)) {
                 val colType = if (field.`type`.equalsIgnoreCase("string")) "text" else field.`type`
-                val alterSql = s"""ALTER TABLE "$dbName"."${config.destination.database.schema}"."$tableName" ADD COLUMN IF NOT EXISTS "${field.name}" $colType"""
+                val alterSql =
+                    s"""ALTER TABLE "$dbName"."${config.destination.database.schema}"."$tableName" ADD COLUMN IF NOT EXISTS "${field.name}" $colType"""
                 statusUtil.info("processing", "Schema evolution: " + alterSql)
                 statement.execute(alterSql)
             }

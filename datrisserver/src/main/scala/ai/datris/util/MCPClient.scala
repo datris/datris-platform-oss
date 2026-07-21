@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import ai.datris.model.DatrisException
@@ -45,9 +45,9 @@ object MCPClient {
     // Tool / resource catalogs change only when mcp-server redeploys. Cache for 60s
     // so the Assistant /init endpoint is effectively free after the first hit.
     private case class CachedEntry[T](value: T, expiresAt: Long)
-    private val toolsCache:     ConcurrentHashMap[String, CachedEntry[List[JsonObject]]] = new ConcurrentHashMap()
+    private val toolsCache: ConcurrentHashMap[String, CachedEntry[List[JsonObject]]] = new ConcurrentHashMap()
     private val resourcesCache: ConcurrentHashMap[String, CachedEntry[List[JsonObject]]] = new ConcurrentHashMap()
-    private val resourceCache:  ConcurrentHashMap[String, CachedEntry[String]]            = new ConcurrentHashMap()
+    private val resourceCache: ConcurrentHashMap[String, CachedEntry[String]] = new ConcurrentHashMap()
     private val ttlMillis: Long = 60 * 1000L
 
     private def cacheKey(apiKey: String, suffix: String): String =

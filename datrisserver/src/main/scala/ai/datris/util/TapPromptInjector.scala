@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, TapPromptFragment}
 import org.slf4j.{Logger, LoggerFactory}
@@ -58,12 +58,13 @@ object TapPromptInjector {
         Option(cache.get(table)) match {
             case Some((frags, t)) if (now - t) < TTL_MS => frags
             case _ =>
-                val frags = try TapPromptFragmentIO.readAll(table).filter(_.enabled)
-                            catch {
-                                case e: Exception =>
-                                    logger.warn("TapPromptInjector: failed to load fragments: " + e.getMessage)
-                                    Nil
-                            }
+                val frags =
+                    try TapPromptFragmentIO.readAll(table).filter(_.enabled)
+                    catch {
+                        case e: Exception =>
+                            logger.warn("TapPromptInjector: failed to load fragments: " + e.getMessage)
+                            Nil
+                    }
                 cache.put(table, (frags, now))
                 frags
         }

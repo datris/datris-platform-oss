@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ch.qos.logback.classic.{Level, Logger}
 import ch.qos.logback.classic.turbo.TurboFilter
@@ -23,12 +23,7 @@ import org.slf4j.Marker
   * logger, still logs normally. Registered as a logback turbo filter in
   * logback-spring.xml so it sees every event before it's dispatched. */
 class ClientAbortLogFilter extends TurboFilter {
-    override def decide(marker: Marker,
-                        logger: Logger,
-                        level: Level,
-                        format: String,
-                        params: Array[AnyRef],
-                        t: Throwable): FilterReply = {
+    override def decide(marker: Marker, logger: Logger, level: Level, format: String, params: Array[AnyRef], t: Throwable): FilterReply = {
         if (t != null && isClientAbort(t)) FilterReply.DENY else FilterReply.NEUTRAL
     }
 

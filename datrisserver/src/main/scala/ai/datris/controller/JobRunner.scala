@@ -3,7 +3,7 @@ package ai.datris.controller
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonElement, JsonParser}
@@ -90,12 +90,12 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             }
 
             // Do data quality?
-            if(config.dataQuality != null)
+            if (config.dataQuality != null)
                 new DataQuality(jobContextPreprocessed).process()
 
             // Transformations?
             val jobContextTransform = {
-                if(config.transformation != null)
+                if (config.transformation != null)
                     new Transformation(jobContextPreprocessed).process()
                 else
                     jobContextPreprocessed
@@ -107,7 +107,8 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             // Wrap each destination loader to propagate tenant context to the thread pool
             def withTenant[T](f: => T): T = {
                 if (tenantEnv != null) TenantContext.set(tenantEnv)
-                try { f } finally { TenantContext.clear() }
+                try { f }
+                finally { TenantContext.clear() }
             }
 
             // Wrap a loader's `process()` body for scheduling on destinationEC. Two
@@ -135,55 +136,42 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                 if (config.destination.objectStore != null)
                     Some(runLoader("SparkObjectStoreLoader")(new SparkObjectStoreLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.database != null && config.destination.database.usePostgres)
                     Some(runLoader("PostgresLoader")(new PostgresLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.database != null && config.destination.database.useMongoDB)
                     Some(runLoader("MongoDBLoader")(new MongoDBLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.database != null && config.destination.database.useSnowflake)
                     Some(runLoader("SnowflakeLoader")(new SnowflakeLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.database != null && config.destination.database.useDatabricks)
                     Some(runLoader("DatabricksLoader")(new DatabricksLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.restEndpoint != null)
                     Some(runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextTransform, config.destination.restEndpoint).process()))
                 else None,
-
                 if (config.destination.kafka != null)
                     Some(runLoader("KafkaLoader")(new KafkaLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.activeMQ != null)
                     Some(runLoader("ActiveMQLoader")(new ActiveMQLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.qdrant != null)
                     Some(runLoader("QdrantLoader")(new QdrantLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.weaviate != null)
                     Some(runLoader("WeaviateLoader")(new WeaviateLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.pgvector != null)
                     Some(runLoader("PGVectorLoader")(new PGVectorLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.milvus != null)
                     Some(runLoader("MilvusLoader")(new MilvusLoader(jobContextTransform).process()))
                 else None,
-
                 if (config.destination.chroma != null)
                     Some(runLoader("ChromaLoader")(new ChromaLoader(jobContextTransform).process()))
                 else None
-
             ).flatten
 
             Await.result(Future.sequence(destinationFutures), Duration(JobRunner.destinationTimeoutMinutes, "minutes"))

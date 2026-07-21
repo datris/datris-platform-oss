@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatabaseAttributes, PipelineConfig, DatrisEnvironment, DatrisException}
 import ai.datris.model._
@@ -24,18 +24,17 @@ class DataPuller {
 
             // Attempt a pull?
             val now = new Date()
-            if(now.compareTo(nextPullDate) > 0) {
+            if (now.compareTo(nextPullDate) > 0) {
                 val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipelinePull.pipeline)
 
                 // Before we pull the data, save the actual pull data date and generate the next pull date from the cron expression
                 val generatedNextPullDate = PipelinePullTableUtil.generateNextPullDate(config.source.databaseAttributes.cronExpression)
 
                 val (data, lastTimestamp) = pull(config, pipelinePull)
-                if(data == null) {
+                if (data == null) {
                     // Re-initialize the data pull table to reset the next pull date request
                     PipelinePullTableUtil.update(config.name, generatedNextPullDate, null)
-                }
-                else {
+                } else {
                     // Re-initialize the data pull table to reset the next pull date request and the last pull date
                     PipelinePullTableUtil.update(config.name, generatedNextPullDate, lastTimestamp)
 
@@ -58,10 +57,10 @@ class DataPuller {
 
         val connection = getDatabaseConnection(databaseAttributes)
         val rows = new util.ArrayList[String]()
-        var lastTimestamp:String = null
+        var lastTimestamp: String = null
 
         val outputDelimiter = {
-            if(databaseAttributes.outputDelimiter == null)
+            if (databaseAttributes.outputDelimiter == null)
                 ","
             else
                 databaseAttributes.outputDelimiter
@@ -71,17 +70,16 @@ class DataPuller {
         var resultSet: java.sql.ResultSet = null
         try {
             val sql = new StringBuilder()
-            if(databaseAttributes.sqlOverride != null) {
+            if (databaseAttributes.sqlOverride != null) {
                 sql.append(databaseAttributes.sqlOverride)
-            }
-            else {
+            } else {
                 val fieldNames = getFieldNames(config)
                 sql.append("select ")
                 sql.append(fieldNames.mkString(","))
                 sql.append(" from ")
-                if(databaseAttributes.database != null)
+                if (databaseAttributes.database != null)
                     sql.append(databaseAttributes.database + ".")
-                if(databaseAttributes.schema != null)
+                if (databaseAttributes.schema != null)
                     sql.append(databaseAttributes.schema + ".")
                 sql.append(databaseAttributes.table)
                 if (pipelinePull.lastPullTimestampUsed != null) {
@@ -97,52 +95,54 @@ class DataPuller {
             resultSet = preparedStatement.executeQuery()
 
             val resultSetMetadata = resultSet.getMetaData
-            while(resultSet.next()) {
-                val row = (1 until resultSetMetadata.getColumnCount + 1).toList.map(index => {
-                    // TODO - Consolidate later to use the SQLUtil.getResultSet
-                    val dataType = resultSetMetadata.getColumnType(index)
-                    val columnName = resultSetMetadata.getColumnName(index)
-                    dataType match {
-                        case Types.BOOLEAN | Types.BIT =>
-                            resultSet.getBoolean(index).toString
-                        case Types.TINYINT | Types.SMALLINT | Types.INTEGER =>
-                            resultSet.getInt(index).toString
-                        case Types.BIGINT =>
-                            resultSet.getLong(index).toString
-                        case Types.NUMERIC | Types.DECIMAL =>
-                            resultSet.getBigDecimal(index).toString
-                        case Types.REAL =>
-                            resultSet.getFloat(index).toString
-                        case Types.FLOAT | Types.DOUBLE =>
-                            resultSet.getDouble(index).toString
-                        case Types.TIME | Types.TIME_WITH_TIMEZONE =>
-                            resultSet.getTime(index).toString
-                        case Types.TIMESTAMP | Types.TIMESTAMP_WITH_TIMEZONE =>
-                            if(columnName.compareToIgnoreCase(databaseAttributes.timestampFieldName) == 0) {
-                                val timestamp = resultSet.getTimestamp(index)
-                                if(timestamp == null)
-                                    null
-                                else {
-                                    val formatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS")
-                                    val timestampAsString = formatter.format(timestamp)
-                                    if(timestamp.toString.length > timestampAsString.length)
-                                        timestamp.toString
-                                    else
-                                        timestampAsString
+            while (resultSet.next()) {
+                val row =
+                    (1 until resultSetMetadata.getColumnCount + 1).toList.map(index => {
+                        // TODO - Consolidate later to use the SQLUtil.getResultSet
+                        val dataType = resultSetMetadata.getColumnType(index)
+                        val columnName = resultSetMetadata.getColumnName(index)
+                        dataType match {
+                            case Types.BOOLEAN | Types.BIT =>
+                                resultSet.getBoolean(index).toString
+                            case Types.TINYINT | Types.SMALLINT | Types.INTEGER =>
+                                resultSet.getInt(index).toString
+                            case Types.BIGINT =>
+                                resultSet.getLong(index).toString
+                            case Types.NUMERIC | Types.DECIMAL =>
+                                resultSet.getBigDecimal(index).toString
+                            case Types.REAL =>
+                                resultSet.getFloat(index).toString
+                            case Types.FLOAT | Types.DOUBLE =>
+                                resultSet.getDouble(index).toString
+                            case Types.TIME | Types.TIME_WITH_TIMEZONE =>
+                                resultSet.getTime(index).toString
+                            case Types.TIMESTAMP | Types.TIMESTAMP_WITH_TIMEZONE =>
+                                if (columnName.compareToIgnoreCase(databaseAttributes.timestampFieldName) == 0) {
+                                    val timestamp = resultSet.getTimestamp(index)
+                                    if (timestamp == null)
+                                        null
+                                    else {
+                                        val formatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS")
+                                        val timestampAsString = formatter.format(timestamp)
+                                        if (timestamp.toString.length > timestampAsString.length)
+                                            timestamp.toString
+                                        else
+                                            timestampAsString
+                                    }
+                                } else {
+                                    val timestamp = resultSet.getTimestamp(index)
+                                    if (timestamp == null) null else timestamp.toString
                                 }
-                            }
-                            else {
-                                val timestamp = resultSet.getTimestamp(index)
-                                if(timestamp == null) null else timestamp.toString
-                            }
-                        case Types.DATE =>
-                            resultSet.getDate(index).toString
-                        case Types.CHAR | Types.VARCHAR | Types.LONGVARCHAR =>
-                            resultSet.getString(index)
-                        case _ =>
-                            throw new DatrisException("Column type name: " + resultSetMetadata.getColumnTypeName(index) + ",column type: " + resultSetMetadata.getColumnType(index) + " is not currently supported, please contact customer support")
-                    }
-                })
+                            case Types.DATE =>
+                                resultSet.getDate(index).toString
+                            case Types.CHAR | Types.VARCHAR | Types.LONGVARCHAR =>
+                                resultSet.getString(index)
+                            case _ =>
+                                throw new DatrisException("Column type name: " + resultSetMetadata.getColumnTypeName(
+                                    index
+                                ) + ",column type: " + resultSetMetadata.getColumnType(index) + " is not currently supported, please contact customer support")
+                        }
+                    })
                 lastTimestamp = row.last
 
                 // Drop the timestamp column at the end
@@ -150,14 +150,13 @@ class DataPuller {
 
                 rows.add(rowWithDelimiter)
             }
-        }
-        finally {
-            if(resultSet != null) resultSet.close()
-            if(preparedStatement != null) preparedStatement.close()
+        } finally {
+            if (resultSet != null) resultSet.close()
+            if (preparedStatement != null) preparedStatement.close()
             connection.close()
         }
 
-        if(rows.size() == 0)
+        if (rows.size() == 0)
             (null, null)
         else
             (rows.asScala.mkString("\n"), lastTimestamp)
@@ -166,40 +165,37 @@ class DataPuller {
     private def getDatabaseConnection(databaseAttributes: DatabaseAttributes): Connection = {
         // Grab the secrets
         val (secrets, secretsName) = {
-            if(databaseAttributes.postgresSecretsName != null) {
+            if (databaseAttributes.postgresSecretsName != null) {
                 Class.forName("org.postgresql.Driver")
 
                 val secrets = SecretsUtil.getSecretMap(databaseAttributes.postgresSecretsName)
                     .getOrElse(throw new DatrisException("Secrets not found for secret name: " + databaseAttributes.postgresSecretsName))
                 (secrets, databaseAttributes.postgresSecretsName)
-            }
-            else if(databaseAttributes.mysqlSecretsName != null) {
+            } else if (databaseAttributes.mysqlSecretsName != null) {
                 Class.forName("com.mysql.cj.jdbc.Driver")
 
                 val secrets = SecretsUtil.getSecretMap(databaseAttributes.mysqlSecretsName)
                     .getOrElse(throw new DatrisException("Secrets not found for secret name: " + databaseAttributes.mysqlSecretsName))
                 (secrets, databaseAttributes.mysqlSecretsName)
-            }
-            else if(databaseAttributes.mssqlSecretsName != null) {
+            } else if (databaseAttributes.mssqlSecretsName != null) {
                 Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
 
                 val secrets = SecretsUtil.getSecretMap(databaseAttributes.mssqlSecretsName)
                     .getOrElse(throw new DatrisException("Secrets not found for secret name: " + databaseAttributes.mssqlSecretsName))
                 (secrets, databaseAttributes.mssqlSecretsName)
-            }
-            else {
+            } else {
                 throw new DatrisException("The pipeline configuration 'source.databaseAttributes' does not contain a database secrets name")
             }
         }
 
         val jdbcUrl = secrets.get("jdbcUrl")
-        if(jdbcUrl == null)
+        if (jdbcUrl == null)
             throw new DatrisException("The 'jdbcUrl' does not exist in the Secrets Manager secrets: " + secretsName)
         val username = secrets.get("username")
-        if(username == null)
+        if (username == null)
             throw new DatrisException("The 'username' does not exist in the Secrets Manager secrets: " + secretsName)
         val password = secrets.get("password")
-        if(password == null)
+        if (password == null)
             throw new DatrisException("The 'password' does not exist in the Secrets Manager secrets: " + secretsName)
 
         DriverManager.getConnection(jdbcUrl, username, password)

@@ -3,7 +3,7 @@ package ai.datris
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model._
 import ai.datris.util.{PipelineConfigIO, NotificationUtil, SecretsUtil, SessionStore, UserStore}
@@ -145,14 +145,14 @@ class StartupRunner extends ApplicationRunner {
     var versionCap: Int = _
 
     @Override
-    def run(args: ApplicationArguments): Unit =  {
+    def run(args: ApplicationArguments): Unit = {
         initDatrisEnvironment()
         initUserAuth()
         // Seed v1 definition snapshots for any pre-versioning taps/pipelines so
         // their version history isn't empty. Idempotent — skips entities that
         // already have version records.
         ai.datris.util.VersionBackfill.run()
-        if(kafkaConsumerEnabled)
+        if (kafkaConsumerEnabled)
             initKafkaConsumerRunner()
     }
 
@@ -190,7 +190,7 @@ class StartupRunner extends ApplicationRunner {
         val pipelinePullTableName = environment + "-data-pull"
 
         val kafkaConsumerConfig = {
-            if(kafkaConsumerEnabled) {
+            if (kafkaConsumerEnabled) {
                 KafkaConsumerConfig(
                     kafkaConsumerEnabled,
                     kafkaConsumerBootstrapServer,
@@ -198,8 +198,7 @@ class StartupRunner extends ApplicationRunner {
                     kafkaConsumerPollingInterval,
                     kafkaConsumerTopicPrefix
                 )
-            }
-            else
+            } else
                 null
         }
 
@@ -261,10 +260,10 @@ class StartupRunner extends ApplicationRunner {
             val secret = SecretsUtil.getSecretMap(minIOSecretName)
                 .getOrElse(throw new DatrisException("MinIO secret not found, secret name: " + minIOSecretName))
             val accessKey = secret.get("accessKey")
-            if(accessKey == null)
+            if (accessKey == null)
                 throw new DatrisException("MinIO accessKey not found in the Secrets Manager, secret: " + minIOSecretName)
             val secretKey = secret.get("secretKey")
-            if(secretKey == null)
+            if (secretKey == null)
                 throw new DatrisException("MinIO secretKey not found in the Secrets Manager, secret: " + minIOSecretName)
             MinIOConfig(
                 minioServer,
@@ -277,21 +276,22 @@ class StartupRunner extends ApplicationRunner {
             val secret = SecretsUtil.getSecretMap(activeMQSecretName)
                 .getOrElse(throw new DatrisException("ActiveMQ secret not found, secret name: " + activeMQSecretName))
             val username = secret.get("username")
-            if(username == null)
+            if (username == null)
                 throw new DatrisException("ActiveMQ username not found in the Secrets Manager, secret: " + activeMQSecretName)
             val password = secret.get("password")
-            if(password == null)
+            if (password == null)
                 throw new DatrisException("ActiveMQ password not found in the Secrets Manager, secret: " + activeMQSecretName)
             ActiveMQConfig(
                 activeMQServer,
                 username,
-                password)
+                password
+            )
         }
         DatrisEnvironment.init(DatrisEnvironment.values.copy(minIOConfig = minIOConfig, activeMQConfig = activeMQConfig))
 
         // And Notifications, send pipeline notifications?
         val pipelineTopic = {
-            if(sendPipelineNotifications)
+            if (sendPipelineNotifications)
                 "VirtualTopic." + environment + "-pipeline-notification"
             else
                 null
@@ -302,7 +302,9 @@ class StartupRunner extends ApplicationRunner {
         if (!aiEnabled)
             throw new DatrisException("AI is required but not enabled. Set 'ai.enabled: true' in application.yaml")
         if (aiPrimarySecretName == null || aiPrimarySecretName.isEmpty)
-            throw new DatrisException("AI is enabled but no primary secret is configured. Set 'ai.aiPrimary.secretName' in application.yaml (e.g., 'oss/ai-primary')")
+            throw new DatrisException(
+                "AI is enabled but no primary secret is configured. Set 'ai.aiPrimary.secretName' in application.yaml (e.g., 'oss/ai-primary')"
+            )
 
         val aiConfig = loadAiConfigFromSecret(aiPrimarySecretName, "ai-primary", required = true).get
         logger.info("AI primary configured: " + aiConfig.provider + ", model: " + aiConfig.model + ", endpoint: " + aiConfig.endpoint)
@@ -321,9 +323,19 @@ class StartupRunner extends ApplicationRunner {
         val webSearchConfig: Option[WebSearchConfig] =
             if (webSearchSecretName == null || webSearchSecretName.isEmpty) None
             else loadWebSearchConfigFromSecret(webSearchSecretName)
-        webSearchConfig.foreach(c => logger.info("Web search configured: provider=" + c.provider + ", model=" + c.model + ", enabled=" + c.enabled + ", maxUses=" + c.maxUses))
+        webSearchConfig.foreach(c =>
+            logger.info("Web search configured: provider=" + c.provider + ", model=" + c.model + ", enabled=" + c.enabled + ", maxUses=" + c.maxUses)
+        )
 
-        DatrisEnvironment.init(DatrisEnvironment.values.copy(initialized = true, pipelineTopic = pipelineTopic, aiConfig = aiConfig, codegenAiConfig = codegenAiConfig, webSearchConfig = webSearchConfig, aiEnabled = aiEnabled, extendedThinking = extendedThinking))
+        DatrisEnvironment.init(DatrisEnvironment.values.copy(
+            initialized = true,
+            pipelineTopic = pipelineTopic,
+            aiConfig = aiConfig,
+            codegenAiConfig = codegenAiConfig,
+            webSearchConfig = webSearchConfig,
+            aiEnabled = aiEnabled,
+            extendedThinking = extendedThinking
+        ))
     }
 
     /** Load a WebSearchConfig from a self-describing Vault secret. Mirrors the
@@ -334,15 +346,19 @@ class StartupRunner extends ApplicationRunner {
         SecretsUtil.getSecretMap(secretName).flatMap { secret =>
             val provider = Option(secret.get("provider")).map(_.trim.toLowerCase).getOrElse("")
             if (!Seq("anthropic", "openai").contains(provider)) {
-                logger.warn("Web search secret " + secretName + " has missing or invalid provider: '" + provider + "' — disabling web search. Valid values are: anthropic, openai")
+                logger.warn(
+                    "Web search secret " + secretName + " has missing or invalid provider: '" + provider + "' — disabling web search. Valid values are: anthropic, openai"
+                )
                 None
             } else {
-                val enabled  = Option(secret.get("enabled")).exists(_.trim.equalsIgnoreCase("true"))
+                val enabled = Option(secret.get("enabled")).exists(_.trim.equalsIgnoreCase("true"))
                 val endpoint = Option(secret.get("endpoint")).map(_.trim).getOrElse("")
-                val model    = Option(secret.get("model")).map(_.trim).getOrElse("")
-                val rawKey   = Option(secret.get("apiKey")).getOrElse("")
-                val version  = Option(secret.get("version")).getOrElse("")
-                val maxUses  = try Option(secret.get("maxUses")).map(_.trim.toInt).getOrElse(3) catch { case _: Exception => 3 }
+                val model = Option(secret.get("model")).map(_.trim).getOrElse("")
+                val rawKey = Option(secret.get("apiKey")).getOrElse("")
+                val version = Option(secret.get("version")).getOrElse("")
+                val maxUses =
+                    try Option(secret.get("maxUses")).map(_.trim.toInt).getOrElse(3)
+                    catch { case _: Exception => 3 }
                 val apiKey = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant, DatrisEnvironment.values.environment)
                 if (apiKey != rawKey && apiKey.nonEmpty)
                     logger.info("Web search apiKey resolved from the shared key store or " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")
@@ -376,7 +392,9 @@ class StartupRunner extends ApplicationRunner {
             else return None
         }
         if (!Seq("anthropic", "openai", "ollama").contains(provider.toLowerCase))
-            throw new DatrisException("Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, ollama")
+            throw new DatrisException(
+                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, ollama"
+            )
         if (endpoint.isEmpty) {
             if (required) throw new DatrisException("'endpoint' not found in AI " + label + " secret: " + secretName)
             else return None
@@ -411,11 +429,11 @@ class StartupRunner extends ApplicationRunner {
         // Find the pipeline configurations with streaming sources
         val configs = PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName)
         val streamingConfigs = configs.filter(c => {
-            c.source.streamAttributes != null && c.source.streamAttributes.`type`.compareToIgnoreCase("kafka") ==0
+            c.source.streamAttributes != null && c.source.streamAttributes.`type`.compareToIgnoreCase("kafka") == 0
         })
         val topicNames = streamingConfigs.map(c => {
             val topicPrefix = {
-                if(DatrisEnvironment.values.kafkaConsumerConfig.topicPrefix != null && DatrisEnvironment.values.kafkaConsumerConfig.topicPrefix.nonEmpty)
+                if (DatrisEnvironment.values.kafkaConsumerConfig.topicPrefix != null && DatrisEnvironment.values.kafkaConsumerConfig.topicPrefix.nonEmpty)
                     DatrisEnvironment.values.kafkaConsumerConfig.topicPrefix
                 else
                     ""

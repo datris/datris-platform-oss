@@ -3,7 +3,7 @@ package ai.datris.config
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, TenantContext}
 import ai.datris.util.APIKeyValidator
@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component
 import org.springframework.web.servlet.HandlerInterceptor
 
 object TenantInterceptor {
+
     /** Request attribute name under which the ResolvedKey is stored.
       * Controllers and the CapabilityInterceptor read it via
       * `request.getAttribute(TenantInterceptor.ResolvedKeyAttr)`. */

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{Gson, JsonObject}
 import io.milvus.v2.client.{ConnectConfig, MilvusClientV2}
@@ -29,7 +29,9 @@ class MilvusLoader(jobContext: JobContext) {
         statusUtil.info("begin", "Process started")
 
         if (jobContext.data.rawBytes == null)
-            throw new DatrisException("Milvus destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration.")
+            throw new DatrisException(
+                "Milvus destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration."
+            )
 
         // Extract text from the document
         val filename = if (jobContext.metadata != null) jobContext.metadata.dataFileName else ""
@@ -41,13 +43,15 @@ class MilvusLoader(jobContext: JobContext) {
 
         // Chunk the document
         val chunkingConfig = if (milvusConfig.chunking != null) milvusConfig.chunking
-            else new ai.datris.model.ChunkingConfig()
+        else new ai.datris.model.ChunkingConfig()
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
         // Get configs — use tenant secret names if in multi-tenant mode
-        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else milvusConfig.embeddingSecretName
-        val milvusSecretName = if (DatrisEnvironment.current.milvusSecretName != null) DatrisEnvironment.current.milvusSecretName else milvusConfig.milvusSecretName
+        val embeddingSecretName =
+            if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else milvusConfig.embeddingSecretName
+        val milvusSecretName =
+            if (DatrisEnvironment.current.milvusSecretName != null) DatrisEnvironment.current.milvusSecretName else milvusConfig.milvusSecretName
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val milvusSecret = SecretsUtil.getSecretMap(milvusSecretName)
             .getOrElse(throw new DatrisException("Milvus secret not found: " + milvusSecretName))
@@ -165,9 +169,10 @@ class MilvusLoader(jobContext: JobContext) {
                 // simultaneously) may have created the collection between our
                 // listCollections check and our createCollection call. Re-check
                 // and swallow if it's there now.
-                val racedIn = try {
-                    client.listCollections().getCollectionNames.contains(collectionName)
-                } catch { case _: Exception => false }
+                val racedIn =
+                    try {
+                        client.listCollections().getCollectionNames.contains(collectionName)
+                    } catch { case _: Exception => false }
                 if (!racedIn) throw e
                 // If a racing session won, still verify its embedding dim matches ours.
                 verifyCollectionDimension(client, collectionName, dimension)
@@ -175,20 +180,21 @@ class MilvusLoader(jobContext: JobContext) {
     }
 
     private def verifyCollectionDimension(client: MilvusClientV2, collectionName: String, dimension: Int): Unit = {
-        val describeResp = try {
-            client.describeCollection(DescribeCollectionReq.builder().collectionName(collectionName).build())
-        } catch {
-            case _: Exception => return  // can't read schema — let insert surface the real error
-        }
+        val describeResp =
+            try {
+                client.describeCollection(DescribeCollectionReq.builder().collectionName(collectionName).build())
+            } catch {
+                case _: Exception => return // can't read schema — let insert surface the real error
+            }
         val fields = describeResp.getCollectionSchema.getFieldSchemaList.asScala
         val embeddingField = fields.find(_.getName == "embedding")
         embeddingField.flatMap(f => Option(f.getDimension)).foreach { existing =>
             if (existing.intValue() != dimension) {
                 throw new DatrisException(
                     "Embedding dimension mismatch on collection \"" + collectionName +
-                    "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
-                    "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
-                    collectionName + "\" and re-ingest, or point this pipeline at a new collection."
+                        "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                        "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
+                        collectionName + "\" and re-ingest, or point this pipeline at a new collection."
                 )
             }
         }

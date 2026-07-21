@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
@@ -38,11 +38,11 @@ class HealthCheckAPIController {
 
             val env = DatrisEnvironment.current
             val candidates = Seq(
-                ("qdrant",   env.qdrantSecretName),
+                ("qdrant", env.qdrantSecretName),
                 ("weaviate", env.weaviateSecretName),
                 ("pgvector", env.pgvectorSecretName),
-                ("milvus",   env.milvusSecretName),
-                ("chroma",   env.chromaSecretName)
+                ("milvus", env.milvusSecretName),
+                ("chroma", env.chromaSecretName)
             )
             val available = new java.util.ArrayList[String]()
             candidates.foreach { case (name, secretName) =>
@@ -127,8 +127,7 @@ class HealthCheckAPIController {
 
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(results), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -160,7 +159,7 @@ class HealthCheckAPIController {
         // Probe body lives in PostgresQueryUtil.probeError so the
         // create-pipeline pre-validation uses the exact same reachability test.
         PostgresQueryUtil.probeError() match {
-            case None          => statusUp()
+            case None => statusUp()
             case Some(message) => statusDown(message)
         }
     }
@@ -242,8 +241,10 @@ class HealthCheckAPIController {
             if (username.isDefined && password.isDefined) {
                 props.put("security.protocol", "SASL_PLAINTEXT")
                 props.put("sasl.mechanism", "PLAIN")
-                props.put("sasl.jaas.config",
-                    s"""org.apache.kafka.common.security.plain.PlainLoginModule required username="${username.get}" password="${password.get}";""")
+                props.put(
+                    "sasl.jaas.config",
+                    s"""org.apache.kafka.common.security.plain.PlainLoginModule required username="${username.get}" password="${password.get}";"""
+                )
             }
 
             val producer = new org.apache.kafka.clients.producer.KafkaProducer[String, String](props)

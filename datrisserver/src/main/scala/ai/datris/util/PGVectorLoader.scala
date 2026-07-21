@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{JobContext, DatrisEnvironment, DatrisException}
@@ -25,7 +25,9 @@ class PGVectorLoader(jobContext: JobContext) {
         statusUtil.info("begin", "Process started")
 
         if (jobContext.data.rawBytes == null)
-            throw new DatrisException("pgvector destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration.")
+            throw new DatrisException(
+                "pgvector destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration."
+            )
 
         // Extract text from the document
         val filename = if (jobContext.metadata != null) jobContext.metadata.dataFileName else ""
@@ -37,13 +39,15 @@ class PGVectorLoader(jobContext: JobContext) {
 
         // Chunk the document
         val chunkingConfig = if (pgvectorConfig.chunking != null) pgvectorConfig.chunking
-            else new ai.datris.model.ChunkingConfig()
+        else new ai.datris.model.ChunkingConfig()
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
         // Get configs — use tenant secret names if in multi-tenant mode
-        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else pgvectorConfig.embeddingSecretName
-        val pgvectorSecretName = if (DatrisEnvironment.current.pgvectorSecretName != null) DatrisEnvironment.current.pgvectorSecretName else pgvectorConfig.postgresSecretName
+        val embeddingSecretName =
+            if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else pgvectorConfig.embeddingSecretName
+        val pgvectorSecretName =
+            if (DatrisEnvironment.current.pgvectorSecretName != null) DatrisEnvironment.current.pgvectorSecretName else pgvectorConfig.postgresSecretName
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val pgSecret = SecretsUtil.getSecretMap(pgvectorSecretName)
             .getOrElse(throw new DatrisException("PostgreSQL secret not found: " + pgvectorSecretName))
@@ -204,9 +208,9 @@ class PGVectorLoader(jobContext: JobContext) {
                     if (existing > 0 && existing != dimension) {
                         throw new DatrisException(
                             "Embedding dimension mismatch on table \"" + schemaName + "." + tableName +
-                            "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
-                            "). The stored vectors are incompatible with the new provider. Either drop table \"" +
-                            schemaName + "." + tableName + "\" and re-ingest, or point this pipeline at a new table."
+                                "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                                "). The stored vectors are incompatible with the new provider. Either drop table \"" +
+                                schemaName + "." + tableName + "\" and re-ingest, or point this pipeline at a new table."
                         )
                     }
                 }

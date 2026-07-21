@@ -3,7 +3,7 @@ package ai.datris.model
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 /** A UI user. Independent of the x-api-key system — humans log in with username + password,
   * programmatic clients (CLI, MCP) keep using x-api-key.
@@ -23,7 +23,7 @@ case class User(
 }
 
 object User {
-    val RoleAdmin  = "admin"
+    val RoleAdmin = "admin"
     val RoleEditor = "editor"
     val RoleViewer = "viewer"
 

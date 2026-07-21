@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonParser}
@@ -25,9 +25,11 @@ class ConfigAPIController {
     private val VALID_SCHEMA_TYPES = Set("json-schema", "xsd")
 
     @PostMapping(path = Array("/config/upload"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def uploadConfigFile(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                         @RequestParam("type") fileType: String,
-                         @RequestPart("file") file: MultipartFile): ResponseEntity[String] = {
+    def uploadConfigFile(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam("type") fileType: String,
+        @RequestPart("file") file: MultipartFile
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /config/upload called, type: " + fileType + ", filename: " + file.getOriginalFilename)
             APIKeyValidator.validate(apiKey)
@@ -52,17 +54,19 @@ class ConfigAPIController {
             response.put("filename", filename)
             response.put("path", "s3://" + bucket + "/" + key)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
         }
     }
 
-    @PostMapping(path = Array("/config/generate-schema"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def generateSchema(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestBody body: String): ResponseEntity[String] = {
+    @PostMapping(
+        path = Array("/config/generate-schema"),
+        consumes = Array(MediaType.APPLICATION_JSON_VALUE),
+        produces = Array(MediaType.APPLICATION_JSON_VALUE)
+    )
+    def generateSchema(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /config/generate-schema called")
             APIKeyValidator.validate(apiKey)
@@ -99,8 +103,7 @@ class ConfigAPIController {
             response.put("path", "s3://" + bucket + "/" + key)
             response.put("schema", schema)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))

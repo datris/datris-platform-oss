@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.Gson
@@ -21,22 +21,27 @@ class SearchAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[SearchAPIController])
 
     @PostMapping(path = Array("/search/qdrant"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def searchQdrant(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def searchQdrant(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /search/qdrant called")
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "documents")
-            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
-            val qdrantSecretName = tenantSecretName(optString(body, "qdrantSecretName", DatrisEnvironment.current.qdrantSecretName), DatrisEnvironment.current.qdrantSecretName)
+            val embeddingSecretName = tenantSecretName(
+                optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName),
+                DatrisEnvironment.current.embeddingSecretName
+            )
+            val qdrantSecretName =
+                tenantSecretName(optString(body, "qdrantSecretName", DatrisEnvironment.current.qdrantSecretName), DatrisEnvironment.current.qdrantSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = QdrantSearchUtil.search(query, collection, embeddingSecretName, qdrantSecretName, topK)
             buildResponse(results)
-        }
-        catch {
+        } catch {
             case e: DatrisException =>
                 // User-actionable platform errors (e.g. dim mismatch from the
                 // pre-flight check). Return the message cleanly with 400 so
@@ -60,22 +65,29 @@ class SearchAPIController {
     }
 
     @PostMapping(path = Array("/search/weaviate"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def searchWeaviate(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def searchWeaviate(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /search/weaviate called")
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
             val className = optString(body, "className", "Documents")
-            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
-            val weaviateSecretName = tenantSecretName(optString(body, "weaviateSecretName", DatrisEnvironment.current.weaviateSecretName), DatrisEnvironment.current.weaviateSecretName)
+            val embeddingSecretName = tenantSecretName(
+                optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName),
+                DatrisEnvironment.current.embeddingSecretName
+            )
+            val weaviateSecretName = tenantSecretName(
+                optString(body, "weaviateSecretName", DatrisEnvironment.current.weaviateSecretName),
+                DatrisEnvironment.current.weaviateSecretName
+            )
             val topK = optInt(body, "topK", 5)
 
             val results = WeaviateSearchUtil.search(query, className, embeddingSecretName, weaviateSecretName, topK)
             buildResponse(results)
-        }
-        catch {
+        } catch {
             case e: DatrisException =>
                 // User-actionable platform errors (e.g. dim mismatch from the
                 // pre-flight check). Return the message cleanly with 400 so
@@ -99,22 +111,27 @@ class SearchAPIController {
     }
 
     @PostMapping(path = Array("/search/milvus"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def searchMilvus(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def searchMilvus(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /search/milvus called")
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "documents")
-            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
-            val milvusSecretName = tenantSecretName(optString(body, "milvusSecretName", DatrisEnvironment.current.milvusSecretName), DatrisEnvironment.current.milvusSecretName)
+            val embeddingSecretName = tenantSecretName(
+                optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName),
+                DatrisEnvironment.current.embeddingSecretName
+            )
+            val milvusSecretName =
+                tenantSecretName(optString(body, "milvusSecretName", DatrisEnvironment.current.milvusSecretName), DatrisEnvironment.current.milvusSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = MilvusSearchUtil.search(query, collection, embeddingSecretName, milvusSecretName, topK)
             buildResponse(results)
-        }
-        catch {
+        } catch {
             case e: DatrisException =>
                 // User-actionable platform errors (e.g. dim mismatch from the
                 // pre-flight check). Return the message cleanly with 400 so
@@ -138,22 +155,27 @@ class SearchAPIController {
     }
 
     @PostMapping(path = Array("/search/chroma"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def searchChroma(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def searchChroma(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /search/chroma called")
             APIKeyValidator.validate(apiKey)
 
             val query = requireString(body, "query")
             val collection = optString(body, "collection", "documents")
-            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
-            val chromaSecretName = tenantSecretName(optString(body, "chromaSecretName", DatrisEnvironment.current.chromaSecretName), DatrisEnvironment.current.chromaSecretName)
+            val embeddingSecretName = tenantSecretName(
+                optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName),
+                DatrisEnvironment.current.embeddingSecretName
+            )
+            val chromaSecretName =
+                tenantSecretName(optString(body, "chromaSecretName", DatrisEnvironment.current.chromaSecretName), DatrisEnvironment.current.chromaSecretName)
             val topK = optInt(body, "topK", 5)
 
             val results = ChromaSearchUtil.search(query, collection, embeddingSecretName, chromaSecretName, topK)
             buildResponse(results)
-        }
-        catch {
+        } catch {
             case e: DatrisException =>
                 // User-actionable platform errors (e.g. dim mismatch from the
                 // pre-flight check). Return the message cleanly with 400 so
@@ -177,8 +199,10 @@ class SearchAPIController {
     }
 
     @PostMapping(path = Array("/search/pgvector"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def searchPgvector(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def searchPgvector(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /search/pgvector called")
             APIKeyValidator.validate(apiKey)
@@ -186,14 +210,19 @@ class SearchAPIController {
             val query = requireString(body, "query")
             val table = optString(body, "table", "documents")
             val schema = optString(body, "schema", "public")
-            val embeddingSecretName = tenantSecretName(optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName), DatrisEnvironment.current.embeddingSecretName)
-            val postgresSecretName = tenantSecretName(optString(body, "postgresSecretName", DatrisEnvironment.current.pgvectorSecretName), DatrisEnvironment.current.pgvectorSecretName)
+            val embeddingSecretName = tenantSecretName(
+                optString(body, "embeddingSecretName", DatrisEnvironment.current.embeddingSecretName),
+                DatrisEnvironment.current.embeddingSecretName
+            )
+            val postgresSecretName = tenantSecretName(
+                optString(body, "postgresSecretName", DatrisEnvironment.current.pgvectorSecretName),
+                DatrisEnvironment.current.pgvectorSecretName
+            )
             val topK = optInt(body, "topK", 5)
 
             val results = PGVectorSearchUtil.search(query, table, embeddingSecretName, postgresSecretName, schema, topK)
             buildResponse(results)
-        }
-        catch {
+        } catch {
             case e: DatrisException =>
                 // User-actionable platform errors (e.g. dim mismatch from the
                 // pre-flight check). Return the message cleanly with 400 so
@@ -258,9 +287,11 @@ class SearchAPIController {
         while (cur != null) {
             val msg = Option(cur.getMessage).getOrElse("")
             val lower = msg.toLowerCase
-            if (lower.contains("different vector dimensions") ||
+            if (
+                lower.contains("different vector dimensions") ||
                 lower.contains("vector dimension") ||
-                (lower.contains("dimension") && (lower.contains("mismatch") || lower.contains("does not match")))) {
+                (lower.contains("dimension") && (lower.contains("mismatch") || lower.contains("does not match")))
+            ) {
                 return Some(msg)
             }
             cur = cur.getCause

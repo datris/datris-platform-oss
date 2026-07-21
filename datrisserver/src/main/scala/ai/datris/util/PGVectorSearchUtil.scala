@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.slf4j.{Logger, LoggerFactory}
@@ -15,9 +15,14 @@ import scala.collection.JavaConverters._
 object PGVectorSearchUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
-    def search(query: String, table: String, embeddingSecretName: String,
-               postgresSecretName: String, schema: String = "public",
-               topK: Int = 5): java.util.List[java.util.Map[String, Any]] = {
+    def search(
+        query: String,
+        table: String,
+        embeddingSecretName: String,
+        postgresSecretName: String,
+        schema: String = "public",
+        topK: Int = 5
+    ): java.util.List[java.util.Map[String, Any]] = {
 
         if (query == null || query.trim.isEmpty)
             throw new DatrisException("Search query cannot be empty")
@@ -54,22 +59,23 @@ object PGVectorSearchUtil {
             // dimensions X and Y" exception that surfaces as a stack trace.
             val storedDimStmt = conn.prepareStatement(
                 "SELECT atttypmod FROM pg_attribute " +
-                "WHERE attrelid = (?::regclass) AND attname = 'embedding' AND NOT attisdropped"
+                    "WHERE attrelid = (?::regclass) AND attname = 'embedding' AND NOT attisdropped"
             )
             storedDimStmt.setString(1, "\"" + schema + "\".\"" + table + "\"")
-            val storedDim: Option[Int] = try {
-                val rs = storedDimStmt.executeQuery()
-                val v = if (rs.next()) Some(rs.getInt(1)) else None
-                rs.close()
-                v.filter(_ > 0)
-            } finally storedDimStmt.close()
+            val storedDim: Option[Int] =
+                try {
+                    val rs = storedDimStmt.executeQuery()
+                    val v = if (rs.next()) Some(rs.getInt(1)) else None
+                    rs.close()
+                    v.filter(_ > 0)
+                } finally storedDimStmt.close()
 
             storedDim.foreach { dim =>
                 if (dim != queryEmbedding.length)
                     throw new DatrisException(
                         s"Vector dimension mismatch on $schema.$table: collection stores $dim-dim vectors but the current embedding model " +
-                        s"('${embeddingConfig.model}' at ${embeddingConfig.endpoint}) produces ${queryEmbedding.length}-dim vectors. " +
-                        s"Switch the embedding provider in Configuration to one that produces $dim-dim vectors, or re-ingest the collection under the current provider."
+                            s"('${embeddingConfig.model}' at ${embeddingConfig.endpoint}) produces ${queryEmbedding.length}-dim vectors. " +
+                            s"Switch the embedding provider in Configuration to one that produces $dim-dim vectors, or re-ingest the collection under the current provider."
                     )
             }
 

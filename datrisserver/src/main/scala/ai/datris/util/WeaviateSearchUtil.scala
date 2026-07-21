@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import io.weaviate.client.{Config => WeaviateClientConfig, WeaviateClient}
 import io.weaviate.client.v1.graphql.query.argument.NearVectorArgument
@@ -15,8 +15,13 @@ import scala.collection.JavaConverters._
 object WeaviateSearchUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
-    def search(query: String, className: String, embeddingSecretName: String,
-               weaviateSecretName: String, topK: Int = 5): java.util.List[java.util.Map[String, Any]] = {
+    def search(
+        query: String,
+        className: String,
+        embeddingSecretName: String,
+        weaviateSecretName: String,
+        topK: Int = 5
+    ): java.util.List[java.util.Map[String, Any]] = {
 
         if (query == null || query.trim.isEmpty)
             throw new DatrisException("Search query cannot be empty")

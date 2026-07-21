@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.IterationRecord
 import com.google.gson.{Gson, JsonParser}
@@ -46,9 +46,9 @@ object IterationHistoryPromptBuilder {
         val header = "PRIOR ATTEMPTS in this session (most recent first):\n\n"
         val footer =
             "\n\nCRITICAL guidance from prior attempts:\n" +
-            "- Do NOT repeat fixes that already failed. If a strategy was tried and produced the same class of error, choose a different approach.\n" +
-            "- Preserve constraints introduced by prior iterations (e.g. rate-limit awareness, retry logic, burst protection, pagination handling). Their presence means they were either user-requested or load-bearing — removing them re-introduces the original failure.\n" +
-            "- If the prior diagnosis was wrong, identify why and pursue a different root cause.\n\n"
+                "- Do NOT repeat fixes that already failed. If a strategy was tried and produced the same class of error, choose a different approach.\n" +
+                "- Preserve constraints introduced by prior iterations (e.g. rate-limit awareness, retry logic, burst protection, pagination handling). Their presence means they were either user-requested or load-bearing — removing them re-introduces the original failure.\n" +
+                "- If the prior diagnosis was wrong, identify why and pursue a different root cause.\n\n"
         header + sections.mkString("\n\n") + footer
     }
 

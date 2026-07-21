@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.mongodb.client.model.{Filters, ReplaceOptions}
 import com.mongodb.client.{ClientSession, MongoClient, MongoDatabase}
@@ -63,7 +63,16 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         }
     }
 
-    override def putItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null, extraFields: java.util.Map[String, AnyRef] = null): Unit = {
+    override def putItemJSON(
+        tableName: String,
+        keyName: String,
+        key: String,
+        valueName: String,
+        value: String,
+        sortKeyName: String = null,
+        sortKeyValue: Number = null,
+        extraFields: java.util.Map[String, AnyRef] = null
+    ): Unit = {
         val collection = database.getCollection(tableName)
         val valueDoc = Document.parse(value)
 
@@ -84,7 +93,15 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         )
     }
 
-    override def updateItemJSON(tableName: String, keyName: String, key: String, valueName: String, value: String, sortKeyName: String = null, sortKeyValue: Number = null): Unit = {
+    override def updateItemJSON(
+        tableName: String,
+        keyName: String,
+        key: String,
+        valueName: String,
+        value: String,
+        sortKeyName: String = null,
+        sortKeyValue: Number = null
+    ): Unit = {
         val collection = database.getCollection(tableName)
         val valueDoc = Document.parse(value)
 
@@ -117,8 +134,13 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
             .toList
     }
 
-    override def getPageOfItemsAsJSON(tableName: String, pageNbr: Int, maxPageSize: Int,
-                                      sortField: String = null, sortDescending: Boolean = true): List[String] = {
+    override def getPageOfItemsAsJSON(
+        tableName: String,
+        pageNbr: Int,
+        maxPageSize: Int,
+        sortField: String = null,
+        sortDescending: Boolean = true
+    ): List[String] = {
         val collection = database.getCollection(tableName)
         var query = collection.find()
         if (sortField != null)
@@ -215,8 +237,7 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
     }
 
     /** Upsert a session-style document with a BSON Date field. Used to slide TTL on session renew. */
-    def upsertWithDateField(tableName: String, keyName: String, key: String, json: String,
-                            dateFieldName: String, dateValueEpochMillis: Long): Unit = {
+    def upsertWithDateField(tableName: String, keyName: String, key: String, json: String, dateFieldName: String, dateValueEpochMillis: Long): Unit = {
         val collection = database.getCollection(tableName)
         val doc = Document.parse(json)
         doc.put(dateFieldName, new java.util.Date(dateValueEpochMillis))
@@ -227,8 +248,7 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         if (sortKeyName != null) {
             val concreteValue: java.lang.Long = sortKeyValue.longValue()
             Filters.and(Filters.eq(keyName, key), Filters.eq(sortKeyName, concreteValue))
-        }
-        else
+        } else
             Filters.eq(keyName, key)
     }
 }

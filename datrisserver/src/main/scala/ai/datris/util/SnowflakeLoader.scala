@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model._
@@ -277,7 +277,8 @@ class SnowflakeLoader(jobContext: JobContext) {
         val existing = scala.collection.mutable.Set[String]()
         val rs = statement.executeQuery(
             s"""SELECT column_name FROM ${ident(db.dbName)}.information_schema.columns
-               |WHERE table_schema = '${sqlLiteral(effectiveName(db.schema))}' AND table_name = '${sqlLiteral(effectiveName(db.table))}'""".stripMargin)
+               |WHERE table_schema = '${sqlLiteral(effectiveName(db.schema))}' AND table_name = '${sqlLiteral(effectiveName(db.table))}'""".stripMargin
+        )
         try {
             while (rs.next()) existing.add(rs.getString(1).toLowerCase)
         } finally {
@@ -301,14 +302,14 @@ class SnowflakeLoader(jobContext: JobContext) {
         if (field.name.equalsIgnoreCase("_json")) "VARIANT"
         else if (field.name.equalsIgnoreCase("_xml")) "VARCHAR"
         else field.`type`.toLowerCase match {
-            case "string"                                 => "VARCHAR"
+            case "string" => "VARCHAR"
             case "int" | "integer" | "tinyint" |
-                 "smallint" | "bigint"                    => "NUMBER(38,0)"
-            case "float" | "double"                       => "FLOAT"
-            case "boolean"                                => "BOOLEAN"
-            case "date"                                   => "DATE"
-            case "timestamp"                              => "TIMESTAMP_NTZ"
-            case _                                        => field.`type`
+                "smallint" | "bigint" => "NUMBER(38,0)"
+            case "float" | "double" => "FLOAT"
+            case "boolean" => "BOOLEAN"
+            case "date" => "DATE"
+            case "timestamp" => "TIMESTAMP_NTZ"
+            case _ => field.`type`
         }
     }
 

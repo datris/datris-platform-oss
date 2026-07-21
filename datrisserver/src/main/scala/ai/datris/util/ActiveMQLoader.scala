@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{Notification, DatrisEnvironment, DatrisException}
@@ -44,10 +44,12 @@ class ActiveMQLoader(jobContext: JobContext) {
         val header = data.header
 
         val delimiter = {
-            if (config.source != null
+            if (
+                config.source != null
                 && config.source.fileAttributes != null
                 && config.source.fileAttributes.csvAttributes != null
-                && config.source.fileAttributes.csvAttributes.delimiter != null)
+                && config.source.fileAttributes.csvAttributes.delimiter != null
+            )
                 config.source.fileAttributes.csvAttributes.delimiter
             else
                 ","

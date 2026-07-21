@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.DatrisException
 import org.everit.json.schema.loader.SchemaLoader
@@ -41,10 +41,11 @@ object SchemaValidationUtil {
             val schema = schemaFactory.newSchema(new StreamSource(new StringReader(xmlSchema)))
             val validator = schema.newValidator()
             validator.validate(new StreamSource(xmlDataStream))
-        }
-        catch {
+        } catch {
             case e: SAXException =>
-                throw new DatrisException("The XML data did not pass the XML Schema validation against the XML schema: " + schemaFileUrl + ", error: " + e.getMessage)
+                throw new DatrisException(
+                    "The XML data did not pass the XML Schema validation against the XML schema: " + schemaFileUrl + ", error: " + e.getMessage
+                )
         }
     }
 }

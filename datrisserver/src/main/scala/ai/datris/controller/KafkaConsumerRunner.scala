@@ -3,7 +3,7 @@ package ai.datris.controller
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{PipelineConfig, DatrisEnvironment}
 import ai.datris.util.{PipelineConfigIO, ObjectStoreUtil}
@@ -18,9 +18,9 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 class KafkaConsumerRunner(
-                              bootstrapServers: String,
-                              groupId: String
-                          ) extends  Runnable {
+    bootstrapServers: String,
+    groupId: String
+) extends Runnable {
 
     private val logger: Logger = LoggerFactory.getLogger(classOf[KafkaConsumerRunner])
 
@@ -53,7 +53,7 @@ class KafkaConsumerRunner(
     def run(): Unit = {
         logger.info("Kafka consumer started")
 
-        while(true) {
+        while (true) {
             try {
                 if (topics.nonEmpty) {
                     val records: ConsumerRecords[String, String] = consumer.poll(Duration.ofMillis(1000))
@@ -85,7 +85,7 @@ class KafkaConsumerRunner(
         }
         val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
 
-        if(config == null)
+        if (config == null)
             logger.error("Pipeline: " + pipeline + " is not configured in the NoSQL database")
         else
             processData(config, value)
@@ -93,15 +93,14 @@ class KafkaConsumerRunner(
 
     private def processData(config: PipelineConfig, data: String): Unit = {
         // If the incoming data is JSON or XML, process directly
-        if(config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
+        if (config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
             // Start job
             val jobContext = new StreamNotifier().process(config, data)
             GlobalJobContext.addJobContext(jobContext)
-        }
-        else {
+        } else {
             // Write data to a unique path in the -temp bucket
             val tempLocation = "s3://" + DatrisEnvironment.current.environment + "-temp/kafka/" + UUID.randomUUID().toString + "/"
-            val tempFilename = config.name + "." +  UUID.randomUUID().toString + ".tmp"
+            val tempFilename = config.name + "." + UUID.randomUUID().toString + ".tmp"
             val tempUrl = tempLocation + tempFilename
             ObjectStoreUtil.writeBucketObject(ObjectStoreUtil.getBucket(tempUrl), ObjectStoreUtil.getKey(tempUrl), data)
 

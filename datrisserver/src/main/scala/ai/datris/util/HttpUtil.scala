@@ -17,42 +17,67 @@ import scala.util.control.Breaks.{break, breakable}
 
 object HttpUtil {
     def get(url: String, bearerToken: String = null, timeoutMillis: Int = 30000, retry: Boolean = false, retryWaitMillis: Long = 5000): String = {
-        if(retry)
+        if (retry)
             httpWithRetry("get", url, null, null, bearerToken, null, timeoutMillis, retryWaitMillis)
         else
             http("get", url, null, null, bearerToken, null, timeoutMillis)
     }
 
-    def post(url: String, contentType: String, dataToPost: String, bearerToken: String = null, apiKey: String = null, timeoutMillis: Int = 30000, retry: Boolean = false, retryWaitMillis: Long = 5000): String = {
-        if(retry)
+    def post(
+        url: String,
+        contentType: String,
+        dataToPost: String,
+        bearerToken: String = null,
+        apiKey: String = null,
+        timeoutMillis: Int = 30000,
+        retry: Boolean = false,
+        retryWaitMillis: Long = 5000
+    ): String = {
+        if (retry)
             httpWithRetry("post", url, contentType, dataToPost, bearerToken, apiKey, timeoutMillis, retryWaitMillis)
         else
             http("post", url, contentType, dataToPost, bearerToken, apiKey, timeoutMillis)
     }
 
-    private def http(method: String, url: String, contentType: String, dataToPost: String, bearerToken: String, apiKey: String = null, timeoutMillis: Int): String = {
-        if(method.compareToIgnoreCase("post") == 0)
+    private def http(
+        method: String,
+        url: String,
+        contentType: String,
+        dataToPost: String,
+        bearerToken: String,
+        apiKey: String = null,
+        timeoutMillis: Int
+    ): String = {
+        if (method.compareToIgnoreCase("post") == 0)
             doPost(url, contentType, dataToPost, bearerToken, apiKey, timeoutMillis)
         else
             doGet(url, bearerToken, timeoutMillis)
     }
 
-    private def httpWithRetry(method: String, url: String, contentType: String, dataToPost: String, bearerToken: String, apiKey: String = null, timeoutMillis: Int, retryWaitMillis: Long): String = {
-        var response:String = null
-        var exception:String = null
+    private def httpWithRetry(
+        method: String,
+        url: String,
+        contentType: String,
+        dataToPost: String,
+        bearerToken: String,
+        apiKey: String = null,
+        timeoutMillis: Int,
+        retryWaitMillis: Long
+    ): String = {
+        var response: String = null
+        var exception: String = null
         breakable {
             val millisToWait = Seq(retryWaitMillis, retryWaitMillis, 1000)
-            for(millis <- millisToWait) {
+            for (millis <- millisToWait) {
                 try {
                     response = {
-                        if(method.compareToIgnoreCase("post") == 0)
+                        if (method.compareToIgnoreCase("post") == 0)
                             doPost(url, contentType, dataToPost, bearerToken, apiKey, timeoutMillis)
                         else
                             doGet(url, bearerToken, timeoutMillis)
                     }
                     break
-                }
-                catch {
+                } catch {
                     case e: Exception =>
                         exception = e.getMessage
                         // Wait and try again
@@ -60,7 +85,7 @@ object HttpUtil {
                 }
             }
         }
-        if(response == null)
+        if (response == null)
             throw new DatrisException(exception)
         response
     }
@@ -71,8 +96,8 @@ object HttpUtil {
         try {
             val httpGet = {
                 val http = new HttpGet(url)
-                if(bearerToken != null)
-                    http.addHeader(HttpHeaders.AUTHORIZATION,"Bearer " + bearerToken)
+                if (bearerToken != null)
+                    http.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + bearerToken)
                 http
             }
 
@@ -84,11 +109,10 @@ object HttpUtil {
             httpGet.addHeader(HttpHeaders.ACCEPT, "*/*")
 
             val response = client.execute(httpGet)
-            if(response.getStatusLine.getStatusCode != 200 && response.getStatusLine.getStatusCode != 201)
+            if (response.getStatusLine.getStatusCode != 200 && response.getStatusLine.getStatusCode != 201)
                 throw new DatrisException("HTTP error, status code: " + response.getStatusLine.getStatusCode.toString)
             EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8.name())
-        }
-        finally {
+        } finally {
             client.close()
         }
     }
@@ -99,10 +123,10 @@ object HttpUtil {
         try {
             val httpPost = {
                 val http = new HttpPost(url)
-                if(bearerToken != null) {
-                    http.addHeader(HttpHeaders.AUTHORIZATION,"Bearer " + bearerToken)
+                if (bearerToken != null) {
+                    http.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + bearerToken)
                 }
-                if(apiKey != null) {
+                if (apiKey != null) {
                     http.addHeader("x-api-key", apiKey)
                 }
                 http
@@ -120,36 +144,35 @@ object HttpUtil {
             httpPost.addHeader(HttpHeaders.ACCEPT, "*/*")
 
             val httpResponse = client.execute(httpPost)
-            if(httpResponse.getStatusLine.getStatusCode != 200 && httpResponse.getStatusLine.getStatusCode != 201)
+            if (httpResponse.getStatusLine.getStatusCode != 200 && httpResponse.getStatusLine.getStatusCode != 201)
                 throw new DatrisException("HTTP error, status code: " + httpResponse.getStatusLine.getStatusCode.toString)
 
             val response = new ListBuffer[String]()
             breakable {
                 val reader = new BufferedReader(new InputStreamReader(httpResponse.getEntity.getContent))
-                while(true) {
+                while (true) {
                     val line = reader.readLine()
-                    if(line == null)
+                    if (line == null)
                         break
                     response += line
                 }
             }
             response.mkString
-        }
-        finally {
+        } finally {
             client.close()
         }
     }
 
     private def getHttpClient(url: String): CloseableHttpClient = {
-        if(url.toLowerCase.startsWith("https")) {
+        if (url.toLowerCase.startsWith("https")) {
             val sslsf = new SSLConnectionSocketFactory(
                 SSLContext.getDefault,
                 Array("TLSv1.2"),
                 null,
-                SSLConnectionSocketFactory.getDefaultHostnameVerifier)
+                SSLConnectionSocketFactory.getDefaultHostnameVerifier
+            )
             HttpClients.custom().setSSLSocketFactory(sslsf).build()
-        }
-        else
+        } else
             HttpClients.createDefault
     }
 }

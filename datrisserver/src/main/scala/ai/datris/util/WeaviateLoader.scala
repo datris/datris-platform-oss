@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import io.weaviate.client.{Config => WeaviateClientConfig, WeaviateClient}
@@ -26,7 +26,9 @@ class WeaviateLoader(jobContext: JobContext) {
         statusUtil.info("begin", "Process started")
 
         if (jobContext.data.rawBytes == null)
-            throw new DatrisException("Weaviate destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration.")
+            throw new DatrisException(
+                "Weaviate destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration."
+            )
 
         // Extract text from the document
         val filename = if (jobContext.metadata != null) jobContext.metadata.dataFileName else ""
@@ -38,13 +40,15 @@ class WeaviateLoader(jobContext: JobContext) {
 
         // Chunk the document
         val chunkingConfig = if (weaviateConfig.chunking != null) weaviateConfig.chunking
-            else new ai.datris.model.ChunkingConfig()
+        else new ai.datris.model.ChunkingConfig()
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
         // Get configs — use tenant secret names if in multi-tenant mode
-        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else weaviateConfig.embeddingSecretName
-        val weaviateSecretName = if (DatrisEnvironment.current.weaviateSecretName != null) DatrisEnvironment.current.weaviateSecretName else weaviateConfig.weaviateSecretName
+        val embeddingSecretName =
+            if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else weaviateConfig.embeddingSecretName
+        val weaviateSecretName =
+            if (DatrisEnvironment.current.weaviateSecretName != null) DatrisEnvironment.current.weaviateSecretName else weaviateConfig.weaviateSecretName
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val weaviateSecret = SecretsUtil.getSecretMap(weaviateSecretName)
             .getOrElse(throw new DatrisException("Weaviate secret not found: " + weaviateSecretName))
@@ -153,10 +157,11 @@ class WeaviateLoader(jobContext: JobContext) {
             // Race: a concurrent JobRunner (document taps feed many docs
             // simultaneously) may have created the class between our classGetter
             // check and our classCreator call. Re-check and swallow if it's there now.
-            val racedIn = try {
-                val recheck = client.schema().classGetter().withClassName(className).run()
-                !recheck.hasErrors && recheck.getResult != null
-            } catch { case _: Exception => false }
+            val racedIn =
+                try {
+                    val recheck = client.schema().classGetter().withClassName(className).run()
+                    !recheck.hasErrors && recheck.getResult != null
+                } catch { case _: Exception => false }
             if (!racedIn)
                 throw new DatrisException("Failed to create Weaviate class: " + createResult.getError.getMessages.toString)
             // If a racing session won, still verify its existing vector dim matches ours.
@@ -169,15 +174,16 @@ class WeaviateLoader(jobContext: JobContext) {
     // vector length. If the class is empty (no objects yet) we can't verify,
     // so we proceed and let the first write set the dim naturally.
     private def verifyClassDimension(client: WeaviateClient, className: String, dimension: Int): Unit = {
-        val probe = try {
-            client.data().objectsGetter()
-                .withClassName(className)
-                .withLimit(1)
-                .withVector()
-                .run()
-        } catch {
-            case _: Exception => return
-        }
+        val probe =
+            try {
+                client.data().objectsGetter()
+                    .withClassName(className)
+                    .withLimit(1)
+                    .withVector()
+                    .run()
+            } catch {
+                case _: Exception => return
+            }
         if (probe.hasErrors || probe.getResult == null) return
         val objects = probe.getResult.asScala
         objects.headOption.flatMap(o => Option(o.getVector)).foreach { vector =>
@@ -185,9 +191,9 @@ class WeaviateLoader(jobContext: JobContext) {
             if (existing > 0 && existing != dimension) {
                 throw new DatrisException(
                     "Embedding dimension mismatch on class \"" + className +
-                    "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
-                    "). The stored vectors are incompatible with the new provider. Either drop class \"" +
-                    className + "\" and re-ingest, or point this pipeline at a new class."
+                        "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                        "). The stored vectors are incompatible with the new provider. Either drop class \"" +
+                        className + "\" and re-ingest, or point this pipeline at a new class."
                 )
             }
         }

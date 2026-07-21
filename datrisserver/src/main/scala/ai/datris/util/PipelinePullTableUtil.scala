@@ -11,12 +11,12 @@ import java.util.Date
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 case class PipelinePullTable(
-                               pipeline: String,
-                               json: PipelinePull
-                           )
+    pipeline: String,
+    json: PipelinePull
+)
 
 object PipelinePullTableUtil {
     private val dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS")
@@ -33,7 +33,7 @@ object PipelinePullTableUtil {
     def deleteEntryIfExists(pipeline: String): Unit = {
         // Make sure an entry already exists for the key
         val existing = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline, "json").orNull
-        if(existing != null)
+        if (existing != null)
             NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline)
     }
 
@@ -51,18 +51,20 @@ object PipelinePullTableUtil {
 
         // Get the existing pull information
         val json = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline, "json").orNull
-        if(json == null)
-            throw new DatrisException("The table: " + DatrisEnvironment.current.dataPullTableName + " does not contain an entry for the pipeline: " + pipeline + ", re-register the pipeline with the API")
+        if (json == null)
+            throw new DatrisException(
+                "The table: " + DatrisEnvironment.current.dataPullTableName + " does not contain an entry for the pipeline: " + pipeline + ", re-register the pipeline with the API"
+            )
         val pipelinePull = gson.fromJson(json, classOf[PipelinePull])
 
         val newNextPullDate = {
-            if(nextPullDate != null)
+            if (nextPullDate != null)
                 dateFormatter.format(nextPullDate)
             else
                 pipelinePull.nextPullDate
         }
         val newLastPullTimestampUsed = {
-            if(lastPullTimestampUsed != null)
+            if (lastPullTimestampUsed != null)
                 lastPullTimestampUsed
             else
                 pipelinePull.lastPullTimestampUsed
@@ -75,7 +77,9 @@ object PipelinePullTableUtil {
 
     def getNextPullDate(pipeline: String): Date = {
         val json = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.dataPullTableName, "pipeline", pipeline, "json")
-            .getOrElse(throw new DatrisException("The table: " + DatrisEnvironment.current.dataPullTableName + " does not contain an entry for the pipeline: " + pipeline + ", re-register the pipeline with the API"))
+            .getOrElse(throw new DatrisException(
+                "The table: " + DatrisEnvironment.current.dataPullTableName + " does not contain an entry for the pipeline: " + pipeline + ", re-register the pipeline with the API"
+            ))
         val gson = new Gson()
         val pipelinePull = gson.fromJson(json, classOf[PipelinePull])
         dateFormatter.parse(pipelinePull.nextPullDate)

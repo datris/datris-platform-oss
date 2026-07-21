@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{JsonObject, JsonParser}
 import ai.datris.model.{AIConfig, DatrisException}
@@ -31,27 +31,30 @@ object AgentLoop {
       * (tool-result, done, error) that AIStreamEvent doesn't model. */
     sealed trait LoopEvent
     object LoopEvent {
-        case object IterationStart                                       extends LoopEvent
-        case class  ThinkingDelta(text: String)                          extends LoopEvent
-        case class  TextDelta(text: String)                              extends LoopEvent
-        case class  ToolUseStart(id: String, name: String)               extends LoopEvent
+        case object IterationStart extends LoopEvent
+        case class ThinkingDelta(text: String) extends LoopEvent
+        case class TextDelta(text: String) extends LoopEvent
+        case class ToolUseStart(id: String, name: String) extends LoopEvent
+
         /** Progress while the model composes a tool call's input — the UI shows
           * a live size counter on the running tool card. */
-        case class  InputDelta(id: String, chars: Int)                   extends LoopEvent
-        case class  ToolUseComplete(id: String, name: String, input: JsonObject) extends LoopEvent
-        case class  ToolResult(id: String, name: String, result: String, isError: Boolean) extends LoopEvent
+        case class InputDelta(id: String, chars: Int) extends LoopEvent
+        case class ToolUseComplete(id: String, name: String, input: JsonObject) extends LoopEvent
+        case class ToolResult(id: String, name: String, result: String, isError: Boolean) extends LoopEvent
+
         /** Synthetic tool: agent is asking the user to provide a tap secret via a UI
           * form. The UI renders an inline credentials form on the matching tool card.
           * The loop ends after this so the user can submit; their next chat message
           * resumes the conversation. */
-        case class  SecretRequest(id: String, secretName: String, fieldNames: List[String], reason: String) extends LoopEvent
+        case class SecretRequest(id: String, secretName: String, fieldNames: List[String], reason: String) extends LoopEvent
+
         /** Transient system message — surfaced to the user as a small inline note,
           * not as part of the assistant's textual response. Currently used to tell
           * the user when the model was downgraded mid-request (e.g., Opus → Sonnet
           * after sustained `overloaded_error` from Anthropic). */
-        case class  Notice(message: String)                              extends LoopEvent
-        case object Done                                                 extends LoopEvent
-        case class  Error(message: String)                               extends LoopEvent
+        case class Notice(message: String) extends LoopEvent
+        case object Done extends LoopEvent
+        case class Error(message: String) extends LoopEvent
     }
 
     /** The synthetic tool name the agent calls to ask the user for credentials.
@@ -163,9 +166,13 @@ object AgentLoop {
                     if (response.stopReason == "max_tokens" && autoContinues < MaxAutoContinues) {
                         autoContinues += 1
                         sink(LoopEvent.Notice("Response reached the length limit — continuing automatically…"))
-                        messages = messages :+ ("user", List[AIContentBlock](AIContentBlock.TextBlock(
-                            "Your previous response was cut off at the output length limit. " +
-                            "Continue exactly where you left off — do not repeat what you already said.")))
+                        messages = messages :+ (
+                            "user",
+                            List[AIContentBlock](AIContentBlock.TextBlock(
+                                "Your previous response was cut off at the output length limit. " +
+                                    "Continue exactly where you left off — do not repeat what you already said."
+                            ))
+                        )
                     } else {
                         continue = false
                     }
@@ -196,7 +203,8 @@ object AgentLoop {
                             AIContentBlock.ToolResultBlock(
                                 t.id,
                                 "Credentials request displayed to the user. The user's next message will tell you whether they provided a new secret, picked an existing one, or declined. Wait for their reply before continuing.",
-                                isError = false)
+                                isError = false
+                            )
                         } else {
                             try {
                                 // Substitute staged file bytes for an attachmentId before
@@ -227,8 +235,9 @@ object AgentLoop {
             } else if (iter >= maxIterations) {
                 sink(LoopEvent.Error(
                     "I've used " + maxIterations + " iterations on this turn and need to pause so I don't run away on cost. " +
-                    "I haven't failed — I just hit the per-turn iteration cap. " +
-                    "Send a follow-up (\"keep going\", \"continue\", or specific next-step instructions) and I'll pick up where I left off."))
+                        "I haven't failed — I just hit the per-turn iteration cap. " +
+                        "Send a follow-up (\"keep going\", \"continue\", or specific next-step instructions) and I'll pick up where I left off."
+                ))
                 sink(LoopEvent.Done)
             } else {
                 sink(LoopEvent.Done)
@@ -246,13 +255,13 @@ object AgentLoop {
     /** Adapt AIUtil's stream events to the agent-loop's event vocabulary. They
       * overlap mostly 1:1 — the loop adds tool_result, done, error. */
     private def streamSinkAdapter(out: LoopEvent => Unit): AIStreamEvent => Unit = {
-        case AIStreamEvent.IterationStart                  => // already emitted at iteration top
-        case AIStreamEvent.ThinkingDelta(t)                => out(LoopEvent.ThinkingDelta(t))
-        case AIStreamEvent.TextDelta(t)                    => out(LoopEvent.TextDelta(t))
-        case AIStreamEvent.ToolUseStart(id, name)          => out(LoopEvent.ToolUseStart(id, name))
-        case AIStreamEvent.InputDelta(id, chars)           => out(LoopEvent.InputDelta(id, chars))
-        case AIStreamEvent.ToolUseComplete(id, name, in)   => out(LoopEvent.ToolUseComplete(id, name, in))
-        case AIStreamEvent.Error(msg)                      => out(LoopEvent.Error(msg))
+        case AIStreamEvent.IterationStart => // already emitted at iteration top
+        case AIStreamEvent.ThinkingDelta(t) => out(LoopEvent.ThinkingDelta(t))
+        case AIStreamEvent.TextDelta(t) => out(LoopEvent.TextDelta(t))
+        case AIStreamEvent.ToolUseStart(id, name) => out(LoopEvent.ToolUseStart(id, name))
+        case AIStreamEvent.InputDelta(id, chars) => out(LoopEvent.InputDelta(id, chars))
+        case AIStreamEvent.ToolUseComplete(id, name, in) => out(LoopEvent.ToolUseComplete(id, name, in))
+        case AIStreamEvent.Error(msg) => out(LoopEvent.Error(msg))
     }
 
     /** Substitute a staged file's real base64 `content` (and `filename` if
@@ -327,7 +336,7 @@ object AgentLoop {
       * (name, description, JSON Schema) is identical. */
     private def mcpToAnthropicTool(mcp: JsonObject): JsonObject = {
         val out = new JsonObject()
-        if (mcp.has("name"))        out.addProperty("name", mcp.get("name").getAsString)
+        if (mcp.has("name")) out.addProperty("name", mcp.get("name").getAsString)
         if (mcp.has("description")) out.addProperty("description", mcp.get("description").getAsString)
         val schema =
             if (mcp.has("inputSchema") && !mcp.get("inputSchema").isJsonNull) mcp.get("inputSchema")
@@ -366,7 +375,7 @@ object AgentLoop {
         var emitStreamErrors = false
         val gatedSink: AIStreamEvent => Unit = {
             case AIStreamEvent.Error(_) if !emitStreamErrors => ()
-            case other                                       => sink(other)
+            case other => sink(other)
         }
 
         var lastOverloadError: Throwable = null
@@ -379,7 +388,7 @@ object AgentLoop {
                 val sleepMs = OverloadBackoffMs(attempt - 1)
                 logger.warn(
                     "AgentLoop: Anthropic overloaded; retrying in " + sleepMs +
-                    "ms (retry " + attempt + " of " + OverloadBackoffMs.length + ")"
+                        "ms (retry " + attempt + " of " + OverloadBackoffMs.length + ")"
                 )
                 try Thread.sleep(sleepMs)
                 catch { case _: InterruptedException => throw new DatrisException("Cancelled by user") }
@@ -409,7 +418,7 @@ object AgentLoop {
                 val fallbackCfg = aiConfig.copy(model = fallbackModel)
                 logger.warn(
                     "AgentLoop: Anthropic overloaded after " + OverloadBackoffMs.length +
-                    " retries on " + aiConfig.model + "; falling back to " + fallbackModel + " for this request"
+                        " retries on " + aiConfig.model + "; falling back to " + fallbackModel + " for this request"
                 )
                 notice("Running on " + fallbackModel + " — " + aiConfig.model + " is currently overloaded.")
                 emitStreamErrors = true
@@ -426,7 +435,8 @@ object AgentLoop {
             case None =>
                 // No lighter model to fall back to. Surface the original error.
                 val msg = if (lastOverloadError != null && lastOverloadError.getMessage != null)
-                    lastOverloadError.getMessage else "Anthropic overloaded"
+                    lastOverloadError.getMessage
+                else "Anthropic overloaded"
                 sink(AIStreamEvent.Error(msg))
                 throw (if (lastOverloadError != null) lastOverloadError else new DatrisException(msg))
         }
@@ -452,7 +462,7 @@ object AgentLoop {
       * no-op retry if someone misconfigures it to the same model). */
     private def sonnetFallbackFor(cfg: AIConfig): Option[String] = {
         val provider = if (cfg.provider == null) "" else cfg.provider.toLowerCase
-        val model    = if (cfg.model == null) "" else cfg.model.toLowerCase
+        val model = if (cfg.model == null) "" else cfg.model.toLowerCase
         val isTopTier = model.contains("opus") || model.contains("fable") || model.contains("mythos")
         if (provider == "anthropic" && isTopTier) {
             val fallback = sys.env.getOrElse("ANTHROPIC_OVERLOAD_FALLBACK_MODEL", "claude-sonnet-4-6").trim

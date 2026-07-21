@@ -3,7 +3,7 @@ package ai.datris.model
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 /** MongoDB configuration.
   *
@@ -18,7 +18,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * and MetadataAPIController / PipelineAPIController for the user side.
   */
 case class MongoDBConfig(
-                            connectionString: String,
-                            database: String,
-                            internalDatabase: String
-                        )
+    connectionString: String,
+    database: String,
+    internalDatabase: String
+)

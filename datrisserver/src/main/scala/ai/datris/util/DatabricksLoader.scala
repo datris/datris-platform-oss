@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model._
@@ -42,7 +42,10 @@ class DatabricksLoader(jobContext: JobContext) {
         statusUtil.info("begin", "Loading the data into Databricks catalog: " + db.dbName + ", schema: " + db.schema + ", table: " + db.table)
 
         if (db.useTransaction)
-            statusUtil.info("processing", "Databricks (Delta) has no multi-statement transactions; 'useTransaction' is ignored — each load runs as a single atomic Delta commit")
+            statusUtil.info(
+                "processing",
+                "Databricks (Delta) has no multi-statement transactions; 'useTransaction' is ignored — each load runs as a single atomic Delta commit"
+            )
 
         var dataFile: Path = null
         try {
@@ -252,7 +255,8 @@ class DatabricksLoader(jobContext: JobContext) {
         "escape" -> ("" + '"'),
         "nullValue" -> "",
         "multiLine" -> "true",
-        "inferSchema" -> "false")
+        "inferSchema" -> "false"
+    )
 
     private def readFiles(stagedPath: String): String =
         "read_files('" + sqlLiteral(stagedPath) + "', format => 'csv', " +
@@ -310,7 +314,8 @@ class DatabricksLoader(jobContext: JobContext) {
         val existing = scala.collection.mutable.Set[String]()
         val rs = statement.executeQuery(
             s"""SELECT column_name FROM ${ident(db.dbName)}.information_schema.columns
-               |WHERE lower(table_schema) = '${sqlLiteral(effectiveName(db.schema))}' AND lower(table_name) = '${sqlLiteral(effectiveName(db.table))}'""".stripMargin)
+               |WHERE lower(table_schema) = '${sqlLiteral(effectiveName(db.schema))}' AND lower(table_name) = '${sqlLiteral(effectiveName(db.table))}'""".stripMargin
+        )
         try {
             while (rs.next()) existing.add(rs.getString(1).toLowerCase)
         } finally {
@@ -335,16 +340,16 @@ class DatabricksLoader(jobContext: JobContext) {
         if (field.name.equalsIgnoreCase("_json")) "VARIANT"
         else if (field.name.equalsIgnoreCase("_xml")) "STRING"
         else field.`type`.toLowerCase match {
-            case "string"                                 => "STRING"
+            case "string" => "STRING"
             case "int" | "integer" | "tinyint" |
-                 "smallint"                               => "INT"
-            case "bigint"                                 => "BIGINT"
-            case "float"                                  => "FLOAT"
-            case "double"                                 => "DOUBLE"
-            case "boolean"                                => "BOOLEAN"
-            case "date"                                   => "DATE"
-            case "timestamp"                              => "TIMESTAMP"
-            case _                                        => field.`type`
+                "smallint" => "INT"
+            case "bigint" => "BIGINT"
+            case "float" => "FLOAT"
+            case "double" => "DOUBLE"
+            case "boolean" => "BOOLEAN"
+            case "date" => "DATE"
+            case "timestamp" => "TIMESTAMP"
+            case _ => field.`type`
         }
     }
 

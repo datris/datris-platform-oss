@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.apache.spark.sql.Row
@@ -58,7 +58,9 @@ object ObjectStoreQueryUtil {
         if (pipelineConfig == null)
             throw new DatrisException("Pipeline not found: " + pipelineName)
         if (pipelineConfig.destination == null || pipelineConfig.destination.objectStore == null)
-            throw new DatrisException("Pipeline '" + pipelineName + "' does not have an objectStore destination — use query_postgres / query_mongodb / search_* depending on the actual destination type.")
+            throw new DatrisException(
+                "Pipeline '" + pipelineName + "' does not have an objectStore destination — use query_postgres / query_mongodb / search_* depending on the actual destination type."
+            )
 
         val objectStore = pipelineConfig.destination.objectStore
         val bucket = ObjectStoreSpark.resolveBucket(objectStore)
@@ -79,7 +81,9 @@ object ObjectStoreQueryUtil {
         val jobGroup = "objectstore-query-" + java.util.UUID.randomUUID().toString
         spark.sparkContext.setJobGroup(jobGroup, "objectstore query: " + pipelineName, interruptOnCancel = true)
 
-        logger.info(s"ObjectStoreQuery: pipeline=$pipelineName, path=$path, format=$format, limit=$cappedLimit, jobGroup=$jobGroup, timeout=${queryTimeoutSec}s")
+        logger.info(
+            s"ObjectStoreQuery: pipeline=$pipelineName, path=$path, format=$format, limit=$cappedLimit, jobGroup=$jobGroup, timeout=${queryTimeoutSec}s"
+        )
 
         // Run the Spark read on the dedicated executor and Await it with a
         // wall-clock cap. A fatal error inside Spark's parmap (LinkageError,
@@ -105,10 +109,12 @@ object ObjectStoreQueryUtil {
         catch {
             case _: TimeoutException =>
                 logger.warn(s"ObjectStoreQuery: timed out after ${queryTimeoutSec}s for pipeline=$pipelineName — cancelling job group $jobGroup")
-                try spark.sparkContext.cancelJobGroup(jobGroup) catch { case _: Throwable => () }
-                throw new DatrisException("Object store query timed out after " + queryTimeoutSec + "s. The Spark read did not complete — most often a classpath/version mismatch (e.g. hadoop-aws vs. hadoop-common). Check server logs for NoSuchMethodError, IllegalAccessError, or similar fatal Throwables. The wall-clock limit is tunable via DATRIS_OBJECTSTORE_QUERY_TIMEOUT_SEC.")
-        }
-        finally spark.sparkContext.clearJobGroup()
+                try spark.sparkContext.cancelJobGroup(jobGroup)
+                catch { case _: Throwable => () }
+                throw new DatrisException(
+                    "Object store query timed out after " + queryTimeoutSec + "s. The Spark read did not complete — most often a classpath/version mismatch (e.g. hadoop-aws vs. hadoop-common). Check server logs for NoSuchMethodError, IllegalAccessError, or similar fatal Throwables. The wall-clock limit is tunable via DATRIS_OBJECTSTORE_QUERY_TIMEOUT_SEC."
+                )
+        } finally spark.sparkContext.clearJobGroup()
     }
 
     private def rowToMap(row: Row, columns: Array[String]): java.util.Map[String, Any] = {
@@ -124,21 +130,21 @@ object ObjectStoreQueryUtil {
       *  dates become ISO strings so the JSON response is self-describing
       *  without the agent having to interpret epoch millis. */
     private def sparkValueToJson(v: Any): Any = v match {
-        case null                            => null
-        case s: String                       => s
-        case b: java.lang.Boolean            => b
+        case null => null
+        case s: String => s
+        case b: java.lang.Boolean => b
         // BigDecimal comes before java.lang.Number (BigDecimal IS-A Number) so
         // we preserve exact precision via toPlainString instead of letting Gson
         // serialize it via Number's default behavior.
-        case bd: java.math.BigDecimal        => bd.toPlainString
-        case n: java.lang.Number             => n
-        case ts: java.sql.Timestamp          => ts.toInstant.toString
-        case d: java.sql.Date                => d.toString
-        case ba: Array[Byte]                 => java.util.Base64.getEncoder.encodeToString(ba)
-        case seq: scala.collection.Seq[_]    => seq.map(sparkValueToJson).asJava
-        case arr: Array[_]                   => arr.toSeq.map(sparkValueToJson).asJava
-        case m: scala.collection.Map[_, _]   => m.map { case (k, vv) => (k.toString, sparkValueToJson(vv)) }.asJava
-        case r: Row                          => rowToMap(r, r.schema.fieldNames)
-        case other                           => other.toString
+        case bd: java.math.BigDecimal => bd.toPlainString
+        case n: java.lang.Number => n
+        case ts: java.sql.Timestamp => ts.toInstant.toString
+        case d: java.sql.Date => d.toString
+        case ba: Array[Byte] => java.util.Base64.getEncoder.encodeToString(ba)
+        case seq: scala.collection.Seq[_] => seq.map(sparkValueToJson).asJava
+        case arr: Array[_] => arr.toSeq.map(sparkValueToJson).asJava
+        case m: scala.collection.Map[_, _] => m.map { case (k, vv) => (k.toString, sparkValueToJson(vv)) }.asJava
+        case r: Row => rowToMap(r, r.schema.fieldNames)
+        case other => other.toString
     }
 }

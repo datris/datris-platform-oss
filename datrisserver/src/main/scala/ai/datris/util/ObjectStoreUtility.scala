@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import java.io.{BufferedReader, ByteArrayInputStream, InputStream}
 import java.net.URI

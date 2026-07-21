@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion}
@@ -18,7 +18,7 @@ object PipelineConfigIO {
 
     def read(tableName: String, pipelineName: String): PipelineConfig = {
         val json = NoSQLDbUtil.getItemJSON(tableName, "name", pipelineName, "value").orNull
-        if(json != null) {
+        if (json != null) {
             val gson = new Gson
             val parsed = gson.fromJson(json, classOf[PipelineConfig])
             // Gson ignores Scala case-class default values, so a pre-versioning doc
@@ -27,14 +27,12 @@ object PipelineConfigIO {
             val config = if (parsed != null && parsed.version <= 0) parsed.copy(version = 1) else parsed
 
             // If there are no destination schema properties, use the source schema as the destination schema
-            if(config.destination.schemaProperties == null) {
+            if (config.destination.schemaProperties == null) {
                 val destination = config.destination.copy(schemaProperties = config.source.schemaProperties)
                 config.copy(destination = destination)
-            }
-            else
+            } else
                 config
-        }
-        else
+        } else
             null
     }
 
@@ -60,32 +58,38 @@ object PipelineConfigIO {
 
         if (baseVersion == 0 && existing != null) {
             val seedVersion = if (existing.version > 0) existing.version else 1
-            EntityVersionIO.append(versionTable, EntityVersion(
-                key = EntityVersionIO.docKey(config.name, seedVersion),
-                entityName = config.name,
-                version = seedVersion,
-                config = gson.toJson(existing),
-                scriptPath = null,
-                changeNote = "(seeded from pre-versioning state)",
-                createdAt = now,
-                createdBy = "system"
-            ))
+            EntityVersionIO.append(
+                versionTable,
+                EntityVersion(
+                    key = EntityVersionIO.docKey(config.name, seedVersion),
+                    entityName = config.name,
+                    version = seedVersion,
+                    config = gson.toJson(existing),
+                    scriptPath = null,
+                    changeNote = "(seeded from pre-versioning state)",
+                    createdAt = now,
+                    createdBy = "system"
+                )
+            )
             baseVersion = seedVersion
         }
 
         val nextVersion = baseVersion + 1
         val versioned = config.copy(version = nextVersion)
         write(versioned)
-        EntityVersionIO.append(versionTable, EntityVersion(
-            key = EntityVersionIO.docKey(config.name, nextVersion),
-            entityName = config.name,
-            version = nextVersion,
-            config = gson.toJson(versioned),
-            scriptPath = null,
-            changeNote = changeNote,
-            createdAt = now,
-            createdBy = actor
-        ))
+        EntityVersionIO.append(
+            versionTable,
+            EntityVersion(
+                key = EntityVersionIO.docKey(config.name, nextVersion),
+                entityName = config.name,
+                version = nextVersion,
+                config = gson.toJson(versioned),
+                scriptPath = null,
+                changeNote = changeNote,
+                createdAt = now,
+                createdBy = actor
+            )
+        )
 
         EntityVersionIO.prune(versionTable, config.name, env.versionCap)
         versioned
@@ -99,13 +103,13 @@ object PipelineConfigIO {
 
     def getSourceFileExtension(config: PipelineConfig): String = {
         val fileAttributes = config.source.fileAttributes
-        if(fileAttributes.csvAttributes != null)
+        if (fileAttributes.csvAttributes != null)
             "csv"
-        else if(fileAttributes.jsonAttributes != null)
+        else if (fileAttributes.jsonAttributes != null)
             "json"
-        else if(fileAttributes.xmlAttributes != null)
+        else if (fileAttributes.xmlAttributes != null)
             "xml"
-        else if(fileAttributes.unstructuredAttributes != null)
+        else if (fileAttributes.unstructuredAttributes != null)
             fileAttributes.unstructuredAttributes.fileExtension
         else
             throw new DatrisException("The pipeline configuration fileAttributes are not configured properly")

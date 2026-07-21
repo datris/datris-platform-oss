@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.util.{APIKeyValidator, HttpUtil}
 import com.google.common.base.Throwables
@@ -46,8 +46,7 @@ class ModelCatalogAPIController {
             val body = HttpUtil.get(CATALOG_URL, timeoutMillis = FETCH_TIMEOUT_MS)
             cache.set(Cached(body, now))
             new ResponseEntity[String](body, HttpStatus.OK)
-        }
-        catch {
+        } catch {
             case e: Exception =>
                 logger.warn("Model catalog fetch failed: " + e.getMessage)
                 // Serve the stale cache if we have one — better than forcing UIs to fall back.

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 object ElapsedTimeUtil {
     def getElapsedTime(durationMillis: Long): (String, Boolean) = {
@@ -31,8 +31,7 @@ object ElapsedTimeUtil {
                 ("timed out", true)
             else
                 (hours.toString + " hr " + minutes.toString + " min " + seconds + "." + millisStr + " sec", false)
-        }
-        else if (minutes > 0)
+        } else if (minutes > 0)
             (minutes.toString + " min " + seconds + "." + millisStr + " sec", false)
         else
             (seconds + "." + millisStr + " sec", false)

@@ -3,7 +3,7 @@ package ai.datris.model
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 /** Parsed representation of one capability string.
   *
@@ -19,11 +19,11 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * and ownership (owner). Leaf resource names (a tap name, a pipeline name
   * the agent picks at runtime) cannot appear in scope. */
 case class Capability(
-                         resource: String,
-                         action: String,
-                         scope: Map[String, String],
-                         raw: String
-                     ) {
+    resource: String,
+    action: String,
+    scope: Map[String, String],
+    raw: String
+) {
 
     /** Does this granted capability satisfy a request for (requiredResource,
       * requiredAction) given a runtime context?
@@ -113,9 +113,9 @@ object Capability {
                     if (!AllowedScopeKeys.contains(k))
                         throw new DatrisException(
                             s"Invalid capability '$s' — scope key '$k' is not allowed. " +
-                            s"Allowed: ${AllowedScopeKeys.toSeq.sorted.mkString(", ")}. " +
-                            s"Leaf resource names (e.g. tap=<name>, pipeline=<name>) cannot be scoped — " +
-                            s"the agent picks those at runtime."
+                                s"Allowed: ${AllowedScopeKeys.toSeq.sorted.mkString(", ")}. " +
+                                s"Leaf resource names (e.g. tap=<name>, pipeline=<name>) cannot be scoped — " +
+                                s"the agent picks those at runtime."
                         )
                     if (v.isEmpty)
                         throw new DatrisException(
@@ -141,11 +141,11 @@ object Capability {
   * the parsed capabilities, and a flag indicating whether this key is a
   * legacy unscoped credential (i.e. behaves as `*:*` for backward compat). */
 case class ResolvedKey(
-                          tenantEnvironment: Option[String],
-                          label: String,
-                          capabilities: Seq[Capability],
-                          isLegacyFullAccess: Boolean
-                      ) {
+    tenantEnvironment: Option[String],
+    label: String,
+    capabilities: Seq[Capability],
+    isLegacyFullAccess: Boolean
+) {
 
     /** Does this key grant (resource, action) given a runtime context?
       * Legacy keys always grant. */

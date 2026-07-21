@@ -3,7 +3,7 @@ package ai.datris.config
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import org.springframework.beans.factory.annotation.{Autowired, Value}
 import org.springframework.context.annotation.Configuration

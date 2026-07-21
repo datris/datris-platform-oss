@@ -3,7 +3,7 @@ package ai.datris.config
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.auth.{CapabilityRoutes, RouteCheck}
 import ai.datris.model.{ResolvedKey, UserContext}
@@ -120,14 +120,14 @@ class CapabilityInterceptor extends HandlerInterceptor {
                             val safeLabel = rk.label.replace("\"", "\\\"")
                             val body =
                                 "{\"error\":\"capability denied\"," +
-                                "\"errorKind\":\"capability_denied\"," +
-                                "\"key\":\"" + safeLabel + "\"," +
-                                "\"required\":\"" + resource + ":" + action + "\"," +
-                                "\"route\":\"" + method + " " + path + "\"," +
-                                "\"message\":\"API key '" + safeLabel + "' does not hold capability '" + resource + ":" + action + "'. " +
-                                "This is a permission boundary on the API key, not a problem with the upstream service. " +
-                                "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
-                                "or the operator must use a different key with the required capability.\"}"
+                                    "\"errorKind\":\"capability_denied\"," +
+                                    "\"key\":\"" + safeLabel + "\"," +
+                                    "\"required\":\"" + resource + ":" + action + "\"," +
+                                    "\"route\":\"" + method + " " + path + "\"," +
+                                    "\"message\":\"API key '" + safeLabel + "' does not hold capability '" + resource + ":" + action + "'. " +
+                                    "This is a permission boundary on the API key, not a problem with the upstream service. " +
+                                    "The key would need '" + resource + ":" + action + "' added to its capability bundle, " +
+                                    "or the operator must use a different key with the required capability.\"}"
                             response.getWriter.write(body)
                             response.getWriter.flush()
                             false

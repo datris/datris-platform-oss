@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import io.qdrant.client.QdrantClient
@@ -31,7 +31,9 @@ class QdrantLoader(jobContext: JobContext) {
         statusUtil.info("begin", "Process started")
 
         if (jobContext.data.rawBytes == null)
-            throw new DatrisException("Qdrant destination requires unstructured file data (PDF, text). Use 'unstructuredAttributes' in the source configuration.")
+            throw new DatrisException(
+                "Qdrant destination requires unstructured file data (PDF, text). Use 'unstructuredAttributes' in the source configuration."
+            )
 
         // Extract text from the document
         val filename = if (jobContext.metadata != null) jobContext.metadata.dataFileName else ""
@@ -43,13 +45,15 @@ class QdrantLoader(jobContext: JobContext) {
 
         // Chunk the document
         val chunkingConfig = if (qdrantConfig.chunking != null) qdrantConfig.chunking
-            else new ai.datris.model.ChunkingConfig()
+        else new ai.datris.model.ChunkingConfig()
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
         // Get configs — use tenant secret names if in multi-tenant mode
-        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else qdrantConfig.embeddingSecretName
-        val qdrantSecretName = if (DatrisEnvironment.current.qdrantSecretName != null) DatrisEnvironment.current.qdrantSecretName else qdrantConfig.qdrantSecretName
+        val embeddingSecretName =
+            if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else qdrantConfig.embeddingSecretName
+        val qdrantSecretName =
+            if (DatrisEnvironment.current.qdrantSecretName != null) DatrisEnvironment.current.qdrantSecretName else qdrantConfig.qdrantSecretName
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val qdrantSecret = SecretsUtil.getSecretMap(qdrantSecretName)
             .getOrElse(throw new DatrisException("Qdrant secret not found: " + qdrantSecretName))
@@ -127,7 +131,8 @@ class QdrantLoader(jobContext: JobContext) {
         } else {
             statusUtil.info("processing", "Ensuring Qdrant collection: " + collectionName + " with dimension: " + dimension)
             try {
-                client.createCollectionAsync(collectionName,
+                client.createCollectionAsync(
+                    collectionName,
                     VectorParams.newBuilder()
                         .setDistance(Distance.Cosine)
                         .setSize(dimension)
@@ -139,9 +144,10 @@ class QdrantLoader(jobContext: JobContext) {
                     // simultaneously) may have created the collection between our
                     // listCollections check and our createCollection call. Re-check
                     // and swallow the error if so; otherwise rethrow the real problem.
-                    val racedIn = try {
-                        client.listCollectionsAsync().get().asScala.exists(_ == collectionName)
-                    } catch { case _: Exception => false }
+                    val racedIn =
+                        try {
+                            client.listCollectionsAsync().get().asScala.exists(_ == collectionName)
+                        } catch { case _: Exception => false }
                     if (!racedIn) throw e
                     // If a racing session won, still verify its dimension matches ours.
                     verifyCollectionDimension(client, collectionName, dimension)
@@ -150,21 +156,22 @@ class QdrantLoader(jobContext: JobContext) {
     }
 
     private def verifyCollectionDimension(client: QdrantClient, collectionName: String, dimension: Int): Unit = {
-        val info = try {
-            client.getCollectionInfoAsync(collectionName).get()
-        } catch {
-            case _: Exception => return  // can't read config — let the upsert surface the real error
-        }
+        val info =
+            try {
+                client.getCollectionInfoAsync(collectionName).get()
+            } catch {
+                case _: Exception => return // can't read config — let the upsert surface the real error
+            }
         val vectorsConfig = info.getConfig.getParams.getVectorsConfig
         val existing: Long =
             if (vectorsConfig.hasParams) vectorsConfig.getParams.getSize
-            else -1L  // named-vector config — skip check
+            else -1L // named-vector config — skip check
         if (existing > 0 && existing != dimension.toLong) {
             throw new DatrisException(
                 "Embedding dimension mismatch on collection \"" + collectionName +
-                "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
-                "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
-                collectionName + "\" and re-ingest, or point this pipeline at a new collection."
+                    "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                    "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
+                    collectionName + "\" and re-ingest, or point this pipeline at a new collection."
             )
         }
     }

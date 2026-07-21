@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import org.apache.pdfbox.Loader
 import org.apache.pdfbox.text.PDFTextStripper
@@ -29,19 +29,19 @@ object TextExtractorUtil {
     def extractText(bytes: Array[Byte], filename: String): String = {
         val ext = filename.toLowerCase.split("\\.").lastOption.getOrElse("")
         ext match {
-            case "pdf"          => extractPdf(bytes)
-            case "doc"          => extractDoc(bytes)
-            case "docx"         => extractDocx(bytes)
-            case "ppt"          => extractPpt(bytes)
-            case "pptx"         => extractPptx(bytes)
-            case "xls"          => extractXls(bytes)
-            case "xlsx"         => extractXlsx(bytes)
+            case "pdf" => extractPdf(bytes)
+            case "doc" => extractDoc(bytes)
+            case "docx" => extractDocx(bytes)
+            case "ppt" => extractPpt(bytes)
+            case "pptx" => extractPptx(bytes)
+            case "xls" => extractXls(bytes)
+            case "xlsx" => extractXlsx(bytes)
             case "html" | "htm" => extractHtml(bytes)
-            case "rtf"          => extractRtf(bytes)
-            case "msg"          => extractMsg(bytes)
-            case "eml"          => extractEml(bytes)
-            case "epub"         => extractEpub(bytes)
-            case _              => new String(bytes, "UTF-8")
+            case "rtf" => extractRtf(bytes)
+            case "msg" => extractMsg(bytes)
+            case "eml" => extractEml(bytes)
+            case "epub" => extractEpub(bytes)
+            case _ => new String(bytes, "UTF-8")
         }
     }
 
@@ -92,7 +92,8 @@ object TextExtractorUtil {
         try {
             val extractor = new org.apache.poi.sl.extractor.SlideShowExtractor[
                 org.apache.poi.hslf.usermodel.HSLFShape,
-                org.apache.poi.hslf.usermodel.HSLFTextParagraph](ppt)
+                org.apache.poi.hslf.usermodel.HSLFTextParagraph
+            ](ppt)
             try {
                 extractor.getText
             } finally {

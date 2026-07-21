@@ -3,7 +3,7 @@ package ai.datris.auth
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.config.TenantInterceptor
 import ai.datris.model.{DatrisException, ResolvedKey}
@@ -46,8 +46,8 @@ object CapabilityCheck {
             if (!rk.grants(resource, action, context)) {
                 throw new DatrisException(
                     "capability denied: key '" + rk.label + "' does not hold capability '" +
-                    resource + ":" + action + "' for the targeted resource " +
-                    "(scope: " + scopeStr(context) + ")"
+                        resource + ":" + action + "' for the targeted resource " +
+                        "(scope: " + scopeStr(context) + ")"
                 )
             }
         }
@@ -76,7 +76,7 @@ object CapabilityCheck {
     ): Boolean = {
         readResolvedKey(request) match {
             case Some(rk) => rk.grants(resource, action, context)
-            case None     => true
+            case None => true
         }
     }
 
@@ -104,7 +104,7 @@ object CapabilityCheck {
         if (request == null) return None
         request.getAttribute(TenantInterceptor.ResolvedKeyAttr) match {
             case rk: ResolvedKey => Some(rk)
-            case _               => None
+            case _ => None
         }
     }
 

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{Gson, JsonArray, JsonObject}
 import ai.datris.model.DatrisException
@@ -70,8 +70,7 @@ object EmbeddingUtil {
         val provider = Option(secret.get("provider")).map(_.trim.toLowerCase).getOrElse("")
         val apiKey =
             if (provider == "openai" || provider == "anthropic")
-                AIUtil.resolveApiKey(rawKey, provider, ai.datris.model.DatrisEnvironment.values.multiTenant,
-                    secretName.takeWhile(_ != '/'))
+                AIUtil.resolveApiKey(rawKey, provider, ai.datris.model.DatrisEnvironment.values.multiTenant, secretName.takeWhile(_ != '/'))
             else rawKey
         val batchSize = Option(secret.get("batchSize"))
             .filter(_.nonEmpty)
@@ -92,8 +91,7 @@ object EmbeddingUtil {
         val retryIndividual = Option(secret.get("retryIndividualOnFailure"))
             .map(_.trim.toLowerCase)
             .exists(s => s == "true" || s == "1" || s == "yes")
-        EmbeddingConfig(endpoint, model, apiKey, batchSize, maxTokens, tokenizer,
-            tokensPerCharRatio, oversize, retryIndividual)
+        EmbeddingConfig(endpoint, model, apiKey, batchSize, maxTokens, tokenizer, tokensPerCharRatio, oversize, retryIndividual)
     }
 
     /**

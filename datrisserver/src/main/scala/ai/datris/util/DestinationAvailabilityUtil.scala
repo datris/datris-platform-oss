@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.DatrisEnvironment
 import org.slf4j.{Logger, LoggerFactory}
@@ -143,8 +143,10 @@ object DestinationAvailabilityUtil {
     private def externalSaasAvailability(): (Boolean, Boolean) = {
         try {
             val secrets = SecretsRetrieverUtil.platformSecrets()
-            (secrets.exists { case (_, fields) => CredentialResolver.hasSnowflakeCredentials(fields) },
-                secrets.exists { case (_, fields) => CredentialResolver.hasDatabricksCredentials(fields) })
+            (
+                secrets.exists { case (_, fields) => CredentialResolver.hasSnowflakeCredentials(fields) },
+                secrets.exists { case (_, fields) => CredentialResolver.hasDatabricksCredentials(fields) }
+            )
         } catch {
             case e: Exception =>
                 logger.warn("Platform-secret scan failed — failing open for snowflake/databricks: " + e.getMessage)

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import ai.datris.model.PipelineConfig
 
@@ -27,7 +27,9 @@ object DocumentTapValidator {
         val hasUnstructuredSource = fileAttrs.exists(_.unstructuredAttributes != null)
 
         if (!hasUnstructuredSource)
-            return Some("pipeline source must be configured as unstructured (source.fileAttributes.unstructuredAttributes). Current source is not unstructured, so raw document bytes cannot be routed through text extraction/chunking/embedding.")
+            return Some(
+                "pipeline source must be configured as unstructured (source.fileAttributes.unstructuredAttributes). Current source is not unstructured, so raw document bytes cannot be routed through text extraction/chunking/embedding."
+            )
 
         val dest = Option(pipeline.destination)
         val hasVectorDest = dest.exists { d =>
@@ -35,7 +37,9 @@ object DocumentTapValidator {
         }
 
         if (!hasVectorDest)
-            return Some("pipeline destination must be a vector store (qdrant, weaviate, pgvector, milvus, or chroma). Document taps cannot write raw bytes to relational or object-store destinations.")
+            return Some(
+                "pipeline destination must be a vector store (qdrant, weaviate, pgvector, milvus, or chroma). Document taps cannot write raw bytes to relational or object-store destinations."
+            )
 
         None
     }

@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.Gson
 import ai.datris.model.{Notification, DatrisEnvironment, SchemaField}
@@ -53,8 +53,10 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
 
         // Convert data rows to Spark Rows
         val delimiter = {
-            if (config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null
-                && config.source.fileAttributes.csvAttributes.delimiter != null)
+            if (
+                config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null
+                && config.source.fileAttributes.csvAttributes.delimiter != null
+            )
                 config.source.fileAttributes.csvAttributes.delimiter
             else
                 ","

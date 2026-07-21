@@ -3,7 +3,7 @@ package ai.datris.util
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{JobContext, DatrisEnvironment, DatrisException}
@@ -28,7 +28,9 @@ class ChromaLoader(jobContext: JobContext) {
         statusUtil.info("begin", "Process started")
 
         if (jobContext.data.rawBytes == null)
-            throw new DatrisException("Chroma destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration.")
+            throw new DatrisException(
+                "Chroma destination requires unstructured file data (PDF, DOC, DOCX, HTML, text). Use 'unstructuredAttributes' in the source configuration."
+            )
 
         // Extract text from the document
         val filename = if (jobContext.metadata != null) jobContext.metadata.dataFileName else ""
@@ -40,13 +42,15 @@ class ChromaLoader(jobContext: JobContext) {
 
         // Chunk the document
         val chunkingConfig = if (chromaConfig.chunking != null) chromaConfig.chunking
-            else new ai.datris.model.ChunkingConfig()
+        else new ai.datris.model.ChunkingConfig()
         val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
         statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
 
         // Get configs — use tenant secret names if in multi-tenant mode
-        val embeddingSecretName = if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else chromaConfig.embeddingSecretName
-        val chromaSecretName = if (DatrisEnvironment.current.chromaSecretName != null) DatrisEnvironment.current.chromaSecretName else chromaConfig.chromaSecretName
+        val embeddingSecretName =
+            if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else chromaConfig.embeddingSecretName
+        val chromaSecretName =
+            if (DatrisEnvironment.current.chromaSecretName != null) DatrisEnvironment.current.chromaSecretName else chromaConfig.chromaSecretName
         val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
         val chromaSecret = SecretsUtil.getSecretMap(chromaSecretName)
             .getOrElse(throw new DatrisException("Chroma secret not found: " + chromaSecretName))
@@ -177,7 +181,7 @@ class ChromaLoader(jobContext: JobContext) {
             // Create failed — another runner may have raced us in. Re-check before erroring.
             getCollectionId(client, collectionsPath, collectionName) match {
                 case Some(id) => id
-                case None     => throw new DatrisException("Failed to create Chroma collection: " + body)
+                case None => throw new DatrisException("Failed to create Chroma collection: " + body)
             }
         } finally {
             response.close()
@@ -200,7 +204,9 @@ class ChromaLoader(jobContext: JobContext) {
         val post = new HttpPost(collectionsPath + "/" + collectionId + "/get")
         post.setHeader("Content-Type", "application/json")
         post.setEntity(new StringEntity(payload.toString, "UTF-8"))
-        val response = try client.execute(post) catch { case _: Exception => return }
+        val response =
+            try client.execute(post)
+            catch { case _: Exception => return }
         try {
             if (response.getStatusLine.getStatusCode != 200) return
             val body = EntityUtils.toString(response.getEntity)
@@ -213,9 +219,9 @@ class ChromaLoader(jobContext: JobContext) {
                     if (existing > 0 && existing != dimension) {
                         throw new DatrisException(
                             "Embedding dimension mismatch on collection \"" + collectionName +
-                            "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
-                            "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
-                            collectionName + "\" and re-ingest, or point this pipeline at a new collection."
+                                "\": existing is vector(" + existing + "), configured embedding provider produces vector(" + dimension +
+                                "). The stored vectors are incompatible with the new provider. Either drop collection \"" +
+                                collectionName + "\" and re-ingest, or point this pipeline at a new collection."
                         )
                     }
                 }

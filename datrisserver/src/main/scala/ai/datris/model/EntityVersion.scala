@@ -3,7 +3,7 @@ package ai.datris.model
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 /** One immutable snapshot of a tap or pipeline *definition* at a point in time.
   * Lives in the append-only `<env>-tap-version` / `<env>-pipeline-version`

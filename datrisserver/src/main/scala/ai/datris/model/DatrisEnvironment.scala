@@ -3,7 +3,7 @@ package ai.datris.model
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 object DatrisEnvironment {
     var values: DatrisEnvironment = _
@@ -107,7 +107,7 @@ object DatrisEnvironment {
                 val map = s.asScala
                 val provider = map.getOrElse("provider", "").trim
                 val endpoint = map.getOrElse("endpoint", "").trim
-                val rawKey   = map.getOrElse("apiKey", "")
+                val rawKey = map.getOrElse("apiKey", "")
                 val apiKey =
                     if (provider.toLowerCase == "ollama") rawKey
                     else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant, path.takeWhile(_ != '/'))
@@ -135,13 +135,15 @@ object DatrisEnvironment {
                 val provider = map.getOrElse("provider", "").trim.toLowerCase
                 if (!Seq("anthropic", "openai").contains(provider)) None
                 else {
-                    val enabled  = map.getOrElse("enabled", "false").trim.equalsIgnoreCase("true")
+                    val enabled = map.getOrElse("enabled", "false").trim.equalsIgnoreCase("true")
                     val endpoint = map.getOrElse("endpoint", "").trim
-                    val model    = map.getOrElse("model", "").trim
-                    val rawKey   = map.getOrElse("apiKey", "")
-                    val version  = map.getOrElse("version", "")
-                    val maxUses  = try map.getOrElse("maxUses", "3").trim.toInt catch { case _: Exception => 3 }
-                    val apiKey   = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant, path.takeWhile(_ != '/'))
+                    val model = map.getOrElse("model", "").trim
+                    val rawKey = map.getOrElse("apiKey", "")
+                    val version = map.getOrElse("version", "")
+                    val maxUses =
+                        try map.getOrElse("maxUses", "3").trim.toInt
+                        catch { case _: Exception => 3 }
+                    val apiKey = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant, path.takeWhile(_ != '/'))
                     Some(WebSearchConfig(enabled, provider, endpoint, model, apiKey, version, maxUses))
                 }
             }
@@ -150,55 +152,56 @@ object DatrisEnvironment {
 }
 
 case class DatrisEnvironment(
-                                  initialized: Boolean, // Determines if the environment is fully initialized
-                                  environment: String,
-                                  fileNotifierQueue: String,
-                                  ttlFileNotifierQueueMessages: Int,
-                                  pipelineTopic: String,
-                                  pipelineTableName: String,
-                                  archivedMetadataTableName: String,
-                                  pipelineStatusTableName: String,
-                                  fileNotifierMessageTableName: String,
-                                  dataPullTableName: String,
-                                  useApiKeys: Boolean,
-                                  apiKeysSecretName: String,
-                                  postgresSecretName: String,
-                                  mongoDbSecretName: String,
-                                  kafkaProducerSecretName: String,
-                                  kafkaConsumerConfig: KafkaConsumerConfig,
-                                  mongoDbConfig: MongoDBConfig,
-                                  minIOConfig: MinIOConfig,
-                                  activeMQConfig: ActiveMQConfig,
-                                  aiConfig: AIConfig,
-                                  aiEnabled: Boolean,
-                                  embeddingSecretName: String,
-                                  qdrantSecretName: String,
-                                  weaviateSecretName: String,
-                                  milvusSecretName: String,
-                                  chromaSecretName: String,
-                                  pgvectorSecretName: String,
-                                  multiTenant: Boolean,
-                                  tapTableName: String = null,
-                                  tapLogTableName: String = null,
-                                  tapLedgerTableName: String = null,
-                                  tapPromptTableName: String = null,
-                                  tapScriptTimeoutSeconds: Int = 300,
-                                  tapMaxOutputMB: Int = 100,
-                                  dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
-                                  dateTimezone: String = "UTC",
-                                  postgresDatabase: String = "datris",
-                                  codegenAiConfig: Option[AIConfig] = None,
-                                  webSearchConfig: Option[WebSearchConfig] = None,
-                                  extendedThinking: Boolean = true,
-                              hosted: Boolean = false,
-                              useUserAuth: Boolean = false,
-                              userTableName: String = null,
-                              userSessionTableName: String = null,
-                              // Max definition versions retained per entity. Older
-                              // version records (and, for taps, their pinned script
-                              // objects) are pruned beyond this cap. Configurable.
-                              versionCap: Int = 50
-                              ) {
+    initialized: Boolean, // Determines if the environment is fully initialized
+    environment: String,
+    fileNotifierQueue: String,
+    ttlFileNotifierQueueMessages: Int,
+    pipelineTopic: String,
+    pipelineTableName: String,
+    archivedMetadataTableName: String,
+    pipelineStatusTableName: String,
+    fileNotifierMessageTableName: String,
+    dataPullTableName: String,
+    useApiKeys: Boolean,
+    apiKeysSecretName: String,
+    postgresSecretName: String,
+    mongoDbSecretName: String,
+    kafkaProducerSecretName: String,
+    kafkaConsumerConfig: KafkaConsumerConfig,
+    mongoDbConfig: MongoDBConfig,
+    minIOConfig: MinIOConfig,
+    activeMQConfig: ActiveMQConfig,
+    aiConfig: AIConfig,
+    aiEnabled: Boolean,
+    embeddingSecretName: String,
+    qdrantSecretName: String,
+    weaviateSecretName: String,
+    milvusSecretName: String,
+    chromaSecretName: String,
+    pgvectorSecretName: String,
+    multiTenant: Boolean,
+    tapTableName: String = null,
+    tapLogTableName: String = null,
+    tapLedgerTableName: String = null,
+    tapPromptTableName: String = null,
+    tapScriptTimeoutSeconds: Int = 300,
+    tapMaxOutputMB: Int = 100,
+    dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
+    dateTimezone: String = "UTC",
+    postgresDatabase: String = "datris",
+    codegenAiConfig: Option[AIConfig] = None,
+    webSearchConfig: Option[WebSearchConfig] = None,
+    extendedThinking: Boolean = true,
+    hosted: Boolean = false,
+    useUserAuth: Boolean = false,
+    userTableName: String = null,
+    userSessionTableName: String = null,
+    // Max definition versions retained per entity. Older
+    // version records (and, for taps, their pinned script
+    // objects) are pruned beyond this cap. Configurable.
+    versionCap: Int = 50
+) {
+
     /** Append-only definition-version collections. Derived from the live table
       * names so they track per-tenant naming automatically (`<env>-tap-version`,
       * `<env>-pipeline-version`) without separate wiring in StartupRunner /

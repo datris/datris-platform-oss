@@ -3,7 +3,7 @@ package ai.datris.api
 /*
 Datris
 Copyright (C) 2026 Datris (https://datris.ai)
-*/
+ */
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, GsonBuilder, JsonElement, JsonNull, JsonParser}
@@ -39,8 +39,7 @@ class TapAPIController {
     private val logger: Logger = LoggerFactory.getLogger(classOf[TapAPIController])
 
     @GetMapping(path = Array("/taps"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTaps(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                request: HttpServletRequest): ResponseEntity[String] = {
+    def getTaps(@RequestHeader(name = "x-api-key", required = false) apiKey: String, request: HttpServletRequest): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /taps called")
             APIKeyValidator.validate(apiKey)
@@ -68,8 +67,7 @@ class TapAPIController {
     }
 
     @GetMapping(path = Array("/tap"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-               @RequestParam name: String): ResponseEntity[String] = {
+    def getTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap called with name: " + name)
             APIKeyValidator.validate(apiKey)
@@ -111,9 +109,11 @@ class TapAPIController {
     }
 
     @GetMapping(path = Array("/tap/logs/all"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getAllTapLogs(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                      @RequestParam(required = false) since: java.lang.Long,
-                      @RequestParam(required = false) limit: java.lang.Integer): ResponseEntity[String] = {
+    def getAllTapLogs(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(required = false) since: java.lang.Long,
+        @RequestParam(required = false) limit: java.lang.Integer
+    ): ResponseEntity[String] = {
         try {
             APIKeyValidator.validate(apiKey)
             // Default: last 30 days, capped at 2000 rows. Both bounds protect the
@@ -126,7 +126,11 @@ class TapAPIController {
             logger.info("API endpoint GET /tap/logs/all called since=" + sinceMs + " limit=" + maxItems)
 
             val rows = NoSQLDbUtil.getItemsSinceAsJSON(
-                DatrisEnvironment.current.tapLogTableName, "created_at", sinceMs, maxItems)
+                DatrisEnvironment.current.tapLogTableName,
+                "created_at",
+                sinceMs,
+                maxItems
+            )
 
             // Mongo rows have shape {"key": ..., "value": {...TapRunLog...}, "created_at": ...}.
             // Unwrap to just the embedded TapRunLog values so the response is a flat
@@ -155,8 +159,7 @@ class TapAPIController {
     }
 
     @GetMapping(path = Array("/tap/logs"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTapLogs(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                   @RequestParam name: String): ResponseEntity[String] = {
+    def getTapLogs(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap/logs called for tap: " + name)
             APIKeyValidator.validate(apiKey)
@@ -208,10 +211,12 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def createOrUpdateTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                          @RequestParam(name = "changeNote", required = false) changeNote: String,
-                          @RequestBody tapConfig: TapConfig,
-                          request: HttpServletRequest): ResponseEntity[String] = {
+    def createOrUpdateTap(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(name = "changeNote", required = false) changeNote: String,
+        @RequestBody tapConfig: TapConfig,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /tap called with name: " + tapConfig.name)
             APIKeyValidator.validate(apiKey)
@@ -228,7 +233,8 @@ class TapAPIController {
                     case Some(reason) =>
                         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
                             "{\"error\": \"Document tap '" + tapConfig.name + "' cannot target pipeline '" +
-                                tapConfig.targetPipeline + "': " + reason.replace("\"", "'") + "\"}")
+                                tapConfig.targetPipeline + "': " + reason.replace("\"", "'") + "\"}"
+                        )
                     case None => // compatible
                 }
             }
@@ -239,13 +245,15 @@ class TapAPIController {
             // the UI can prompt the user to push the script before retrying.
             if (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) {
                 val bucket = DatrisEnvironment.current.environment + "-config"
-                val exists = try {
-                    ObjectStoreUtil.readBucketObject(bucket, tapConfig.scriptPath).isDefined
-                } catch { case _: Exception => false }
+                val exists =
+                    try {
+                        ObjectStoreUtil.readBucketObject(bucket, tapConfig.scriptPath).isDefined
+                    } catch { case _: Exception => false }
                 if (!exists) {
                     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
                         "{\"error\": \"Tap script not found in object storage at '" + tapConfig.scriptPath +
-                        "'. The script must be uploaded (via the tap wizard's script-store endpoints) before saving the tap config.\"}")
+                            "'. The script must be uploaded (via the tap wizard's script-store endpoints) before saving the tap config.\"}"
+                    )
                 }
             }
 
@@ -273,7 +281,7 @@ class TapAPIController {
             // Definition-edit write → mints a new immutable version snapshot.
             // (Status churn from TapRunner stays on plain TapConfigIO.write.)
             val note = if (changeNote != null && changeNote.nonEmpty) changeNote
-                       else if (existing != null) "updated" else "created"
+            else if (existing != null) "updated" else "created"
             val saved = TapConfigIO.writeVersioned(configToSave, note, VersionActor.resolve(request))
 
             val gson = new Gson
@@ -286,9 +294,11 @@ class TapAPIController {
     }
 
     @DeleteMapping(path = Array("/tap"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def deleteTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                  @RequestParam name: String,
-                  request: HttpServletRequest): ResponseEntity[String] = {
+    def deleteTap(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /tap called with name: " + name)
             APIKeyValidator.validate(apiKey)
@@ -356,8 +366,10 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/script"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def storeScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                    @RequestBody body: java.util.Map[String, String]): ResponseEntity[String] = {
+    def storeScript(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, String]
+    ): ResponseEntity[String] = {
         try {
             val tapName = body.get("tapName")
             val script = body.get("script")
@@ -390,8 +402,10 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/cron"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def generateCron(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestBody body: java.util.Map[String, String]): ResponseEntity[String] = {
+    def generateCron(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, String]
+    ): ResponseEntity[String] = {
         try {
             val description = body.get("description")
             logger.info("API endpoint POST /tap/cron called: " + description)
@@ -434,8 +448,10 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/brainstorm"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def brainstorm(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                   @RequestBody body: java.util.Map[String, Any]): ResponseEntity[String] = {
+    def brainstorm(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /tap/brainstorm called")
             APIKeyValidator.validate(apiKey)
@@ -566,7 +582,8 @@ class TapAPIController {
             }
 
             val scanText = currentDescription + "\n" + messages.map(_._2).mkString("\n")
-            val brainstormQuery = if (currentDescription.nonEmpty) currentDescription + "\n" + messages.lastOption.map(_._2).getOrElse("") else messages.lastOption.map(_._2).getOrElse("")
+            val brainstormQuery = if (currentDescription.nonEmpty) currentDescription + "\n" + messages.lastOption.map(_._2).getOrElse("")
+            else messages.lastOption.map(_._2).getOrElse("")
             val plan = AIUtil.planWebSearch(DatrisEnvironment.current.aiConfig, brainstormQuery)
             val nativeFragment = plan match {
                 case AIUtil.WebSearchPlan.Native =>
@@ -586,7 +603,14 @@ class TapAPIController {
             val systemPrompt = TapPromptInjector.augment(systemWithSearch, scanText)
             val injectedPrompts = TapPromptInjector.matchKeys(scanText)
 
-            val responseText = AIUtil.callAIWithMessages(systemPrompt, messagesWithContext, DatrisEnvironment.current.aiConfig, 8192, -1.0, useWebSearch = AIUtil.useNative(plan))
+            val responseText = AIUtil.callAIWithMessages(
+                systemPrompt,
+                messagesWithContext,
+                DatrisEnvironment.current.aiConfig,
+                8192,
+                -1.0,
+                useWebSearch = AIUtil.useNative(plan)
+            )
             if (AIUtil.useNative(plan)) {
                 val citations = AIUtil.extractCitations(responseText, DatrisEnvironment.current.aiConfig)
                 if (citations.nonEmpty)
@@ -639,8 +663,10 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/generate"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def generateScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestBody body: java.util.Map[String, String]): ResponseEntity[String] = {
+    def generateScript(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, String]
+    ): ResponseEntity[String] = {
         try {
             val description = body.get("description")
             val tapName = Option(body.get("tapName")).getOrElse("tap-" + System.currentTimeMillis())
@@ -676,8 +702,10 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/fix"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def fixScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                  @RequestBody body: java.util.Map[String, String]): ResponseEntity[String] = {
+    def fixScript(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, String]
+    ): ResponseEntity[String] = {
         try {
             val tapName = body.get("tapName")
             val script = body.get("script")
@@ -720,8 +748,14 @@ class TapAPIController {
             // is stale or wrong (renamed methods, removed packages, version-skewed APIs).
             // Look up the current truth to ground the fix.
             val combinedError = error + " " + diagnosis + " " + logs
-            val needsPackageLookup = Seq("has no attribute", "AttributeError", "ModuleNotFoundError",
-                "No module named", "No matching distribution", "ImportError").exists(combinedError.contains)
+            val needsPackageLookup = Seq(
+                "has no attribute",
+                "AttributeError",
+                "ModuleNotFoundError",
+                "No module named",
+                "No matching distribution",
+                "ImportError"
+            ).exists(combinedError.contains)
 
             // Two paths for resolving stale-library errors:
             //   1) Web search is enabled. Either attach the native tool (codegen provider
@@ -730,7 +764,8 @@ class TapAPIController {
             //   2) Fallback to the legacy hand-rolled scraper that hits pypi.org/json
             //      and pulls the docs URL out of project_urls. Kept verbatim so users
             //      without web search still get something.
-            val plan = if (needsPackageLookup) AIUtil.planWebSearch(codegenCfg, "package documentation lookup for: " + diagnosis.take(500)) else AIUtil.WebSearchPlan.Off
+            val plan = if (needsPackageLookup) AIUtil.planWebSearch(codegenCfg, "package documentation lookup for: " + diagnosis.take(500))
+            else AIUtil.WebSearchPlan.Off
             val nativeFragment = plan match {
                 case AIUtil.WebSearchPlan.Native =>
                     """
@@ -786,29 +821,30 @@ class TapAPIController {
             }
 
             // Try parsing as JSON first; if that fails, treat the whole response as a script
-            val (fixedScript, packages) = try {
-                val gson2 = new Gson
-                val result = gson2.fromJson(jsonStr, classOf[java.util.Map[String, Any]])
-                val s = Option(result.get("script")).map(_.toString).getOrElse(cleaned)
-                val p: java.util.List[String] = {
-                    val raw = result.get("packages")
-                    if (raw == null) new java.util.ArrayList[String]()
-                    else raw match {
-                        case list: java.util.List[_] =>
-                            val stringList = new java.util.ArrayList[String]()
-                            val it = list.iterator()
-                            while (it.hasNext) stringList.add(it.next().toString)
-                            stringList
-                        case _ => new java.util.ArrayList[String]()
+            val (fixedScript, packages) =
+                try {
+                    val gson2 = new Gson
+                    val result = gson2.fromJson(jsonStr, classOf[java.util.Map[String, Any]])
+                    val s = Option(result.get("script")).map(_.toString).getOrElse(cleaned)
+                    val p: java.util.List[String] = {
+                        val raw = result.get("packages")
+                        if (raw == null) new java.util.ArrayList[String]()
+                        else raw match {
+                            case list: java.util.List[_] =>
+                                val stringList = new java.util.ArrayList[String]()
+                                val it = list.iterator()
+                                while (it.hasNext) stringList.add(it.next().toString)
+                                stringList
+                            case _ => new java.util.ArrayList[String]()
+                        }
                     }
+                    (s, p)
+                } catch {
+                    case _: Exception =>
+                        // AI returned raw script instead of JSON — use it directly
+                        logger.info("AI fix response was not JSON, treating as raw script")
+                        (cleaned, new java.util.ArrayList[String]())
                 }
-                (s, p)
-            } catch {
-                case _: Exception =>
-                    // AI returned raw script instead of JSON — use it directly
-                    logger.info("AI fix response was not JSON, treating as raw script")
-                    (cleaned, new java.util.ArrayList[String]())
-            }
 
             // Store fixed script in MinIO
             val scriptPath = TapScriptGenerator.storeScript(Option(tapName).getOrElse("tap"), fixedScript, oldScriptPath)
@@ -833,8 +869,10 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/review"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def reviewScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestBody body: java.util.Map[String, Object]): ResponseEntity[String] = {
+    def reviewScript(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Object]
+    ): ResponseEntity[String] = {
         try {
             val tapName = Option(body.get("tapName")).map(_.toString).getOrElse("tap")
             val script = Option(body.get("script")).map(_.toString).getOrElse("")
@@ -877,8 +915,10 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/optimize"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def optimizeScript(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                       @RequestBody body: java.util.Map[String, Object]): ResponseEntity[String] = {
+    def optimizeScript(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Object]
+    ): ResponseEntity[String] = {
         try {
             val tapName = Option(body.get("tapName")).map(_.toString).getOrElse("tap")
             val script = Option(body.get("script")).map(_.toString).getOrElse("")
@@ -925,9 +965,11 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/test"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def testTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                @RequestParam(required = false) testLimit: Integer,
-                @RequestBody tapConfig: TapConfig): ResponseEntity[String] = {
+    def testTap(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(required = false) testLimit: Integer,
+        @RequestBody tapConfig: TapConfig
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint POST /tap/test called for tap: " + tapConfig.name + (if (testLimit != null) s" (testLimit=$testLimit)" else ""))
             APIKeyValidator.validate(apiKey)
@@ -968,10 +1010,11 @@ class TapAPIController {
             }
             val needsExplanation = result.error != null || result.recordCount == 0 || logsHaveIssues
             if (needsExplanation) {
-                val script = try {
-                    val env = DatrisEnvironment.current.environment
-                    ObjectStoreUtil.readBucketObject(env + "-config", tapConfig.scriptPath).getOrElse("")
-                } catch { case _: Exception => "" }
+                val script =
+                    try {
+                        val env = DatrisEnvironment.current.environment
+                        ObjectStoreUtil.readBucketObject(env + "-config", tapConfig.scriptPath).getOrElse("")
+                    } catch { case _: Exception => "" }
                 val aiExplanation = getAIExplanation(tapConfig.description, script, result)
                 // Swallow the "all clear" response so the UI doesn't show an empty diagnosis
                 // panel just because the heuristic fired on a benign warning.
@@ -990,9 +1033,11 @@ class TapAPIController {
     }
 
     @PostMapping(path = Array("/tap/run"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def runTap(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-               @RequestBody body: java.util.Map[String, Any],
-               request: HttpServletRequest): ResponseEntity[String] = {
+    def runTap(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any],
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             val name = Option(body.get("name")).map(_.toString).orNull
             logger.info("API endpoint POST /tap/run called for tap: " + name)
@@ -1041,7 +1086,9 @@ class TapAPIController {
 
             if (debouncedAgeMs.isDefined) {
                 val ageMs = debouncedAgeMs.get
-                logger.info("Debounced /tap/run for tap: " + name + " — last run started " + ageMs + "ms ago (window=" + TapAPIController.runDebounceWindowMs + "ms)")
+                logger.info(
+                    "Debounced /tap/run for tap: " + name + " — last run started " + ageMs + "ms ago (window=" + TapAPIController.runDebounceWindowMs + "ms)"
+                )
                 val gson = new Gson
                 val response = new java.util.HashMap[String, Any]()
                 response.put("tap", name)
@@ -1051,84 +1098,83 @@ class TapAPIController {
                 response.put("targetPipeline", tapConfig.targetPipeline)
                 response.put("persisted", java.lang.Boolean.FALSE)
                 response.put("persistedReason", "debounced")
-                response.put("error",
+                response.put(
+                    "error",
                     "Tap '" + name + "' was triggered " + ageMs + " ms ago; ignoring this duplicate request " +
-                    "(debounce window: " + TapAPIController.runDebounceWindowMs + " ms). Wait for the in-flight " +
-                    "run to finish, then check `get_pipeline_status` or `get_tap_logs` for the outcome.")
+                        "(debounce window: " + TapAPIController.runDebounceWindowMs + " ms). Wait for the in-flight " +
+                        "run to finish, then check `get_pipeline_status` or `get_tap_logs` for the outcome."
+                )
                 response.put("recordCount", Integer.valueOf(0))
                 new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-            }
-            else {
+            } else {
 
-            val result = TapRunner.run(tapConfig, mode = mode, params = params)
+                val result = TapRunner.run(tapConfig, mode = mode, params = params)
 
-            // Save test run status when not pushing to pipeline
-            if (mode != "run") {
-                val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
-                sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
-                val now = sdf.format(new java.util.Date())
-                val updated = tapConfig.copy(
-                    lastTestRunStatus = if (result.error == null) "success" else "failure",
-                    lastTestRunTime = now,
-                    lastTestRunRecordCount = result.recordCount,
-                    lastTestRunError = result.error,
-                    lastTestRunDataType = result.dataType,
-                    lastTestRunColumns = result.columns
-                )
-                TapConfigIO.write(updated)
-            }
-
-            val gson = new Gson
-            val rawRecords = if (result.records != null) JsonParser.parseString(result.records) else null
-
-            // Records policy:
-            //   - mode=run: omit records entirely. They are in transit to the destination;
-            //     the agent must verify via get_pipeline_status, not from this body.
-            //     `recordCount` is enough to summarize what was submitted.
-            //   - mode=test: include records as a preview, capped at TapAPIController.testRecordSampleSize.
-            //     Set `recordsTruncated=true` when we trimmed it.
-            val (recordsToReturn, recordsTruncated) =
-                if (mode == "run") (null, false)
-                else if (rawRecords != null && rawRecords.isJsonArray) {
-                    val arr = rawRecords.getAsJsonArray
-                    if (arr.size > TapAPIController.testRecordSampleSize) {
-                        val sample = new com.google.gson.JsonArray
-                        var i = 0
-                        while (i < TapAPIController.testRecordSampleSize) { sample.add(arr.get(i)); i += 1 }
-                        (sample: com.google.gson.JsonElement, true)
-                    }
-                    else (rawRecords: com.google.gson.JsonElement, false)
+                // Save test run status when not pushing to pipeline
+                if (mode != "run") {
+                    val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+                    sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+                    val now = sdf.format(new java.util.Date())
+                    val updated = tapConfig.copy(
+                        lastTestRunStatus = if (result.error == null) "success" else "failure",
+                        lastTestRunTime = now,
+                        lastTestRunRecordCount = result.recordCount,
+                        lastTestRunError = result.error,
+                        lastTestRunDataType = result.dataType,
+                        lastTestRunColumns = result.columns
+                    )
+                    TapConfigIO.write(updated)
                 }
-                else (rawRecords: com.google.gson.JsonElement, false)
 
-            val hasTargetPipeline = tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
-            val persisted = mode == "run" && hasTargetPipeline && result.error == null && result.recordCount > 0
-            val persistedReason: String =
-                if (persisted) null
-                else if (mode != "run") "test_mode"
-                else if (result.error != null) "run_error"
-                else if (result.recordCount == 0) "no_records"
-                else if (!hasTargetPipeline) "no_target_pipeline"
-                else "unknown"
-            val response = new java.util.HashMap[String, Any]()
-            response.put("tap", name)
-            response.put("description", tapConfig.description)
-            response.put("status", if (result.error == null) "success" else "failure")
-            response.put("mode", mode)
-            response.put("targetPipeline", tapConfig.targetPipeline)
-            response.put("persisted", java.lang.Boolean.valueOf(persisted))
-            if (persistedReason != null) response.put("persistedReason", persistedReason)
-            if (result.publisherToken != null) response.put("publisherToken", result.publisherToken)
-            if (result.pipelineTokens != null && !result.pipelineTokens.isEmpty) response.put("pipelineTokens", result.pipelineTokens)
-            if (recordsToReturn != null) response.put("records", recordsToReturn)
-            if (recordsTruncated) response.put("recordsTruncated", java.lang.Boolean.TRUE)
-            response.put("recordCount", Integer.valueOf(result.recordCount))
-            response.put("error", result.error)
-            response.put("logs", result.logs)
-            response.put("dataType", result.dataType)
-            response.put("columns", result.columns)
-            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
-            }  // end else (non-debounced path)
+                val gson = new Gson
+                val rawRecords = if (result.records != null) JsonParser.parseString(result.records) else null
+
+                // Records policy:
+                //   - mode=run: omit records entirely. They are in transit to the destination;
+                //     the agent must verify via get_pipeline_status, not from this body.
+                //     `recordCount` is enough to summarize what was submitted.
+                //   - mode=test: include records as a preview, capped at TapAPIController.testRecordSampleSize.
+                //     Set `recordsTruncated=true` when we trimmed it.
+                val (recordsToReturn, recordsTruncated) =
+                    if (mode == "run") (null, false)
+                    else if (rawRecords != null && rawRecords.isJsonArray) {
+                        val arr = rawRecords.getAsJsonArray
+                        if (arr.size > TapAPIController.testRecordSampleSize) {
+                            val sample = new com.google.gson.JsonArray
+                            var i = 0
+                            while (i < TapAPIController.testRecordSampleSize) { sample.add(arr.get(i)); i += 1 }
+                            (sample: com.google.gson.JsonElement, true)
+                        } else (rawRecords: com.google.gson.JsonElement, false)
+                    } else (rawRecords: com.google.gson.JsonElement, false)
+
+                val hasTargetPipeline = tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
+                val persisted = mode == "run" && hasTargetPipeline && result.error == null && result.recordCount > 0
+                val persistedReason: String =
+                    if (persisted) null
+                    else if (mode != "run") "test_mode"
+                    else if (result.error != null) "run_error"
+                    else if (result.recordCount == 0) "no_records"
+                    else if (!hasTargetPipeline) "no_target_pipeline"
+                    else "unknown"
+                val response = new java.util.HashMap[String, Any]()
+                response.put("tap", name)
+                response.put("description", tapConfig.description)
+                response.put("status", if (result.error == null) "success" else "failure")
+                response.put("mode", mode)
+                response.put("targetPipeline", tapConfig.targetPipeline)
+                response.put("persisted", java.lang.Boolean.valueOf(persisted))
+                if (persistedReason != null) response.put("persistedReason", persistedReason)
+                if (result.publisherToken != null) response.put("publisherToken", result.publisherToken)
+                if (result.pipelineTokens != null && !result.pipelineTokens.isEmpty) response.put("pipelineTokens", result.pipelineTokens)
+                if (recordsToReturn != null) response.put("records", recordsToReturn)
+                if (recordsTruncated) response.put("recordsTruncated", java.lang.Boolean.TRUE)
+                response.put("recordCount", Integer.valueOf(result.recordCount))
+                response.put("error", result.error)
+                response.put("logs", result.logs)
+                response.put("dataType", result.dataType)
+                response.put("columns", result.columns)
+                new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+            } // end else (non-debounced path)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -1144,21 +1190,23 @@ class TapAPIController {
         val dedupKey = tenant + "::" + tapName
         val now = System.currentTimeMillis()
         val accepted = new java.util.concurrent.atomic.AtomicBoolean(false)
-        TapAPIController.recentRunStarts.compute(dedupKey, (_, existing) => {
-            if (existing != null && (now - existing.longValue()) < TapAPIController.runDebounceWindowMs)
-                existing
-            else {
-                accepted.set(true)
-                java.lang.Long.valueOf(now)
+        TapAPIController.recentRunStarts.compute(
+            dedupKey,
+            (_, existing) => {
+                if (existing != null && (now - existing.longValue()) < TapAPIController.runDebounceWindowMs)
+                    existing
+                else {
+                    accepted.set(true)
+                    java.lang.Long.valueOf(now)
+                }
             }
-        })
+        )
         if (accepted.get()) None
         else Some(now - TapAPIController.recentRunStarts.get(dedupKey).longValue())
     }
 
     @GetMapping(path = Array("/tap/ledger"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getTapLedger(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                     @RequestParam name: String): ResponseEntity[String] = {
+    def getTapLedger(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /tap/ledger called for tap: " + name)
             APIKeyValidator.validate(apiKey)
@@ -1174,9 +1222,11 @@ class TapAPIController {
     }
 
     @DeleteMapping(path = Array("/tap/ledger"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def deleteTapLedger(@RequestHeader(name = "x-api-key", required = false) apiKey: String,
-                        @RequestParam name: String,
-                        @RequestParam(required = false) uri: String): ResponseEntity[String] = {
+    def deleteTapLedger(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam name: String,
+        @RequestParam(required = false) uri: String
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint DELETE /tap/ledger called for tap: " + name + (if (uri != null) ", uri: " + uri else ""))
             APIKeyValidator.validate(apiKey)
@@ -1241,7 +1291,8 @@ class TapAPIController {
                    |Script output/logs:
                    |$logs
                    |
-                   |${if (error.nonEmpty) "Error: " + error else ""}
+                   |${if (error.nonEmpty) "Error: " + error
+                    else ""}
                    |
                    |Analyze the script and its runtime output, and respond with ONE of the following:
                    |  (a) If the script failed or returned 0 records, explain what went wrong and suggest a specific fix.
@@ -1309,7 +1360,8 @@ class TapAPIController {
                         val pipName = Option(info.get("name")).map(_.toString).getOrElse(pkg)
 
                         val docsUrl = {
-                            val projectUrls = Option(info.get("project_urls")).map(_.asInstanceOf[java.util.Map[String, Any]]).getOrElse(new java.util.HashMap())
+                            val projectUrls =
+                                Option(info.get("project_urls")).map(_.asInstanceOf[java.util.Map[String, Any]]).getOrElse(new java.util.HashMap())
                             Option(projectUrls.get("Documentation")).map(_.toString)
                                 .orElse(Option(projectUrls.get("Docs")).map(_.toString))
                                 .orElse(Option(projectUrls.get("Homepage")).map(_.toString))
