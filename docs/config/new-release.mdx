@@ -6,7 +6,8 @@ description: "Step-by-step process for releasing a new version of Datris"
 ## Prerequisites
 
 - All changes committed and pushed to `main`
-- `sbt clean assembly` passes
+- `sbt scalafmtCheckAll test` passes — the CI workflow (`.github/workflows/ci.yml`) runs this on every push/PR to `main`, so run it locally first. If the format check fails, run `sbt scalafmtAll` and commit the result.
+- `sbt clean test assembly` passes — the release Docker build runs tests before assembly, so a red test blocks the image build at tag time
 - `docker compose up --build` works locally
 - Documentation is up to date
 
@@ -48,8 +49,10 @@ Update the version in these files:
 ## 3. Build the Server JAR (if server code changed)
 
 ```bash
-sbt clean assembly
+sbt clean test assembly
 ```
+
+This mirrors what the tag-triggered Docker build runs — the unit test suite executes before assembly, and a failing test fails the release build.
 
 ## 4. Publish MCP Server + CLI to PyPI
 
@@ -231,7 +234,7 @@ curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.
 |------|------|-------|
 | 1 | Version numbers | 4 files in repo |
 | 2 | Release notes | `release-notes.md` + archive |
-| 3 | Server JAR | `sbt clean assembly` (if server changed) |
+| 3 | Server JAR | `sbt clean test assembly` (if server changed) |
 | 4 | PyPI | `twine upload` (before tagging!) |
 | 5 | Commit + push | GitHub `main` branch |
 | 6 | Tag | GitHub tag → triggers Docker Hub build + MCP Registry |
