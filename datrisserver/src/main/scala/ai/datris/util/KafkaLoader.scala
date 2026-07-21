@@ -59,6 +59,7 @@ object KafkaLoader {
 }
 
 class KafkaLoader(jobContext: JobContext) {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[KafkaLoader])
     private val config = jobContext.config
     private val statusUtil = jobContext.statusUtil
 
@@ -139,7 +140,9 @@ class KafkaLoader(jobContext: JobContext) {
                     else
                         null
                 } catch {
-                    case _: Exception => null
+                    case e: Exception =>
+                        logger.warn("Could not extract key field '" + keyField + "' from raw data, sending to topic '" + topic + "' with null key", e)
+                        null
                 }
             } else null
         }

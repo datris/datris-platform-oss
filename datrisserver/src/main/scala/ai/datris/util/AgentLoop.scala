@@ -319,7 +319,11 @@ object AgentLoop {
             try {
                 val decoded = new String(java.util.Base64.getDecoder.decode(c), "UTF-8").trim
                 if (attachments.contains(decoded)) return Some(decoded)
-            } catch { case _: Exception => () }
+            } catch {
+                case e: Exception =>
+                    logger.debug("AgentLoop: tool input content was not a base64-wrapped attachment handle, leaving it as direct content", e)
+                    ()
+            }
         }
         None
     }

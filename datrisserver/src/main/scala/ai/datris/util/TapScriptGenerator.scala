@@ -285,7 +285,11 @@ object TapScriptGenerator {
                             (s, p)
                         }
                     }
-                } catch { case _: Exception => None }
+                } catch {
+                    case e: Exception =>
+                        logger.debug("Candidate JSON object in AI response did not parse — trying next candidate", e)
+                        None
+                }
             }.toIterable.headOption
         }
 
@@ -334,7 +338,11 @@ object TapScriptGenerator {
                     try {
                         val s = gson.fromJson(cleaned, classOf[String])
                         if (s != null && s.nonEmpty) s else cleaned
-                    } catch { case _: Exception => cleaned }
+                    } catch {
+                        case e: Exception =>
+                            logger.debug("AI response is not a JSON string literal — using cleaned response as-is", e)
+                            cleaned
+                    }
                 logger.warn("TapScriptGenerator: retry also failed — treating as raw script (length: " + unwrapped.length + ")")
                 (unwrapped, new java.util.ArrayList[String]())
             }

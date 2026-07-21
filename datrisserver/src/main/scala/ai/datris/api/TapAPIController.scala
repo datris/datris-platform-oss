@@ -147,7 +147,10 @@ class TapAPIController {
                         if (obj.has("value")) out.add(obj.get("value"))
                     }
                 } catch {
-                    case _: Exception => () // skip malformed row, don't fail the whole request
+                    case e: Exception =>
+                        // skip malformed row, don't fail the whole request
+                        logger.debug("Skipping malformed tap run log row", e)
+                        ()
                 }
             }
             new ResponseEntity[String](out.toString, HttpStatus.OK)
@@ -248,7 +251,11 @@ class TapAPIController {
                 val exists =
                     try {
                         ObjectStoreUtil.readBucketObject(bucket, tapConfig.scriptPath).isDefined
-                    } catch { case _: Exception => false }
+                    } catch {
+                        case e: Exception =>
+                            logger.warn("Tap script existence check failed for '" + tapConfig.scriptPath + "' in bucket '" + bucket + "'", e)
+                            false
+                    }
                 if (!exists) {
                     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
                         "{\"error\": \"Tap script not found in object storage at '" + tapConfig.scriptPath +
@@ -645,9 +652,9 @@ class TapAPIController {
                 }
                 response.put("suggestedEnvVars", envVars)
             } catch {
-                case _: Exception =>
+                case e: Exception =>
                     // LLM didn't return JSON — use raw text as reply, keep current description
-                    logger.warn("Brainstorm AI did not return valid JSON, using raw text as reply")
+                    logger.warn("Brainstorm AI did not return valid JSON, using raw text as reply", e)
                     response.put("reply", rawText)
                     response.put("description", currentDescription)
                     response.put("suggestedEnvVars", new java.util.ArrayList[String]())
@@ -840,8 +847,9 @@ class TapAPIController {
                     }
                     (s, p)
                 } catch {
-                    case _: Exception =>
+                    case e: Exception =>
                         // AI returned raw script instead of JSON — use it directly
+                        logger.debug("AI fix response JSON parse failed", e)
                         logger.info("AI fix response was not JSON, treating as raw script")
                         (cleaned, new java.util.ArrayList[String]())
                 }
@@ -1014,7 +1022,11 @@ class TapAPIController {
                     try {
                         val env = DatrisEnvironment.current.environment
                         ObjectStoreUtil.readBucketObject(env + "-config", tapConfig.scriptPath).getOrElse("")
-                    } catch { case _: Exception => "" }
+                    } catch {
+                        case e: Exception =>
+                            logger.warn("Failed to read tap script '" + tapConfig.scriptPath + "' for AI run explanation", e)
+                            ""
+                    }
                 val aiExplanation = getAIExplanation(tapConfig.description, script, result)
                 // Swallow the "all clear" response so the UI doesn't show an empty diagnosis
                 // panel just because the heuristic fired on a benign warning.
@@ -1321,7 +1333,9 @@ class TapAPIController {
             val responseText = AIUtil.callAI(finalPrompt, useWebSearch = AIUtil.useNative(plan))
             AIUtil.extractText(responseText).trim
         } catch {
-            case _: Exception => null
+            case e: Exception =>
+                logger.warn("AI tap-run diagnosis failed; omitting explanation", e)
+                null
         }
     }
 
@@ -1378,7 +1392,11 @@ class TapAPIController {
                                     val text = html.replaceAll("<[^>]+>", " ").replaceAll("\\s+", " ").trim
                                     Some(text.take(2000))
                                 } else None
-                            } catch { case _: Exception => None }
+                            } catch {
+                                case e: Exception =>
+                                    logger.debug("Docs page fetch failed for " + url, e)
+                                    None
+                            }
                         }.getOrElse("")
 
                         val contextText = if (docsExcerpt.nonEmpty) docsExcerpt else description.take(2000)

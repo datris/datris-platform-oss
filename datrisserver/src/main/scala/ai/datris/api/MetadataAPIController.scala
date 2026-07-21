@@ -56,7 +56,9 @@ class MetadataAPIController {
                 else Option(p.destination.database).filter(_.useMongoDB).map(_.table).toList
             }.filter(_ != null).toSet
         } catch {
-            case _: Exception => Set.empty[String]
+            case e: Exception =>
+                logger.warn("Failed to read pipeline configs for tenant Mongo collection list; returning empty set", e)
+                Set.empty[String]
         }
     }
 
@@ -74,7 +76,9 @@ class MetadataAPIController {
                 }
             }.filter(_ != null).toSet
         } catch {
-            case _: Exception => Set.empty[String]
+            case e: Exception =>
+                logger.warn("Failed to read pipeline configs for tenant " + destType + " collection list; returning empty set", e)
+                Set.empty[String]
         }
     }
 

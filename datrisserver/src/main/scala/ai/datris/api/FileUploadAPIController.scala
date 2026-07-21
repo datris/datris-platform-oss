@@ -148,7 +148,9 @@ class FileUploadAPIController {
                     statusUtil.setFilename(pipeline)
                     statusUtil.error("end", e.getMessage)
                 } catch {
-                    case _: Exception => // ignore status write failures
+                    case e2: Exception =>
+                        // ignore status write failures
+                        logger.debug("Failed to write error status for pipeline '" + pipeline + "'", e2)
                 }
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
         }

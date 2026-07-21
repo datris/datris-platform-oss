@@ -109,8 +109,8 @@ object TapScriptReviewer {
                 val c = toStringList(result.get("changes"))
                 (r, s, p, c)
             } catch {
-                case _: Exception =>
-                    logger.info("TapScriptReviewer: AI response was not parseable JSON, treating as no-op")
+                case e: Exception =>
+                    logger.warn(s"TapScriptReviewer: AI response for tap '$tapName' was not parseable JSON, treating as no-op", e)
                     (false, script, new java.util.ArrayList[String](), new java.util.ArrayList[String]())
             }
 

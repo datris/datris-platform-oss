@@ -148,13 +148,14 @@ object HttpUtil {
                 throw new DatrisException("HTTP error, status code: " + httpResponse.getStatusLine.getStatusCode.toString)
 
             val response = new ListBuffer[String]()
-            breakable {
-                val reader = new BufferedReader(new InputStreamReader(httpResponse.getEntity.getContent))
-                while (true) {
-                    val line = reader.readLine()
-                    if (line == null)
-                        break
-                    response += line
+            Loan.withResource(new BufferedReader(new InputStreamReader(httpResponse.getEntity.getContent))) { reader =>
+                breakable {
+                    while (true) {
+                        val line = reader.readLine()
+                        if (line == null)
+                            break
+                        response += line
+                    }
                 }
             }
             response.mkString

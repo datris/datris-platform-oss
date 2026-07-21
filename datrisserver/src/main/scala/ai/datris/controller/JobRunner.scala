@@ -221,7 +221,9 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             val responseText = AIUtil.callAI(prompt)
             AIUtil.extractText(responseText).trim
         } catch {
-            case _: Exception => null
+            case e: Exception =>
+                logger.warn("Failed to get AI explanation for pipeline error (explanation is best-effort, continuing without it)", e)
+                null
         }
     }
 }

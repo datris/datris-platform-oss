@@ -97,9 +97,15 @@ class CatalogChatAPIController {
                     case e: Exception =>
                         try {
                             AssistantSseSupport.sendEvent(emitter, "error", AssistantSseSupport.makeEvent("error", "message", e.getMessage))
-                        } catch { case _: Exception => () }
+                        } catch {
+                            case e2: Exception =>
+                                logger.debug("Failed to send error SSE event; client likely disconnected", e2)
+                        }
                         try emitter.complete()
-                        catch { case _: Exception => () }
+                        catch {
+                            case e2: Exception =>
+                                logger.debug("Failed to complete SSE emitter after chat error; client likely disconnected", e2)
+                        }
                 } finally {
                     UserContext.clear()
                     TenantContext.clear()
@@ -183,7 +189,10 @@ class CatalogChatAPIController {
         // another spurious broken pipe. The container finalizes the response.
         if (!cancelled.get()) {
             try emitter.complete()
-            catch { case _: Exception => () }
+            catch {
+                case e: Exception =>
+                    logger.debug("Failed to complete SSE emitter; client likely disconnected", e)
+            }
         }
     }
 

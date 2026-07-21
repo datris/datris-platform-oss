@@ -147,7 +147,11 @@ class QdrantLoader(jobContext: JobContext) {
                     val racedIn =
                         try {
                             client.listCollectionsAsync().get().asScala.exists(_ == collectionName)
-                        } catch { case _: Exception => false }
+                        } catch {
+                            case ex: Exception =>
+                                logger.debug("Re-check of Qdrant collection \"" + collectionName + "\" after create failure threw — assuming no race", ex)
+                                false
+                        }
                     if (!racedIn) throw e
                     // If a racing session won, still verify its dimension matches ours.
                     verifyCollectionDimension(client, collectionName, dimension)
@@ -160,7 +164,9 @@ class QdrantLoader(jobContext: JobContext) {
             try {
                 client.getCollectionInfoAsync(collectionName).get()
             } catch {
-                case _: Exception => return // can't read config — let the upsert surface the real error
+                case e: Exception => // can't read config — let the upsert surface the real error
+                    logger.debug("Could not read Qdrant collection \"" + collectionName + "\" config — skipping dimension verification", e)
+                    return
             }
         val vectorsConfig = info.getConfig.getParams.getVectorsConfig
         val existing: Long =

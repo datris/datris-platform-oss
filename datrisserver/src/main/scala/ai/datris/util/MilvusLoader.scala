@@ -172,7 +172,11 @@ class MilvusLoader(jobContext: JobContext) {
                 val racedIn =
                     try {
                         client.listCollections().getCollectionNames.contains(collectionName)
-                    } catch { case _: Exception => false }
+                    } catch {
+                        case ex: Exception =>
+                            logger.debug("Re-check of Milvus collection \"" + collectionName + "\" after create failure threw — assuming no race", ex)
+                            false
+                    }
                 if (!racedIn) throw e
                 // If a racing session won, still verify its embedding dim matches ours.
                 verifyCollectionDimension(client, collectionName, dimension)
@@ -184,7 +188,9 @@ class MilvusLoader(jobContext: JobContext) {
             try {
                 client.describeCollection(DescribeCollectionReq.builder().collectionName(collectionName).build())
             } catch {
-                case _: Exception => return // can't read schema — let insert surface the real error
+                case e: Exception => // can't read schema — let insert surface the real error
+                    logger.debug("Could not describe Milvus collection \"" + collectionName + "\" — skipping dimension verification", e)
+                    return
             }
         val fields = describeResp.getCollectionSchema.getFieldSchemaList.asScala
         val embeddingField = fields.find(_.getName == "embedding")

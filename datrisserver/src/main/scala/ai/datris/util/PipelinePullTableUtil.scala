@@ -5,7 +5,8 @@ import ai.datris.model.{DatrisEnvironment, DatrisException}
 import ai.datris.model.PipelinePull
 import org.quartz.CronExpression
 
-import java.text.SimpleDateFormat
+import java.time.format.DateTimeFormatter
+import java.time.{Instant, LocalDateTime, ZoneId}
 import java.util.Date
 
 /*
@@ -19,11 +20,20 @@ case class PipelinePullTable(
 )
 
 object PipelinePullTableUtil {
-    private val dateFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS")
+    // DateTimeFormatter is immutable and thread-safe — the shared SimpleDateFormat
+    // it replaces was not, and this object is hit from concurrent pull schedulers.
+    // The stored string format is byte-identical to the old pattern.
+    private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
+
+    private[util] def formatDate(date: Date): String =
+        dateFormatter.format(LocalDateTime.ofInstant(Instant.ofEpochMilli(date.getTime), ZoneId.systemDefault()))
+
+    private[util] def parseDate(s: String): Date =
+        Date.from(LocalDateTime.parse(s, dateFormatter).atZone(ZoneId.systemDefault()).toInstant)
 
     def initialize(pipeline: String, cronExpression: String): Unit = {
         val nextPullDate = generateNextPullDate(cronExpression)
-        val nextPullDateAsString = dateFormatter.format(nextPullDate)
+        val nextPullDateAsString = formatDate(nextPullDate)
 
         val pipelinePull = PipelinePull(pipeline, nextPullDateAsString, null)
         val gson = new Gson()
@@ -59,7 +69,7 @@ object PipelinePullTableUtil {
 
         val newNextPullDate = {
             if (nextPullDate != null)
-                dateFormatter.format(nextPullDate)
+                formatDate(nextPullDate)
             else
                 pipelinePull.nextPullDate
         }
@@ -82,7 +92,7 @@ object PipelinePullTableUtil {
             ))
         val gson = new Gson()
         val pipelinePull = gson.fromJson(json, classOf[PipelinePull])
-        dateFormatter.parse(pipelinePull.nextPullDate)
+        parseDate(pipelinePull.nextPullDate)
     }
 
     def generateNextPullDate(cronExpression: String): Date = {

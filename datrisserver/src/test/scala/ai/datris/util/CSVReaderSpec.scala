@@ -88,6 +88,15 @@ class CSVReaderSpec extends AnyFunSuite {
         assert(out == "1\n2")
     }
 
+    test("readFromStream closes the stream it was given (takes ownership)") {
+        var closed = false
+        val tracking = new ByteArrayInputStream("a\n1".getBytes(StandardCharsets.UTF_8)) {
+            override def close(): Unit = { closed = true; super.close() }
+        }
+        reader.readFromStream(tracking, header = true, delimiter = ",", columnList = List("a"), columnFilter = List("a"))
+        assert(closed)
+    }
+
     test("alternate delimiter is honored for parsing and output") {
         val out = reader.readFromStream(
             stream("a|b\n1|2"),

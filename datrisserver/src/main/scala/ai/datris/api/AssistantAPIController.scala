@@ -157,9 +157,15 @@ class AssistantAPIController {
                     case e: Exception =>
                         try {
                             AssistantSseSupport.sendEvent(emitter, "error", AssistantSseSupport.makeEvent("error", "message", e.getMessage))
-                        } catch { case _: Exception => () }
+                        } catch {
+                            case e2: Exception =>
+                                logger.debug("Failed to send error SSE event; client likely disconnected", e2)
+                        }
                         try emitter.complete()
-                        catch { case _: Exception => () }
+                        catch {
+                            case e2: Exception =>
+                                logger.debug("Failed to complete SSE emitter after chat error; client likely disconnected", e2)
+                        }
                 } finally {
                     UserContext.clear()
                     TenantContext.clear()
@@ -227,7 +233,11 @@ class AssistantAPIController {
         val toolDefs = MCPClient.listTools(uiKey) :+ syntheticSecretToolDef()
         val workflowReference =
             try MCPClient.readResource("datris://pipeline-config-reference", uiKey)
-            catch { case _: Exception => "" }
+            catch {
+                case e: Exception =>
+                    logger.warn("Failed to read pipeline-config-reference MCP resource; assistant prompt will omit the workflow reference", e)
+                    ""
+            }
 
         val systemPrompt = buildSystemPrompt(workflowReference, env.environment)
 
@@ -259,7 +269,10 @@ class AssistantAPIController {
         // another spurious broken pipe. The container finalizes the response.
         if (!cancelled.get()) {
             try emitter.complete()
-            catch { case _: Exception => () }
+            catch {
+                case e: Exception =>
+                    logger.debug("Failed to complete SSE emitter; client likely disconnected", e)
+            }
         }
     }
 

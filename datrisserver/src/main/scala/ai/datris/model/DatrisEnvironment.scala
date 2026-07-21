@@ -5,7 +5,11 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import org.slf4j.{Logger, LoggerFactory}
+
 object DatrisEnvironment {
+    private val logger: Logger = LoggerFactory.getLogger(getClass)
+
     var values: DatrisEnvironment = _
 
     def init(environment: DatrisEnvironment): Unit = {
@@ -120,7 +124,11 @@ object DatrisEnvironment {
                     map.getOrElse("version", "")
                 ))
             }
-        } catch { case _: Exception => None }
+        } catch {
+            case e: Exception =>
+                logger.warn("Failed to load tenant AI config from secret path: " + path, e)
+                None
+        }
     }
 
     /** Load the web-search override from a self-describing Vault secret. Mirrors
@@ -142,12 +150,20 @@ object DatrisEnvironment {
                     val version = map.getOrElse("version", "")
                     val maxUses =
                         try map.getOrElse("maxUses", "3").trim.toInt
-                        catch { case _: Exception => 3 }
+                        catch {
+                            case e: Exception =>
+                                logger.debug("Invalid maxUses in web-search secret " + path + ", defaulting to 3", e)
+                                3
+                        }
                     val apiKey = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant, path.takeWhile(_ != '/'))
                     Some(WebSearchConfig(enabled, provider, endpoint, model, apiKey, version, maxUses))
                 }
             }
-        } catch { case _: Exception => None }
+        } catch {
+            case e: Exception =>
+                logger.warn("Failed to load tenant web-search config from secret path: " + path, e)
+                None
+        }
     }
 }
 

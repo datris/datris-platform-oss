@@ -220,7 +220,8 @@ object MCPClient {
                         if (obj.has("id") && obj.get("id").getAsString == expectedId)
                             return obj
                     } catch {
-                        case _: Exception => // skip malformed event
+                        case e: Exception => // skip malformed event
+                            logger.debug("MCPClient: skipping malformed SSE event for method=" + method, e)
                     }
                 }
             }

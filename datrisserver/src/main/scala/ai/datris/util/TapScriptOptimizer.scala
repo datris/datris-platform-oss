@@ -121,8 +121,8 @@ object TapScriptOptimizer {
                 val c = toStringList(result.get("changes"))
                 (s, p, c)
             } catch {
-                case _: Exception =>
-                    logger.info("AI optimize response was not JSON, returning original script unchanged")
+                case e: Exception =>
+                    logger.warn(s"AI optimize response for tap '$tapName' was not JSON, returning original script unchanged", e)
                     (script, new java.util.ArrayList[String](), new java.util.ArrayList[String]())
             }
 

@@ -7,6 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.Gson
 import ai.datris.model.EntityVersion
+import org.slf4j.{Logger, LoggerFactory}
 
 /** Append-only store for tap/pipeline definition snapshots. Backs both
   * `<env>-tap-version` and `<env>-pipeline-version` — the caller passes the
@@ -17,6 +18,8 @@ import ai.datris.model.EntityVersion
   * See plans/tap-pipeline-versioning.md. */
 object EntityVersionIO {
 
+    private val logger: Logger = LoggerFactory.getLogger(getClass)
+
     private def gson = new Gson
 
     def docKey(entityName: String, version: Int): String = entityName + "|" + version
@@ -26,7 +29,11 @@ object EntityVersionIO {
         NoSQLDbUtil.queryJSONItemsByKey(tableName, "entityName", entityName)
             .flatMap { json =>
                 try Some(gson.fromJson(json, classOf[EntityVersion]))
-                catch { case _: Exception => None }
+                catch {
+                    case e: Exception =>
+                        logger.warn("Skipping malformed version record for entity \"" + entityName + "\" in table \"" + tableName + "\"", e)
+                        None
+                }
             }
             .sortBy(_.version)
     }
@@ -52,7 +59,11 @@ object EntityVersionIO {
         val records = listVersions(tableName, entityName)
         records.foreach { r =>
             try NoSQLDbUtil.deleteItemJSON(tableName, "key", r.key)
-            catch { case _: Exception => () }
+            catch {
+                case e: Exception =>
+                    logger.warn("Failed to delete version record \"" + r.key + "\" from table \"" + tableName + "\"", e)
+                    ()
+            }
         }
         records.map(_.scriptPath).filter(p => p != null && p.nonEmpty).distinct
     }
@@ -68,7 +79,11 @@ object EntityVersionIO {
         val pruned = all.dropRight(keep)
         pruned.foreach { r =>
             try NoSQLDbUtil.deleteItemJSON(tableName, "key", r.key)
-            catch { case _: Exception => () }
+            catch {
+                case e: Exception =>
+                    logger.warn("Failed to prune version record \"" + r.key + "\" from table \"" + tableName + "\"", e)
+                    ()
+            }
         }
         val survivingPaths =
             survivors.map(_.scriptPath).filter(p => p != null && p.nonEmpty).toSet

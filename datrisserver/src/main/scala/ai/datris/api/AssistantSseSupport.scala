@@ -7,6 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{JsonArray, JsonObject}
 import ai.datris.util.AgentLoop
+import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 
 /** Shared SSE plumbing for assistant-style endpoints (build mode and ops
@@ -17,6 +18,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
   * Pulled out so the two endpoints can't drift in their SSE event shape —
   * the UI parses a single AssistantEvent union for both. */
 object AssistantSseSupport {
+
+    private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     /** Serialize an AgentLoop event onto the SSE emitter. Matches the
       * existing wire format consumed by the UI's ops-assistant.service.ts
@@ -99,7 +102,10 @@ object AssistantSseSupport {
             emitter.send(SseEmitter.event().name(name).data(payload.toString))
             true
         } catch {
-            case _: Exception => false // client disconnected; stop emitting
+            case e: Exception =>
+                // client disconnected; stop emitting
+                logger.debug("SSE frame write failed for event '" + name + "'; client likely disconnected", e)
+                false
         }
     }
 

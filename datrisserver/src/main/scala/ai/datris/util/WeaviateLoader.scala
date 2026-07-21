@@ -161,7 +161,11 @@ class WeaviateLoader(jobContext: JobContext) {
                 try {
                     val recheck = client.schema().classGetter().withClassName(className).run()
                     !recheck.hasErrors && recheck.getResult != null
-                } catch { case _: Exception => false }
+                } catch {
+                    case e: Exception =>
+                        logger.debug("Re-check of Weaviate class \"" + className + "\" after create failure threw — assuming no race", e)
+                        false
+                }
             if (!racedIn)
                 throw new DatrisException("Failed to create Weaviate class: " + createResult.getError.getMessages.toString)
             // If a racing session won, still verify its existing vector dim matches ours.
@@ -182,7 +186,9 @@ class WeaviateLoader(jobContext: JobContext) {
                     .withVector()
                     .run()
             } catch {
-                case _: Exception => return
+                case e: Exception =>
+                    logger.debug("Dimension-probe of Weaviate class \"" + className + "\" failed — skipping dimension verification", e)
+                    return
             }
         if (probe.hasErrors || probe.getResult == null) return
         val objects = probe.getResult.asScala

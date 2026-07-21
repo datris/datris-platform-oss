@@ -280,7 +280,8 @@ class KeysAPIController {
                     if (obj.has("revokedBy") && !obj.get("revokedBy").isJsonNull) row.addProperty("revokedBy", obj.get("revokedBy").getAsString)
                     row.addProperty("isLegacyFullAccess", false)
                 } catch {
-                    case _: Exception =>
+                    case e: Exception =>
+                        logger.warn("Malformed API key metadata for label '" + label + "'; listing as legacy full-access key", e)
                         row.add("capabilities", new JsonArray())
                         row.addProperty("isLegacyFullAccess", true)
                         row.addProperty("revoked", false)
@@ -298,7 +299,11 @@ class KeysAPIController {
         val map = SecretsUtil.getSecretMap(metadataSecretName).map(_.asScala.toMap).getOrElse(Map.empty[String, String])
         map.get(label).flatMap { json =>
             try Some(JsonParser.parseString(json).getAsJsonObject)
-            catch { case _: Exception => None }
+            catch {
+                case e: Exception =>
+                    logger.warn("Malformed API key metadata JSON for label '" + label + "'", e)
+                    None
+            }
         }
     }
 

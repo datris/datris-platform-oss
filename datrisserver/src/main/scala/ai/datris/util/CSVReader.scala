@@ -26,18 +26,24 @@ class CSVReader {
             }
         })
 
-        val reader = new InputStreamReader(inputStream)
-        val parser = new CSVParser(reader, CSVFormat.RFC4180.builder().setDelimiter(delimiter).setIgnoreEmptyLines(true).setTrim(trimColumns).build())
-
-        val rows = parser.getRecords.asScala.map(record => {
-            columnNumbers.map(colNumber => {
-                val value = record.get(colNumber)
-                if (value != null && (value.contains(delimiter) || value.contains("\"") || value.contains("\n")))
-                    "\"" + value.replace("\"", "\"\"") + "\""
-                else
-                    value
-            }).mkString(delimiter)
-        }).toList
+        // Takes ownership of inputStream: parsing consumes it, and closing the
+        // parser closes the reader chain (and with it the stream).
+        val rows = Loan.withResource(
+            new CSVParser(
+                new InputStreamReader(inputStream),
+                CSVFormat.RFC4180.builder().setDelimiter(delimiter).setIgnoreEmptyLines(true).setTrim(trimColumns).build()
+            )
+        ) { parser =>
+            parser.getRecords.asScala.map(record => {
+                columnNumbers.map(colNumber => {
+                    val value = record.get(colNumber)
+                    if (value != null && (value.contains(delimiter) || value.contains("\"") || value.contains("\n")))
+                        "\"" + value.replace("\"", "\"\"") + "\""
+                    else
+                        value
+                }).mkString(delimiter)
+            }).toList
+        }
 
         if (header && removeHeader)
             rows.tail.mkString("\n")
@@ -64,20 +70,24 @@ class CSVReader {
             }
         })
 
-        // Read the file using Apache commons-csv
+        // Read the file using Apache commons-csv. The parser owns the reader
+        // chain down to the object-store stream; closing it releases the
+        // connection (previously leaked — the reader was never closed).
         val bufferedReader = ObjectStoreUtil.getBufferedReader(ObjectStoreUtil.getBucket(url), ObjectStoreUtil.getKey(url))
-        val parser = new CSVParser(bufferedReader, CSVFormat.RFC4180.builder().setDelimiter(delimiter).setIgnoreEmptyLines(true).setTrim(trimColumns).build())
-
-        // Get only the columns in the column filter
-        val rows = parser.getRecords.asScala.map(record => {
-            columnNumbers.map(colNumber => {
-                val value = record.get(colNumber)
-                if (value != null && (value.contains(delimiter) || value.contains("\"") || value.contains("\n")))
-                    "\"" + value.replace("\"", "\"\"") + "\""
-                else
-                    value
-            }).mkString(delimiter)
-        }).toList
+        val rows = Loan.withResource(
+            new CSVParser(bufferedReader, CSVFormat.RFC4180.builder().setDelimiter(delimiter).setIgnoreEmptyLines(true).setTrim(trimColumns).build())
+        ) { parser =>
+            // Get only the columns in the column filter
+            parser.getRecords.asScala.map(record => {
+                columnNumbers.map(colNumber => {
+                    val value = record.get(colNumber)
+                    if (value != null && (value.contains(delimiter) || value.contains("\"") || value.contains("\n")))
+                        "\"" + value.replace("\"", "\"\"") + "\""
+                    else
+                        value
+                }).mkString(delimiter)
+            }).toList
+        }
 
         if (header && removeHeader)
             rows.tail.mkString("\n")

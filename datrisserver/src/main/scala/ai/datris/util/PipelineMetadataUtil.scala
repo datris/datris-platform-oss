@@ -11,12 +11,15 @@ import org.apache.commons.compress.archivers.ArchiveStreamFactory
 import org.apache.commons.compress.archivers.ArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.utils.IOUtils
+import org.slf4j.{Logger, LoggerFactory}
 
 import java.io.{BufferedInputStream, ByteArrayInputStream}
 import java.util.UUID
 import scala.util.control.Breaks._
 
 class PipelineMetadataUtil(statusUtil: StatusUtil) {
+    private val logger: Logger = LoggerFactory.getLogger(getClass)
+
     def read(bucket: String, key: String): PipelineMetadata = {
         if (key.endsWith(".metadata.json")) {
             // Read the metadata file and create the PipelineMetadata object
@@ -90,7 +93,8 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
                 try {
                     new ArchiveStreamFactory().createArchiveInputStream(bufferedInputStream)
                 } catch {
-                    case _: Exception =>
+                    case e: Exception =>
+                        logger.warn("Could not create archive input stream for bucket: " + bucket + ", key: " + key, e)
                         throw new DatrisException("Archive type for key: " + key + " is not supported")
                 }
             }

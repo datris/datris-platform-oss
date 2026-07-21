@@ -358,7 +358,11 @@ class StartupRunner extends ApplicationRunner {
                 val version = Option(secret.get("version")).getOrElse("")
                 val maxUses =
                     try Option(secret.get("maxUses")).map(_.trim.toInt).getOrElse(3)
-                    catch { case _: Exception => 3 }
+                    catch {
+                        case e: Exception =>
+                            logger.debug("Invalid maxUses in web search secret " + secretName + ", defaulting to 3", e)
+                            3
+                    }
                 val apiKey = ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant, DatrisEnvironment.values.environment)
                 if (apiKey != rawKey && apiKey.nonEmpty)
                     logger.info("Web search apiKey resolved from the shared key store or " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")

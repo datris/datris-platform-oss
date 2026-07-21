@@ -241,7 +241,11 @@ object AIUtil {
                 .flatMap(m => Option(m.get(field)))
                 .filter(_.nonEmpty)
                 .getOrElse("")
-        } catch { case _: Exception => "" }
+        } catch {
+            case e: Exception =>
+                logger.debug("Could not read shared " + provider + " key from " + env + "/ai-keys — falling through to next resolution tier", e)
+                ""
+        }
     }
 
     /** Whether web search is enabled at all. Independent of which provider runs the
@@ -618,7 +622,11 @@ object AIUtil {
                 case "anthropic" => extractAnthropicCitations(responseMap)
                 case _ => Nil
             }
-        } catch { case _: Exception => Nil }
+        } catch {
+            case e: Exception =>
+                logger.debug("Could not extract web-search citations from " + aiConfig.provider + " response — returning none", e)
+                Nil
+        }
     }
 
     private def extractAnthropicCitations(responseMap: java.util.Map[String, Any]): List[(String, String)] = {
@@ -1133,7 +1141,11 @@ object AIUtil {
                                     if (b.kind == "tool_use") {
                                         val input =
                                             try JsonParser.parseString(if (b.text.isEmpty) "{}" else b.text.toString).getAsJsonObject
-                                            catch { case _: Exception => new JsonObject() }
+                                            catch {
+                                                case ex: Exception =>
+                                                    logger.warn("Malformed tool input JSON for tool \"" + b.toolName + "\" — substituting empty input", ex)
+                                                    new JsonObject()
+                                            }
                                         b.toolInput = input
                                         sink(AIStreamEvent.ToolUseComplete(b.toolId, b.toolName, input))
                                     }
@@ -1154,7 +1166,8 @@ object AIUtil {
                         }
                     } catch {
                         case e: DatrisException => throw e
-                        case _: Exception => // skip malformed event line; the next one will likely be fine
+                        case e: Exception => // skip malformed event line; the next one will likely be fine
+                            logger.debug("Skipping malformed Anthropic stream event line", e)
                     }
                 }
             }
@@ -1336,7 +1349,11 @@ object AIUtil {
                     val argsStr = if (item.has("arguments")) item.get("arguments").getAsString else "{}"
                     val args =
                         try JsonParser.parseString(argsStr).getAsJsonObject
-                        catch { case _: Exception => new JsonObject() }
+                        catch {
+                            case e: Exception =>
+                                logger.warn("Malformed function_call arguments for tool \"" + name + "\" — substituting empty input", e)
+                                new JsonObject()
+                        }
                     sink(AIStreamEvent.ToolUseStart(id, name))
                     sink(AIStreamEvent.ToolUseComplete(id, name, args))
                     blocks += AIContentBlock.ToolUseBlock(id, name, args)

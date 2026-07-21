@@ -140,7 +140,9 @@ class AuthAPIController {
             val fmt = DateTimeFormatter.ofPattern(env.dateFormat).withZone(ZoneId.of(env.dateTimezone))
             fmt.format(Instant.parse(iso))
         } catch {
-            case _: Exception => iso
+            case e: Exception =>
+                logger.warn("Failed to format timestamp '" + iso + "' with configured dateFormat/dateTimezone; returning raw value", e)
+                iso
         }
     }
 

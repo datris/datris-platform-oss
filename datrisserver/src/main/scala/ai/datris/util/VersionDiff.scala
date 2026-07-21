@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{JsonArray, JsonElement, JsonObject, JsonParser}
+import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.mutable
 
@@ -17,6 +18,7 @@ import scala.collection.mutable
   *    flattened to dotted paths so nested pipeline configs diff at any depth.
   *  - [[scriptDiff]]: line-level LCS diff of two tap scripts. */
 object VersionDiff {
+    private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     /** One changed/added/removed leaf field. `change` ∈ added | removed | changed. */
     case class FieldChange(path: String, before: String, after: String, change: String)
@@ -53,7 +55,11 @@ object VersionDiff {
         try {
             val el = JsonParser.parseString(if (json == null) "{}" else json)
             flatten("", el, acc)
-        } catch { case _: Exception => () }
+        } catch {
+            case e: Exception =>
+                logger.warn("VersionDiff: failed to parse config JSON snapshot, diffing it as empty", e)
+                ()
+        }
         acc
     }
 

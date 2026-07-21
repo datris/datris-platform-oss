@@ -105,14 +105,6 @@ object PostgresQueryUtil {
         val secrets = SecretsRetrieverUtil.postgresSecrets()
         Class.forName("org.postgresql.Driver")
 
-        val properties = new Properties()
-        properties.setProperty("user", secrets.username)
-        properties.setProperty("password", secrets.password)
-        // TCP connect + login timeout (pgjdbc, in seconds). Bounds connection
-        // setup only — does not limit how long a query runs.
-        properties.setProperty("connectTimeout", CONNECT_TIMEOUT_SECONDS.toString)
-        properties.setProperty("loginTimeout", CONNECT_TIMEOUT_SECONDS.toString)
-
         // Append database name to JDBC URL (same pattern as PostgresLoader)
         // URL format: jdbc:postgresql://host:port/dbname — check if dbname is already present after host:port
         val jdbcUrl = {
@@ -121,9 +113,10 @@ object PostgresQueryUtil {
             if (hasDatabase) secrets.jdbcUrl else secrets.jdbcUrl + "/" + effectiveDb
         }
 
-        var conn: Connection = null
-        try {
-            conn = DriverManager.getConnection(jdbcUrl, properties)
+        // Pooled: this is the interactive path where per-request DriverManager
+        // connections hurt most. Connect/login timeouts live in PostgresPool;
+        // Hikari resets readOnly/autoCommit when the connection is returned.
+        PostgresPool.withConnection(jdbcUrl, secrets.username, secrets.password) { conn =>
             conn.setReadOnly(true)
             conn.setAutoCommit(true)
 
@@ -157,8 +150,6 @@ object PostgresQueryUtil {
             stmt.close()
             logger.info("Query returned " + results.size() + " rows")
             results
-        } finally {
-            if (conn != null) conn.close()
         }
     }
 

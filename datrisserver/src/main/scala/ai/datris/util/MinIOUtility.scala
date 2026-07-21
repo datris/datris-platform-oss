@@ -44,14 +44,10 @@ class MinIOUtility(val client: MinioClient) extends ObjectStoreUtility {
 
     override def readBucketObject(bucketName: String, key: String): Option[String] = {
         try {
-            val stream = getInputStream(bucketName, key)
-            try {
-                val reader = new BufferedReader(new InputStreamReader(stream))
-                val data = Some(Stream.continually(reader.readLine()).takeWhile(_ != null).mkString("\n"))
-                reader.close()
-                data
-            } finally {
-                stream.close()
+            Loan.withResource(getInputStream(bucketName, key)) { stream =>
+                Loan.withResource(new BufferedReader(new InputStreamReader(stream))) { reader =>
+                    Some(Stream.continually(reader.readLine()).takeWhile(_ != null).mkString("\n"))
+                }
             }
         } catch {
             case e: ErrorResponseException if isMissingKey(e) => None
@@ -60,14 +56,10 @@ class MinIOUtility(val client: MinioClient) extends ObjectStoreUtility {
 
     override def readBucketObjectFirstRow(bucketName: String, key: String): Option[String] = {
         try {
-            val stream = getInputStream(bucketName, key)
-            try {
-                val reader = new BufferedReader(new InputStreamReader(stream))
-                val firstRow = Some(reader.readLine())
-                reader.close()
-                firstRow
-            } finally {
-                stream.close()
+            Loan.withResource(getInputStream(bucketName, key)) { stream =>
+                Loan.withResource(new BufferedReader(new InputStreamReader(stream))) { reader =>
+                    Some(reader.readLine())
+                }
             }
         } catch {
             case e: ErrorResponseException if isMissingKey(e) => None

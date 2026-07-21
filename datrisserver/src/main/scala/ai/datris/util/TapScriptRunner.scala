@@ -290,7 +290,11 @@ object TapScriptRunner {
                         }
                         (gson.toJson(rewrittenList), normalizedCols)
                     } else (dataJson, null)
-                } catch { case _: Exception => (dataJson, null) }
+                } catch {
+                    case e: Exception =>
+                        logger.warn("Column-name normalization of tap output failed — passing data through unnormalized", e)
+                        (dataJson, null)
+                }
             } else (dataJson, null)
 
             logger.info("TapScriptRunner: dataType=" + dataType + ", fetched " + recordCount + " records" +
@@ -438,7 +442,11 @@ object TapScriptRunner {
                 Files.walk(dir).sorted(java.util.Comparator.reverseOrder[Path]())
                     .forEach(p => { Files.deleteIfExists(p); () })
             }
-        } catch { case _: Exception => () }
+        } catch {
+            case e: Exception =>
+                logger.debug("Best-effort cleanup of venv directory " + dir + " failed", e)
+                ()
+        }
     }
 
     // ---- Phase 3: isolated sidecar execution -------------------------------------------------

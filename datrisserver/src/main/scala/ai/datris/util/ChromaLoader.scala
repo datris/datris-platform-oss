@@ -206,7 +206,11 @@ class ChromaLoader(jobContext: JobContext) {
         post.setEntity(new StringEntity(payload.toString, "UTF-8"))
         val response =
             try client.execute(post)
-            catch { case _: Exception => return }
+            catch {
+                case e: Exception =>
+                    logger.debug("Dimension-probe of Chroma collection \"" + collectionName + "\" failed — skipping dimension verification", e)
+                    return
+            }
         try {
             if (response.getStatusLine.getStatusCode != 200) return
             val body = EntityUtils.toString(response.getEntity)
@@ -240,8 +244,11 @@ class ChromaLoader(jobContext: JobContext) {
                 val json = JsonParser.parseString(body).getAsJsonObject
                 Some(json.get("id").getAsString)
             } else None
-        } catch { case _: Exception => None }
-        finally { response.close() }
+        } catch {
+            case e: Exception =>
+                logger.warn("Failed to parse Chroma collection lookup response for \"" + collectionName + "\" — treating collection as absent", e)
+                None
+        } finally { response.close() }
     }
 
     private def sendNotification(): Unit = {

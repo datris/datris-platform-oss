@@ -34,7 +34,11 @@ object TapScheduler {
                         def parseOpt(s: String): Option[Date] =
                             Option(s).filter(_.nonEmpty).flatMap(v =>
                                 try Some(sdf.parse(v))
-                                catch { case _: Exception => None }
+                                catch {
+                                    case e: Exception =>
+                                        logger.debug("TapScheduler: unparseable anchor date '" + v + "' for tap: " + tap.name + ", trying next fallback", e)
+                                        None
+                                }
                             )
                         parseOpt(tap.lastRunTime)
                             .orElse(parseOpt(tap.updatedAt))

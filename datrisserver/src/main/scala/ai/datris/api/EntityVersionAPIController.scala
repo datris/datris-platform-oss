@@ -237,7 +237,11 @@ class EntityVersionAPIController {
         try {
             val bucket = DatrisEnvironment.current.environment + "-config"
             ObjectStoreUtil.readBucketObject(bucket, scriptPath).orNull
-        } catch { case _: Exception => null }
+        } catch {
+            case e: Exception =>
+                logger.warn("Failed to read tap script '" + scriptPath + "' from object storage", e)
+                null
+        }
     }
 
     private def ok(json: String): ResponseEntity[String] =

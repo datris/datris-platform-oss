@@ -12,8 +12,8 @@ import org.postgresql.copy.CopyManager
 import org.postgresql.core.BaseConnection
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.sql.{Connection, DriverManager, Statement}
-import java.util.{Properties, UUID}
+import java.sql.{Connection, Statement}
+import java.util.UUID
 import scala.collection.JavaConverters._
 import scala.util.Try
 
@@ -36,39 +36,32 @@ class PostgresLoader(jobContext: JobContext) {
         Class.forName("org.postgresql.Driver")
         statusUtil.info("processing", "Postgres driver loaded successfully")
 
-        var conn: Connection = null
-        var statement: Statement = null
-
-        try {
-            val properties = new Properties()
-            properties.setProperty("user", secrets.username)
-            properties.setProperty("password", secrets.password)
-            val jdbcUrl = secrets.jdbcUrl + "/" + dbName
-            statusUtil.info("processing", "jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
-            conn = DriverManager.getConnection(jdbcUrl, properties)
+        val jdbcUrl = secrets.jdbcUrl + "/" + dbName
+        statusUtil.info("processing", "jdbc url: " + LogRedactUtil.redactJdbcUrl(jdbcUrl))
+        // Pooled: close() below returns the connection to the pool; Hikari
+        // resets autoCommit on return, so the transaction toggle is safe.
+        PostgresPool.withConnection(jdbcUrl, secrets.username, secrets.password) { conn =>
             statusUtil.info("processing", "Postgres connection acquired")
             if (config.destination.database.useTransaction)
                 conn.setAutoCommit(false)
-            statement = conn.createStatement()
+            val statement = conn.createStatement()
+            try {
+                val file = createStagingFile()
 
-            val file = createStagingFile()
+                copyInto(conn, statement, file)
 
-            copyInto(conn, statement, file)
-
-            if (config.destination.database.useTransaction)
-                conn.commit()
-            sendNotification()
-            statusUtil.info("end", "Process completed")
-        } catch {
-            case e: Exception =>
-                if (config.destination.database.useTransaction && conn != null)
-                    Try(conn.rollback())
-                throw e
-        } finally {
-            if (statement != null)
+                if (config.destination.database.useTransaction)
+                    conn.commit()
+                sendNotification()
+                statusUtil.info("end", "Process completed")
+            } catch {
+                case e: Exception =>
+                    if (config.destination.database.useTransaction)
+                        Try(conn.rollback())
+                    throw e
+            } finally {
                 statement.close()
-            if (conn != null)
-                conn.close()
+            }
         }
     }
 
@@ -197,7 +190,7 @@ class PostgresLoader(jobContext: JobContext) {
 
         statusUtil.info("processing", "Copy command: " + sql.toString())
         val inputStream = ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
-        val rowsInserted = new CopyManager(conn.asInstanceOf[BaseConnection])
+        val rowsInserted = new CopyManager(conn.unwrap(classOf[BaseConnection]))
             .copyIn(sql.mkString, inputStream)
         statusUtil.info("processing", "Rows inserted into table: " + rowsInserted.toString)
 
@@ -267,7 +260,7 @@ class PostgresLoader(jobContext: JobContext) {
             val inputStream = ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
             val rowsCopied =
                 try {
-                    new CopyManager(conn.asInstanceOf[BaseConnection]).copyIn(copySql.mkString, inputStream)
+                    new CopyManager(conn.unwrap(classOf[BaseConnection])).copyIn(copySql.mkString, inputStream)
                 } finally {
                     inputStream.close()
                 }

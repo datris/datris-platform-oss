@@ -103,7 +103,9 @@ object DestinationAvailabilityUtil {
                 client.close()
             }
         } catch {
-            case _: Exception => false
+            case e: Exception =>
+                logger.debug("MongoDB availability probe failed — treating destination as unavailable", e)
+                false
         }
     }
 
@@ -115,7 +117,9 @@ object DestinationAvailabilityUtil {
             if (secretName == null || secretName.isEmpty) return false
             PostgresQueryUtil.probeError().isEmpty
         } catch {
-            case _: Exception => false
+            case e: Exception =>
+                logger.debug("Postgres availability probe failed — treating destination as unavailable", e)
+                false
         }
     }
 
@@ -133,7 +137,9 @@ object DestinationAvailabilityUtil {
             client.listBuckets()
             true
         } catch {
-            case _: Exception => false
+            case e: Exception =>
+                logger.debug("MinIO availability probe failed — treating destination as unavailable", e)
+                false
         }
     }
 

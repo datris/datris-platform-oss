@@ -87,6 +87,8 @@ lazy val allDependencies = Seq(
 
     // Databases
     "org.postgresql" % "postgresql" % "42.7.7",
+    // Connection pooling for Postgres (slf4j-only transitives; no Spark conflicts)
+    "com.zaxxer" % "HikariCP" % "5.1.0",
     "com.mysql" % "mysql-connector-j" % "8.4.0",
     "net.snowflake" % "snowflake-jdbc" % "3.20.0",
     // Databricks OSS JDBC driver (Apache 2.0) — an uber jar with its own deps
