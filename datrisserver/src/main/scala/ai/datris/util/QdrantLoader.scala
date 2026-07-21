@@ -5,7 +5,6 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import com.google.gson.Gson
 import io.qdrant.client.QdrantClient
 import io.qdrant.client.QdrantGrpcClient
 import io.qdrant.client.PointIdFactory.id
@@ -13,114 +12,70 @@ import io.qdrant.client.ValueFactory.value
 import io.qdrant.client.VectorsFactory.vectors
 import io.qdrant.client.grpc.Collections.{Distance, VectorParams}
 import io.qdrant.client.grpc.Points.PointStruct
-import ai.datris.model.{JobContext, DatrisEnvironment, DatrisException}
-import org.slf4j.{Logger, LoggerFactory}
+import ai.datris.model.{ChunkingConfig, DatrisEnvironment, DatrisException, JobContext}
 
-import java.util.UUID
 import scala.collection.JavaConverters._
 
-class QdrantLoader(jobContext: JobContext) {
-    private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private val config = jobContext.config
-    private val statusUtil = jobContext.statusUtil
+class QdrantLoader(jobContext: JobContext) extends VectorLoaderBase(jobContext) {
+    import VectorLoaderBase.EmbeddedRow
+
     private val qdrantConfig = config.destination.qdrant
-    private val UPSERT_BATCH_SIZE = 100
 
-    def process(): Unit = {
-        statusUtil.overrideProcessName(this.getClass.getSimpleName)
-        statusUtil.info("begin", "Process started")
+    override type Client = QdrantClient
 
-        if (jobContext.data.rawBytes == null)
-            throw new DatrisException(
-                "Qdrant destination requires unstructured file data (PDF, text). Use 'unstructuredAttributes' in the source configuration."
-            )
+    override protected def destinationType: String = "qdrant"
+    override protected def secretDisplayName: String = "Qdrant"
+    override protected def collectionName: String = qdrantConfig.collectionName
+    override protected def configuredChunking: ChunkingConfig = qdrantConfig.chunking
+    override protected def embeddingSecretNameFromConfig: String = qdrantConfig.embeddingSecretName
+    override protected def destinationSecretNameFromConfig: String = qdrantConfig.qdrantSecretName
+    override protected def tenantSecretNameOverride: String = DatrisEnvironment.current.qdrantSecretName
 
-        // Extract text from the document
-        val filename = if (jobContext.metadata != null) jobContext.metadata.dataFileName else ""
-        val documentText = TextExtractorUtil.extractText(jobContext.data.rawBytes, filename)
-        if (documentText.isEmpty)
-            throw new DatrisException("No text could be extracted from the uploaded file: " + filename)
+    override protected def guardMessage: String =
+        "Qdrant destination requires unstructured file data (PDF, text). Use 'unstructuredAttributes' in the source configuration."
 
-        statusUtil.info("processing", "Extracted " + documentText.length + " characters from: " + filename)
-
-        // Chunk the document
-        val chunkingConfig = if (qdrantConfig.chunking != null) qdrantConfig.chunking
-        else new ai.datris.model.ChunkingConfig()
-        val chunks = ChunkUtil.chunk(documentText, chunkingConfig)
-        statusUtil.info("processing", "Chunked into " + chunks.size + " chunks using strategy: " + chunkingConfig.strategy)
-
-        // Get configs — use tenant secret names if in multi-tenant mode
-        val embeddingSecretName =
-            if (DatrisEnvironment.current.embeddingSecretName != null) DatrisEnvironment.current.embeddingSecretName else qdrantConfig.embeddingSecretName
-        val qdrantSecretName =
-            if (DatrisEnvironment.current.qdrantSecretName != null) DatrisEnvironment.current.qdrantSecretName else qdrantConfig.qdrantSecretName
-        val embeddingConfig = EmbeddingUtil.getConfig(embeddingSecretName)
-        val qdrantSecret = SecretsUtil.getSecretMap(qdrantSecretName)
-            .getOrElse(throw new DatrisException("Qdrant secret not found: " + qdrantSecretName))
-        val host = qdrantSecret.get("host")
+    override protected def openClient(secret: java.util.Map[String, String]): QdrantClient = {
+        val host = secret.get("host")
         if (host == null) throw new DatrisException("'host' not found in Qdrant secret: " + qdrantConfig.qdrantSecretName)
-        val port = Option(qdrantSecret.get("port")).map(_.toInt).getOrElse(6334)
-        val apiKey = Option(qdrantSecret.get("apiKey")).getOrElse("")
+        val port = Option(secret.get("port")).map(_.toInt).getOrElse(6334)
+        val apiKey = Option(secret.get("apiKey")).getOrElse("")
 
         statusUtil.info("processing", "Connecting to Qdrant at " + host + ":" + port)
 
         val grpcClientBuilder = QdrantGrpcClient.newBuilder(host, port, false)
         if (apiKey.nonEmpty) grpcClientBuilder.withApiKey(apiKey)
-        val client = new QdrantClient(grpcClientBuilder.build())
-
-        try {
-            // Ensure collection exists
-            val dimension = EmbeddingUtil.embeddingDimension(embeddingConfig)
-            ensureCollection(client, qdrantConfig.collectionName, dimension)
-
-            // Batch: embed + upsert. globalChunkIdx is the row's chunk_index AND
-            // part of the deterministic PK seed; it advances per fitted chunk
-            // because TokenGuard's split mode can fan one input chunk into N.
-            var totalUpserted = 0
-            var globalChunkIdx = 0
-            chunks.grouped(UPSERT_BATCH_SIZE).foreach { batch =>
-                val embedded = EmbeddingUtil.generateEmbeddings(batch, embeddingConfig)
-
-                val points = embedded.map { case EmbeddingUtil.EmbeddedChunk(chunkText, embedding) =>
-                    val chunkIdx = globalChunkIdx
-                    val pointId = UUID.nameUUIDFromBytes(
-                        (jobContext.pipelineToken + "_" + chunkIdx).getBytes
-                    )
-
-                    val payload = new java.util.HashMap[String, io.qdrant.client.grpc.JsonWithInt.Value]()
-                    payload.put("text", value(chunkText))
-                    payload.put("chunk_index", value(chunkIdx.toLong))
-                    payload.put("source_pipeline", value(config.name))
-                    payload.put("filename", value(filename))
-
-                    // Static metadata from config
-                    if (qdrantConfig.metadata != null) {
-                        qdrantConfig.metadata.asScala.foreach { case (key, v) =>
-                            if (v != null) payload.put(key, value(v))
-                        }
-                    }
-
-                    globalChunkIdx += 1
-                    PointStruct.newBuilder()
-                        .setId(id(pointId))
-                        .setVectors(vectors(embedding.map(_.toFloat): _*))
-                        .putAllPayload(payload)
-                        .build()
-                }
-
-                client.upsertAsync(qdrantConfig.collectionName, points.asJava).get()
-                totalUpserted += embedded.size
-                statusUtil.info("processing", "Upserted " + totalUpserted + " chunks (input chunks: " + chunks.size + ")")
-            }
-
-            sendNotification()
-            statusUtil.info("end", "Process completed, " + totalUpserted + " chunks upserted to collection: " + qdrantConfig.collectionName)
-        } finally {
-            client.close()
-        }
+        new QdrantClient(grpcClientBuilder.build())
     }
 
-    private def ensureCollection(client: QdrantClient, collectionName: String, dimension: Int): Unit = {
+    override protected def closeClient(client: QdrantClient): Unit = client.close()
+
+    override protected def upsertBatch(client: QdrantClient, rows: List[EmbeddedRow], filename: String): Unit = {
+        val points = rows.map { row =>
+            val payload = new java.util.HashMap[String, io.qdrant.client.grpc.JsonWithInt.Value]()
+            payload.put("text", value(row.text))
+            payload.put("chunk_index", value(row.chunkIndex.toLong))
+            payload.put("source_pipeline", value(config.name))
+            payload.put("filename", value(filename))
+
+            // Static metadata from config
+            if (qdrantConfig.metadata != null) {
+                qdrantConfig.metadata.asScala.foreach { case (key, v) =>
+                    if (v != null) payload.put(key, value(v))
+                }
+            }
+
+            PointStruct.newBuilder()
+                .setId(id(row.id))
+                .setVectors(vectors(row.embedding.map(_.toFloat): _*))
+                .putAllPayload(payload)
+                .build()
+        }
+
+        client.upsertAsync(qdrantConfig.collectionName, points.asJava).get()
+    }
+
+    override protected def ensureCollection(client: QdrantClient, dimension: Int): Unit = {
+        val collectionName = qdrantConfig.collectionName
         val collections = client.listCollectionsAsync().get()
         val exists = collections.asScala.exists(_ == collectionName)
 
@@ -180,24 +135,5 @@ class QdrantLoader(jobContext: JobContext) {
                     collectionName + "\" and re-ingest, or point this pipeline at a new collection."
             )
         }
-    }
-
-    private def sendNotification(): Unit = {
-        val attributes = Map(
-            "database" -> "",
-            "schema" -> "",
-            "pipeline" -> config.name,
-            "destination" -> "qdrant",
-            "table" -> qdrantConfig.collectionName
-        )
-        val notification = Map(
-            "pipeline" -> config.name,
-            "publisherToken" -> jobContext.pipelineToken,
-            "pipelineToken" -> jobContext.pipelineToken,
-            "destination" -> "qdrant",
-            "collection" -> qdrantConfig.collectionName
-        )
-        val gson = new Gson()
-        NotificationUtil.add(DatrisEnvironment.current.pipelineTopic, gson.toJson(notification.asJava), attributes)
     }
 }
