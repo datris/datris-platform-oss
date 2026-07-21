@@ -8,12 +8,25 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import io.milvus.v2.client.{ConnectConfig, MilvusClientV2}
 import io.milvus.v2.service.vector.request.SearchReq
 import io.milvus.v2.service.vector.request.data.FloatVec
-import ai.datris.model.DatrisException
+import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.JavaConverters._
 
-object MilvusSearchUtil {
+object MilvusSearchUtil extends VectorSearchUtility {
+
+    override def storeType: String = "milvus"
+    override def tenantSecretName: String = DatrisEnvironment.current.milvusSecretName
+
+    override def searchStore(
+        query: String,
+        container: String,
+        embeddingSecretName: String,
+        secretName: String,
+        topK: Int,
+        requestBody: java.util.Map[String, Any]
+    ): java.util.List[java.util.Map[String, Any]] =
+        search(query, container, embeddingSecretName, secretName, topK)
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     def search(

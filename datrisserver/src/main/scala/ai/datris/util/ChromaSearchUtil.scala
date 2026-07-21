@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
-import ai.datris.model.DatrisException
+import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.apache.http.client.methods.{HttpGet, HttpPost}
 import org.apache.http.entity.StringEntity
 import org.apache.http.impl.client.HttpClients
@@ -15,7 +15,20 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.JavaConverters._
 
-object ChromaSearchUtil {
+object ChromaSearchUtil extends VectorSearchUtility {
+
+    override def storeType: String = "chroma"
+    override def tenantSecretName: String = DatrisEnvironment.current.chromaSecretName
+
+    override def searchStore(
+        query: String,
+        container: String,
+        embeddingSecretName: String,
+        secretName: String,
+        topK: Int,
+        requestBody: java.util.Map[String, Any]
+    ): java.util.List[java.util.Map[String, Any]] =
+        search(query, container, embeddingSecretName, secretName, topK)
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     def search(

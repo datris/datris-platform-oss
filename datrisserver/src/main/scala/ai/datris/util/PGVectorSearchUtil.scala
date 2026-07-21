@@ -12,7 +12,24 @@ import java.sql.{Connection, DriverManager}
 import java.util.Properties
 import scala.collection.JavaConverters._
 
-object PGVectorSearchUtil {
+object PGVectorSearchUtil extends VectorSearchUtility {
+
+    override def storeType: String = "pgvector"
+    override def containerParam: String = "table"
+    override def containerDefault: String = "documents"
+    override def tenantSecretName: String = DatrisEnvironment.current.pgvectorSecretName
+
+    override def searchStore(
+        query: String,
+        container: String,
+        embeddingSecretName: String,
+        secretName: String,
+        topK: Int,
+        requestBody: java.util.Map[String, Any]
+    ): java.util.List[java.util.Map[String, Any]] = {
+        val schema = Option(requestBody.get("schema")).map(_.toString).getOrElse("public")
+        search(query, container, embeddingSecretName, secretName, schema, topK)
+    }
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     def search(
