@@ -3,10 +3,11 @@
 Datris MCP Server
 
 MCP server for AI-driven data platform operations — ingest, validate, transform,
-analyze, and query data from enterprise sources. 32 tools covering ETL orchestration,
+analyze, and query data from enterprise sources. 61 tools covering ETL orchestration,
 AI-generated data quality rules (Python codegen via LLM), vector database search,
-and secrets-managed connectivity. Supports PostgreSQL, MongoDB, Kafka, S3/MinIO,
-HashiCorp Vault, and vector stores (Qdrant, Weaviate, Milvus, Chroma, pgvector).
+and secrets-managed connectivity. Supports PostgreSQL, MongoDB, Snowflake, Databricks,
+Kafka, S3/MinIO, HashiCorp Vault, and vector stores (Qdrant, Weaviate, Milvus, Chroma,
+pgvector).
 
 Usage:
     pip install -r requirements.txt

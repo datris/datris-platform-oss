@@ -149,13 +149,25 @@ The class is auto-created on first upsert using HNSW indexing with cosine distan
 
 ## Running Weaviate
 
-Weaviate runs outside Docker (like Qdrant and Ollama). Run locally via Docker:
+Weaviate ships as a bundled **opt-in** Compose service. Enable it with one line in `.env`:
+
+```bash
+COMPOSE_PROFILES=weaviate
+```
+
+Then start the stack:
+
+```bash
+docker compose up -d
+```
+
+Combine profiles with commas (e.g., `COMPOSE_PROFILES=weaviate,kafka`). The `install.sh` installer can also enable Weaviate at install time — it writes the profile and seeds the `oss/weaviate` secret for you. On the Compose network the bundled container is reachable at `weaviate:8080`; on the host it is published at port 8079 to avoid conflict with the pipeline server on port 8080.
+
+To use an existing external or Weaviate Cloud instance instead, skip the profile and point the `oss/weaviate` secret's `host`/`port`/`apiKey` at it — the secret fields are the same either way. You can also run Weaviate standalone:
 
 ```bash
 docker run -p 8079:8080 -p 50051:50051 cr.weaviate.io/semitechnologies/weaviate:latest
 ```
-
-Port 8079 is used to avoid conflict with the pipeline server on port 8080.
 
 Or install from [weaviate.io/developers/weaviate/installation](https://weaviate.io/developers/weaviate/installation).
 

@@ -9,7 +9,7 @@ The pipeline publishes event notifications after each destination loader complet
 
 The pipeline uses ActiveMQ's [Virtual Destinations](https://activemq.apache.org/virtual-destinations) pattern:
 
-1. Each destination loader (PostgreSQL, MongoDB, Kafka, ActiveMQ, Object Store, REST Endpoint, Qdrant, Weaviate, Milvus, Chroma, pgvector) publishes a notification to `VirtualTopic.{environment}-pipeline-notification`
+1. Each destination loader (PostgreSQL, MongoDB, Snowflake, Databricks, Kafka, ActiveMQ, Object Store, REST Endpoint, Qdrant, Weaviate, Milvus, Chroma, pgvector) publishes a notification to `VirtualTopic.{environment}-pipeline-notification`
 2. Consumers subscribe by creating a queue named `Consumer.{name}.VirtualTopic.{environment}-pipeline-notification`
 3. ActiveMQ automatically copies topic messages to all matching consumer queues
 4. Each consumer gets its own independent queue with its own message cursor
@@ -76,7 +76,7 @@ Notifications include JMS message properties that can be used with **JMS selecto
 | Property | Description |
 |----------|-------------|
 | `pipeline` | Pipeline name |
-| `destination` | Destination type (`postgres`, `mongodb`, `objectStore`, `kafka`, `activemq`, `restEndpoint`, `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector`) |
+| `destination` | Destination type (`postgres`, `mongodb`, `snowflake`, `databricks`, `objectStore`, `kafka`, `activemq`, `restEndpoint`, `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector`) |
 | `schema` | Database schema (database destinations) |
 | `database` | Database name (database destinations) |
 | `table` | Table name (database destinations) |

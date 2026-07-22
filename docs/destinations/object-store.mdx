@@ -57,6 +57,7 @@ Column types from the source schema are mapped to Spark types before writing:
 | `bigint`    | `LongType`    |
 | `float`     | `FloatType`   |
 | `double`    | `DoubleType`  |
+| `decimal(p,s)` | `DecimalType(p,s)` (scale defaults to 0 if omitted) |
 | `string`    | `StringType`  |
 | `boolean`   | `BooleanType` |
 | `date`      | `DateType`    |

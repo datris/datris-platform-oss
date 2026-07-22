@@ -3,7 +3,7 @@ title: "Query API"
 description: "Query data endpoints"
 ---
 
-The Query API provides REST endpoints for querying PostgreSQL and MongoDB databases, plus natural language queries and AI-powered answers. These endpoints mirror the MCP tools, making the same retrieval capabilities available via HTTP.
+The Query API provides REST endpoints for querying every structured destination — PostgreSQL, MongoDB, object store, Snowflake, and Databricks — plus natural language queries and AI-powered answers. These endpoints mirror the MCP tools, making the same retrieval capabilities available via HTTP.
 
 ## Query PostgreSQL
 
@@ -108,6 +108,193 @@ curl -X POST http://localhost:8080/api/v1/query/mongodb \
 
 - **Blocked operators** — filters containing `$where`, `$function`, or `$accumulator` are rejected, as these allow arbitrary JavaScript execution
 - **Standard MongoDB query operators** (`$eq`, `$gt`, `$in`, `$regex`, etc.) are safe and fully supported
+
+---
+
+## Query Object Store
+
+Read rows from a pipeline's object store destination (MinIO or S3). The pipeline name selects the bucket, prefix, and credentials — the caller never supplies connection details.
+
+```
+POST /api/v1/query/objectstore
+```
+
+### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with an object store destination. |
+| `limit` | integer | No | 100 | Maximum rows to return. Values of 0 or less fall back to 100; capped at 10,000. |
+
+### Example
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/objectstore \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pipeline": "sales_data",
+    "limit": 10
+  }'
+```
+
+### Response
+
+```json
+{
+  "pipeline": "sales_data",
+  "path": "s3a://datris-bucket/sales_data",
+  "format": "parquet",
+  "columns": ["symbol", "date", "close"],
+  "results": [
+    {
+      "symbol": "AAPL",
+      "date": "2024-01-15",
+      "close": 185.92
+    }
+  ],
+  "count": 1
+}
+```
+
+If the pipeline exists but no runs have written data yet, the endpoint returns an empty result (`"count": 0`) rather than an error.
+
+### Error Cases
+
+Returns `400 Bad Request` with `{"error": "..."}` when:
+
+- The pipeline is not found
+- The pipeline does not have an object store destination
+- The pipeline's object store configuration is missing a prefix key
+- The read times out (default 90 seconds, tunable via the `DATRIS_OBJECTSTORE_QUERY_TIMEOUT_SEC` environment variable)
+
+---
+
+## Query Snowflake
+
+Execute a read-only query against the Snowflake account a pipeline loads into. The pipeline name selects the credentials, warehouse, database, and schema — credentials never leave the server.
+
+```
+POST /api/v1/query/snowflake
+```
+
+### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a Snowflake destination. |
+| `sql` | string | No | `SELECT * FROM {destination table}` | SQL to execute. When omitted, previews the pipeline's destination table. |
+| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited (also disables the query timeout). |
+
+### Example
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/snowflake \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pipeline": "sales_data",
+    "sql": "SELECT symbol, close FROM SALES_DB.PUBLIC.STOCK_PRICE WHERE volume > 1000000",
+    "limit": 10
+  }'
+```
+
+### Response
+
+```json
+{
+  "pipeline": "sales_data",
+  "sql": "SELECT symbol, close FROM SALES_DB.PUBLIC.STOCK_PRICE WHERE volume > 1000000 LIMIT 10",
+  "results": [
+    {
+      "SYMBOL": "AAPL",
+      "CLOSE": 185.92
+    }
+  ],
+  "count": 1
+}
+```
+
+The `sql` field echoes the query that actually ran, including any automatically appended `LIMIT`.
+
+### Safety
+
+- **Read-only allowlist** — queries must start with `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, or `DESC`. `SHOW`/`DESCRIBE` are allowed so agents can discover databases, schemas, tables, and columns.
+- **Statement blocklist** — queries containing `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `TRUNCATE`, `GRANT`, `REVOKE`, `CALL`, `EXECUTE`, `EXEC`, `PUT`, `REMOVE`, `COPY`, `MERGE`, or `USE` are rejected (`USE` is blocked so a query cannot re-point the session at another database or role)
+- **No stacked queries** — semicolons are not allowed
+- **No SQL comments** — `--` and `/* */` are rejected to prevent obfuscation
+- **LIMIT enforcement** — if a `SELECT`/`WITH` query has no `LIMIT`, one is appended using the request's `limit` value. `SHOW`/`DESCRIBE` output is row-capped at the same value.
+- **Query timeout** — 30 seconds, bounding both hung requests and warehouse spend. Not applied when `limit: -1`.
+
+### Error Cases
+
+Returns `400 Bad Request` with `{"error": "..."}` when:
+
+- The pipeline is not found
+- The pipeline does not have a Snowflake destination
+- The SQL fails validation (allowlist, blocklist, semicolons, comments)
+
+---
+
+## Query Databricks
+
+Execute a read-only query against the Databricks workspace a pipeline loads into. The pipeline name selects the credentials, SQL warehouse, catalog, and schema — credentials never leave the server.
+
+```
+POST /api/v1/query/databricks
+```
+
+### Request
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `pipeline` | string | Yes | | Pipeline name. Must be a pipeline with a Databricks destination. |
+| `sql` | string | No | `SELECT * FROM {destination table}` | SQL to execute. When omitted, previews the pipeline's destination table. |
+| `limit` | integer | No | 100 | Maximum rows to return. Pass `-1` for unlimited (also disables the query timeout). |
+
+### Example
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/databricks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pipeline": "sales_data",
+    "sql": "SELECT symbol, close FROM main.default.stock_price WHERE volume > 1000000",
+    "limit": 10
+  }'
+```
+
+### Response
+
+```json
+{
+  "pipeline": "sales_data",
+  "sql": "SELECT symbol, close FROM main.default.stock_price WHERE volume > 1000000 LIMIT 10",
+  "results": [
+    {
+      "symbol": "AAPL",
+      "close": 185.92
+    }
+  ],
+  "count": 1
+}
+```
+
+The `sql` field echoes the query that actually ran, including any automatically appended `LIMIT`.
+
+### Safety
+
+Same protections as [Query Snowflake](#query-snowflake), with the blocklist extended for Databricks-specific data-movement and maintenance verbs: `OPTIMIZE`, `VACUUM`, `RESTORE`, `CLONE`, `REFRESH`, `MSCK`, and `DECLARE` are also rejected.
+
+<Note>
+If the SQL warehouse is stopped, opening the connection blocks while it auto-starts — this happens before the 30-second query timeout applies, so the first query after idle time can take longer.
+</Note>
+
+### Error Cases
+
+Returns `400 Bad Request` with `{"error": "..."}` when:
+
+- The pipeline is not found
+- The pipeline does not have a Databricks destination
+- The SQL fails validation (allowlist, blocklist, semicolons, comments)
 
 ---
 

@@ -3,7 +3,7 @@ title: "Health Check API"
 description: "Health check endpoints"
 ---
 
-The Health Check API provides a single endpoint to check the connectivity status of all backend services.
+The Health Check API provides endpoints to check the connectivity status of all backend services, and to list which destinations and vector stores are actually available in this deployment.
 
 ## Check Service Health
 
@@ -58,4 +58,55 @@ Returns the health status of all configured backend services.
 
 ```bash
 curl http://localhost:8080/api/v1/health/services
+```
+
+---
+
+## List Available Destinations
+
+```
+GET /api/v1/destinations/available
+```
+
+Returns the structured destinations that are usable in this deployment, as a JSON array of destination names. This drives the pipeline wizard's and Assistant's destination pickers.
+
+Two availability semantics are used on purpose:
+
+- **Self-hosted destinations** (`mongodb`, `postgres`, `objectstore`) are **live-probed** — a destination is listed only if the service is actually reachable. The presence of a Vault secret alone is not enough, because the compose stack seeds secrets even when a service is disabled.
+- **External SaaS destinations** (`snowflake`, `databricks`) have no local service to probe, so they are listed when any Platform secret contains a complete set of credentials for that destination. Credential secret names are user-chosen per pipeline, so every Platform secret is scanned rather than a fixed name looked up.
+
+### Response
+
+```json
+["mongodb", "postgres", "objectstore", "snowflake"]
+```
+
+### Example
+
+```bash
+curl http://localhost:8080/api/v1/destinations/available
+```
+
+---
+
+## List Available Vector Stores
+
+```
+GET /api/v1/vector-stores/available
+```
+
+Returns the vector stores that are live and reachable, as a JSON array of store keys. This drives the document-tap pipeline wizard's store picker and the Search tab's store dropdown, and is the recommended way to discover which stores can be searched via [`POST /api/v1/search/{store}`](/api-reference/search-api).
+
+Each candidate store (`qdrant`, `weaviate`, `pgvector`, `milvus`, `chroma`) is actively probed using the same connectivity checks as `/health/services` — only stores whose status is `up` are returned. A store with a configured Vault secret but an unreachable service is excluded.
+
+### Response
+
+```json
+["pgvector", "qdrant"]
+```
+
+### Example
+
+```bash
+curl http://localhost:8080/api/v1/vector-stores/available
 ```

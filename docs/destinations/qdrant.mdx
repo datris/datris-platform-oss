@@ -163,7 +163,21 @@ The collection is auto-created on first upsert using cosine distance and the emb
 
 ## Running Qdrant
 
-Qdrant runs outside Docker (like Ollama). Run locally via Docker:
+Qdrant ships as a bundled **opt-in** Compose service. Enable it with one line in `.env`:
+
+```bash
+COMPOSE_PROFILES=qdrant
+```
+
+Then start the stack:
+
+```bash
+docker compose up -d
+```
+
+Combine profiles with commas (e.g., `COMPOSE_PROFILES=qdrant,kafka`). The `install.sh` installer can also enable Qdrant at install time — it writes the profile and seeds the `oss/qdrant` secret for you. For the bundled container, use the compose service name as the host in the secret (`host="qdrant"`, gRPC port `6334`).
+
+To use an existing external or Qdrant Cloud instance instead, skip the profile and point the `oss/qdrant` secret's `host`/`port`/`apiKey` at it — the secret fields are the same either way. You can also run Qdrant standalone:
 
 ```bash
 docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant

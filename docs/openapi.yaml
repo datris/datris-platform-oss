@@ -5,7 +5,7 @@ info:
     REST API for the Datris AI Data Platform. Ingest, validate, transform, store, and retrieve data.
 
     For AI agent integration, use the [MCP Server](https://docs.datris.ai/mcp-server) instead.
-  version: 1.0.0
+  version: 1.11.3
   contact:
     name: Datris
     url: https://datris.ai
@@ -354,6 +354,121 @@ components:
             type: string
           description: Environment variable names the script will need (excludes platform-injected DATRIS_* vars)
 
+    TapPromptFragment:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          description: Data-source key that triggers injection (e.g. a provider or API name)
+        aliases:
+          type: array
+          items:
+            type: string
+          description: Alternate names that also trigger this fragment
+        content:
+          type: string
+          description: Fragment text appended to the tap code-generation system prompt when the key/alias matches
+        enabled:
+          type: boolean
+          default: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+
+    ChatRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [user, assistant]
+              content:
+                type: string
+        maxIterations:
+          type: integer
+          default: 50
+          description: Maximum agent-loop iterations (LLM + tool-call rounds) before the loop stops
+        context:
+          type: object
+          description: Optional endpoint-specific context object (see each chat endpoint's description)
+
+    EntityVersionSummary:
+      type: object
+      properties:
+        version:
+          type: integer
+        createdAt:
+          type: string
+        createdBy:
+          type: string
+          description: Who saved this version (user, API key label, or agent identity)
+        changeNote:
+          type: string
+
+    EntityVersionSnapshot:
+      allOf:
+        - $ref: '#/components/schemas/EntityVersionSummary'
+        - type: object
+          properties:
+            scriptPath:
+              type: string
+              nullable: true
+              description: Storage path of the tap script pinned to this version (taps only)
+            config:
+              type: object
+              description: The full configuration as saved at this version
+            script:
+              type: string
+              nullable: true
+              description: Resolved tap script content (taps only; null if the object is absent)
+
+    EntityVersionDiff:
+      type: object
+      properties:
+        from:
+          type: integer
+          description: Base version of the comparison (the `against` parameter)
+        to:
+          type: integer
+          description: Target version of the comparison (the `version` parameter)
+        config:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              before:
+                type: string
+              after:
+                type: string
+              change:
+                type: string
+        script:
+          type: object
+          description: Script diff (taps only)
+          properties:
+            before:
+              type: string
+            after:
+              type: string
+            lines:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                  text:
+                    type: string
+
 paths:
   # ── Pipeline Management ──────────────────────────────────────
 
@@ -525,6 +640,10 @@ paths:
                 header:
                   type: boolean
                   description: Whether CSV has a header row (default true)
+                allStrings:
+                  type: string
+                  default: "false"
+                  description: If "true", generate every CSV field as a string instead of inferring types
       responses:
         '200':
           description: AI-generated pipeline configuration
@@ -599,16 +718,53 @@ paths:
           schema:
             type: integer
             default: 1
-          description: Page number for paginated results
+          description: Page number for paginated results (pipelinename queries only)
+        - name: withrollup
+          in: query
+          schema:
+            type: string
+            default: "false"
+          description: >-
+            When "true" on a publishertoken or pipelinetoken query, wraps the
+            response in `{rollup, events}`. `rollup.allDone` flips to true when
+            every job reaches a terminal state; `rollup.status` is the aggregate
+            outcome (success, warning, error, or processing); `rollup.jobs[]`
+            carries per-job status (success, warning, error, processing, or
+            timed_out) plus `lastError` on failures; `events` is the same raw
+            entry array returned without the flag. Recommended for agents that
+            need a single boolean to poll on. Ignored for pipelinename summary
+            queries, which return their own rollup-equivalent shape.
       responses:
         '200':
-          description: Job status information
+          description: >-
+            Job status information. An array of status entries by default; an
+            object (`{rollup, events}` for token queries with withrollup=true,
+            or the paginated summary shape for pipelinename queries) otherwise.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
+                oneOf:
+                  - type: array
+                    items:
+                      type: object
+                  - type: object
+        '500':
+          description: Error
+
+    delete:
+      tags: [Status]
+      summary: Clear all ingestion history
+      description: Deletes every job status entry — detail rows and per-pipeline summaries — for the environment.
+      responses:
+        '200':
+          description: Number of entries deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: integer
         '500':
           description: Error
 
@@ -686,6 +842,222 @@ paths:
         '500':
           description: Error
 
+  /api/v1/query/objectstore:
+    post:
+      tags: [Query]
+      summary: Query object store
+      description: Read rows back from the files an object-store-destination pipeline has written (Parquet, ORC, CSV, or JSON), without downloading them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipeline]
+              properties:
+                pipeline:
+                  type: string
+                  description: Name of a pipeline with an objectStore destination
+                limit:
+                  type: integer
+                  default: 100
+                  description: Maximum rows to return
+      responses:
+        '200':
+          description: Query results with file metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  path:
+                    type: string
+                    description: Object path the rows were read from
+                  format:
+                    type: string
+                    description: File format (e.g. parquet, orc, csv, json)
+                  columns:
+                    type: array
+                    items:
+                      type: string
+                  results:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+        '400':
+          description: User-actionable error (e.g. unknown pipeline, no objectStore destination)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '500':
+          description: Error
+
+  /api/v1/query/snowflake:
+    post:
+      tags: [Query]
+      summary: Query Snowflake
+      description: Execute a read-only SQL query against the Snowflake destination of a pipeline. Connection credentials come from the pipeline's configured `credentialsSecret`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipeline]
+              properties:
+                pipeline:
+                  type: string
+                  description: Name of a pipeline with a Snowflake destination
+                sql:
+                  type: string
+                  description: SQL query to execute. Omit to select everything from the pipeline's destination table.
+                limit:
+                  type: integer
+                  default: 100
+                  description: Maximum rows to return
+      responses:
+        '200':
+          description: Query results including the SQL that was executed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  sql:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+        '400':
+          description: User-actionable error (e.g. unknown pipeline, no Snowflake destination)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '500':
+          description: Error
+
+  /api/v1/query/databricks:
+    post:
+      tags: [Query]
+      summary: Query Databricks
+      description: Execute a read-only SQL query against the Databricks destination of a pipeline (a Unity Catalog managed Delta table). Connection credentials come from the pipeline's configured `credentialsSecret`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipeline]
+              properties:
+                pipeline:
+                  type: string
+                  description: Name of a pipeline with a Databricks destination
+                sql:
+                  type: string
+                  description: SQL query to execute. Omit to select everything from the pipeline's destination table.
+                limit:
+                  type: integer
+                  default: 100
+                  description: Maximum rows to return
+      responses:
+        '200':
+          description: Query results including the SQL that was executed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  sql:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+        '400':
+          description: User-actionable error (e.g. unknown pipeline, no Databricks destination)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '500':
+          description: Error
+
+  /api/v1/query/natural:
+    post:
+      tags: [Query]
+      summary: Natural-language query (AI)
+      description: Ask a question in plain English against a PostgreSQL table. The server reads the table's columns, uses AI to generate a SQL SELECT, executes it, and returns both the SQL and the results.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question, table]
+              properties:
+                question:
+                  type: string
+                  description: Plain-English question to answer
+                table:
+                  type: string
+                  description: PostgreSQL table to query
+                database:
+                  type: string
+                  default: datris
+                  description: PostgreSQL database name
+                schema:
+                  type: string
+                  default: public
+                  description: PostgreSQL schema
+                limit:
+                  type: integer
+                  default: 100
+                  description: Maximum rows to return
+      responses:
+        '200':
+          description: Generated SQL and query results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  question:
+                    type: string
+                  sql:
+                    type: string
+                  results:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+        '500':
+          description: Error (including table not found)
+
   /api/v1/job/kill:
     post:
       tags: [Status]
@@ -714,11 +1086,27 @@ paths:
 
   # ── Vector Search ───────────────────────────────────────────
 
-  /api/v1/search/qdrant:
+  /api/v1/search/{store}:
     post:
       tags: [Search]
-      summary: Semantic search — Qdrant
-      description: Search a Qdrant vector database collection using natural language. Generates an embedding from the query and returns the most similar document chunks.
+      summary: Semantic search (all vector stores)
+      description: >-
+        Search a vector store using natural language. One endpoint serves every
+        supported store — the `{store}` path segment selects it. Generates an
+        embedding from the query and returns the most similar document chunks.
+        Connection and embedding secrets are always resolved server-side from
+        the server's configuration; any client-supplied secret names are
+        ignored. Request fields vary slightly per store — qdrant, milvus, and
+        chroma name their container with `collection`, weaviate with
+        `className`, pgvector with `table` (plus an optional `schema`).
+      parameters:
+        - name: store
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [qdrant, weaviate, milvus, chroma, pgvector]
+          description: Vector store to search
       requestBody:
         required: true
         content:
@@ -733,13 +1121,19 @@ paths:
                 collection:
                   type: string
                   default: documents
-                  description: Qdrant collection name
-                embeddingSecretName:
+                  description: Collection name (qdrant, milvus, and chroma only)
+                className:
                   type: string
-                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
-                qdrantSecretName:
+                  default: Documents
+                  description: Weaviate class name, PascalCase (weaviate only)
+                table:
                   type: string
-                  description: Vault secret name for Qdrant connection
+                  default: documents
+                  description: PostgreSQL table name (pgvector only)
+                schema:
+                  type: string
+                  default: public
+                  description: PostgreSQL schema (pgvector only)
                 topK:
                   type: integer
                   default: 5
@@ -751,162 +1145,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SearchResponse'
-        '500':
-          description: Error
-
-  /api/v1/search/weaviate:
-    post:
-      tags: [Search]
-      summary: Semantic search — Weaviate
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [query]
-              properties:
-                query:
-                  type: string
-                  description: Natural language search query
-                className:
-                  type: string
-                  default: Documents
-                  description: Weaviate class name (PascalCase)
-                embeddingSecretName:
-                  type: string
-                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
-                weaviateSecretName:
-                  type: string
-                  description: Vault secret name for Weaviate connection
-                topK:
-                  type: integer
-                  default: 5
-      responses:
-        '200':
-          description: Search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchResponse'
-        '500':
-          description: Error
-
-  /api/v1/search/milvus:
-    post:
-      tags: [Search]
-      summary: Semantic search — Milvus
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [query]
-              properties:
-                query:
-                  type: string
-                  description: Natural language search query
-                collection:
-                  type: string
-                  default: documents
-                  description: Milvus collection name
-                embeddingSecretName:
-                  type: string
-                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
-                milvusSecretName:
-                  type: string
-                  description: Vault secret name for Milvus connection
-                topK:
-                  type: integer
-                  default: 5
-      responses:
-        '200':
-          description: Search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchResponse'
-        '500':
-          description: Error
-
-  /api/v1/search/chroma:
-    post:
-      tags: [Search]
-      summary: Semantic search — Chroma
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [query]
-              properties:
-                query:
-                  type: string
-                  description: Natural language search query
-                collection:
-                  type: string
-                  default: documents
-                  description: Chroma collection name
-                embeddingSecretName:
-                  type: string
-                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
-                chromaSecretName:
-                  type: string
-                  description: Vault secret name for Chroma connection
-                topK:
-                  type: integer
-                  default: 5
-      responses:
-        '200':
-          description: Search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchResponse'
-        '500':
-          description: Error
-
-  /api/v1/search/pgvector:
-    post:
-      tags: [Search]
-      summary: Semantic search — pgvector
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [query]
-              properties:
-                query:
-                  type: string
-                  description: Natural language search query
-                table:
-                  type: string
-                  default: documents
-                  description: PostgreSQL table name
-                schema:
-                  type: string
-                  default: public
-                  description: PostgreSQL schema
-                embeddingSecretName:
-                  type: string
-                  description: Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing — provider, endpoint, model, apiKey, and (optionally) version.
-                postgresSecretName:
-                  type: string
-                  description: Vault secret name for PostgreSQL/pgvector connection
-                topK:
-                  type: integer
-                  default: 5
-      responses:
-        '200':
-          description: Search results
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: >-
+            User-actionable error, returned as a plain message. Sent for an
+            unknown or unavailable `{store}` (the message names the valid
+            stores, e.g. "Unknown vector store: 'faiss'. Valid stores: chroma,
+            milvus, pgvector, qdrant, weaviate"), a missing `query`, or an
+            embedding dimension mismatch between ingest and query.
         '500':
           description: Error
 
@@ -1466,6 +1711,39 @@ paths:
                 items:
                   $ref: '#/components/schemas/TapRunLog'
 
+  /api/v1/tap/logs/all:
+    get:
+      tags: [Taps]
+      summary: Get run history across all taps
+      description: Returns run log entries for every tap, newest window first. Feeds the Ops activity dashboard's aggregation. Defaults to the last 30 days, capped at 2000 rows.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: Only return runs created at or after this epoch-milliseconds timestamp (default now minus 30 days)
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 2000
+            maximum: 5000
+          description: Maximum entries to return (values above 5000 are clamped)
+      responses:
+        '200':
+          description: Array of run log entries across all taps
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TapRunLog'
+        '500':
+          description: Error
+
   /api/v1/tap/brainstorm:
     post:
       tags: [Taps]
@@ -1566,6 +1844,159 @@ paths:
       responses:
         '200':
           description: Fixed script (same shape as /tap/generate)
+
+  /api/v1/tap/script:
+    post:
+      tags: [Taps]
+      summary: Store a tap script
+      description: Stores a (typically hand-edited) Python script in object storage and, if the tap already exists, updates its `scriptPath` to point at the new object.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tapName, script]
+              properties:
+                tapName:
+                  type: string
+                script:
+                  type: string
+                  description: Python script body to store
+                oldScriptPath:
+                  type: string
+                  description: Path of a previous script to delete after the new one is written
+      responses:
+        '200':
+          description: Storage path of the saved script
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scriptPath:
+                    type: string
+        '500':
+          description: Error (including missing tapName or script)
+
+  /api/v1/tap/review:
+    post:
+      tags: [Taps]
+      summary: Review tap script (AI)
+      description: >-
+        Uses AI to review a script after a successful test run — correctness,
+        robustness, and adherence to tap conventions. May return the script
+        rewritten. When it rewrites and the tap already exists, the tap's
+        `scriptPath` is updated to the new object.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [script]
+              properties:
+                tapName:
+                  type: string
+                script:
+                  type: string
+                recordCount:
+                  type: integer
+                  description: Record count from the latest test run
+                durationMs:
+                  type: integer
+                  format: int64
+                  description: Duration of the latest test run in milliseconds
+                logs:
+                  type: string
+                  description: Logs from the latest test run
+                oldScriptPath:
+                  type: string
+                  description: Path of the current script, deleted if a rewrite is stored
+                priorIterations:
+                  type: string
+                  description: JSON-encoded array of prior review/optimize iterations, so the AI doesn't repeat suggestions
+      responses:
+        '200':
+          description: Review result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  script:
+                    type: string
+                  packages:
+                    type: array
+                    items:
+                      type: string
+                  scriptPath:
+                    type: string
+                  changes:
+                    type: array
+                    items:
+                      type: string
+                    description: Human-readable list of what changed
+                  rewritten:
+                    type: boolean
+                    description: True when the AI produced a modified script
+        '500':
+          description: Error (including missing script)
+
+  /api/v1/tap/optimize:
+    post:
+      tags: [Taps]
+      summary: Optimize tap script (AI)
+      description: >-
+        Uses AI to optimize a working script for speed and efficiency (based on
+        the latest run's record count and duration). Always stores the returned
+        script; if the tap already exists, its `scriptPath` is updated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [script]
+              properties:
+                tapName:
+                  type: string
+                script:
+                  type: string
+                recordCount:
+                  type: integer
+                durationMs:
+                  type: integer
+                  format: int64
+                logs:
+                  type: string
+                oldScriptPath:
+                  type: string
+                priorIterations:
+                  type: string
+                  description: JSON-encoded array of prior review/optimize iterations
+      responses:
+        '200':
+          description: Optimized script
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  script:
+                    type: string
+                  packages:
+                    type: array
+                    items:
+                      type: string
+                  scriptPath:
+                    type: string
+                  changes:
+                    type: array
+                    items:
+                      type: string
+        '500':
+          description: Error (including missing script)
 
   /api/v1/tap/test:
     post:
@@ -1745,3 +2176,1096 @@ paths:
                 type: array
                 items: { type: string }
                 example: [pgvector]
+        '500':
+          description: Error
+
+  /api/v1/destinations/available:
+    get:
+      tags: [Health]
+      summary: List usable structured destinations
+      description: >-
+        Returns the subset of `[mongodb, postgres, objectstore, snowflake,
+        databricks]` usable in this deployment. Drives the pipeline wizard's and
+        Assistant's destination picker. Two availability semantics on purpose:
+        the self-hosted destinations (mongodb, postgres, objectstore) are
+        live-probed — secret presence alone isn't a reliable signal because the
+        compose stack seeds their secrets even when a service is disabled; the
+        external SaaS destinations (snowflake, databricks) have no local service
+        to probe, so they are included when any Platform secret carries a
+        complete credential set for them.
+      responses:
+        '200':
+          description: Available destinations
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+                example: [mongodb, postgres, objectstore]
+        '500':
+          description: Error
+
+  # ── Version History ────────────────────────────────────────
+
+  /api/v1/tap/versions:
+    get:
+      tags: [Versions]
+      summary: List tap definition versions
+      description: Lists the saved definition versions of a tap, newest first. Every versioned save (create, update, restore) appends a snapshot.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Tap name
+      responses:
+        '200':
+          description: Version summaries, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EntityVersionSummary'
+        '500':
+          description: Error
+
+  /api/v1/tap/version:
+    get:
+      tags: [Versions]
+      summary: Get a tap version snapshot
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Full snapshot including the pinned script content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityVersionSnapshot'
+        '404':
+          description: No such version for this tap
+        '500':
+          description: Error
+
+  /api/v1/tap/version/diff:
+    get:
+      tags: [Versions]
+      summary: Diff two tap versions
+      description: Server-computed, ready-to-render diff of the tap configuration and script between two versions.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Target version of the comparison
+        - name: against
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Base version to compare against
+      responses:
+        '200':
+          description: Field-level config diff and line-level script diff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityVersionDiff'
+        '404':
+          description: One of the versions does not exist
+        '500':
+          description: Error
+
+  /api/v1/tap/version/restore:
+    post:
+      tags: [Versions]
+      summary: Restore a tap version
+      description: >-
+        Restores the tap's DEFINITION from the given version snapshot,
+        preserving the live tap's creation metadata, ownership, and run-status
+        fields. The restore itself is saved as a new version.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The restored tap configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TapConfig'
+        '404':
+          description: No such version for this tap
+        '500':
+          description: Error
+
+  /api/v1/pipeline/versions:
+    get:
+      tags: [Versions]
+      summary: List pipeline definition versions
+      description: Lists the saved definition versions of a pipeline, newest first.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Pipeline name
+      responses:
+        '200':
+          description: Version summaries, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EntityVersionSummary'
+        '500':
+          description: Error
+
+  /api/v1/pipeline/version:
+    get:
+      tags: [Versions]
+      summary: Get a pipeline version snapshot
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Full snapshot (no script fields — pipelines have no script)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityVersionSnapshot'
+        '404':
+          description: No such version for this pipeline
+        '500':
+          description: Error
+
+  /api/v1/pipeline/version/diff:
+    get:
+      tags: [Versions]
+      summary: Diff two pipeline versions
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Target version of the comparison
+        - name: against
+          in: query
+          required: true
+          schema:
+            type: integer
+          description: Base version to compare against
+      responses:
+        '200':
+          description: Field-level config diff (no script section)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityVersionDiff'
+        '404':
+          description: One of the versions does not exist
+        '500':
+          description: Error
+
+  /api/v1/pipeline/version/restore:
+    post:
+      tags: [Versions]
+      summary: Restore a pipeline version
+      description: Restores the pipeline's definition from the given version snapshot, preserving ownership. The restore itself is saved as a new version.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: The restored pipeline configuration
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: No such version for this pipeline
+        '500':
+          description: Error
+
+  # ── Authentication & Users ─────────────────────────────────
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in
+      description: >-
+        Authenticates a user and sets an HTTP-only session cookie. Only
+        available when user auth is enabled on the server. For a user whose
+        password has not been set yet (`mustSetPassword`), any password is
+        accepted and the client must immediately call `/auth/change-password`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Authenticated; session cookie set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username:
+                    type: string
+                  role:
+                    type: string
+                  mustSetPassword:
+                    type: boolean
+        '400':
+          description: Username is required
+        '401':
+          description: Invalid username or password
+        '404':
+          description: User auth is not enabled on this server
+        '500':
+          description: Error
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out
+      description: Deletes the server-side session and clears the session cookie.
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current user
+      description: UI bootstrap probe — returns the session's user, or 401 if there is no session.
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  username:
+                    type: string
+                  role:
+                    type: string
+                  mustSetPassword:
+                    type: boolean
+        '401':
+          description: Not authenticated
+
+  /api/v1/auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change the current user's password
+      description: Requires an authenticated session. The current-password check is skipped on a first-time set (`mustSetPassword`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newPassword]
+              properties:
+                currentPassword:
+                  type: string
+                  description: Required unless this is the user's first-time password set
+                newPassword:
+                  type: string
+                  minLength: 5
+      responses:
+        '200':
+          description: Password updated
+        '400':
+          description: New password too short
+        '401':
+          description: Not authenticated, or current password is incorrect
+        '500':
+          description: Error
+
+  /api/v1/auth/users:
+    get:
+      tags: [Auth]
+      summary: List users (admin)
+      description: Admin-only. Timestamps are formatted using the server's configured date format and timezone.
+      responses:
+        '200':
+          description: All users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    username:
+                      type: string
+                    role:
+                      type: string
+                    createdAt:
+                      type: string
+                    lastLoginAt:
+                      type: string
+                      nullable: true
+                    mustSetPassword:
+                      type: boolean
+    post:
+      tags: [Auth]
+      summary: Create a user (admin)
+      description: Admin-only. Omit `password` to create the user in first-login mode — they set their own password on first sign-in.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, role]
+              properties:
+                username:
+                  type: string
+                  description: Lowercase; letters, digits, and . _ @ - only
+                role:
+                  type: string
+                  description: One of the valid platform roles (e.g. admin)
+                password:
+                  type: string
+                  description: Optional initial password
+      responses:
+        '201':
+          description: User created
+        '400':
+          description: Missing/invalid username or invalid role
+        '409':
+          description: User already exists
+        '500':
+          description: Error
+
+  /api/v1/auth/users/{username}:
+    patch:
+      tags: [Auth]
+      summary: Update a user (admin)
+      description: >-
+        Admin-only. Change a user's role and/or reset their password (back to
+        first-login mode). The built-in `admin` user is locked to the admin
+        role, and the last remaining admin cannot be demoted.
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role:
+                  type: string
+                resetPassword:
+                  type: boolean
+                  description: If true, clears the password so the user must set a new one on next login
+      responses:
+        '200':
+          description: User updated
+        '400':
+          description: Invalid role
+        '404':
+          description: User not found
+        '409':
+          description: Role change refused (built-in admin locked, or last admin)
+        '500':
+          description: Error
+    delete:
+      tags: [Auth]
+      summary: Delete a user (admin)
+      description: Admin-only. The built-in `admin` recovery account can never be deleted, and the last remaining admin cannot be deleted.
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User deleted
+        '404':
+          description: User not found
+        '409':
+          description: Deletion refused (built-in admin, or last admin)
+        '500':
+          description: Error
+
+  # ── API Keys ───────────────────────────────────────────────
+
+  /api/v1/keys:
+    get:
+      tags: [API Keys]
+      summary: List API keys (admin)
+      description: >-
+        Admin-only. Lists every issued API key with its capabilities and audit
+        metadata. Key VALUES are never returned here — only on issue and
+        rotate, one time. Keys issued before capability metadata existed are
+        flagged `isLegacyFullAccess`.
+      responses:
+        '200':
+          description: All keys, without values
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        label:
+                          type: string
+                        capabilities:
+                          type: array
+                          items:
+                            type: string
+                        revoked:
+                          type: boolean
+                        createdAt:
+                          type: string
+                        createdBy:
+                          type: string
+                        revokedAt:
+                          type: string
+                        revokedBy:
+                          type: string
+                        isLegacyFullAccess:
+                          type: boolean
+        '500':
+          description: Error
+    post:
+      tags: [API Keys]
+      summary: Issue a new API key (admin)
+      description: Admin-only. The returned `value` is shown ONCE and cannot be retrieved again — store it immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label:
+                  type: string
+                  description: 1-64 chars of lowercase letters, digits, dash, underscore
+                capabilities:
+                  type: array
+                  items:
+                    type: string
+                  description: Capability strings, e.g. "pipeline:read" or "secret:write:_type=tap" (see /keys/capabilities/catalog)
+      responses:
+        '200':
+          description: The new key, including its one-time value
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  label:
+                    type: string
+                  value:
+                    type: string
+                    description: The API key secret — shown only in this response
+                  capabilities:
+                    type: array
+                    items:
+                      type: string
+                  createdAt:
+                    type: string
+                  createdBy:
+                    type: string
+        '400':
+          description: Missing/invalid label or invalid capability string
+        '409':
+          description: A key with this label already exists
+        '500':
+          description: Error
+
+  /api/v1/keys/{label}:
+    delete:
+      tags: [API Keys]
+      summary: Revoke an API key (admin)
+      description: Admin-only. Marks the key revoked; it immediately stops authenticating, and subsequent attempts are logged as "revoked key".
+      parameters:
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: revoked
+                  label:
+                    type: string
+        '404':
+          description: Key not found
+        '500':
+          description: Error
+
+  /api/v1/keys/{label}/rotate:
+    post:
+      tags: [API Keys]
+      summary: Rotate an API key (admin)
+      description: >-
+        Admin-only. Generates a new value for the key; the previous value stops
+        working immediately. Capabilities are preserved. The returned value is
+        shown once — update every caller that held the old value.
+      parameters:
+        - name: label
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The rotated key, including its one-time value
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  label:
+                    type: string
+                  value:
+                    type: string
+                  rotatedAt:
+                    type: string
+        '404':
+          description: Key not found
+        '500':
+          description: Error
+
+  /api/v1/keys/capabilities/catalog:
+    get:
+      tags: [API Keys]
+      summary: Capability catalog (admin)
+      description: Admin-only. Every capability resource, its actions, and the scope keys it accepts — drives the Keys UI capability editor.
+      responses:
+        '200':
+          description: Capability catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resources:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        resource:
+                          type: string
+                        actions:
+                          type: array
+                          items:
+                            type: string
+                        scopeKeys:
+                          type: array
+                          items:
+                            type: string
+        '500':
+          description: Error
+
+  /api/v1/keys/templates:
+    get:
+      tags: [API Keys]
+      summary: Capability templates (admin)
+      description: Admin-only. Common capability-set starting points (read-only, rag-builder, reporting, ops, full-access) offered by the Keys UI wizard.
+      responses:
+        '200':
+          description: Templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        description:
+                          type: string
+                        capabilities:
+                          type: array
+                          items:
+                            type: string
+        '500':
+          description: Error
+
+  # ── Assistant ──────────────────────────────────────────────
+
+  /api/v1/assistant/init:
+    get:
+      tags: [Assistant]
+      summary: Initialize the Assistant
+      description: UI mount call — warms the MCP client caches and returns the tool catalog, the workflow reference resource, and the active chat model.
+      responses:
+        '200':
+          description: Assistant bootstrap payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  toolCount:
+                    type: integer
+                  toolNames:
+                    type: array
+                    items:
+                      type: string
+                  workflowReference:
+                    type: string
+                    description: Pipeline-config reference resource text (empty if unavailable)
+                  provider:
+                    type: string
+                    description: Active chat AI provider (lowercase)
+                  model:
+                    type: string
+                  extendedThinking:
+                    type: boolean
+        '400':
+          description: User-actionable error
+        '500':
+          description: Error
+
+  /api/v1/assistant/chat:
+    post:
+      tags: [Assistant]
+      summary: Assistant chat (SSE)
+      description: >-
+        Runs the build-mode Assistant agent loop and streams agent-loop events
+        (text deltas, tool calls, tool results, errors) as Server-Sent Events.
+        The client cancels by disconnecting. Attachments reference files
+        previously staged via `/assistant/attachment`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ChatRequest'
+                - type: object
+                  properties:
+                    attachments:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          attachmentId:
+                            type: string
+                      description: Handles of files staged via /assistant/attachment for this turn
+      responses:
+        '200':
+          description: Server-Sent Events stream of agent-loop events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/v1/assistant/attachment:
+    post:
+      tags: [Assistant]
+      summary: Stage a chat attachment
+      description: >-
+        Stages a file dropped into the Assistant chat. The bytes are cached
+        server-side (tenant-scoped, TTL'd) and only the returned handle plus a
+        small content sample travel through the chat; the platform substitutes
+        the real bytes when the agent calls a file tool with the
+        `attachmentId`. Limit 25 MB per file.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Staged attachment descriptor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attachmentId:
+                    type: string
+                  filename:
+                    type: string
+                  detectedType:
+                    type: string
+                    description: Detected source category (e.g. "CSV (structured)", "document (unstructured)")
+                  byteSize:
+                    type: integer
+                  sample:
+                    type: string
+                    description: Text sample for the model (capped; binary documents get a one-line note)
+        '400':
+          description: Empty file
+        '413':
+          description: File exceeds the 25 MB limit
+        '500':
+          description: Error
+
+  # ── Chat Panels ────────────────────────────────────────────
+
+  /api/v1/ops-chat/chat:
+    post:
+      tags: [Chat]
+      summary: Ops chat (SSE)
+      description: >-
+        Agent chat for the Ops dashboard side panel — explains failures and
+        acts on runs by name, with operational tools (run, status, kill)
+        prioritized. The optional `context` object is a dashboard snapshot
+        that grounds answers in the failures and volumes currently on screen.
+        Streams the same SSE event format as `/assistant/chat`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Server-Sent Events stream of agent-loop events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/v1/search-chat/chat:
+    post:
+      tags: [Chat]
+      summary: Search chat (SSE)
+      description: >-
+        Conversational data discovery for the Search tab — finds the data that
+        answers a question, queries/searches it, and answers with citations.
+        The tool catalog is filtered server-side to READ-ONLY
+        discovery/query/search tools; the agent never sees mutating tools. The
+        optional `context` object may carry a catalog scope, e.g.
+        `{"catalog": "finance"}` (or "Uncataloged"; "All"/empty means
+        unscoped). Streams the same SSE event format as `/assistant/chat`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Server-Sent Events stream of agent-loop events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/v1/catalog-chat/chat:
+    post:
+      tags: [Chat]
+      summary: Catalog chat (SSE)
+      description: >-
+        Agent chat for organizing the inventory — group, move, rename, and
+        describe taps and pipelines. Full tool catalog with catalog tools
+        prioritized. The optional `context` object is a catalog inventory
+        snapshot that grounds answers in what the user is looking at. Streams
+        the same SSE event format as `/assistant/chat`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Server-Sent Events stream of agent-loop events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  # ── MCP Activity ───────────────────────────────────────────
+
+  /api/v1/mcp/activity:
+    get:
+      tags: [MCP]
+      summary: Get MCP server activity
+      description: >-
+        Proxies the MCP server's activity feed (agent sessions and tool calls)
+        with server-side enrichment: timestamps are formatted with the
+        platform's date settings and each session/call is labeled with the
+        tenant or key name resolved from its API-key hint. Always returns 200 —
+        when the MCP server is unreachable or auth fails, the payload carries
+        an `error` message and an `errorKind` of "unreachable" or "auth" with
+        empty session/call arrays.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Only return activity after this server timestamp (from a previous response's server_time; default 0 for everything)
+      responses:
+        '200':
+          description: Activity feed (or an error payload with empty arrays)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  server_time:
+                    type: number
+                  sessions:
+                    type: array
+                    items:
+                      type: object
+                  calls:
+                    type: array
+                    items:
+                      type: object
+                  error:
+                    type: string
+                  errorKind:
+                    type: string
+                    enum: [auth, unreachable]
+    delete:
+      tags: [MCP]
+      summary: Clear MCP activity history
+      description: Clears the MCP server's activity buffer so the cleared state survives page reloads. Live sessions are untouched.
+      responses:
+        '204':
+          description: Activity cleared
+        '502':
+          description: MCP server unreachable or returned an error
+
+  # ── AI Model Catalog ───────────────────────────────────────
+
+  /api/v1/ai/model-catalog:
+    get:
+      tags: [AI]
+      summary: Get the AI model catalog
+      description: >-
+        Same-origin proxy for the remote model catalog (datris.ai/models.json)
+        used by the Configuration UI's model pickers. Successful fetches are
+        cached for 5 minutes; on fetch failure the stale cache is served if one
+        exists.
+      responses:
+        '200':
+          description: Model catalog JSON
+          content:
+            application/json:
+              schema:
+                type: object
+        '502':
+          description: Catalog unavailable and no cached copy exists
+
+  # ── Tap Prompt Fragments ───────────────────────────────────
+
+  /api/v1/tap-prompts:
+    get:
+      tags: [Tap Prompts]
+      summary: List tap prompt fragments
+      description: Returns every prompt fragment. Fragments are per-source snippets injected into the tap code-generation system prompt when a tap's description mentions the fragment's key or an alias.
+      responses:
+        '200':
+          description: All fragments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TapPromptFragment'
+        '500':
+          description: Error
+    post:
+      tags: [Tap Prompts]
+      summary: Create or update a tap prompt fragment
+      description: Creates a new fragment or updates the existing fragment with the same `key`. Timestamps are managed server-side.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TapPromptFragment'
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '500':
+          description: Error (including missing key)
+
+  /api/v1/tap-prompts/{key}:
+    get:
+      tags: [Tap Prompts]
+      summary: Get a tap prompt fragment
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The fragment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TapPromptFragment'
+        '404':
+          description: Fragment not found
+        '500':
+          description: Error
+    delete:
+      tags: [Tap Prompts]
+      summary: Delete a tap prompt fragment
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '500':
+          description: Error
+
+  /api/v1/tap-prompts/suggest:
+    post:
+      tags: [Tap Prompts]
+      summary: Suggest fragment content (AI)
+      description: Uses AI to draft (or refine) the content of a prompt fragment from its key, aliases, and any existing content.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key:
+                  type: string
+                  description: Data-source key the fragment is for
+                aliases:
+                  type: array
+                  items:
+                    type: string
+                content:
+                  type: string
+                  description: Existing content to refine or expand (optional)
+      responses:
+        '200':
+          description: Suggested fragment content
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:
+                    type: string
+        '500':
+          description: Error (including missing key)

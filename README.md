@@ -127,7 +127,7 @@ CSV, JSON, XML, Excel, PDF, Word (DOCX), plain text
 
 ### AI Providers
 
-Anthropic Claude (Sonnet 4.6 default, Opus 4.8 for CodeGen) · OpenAI (GPT-5.5) · Ollama (local models, optional). Embeddings via TEI sidecar (BAAI/bge-m3) when using Anthropic, or `text-embedding-3-small` when using OpenAI.
+Anthropic Claude (Opus 4.8 default for chat and CodeGen) · OpenAI (GPT-5.5) · Ollama (local models, optional). Embeddings via OpenAI `text-embedding-3-small` (recommended when you have an OpenAI key), the bundled TEI sidecar (BAAI/bge-m3 — fully local, no API key), or Ollama.
 
 ## Architecture
 
@@ -138,7 +138,7 @@ Anthropic Claude (Sonnet 4.6 default, Opus 4.8 for CodeGen) · OpenAI (GPT-5.5) 
 | **MongoDB** | Configuration store, job status tracking, metadata |
 | **ActiveMQ** | File notification queue, pipeline event notifications |
 | **HashiCorp Vault** | Secrets management (database credentials, API keys) |
-| **TEI** | Text Embeddings Inference sidecar (BAAI/bge-m3) for vector embeddings without an OpenAI key |
+| **TEI** | Text Embeddings Inference sidecar (BAAI/bge-m3) — local vector embeddings when you're not using OpenAI embeddings |
 | **Apache Kafka** | Optional streaming source and destination |
 | **Apache Spark** | Local Spark for writing Parquet/ORC to MinIO |
 

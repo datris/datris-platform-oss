@@ -217,7 +217,7 @@ AI configuration is split into three independent slots, each pointing at its own
 | Property | Default | Description |
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
-| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). |
+| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the strongest available model — Anthropic gets `claude-opus-4-8`, OpenAI gets `gpt-5.5`. |
 | `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest available model — Anthropic gets `claude-opus-4-8`, OpenAI gets `gpt-5.5`. |
 | `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled TEI sidecar serving `BAAI/bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
 
@@ -227,12 +227,24 @@ Each Vault secret is self-describing and looks like:
 vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-sonnet-4-6" \
+  model="claude-opus-4-8" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
 
 `docker/vault-init.sh` seeds all three secrets automatically based on which key is present in `.env` (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`). For multi-tenant deployments, per-tenant override secrets live at `{env}/ai-primary`, `{env}/codegen`, `{env}/embedding`.
+
+These `.env` variables tune what gets seeded. They apply on the **first boot only** — after that, Vault persists and the Configuration tab is the source of truth:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_PROVIDER` | auto | Explicit provider pick (`anthropic` or `openai`) for the `ai-primary` and `codegen` slots. When unset, whichever API key is present wins (OpenAI wins ties). |
+| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Model seeded into `oss/ai-primary` on the Anthropic path. |
+| `OPENAI_MODEL` | `gpt-5.5` | Model seeded into `oss/ai-primary` on the OpenAI path. |
+| `CODEGEN_MODEL` | `claude-opus-4-8` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults respectively). |
+| `EMBEDDING_PROVIDER` | follows provider | `openai`, `tei`, or `ollama`. When unset: `openai` when the AI provider is OpenAI, otherwise the bundled TEI sidecar. |
+| `EMBEDDING_MODEL` | provider default | `text-embedding-3-small` (openai), `BAAI/bge-m3` (tei), `bge-m3` (ollama). |
+| `EMBEDDING_ENDPOINT` | provider default | Endpoint override for the `tei` and `ollama` providers — useful when TEI or Ollama runs on a separate host. |
 
 All AI calls (`callAI`, `callAIWithSystem`, `callAIWithMessages`) share a unified retry helper that automatically retries on transient `429` (rate limited), `503` (service unavailable), and `529` (overloaded) responses with linear backoff (5s, 10s, 15s, 20s, 25s) for up to 5 attempts. This applies uniformly across all configured providers.
 
@@ -334,4 +346,5 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `USE_USER_AUTH` | `false` | Enable username/password login + admin gating. See [User Authentication](/user-auth). |
 | `USE_API_KEYS` | `false` | Enable per-tenant API-key gating on the REST/MCP API. See [API Keys](/api-keys). |
 | `MULTI_TENANT` | `false` | Switch to per-tenant database isolation (intended for hosted/managed deployments). |
+| `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` | `claude-sonnet-4-6` | Model used for the current request when Anthropic returns a sustained `overloaded_error` on an Opus call (after the automatic retries). Only consulted when the configured model is an Anthropic Opus variant — other providers ignore it. Bump when a newer Sonnet ships to keep the fallback current. |
 | `CAPABILITY_ENFORCEMENT` | `enforce` | `enforce` returns HTTP 403 on policy violations by scoped keys. Set to `log-only` to emit would-deny log lines without rejecting — useful when iterating on a new scope policy. |

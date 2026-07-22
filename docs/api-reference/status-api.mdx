@@ -3,7 +3,7 @@ title: "Pipeline Status API"
 description: "Pipeline status endpoints"
 ---
 
-Query job processing status by publisher token, pipeline token, or pipeline name.
+Query job processing status by publisher token, pipeline token, or pipeline name, or clear all ingestion history.
 
 ## Get Status by Publisher Token
 
@@ -172,6 +172,34 @@ Without `withrollup=true`, all three queries return their original array shapes 
 ---
 
 *Use one of `publishertoken`, `pipelinetoken`, or `pipelinename`. When multiple are supplied, `publishertoken` wins over `pipelinetoken` wins over `pipelinename`.
+
+---
+
+## Clear All Status
+
+```
+DELETE /api/v1/pipeline/status
+```
+
+Deletes **all** ingestion history — every status entry (the detail events returned by the token queries) and every job summary (the entries returned by the pipeline-name query). There are no parameters and no filtering: this is an all-or-nothing reset, typically used to clear out accumulated history on a dev or demo instance.
+
+**Example:**
+```bash
+curl -X DELETE "http://localhost:8080/api/v1/pipeline/status"
+```
+
+**Response:** `200 OK` — the total number of entries removed (detail entries plus summary entries combined):
+```json
+{
+  "deleted": 1234
+}
+```
+
+<Warning>
+This permanently removes the processing history for every pipeline, not just one. Pipeline configurations and loaded data are untouched — only the status/history records are deleted.
+</Warning>
+
+---
 
 ## Status Fields
 

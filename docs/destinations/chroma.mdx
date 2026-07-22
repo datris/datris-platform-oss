@@ -150,13 +150,27 @@ The collection is auto-created on first upsert with cosine distance. No Java cli
 
 ## Running Chroma
 
-Chroma runs outside Docker (like the other vector databases). Start locally with a single command:
+Chroma ships as a bundled **opt-in** Compose service. Enable it with one line in `.env`:
+
+```bash
+COMPOSE_PROFILES=chroma
+```
+
+Then start the stack:
+
+```bash
+docker compose up -d
+```
+
+Combine profiles with commas (e.g., `COMPOSE_PROFILES=chroma,kafka`). The `install.sh` installer can also enable Chroma at install time — it writes the profile and seeds the `oss/chroma` secret for you. For the bundled container, use the compose service name as the host in the secret (`host="chroma"`, port `8000`).
+
+To use an existing external instance instead, skip the profile and point the `oss/chroma` secret's `host`/`port` at it — the secret fields are the same either way. You can also run Chroma standalone:
 
 ```bash
 docker run -d --name chroma -p 8000:8000 chromadb/chroma:latest
 ```
 
-That's it — no external dependencies like etcd or MinIO. Chroma is the simplest vector database to run.
+Either way there are no external dependencies like etcd or MinIO — Chroma is the simplest vector database to run.
 
 ## Verifying
 

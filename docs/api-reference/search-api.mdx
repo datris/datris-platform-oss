@@ -3,23 +3,38 @@ title: "Search API"
 description: "Search endpoints"
 ---
 
-The Search API provides REST endpoints for semantic search across vector databases. Each endpoint converts a natural language query into an embedding vector, searches the specified vector database, and returns the most similar results with relevance scores.
+The Search API provides a single REST endpoint for semantic search across vector databases. The endpoint converts a natural language query into an embedding vector, searches the vector store named in the URL, and returns the most similar results with relevance scores.
 
-All search endpoints use embedding and vector database connection details stored in HashiCorp Vault. Secret names can be passed per-request or configured as server defaults in `application.yaml`.
+Embedding and vector database connection details are stored in HashiCorp Vault and resolved **server-side**. Clients never send secret names — the server always uses its own configured secret names (in multi-tenant mode this enforces tenant isolation), so any secret-name fields in a request body are ignored.
 
-## Common Parameters
+## Search a Vector Store
 
-All search endpoints share these parameters:
+```
+POST /api/v1/search/{store}
+```
+
+One endpoint serves all vector stores. The `{store}` path parameter selects the store:
+
+| Store | Container field | Container default | Store-specific fields |
+|-------|-----------------|-------------------|-----------------------|
+| `qdrant` | `collection` | `documents` | |
+| `weaviate` | `className` | `Documents` | |
+| `milvus` | `collection` | `documents` | |
+| `chroma` | `collection` | `documents` | |
+| `pgvector` | `table` | `documents` | `schema` (default `public`) |
+
+### Common Parameters
+
+All stores share these request-body parameters:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `query` | string | Yes | | Natural language search query |
-| `embeddingSecretName` | string | No | `ai.embedding.secretName` | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically by `vault-init.sh`. The secret is self-describing: `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version`. |
 | `topK` | integer | No | 5 | Number of results to return |
 
-## Common Response Format
+Plus the store's container field from the table above (e.g. `collection` for Qdrant, `className` for Weaviate, `table`/`schema` for pgvector).
 
-All search endpoints return:
+### Common Response Format
 
 ```json
 {
@@ -38,18 +53,23 @@ All search endpoints return:
 
 The `_score` field indicates relevance (higher is more similar, normalized to 0–1 where applicable).
 
+### Error Responses
+
+An unknown `{store}` value returns `400 Bad Request` with a message naming the valid stores:
+
+```
+Unknown vector store: 'faiss'. Valid stores: chroma, milvus, pgvector, qdrant, weaviate
+```
+
+Other user-actionable errors also return `400 Bad Request` with a plain-text message — most notably a vector dimension mismatch, which usually means the embedding provider was changed between ingest and query. Fix it by switching the embedding provider in Configuration to match the collection's dimension, or by re-ingesting under the current provider.
+
+Only stores that are actually running and reachable can be searched successfully. Use [`GET /api/v1/vector-stores/available`](/api-reference/health-api#list-available-vector-stores) to discover which stores are live before searching — the UI's Search tab uses this to gate its store dropdown.
+
+Unexpected server errors return `500 Internal Server Error`.
+
 ---
 
-## Search Qdrant
-
-```
-POST /api/v1/search/qdrant
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `collection` | string | No | `documents` | Qdrant collection name |
-| `qdrantSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `apiKey`). Uses server default if omitted. |
+### Qdrant
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/qdrant \
@@ -57,23 +77,13 @@ curl -X POST http://localhost:8080/api/v1/search/qdrant \
   -d '{
     "query": "quarterly revenue projections",
     "collection": "documents",
-    "qdrantSecretName": "oss/qdrant",
     "topK": 5
   }'
 ```
 
----
+### Weaviate
 
-## Search Weaviate
-
-```
-POST /api/v1/search/weaviate
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `className` | string | No | `Documents` | Weaviate class name (PascalCase) |
-| `weaviateSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `scheme`, `apiKey`). Uses server default if omitted. |
+The container field is `className` (PascalCase, default `Documents`).
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/weaviate \
@@ -81,23 +91,11 @@ curl -X POST http://localhost:8080/api/v1/search/weaviate \
   -d '{
     "query": "quarterly revenue projections",
     "className": "Documents",
-    "weaviateSecretName": "oss/weaviate",
     "topK": 5
   }'
 ```
 
----
-
-## Search Milvus
-
-```
-POST /api/v1/search/milvus
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `collection` | string | No | `documents` | Milvus collection name |
-| `milvusSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`, `apiKey`). Uses server default if omitted. |
+### Milvus
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/milvus \
@@ -105,23 +103,11 @@ curl -X POST http://localhost:8080/api/v1/search/milvus \
   -d '{
     "query": "quarterly revenue projections",
     "collection": "documents",
-    "milvusSecretName": "oss/milvus",
     "topK": 5
   }'
 ```
 
----
-
-## Search Chroma
-
-```
-POST /api/v1/search/chroma
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `collection` | string | No | `documents` | Chroma collection name |
-| `chromaSecretName` | string | No | Server default | Vault secret (must contain `host`, optionally `port`). Uses server default if omitted. |
+### Chroma
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/chroma \
@@ -129,24 +115,13 @@ curl -X POST http://localhost:8080/api/v1/search/chroma \
   -d '{
     "query": "quarterly revenue projections",
     "collection": "documents",
-    "chromaSecretName": "oss/chroma",
     "topK": 5
   }'
 ```
 
----
+### pgvector
 
-## Search pgvector
-
-```
-POST /api/v1/search/pgvector
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `table` | string | No | `documents` | PostgreSQL table name |
-| `schema` | string | No | `public` | PostgreSQL schema |
-| `postgresSecretName` | string | No | Server default | Vault secret (must contain `jdbcUrl`, optionally `username`, `password`). Uses server default if omitted. |
+The container field is `table`, with an optional `schema` (default `public`).
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/search/pgvector \
@@ -155,7 +130,6 @@ curl -X POST http://localhost:8080/api/v1/search/pgvector \
     "query": "quarterly revenue projections",
     "table": "documents",
     "schema": "public",
-    "postgresSecretName": "oss/pgvector",
     "topK": 5
   }'
 ```
@@ -219,9 +193,11 @@ Returns the AI-generated answer based on the provided context.
 
 ## Vault Secret Structure
 
+These secrets are configured on the server (seeded by `vault-init.sh` and managed via the Configuration tab) — they are never passed in search requests.
+
 ### Embedding Secret
 
-Self-describing — the resolver reads `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version` from inside the secret. See [AI Configuration](/ai-configuration).
+Self-describing — the resolver reads `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version` from inside the secret. The server uses the secret named by `ai.embedding.secretName` (`oss/embedding`). See [AI Configuration](/ai-configuration).
 
 ```json
 {
@@ -235,6 +211,8 @@ Self-describing — the resolver reads `provider`, `endpoint`, `model`, `apiKey`
 For Anthropic-only deployments, the bundled TEI sidecar serves `bge-m3` and `vault-init.sh` seeds the embedding secret to point at it (`provider: "tei"`, `endpoint: "http://tei:80/v1/embeddings"`, `model: "BAAI/bge-m3"`).
 
 ### Vector Database Secrets
+
+Each store has a server-configured secret resolved by store key:
 
 **Qdrant:**
 ```json

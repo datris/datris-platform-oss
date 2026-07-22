@@ -44,12 +44,22 @@ Each Vault secret carries its full configuration inline:
 | `provider` | Yes | `anthropic`, `openai`, or `ollama` |
 | `endpoint` | Yes | API endpoint URL |
 | `model` | Yes | Model identifier |
-| `apiKey` | Yes (no for ollama) | Provider API key |
+| `apiKey` | No (not used by ollama) | Inline provider API key. The [shared API key store](#shared-api-key-store) is checked first and takes precedence when set |
 | `version` | Optional | API version (Anthropic uses `2023-06-01`) |
 
 The resolver reads each secret at the configured path and uses whatever it finds inside — there is no path derivation from a YAML `provider` field. This means the three slots can independently use different providers (e.g. Anthropic for `aiPrimary`, Ollama for `codegen`, OpenAI for `embedding`).
 
 **All three slots support Ollama** — you can run the entire platform on local models with no API keys. The Configuration UI offers Ollama as a provider choice for every section, with a free-text model input since Ollama supports hundreds of community models.
+
+### Shared API Key Store
+
+Provider API keys live in a shared per-provider secret, `{env}/ai-keys` (`oss/ai-keys` in single-tenant deployments), with one field per provider: `anthropicApiKey` and `openaiApiKey`. When a slot needs a key, resolution order is:
+
+1. **Shared key store** (`{env}/ai-keys`) — checked first; takes precedence over any inline key
+2. **Inline `apiKey`** on the slot secret — legacy deployments that stored the key on the slot itself
+3. **`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`** container env vars — single-tenant only
+
+Keys are stored once per provider rather than once per slot, so switching a slot between providers never loses the other provider's key. This is the store behind the Configuration UI's shared **API Keys** panel — entering a key there writes it to `{env}/ai-keys` for all slots to use.
 
 ## Quick Start with `.env`
 
@@ -77,7 +87,7 @@ When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
-| `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-sonnet-4-6` |
+| `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-4-8` |
 | `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-4-8` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
@@ -102,7 +112,7 @@ The Configuration UI makes this easy — select **Ollama (if optional service en
 Override the seeded models by setting these in `.env`:
 
 ```bash
-ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL=claude-opus-4-8
 OPENAI_MODEL=gpt-5.5
 CODEGEN_MODEL=claude-opus-4-8   # or gpt-5.5 if using OpenAI
 ```
@@ -171,7 +181,7 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
   vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-sonnet-4-6" \
+  model="claude-opus-4-8" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
@@ -231,7 +241,7 @@ OpenAI web search requires the **Responses API**. When the configured endpoint i
 **Highly recommended: Anthropic with the latest coding model for CodeGen.** Tap script generation, AI data quality rules, AI transformations, and NL→SQL all depend heavily on the model's coding ability — Claude produces dramatically better results than smaller or cheaper models. The same recommendation appears in the Configuration UI's CodeGen section and in `.env.example`.
 </Tip>
 
-CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot precisely so you can point them at a stronger model than the chatty default. With OpenAI both slots default to `gpt-5.5`; with Anthropic the default is `claude-opus-4-8` for codegen vs `claude-sonnet-4-6` for general. Cheap chatty paths stay on the cheaper model so you only pay the upgrade on the calls that benefit.
+CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot so they can run a different model than the general default. On a fresh install both slots seed the strongest available model — `gpt-5.5` with OpenAI, `claude-opus-4-8` with Anthropic — so code generation is at full quality out of the box. The separate slot is your cost-tuning lever: point `aiPrimary` at a cheaper model (e.g. `claude-sonnet-4-6`) for the chatty paths and keep the stronger model only on the calls that benefit from it.
 
 | Feature | Uses codegen slot? |
 |---|---|
@@ -265,7 +275,7 @@ A per-tenant secret takes effect on the next AI call — no restart needed. The 
 
 Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI. The Configuration page is organized into sub-tabs:
 
-- **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right. This is where you enter your Anthropic / OpenAI key and pick models.
+- **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right (backed by the `{env}/ai-keys` secret — see [Shared API Key Store](#shared-api-key-store)). This is where you enter your Anthropic / OpenAI key and pick models.
 - **Secrets** — operator-facing platform credentials (Vault-backed). Admin-only when user-auth is on.
 - **Users** — user accounts and roles. Visible when `USE_USER_AUTH=true`.
 - **API-Keys** — issue and revoke scoped credentials for the CLI, MCP agents, and other programmatic clients. Visible when `USE_API_KEYS=true`. See [API Keys](/api-keys).
@@ -291,7 +301,7 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
   vault kv put secret/trial-acme/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-sonnet-4-6" \
+  model="claude-opus-4-8" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
