@@ -24,18 +24,18 @@
       <label class="form-label">Query Type</label>
       <select class="form-input" [(ngModel)]="queryType" (ngModelChange)="onQueryTypeChange()">
         <optgroup label="Database Query">
-          <option value="postgres">PostgreSQL</option>
-          <option value="mongodb">MongoDB</option>
+          <option value="postgres" *ngIf="healthService.isAvailable('postgres')">PostgreSQL</option>
+          <option value="mongodb" *ngIf="healthService.isAvailable('mongodb')">MongoDB</option>
         </optgroup>
         <optgroup label="Object Store">
-          <option value="objectstore">Object Store (MinIO / S3 — Parquet or ORC)</option>
+          <option value="objectstore" *ngIf="healthService.isAvailable('minio')">Object Store (MinIO / S3 — Parquet or ORC)</option>
         </optgroup>
         <optgroup label="Vector Search">
           <option value="qdrant" *ngIf="healthService.isAvailable('qdrant')">Qdrant</option>
           <option value="weaviate" *ngIf="healthService.isAvailable('weaviate')">Weaviate</option>
           <option value="milvus" *ngIf="healthService.isAvailable('milvus')">Milvus</option>
           <option value="chroma" *ngIf="healthService.isAvailable('chroma')">Chroma</option>
-          <option value="pgvector">pgvector</option>
+          <option value="pgvector" *ngIf="healthService.isAvailable('pgvector')">pgvector</option>
         </optgroup>
       </select>
     </div>

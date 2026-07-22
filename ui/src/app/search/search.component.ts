@@ -78,6 +78,11 @@ export class SearchComponent implements OnInit, OnDestroy {
     const savedView = (() => { try { return sessionStorage.getItem(SearchComponent.VIEW_KEY); } catch { return null; } })();
     if (savedView === 'chat' || savedView === 'traditional') this.activeView = savedView;
 
+    // Re-fetch health when the tab opens so store gating recovers from a failed
+    // bootstrap fetch or a server restart; then make sure the selected query
+    // type is still one of the visible options.
+    this.healthService.refresh().then(() => this.ensureQueryTypeAvailable());
+
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
         this.isTrial = data.multiTenant === 'true';
@@ -247,6 +252,22 @@ export class SearchComponent implements OnInit, OnDestroy {
     this.error = '';
     this.resultCount = 0;
     this.vectorSecretName = this.getDefaultVectorSecret();
+  }
+
+  /** If health gating hid the currently-selected query type, fall back to the
+   * first visible option (dropdown order) so the select never sits on a value
+   * that has no matching <option>. */
+  private ensureQueryTypeAvailable(): void {
+    const healthKey: Record<string, string> = {
+      postgres: 'postgres', mongodb: 'mongodb', objectstore: 'minio',
+      qdrant: 'qdrant', weaviate: 'weaviate', milvus: 'milvus', chroma: 'chroma', pgvector: 'pgvector'
+    };
+    if (this.healthService.isAvailable(healthKey[this.queryType])) return;
+    const fallback = Object.keys(healthKey).find(t => this.healthService.isAvailable(healthKey[t]));
+    if (fallback) {
+      this.queryType = fallback;
+      this.onQueryTypeChange();
+    }
   }
 
   isVectorSearch(): boolean {
