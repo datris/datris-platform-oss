@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.12.0" description="July 23, 2026">
+  **Failed scheduled runs now retry themselves — and tell you how to fix what they can't.**
+
+  - **Automatic retry for scheduled runs.** Transient failures (source briefly unreachable, rate limits, network blips) are re-run automatically a few times with a short delay before being flagged. Only runs that are provably safe to repeat are retried, so a retry can never duplicate data. On by default and configurable; manual runs pause the retry ladder.
+  - **AI fix suggestions, right where failures show.** Persistent failures get a one-line suggested fix directly on the failed run in Ops → Ingestion and tap Run History, with the full diagnosis and concrete change one click away. Advisory only — nothing changes unless you apply it.
+  - **Agents see suggestions too.** Agents polling pipeline status get the same one-line fix suggestion for failed jobs.
+  - **Sign-in session fix.** With user login enabled, an expired session now ends cleanly and returns you to the login screen right away, instead of requiring a page refresh.
+</Update>
+
 <Update label="v1.11.3" description="July 22, 2026">
   **Search shows only what's installed, plus internal consolidation.**
 
