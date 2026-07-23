@@ -28,7 +28,13 @@ object TapRunner {
      *                Persisted on the tap so the scheduler only auto-retries cron failures.
      * @return TapScriptResult with fetched records
      */
-    def run(tapConfig: TapConfig, mode: String = "run", testLimit: Int = 0, params: Map[String, String] = Map.empty, trigger: String = "manual"): TapScriptResult = {
+    def run(
+        tapConfig: TapConfig,
+        mode: String = "run",
+        testLimit: Int = 0,
+        params: Map[String, String] = Map.empty,
+        trigger: String = "manual"
+    ): TapScriptResult = {
         val push = mode == "run"
         val publisherToken = if (push) UUID.randomUUID().toString else null
         val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)

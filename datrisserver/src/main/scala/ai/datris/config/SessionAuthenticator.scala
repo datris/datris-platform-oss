@@ -16,6 +16,7 @@ import org.springframework.web.servlet.HandlerInterceptor
   * own — that's `RoleEnforcementInterceptor`'s job, since some endpoints are public
   * (login, version) and others tolerate either a session or an x-api-key. */
 object SessionAuthenticator {
+
     /** Request attribute set when the request carried a session cookie that no
       * longer resolves to a live session. Only a browser whose session expired
       * (or was revoked) can be in this state — programmatic callers never send

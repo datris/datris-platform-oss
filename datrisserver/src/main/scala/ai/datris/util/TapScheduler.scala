@@ -55,7 +55,8 @@ object TapScheduler {
                     } else if (shouldRetry(tap, now, sdf)) {
                         logger.info(
                             "TapScheduler: retrying failed tap: " + tap.name +
-                                " (attempt " + (tap.retryCount + 1) + "/" + DatrisEnvironment.current.cronRetryCap + ")")
+                                " (attempt " + (tap.retryCount + 1) + "/" + DatrisEnvironment.current.cronRetryCap + ")"
+                        )
                         fireCronRun(tap.copy(retryCount = tap.retryCount + 1))
                     }
                 } catch {
@@ -106,7 +107,10 @@ object TapScheduler {
 
     private def backoffMs(retryCount: Int): Long = {
         val minutes = DatrisEnvironment.current.cronRetryBackoffMinutes
-            .split(",").toList.flatMap(s => try Some(s.trim.toInt) catch { case _: Exception => None })
+            .split(",").toList.flatMap(s =>
+                try Some(s.trim.toInt)
+                catch { case _: Exception => None }
+            )
         val effective = if (minutes.isEmpty) List(5, 15) else minutes
         effective(Math.min(retryCount, effective.length - 1)).toLong * 60000L
     }
