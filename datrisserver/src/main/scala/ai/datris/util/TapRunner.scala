@@ -24,19 +24,25 @@ object TapRunner {
      * @param tapConfig the tap to run
      * @param mode "run" persists to the pipeline and updates tap status; "test" just executes and returns without persisting
      * @param params per-run params injected as DATRIS_TAP_PARAM_<key> env vars (date range, id list, etc.)
+     * @param trigger what initiated the run: "cron" (TapScheduler) or "manual" (UI/API/MCP).
+     *                Persisted on the tap so the scheduler only auto-retries cron failures.
      * @return TapScriptResult with fetched records
      */
-    def run(tapConfig: TapConfig, mode: String = "run", testLimit: Int = 0, params: Map[String, String] = Map.empty): TapScriptResult = {
+    def run(tapConfig: TapConfig, mode: String = "run", testLimit: Int = 0, params: Map[String, String] = Map.empty, trigger: String = "manual"): TapScriptResult = {
         val push = mode == "run"
         val publisherToken = if (push) UUID.randomUUID().toString else null
         val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
         sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
         val now = sdf.format(new Date())
         val startMs = System.currentTimeMillis()
+        // Flipped just before the first pipeline submission. A failure with this
+        // still false provably fed nothing downstream, so an automatic re-run
+        // cannot double-write (the retry-safety gate).
+        var feedStarted = false
 
         // Only update status in DB for real runs, not tests
         if (push) {
-            val runningConfig = tapConfig.copy(lastRunStatus = "running", lastRunTime = now, lastRunError = null)
+            val runningConfig = tapConfig.copy(lastRunStatus = "running", lastRunTime = now, lastRunError = null, lastRunTrigger = trigger)
             TapConfigIO.write(runningConfig)
         }
 
@@ -46,12 +52,15 @@ object TapRunner {
 
             if (result.error != null) {
                 // Script errored. This is a real failure — write it as such.
+                // Script failures happen before any pipeline submission → retry-safe.
                 if (push) {
                     val failedConfig = tapConfig.copy(
                         lastRunStatus = "failure",
                         lastRunTime = now,
                         lastRunRecordCount = 0,
-                        lastRunError = result.error
+                        lastRunError = result.error,
+                        lastRunTrigger = trigger,
+                        lastRunRetrySafe = true
                     )
                     TapConfigIO.write(failedConfig)
                 }
@@ -73,11 +82,15 @@ object TapRunner {
                             ". The script ran without those credentials and returned no data. Add the missing field(s) to " +
                             "the secret (Configuration → Secrets), or update the script to match the secret."
                     if (push) {
+                        // Structural (secret/script mismatch) — a retry hits the
+                        // same wall, so it is not marked retry-safe.
                         val failedConfig = tapConfig.copy(
                             lastRunStatus = "failure",
                             lastRunTime = now,
                             lastRunRecordCount = 0,
-                            lastRunError = missingMsg
+                            lastRunError = missingMsg,
+                            lastRunTrigger = trigger,
+                            lastRunRetrySafe = false
                         )
                         TapConfigIO.write(failedConfig)
                     }
@@ -97,7 +110,10 @@ object TapRunner {
                         lastRunStatus = "no_records",
                         lastRunTime = now,
                         lastRunRecordCount = 0,
-                        lastRunError = null
+                        lastRunError = null,
+                        lastRunTrigger = trigger,
+                        lastRunRetrySafe = false,
+                        retryCount = 0
                     )
                     TapConfigIO.write(noRecordsConfig)
                 }
@@ -111,6 +127,7 @@ object TapRunner {
                     push && result.records != null && result.recordCount > 0 &&
                     tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
                 ) {
+                    feedStarted = true
                     feedPipeline(tapConfig, result, publisherToken)
                 } else (result.recordCount, new java.util.ArrayList[String]())
 
@@ -121,7 +138,10 @@ object TapRunner {
                     lastRunRecordCount = processedCount,
                     lastRunError = null,
                     lastRunDataType = result.dataType,
-                    lastRunColumns = result.columns
+                    lastRunColumns = result.columns,
+                    lastRunTrigger = trigger,
+                    lastRunRetrySafe = false,
+                    retryCount = 0
                 )
                 TapConfigIO.write(successConfig)
             }
@@ -135,11 +155,16 @@ object TapRunner {
                 val durationMs = System.currentTimeMillis() - startMs
                 logger.error("TapRunner failed for tap: " + tapConfig.name, e)
                 if (push) {
+                    // Retry-safe only if the exception fired before the first
+                    // pipeline submission; a mid-feed failure (e.g. a document
+                    // batch that partially fed) must not be re-run blindly.
                     val failedConfig = tapConfig.copy(
                         lastRunStatus = "failure",
                         lastRunTime = now,
                         lastRunRecordCount = 0,
-                        lastRunError = e.getMessage
+                        lastRunError = e.getMessage,
+                        lastRunTrigger = trigger,
+                        lastRunRetrySafe = !feedStarted
                     )
                     TapConfigIO.write(failedConfig)
                 }

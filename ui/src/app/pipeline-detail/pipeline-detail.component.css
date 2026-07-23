@@ -197,3 +197,35 @@ tbody tr:last-child td {
   color: var(--accent-cyan);
   background: rgba(0, 180, 255, 0.1);
 }
+
+/* AI fix-suggestion card above the event stream */
+.suggestion-card {
+  margin: 12px 0 16px;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent-cyan);
+  border-radius: 8px;
+}
+
+.suggestion-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.suggestion-summary {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.suggestion-text {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 4px 0;
+}

@@ -158,6 +158,21 @@ While a re-run is in flight, the button swaps to an amber spinner with "Running�
 
 **Tap status semantics:** `no_records` (script ran cleanly but returned zero records — legitimate for polling/incremental taps on a quiet day) is treated as healthy, not as a failure. It does not count in the Failures tile and does not appear in the Failures pane. See [Taps → Run Status Outcomes](/taps#run-status-outcomes).
 
+## Automatic Retry of Scheduled Runs
+
+When a scheduled (cron) tap run fails on a transient error — the source briefly unreachable, a rate limit, a network blip — Datris automatically re-runs it a few times with a short delay before flagging it. Only runs that had not yet delivered any data downstream are retried, so a retry can never duplicate records. Manual runs are never auto-retried: running a tap yourself pauses the retry ladder until its next scheduled run.
+
+Defaults: up to 3 retries with 5- and 15-minute backoff. Tune or disable with `cron.retry.enabled`, `cron.retry.cap`, and `cron.retry.backoffMinutes`.
+
+## AI Fix Suggestions
+
+When a failure persists — a scheduled run that is still failing after its retries, or any pipeline job failure — Datris diagnoses it and proposes a fix:
+
+- **Ops → Ingestion**: failed runs show a one-line 💡 suggestion directly in the list; clicking through to the run opens a **Suggested fix** card with the full diagnosis and the concrete change to make.
+- **Tap Run History**: failed runs show the same one-line suggestion, with the diagnosis and suggested fix in the expanded entry.
+
+Suggestions are advisory only — nothing is changed automatically. Apply the fix through the tap or pipeline edit dialogs, or ask the Assistant to make the change.
+
 ## Agent Monitor
 
 The **Agent Monitor** lives on the MCP tab and shows a live view of every AI agent currently connected to the platform's MCP server, along with a streaming log of the tool calls each agent is making. Both panes (Connections and Activity Log) are sized to fit the viewport on initial load and reflow when you resize the window — the visualization stays roughly the upper third and the log fills the rest, with its own internal scroll. A pop-out icon next to the title opens the same view in a separate browser window so you can park it on a second monitor while you work elsewhere in the UI.

@@ -7,6 +7,14 @@
       Version history
     </button>
   </div>
+  <!-- AI fix suggestion for the failed run: full diagnosis + concrete fix,
+       shown above the raw step-by-step event stream. -->
+  <div class="suggestion-card" *ngIf="suggestion">
+    <div class="suggestion-title">💡 Suggested fix</div>
+    <div class="suggestion-summary" *ngIf="suggestion!.aiSummary">{{ suggestion!.aiSummary }}</div>
+    <p class="suggestion-text" *ngIf="suggestion!.aiDiagnosis"><strong>Diagnosis:</strong> {{ suggestion!.aiDiagnosis }}</p>
+    <p class="suggestion-text" *ngIf="suggestion!.aiSuggestion"><strong>Fix:</strong> {{ suggestion!.aiSuggestion }}</p>
+  </div>
   <div class="table-container">
     <table>
       <thead>
@@ -37,7 +45,7 @@
           <td class="mono">{{ detail.code }}</td>
           <td class="description-text">
             <span>{{ detail.description }}</span>
-            <button class="copy-btn" *ngIf="detail.code === 'error' || detail.code === 'warning' || detail.description.includes('AI Explanation')"
+            <button class="copy-btn" *ngIf="detail.code === 'error' || detail.code === 'warning' || detail.description.includes('AI Explanation') || detail.description.includes('AI Suggested Fix')"
               (click)="copyToClipboard(detail.description)" title="Copy to clipboard">
               <span class="material-icons copy-icon">content_copy</span>
             </button>

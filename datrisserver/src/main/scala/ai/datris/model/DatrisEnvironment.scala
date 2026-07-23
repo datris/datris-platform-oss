@@ -215,7 +215,14 @@ case class DatrisEnvironment(
     // Max definition versions retained per entity. Older
     // version records (and, for taps, their pinned script
     // objects) are pruned beyond this cap. Configurable.
-    versionCap: Int = 50
+    versionCap: Int = 50,
+    // Automatic retry of failed cron-triggered tap runs. Only runs that fed
+    // nothing downstream are retried (see TapConfig.lastRunRetrySafe).
+    cronRetryEnabled: Boolean = true,
+    cronRetryCap: Int = 3,
+    // Minutes to wait before retry attempt N; the last entry repeats when
+    // attempts outnumber entries.
+    cronRetryBackoffMinutes: String = "5,15"
 ) {
 
     /** Append-only definition-version collections. Derived from the live table

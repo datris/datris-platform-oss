@@ -130,9 +130,13 @@ object PipelineStatusUtil {
         val nowMillis = new Timestamp(new Date().getTime).getTime
         val (elapsedStr, timedOut) = ElapsedTimeUtil.getElapsedTime(nowMillis - first.epoch)
 
+        // The AI fix-suggestion event (written after the error event) carries a
+        // one-line headline agents/UI can show without replaying the stream.
+        val aiSummary = sorted.reverse.find(_.aiSummary != null).map(_.aiSummary).orNull
+
         val (status, lastErr) =
             if (errorEvent.isDefined)
-                ("error", PipelineJobError(errorEvent.get.processName, errorEvent.get.description))
+                ("error", PipelineJobError(errorEvent.get.processName, errorEvent.get.description, aiSummary))
             else if (hasJobRunnerEnd && hasWarning)
                 ("warning", null)
             else if (hasJobRunnerEnd)

@@ -495,3 +495,15 @@ option {
   font-size: 14px;
   margin-top: 12px;
 }
+
+/* AI fix-suggestion headline row under a failed run */
+.ai-summary-row td {
+  padding-top: 0;
+  border-top: none;
+  font-size: 13px;
+}
+
+.ai-summary-row .ai-summary-text {
+  color: var(--text-muted);
+  font-style: italic;
+}

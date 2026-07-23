@@ -188,42 +188,12 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             case e: Throwable =>
                 val errorMessage = Throwables.getStackTraceAsString(e)
                 statusUtil.error("end", "Process completed, error: " + errorMessage)
-                val aiExplanation = getAIErrorExplanation(errorMessage)
-                if (aiExplanation != null) {
-                    logger.info("AI Error Explanation: " + aiExplanation)
-                    statusUtil.info("end", "AI Explanation: " + aiExplanation)
+                val fix = FixSuggestionUtil.suggest("pipeline", new Gson().toJson(jobContext.config), errorMessage)
+                if (fix != null) {
+                    logger.info("AI Fix Suggestion: " + fix.summary)
+                    statusUtil.suggestion(fix)
                 }
                 throw new DatrisException("Pipeline error: " + errorMessage)
-        }
-    }
-
-    private def getAIErrorExplanation(errorMessage: String): String = {
-        try {
-            if (!DatrisEnvironment.current.aiEnabled || DatrisEnvironment.current.aiConfig == null)
-                return null
-
-            val configJson = new Gson().toJson(jobContext.config)
-            // Truncate config and error to avoid exceeding context
-            val truncatedConfig = if (configJson.length > 2000) configJson.substring(0, 2000) + "..." else configJson
-            val truncatedError = if (errorMessage.length > 2000) errorMessage.substring(0, 2000) + "..." else errorMessage
-
-            val prompt =
-                s"""You are a data pipeline error analyst. A pipeline job failed with the error below.
-                   |Explain in 2-3 concise sentences what went wrong and how to fix it.
-                   |Do NOT repeat the error message. Focus on the root cause and actionable fix.
-                   |
-                   |Pipeline configuration:
-                   |$truncatedConfig
-                   |
-                   |Error:
-                   |$truncatedError""".stripMargin
-
-            val responseText = AIUtil.callAI(prompt)
-            AIUtil.extractText(responseText).trim
-        } catch {
-            case e: Exception =>
-                logger.warn("Failed to get AI explanation for pipeline error (explanation is best-effort, continuing without it)", e)
-                null
         }
     }
 }

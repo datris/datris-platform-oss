@@ -293,10 +293,20 @@
             <span class="log-error-hint" *ngIf="log.error">error</span>
             <span class="material-icons log-expand">{{ log._expanded ? 'expand_less' : 'expand_more' }}</span>
           </div>
+          <!-- AI fix-suggestion headline: visible without expanding the entry -->
+          <div class="log-ai-summary" *ngIf="log.aiSummary">💡 {{ log.aiSummary }}</div>
           <div class="log-detail" *ngIf="log._expanded">
             <div class="log-detail-row" *ngIf="log.error">
               <span class="log-detail-label">Error</span>
               <span class="log-detail-value log-error-text">{{ log.error }}</span>
+            </div>
+            <div class="log-detail-row" *ngIf="log.aiDiagnosis">
+              <span class="log-detail-label">Diagnosis</span>
+              <span class="log-detail-value">{{ log.aiDiagnosis }}</span>
+            </div>
+            <div class="log-detail-row" *ngIf="log.aiSuggestion">
+              <span class="log-detail-label">Suggested Fix</span>
+              <span class="log-detail-value">{{ log.aiSuggestion }}</span>
             </div>
             <div class="log-detail-row" *ngIf="log.logs">
               <span class="log-detail-label">Script Output</span>

@@ -15,5 +15,11 @@ case class TapRunLog(
     error: String = null,
     mode: String = "test",
     durationMs: Long = 0,
-    publisherToken: String = null
+    publisherToken: String = null,
+    // AI fix suggestion, filled in after the retry ladder is exhausted on a
+    // cron failure. summary is a one-line headline for list rows; diagnosis +
+    // suggestion carry the full explanation for the expanded view.
+    aiSummary: String = null,
+    aiDiagnosis: String = null,
+    aiSuggestion: String = null
 )

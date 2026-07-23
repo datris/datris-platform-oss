@@ -16,7 +16,13 @@ case class PipelineStatus(
     state: String,
     code: String,
     description: String,
-    epoch: Long
+    epoch: Long,
+    // AI fix suggestion, set only on the suggestion event written after a job
+    // failure. summary is a one-line headline; diagnosis + suggestion carry
+    // the full advisory text for the detail view.
+    aiSummary: String = null,
+    aiDiagnosis: String = null,
+    aiSuggestion: String = null
 )
 
 case class PipelineStatusTable(

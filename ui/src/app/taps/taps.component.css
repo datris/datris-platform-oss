@@ -1128,3 +1128,11 @@ tbody tr:last-child td {
 .script-btn:hover {
   color: var(--accent-cyan);
 }
+
+/* AI fix-suggestion headline under a failed run entry */
+.log-ai-summary {
+  padding: 2px 12px 8px 12px;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-muted);
+}

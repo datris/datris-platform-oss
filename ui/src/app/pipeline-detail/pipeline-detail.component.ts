@@ -36,6 +36,11 @@ export class PipelineDetailComponent implements OnInit, OnDestroy {
     navigator.clipboard.writeText(text);
   }
 
+  /** The AI fix-suggestion event for this run, if one was recorded. */
+  get suggestion(): PipelineStatusDetail | undefined {
+    return this.pipelineStatusDetails.find(d => !!d.aiDiagnosis || !!d.aiSuggestion);
+  }
+
   openHistory(): void {
     this.showHistory = true;
   }

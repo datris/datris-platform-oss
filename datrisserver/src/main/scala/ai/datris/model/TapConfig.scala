@@ -34,5 +34,16 @@ case class TapConfig(
     // Monotonic definition version. The live document is always the latest
     // version N; immutable snapshots 1..N live in <env>-tap-version. Defaults
     // to 1 so pre-versioning taps deserialize cleanly (absent field → 1).
-    version: Int = 1
+    version: Int = 1,
+    // What initiated the last real run: "cron" | "manual". Only cron-triggered
+    // failures are auto-retried; a manual run stamps this and stops the retry
+    // ladder (the user is at the wheel). Absent on pre-existing docs → null →
+    // never auto-retried until their next run stamps it.
+    lastRunTrigger: String = null,
+    // True only when the failed run provably fed nothing downstream (script
+    // errored before any pipeline submission), so a re-run cannot double-write.
+    lastRunRetrySafe: Boolean = false,
+    // Consecutive automatic retries since the last successful run. Reset to 0
+    // on success/no_records; capped by cronRetryCap.
+    retryCount: Int = 0
 )

@@ -33,21 +33,31 @@
         </tr>
       </thead>
       <tbody>
-        <tr *ngFor="let item of pipelines" (click)="onRowClick(item.pipelineToken, item.pipeline)">
-          <td>{{ item.pipeline }}</td>
-          <td>{{ item.process }}</td>
-          <td>{{ item.startTime }}</td>
-          <td>{{ item.endTime }}</td>
-          <td>{{ item.totalTime }}</td>
-          <td>
-            <span class="status-pill"
-              [class.status-completed]="item.status === 'completed' || item.status === 'success'"
-              [class.status-error]="item.status === 'error' || item.status === 'failed'"
-              [class.status-processing]="item.status === 'processing' || item.status === 'running'"
-              [class.status-pending]="item.status === 'pending' || item.status === 'queued'"
-            >{{ item.status }}</span>
-          </td>
-        </tr>
+        <ng-container *ngFor="let item of pipelines">
+          <tr (click)="onRowClick(item.pipelineToken, item.pipeline)">
+            <td>{{ item.pipeline }}</td>
+            <td>{{ item.process }}</td>
+            <td>{{ item.startTime }}</td>
+            <td>{{ item.endTime }}</td>
+            <td>{{ item.totalTime }}</td>
+            <td>
+              <span class="status-pill"
+                [class.status-completed]="item.status === 'completed' || item.status === 'success'"
+                [class.status-error]="item.status === 'error' || item.status === 'failed'"
+                [class.status-processing]="item.status === 'processing' || item.status === 'running'"
+                [class.status-pending]="item.status === 'pending' || item.status === 'queued'"
+              >{{ item.status }}</span>
+            </td>
+          </tr>
+          <!-- AI fix-suggestion headline: visible in the list without a click;
+               full diagnosis lives in the run detail. -->
+          <tr class="ai-summary-row" *ngIf="(item.status === 'error' || item.status === 'failed') && item.aiSummary"
+              (click)="onRowClick(item.pipelineToken, item.pipeline)">
+            <td colspan="6">
+              <span class="ai-summary-text">💡 {{ item.aiSummary }}</span>
+            </td>
+          </tr>
+        </ng-container>
       </tbody>
     </table>
   </div>

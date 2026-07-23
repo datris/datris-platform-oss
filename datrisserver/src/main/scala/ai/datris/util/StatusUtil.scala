@@ -80,7 +80,22 @@ class StatusUtil {
         send(state, "error", description)
     }
 
-    private def send(state: String, code: String, description: String): Unit = {
+    /** Record an AI fix suggestion for a failed job. Writes a normal info event
+      * whose description carries the readable text (so existing detail views
+      * show it unchanged) plus the structured fields, and stamps the one-line
+      * summary onto the job's summary row for the Ops → Ingestion list. */
+    def suggestion(fix: FixSuggestion): Unit = {
+        if (fix == null) return
+        val description = {
+            val sb = new StringBuilder("AI Suggested Fix: " + fix.summary)
+            if (fix.diagnosis != null) sb.append("\nDiagnosis: ").append(fix.diagnosis)
+            if (fix.suggestion != null) sb.append("\nSuggested fix: ").append(fix.suggestion)
+            sb.toString
+        }
+        send("end", "info", description, fix)
+    }
+
+    private def send(state: String, code: String, description: String, fix: FixSuggestion = null): Unit = {
         state match {
             case "begin" | "processing" | "end" =>
             case _ => throw new InvalidParameterException("Invalid state. State must be one of the following: begin, processing, end")
@@ -93,7 +108,7 @@ class StatusUtil {
         val status =
             Status(processName.getOrElse(""), publisherToken.getOrElse(""), pipelineToken.getOrElse(""), filename.getOrElse(""), state, code, description)
 
-        writeToNoSQLDb(status)
+        writeToNoSQLDb(status, fix)
 
         // Write to the logger
         val message = pipelineToken.getOrElse("") + ": " + description
@@ -110,7 +125,7 @@ class StatusUtil {
         }
     }
 
-    private def writeToNoSQLDb(status: Status): Unit = {
+    private def writeToNoSQLDb(status: Status, fix: FixSuggestion = null): Unit = {
         val gson = new Gson
         val nowTimestamp = new Timestamp(new Date().getTime)
         val nowInMillis = new Timestamp(new Date().getTime).getTime
@@ -182,7 +197,10 @@ class StatusUtil {
                 // one (e.g. an intermediate "processing" status from a loader emitted
                 // before JobRunner records the final count).
                 if (this.recordCount > 0) this.recordCount else pipelineStatusSummary.recordCount,
-                this.dataType.orElse(Option(pipelineStatusSummary.dataType)).orNull
+                this.dataType.orElse(Option(pipelineStatusSummary.dataType)).orNull,
+                // Preserve a previously stamped suggestion headline unless this
+                // event carries a fresh one.
+                if (fix != null) fix.summary else pipelineStatusSummary.aiSummary
             )
 
             NoSQLDbUtil.updateItemJSON(
@@ -208,7 +226,8 @@ class StatusUtil {
                 "0 seconds",
                 "processing",
                 this.recordCount,
-                this.dataType.orNull
+                this.dataType.orNull,
+                if (fix != null) fix.summary else null
             )
 
             NoSQLDbUtil.putItemJSON(
@@ -234,7 +253,10 @@ class StatusUtil {
             status.state,
             status.code,
             status.description,
-            nowInMillis
+            nowInMillis,
+            aiSummary = if (fix != null) fix.summary else null,
+            aiDiagnosis = if (fix != null) fix.diagnosis else null,
+            aiSuggestion = if (fix != null) fix.suggestion else null
         )
 
         // Top-level `publisher_token` is the indexed read path used by

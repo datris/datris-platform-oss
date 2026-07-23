@@ -17,7 +17,11 @@ case class PipelineStatusSummary(
     totalTime: String,
     status: String,
     recordCount: Int = 0,
-    dataType: String = null
+    dataType: String = null,
+    // One-line AI fix-suggestion headline for failed jobs, so the Ops →
+    // Ingestion list can show it inline without a click-through. Full
+    // diagnosis/suggestion live on the PipelineStatus suggestion event.
+    aiSummary: String = null
 )
 
 case class PipelineStatusSummaryTable(

@@ -12,6 +12,7 @@ export interface PipelineStatus {
   status: string;
   recordCount?: number;
   dataType?: string;
+  aiSummary?: string;
 }
 
 export interface PipelineStatusDetail {
@@ -24,6 +25,9 @@ export interface PipelineStatusDetail {
   state: string;
   code: string;
   description: string;
+  aiSummary?: string;
+  aiDiagnosis?: string;
+  aiSuggestion?: string;
 }
 
 @Injectable({

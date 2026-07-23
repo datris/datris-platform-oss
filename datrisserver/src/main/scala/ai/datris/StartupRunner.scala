@@ -124,6 +124,17 @@ class StartupRunner extends ApplicationRunner {
     @Value("${tapScriptTimeoutSeconds:300}")
     var tapScriptTimeoutSeconds: Int = _
 
+    // Automatic retry of failed cron-triggered tap runs (transient failures
+    // self-clear; only runs that fed nothing downstream are retried).
+    @Value("${cron.retry.enabled:true}")
+    var cronRetryEnabled: Boolean = _
+
+    @Value("${cron.retry.cap:3}")
+    var cronRetryCap: Int = _
+
+    @Value("${cron.retry.backoffMinutes:5,15}")
+    var cronRetryBackoffMinutes: String = _
+
     // Tap script output ceiling. Guards the JVM from buffering massive script
     // output and OOM'ing the server; the agent sees an actionable error and
     // can retry with a smaller chunk (e.g., shorter date window).
@@ -250,7 +261,10 @@ class StartupRunner extends ApplicationRunner {
             useUserAuth = useUserAuth,
             userTableName = environment + "-user",
             userSessionTableName = environment + "-user-session",
-            versionCap = versionCap
+            versionCap = versionCap,
+            cronRetryEnabled = cronRetryEnabled,
+            cronRetryCap = cronRetryCap,
+            cronRetryBackoffMinutes = cronRetryBackoffMinutes
         )
 
         DatrisEnvironment.init(pipelineEnvironment)
