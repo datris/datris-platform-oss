@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.{DatrisEnvironment, User, UserContext}
-import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
+import jakarta.servlet.http.{Cookie, HttpServletRequest, HttpServletResponse}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Component
@@ -44,6 +44,17 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
 
         val userOpt = UserContext.get()
         if (userOpt.isEmpty) {
+            // A stale session cookie means this is a browser whose session
+            // expired or was revoked — NOT a programmatic caller (those never
+            // send the cookie). Hard 401 and clear the cookie so the UI's
+            // auth-error interceptor returns the user to the login screen on
+            // the next request instead of the page silently degrading to the
+            // anonymous paths below. Applies even alongside an x-api-key: a
+            // dead session must force re-login, not fall back to a key.
+            if (request.getAttribute(SessionAuthenticator.StaleSessionAttribute) != null) {
+                response.addCookie(expiredSessionCookie())
+                return reject(response, HttpStatus.UNAUTHORIZED, """{"error":"Session expired"}""")
+            }
             // No session — programmatic / service-to-service path (CLI, MCP server, etc).
             // x-api-key is validated by APIKeyValidator inside each controller; we just
             // let the request through here.
@@ -73,6 +84,17 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                 else if (WriteRoles.contains(user.role)) true
                 else reject(response, HttpStatus.FORBIDDEN, """{"error":"Read-only role"}""")
         }
+    }
+
+    // Mirrors AuthAPIController.buildSessionCookie's attributes with maxAge=0.
+    private def expiredSessionCookie(): Cookie = {
+        val cookie = new Cookie("datris-session", "")
+        cookie.setHttpOnly(true)
+        cookie.setSecure(false)
+        cookie.setPath("/")
+        cookie.setMaxAge(0)
+        cookie.setAttribute("SameSite", "Strict")
+        cookie
     }
 
     private def reject(response: HttpServletResponse, status: HttpStatus, body: String): Boolean = {

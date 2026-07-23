@@ -15,6 +15,15 @@ import org.springframework.web.servlet.HandlerInterceptor
   * to UserContext for the request. Does NOT reject unauthenticated requests on its
   * own — that's `RoleEnforcementInterceptor`'s job, since some endpoints are public
   * (login, version) and others tolerate either a session or an x-api-key. */
+object SessionAuthenticator {
+    /** Request attribute set when the request carried a session cookie that no
+      * longer resolves to a live session. Only a browser whose session expired
+      * (or was revoked) can be in this state — programmatic callers never send
+      * the cookie — so RoleEnforcementInterceptor turns it into a hard 401
+      * instead of letting the request degrade to the anonymous legacy path. */
+    val StaleSessionAttribute = "datris.staleSession"
+}
+
 @Component
 class SessionAuthenticator extends HandlerInterceptor {
 
@@ -26,8 +35,11 @@ class SessionAuthenticator extends HandlerInterceptor {
         val token = readCookie(request, SessionCookieName)
         if (token == null || token.isEmpty) return true
 
-        SessionStore.renew(token).foreach { session =>
-            UserStore.find(session.username).foreach(UserContext.set)
+        val session = SessionStore.renew(token)
+        if (session.isEmpty)
+            request.setAttribute(SessionAuthenticator.StaleSessionAttribute, java.lang.Boolean.TRUE)
+        session.foreach { s =>
+            UserStore.find(s.username).foreach(UserContext.set)
         }
         true
     }
