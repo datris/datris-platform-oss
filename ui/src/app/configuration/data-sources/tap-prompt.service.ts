@@ -19,6 +19,10 @@ export class TapPromptService {
     return this.http.get<TapPromptFragment[]>('/api/v1/tap-prompts');
   }
 
+  get(key: string): Observable<TapPromptFragment> {
+    return this.http.get<TapPromptFragment>(`/api/v1/tap-prompts/${encodeURIComponent(key)}`);
+  }
+
   save(fragment: TapPromptFragment) {
     return this.http.post('/api/v1/tap-prompts', fragment, { responseType: 'text' });
   }

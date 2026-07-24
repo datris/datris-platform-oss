@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, DestinationAvailabilityUtil, MCPClient, SecretsUtil}
+import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, DestinationAvailabilityUtil, MCPClient, SecretsUtil, TapPromptInjector}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -305,6 +305,9 @@ class AssistantAPIController {
     }
 
     private def buildSystemPrompt(workflowReference: String, tenantEnv: String): String = {
+        // Empty when no registry is configured — the prompt is then byte-identical
+        // to the pre-registry prompt (see plans/assistant-data-sources-registry.md).
+        val sourcesSection = TapPromptInjector.approvedSourcesSection()
         val sb = new StringBuilder
         if (workflowReference != null && workflowReference.nonEmpty) {
             sb.append(workflowReference)
@@ -451,6 +454,10 @@ class AssistantAPIController {
         sb.append(
             "- **Source selection is a scope question.** Treat the choice of API / library / data source the same way you treat the choice of scope: present the options briefly, then wait. Do NOT pick one for the user. Do NOT bake the source name into the tap name, pipeline name, or any other artifact until the user has chosen it explicitly.\n"
         )
+        if (sourcesSection.nonEmpty)
+            sb.append(
+                "- **Exception: the approved data-sources registry.** Sources listed under the \"Approved data sources\" section below are the user's own curated registry — offering them by name is not a training-data guess and is always allowed. Offer registry sources first when they cover the ask.\n"
+            )
         sb.append(
             "- **Partial answers are not full answers.** If you asked N clarifying questions and the user answered K of them, the remaining N-K are still pending. Repeat the unanswered ones in plain language and wait — do not infer them from context, the user's tone, or the most popular choice in your training data. Only proceed once every open question is closed or the user has explicitly told you to pick a default.\n"
         )
@@ -522,6 +529,7 @@ class AssistantAPIController {
             "- **Destructive operations gate**: NEVER call `delete_tap`, `delete_pipeline`, `delete_tap_secret`, or `update_secret` on an existing secret without explicit user confirmation in the chat. If the user asks to delete or overwrite something, restate what will be removed and ask the user to confirm before proceeding.\n"
         )
         sb.append("- When you finish, say so plainly in one or two sentences. The UI will surface clickable links to any tap or pipeline you created.\n")
+        sb.append(sourcesSection)
         sb.toString
     }
 

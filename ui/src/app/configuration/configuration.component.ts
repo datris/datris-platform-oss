@@ -4,7 +4,7 @@ import { ActivatedRoute } from '@angular/router';
 import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
 
-type ConfigTab = 'environment' | 'ai-providers' | 'users' | 'secrets' | 'keys';
+type ConfigTab = 'environment' | 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources';
 
 @Component({
   selector: 'app-configuration',
@@ -124,7 +124,7 @@ export class ConfigurationComponent implements OnInit {
     this.route.queryParamMap.subscribe(p => {
       const t = p.get('tab');
       if (t === 'environment' || t === 'ai-providers' ||
-          t === 'users' || t === 'secrets' || t === 'keys') {
+          t === 'users' || t === 'secrets' || t === 'keys' || t === 'data-sources') {
         this.activeTab = t;
       }
     });

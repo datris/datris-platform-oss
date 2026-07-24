@@ -99,7 +99,7 @@ object TapBrainstormer {
               |For free, no-auth sources, no credentials are needed — say so explicitly.
               |
               |Ordering of clarifying questions — IMPORTANT:
-              |1. If the user has not named a specific external data source and the data is NOT on Datris already, your FIRST follow-up MUST list 3-5 specific candidate sources (named APIs, datasets, or public services) so they can pick one. Mention whether each is free vs paid and whether each needs an API key. Do NOT ask about any other parameters yet — those questions are only useful once the model knows what API surface to write for.
+              |1. If the user has not named a specific external data source and the data is NOT on Datris already, your FIRST follow-up MUST list 3-5 specific candidate sources (named APIs, datasets, or public services) so they can pick one. When an "Approved data sources" registry section is present below and covers the ask, draw the candidates from the registry FIRST — add candidates from your own knowledge only when the registry has no coverage, and say when a candidate is outside the registry. Mention whether each is free vs paid and whether each needs an API key. Do NOT ask about any other parameters yet — those questions are only useful once the model knows what API surface to write for.
               |2. Once a source IS picked (or the user pointed at a Datris table), THEN drill into the remaining parameters one at a time. Ask whatever is most relevant to the chosen source — typically the set of entities or items to fetch, any time range, the specific fields wanted, and any filters.
               |3. Ask ONE focused clarifying question at a time. Be concise — 1-2 sentences per turn.
               |4. When you have enough information, tell the user the instruction is ready and they can proceed.
@@ -153,7 +153,7 @@ object TapBrainstormer {
             case _ => ""
         }
         val systemWithSearch = baseSystemPrompt + nativeFragment + AIUtil.renderInjectedContext(plan)
-        val systemPrompt = TapPromptInjector.augment(systemWithSearch, scanText)
+        val systemPrompt = TapPromptInjector.augment(systemWithSearch, scanText) + TapPromptInjector.approvedSourcesSection()
         val injectedPrompts = TapPromptInjector.matchKeys(scanText)
 
         val responseText = AIUtil.callAIWithMessages(
