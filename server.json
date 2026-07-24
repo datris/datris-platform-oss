@@ -7,12 +7,12 @@
     "url": "https://github.com/datris/datris-platform-oss",
     "source": "github"
   },
-  "version": "1.12.0",
+  "version": "1.12.1",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "datris-mcp-server",
-      "version": "1.12.0",
+      "version": "1.12.1",
       "transport": {
         "type": "stdio"
       },
@@ -35,7 +35,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "docker.io/datrisai/datris-mcp-server:1.12.0",
+      "identifier": "docker.io/datrisai/datris-mcp-server:1.12.1",
       "runtimeHint": "docker",
       "transport": {
         "type": "streamable-http",
