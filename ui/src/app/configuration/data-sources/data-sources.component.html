@@ -1,0 +1,41 @@
+<div class="data-sources-wrap">
+  <div>
+    <h2 class="section-title">Approved Data Sources</h2>
+    <p class="section-hint">
+      Curated registry of approved data sources. Injected into the Assistant and tap
+      brainstorming so the AI offers your sources first. One line per source: name,
+      endpoint, what it covers, auth style, and the existing secret name if any.
+    </p>
+  </div>
+
+  <div class="loading" *ngIf="loading">Loading…</div>
+
+  <ng-container *ngIf="!loading">
+    <div class="form-row">
+      <textarea class="form-input form-textarea" rows="12" [(ngModel)]="content"
+                placeholder="- NOAA NWS (api.weather.gov) &mdash; US weather/forecasts. Free, no key; User-Agent header required.
+- FRED (api.stlouisfed.org) &mdash; US economic time series. API key in tap secret `fred`.
+- Orders DB &mdash; internal Postgres read replica. Platform secret `orders-replica`."></textarea>
+      <p class="form-warning" *ngIf="lengthWarning">
+        This registry is added to every Assistant conversation — keep it a short list of
+        sources, not documentation. ({{ contentLength }} chars)
+      </p>
+    </div>
+
+    <div class="form-row form-row-inline">
+      <label class="form-check">
+        <input type="checkbox" [(ngModel)]="enabled" /> Inject into Assistant
+      </label>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn-primary" (click)="save()" [disabled]="saving || !dirty">
+        {{ saving ? 'Saving…' : 'Save' }}
+      </button>
+      <button class="btn-secondary" (click)="revert()" [disabled]="saving || !dirty">Revert</button>
+    </div>
+
+    <div class="success-message" *ngIf="success">{{ success }}</div>
+    <div class="error-message" *ngIf="error">{{ error }}</div>
+  </ng-container>
+</div>
