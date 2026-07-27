@@ -92,13 +92,22 @@ path "secret/*" {
 }
 EOF
 
-if ! VAULT_TOKEN="$SERVER_TOKEN_ID" vault token lookup >/dev/null 2>&1; then
+if VAULT_TOKEN="$SERVER_TOKEN_ID" vault token lookup >/dev/null 2>&1; then
+  # Token still valid — renew so its TTL is re-extended to the full period on
+  # every boot. Tokens minted before max_lease_ttl was raised to 87600h were
+  # clamped to a 768h TTL and would otherwise die a month after install.
+  vault token renew "$SERVER_TOKEN_ID" >/dev/null 2>&1 || true
+else
   echo "vault-bootstrap: creating datris server token (id=$SERVER_TOKEN_ID)..."
-  # Orphan + periodic so it survives reboots without a parent and is exempt from
-  # the system max-TTL. The 10-year period makes it effectively non-expiring on
-  # a long-running box without anyone renewing it — matching the old dev-mode
-  # root-token (which never expired). bootstrap also re-mints it on any restart
-  # if it's somehow missing, so this self-heals.
+  # An expired token's entry can linger until the expiration manager reaps it
+  # (which happens during the lease restore after the Vault restart that
+  # accompanies an upgrade). Revoke defensively so the re-mint below can't fail
+  # with "cannot create a token with a duplicate ID" on a live zombie entry.
+  vault token revoke "$SERVER_TOKEN_ID" >/dev/null 2>&1 || true
+  # Orphan + periodic so it survives reboots without a parent. The 10-year
+  # period, combined with max_lease_ttl=87600h in vault.hcl (the initial TTL is
+  # clamped to max_lease_ttl regardless of period) and the renew-on-boot above,
+  # makes it effectively non-expiring — matching the old dev-mode root-token.
   vault token create -id="$SERVER_TOKEN_ID" -policy=datris -orphan -period=87600h >/dev/null
 fi
 

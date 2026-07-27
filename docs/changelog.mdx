@@ -3,6 +3,13 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.12.2" description="July 27, 2026">
+  **Claude Opus 5 support, and a fix for a month-after-install credential expiry.**
+
+  - **Claude Opus 5.** Anthropic's newest model is fully supported and is now the recommended Anthropic model for chat and code generation — same price as Opus 4.8 with better results. Fresh installs default to it; existing installs keep their configured model.
+  - **Fix: internal credential expired a month after install.** An internal service credential was silently issued with a 32-day lifetime, after which restarting the platform could fail. Credentials are now long-lived and refreshed on every startup. Applies automatically on upgrade.
+</Update>
+
 <Update label="v1.12.1" description="July 24, 2026">
   **Curate the data sources your assistant recommends.**
 
