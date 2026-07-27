@@ -26,7 +26,9 @@ const FETCH_TIMEOUT_MS = 5000;
 const FALLBACK: ModelCatalog = {
   aiPrimary: {
     anthropic: [
-      { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (recommended)', recommended: true },
+      { value: 'claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
       { value: 'claude-fable-5', label: 'Claude Fable 5' },
       { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
@@ -43,7 +45,9 @@ const FALLBACK: ModelCatalog = {
   },
   codegen: {
     anthropic: [
-      { value: 'claude-opus-4-8', label: 'Claude Opus 4.8 (recommended)', recommended: true },
+      { value: 'claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'claude-fable-5', label: 'Claude Fable 5' },
       { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
       { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
