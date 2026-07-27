@@ -217,8 +217,8 @@ AI configuration is split into three independent slots, each pointing at its own
 | Property | Default | Description |
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
-| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the strongest available model — Anthropic gets `claude-opus-4-8`, OpenAI gets `gpt-5.5`. |
-| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest available model — Anthropic gets `claude-opus-4-8`, OpenAI gets `gpt-5.5`. |
+| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the strongest available model — Anthropic gets `claude-opus-5`, OpenAI gets `gpt-5.5`. |
+| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest available model — Anthropic gets `claude-opus-5`, OpenAI gets `gpt-5.5`. |
 | `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled TEI sidecar serving `BAAI/bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
 
 Each Vault secret is self-describing and looks like:
@@ -227,7 +227,7 @@ Each Vault secret is self-describing and looks like:
 vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-opus-4-8" \
+  model="claude-opus-5" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
@@ -239,9 +239,9 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AI_PROVIDER` | auto | Explicit provider pick (`anthropic` or `openai`) for the `ai-primary` and `codegen` slots. When unset, whichever API key is present wins (OpenAI wins ties). |
-| `ANTHROPIC_MODEL` | `claude-opus-4-8` | Model seeded into `oss/ai-primary` on the Anthropic path. |
+| `ANTHROPIC_MODEL` | `claude-opus-5` | Model seeded into `oss/ai-primary` on the Anthropic path. |
 | `OPENAI_MODEL` | `gpt-5.5` | Model seeded into `oss/ai-primary` on the OpenAI path. |
-| `CODEGEN_MODEL` | `claude-opus-4-8` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults respectively). |
+| `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults respectively). |
 | `EMBEDDING_PROVIDER` | follows provider | `openai`, `tei`, or `ollama`. When unset: `openai` when the AI provider is OpenAI, otherwise the bundled TEI sidecar. |
 | `EMBEDDING_MODEL` | provider default | `text-embedding-3-small` (openai), `BAAI/bge-m3` (tei), `bge-m3` (ollama). |
 | `EMBEDDING_ENDPOINT` | provider default | Endpoint override for the `tei` and `ollama` providers — useful when TEI or Ollama runs on a separate host. |

@@ -87,8 +87,8 @@ When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
-| `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-4-8` |
-| `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-4-8` |
+| `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-5` |
+| `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-5` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
 The `tei` service (HuggingFace Text Embeddings Inference) is part of `docker-compose.yml`. On first start it downloads `bge-m3` (~2.2 GB ONNX weights) into a persistent volume; subsequent restarts use the cached model.
@@ -112,9 +112,9 @@ The Configuration UI makes this easy — select **Ollama (if optional service en
 Override the seeded models by setting these in `.env`:
 
 ```bash
-ANTHROPIC_MODEL=claude-opus-4-8
+ANTHROPIC_MODEL=claude-opus-5
 OPENAI_MODEL=gpt-5.5
-CODEGEN_MODEL=claude-opus-4-8   # or gpt-5.5 if using OpenAI
+CODEGEN_MODEL=claude-opus-5   # or gpt-5.5 if using OpenAI
 ```
 
 ### Mix-and-match: Anthropic chat + OpenAI embeddings
@@ -181,7 +181,7 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
   vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-opus-4-8" \
+  model="claude-opus-5" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
@@ -241,7 +241,7 @@ OpenAI web search requires the **Responses API**. When the configured endpoint i
 **Highly recommended: Anthropic with the latest coding model for CodeGen.** Tap script generation, AI data quality rules, AI transformations, and NL→SQL all depend heavily on the model's coding ability — Claude produces dramatically better results than smaller or cheaper models. The same recommendation appears in the Configuration UI's CodeGen section and in `.env.example`.
 </Tip>
 
-CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot so they can run a different model than the general default. On a fresh install both slots seed the strongest available model — `gpt-5.5` with OpenAI, `claude-opus-4-8` with Anthropic — so code generation is at full quality out of the box. The separate slot is your cost-tuning lever: point `aiPrimary` at a cheaper model (e.g. `claude-sonnet-4-6`) for the chatty paths and keep the stronger model only on the calls that benefit from it.
+CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot so they can run a different model than the general default. On a fresh install both slots seed the strongest available model — `gpt-5.5` with OpenAI, `claude-opus-5` with Anthropic — so code generation is at full quality out of the box. The separate slot is your cost-tuning lever: point `aiPrimary` at a cheaper model (e.g. `claude-sonnet-4-6`) for the chatty paths and keep the stronger model only on the calls that benefit from it.
 
 | Feature | Uses codegen slot? |
 |---|---|
@@ -301,7 +301,7 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
   vault kv put secret/trial-acme/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-opus-4-8" \
+  model="claude-opus-5" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
