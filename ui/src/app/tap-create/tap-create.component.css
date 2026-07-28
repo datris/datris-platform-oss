@@ -1723,6 +1723,43 @@
   color: var(--text-primary, #f0f4ff);
 }
 
+.drift-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  border-radius: 8px;
+  background: rgba(0, 180, 255, 0.08);
+  border: 1px solid rgba(0, 180, 255, 0.45);
+  color: var(--text-primary, #f0f4ff);
+}
+
+.drift-banner .material-icons {
+  color: #00b4ff;
+  font-size: 22px;
+  margin-top: 2px;
+}
+
+.drift-banner .banner-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #00b4ff;
+  margin-bottom: 4px;
+}
+
+.drift-banner .banner-body {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary, #a0aec0);
+}
+
+.drift-banner .secondary-btn {
+  margin-left: auto;
+  white-space: nowrap;
+  align-self: center;
+}
+
 .script-missing-banner .banner-body em {
   font-style: italic;
   color: var(--text-primary, #f0f4ff);

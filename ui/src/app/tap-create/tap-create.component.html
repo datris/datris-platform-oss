@@ -19,6 +19,18 @@
     </div>
   </div>
 
+  <div class="drift-banner" *ngIf="driftDetected">
+    <span class="material-icons">cloud_sync</span>
+    <div>
+      <div class="banner-title">This script was changed in {{ repoName }} since the tap was last saved.</div>
+      <div class="banner-body">
+        The repository's {{ driftHeadSha ? '(' + driftHeadSha.substring(0, 9) + ')' : '' }} version differs from the
+        commit this tap is pinned to. Load it to review and save, or keep editing your local version.
+      </div>
+    </div>
+    <button class="secondary-btn" (click)="loadDriftedScript()">Load latest</button>
+  </div>
+
   <!-- Step indicator. The 5th dot only exists once a pipeline is linked,
        since step 5 (Run the tap) is only meaningful in that case. -->
   <div class="steps">
@@ -107,6 +119,15 @@
             </div>
           </label>
         </div>
+      </div>
+
+      <div class="form-group" *ngIf="repoConfigured && !isEditMode">
+        <label class="form-label">Script Storage</label>
+        <select class="form-select" [(ngModel)]="storageChoice">
+          <option value="github">GitHub repository ({{ repoName }}) — default</option>
+          <option value="minio">Built-in storage</option>
+        </select>
+        <p class="form-hint">Where this tap's Python script lives. Repository scripts get a commit on every save and can be edited externally.</p>
       </div>
 
       <div class="form-group">
@@ -275,6 +296,10 @@
     <!-- Step 2: Edit & Test -->
     <div *ngIf="step === 2">
       <h2 class="step-title">Edit & Test</h2>
+      <p class="step-desc" *ngIf="scriptStorage === 'github'">
+        Stored in {{ repoName }} at {{ scriptRepoPath }}<span *ngIf="scriptCommitSha"> ({{ scriptCommitSha.substring(0, 9) }})</span>
+        — <a href="javascript:void(0)" (click)="checkDrift()">check for external edits</a>
+      </p>
       <p class="step-desc" *ngIf="!bringYourOwnCode">Review and edit the generated script, manage packages, then test it.</p>
       <p class="step-desc" *ngIf="bringYourOwnCode">Review and edit your script, manage packages, then test it.</p>
 

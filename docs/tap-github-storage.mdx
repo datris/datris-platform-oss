@@ -1,0 +1,123 @@
+---
+title: "GitHub Script Storage"
+description: "Store tap Python scripts in a GitHub repository — real commits, PR review, and editing from your own IDE"
+---
+
+By default, tap scripts live in Datris's built-in object storage. You can instead connect a
+GitHub repository per environment: every script save becomes a commit, runs are pinned to the
+exact commit they were saved at, and your team can review, blame, and edit tap code with normal
+git tooling.
+
+<Note>
+Repository storage is **opt-in** and coexists with built-in storage. Existing taps stay where
+they are until you move them; you can run a mix of both indefinitely, and move any tap back to
+built-in storage at any time.
+</Note>
+
+## What you get
+
+- **A commit per save** — from the tap wizard, the Assistant, or the API. Commit messages are
+  templated (e.g. `tap(weather-forecast): update via Datris`).
+- **Runs pinned to a commit** — a scheduled run executes exactly the version that was saved,
+  served from a local cache, so cron runs make no GitHub API calls and keep working if GitHub
+  is unreachable.
+- **External editing** — commit changes from your IDE; Datris detects the drift when the tap is
+  opened and offers to load the latest version.
+- **Conflict protection** — if the script changed in the repository after you opened it, saving
+  is rejected with a clear message instead of silently overwriting.
+
+## Setup
+
+### 1. Create (or pick) a repository
+
+Any repository works — private is typical. Scripts are written to
+`<path prefix><tap-name>.py` (default `taps/<tap-name>.py`) on the branch you configure.
+
+### 2. Create a fine-grained personal access token
+
+A PAT is created under a GitHub **user account** and scoped to repositories — you don't add it
+to the repository itself. Datris needs **Contents: Read and write** on just the one repo:
+
+1. On GitHub, click your avatar → **Settings** → **Developer settings** (bottom of the left
+   sidebar) → **Personal access tokens** → **Fine-grained tokens** → **Generate new token**.
+2. Set a name and an expiration.
+3. **Resource owner**: pick the user or organization that owns the target repository.
+4. **Repository access**: choose *Only select repositories* and pick the repo.
+5. Under **Permissions → Repository permissions**, set **Contents: Read and write**
+   (**Metadata: Read** is added automatically as a mandatory permission).
+6. Generate the token and copy it immediately — GitHub shows it only once.
+
+<Warning>
+**For organization-owned repositories**: the org must allow fine-grained PATs under org
+**Settings → Third-party Access → Personal access tokens**, and some orgs require each token to
+be approved. If the connection test fails with an access error on an org repo, this is the
+first thing to check.
+</Warning>
+
+<Note>
+Fine-grained PATs **always expire**. When the token lapses, saves and non-cached reads for
+repository-backed taps fail until you update the secret with a fresh token. Put the expiry
+date somewhere you'll see it.
+</Note>
+
+### 3. Connect it in Datris
+
+In **Configuration → Code Repository**:
+
+1. Enter the repository (`owner/repo`), branch, and path prefix.
+2. Under **Token secret**, click **Create one**, name it (e.g. `github`), and paste the token.
+   This stores it in the secrets store with the shape Datris expects — a `token` field, tagged
+   `_type=repo_token`.
+3. Click **Test connection** — it verifies the token can reach the repository, has push
+   access, and that the branch exists.
+4. Check **Enable repository storage** and **Save**. Saving re-validates the connection.
+
+Once enabled, **new** tap scripts default to the repository — including taps the Assistant
+builds. Existing taps are never moved automatically.
+
+<Tip>
+Creating the token secret manually in the Secrets tab also works, but two details matter: the
+field holding the PAT must be named `token`, and the secret must be tagged `_type=repo_token`
+or it won't appear in the Token secret dropdown. The **Create one** flow handles both.
+</Tip>
+
+### GitHub Enterprise Server
+
+Set **API base URL** to your instance's API endpoint (e.g. `https://ghes.example.com/api/v3`).
+Leave it at `https://api.github.com` for github.com.
+
+## Day-to-day behavior
+
+| Action | What happens in the repository |
+|---|---|
+| Save a script (wizard, Assistant, or API) | A commit on the configured branch; the tap pins to that commit |
+| Run a tap (manual or cron) | Nothing — the pinned commit is read from a local cache |
+| Edit the file directly in GitHub | Datris shows a drift banner when the tap is opened, with a **Load latest** button |
+| Save when the file changed externally | Rejected with a conflict message — pull the latest, reapply your edits, save again |
+| Delete the tap | A delete commit removes the file from the branch head; **git history is preserved** |
+
+Run history records the commit SHA each run executed, so any run can be traced to the exact
+script version in your repository.
+
+## Moving taps between backends
+
+In the **Taps** list, each row shows a **GitHub** badge when its script is repository-backed.
+The cloud action on the row moves a tap's script in either direction:
+
+- **Move to GitHub** — commits the current script to the repository and re-points the tap.
+- **Move to built-in storage** — copies the script back to object storage. The repository file
+  is left in place (remove it manually if you want it gone).
+
+Both directions are recorded as a new tap version, so the move itself is auditable and
+reversible.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Token secret dropdown is empty | The secret isn't tagged `_type=repo_token` — recreate it via **Create one** |
+| Test connection: token rejected | Token expired or revoked — generate a new PAT and update the secret |
+| Test connection: cannot push | Token is missing **Contents: Read and write** on this repository |
+| Test connection: access error on an org repo | Org policy blocks fine-grained PATs, the token awaits approval, or SSO authorization is required |
+| New taps still land in built-in storage | **Enable repository storage** isn't checked and saved |
+| Scheduled runs keep working while GitHub is down | Expected — runs read the pinned commit from the local cache |

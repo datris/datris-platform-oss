@@ -145,7 +145,17 @@ components:
           description: Plain-English instruction used to generate the script
         scriptPath:
           type: string
-          description: MinIO path of the generated Python script
+          description: MinIO path of the generated Python script (built-in storage)
+        scriptStorage:
+          type: string
+          enum: [minio, github]
+          description: Script storage backend. Absent or `minio` = built-in object storage; `github` = the tenant's configured code repository.
+        scriptRepoPath:
+          type: string
+          description: Repo-relative script path when `scriptStorage` is `github`
+        scriptCommitSha:
+          type: string
+          description: Commit SHA the script is pinned to when `scriptStorage` is `github`; runs read exactly this commit
         targetPipeline:
           type: string
           description: Pipeline this tap feeds into (may be empty for unattached taps)
@@ -236,6 +246,41 @@ components:
         durationMs:
           type: integer
           format: int64
+        scriptCommitSha:
+          type: string
+          description: Repo-backed taps only — the commit the run's script was read at
+
+    CodeRepoConfig:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Always `default` — one repository per tenant
+        provider:
+          type: string
+          description: Repository provider (`github`)
+        repo:
+          type: string
+          description: Repository in `owner/repo` form
+        apiBaseUrl:
+          type: string
+          description: API endpoint; override for GitHub Enterprise Server (e.g. `https://ghes.example.com/api/v3`)
+        branch:
+          type: string
+        pathPrefix:
+          type: string
+          description: Script path becomes `{pathPrefix}{tapName}.py`
+        authSecretName:
+          type: string
+          description: Vault secret (tagged `_type=repo_token`) holding a `token` field. The token itself is never returned by the API.
+        commitAuthor:
+          type: string
+          description: Commit author in `Name <email>` form
+        commitMessageTemplate:
+          type: string
+          description: "Commit message template. Tokens: {name}, {action}, {user}"
+        enabled:
+          type: boolean
 
     TapRunResult:
       type: object
@@ -1849,7 +1894,12 @@ paths:
     post:
       tags: [Taps]
       summary: Store a tap script
-      description: Stores a (typically hand-edited) Python script in object storage and, if the tap already exists, updates its `scriptPath` to point at the new object.
+      description: >-
+        Stores a (typically hand-edited) Python script in the resolved storage
+        backend and, if the tap already exists, updates its script reference.
+        Backend resolution: explicit `storage` in the body, else the existing
+        tap's backend, else the tenant default (the code repository when one is
+        enabled, built-in storage otherwise).
       requestBody:
         required: true
         content:
@@ -1866,9 +1916,19 @@ paths:
                 oldScriptPath:
                   type: string
                   description: Path of a previous script to delete after the new one is written
+                storage:
+                  type: string
+                  enum: [minio, github]
+                  description: Explicit storage backend override
+                baseCommitSha:
+                  type: string
+                  description: >-
+                    Repo storage only — the commit the editor loaded the script
+                    at. If the file changed in the repository since, the write
+                    is rejected with 409 instead of overwriting.
       responses:
         '200':
-          description: Storage path of the saved script
+          description: Reference of the saved script (fields depend on the backend)
           content:
             application/json:
               schema:
@@ -1876,8 +1936,167 @@ paths:
                 properties:
                   scriptPath:
                     type: string
+                    nullable: true
+                  storage:
+                    type: string
+                    enum: [minio, github]
+                  scriptRepoPath:
+                    type: string
+                    nullable: true
+                  scriptCommitSha:
+                    type: string
+                    nullable: true
+        '409':
+          description: The script changed in the repository since `baseCommitSha` — pull the latest, reapply edits, and retry
         '500':
           description: Error (including missing tapName or script)
+
+  /api/v1/tap/script/pull:
+    post:
+      tags: [Taps]
+      summary: Pull a repo-backed tap script from its branch head
+      description: >-
+        Re-reads a repository-stored tap script at the configured branch head
+        and reports drift against the tap's pinned commit. With `apply=true`,
+        also advances the pin (a versioned edit).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tapName]
+              properties:
+                tapName:
+                  type: string
+                apply:
+                  type: string
+                  enum: ['true', 'false']
+                  description: Advance the tap's pinned commit to the branch head when drifted
+      responses:
+        '200':
+          description: Drift status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  found:
+                    type: boolean
+                  drifted:
+                    type: boolean
+                  headCommitSha:
+                    type: string
+                  pinnedCommitSha:
+                    type: string
+                  script:
+                    type: string
+                    description: Present only when drifted — the branch-head source
+                  applied:
+                    type: boolean
+        '500':
+          description: Error (tap not found, or tap is not repository-backed)
+
+  /api/v1/tap/migrate-storage:
+    post:
+      tags: [Taps]
+      summary: Move a tap script between storage backends
+      description: >-
+        Reads the script from its current backend, writes it to the target
+        (built-in object storage or the code repository), and stamps the tap
+        as a versioned edit. Idempotent when the tap is already on the target.
+        Built-in objects are never deleted on migrate-out — version snapshots
+        pin them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tapName, target]
+              properties:
+                tapName:
+                  type: string
+                target:
+                  type: string
+                  enum: [github, minio]
+      responses:
+        '200':
+          description: The migrated tap config
+        '400':
+          description: Unknown tap, unreadable script, or invalid target
+        '500':
+          description: Error
+
+  /api/v1/code-repo:
+    get:
+      tags: [Code repository]
+      summary: Get the tenant code repository configuration
+      description: Returns the code repository connection used for tap script storage. The auth token itself lives in Vault and is never returned.
+      responses:
+        '200':
+          description: Current configuration (defaults when none saved yet)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CodeRepoConfig'
+        '500':
+          description: Error
+    put:
+      tags: [Code repository]
+      summary: Save the tenant code repository configuration
+      description: >-
+        Validates the connection when `enabled` (token can push, branch
+        exists — verified via the repository `permissions` block, no probe
+        commits) and persists the configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRepoConfig'
+      responses:
+        '200':
+          description: The saved configuration
+        '400':
+          description: Validation failed (bad repo, token lacks push access, missing branch, or missing token secret)
+        '500':
+          description: Error
+
+  /api/v1/code-repo/test:
+    post:
+      tags: [Code repository]
+      summary: Test a code repository connection
+      description: Round-trip check for the posted configuration — repository reachable, token has push access, branch exists. Always returns 200 with an `ok` flag.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRepoConfig'
+      responses:
+        '200':
+          description: Test outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  canPush:
+                    type: boolean
+                  branchExists:
+                    type: boolean
+                  defaultBranch:
+                    type: string
+                  branches:
+                    type: array
+                    items:
+                      type: string
+                  error:
+                    type: string
+                    description: Present when `ok` is false
 
   /api/v1/tap/review:
     post:

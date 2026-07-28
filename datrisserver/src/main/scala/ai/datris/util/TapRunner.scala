@@ -70,7 +70,18 @@ object TapRunner {
                     )
                     TapConfigIO.write(failedConfig)
                 }
-                writeRunLog(tapConfig.name, now, "failure", result.recordCount, result.dataType, result.logs, result.error, mode, durationMs)
+                writeRunLog(
+                    tapConfig.name,
+                    now,
+                    "failure",
+                    result.recordCount,
+                    result.dataType,
+                    result.logs,
+                    result.error,
+                    mode,
+                    durationMs,
+                    scriptCommitSha = tapConfig.scriptCommitSha
+                )
                 return result
             }
 
@@ -100,7 +111,18 @@ object TapRunner {
                         )
                         TapConfigIO.write(failedConfig)
                     }
-                    writeRunLog(tapConfig.name, now, "failure", 0, result.dataType, result.logs, missingMsg, mode, durationMs)
+                    writeRunLog(
+                        tapConfig.name,
+                        now,
+                        "failure",
+                        0,
+                        result.dataType,
+                        result.logs,
+                        missingMsg,
+                        mode,
+                        durationMs,
+                        scriptCommitSha = tapConfig.scriptCommitSha
+                    )
                     return result.copy(error = missingMsg)
                 }
                 // Script ran cleanly but returned nothing. This is a legitimate
@@ -123,7 +145,18 @@ object TapRunner {
                     )
                     TapConfigIO.write(noRecordsConfig)
                 }
-                writeRunLog(tapConfig.name, now, "no_records", 0, result.dataType, result.logs, null, mode, durationMs)
+                writeRunLog(
+                    tapConfig.name,
+                    now,
+                    "no_records",
+                    0,
+                    result.dataType,
+                    result.logs,
+                    null,
+                    mode,
+                    durationMs,
+                    scriptCommitSha = tapConfig.scriptCommitSha
+                )
                 return result
             }
 
@@ -154,7 +187,19 @@ object TapRunner {
 
             val tokensOut = if (pipelineTokens.isEmpty) null else pipelineTokens
             val pubOut = if (tokensOut == null) null else publisherToken
-            writeRunLog(tapConfig.name, now, "success", processedCount, result.dataType, result.logs, null, mode, durationMs, pubOut)
+            writeRunLog(
+                tapConfig.name,
+                now,
+                "success",
+                processedCount,
+                result.dataType,
+                result.logs,
+                null,
+                mode,
+                durationMs,
+                pubOut,
+                scriptCommitSha = tapConfig.scriptCommitSha
+            )
             result.copy(publisherToken = pubOut, pipelineTokens = tokensOut)
         } catch {
             case e: Exception =>
@@ -174,7 +219,7 @@ object TapRunner {
                     )
                     TapConfigIO.write(failedConfig)
                 }
-                writeRunLog(tapConfig.name, now, "failure", 0, null, null, e.getMessage, mode, durationMs)
+                writeRunLog(tapConfig.name, now, "failure", 0, null, null, e.getMessage, mode, durationMs, scriptCommitSha = tapConfig.scriptCommitSha)
                 TapScriptResult(null, 0, e.getMessage)
         }
     }
@@ -189,10 +234,12 @@ object TapRunner {
         error: String,
         mode: String,
         durationMs: Long,
-        publisherToken: String = null
+        publisherToken: String = null,
+        scriptCommitSha: String = null
     ): Unit = {
         try {
-            val log = TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, mode, durationMs, publisherToken)
+            val log =
+                TapRunLog(tapName, runTime, status, recordCount, dataType, logs, error, mode, durationMs, publisherToken, scriptCommitSha = scriptCommitSha)
             val gson = new Gson
             val key = tapName + "|" + runTime
             // Stamp top-level created_at so the Ops activity dashboard can do an

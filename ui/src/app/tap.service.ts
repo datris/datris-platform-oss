@@ -36,8 +36,13 @@ export class TapService {
     return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null, secretName: secretName || null, tapType: tapType || 'structured' });
   }
 
-  storeScript(tapName: string, script: string, oldScriptPath?: string): Observable<any> {
-    return this.http.post<any>('/api/v1/tap/script', { tapName, script, oldScriptPath: oldScriptPath || null });
+  storeScript(tapName: string, script: string, oldScriptPath?: string, storage?: string, baseCommitSha?: string): Observable<any> {
+    return this.http.post<any>('/api/v1/tap/script', {
+      tapName, script,
+      oldScriptPath: oldScriptPath || null,
+      storage: storage || null,
+      baseCommitSha: baseCommitSha || null
+    });
   }
 
   testTap(config: any): Observable<any> {

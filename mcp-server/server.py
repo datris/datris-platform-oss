@@ -3055,9 +3055,15 @@ def _dispatch(name: str, args: dict) -> str:
         caller_packages = args.get("packages")
 
         script_path = None
+        script_storage = None
+        script_repo_path = None
+        script_commit_sha = None
         packages = caller_packages
 
-        # Mode 1: User-provided script — store directly
+        # Mode 1: User-provided script — store directly. The server resolves the
+        # storage backend (built-in object store, or the tenant's code repository
+        # when one is configured); carry whichever reference it reports into the
+        # tap config below or the saved tap would have no script pointer.
         if script:
             store_result = _call("post", "/api/v1/tap/script", json={"tapName": tap_name, "script": script})
             try:
@@ -3065,6 +3071,9 @@ def _dispatch(name: str, args: dict) -> str:
                 if "error" in store_data:
                     return store_result
                 script_path = store_data.get("scriptPath")
+                script_storage = store_data.get("storage")
+                script_repo_path = store_data.get("scriptRepoPath")
+                script_commit_sha = store_data.get("scriptCommitSha")
             except (json.JSONDecodeError, TypeError):
                 return json.dumps({"error": f"Script storage failed: {store_result[:200]}"})
 
@@ -3084,6 +3093,28 @@ def _dispatch(name: str, args: dict) -> str:
             except (json.JSONDecodeError, TypeError):
                 return json.dumps({"error": f"Script generation failed: {gen_result[:200]}"})
 
+            # /tap/generate always writes to built-in storage. When the tenant
+            # has a code repository enabled, the generated script is final (not
+            # a wizard iteration), so re-store it through /tap/script — which
+            # resolves to the repository — and carry that reference instead.
+            gen_script = gen_data.get("script")
+            if gen_script:
+                try:
+                    repo_cfg = json.loads(_call("get", "/api/v1/code-repo"))
+                except (json.JSONDecodeError, TypeError):
+                    repo_cfg = {}
+                if repo_cfg.get("enabled") and repo_cfg.get("repo"):
+                    store_result = _call("post", "/api/v1/tap/script", json={"tapName": tap_name, "script": gen_script})
+                    try:
+                        store_data = json.loads(store_result)
+                        if "error" not in store_data:
+                            script_path = store_data.get("scriptPath")
+                            script_storage = store_data.get("storage")
+                            script_repo_path = store_data.get("scriptRepoPath")
+                            script_commit_sha = store_data.get("scriptCommitSha")
+                    except (json.JSONDecodeError, TypeError):
+                        pass  # fall back to the built-in copy from /tap/generate
+
         # Mode 3: No script — config only (script added later)
 
         # Save the tap config
@@ -3096,6 +3127,12 @@ def _dispatch(name: str, args: dict) -> str:
             tap_config["description"] = instruction
         if script_path:
             tap_config["scriptPath"] = script_path
+        if script_storage:
+            tap_config["scriptStorage"] = script_storage
+        if script_repo_path:
+            tap_config["scriptRepoPath"] = script_repo_path
+        if script_commit_sha:
+            tap_config["scriptCommitSha"] = script_commit_sha
         if packages:
             tap_config["packages"] = packages
         if target_pipeline:

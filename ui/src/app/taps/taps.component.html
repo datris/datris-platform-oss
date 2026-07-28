@@ -81,6 +81,8 @@
           <td>
             <ng-container *ngIf="editingName !== tap.name">
               <a class="embed-name-link" [title]="tap.name" [routerLink]="['/taps', tap.name, 'edit']">{{ tap.name }}</a>
+              <span class="storage-badge" *ngIf="tap.scriptStorage === 'github'"
+                    [title]="'Script in repository: ' + (tap.scriptRepoPath || '') + (tap.scriptCommitSha ? ' @ ' + tap.scriptCommitSha.substring(0, 9) : '')">GitHub</span>
               <button class="embed-name-edit-btn" *ngIf="auth.canWrite()" (click)="startEditName($event, tap)" title="Rename">
                 <span class="material-icons">edit</span>
               </button>
@@ -130,6 +132,12 @@
                   </button>
                 </div>
               </span>
+              <button class="embed-action-btn" *ngIf="auth.canWrite() && repoConfigured"
+                      (click)="migrateStorage($event, tap)"
+                      [disabled]="migratingTap === tap.name"
+                      [title]="tap.scriptStorage === 'github' ? 'Move script to built-in storage' : 'Move script to GitHub'">
+                <span class="material-icons">{{ migratingTap === tap.name ? 'hourglass_empty' : (tap.scriptStorage === 'github' ? 'cloud_off' : 'cloud_upload') }}</span>
+              </button>
               <button class="embed-action-btn" (click)="promptDelete($event, tap.name)" title="Delete"
                       *ngIf="auth.canWrite()"><span class="material-icons">delete</span></button>
             </ng-container>

@@ -45,6 +45,7 @@
             "pages": [
               "taps",
               "tap-prompts",
+              "tap-github-storage",
               "tap-execution-isolation"
             ]
           },

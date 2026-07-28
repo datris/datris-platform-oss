@@ -21,5 +21,8 @@ case class TapRunLog(
     // suggestion carry the full explanation for the expanded view.
     aiSummary: String = null,
     aiDiagnosis: String = null,
-    aiSuggestion: String = null
+    aiSuggestion: String = null,
+    // Repo-backed taps only: the commit sha the run's script was read at, so
+    // a run is reproducible against repo history. Null for MinIO taps.
+    scriptCommitSha: String = null
 )

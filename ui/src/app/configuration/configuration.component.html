@@ -9,6 +9,8 @@
             (click)="activeTab = 'secrets'">Secrets</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'data-sources'"
             (click)="activeTab = 'data-sources'">Data Sources</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'code-repo'"
+            (click)="activeTab = 'code-repo'">Code Repository</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'users'"
             *ngIf="useUserAuth"
             (click)="activeTab = 'users'">Users</button>
@@ -23,6 +25,7 @@
   <app-secrets *ngIf="activeTab === 'secrets' && canSeeSecrets"></app-secrets>
   <app-keys *ngIf="activeTab === 'keys' && canSeeKeys"></app-keys>
   <app-data-sources *ngIf="activeTab === 'data-sources'"></app-data-sources>
+  <app-code-repo *ngIf="activeTab === 'code-repo'"></app-code-repo>
 
   <div class="config-card" *ngIf="!loading && activeTab === 'environment'">
     <div class="info-grid">
