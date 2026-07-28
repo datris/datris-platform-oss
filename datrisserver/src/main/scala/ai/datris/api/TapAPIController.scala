@@ -80,14 +80,16 @@ class TapAPIController {
             // "never generated" so the UI can tell the user the script was deleted
             // vs. not yet created.
             var scriptMissing = false
-            val scriptContent: String = if (config.scriptPath != null && config.scriptPath.nonEmpty) {
+            val hasScriptRef =
+                (config.scriptPath != null && config.scriptPath.nonEmpty) ||
+                    (config.scriptRepoPath != null && config.scriptRepoPath.nonEmpty)
+            val scriptContent: String = if (hasScriptRef) {
                 try {
-                    val env = DatrisEnvironment.current.environment
-                    ObjectStoreUtil.readBucketObject(env + "-config", config.scriptPath) match {
+                    TapCodeStore.forTap(config).readScript(config) match {
                         case Some(content) => content
                         case None =>
                             scriptMissing = true
-                            logger.warn("Tap '" + name + "' has scriptPath=" + config.scriptPath + " but object is missing from storage")
+                            logger.warn("Tap '" + name + "' has a script reference but the object is missing from its storage backend")
                             null
                     }
                 } catch {
@@ -242,44 +244,65 @@ class TapAPIController {
                 }
             }
 
-            // Script-existence guard: a tap save with a scriptPath that points at
-            // a missing file in MinIO would silently succeed here and then fail at
-            // run_tap with "scriptMissing". Reject the save with a clear error so
-            // the UI can prompt the user to push the script before retrying.
-            if (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) {
-                val bucket = DatrisEnvironment.current.environment + "-config"
+            // Script-existence guard: a tap save with a script reference that points
+            // at a missing file (MinIO object or repo path) would silently succeed
+            // here and then fail at run_tap with "scriptMissing". Reject the save
+            // with a clear error so the UI can prompt the user to push the script
+            // before retrying.
+            val hasScriptRef =
+                (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
+                    (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
+            if (hasScriptRef) {
                 val exists =
                     try {
-                        ObjectStoreUtil.readBucketObject(bucket, tapConfig.scriptPath).isDefined
+                        TapCodeStore.forTap(tapConfig).scriptExists(tapConfig)
                     } catch {
                         case e: Exception =>
-                            logger.warn("Tap script existence check failed for '" + tapConfig.scriptPath + "' in bucket '" + bucket + "'", e)
+                            logger.warn("Tap script existence check failed for tap '" + tapConfig.name + "'", e)
                             false
                     }
                 if (!exists) {
                     return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
-                        "{\"error\": \"Tap script not found in object storage at '" + tapConfig.scriptPath +
-                            "'. The script must be uploaded (via the tap wizard's script-store endpoints) before saving the tap config.\"}"
+                        "{\"error\": \"Tap script not found in its storage backend. " +
+                            "The script must be uploaded (via the tap wizard's script-store endpoints) before saving the tap config.\"}"
                     )
                 }
             }
+
+            // Script-reference preservation: clients (UI save, MCP create_tap)
+            // rebuild the config body from scratch and may omit the script
+            // fields entirely. If the body carries NO script reference but the
+            // stored tap has one, carry it over — otherwise an unrelated edit
+            // (description, cron) would silently orphan the script.
+            val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
+            val bodyHasScriptRef =
+                (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
+                    (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
+            val tapConfigWithScript =
+                if (!bodyHasScriptRef && existing != null)
+                    tapConfig.copy(
+                        scriptStorage = existing.scriptStorage,
+                        scriptPath = existing.scriptPath,
+                        scriptRepoPath = existing.scriptRepoPath,
+                        scriptCommitSha = existing.scriptCommitSha
+                    )
+                else tapConfig
 
             // Set timestamps and stamp the issuing key's label on first create.
             // On update we preserve the original `createdByKeyLabel` — ownership
             // is a property of creation, not the last edit (otherwise an editor
             // key would silently claim ownership and `owner=self` would drift).
-            val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapConfig.name)
             val sdf2 = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
             sdf2.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
             val now = sdf2.format(new java.util.Date())
             val configToSave = if (existing != null)
-                tapConfig.copy(
+                tapConfigWithScript.copy(
                     createdAt = existing.createdAt,
                     updatedAt = now,
                     createdByKeyLabel = existing.createdByKeyLabel
                 )
             else
-                tapConfig.copy(
+                tapConfigWithScript.copy(
                     createdAt = now,
                     updatedAt = now,
                     createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull
@@ -316,7 +339,11 @@ class TapAPIController {
                 // Scope check: `tap:delete:owner=self` keys may only delete
                 // taps they created. Loaded resource carries createdByKeyLabel.
                 CapabilityCheck.assertOwnerScope(request, "tap", "delete", existing.createdByKeyLabel)
-                TapScriptGenerator.deleteScript(existing.scriptPath)
+                // For repo-backed taps this commits a file removal (history is
+                // preserved — that's the point of the repo). Non-fatal: a dead
+                // repo connection must not block deleting the tap itself.
+                try TapCodeStore.forTap(existing).deleteScript(existing)
+                catch { case e: Exception => logger.warn("Tap script cleanup failed for '" + name + "': " + e.getMessage) }
             }
 
             // Document taps: also clean up staged files and ledger entries
@@ -375,12 +402,14 @@ class TapAPIController {
     @PostMapping(path = Array("/tap/script"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def storeScript(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestBody body: java.util.Map[String, String]
+        @RequestBody body: java.util.Map[String, String],
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             val tapName = body.get("tapName")
             val script = body.get("script")
-            val oldScriptPath = body.get("oldScriptPath")
+            val requestedStorage = body.get("storage")
+            val baseCommitSha = body.get("baseCommitSha")
             logger.info("API endpoint POST /tap/script called, tapName: " + tapName)
             APIKeyValidator.validate(apiKey)
 
@@ -389,24 +418,52 @@ class TapAPIController {
             if (script == null || script.isEmpty)
                 throw new DatrisException("script is required")
 
-            val scriptPath = TapScriptGenerator.storeScript(tapName, script, oldScriptPath)
-
-            // Update scriptPath if tap already exists
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+
+            // Backend resolution: explicit request > the tap's current backend
+            // (existing taps never switch silently) > tenant default.
+            val store =
+                if (requestedStorage != null && requestedStorage.nonEmpty) TapCodeStore.forStorage(requestedStorage)
+                else if (existing != null) TapCodeStore.forTap(existing)
+                else TapCodeStore.forStorage(null)
+
+            // The editor sends the commit sha it opened against so a concurrent
+            // external commit to the same file is a conflict, not an overwrite.
+            val prior =
+                if (existing != null && baseCommitSha != null && baseCommitSha.nonEmpty)
+                    existing.copy(scriptCommitSha = baseCommitSha)
+                else existing
+            val stored = store.storeScript(tapName, script, prior, actorLabel(request))
+
             if (existing != null) {
-                TapConfigIO.write(existing.copy(scriptPath = scriptPath))
+                TapConfigIO.write(
+                    existing.copy(
+                        scriptStorage = stored.storage,
+                        scriptPath = stored.scriptPath,
+                        scriptRepoPath = stored.scriptRepoPath,
+                        scriptCommitSha = stored.scriptCommitSha
+                    )
+                )
             }
 
             val gson = new Gson
             val response = new java.util.HashMap[String, String]()
-            response.put("scriptPath", scriptPath)
+            response.put("scriptPath", stored.scriptPath)
+            response.put("storage", stored.storage)
+            response.put("scriptRepoPath", stored.scriptRepoPath)
+            response.put("scriptCommitSha", stored.scriptCommitSha)
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: CodeRepoConflictException =>
+                ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + e.getMessage.replace("\"", "'") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
         }
     }
+
+    private def actorLabel(request: HttpServletRequest): String =
+        ResolvedKeyAccess.keyLabel(request).orNull
 
     @PostMapping(path = Array("/tap/cron"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def generateCron(
@@ -666,7 +723,10 @@ class TapAPIController {
             logger.info("API endpoint POST /tap/test called for tap: " + tapConfig.name + (if (testLimit != null) s" (testLimit=$testLimit)" else ""))
             APIKeyValidator.validate(apiKey)
 
-            if (tapConfig.scriptPath == null || tapConfig.scriptPath.isEmpty)
+            val hasTestScriptRef =
+                (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
+                    (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
+            if (!hasTestScriptRef)
                 throw new DatrisException("Script path is required for testing")
 
             // Run in test mode (no push to pipeline). testLimit > 0 tells the

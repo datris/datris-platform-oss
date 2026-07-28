@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy, ElementRef, ViewChildren, QueryList, Inpu
 import { Router } from '@angular/router';
 import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
+import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 
 @Component({
   selector: 'app-taps',
@@ -49,10 +50,20 @@ export class TapsComponent implements OnInit, OnDestroy {
 
   @ViewChildren('nameInput') nameInputs!: QueryList<ElementRef>;
 
-  constructor(private tapService: TapService, private router: Router, public auth: AuthService) { }
+  /** True when the tenant has an enabled code repository — gates the
+   *  per-tap "move script storage" action. */
+  repoConfigured = false;
+  /** Tap currently being migrated between storage backends, or '' for none. */
+  migratingTap = '';
+
+  constructor(private tapService: TapService, private router: Router, public auth: AuthService, private codeRepoService: CodeRepoService) { }
 
   ngOnInit(): void {
     this.loadTaps();
+    this.codeRepoService.get().subscribe({
+      next: (cfg) => this.repoConfigured = !!(cfg && cfg.enabled && cfg.repo),
+      error: () => this.repoConfigured = false
+    });
     this.loadPipelines();
     this.refreshInterval = setInterval(() => {
       if (!this.editingName && !this.editingPipeline && !this.editingCronTap) this.loadTaps();
@@ -70,6 +81,24 @@ export class TapsComponent implements OnInit, OnDestroy {
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
     }
+  }
+
+  /** Move a tap's script between built-in storage and the code repository. */
+  migrateStorage(event: Event, tap: any): void {
+    event.stopPropagation();
+    if (this.migratingTap) { return; }
+    const target: 'github' | 'minio' = tap.scriptStorage === 'github' ? 'minio' : 'github';
+    this.migratingTap = tap.name;
+    this.codeRepoService.migrateStorage(tap.name, target).subscribe({
+      next: () => {
+        this.migratingTap = '';
+        this.loadTaps();
+      },
+      error: (err) => {
+        this.migratingTap = '';
+        alert('Move failed: ' + ((err.error && err.error.error) || err.message));
+      }
+    });
   }
 
   loadTaps(): void {

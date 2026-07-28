@@ -6,6 +6,7 @@ import { PipelineService } from '../pipeline.service';
 import { SecretsService } from '../secrets.service';
 import { SearchService } from '../search.service';
 import { AuthService } from '../auth.service';
+import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 import { sanitizeLabel } from '../shared/sanitize';
 
 @Component({
@@ -49,6 +50,21 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   scriptMissing = false;   // set when getTap returns scriptMissing=true — the script object is gone from MinIO even though scriptPath is set
   scriptPath = '';
   packages: string[] = [];
+
+  // Script storage backend. '' means built-in (MinIO); 'github' means the
+  // tenant's code repository. The server resolves the default; the wizard only
+  // sends an explicit choice for NEW taps when a repository is configured.
+  scriptStorage = '';
+  scriptRepoPath = '';
+  scriptCommitSha = '';
+  storageChoice: 'minio' | 'github' = 'github';
+  repoConfigured = false;
+  repoName = '';
+  // External-edit drift (repo-backed taps): set when the branch head has a
+  // newer version of the script than the tap's pinned commit.
+  driftDetected = false;
+  driftScript = '';
+  driftHeadSha = '';
 
   // BYO: user pastes their own Python script instead of having the LLM generate one.
   bringYourOwnCode = false;
@@ -180,7 +196,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   // Active subscription for cancellation
   private activeSub: Subscription | null = null;
 
-  constructor(private tapService: TapService, private pipelineService: PipelineService, private secretsService: SecretsService, private searchService: SearchService, private router: Router, private route: ActivatedRoute, private auth: AuthService) { }
+  constructor(private tapService: TapService, private pipelineService: PipelineService, private secretsService: SecretsService, private searchService: SearchService, private router: Router, private route: ActivatedRoute, private auth: AuthService, private codeRepoService: CodeRepoService) { }
 
   /** Whether the current user can navigate to /configuration. Mirrors the
    *  top-nav Configuration link gate so the prompt-fragment chips don't
@@ -220,10 +236,25 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.catalog = tap.catalog || '';
           this.targetPipeline = tap.targetPipeline || '';
           this.tapType = (tap.tapType === 'document') ? 'document' : 'structured';
+          this.scriptStorage = tap.scriptStorage || '';
+          this.scriptRepoPath = tap.scriptRepoPath || '';
+          this.scriptCommitSha = tap.scriptCommitSha || '';
+          if (this.scriptStorage === 'github') {
+            this.checkDrift();
+          }
         },
         error: () => { this.error = 'Failed to load tap'; }
       });
     }
+
+    // Repo-storage availability drives the step-1 storage selector for new taps.
+    this.codeRepoService.get().subscribe({
+      next: (cfg) => {
+        this.repoConfigured = !!(cfg && cfg.enabled && cfg.repo);
+        this.repoName = (cfg && cfg.repo) || '';
+      },
+      error: () => { this.repoConfigured = false; }
+    });
 
     // Load available catalogs + existing tap names (for the overwrite warning).
     // Catalogs come from BOTH taps and pipelines so a catalog that contains
@@ -428,15 +459,17 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.storingUserScript = true;
     this.error = '';
     this.useMyCodeSuccess = '';
-    this.activeSub = this.tapService.storeScript(this.tapName.trim(), this.userScript, this.scriptPath).subscribe({
+    this.activeSub = this.tapService.storeScript(this.tapName.trim(), this.userScript, this.scriptPath, this.storageParam(), this.scriptCommitSha).subscribe({
       next: (result) => {
         this.script = this.userScript;
-        this.scriptPath = result.scriptPath || '';
+        this.applyStoredScript(result);
         this.packages = [];
         this.scriptDirty = true;
         this.storingUserScript = false;
         if (!this.description.trim()) this.description = 'User-provided tap script.';
-        this.useMyCodeSuccess = 'Script uploaded to MinIO' + (this.scriptPath ? ` (${this.scriptPath})` : '') + '. You can continue to the next step.';
+        this.useMyCodeSuccess = this.scriptStorage === 'github'
+          ? `Script committed to ${this.repoName} (${this.scriptRepoPath}). You can continue to the next step.`
+          : 'Script uploaded to MinIO' + (this.scriptPath ? ` (${this.scriptPath})` : '') + '. You can continue to the next step.';
       },
       error: (err) => {
         this.storingUserScript = false;
@@ -516,6 +549,9 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       name: this.tapName.trim(),
       description: this.description,
       scriptPath: this.scriptPath,
+      scriptStorage: this.scriptStorage || null,
+      scriptRepoPath: this.scriptRepoPath || null,
+      scriptCommitSha: this.scriptCommitSha || null,
       packages: this.packages.length > 0 ? this.packages : null,
       secretName: this.secretName || null
     };
@@ -1087,6 +1123,9 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         name: this.tapName.trim(),
         description: this.description,
         scriptPath: scriptPathToUse,
+        scriptStorage: this.scriptStorage || null,
+        scriptRepoPath: this.scriptRepoPath || null,
+        scriptCommitSha: this.scriptCommitSha || null,
         packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
         secretName: this.secretName || null,
         targetPipeline: this.targetPipeline || null,
@@ -1125,20 +1164,72 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     // commit a scriptPath whose file in MinIO doesn't match what the user
     // sees (or doesn't exist at all, after a regression auto-revert).
     if (this.script && this.script.trim()) {
-      this.tapService.storeScript(this.tapName.trim(), this.script, this.scriptPath).subscribe({
+      this.tapService.storeScript(this.tapName.trim(), this.script, this.scriptPath, this.storageParam(), this.scriptCommitSha).subscribe({
         next: (result) => {
-          this.scriptPath = result.scriptPath || this.scriptPath;
+          this.applyStoredScript(result);
           this.scriptDirty = false;
           writeTapConfig(this.scriptPath);
         },
         error: (err) => {
-          this.error = 'Save failed (could not store script): ' + (err.error || err.message);
+          if (err && err.status === 409) {
+            // Someone committed this script in the repo since we loaded it.
+            this.error = (err.error && err.error.error) ||
+              'The script changed in the repository since you opened it. Use "Load latest" in the drift banner, reapply your edits, and save again.';
+            this.checkDrift();
+          } else {
+            this.error = 'Save failed (could not store script): ' + (err.error || err.message);
+          }
           this.saving = false;
         }
       });
     } else {
       writeTapConfig(this.scriptPath);
     }
+  }
+
+  /** Explicit storage request for storeScript. Existing taps stick to their
+   *  backend server-side; new taps send the step-1 choice ('default' lets the
+   *  server pick the tenant default). */
+  private storageParam(): string | undefined {
+    if (this.isEditMode || this.scriptStorage) { return this.scriptStorage || undefined; }
+    return this.repoConfigured ? this.storageChoice : undefined;
+  }
+
+  /** Adopt the storage fields a storeScript response reports. */
+  private applyStoredScript(result: any): void {
+    this.scriptStorage = result.storage === 'github' ? 'github' : '';
+    this.scriptPath = result.scriptPath || '';
+    this.scriptRepoPath = result.scriptRepoPath || '';
+    this.scriptCommitSha = result.scriptCommitSha || '';
+  }
+
+  /** Repo-backed taps: compare the branch head against the pinned commit and
+   *  raise the drift banner when someone committed the script externally. */
+  checkDrift(): void {
+    if (!this.tapName.trim()) { return; }
+    this.codeRepoService.pullScript(this.tapName.trim()).subscribe({
+      next: (result) => {
+        if (result && result.drifted && result.script) {
+          this.driftDetected = true;
+          this.driftScript = result.script;
+          this.driftHeadSha = result.headCommitSha || '';
+        } else {
+          this.driftDetected = false;
+        }
+      },
+      error: () => { /* drift check is advisory — never block the editor */ }
+    });
+  }
+
+  /** Replace the editor content with the repo's latest version and advance the
+   *  local pin so the next save commits on top of it. */
+  loadDriftedScript(): void {
+    if (!this.driftDetected) { return; }
+    this.script = this.driftScript;
+    this.scriptCommitSha = this.driftHeadSha;
+    this.scriptDirty = true;
+    this.driftDetected = false;
+    this.driftScript = '';
   }
 
   // ---------- Step 5 — Run the tap ----------

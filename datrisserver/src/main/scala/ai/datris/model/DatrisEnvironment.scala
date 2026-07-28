@@ -230,6 +230,7 @@ case class DatrisEnvironment(
       * `<env>-pipeline-version`) without separate wiring in StartupRunner /
       * forEnvironment. */
     def tapVersionTableName: String = tapTableName + "-version"
+    def codeRepoTableName: String = environment + "-code-repo"
     def pipelineVersionTableName: String = pipelineTableName + "-version"
 
     /** True for trial-droplet tenants. Trials have AI configuration locked at the

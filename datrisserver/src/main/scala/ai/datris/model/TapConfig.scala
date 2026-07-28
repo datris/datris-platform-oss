@@ -45,5 +45,16 @@ case class TapConfig(
     lastRunRetrySafe: Boolean = false,
     // Consecutive automatic retries since the last successful run. Reset to 0
     // on success/no_records; capped by cronRetryCap.
-    retryCount: Int = 0
+    retryCount: Int = 0,
+    // Script storage backend: null/"minio" ⇒ built-in object store (scriptPath
+    // is authoritative); "github" ⇒ the tenant's configured code repository
+    // (scriptRepoPath + scriptCommitSha are authoritative, scriptPath unused).
+    // Flat strings rather than a sealed ref type because Gson round-trips this
+    // document and its EntityVersion snapshots.
+    scriptStorage: String = null,
+    // Repo-relative path of the script when scriptStorage == "github".
+    scriptRepoPath: String = null,
+    // Commit SHA the script is pinned to. Runs read exactly this commit; the
+    // drift-pull endpoint advances it when the user accepts external edits.
+    scriptCommitSha: String = null
 )

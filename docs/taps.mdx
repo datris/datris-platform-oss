@@ -11,6 +11,11 @@ A **Tap** is an AI-generated Python script that fetches data from external sourc
 
 Taps can run on a schedule using CRON expressions, or be triggered manually. They support credentials management via Vault secrets and include AI-powered diagnosis when scripts fail, return zero records, or emit deprecation/warning output.
 
+Tap scripts live in Datris's built-in object storage by default, or in a GitHub repository you
+connect — every save becomes a commit, runs pin to the exact commit they were saved at, and your
+team can review and edit tap code with normal git tooling. See
+[GitHub Script Storage](/tap-github-storage).
+
 ## Tap Types
 
 Every tap is one of three types. Choose the type when you create the tap; it can't be changed later because the target pipeline shape differs.

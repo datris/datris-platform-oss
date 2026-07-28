@@ -100,12 +100,13 @@ object TapScriptRunner {
     def run(tapConfig: TapConfig, testLimit: Int = 0, params: Map[String, String] = Map.empty): TapScriptResult = {
         logger.info("TapScriptRunner: executing tap: " + tapConfig.name)
 
-        // Step 1: Read script from MinIO
-        val env = DatrisEnvironment.current.environment
-        val bucketName = env + "-config"
-        val scriptContent = ObjectStoreUtil.readBucketObject(bucketName, tapConfig.scriptPath).getOrElse(
+        // Step 1: Read script from its storage backend (MinIO or code repo)
+        val scriptContent = TapCodeStore.forTap(tapConfig).readScript(tapConfig).getOrElse(
             throw new DatrisException(
-                "Tap script is missing from object storage (path: " + tapConfig.scriptPath + "). Open Edit Tap and regenerate the script, or paste a new one."
+                "Tap script is missing from " +
+                    (if (tapConfig.scriptStorage == "github") "the code repository (path: " + tapConfig.scriptRepoPath + ")"
+                     else "object storage (path: " + tapConfig.scriptPath + ")") +
+                    ". Open Edit Tap and regenerate the script, or paste a new one."
             )
         )
 

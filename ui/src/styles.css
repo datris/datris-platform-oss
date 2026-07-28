@@ -177,6 +177,21 @@ tr:hover .embed-name-edit-btn { opacity: 1; }
 .embed-status-no-records { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
 .embed-status-never      { background: rgba(100, 116, 139, 0.15); color: var(--text-muted); }
 
+/* Tap script storage badge (repo-backed taps) */
+.storage-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: rgba(0, 180, 255, 0.15);
+  color: #00b4ff;
+  vertical-align: middle;
+}
+
 .embed-records {
   display: block;
   font-size: 11px;

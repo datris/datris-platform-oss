@@ -94,6 +94,15 @@ object CapabilityRoutes {
         Route("GET", "/api/v1/tap/version", "tap", "read"),
         Route("GET", "/api/v1/tap/version/diff", "tap", "read"),
         Route("POST", "/api/v1/tap/version/restore", "tap", "update"),
+        // Tap script storage (code repository)
+        Route("POST", "/api/v1/tap/script/pull", "tap", "update"),
+        Route("POST", "/api/v1/tap/migrate-storage", "tap", "update"),
+
+        // Code repository connection — its own resource so tap-editing keys
+        // can't rewire where scripts are committed
+        Route("GET", "/api/v1/code-repo", "code-repo", "read"),
+        Route("PUT", "/api/v1/code-repo", "code-repo", "write"),
+        Route("POST", "/api/v1/code-repo/test", "code-repo", "read"),
 
         // Tap prompts (curated tap-building hints)
         Route("GET", "/api/v1/tap-prompts", "tap", "read"),

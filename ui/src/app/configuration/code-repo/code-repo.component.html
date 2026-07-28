@@ -1,0 +1,91 @@
+<div class="code-repo-wrap">
+  <div>
+    <h2 class="section-title">Code Repository</h2>
+    <p class="section-hint">
+      Store tap Python scripts in a GitHub repository instead of built-in storage —
+      real commits, PR review, and editing from your own IDE. Each script save becomes
+      a commit; runs are pinned to the exact commit they were saved at. Existing taps
+      stay on built-in storage until you move them from the Taps list.
+    </p>
+  </div>
+
+  <div class="loading" *ngIf="loading">Loading…</div>
+
+  <ng-container *ngIf="!loading">
+    <div class="form-row form-row-inline">
+      <label class="form-check">
+        <input type="checkbox" [(ngModel)]="config.enabled" />
+        Enable repository storage (new tap scripts default to the repository)
+      </label>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-row">
+        <label class="form-label">Repository</label>
+        <input class="form-input" [(ngModel)]="config.repo" placeholder="owner/repo" />
+      </div>
+      <div class="form-row">
+        <label class="form-label">Branch</label>
+        <input class="form-input" [(ngModel)]="config.branch" placeholder="main" />
+      </div>
+      <div class="form-row">
+        <label class="form-label">Path prefix</label>
+        <input class="form-input" [(ngModel)]="config.pathPrefix" placeholder="taps/" />
+        <p class="field-hint">Scripts are written to {{ config.pathPrefix || '' }}&lt;tap-name&gt;.py</p>
+      </div>
+      <div class="form-row">
+        <label class="form-label">API base URL</label>
+        <input class="form-input" [(ngModel)]="config.apiBaseUrl" placeholder="https://api.github.com" />
+        <p class="field-hint">Change only for GitHub Enterprise Server (https://ghes.example.com/api/v3)</p>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Token secret</label>
+        <select class="form-input" [(ngModel)]="config.authSecretName">
+          <option value="">— select a secret —</option>
+          <option *ngFor="let s of availableSecrets" [value]="s">{{ s }}</option>
+        </select>
+        <p class="field-hint">
+          A secret with a <code>token</code> field holding a fine-grained personal access
+          token with <strong>Contents: read/write</strong> on this repository.
+          <a href="javascript:void(0)" (click)="showCreateSecret = !showCreateSecret">Create one</a>
+        </p>
+      </div>
+      <div class="form-row" *ngIf="showCreateSecret">
+        <label class="form-label">New token secret</label>
+        <input class="form-input" name="repo-secret-name" [(ngModel)]="newSecretName" placeholder="secret name (e.g. github)" autocomplete="off" />
+        <input class="form-input" name="repo-secret-token" type="password" [(ngModel)]="newSecretToken" placeholder="github_pat_…" autocomplete="new-password" />
+        <button class="btn-secondary" (click)="createSecret()" [disabled]="savingSecret || !newSecretName || !newSecretToken">
+          {{ savingSecret ? 'Saving…' : 'Save secret' }}
+        </button>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Commit author</label>
+        <input class="form-input" [(ngModel)]="config.commitAuthor" placeholder="Name &lt;email&gt;" />
+      </div>
+      <div class="form-row">
+        <label class="form-label">Commit message template</label>
+        <input class="form-input" [(ngModel)]="config.commitMessageTemplate" />
+        <p class="field-hint">Tokens: {{ '{' }}name{{ '}' }}, {{ '{' }}action{{ '}' }}, {{ '{' }}user{{ '}' }}</p>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn-secondary" (click)="test()" [disabled]="testing || !config.repo || !config.authSecretName">
+        {{ testing ? 'Testing…' : 'Test connection' }}
+      </button>
+      <button class="btn-primary" (click)="save()" [disabled]="saving">
+        {{ saving ? 'Saving…' : 'Save' }}
+      </button>
+    </div>
+
+    <div class="test-result test-ok" *ngIf="testResult && testResult.ok">
+      Connected. Push access confirmed on {{ config.repo }} ({{ config.branch }}).
+    </div>
+    <div class="test-result test-fail" *ngIf="testResult && !testResult.ok">
+      {{ testResult.error }}
+    </div>
+
+    <div class="success-message" *ngIf="success">{{ success }}</div>
+    <div class="error-message" *ngIf="error">{{ error }}</div>
+  </ng-container>
+</div>

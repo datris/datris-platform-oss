@@ -17,6 +17,7 @@ import { SecretsComponent } from './secrets/secrets.component';
 import { ApiKeyPromptComponent } from './api-key-prompt/api-key-prompt.component';
 import { ConfigurationComponent } from './configuration/configuration.component';
 import { DataSourcesComponent } from './configuration/data-sources/data-sources.component';
+import { CodeRepoComponent } from './configuration/code-repo/code-repo.component';
 import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
@@ -58,6 +59,7 @@ import { NgxEchartsModule } from 'ngx-echarts';
     ApiKeyPromptComponent,
     ConfigurationComponent,
     DataSourcesComponent,
+    CodeRepoComponent,
     TapsComponent,
     TapCreateComponent,
     TapRunComponent,
