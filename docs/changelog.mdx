@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.13.1" description="July 28, 2026">
+  **Store your tap scripts in GitHub — every save is a commit.**
+
+  - **GitHub script storage.** Connect a repository under Configuration → Code Repository and tap Python scripts are stored there instead of built-in storage — every save from the wizard, the Assistant, or the API becomes a reviewable commit.
+  - **Runs pinned to the saved version.** Scheduled runs execute the exact commit that was saved, from a local cache — they keep working even if GitHub is unreachable, and each run records which version it executed.
+  - **Edit in your own IDE.** Commit changes to the repository directly; Datris detects the newer version when the tap is opened and offers to load it. Conflicting edits are stopped with a clear message instead of overwritten.
+  - **Move taps either way, one click.** Existing taps stay on built-in storage until moved; each Taps row shows where its script lives. Fine-grained token scoped to the one repository; connection test built in; GitHub Enterprise Server supported. See the [GitHub Script Storage guide](/tap-github-storage).
+</Update>
+
 <Update label="v1.12.2" description="July 27, 2026">
   **Claude Opus 5 support, and a fix for a month-after-install credential expiry.**
 
