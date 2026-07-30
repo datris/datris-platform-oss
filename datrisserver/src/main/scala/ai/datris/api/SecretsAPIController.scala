@@ -187,6 +187,17 @@ class SecretsAPIController {
                     }
                 }
 
+                // The shared per-provider key store is MERGE-only: each field is an
+                // independent provider's key, so a partial update (e.g. an API or
+                // MCP caller adding one provider's key) must never drop the other
+                // providers' keys. Every other secret keeps replace semantics —
+                // their fields form one coherent config where omission means removal.
+                if (name == "ai-keys") {
+                    existing.foreach { case (k, v) =>
+                        if (!incoming.containsKey(k) && v.nonEmpty) incoming.put(k, v)
+                    }
+                }
+
                 // Special-case the codegen secret: if the request omits or blanks out apiKey,
                 // copy it from the AI primary secret at {env}/ai-primary. This lets the UI
                 // omit the apiKey when the user wants codegen to reuse the main key without
