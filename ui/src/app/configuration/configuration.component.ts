@@ -18,6 +18,7 @@ export class ConfigurationComponent implements OnInit {
   // Shared API keys (entered once in the right-hand panel)
   anthropicApiKey = '';
   openaiApiKey = '';
+  openrouterApiKey = '';
 
   // AI Primary
   aiPrimaryProvider = 'anthropic';
@@ -75,6 +76,18 @@ export class ConfigurationComponent implements OnInit {
   models: Record<string, ModelOption[]> = {};
   codegenModelsList: Record<string, ModelOption[]> = {};
   embeddingModels: Record<string, ModelOption[]> = {};
+
+  // OpenRouter live catalogs, loaded lazily when the provider is selected.
+  // Slot-aware by construction: OpenRouter's chat and embedding catalogs are
+  // disjoint, so the chat list feeds ai-primary/codegen and the embedding list
+  // feeds the embedding dropdown. "Recommended" is the server's frontier
+  // capability filter (tool calling + structured outputs + deep reasoning +
+  // large context); "all" is the full catalog behind a searchable input.
+  openrouterChatRecommended: ModelOption[] = [];
+  openrouterChatAll: ModelOption[] = [];
+  openrouterEmbeddingList: ModelOption[] = [];
+  aiPrimaryShowAllOpenrouter = false;
+  codegenShowAllOpenrouter = false;
 
   environment = '';
   version = '';
@@ -175,15 +188,90 @@ export class ConfigurationComponent implements OnInit {
   }
 
   get aiPrimaryModelOptions(): { value: string; label: string }[] {
+    if (this.aiPrimaryProvider === 'openrouter') {
+      return this.withExtra(this.openrouterChatOptions(this.aiPrimaryShowAllOpenrouter), this.extraAiPrimaryModel);
+    }
     return this.withExtra(this.models[this.aiPrimaryProvider] || [], this.extraAiPrimaryModel);
   }
 
   get codegenModelOptions(): { value: string; label: string }[] {
+    if (this.codegenProvider === 'openrouter') {
+      return this.withExtra(this.openrouterChatOptions(this.codegenShowAllOpenrouter), this.extraCodegenModel);
+    }
     return this.withExtra(this.codegenModelsList[this.codegenProvider] || [], this.extraCodegenModel);
   }
 
   get embeddingModelOptions(): { value: string; label: string }[] {
+    if (this.embeddingProvider === 'openrouter' && this.openrouterEmbeddingList.length > 0) {
+      return this.withExtra(this.openrouterEmbeddingList, this.extraEmbeddingModel);
+    }
     return this.withExtra(this.embeddingModels[this.embeddingProvider] || [], this.extraEmbeddingModel);
+  }
+
+  private openrouterChatOptions(showAll: boolean): ModelOption[] {
+    if (showAll && this.openrouterChatAll.length > 0) return this.openrouterChatAll;
+    if (this.openrouterChatRecommended.length > 0) return this.openrouterChatRecommended;
+    // Live catalog not loaded (yet, or unreachable) — baked-in curated fallback.
+    return this.models['openrouter'] || [];
+  }
+
+  /** Lazily load the OpenRouter live catalog for a slot kind. Safe to call
+   *  repeatedly — the service de-dupes in-flight fetches. */
+  private ensureOpenrouterModels(kind: 'chat' | 'embedding'): void {
+    if (kind === 'chat') {
+      if (this.openrouterChatRecommended.length === 0) {
+        this.modelCatalog.fetchOpenrouter('chat', 'recommended').then(list => {
+          this.openrouterChatRecommended = list;
+          if (this.aiPrimaryProvider === 'openrouter' && !this.aiPrimaryModel && list.length > 0) {
+            this.aiPrimaryModel = list[0].value;
+          }
+          if (this.codegenProvider === 'openrouter' && !this.codegenModel && list.length > 0) {
+            this.codegenModel = list[0].value;
+          }
+        });
+      }
+    } else if (this.openrouterEmbeddingList.length === 0) {
+      this.modelCatalog.fetchOpenrouter('embedding').then(list => {
+        this.openrouterEmbeddingList = list;
+        if (this.embeddingProvider === 'openrouter' && !this.embeddingModel && list.length > 0) {
+          this.embeddingModel = list[0].value;
+        }
+      });
+    }
+  }
+
+  // Model stashed when "Show all" is toggled on, so toggling off without
+  // picking anything restores the previous selection.
+  private aiPrimaryModelBeforeShowAll = '';
+  private codegenModelBeforeShowAll = '';
+
+  onToggleOpenrouterShowAll(section: 'aiPrimary' | 'codegen'): void {
+    const showAll = section === 'aiPrimary' ? this.aiPrimaryShowAllOpenrouter : this.codegenShowAllOpenrouter;
+    if (showAll && this.openrouterChatAll.length === 0) {
+      this.modelCatalog.fetchOpenrouter('chat', 'all').then(list => this.openrouterChatAll = list);
+    }
+    // Native <datalist> filters its suggestions against the field's CURRENT
+    // text — with the model pre-filled, "show all" would appear to show only
+    // near-matches of the current model. Clear the field on toggle-on (stash
+    // the selection) so the full catalog drops down; restore on toggle-off if
+    // the user didn't pick a replacement.
+    if (section === 'aiPrimary') {
+      if (showAll) {
+        this.aiPrimaryModelBeforeShowAll = this.aiPrimaryModel;
+        this.aiPrimaryModel = '';
+      } else if (!this.aiPrimaryModel) {
+        this.aiPrimaryModel = this.aiPrimaryModelBeforeShowAll ||
+          (this.aiPrimaryModelOptions.length > 0 ? this.aiPrimaryModelOptions[0].value : '');
+      }
+    } else {
+      if (showAll) {
+        this.codegenModelBeforeShowAll = this.codegenModel;
+        this.codegenModel = '';
+      } else if (!this.codegenModel) {
+        this.codegenModel = this.codegenModelBeforeShowAll ||
+          (this.codegenModelOptions.length > 0 ? this.codegenModelOptions[0].value : '');
+      }
+    }
   }
 
   /** Web search runs general-purpose summarization (read pages → write a research
@@ -200,6 +288,7 @@ export class ConfigurationComponent implements OnInit {
       this.aiPrimaryModelMemory[this.prevAiPrimaryProvider] = this.aiPrimaryModel;
     }
     this.prevAiPrimaryProvider = this.aiPrimaryProvider;
+    if (this.aiPrimaryProvider === 'openrouter') this.ensureOpenrouterModels('chat');
     const remembered = this.aiPrimaryModelMemory[this.aiPrimaryProvider];
     if (remembered) {
       this.aiPrimaryModel = remembered;
@@ -233,6 +322,7 @@ export class ConfigurationComponent implements OnInit {
       this.codegenModelMemory[this.prevCodegenProvider] = this.codegenModel;
     }
     this.prevCodegenProvider = this.codegenProvider;
+    if (this.codegenProvider === 'openrouter') this.ensureOpenrouterModels('chat');
     const remembered = this.codegenModelMemory[this.codegenProvider];
     if (remembered) {
       this.codegenModel = remembered;
@@ -252,6 +342,7 @@ export class ConfigurationComponent implements OnInit {
       this.embeddingModelMemory[this.prevEmbeddingProvider] = this.embeddingModel;
     }
     this.prevEmbeddingProvider = this.embeddingProvider;
+    if (this.embeddingProvider === 'openrouter') this.ensureOpenrouterModels('embedding');
     const remembered = this.embeddingModelMemory[this.embeddingProvider];
     if (remembered) {
       this.embeddingModel = remembered;
@@ -282,6 +373,7 @@ export class ConfigurationComponent implements OnInit {
       if (!apiKey) return;
       if (provider === 'anthropic') this.anthropicApiKey = apiKey;
       if (provider === 'openai') this.openaiApiKey = apiKey;
+      if (provider === 'openrouter') this.openrouterApiKey = apiKey;
     };
 
     this.http.get<any>('/api/v1/secrets/ai-primary').subscribe({
@@ -295,6 +387,7 @@ export class ConfigurationComponent implements OnInit {
         if (fields && (fields.apiKey || fields.provider)) {
           this.aiPrimaryProvider = (fields.provider || 'anthropic').toLowerCase();
           this.prevAiPrimaryProvider = this.aiPrimaryProvider;
+          if (this.aiPrimaryProvider === 'openrouter') this.ensureOpenrouterModels('chat');
           this.aiPrimaryModel = fields.model || '';
           this.aiPrimaryEndpoint = fields.endpoint || this.endpointFor(this.aiPrimaryProvider, 'chat');
           this.maybeAddExtraModel('aiPrimary', this.aiPrimaryProvider, this.aiPrimaryModel);
@@ -317,6 +410,7 @@ export class ConfigurationComponent implements OnInit {
         if (fields && (fields.apiKey || fields.provider)) {
           this.codegenProvider = (fields.provider || 'anthropic').toLowerCase();
           this.prevCodegenProvider = this.codegenProvider;
+          if (this.codegenProvider === 'openrouter') this.ensureOpenrouterModels('chat');
           this.codegenModel = fields.model || '';
           this.codegenEndpoint = fields.endpoint || this.endpointFor(this.codegenProvider, 'chat');
           this.maybeAddExtraModel('codegen', this.codegenProvider, this.codegenModel);
@@ -376,6 +470,7 @@ export class ConfigurationComponent implements OnInit {
           }
           this.embeddingProvider = ep;
           this.prevEmbeddingProvider = this.embeddingProvider;
+          if (this.embeddingProvider === 'openrouter') this.ensureOpenrouterModels('embedding');
           this.embeddingModel = fields.model || '';
           this.embeddingEndpoint = fields.endpoint || this.endpointFor(this.embeddingProvider, 'embedding');
           this.maybeAddExtraModel('embedding', this.embeddingProvider, this.embeddingModel);
@@ -401,6 +496,7 @@ export class ConfigurationComponent implements OnInit {
         if (fields) {
           if (fields.anthropicApiKey) this.anthropicApiKey = fields.anthropicApiKey;
           if (fields.openaiApiKey) this.openaiApiKey = fields.openaiApiKey;
+          if (fields.openrouterApiKey) this.openrouterApiKey = fields.openrouterApiKey;
         }
         done();
       },
@@ -433,6 +529,7 @@ export class ConfigurationComponent implements OnInit {
   private resetSectionState(): void {
     this.anthropicApiKey = '';
     this.openaiApiKey = '';
+    this.openrouterApiKey = '';
     this.aiPrimaryModel = '';
     this.aiPrimaryEndpoint = '';
     this.showAdvancedAiPrimary = false;
@@ -470,6 +567,9 @@ export class ConfigurationComponent implements OnInit {
   }
   get openaiKeyAvailable(): boolean {
     return !!(this.openaiApiKey && this.openaiApiKey.length > 0);
+  }
+  get openrouterKeyAvailable(): boolean {
+    return !!(this.openrouterApiKey && this.openrouterApiKey.length > 0);
   }
 
   /** Default endpoint per provider for the web-search call (mirrors the chat
@@ -511,6 +611,7 @@ export class ConfigurationComponent implements OnInit {
   private keyForProvider(provider: string): string {
     if (provider === 'anthropic') return this.anthropicApiKey;
     if (provider === 'openai') return this.openaiApiKey;
+    if (provider === 'openrouter') return this.openrouterApiKey;
     return '';  // ollama / ollama-local / tei need no key
   }
 
@@ -539,6 +640,7 @@ export class ConfigurationComponent implements OnInit {
     const p = provider.toLowerCase();
     if (kind === 'embedding') {
       if (p === 'openai') return 'https://api.openai.com/v1/embeddings';
+      if (p === 'openrouter') return 'https://openrouter.ai/api/v1/embeddings';
       if (p === 'tei') return 'http://tei:80/v1/embeddings';
       if (p === 'ollama') return 'http://ollama:11434/v1/embeddings';
       if (p === 'ollama-local') return 'http://host.docker.internal:11434/v1/embeddings';
@@ -546,6 +648,7 @@ export class ConfigurationComponent implements OnInit {
     }
     if (p === 'anthropic') return 'https://api.anthropic.com/v1/messages';
     if (p === 'openai') return 'https://api.openai.com/v1/chat/completions';
+    if (p === 'openrouter') return 'https://openrouter.ai/api/v1/chat/completions';
     if (p === 'ollama') return 'http://host.docker.internal:11434/v1/chat/completions';
     return '';
   }
@@ -608,6 +711,7 @@ export class ConfigurationComponent implements OnInit {
       const keysBody: any = {};
       if (this.anthropicApiKey) keysBody.anthropicApiKey = this.anthropicApiKey;
       if (this.openaiApiKey) keysBody.openaiApiKey = this.openaiApiKey;
+      if (this.openrouterApiKey) keysBody.openrouterApiKey = this.openrouterApiKey;
       if (Object.keys(keysBody).length > 0) {
         tasks.push(this.http.put('/api/v1/secrets/ai-keys', keysBody, { responseType: 'text' }).toPromise());
       }

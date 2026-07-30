@@ -115,6 +115,11 @@ object AIHttp {
         aiConfig.provider.toLowerCase match {
             case "openai" =>
                 httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
+            case "openrouter" =>
+                httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
+                // Attribution headers recommended by OpenRouter; harmless if ignored.
+                httpPost.addHeader("HTTP-Referer", "https://datris.ai")
+                httpPost.addHeader("X-Title", "Datris")
             case "ollama" =>
                 if (aiConfig.apiKey != null && aiConfig.apiKey.nonEmpty)
                     httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)

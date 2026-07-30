@@ -1902,14 +1902,14 @@ async def list_tools():
         # --- Secrets ---
         Tool(
             name="update_secret",
-            description="Update an AI provider secret in the Datris platform. Use this to configure your AI API keys so Datris can use AI features (data profiling, schema generation, AI transformations, RAG). Only AI-related secrets can be updated: anthropic, openai, ollama, embedding.",
+            description="Update an AI provider secret in the Datris platform. Use this to configure your AI API keys so Datris can use AI features (data profiling, schema generation, AI transformations, RAG). Only AI-related secrets can be updated: anthropic, openai, openrouter, ollama, embedding.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "enum": ["anthropic", "openai", "ollama", "embedding"],
-                        "description": "Secret name: anthropic, openai, ollama, or embedding"
+                        "enum": ["anthropic", "openai", "openrouter", "ollama", "embedding"],
+                        "description": "Secret name: anthropic, openai, openrouter, ollama, or embedding"
                     },
                     "fields": {
                         "type": "object",
@@ -2013,7 +2013,7 @@ async def list_tools():
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Secret name. Must not use reserved AI-slot names (anthropic, openai, ollama, embedding, ai-primary, codegen). Convention: lowercase, hyphenated, e.g. 'stripe-api-key'."
+                        "description": "Secret name. Must not use reserved AI-slot names (anthropic, openai, openrouter, ollama, embedding, ai-primary, codegen). Convention: lowercase, hyphenated, e.g. 'stripe-api-key'."
                     },
                     "fields": {
                         "type": "object",
@@ -2960,7 +2960,7 @@ def _dispatch(name: str, args: dict) -> str:
 
     # --- Secrets ---
     elif name == "update_secret":
-        allowed = {"anthropic", "openai", "ollama", "embedding"}
+        allowed = {"anthropic", "openai", "openrouter", "ollama", "embedding"}
         secret_name = args["name"]
         if secret_name not in allowed:
             return json.dumps({"error": f"Only these secrets can be updated: {', '.join(sorted(allowed))}"})
@@ -3009,7 +3009,7 @@ def _dispatch(name: str, args: dict) -> str:
         return json.dumps({"name": secret_name, "fieldNames": field_names, "_type": fields.get("_type")})
 
     elif name == "create_tap_secret":
-        reserved = {"anthropic", "openai", "ollama", "embedding", "ai-primary", "codegen"}
+        reserved = {"anthropic", "openai", "openrouter", "ollama", "embedding", "ai-primary", "codegen"}
         secret_name = args["name"]
         if secret_name in reserved:
             return json.dumps({"error": f"'{secret_name}' is a reserved AI-provider slot. Use update_secret for those, or pick a different name for your tap secret."})

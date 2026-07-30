@@ -25,6 +25,9 @@ object AIProviders {
     // /v1/responses. Request/response shapes are different from chat/completions
     // (input + instructions + max_output_tokens; output[].content[].text).
     private[aiutil] def usesResponsesApi(aiConfig: AIConfig): Boolean = {
+        // Keyed on provider "openai" specifically: OpenRouter serves namespaced ids
+        // like openai/gpt-5-codex but only speaks chat/completions, so it must
+        // never route here.
         if (aiConfig == null || !aiConfig.provider.toLowerCase.equals("openai")) return false
         val model = Option(aiConfig.model).map(_.toLowerCase).getOrElse("")
         val endpoint = Option(aiConfig.endpoint).map(_.toLowerCase).getOrElse("")
@@ -52,6 +55,9 @@ object AIProviders {
     }
 
     private[aiutil] def addTokenLimit(requestObj: JsonObject, provider: String, model: String, maxTokens: Int): Unit = {
+        // Only direct OpenAI needs the max_completion_tokens quirk. OpenRouter always
+        // takes max_tokens regardless of the underlying model (its namespaced ids like
+        // openai/gpt-5.5 wouldn't prefix-match anyway — this makes it explicit).
         val field = if (provider.toLowerCase == "openai") openAiTokenField(model) else "max_tokens"
         requestObj.addProperty(field, maxTokens)
     }
@@ -103,6 +109,7 @@ object AIProviders {
         provider.toLowerCase match {
             case "anthropic" => sys.env.getOrElse("ANTHROPIC_API_KEY", "")
             case "openai" => sys.env.getOrElse("OPENAI_API_KEY", "")
+            case "openrouter" => sys.env.getOrElse("OPENROUTER_API_KEY", "")
             case _ => ""
         }
     }
@@ -116,6 +123,7 @@ object AIProviders {
         val field = provider.toLowerCase match {
             case "anthropic" => "anthropicApiKey"
             case "openai" => "openaiApiKey"
+            case "openrouter" => "openrouterApiKey"
             case _ => return ""
         }
         try {
@@ -133,6 +141,7 @@ object AIProviders {
     private[aiutil] def defaultEndpointFor(provider: String): String = provider.toLowerCase match {
         case "anthropic" => "https://api.anthropic.com/v1/messages"
         case "openai" => "https://api.openai.com/v1/responses"
+        case "openrouter" => "https://openrouter.ai/api/v1/chat/completions"
         case _ => ""
     }
 
@@ -152,6 +161,7 @@ object AIProviders {
         val maxInputTokens = aiConfig.provider.toLowerCase match {
             case "ollama" => 100000
             case "openai" => 100000
+            case "openrouter" => 100000
             case _ => 150000
         }
         maxInputTokens * 4

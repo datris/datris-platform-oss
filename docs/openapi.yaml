@@ -3367,6 +3367,54 @@ paths:
         '502':
           description: Catalog unavailable and no cached copy exists
 
+  /api/v1/ai/model-catalog/openrouter:
+    get:
+      tags: [AI]
+      summary: Get the OpenRouter live model catalog
+      description: >-
+        Same-origin proxy for OpenRouter's live model catalogs, used by the
+        Configuration UI when OpenRouter is the selected provider. OpenRouter
+        serves chat models and embedding models as two disjoint catalogs;
+        `kind` selects which one. For chat, `tier=recommended` (the default)
+        applies a capability filter — tool calling, structured outputs, deep
+        reasoning support, and a large context window — suited to the
+        Assistant and CodeGen; `tier=all` returns the full catalog.
+        Successful fetches are cached for 1 hour; on failure the stale cache
+        is served if one exists.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [chat, embedding]
+            default: chat
+        - name: tier
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [recommended, all]
+            default: recommended
+      responses:
+        '200':
+          description: Model options as `[{value, label, recommended?}]`
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    value:
+                      type: string
+                    label:
+                      type: string
+                    recommended:
+                      type: boolean
+        '502':
+          description: Catalog unavailable and no cached copy exists
+
   # ── Tap Prompt Fragments ───────────────────────────────────
 
   /api/v1/tap-prompts:

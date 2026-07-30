@@ -41,7 +41,7 @@ Each Vault secret carries its full configuration inline:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `provider` | Yes | `anthropic`, `openai`, or `ollama` |
+| `provider` | Yes | `anthropic`, `openai`, `openrouter`, or `ollama` |
 | `endpoint` | Yes | API endpoint URL |
 | `model` | Yes | Model identifier |
 | `apiKey` | No (not used by ollama) | Inline provider API key. The [shared API key store](#shared-api-key-store) is checked first and takes precedence when set |
@@ -53,17 +53,17 @@ The resolver reads each secret at the configured path and uses whatever it finds
 
 ### Shared API Key Store
 
-Provider API keys live in a shared per-provider secret, `{env}/ai-keys` (`oss/ai-keys` in single-tenant deployments), with one field per provider: `anthropicApiKey` and `openaiApiKey`. When a slot needs a key, resolution order is:
+Provider API keys live in a shared per-provider secret, `{env}/ai-keys` (`oss/ai-keys` in single-tenant deployments), with one field per provider: `anthropicApiKey`, `openaiApiKey`, and `openrouterApiKey`. When a slot needs a key, resolution order is:
 
 1. **Shared key store** (`{env}/ai-keys`) — checked first; takes precedence over any inline key
 2. **Inline `apiKey`** on the slot secret — legacy deployments that stored the key on the slot itself
-3. **`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`** container env vars — single-tenant only
+3. **`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY`** container env vars — single-tenant only
 
 Keys are stored once per provider rather than once per slot, so switching a slot between providers never loses the other provider's key. This is the store behind the Configuration UI's shared **API Keys** panel — entering a key there writes it to `{env}/ai-keys` for all slots to use.
 
 ## Quick Start with `.env`
 
-On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set **either** `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`:
+On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY`:
 
 ```bash
 # .env
@@ -93,6 +93,24 @@ When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic
 
 The `tei` service (HuggingFace Text Embeddings Inference) is part of `docker-compose.yml`. On first start it downloads `bge-m3` (~2.2 GB ONNX weights) into a persistent volume; subsequent restarts use the cached model.
 
+### OpenRouter path (one key, many models)
+
+When `OPENROUTER_API_KEY` is the only key set (or `AI_PROVIDER=openrouter`), all three slots are seeded against [OpenRouter](https://openrouter.ai), which fronts many model vendors behind one OpenAI-compatible API using namespaced model ids (`anthropic/claude-opus-5`, `openai/gpt-5.5`, `google/gemini-2.5-pro`, ...). One key covers chat, CodeGen, **and** embeddings — no bundled TEI download needed:
+
+| Slot | Provider | Endpoint | Model |
+|------|----------|----------|-------|
+| `oss/ai-primary` | openrouter | `https://openrouter.ai/api/v1/chat/completions` | `anthropic/claude-opus-5` |
+| `oss/codegen` | openrouter | `https://openrouter.ai/api/v1/chat/completions` | `anthropic/claude-opus-5` |
+| `oss/embedding` | openrouter | `https://openrouter.ai/api/v1/embeddings` | `openai/text-embedding-3-small` |
+
+#### Choosing an OpenRouter model
+
+OpenRouter's catalog is large and its models vary widely in capability. The Assistant's agent loop needs reliable tool calling and deep reasoning, and CodeGen writes the Python scripts your pipelines actually run — a weak model produces broken pipelines, not just mediocre chat.
+
+The Configuration tab helps here: with OpenRouter selected, the model dropdown shows a live **Recommended** list filtered to models that support tool calling, structured outputs, and deep reasoning with a large context window. A **Show all models** toggle reveals the full catalog behind a searchable field, with a warning — models outside the Recommended list may not support tool calling and can degrade Assistant and CodeGen results.
+
+Web search and extended thinking are not available through OpenRouter — those remain Anthropic/OpenAI-direct features. Model behavior on OpenRouter is the upstream vendor's; for the Assistant and CodeGen, frontier models (Claude, GPT ids) are strongly recommended.
+
 ### Fully local with Ollama
 
 You can run all three slots on a local Ollama instance — no cloud API keys needed. Ollama is opt-in: uncomment the optional `ollama` service block in `docker-compose.yml` (and the `ollama-data` volume), then `docker compose up -d ollama` and pull the models you want (e.g. `docker exec ollama ollama pull qwen3:14b`). Alternatively, point at an Ollama instance on your host machine using `host.docker.internal`:
@@ -114,7 +132,8 @@ Override the seeded models by setting these in `.env`:
 ```bash
 ANTHROPIC_MODEL=claude-opus-5
 OPENAI_MODEL=gpt-5.5
-CODEGEN_MODEL=claude-opus-5   # or gpt-5.5 if using OpenAI
+OPENROUTER_MODEL=anthropic/claude-opus-5
+CODEGEN_MODEL=claude-opus-5   # or gpt-5.5 / anthropic/claude-opus-5 per provider
 ```
 
 ### Mix-and-match: Anthropic chat + OpenAI embeddings
@@ -198,6 +217,7 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 The embedding endpoint must speak the **OpenAI embeddings API** (`POST /v1/embeddings` with `{model, input}` body returning `{data: [{embedding: [...]}]}`). That contract is implemented by:
 
 - **OpenAI** — `https://api.openai.com/v1/embeddings`
+- **OpenRouter** — `https://openrouter.ai/api/v1/embeddings` (namespaced models like `openai/text-embedding-3-small`; embedding models are listed separately from chat models in OpenRouter's catalog)
 - **TEI (bundled)** — `http://tei:80/v1/embeddings` (the bundled HuggingFace Text Embeddings Inference sidecar serves `BAAI/bge-m3` out of the box)
 - **Ollama** — `http://ollama:11434/v1/embeddings` (only when the optional Ollama service is enabled and `bge-m3` has been pulled there)
 - **Ollama (external)** — `http://host.docker.internal:11434/v1/embeddings` (your own Ollama with any embedding model)
@@ -207,7 +227,7 @@ Anthropic has no embeddings API, so `provider: "anthropic"` is not valid for the
 
 ## Chat Provider Notes
 
-The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
+The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, OpenRouter, and Ollama. OpenRouter always speaks the chat completions API (never the OpenAI Responses API), regardless of the underlying model. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
 
 ## Web Search (Optional)
 
@@ -275,7 +295,7 @@ A per-tenant secret takes effect on the next AI call — no restart needed. The 
 
 Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI. The Configuration page is organized into sub-tabs:
 
-- **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right (backed by the `{env}/ai-keys` secret — see [Shared API Key Store](#shared-api-key-store)). This is where you enter your Anthropic / OpenAI key and pick models.
+- **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right (backed by the `{env}/ai-keys` secret — see [Shared API Key Store](#shared-api-key-store)). This is where you enter your Anthropic / OpenAI / OpenRouter key and pick models.
 - **Secrets** — operator-facing platform credentials (Vault-backed). Admin-only when user-auth is on.
 - **Users** — user accounts and roles. Visible when `USE_USER_AUTH=true`.
 - **API-Keys** — issue and revoke scoped credentials for the CLI, MCP agents, and other programmatic clients. Visible when `USE_API_KEYS=true`. See [API Keys](/api-keys).
@@ -286,7 +306,7 @@ Some sub-tabs are role- and flag-gated — see the [API Keys matrix](/api-keys#s
 To set your AI keys:
 
 1. Open the **Configuration** tab, then the **AI Providers** sub-tab.
-2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, and Ollama (local).
+2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, OpenRouter, and Ollama (local).
 3. For Anthropic/OpenAI, enter your API key in the right-hand panel and pick a model from the dropdown. For Ollama, type the model name directly — no API key needed.
 4. Click **Save Configuration**. Changes take effect immediately — no restart required.
 

@@ -18,9 +18,11 @@
 #   DATRIS_REF          repo ref to fetch files from (default: main)
 #   ANTHROPIC_API_KEY   pre-set Anthropic key        (skips the prompt)
 #   OPENAI_API_KEY      pre-set OpenAI key           (skips the prompt)
+#   OPENROUTER_API_KEY  pre-set OpenRouter key       (skips the prompt)
 #   DATRIS_POSTGRES     bundled|external|none        (default: bundled)
 #                       external also reads POSTGRES_JDBC_URL/POSTGRES_USER/POSTGRES_PASSWORD
-#   DATRIS_EMBEDDING    openai|tei|none              (default: openai if OpenAI key present, else tei)
+#   DATRIS_EMBEDDING    openai|openrouter|tei|none   (default: openai if OpenAI key present,
+#                       else openrouter if OpenRouter key present, else tei)
 #   DATRIS_PROFILES     comma-separated opt-in services: qdrant,weaviate,chroma,kafka
 #                       external vector stores: set QDRANT_HOST etc. instead of the profile
 #   KAFKA_BOOTSTRAP_SERVERS, SNOWFLAKE_ACCOUNT/USER/PRIVATE_KEY/PASSWORD,
@@ -157,31 +159,37 @@ else
   curl -fsSL "$REPO_RAW/$REF/.env.example" -o "$ENV_FILE" || die "could not download .env.example"
   chmod 600 "$ENV_FILE" 2>/dev/null || true
 
-  # ---- AI keys (both providers, each best at a different job) ----
+  # ---- AI keys (three providers, each best at a different job) ----
   AKEY="${ANTHROPIC_API_KEY:-}"
   OKEY="${OPENAI_API_KEY:-}"
+  RKEY="${OPENROUTER_API_KEY:-}"
 
   # If a provider key was inherited from the shell environment, never adopt it
-  # silently — a stray ANTHROPIC/OPENAI_API_KEY in a shell rc shouldn't decide
-  # your provider without you knowing. Announce what was found, and when
-  # interactive let the user keep it or ignore it and enter their own.
-  if [ -n "$AKEY" ] || [ -n "$OKEY" ]; then
+  # silently — a stray ANTHROPIC/OPENAI/OPENROUTER_API_KEY in a shell rc
+  # shouldn't decide your provider without you knowing. Announce what was
+  # found, and when interactive let the user keep it or ignore it and enter
+  # their own.
+  if [ -n "$AKEY" ] || [ -n "$OKEY" ] || [ -n "$RKEY" ]; then
     [ -n "$AKEY" ] && say "Detected ANTHROPIC_API_KEY in your environment ($(mask "$AKEY"))."
     [ -n "$OKEY" ] && say "Detected OPENAI_API_KEY in your environment ($(mask "$OKEY"))."
+    [ -n "$RKEY" ] && say "Detected OPENROUTER_API_KEY in your environment ($(mask "$RKEY"))."
     if [ -n "$TTY" ]; then
       ask "  Use the detected key(s)? [Y/n] (n = ignore and enter your own): "
       case "$ANS" in
-        n*|N*) warn "Ignoring environment keys."; AKEY=""; OKEY="" ;;
+        n*|N*) warn "Ignoring environment keys."; AKEY=""; OKEY=""; RKEY="" ;;
       esac
     else
       say "Non-interactive — using the detected key(s)."
     fi
   fi
 
-  if [ -n "$TTY" ] && { [ -z "$AKEY" ] || [ -z "$OKEY" ]; }; then
+  if [ -n "$TTY" ] && { [ -z "$AKEY" ] || [ -z "$OKEY" ] || [ -z "$RKEY" ]; }; then
     say ""
-    say "Datris uses two AI providers, each best at a different job. Both are"
-    say "optional, but you'll want at least one."
+    say "Datris can use three AI providers. All are optional, but you'll want"
+    say "at least one:"
+    say "  Anthropic  — chat, CodeGen, AI data quality, NL→SQL (recommended)"
+    say "  OpenAI     — same jobs, plus semantic-search embeddings"
+    say "  OpenRouter — one key, many models: chat, CodeGen, and embeddings"
     # Keys are read with echo OFF (like passwords) so they never land in the
     # terminal scrollback; a masked confirmation is printed instead.
     if [ -z "$AKEY" ]; then
@@ -194,12 +202,17 @@ else
       OKEY="$ANS"
       [ -n "$OKEY" ] && say "  OpenAI key received ($(mask "$OKEY"))."
     fi
+    if [ -z "$RKEY" ]; then
+      ask_hidden "  OpenRouter API key (sk-or-...) — one key for many models via openrouter.ai (chat, CodeGen, and embeddings), or Enter to skip (input hidden): "
+      RKEY="$ANS"
+      [ -n "$RKEY" ] && say "  OpenRouter key received ($(mask "$RKEY"))."
+    fi
   fi
 
   WROTE_KEYS=""
   if [ -n "$AKEY" ]; then
     set_env ANTHROPIC_API_KEY "$AKEY"
-    # Pin the chat/CodeGen provider: with both keys present, vault-init's
+    # Pin the chat/CodeGen provider: with multiple keys present, vault-init's
     # tie-break would otherwise pick OpenAI for ai-primary — the opposite of
     # the recommendation.
     set_env AI_PROVIDER anthropic
@@ -208,6 +221,18 @@ else
   if [ -n "$OKEY" ]; then
     set_env OPENAI_API_KEY "$OKEY"
     WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }OPENAI_API_KEY"
+  fi
+  if [ -n "$RKEY" ]; then
+    set_env OPENROUTER_API_KEY "$RKEY"
+    WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }OPENROUTER_API_KEY"
+    # Sole-key case: pin explicitly (defense in depth — vault-init's sole-key
+    # fallback would also pick it, but a stray shell env var appearing later
+    # must not flip the provider). With other keys present, Anthropic > OpenAI
+    # > OpenRouter, so no pin for OpenRouter here.
+    if [ -z "$AKEY" ] && [ -z "$OKEY" ]; then
+      set_env AI_PROVIDER openrouter
+      WROTE_KEYS="$WROTE_KEYS, AI_PROVIDER=openrouter"
+    fi
   fi
   if [ -n "$WROTE_KEYS" ]; then
     ok "Wrote $WROTE_KEYS to .env"
@@ -268,31 +293,81 @@ else
       ;;
   esac
 
-  # Embeddings — openai (recommended) / bundled tei / none.
+  # Embeddings — hosted (OpenAI or OpenRouter) / bundled tei / none.
   EMB_MODE="${DATRIS_EMBEDDING:-}"
-  if [ -z "$EMB_MODE" ] && [ -n "$TTY" ]; then
+  while [ -z "$EMB_MODE" ] && [ -n "$TTY" ]; do
     say ""
-    say "  Semantic search needs an embedding model. We recommend OpenAI"
-    say "  (text-embedding-3-small): great quality, costs pennies, and skips the"
-    say "  2.2 GB local model download. Run the bundled server only if your data"
-    say "  can't leave this machine."
-    if [ -n "$OKEY" ]; then
-      ask "    [O]penAI (recommended, uses your OpenAI key) / [b]undled local server (TEI, ~2.2 GB) / [n]one: "
-      case "$ANS" in
-        b*|B*) EMB_MODE="tei" ;;
-        n*|N*) EMB_MODE="none" ;;
-        *)     EMB_MODE="openai" ;;
-      esac
+    if [ -n "$OKEY" ] || [ -n "$RKEY" ]; then
+      say "  Semantic search needs an embedding model. We recommend hosted"
+      say "  embeddings: great quality, costs pennies, and skips the 2.2 GB local"
+      say "  model download. Run the bundled server only if your data can't leave"
+      say "  this machine."
+      if [ -n "$OKEY" ] && [ -n "$RKEY" ]; then
+        ask "    [O]penAI (recommended, uses your OpenAI key) / open[R]outer (uses your OpenRouter key) / [b]undled local server (TEI, ~2.2 GB) / [n]one: "
+        case "$ANS" in
+          r*|R*) EMB_MODE="openrouter" ;;
+          b*|B*) EMB_MODE="tei" ;;
+          n*|N*) EMB_MODE="none" ;;
+          *)     EMB_MODE="openai" ;;
+        esac
+      elif [ -n "$OKEY" ]; then
+        ask "    [O]penAI (recommended, uses your OpenAI key) / [b]undled local server (TEI, ~2.2 GB) / [n]one: "
+        case "$ANS" in
+          b*|B*) EMB_MODE="tei" ;;
+          n*|N*) EMB_MODE="none" ;;
+          *)     EMB_MODE="openai" ;;
+        esac
+      else
+        ask "    [O]penRouter (recommended, uses your OpenRouter key) / [b]undled local server (TEI, ~2.2 GB) / [n]one: "
+        case "$ANS" in
+          b*|B*) EMB_MODE="tei" ;;
+          n*|N*) EMB_MODE="none" ;;
+          *)     EMB_MODE="openrouter" ;;
+        esac
+      fi
     else
-      ask "    [B]undled local server (TEI, ~2.2 GB) / [n]one (OpenAI needs an OpenAI key — add one in the Configuration tab later): "
+      say "  Semantic search needs an embedding model. Hosted embeddings (great"
+      say "  quality, costs pennies, no local download) need an OpenAI or"
+      say "  OpenRouter key. Enter one now, run the bundled local server, or skip"
+      say "  semantic search."
+      ask "    [O]penAI (enter a key now) / open[R]outer (enter a key now) / [B]undled local server (TEI, ~2.2 GB) / [n]one: "
       case "$ANS" in
+        o*|O*)
+          ask_hidden "    OpenAI API key (sk-...), or Enter to cancel (input hidden): "
+          if [ -n "$ANS" ]; then
+            OKEY="$ANS"
+            set_env OPENAI_API_KEY "$OKEY"
+            if [ -n "$AKEY" ] || [ -n "$RKEY" ]; then
+              say "    OpenAI key received ($(mask "$OKEY")) — used for embeddings."
+            else
+              # Zero-key install: nothing was pinned, so vault-init's sole-key
+              # fallback also makes this the chat/CodeGen provider. Say so.
+              say "    OpenAI key received ($(mask "$OKEY")) — also enables OpenAI for chat/CodeGen."
+            fi
+            EMB_MODE="openai"
+          fi ;;
+        r*|R*)
+          ask_hidden "    OpenRouter API key (sk-or-...), or Enter to cancel (input hidden): "
+          if [ -n "$ANS" ]; then
+            RKEY="$ANS"
+            set_env OPENROUTER_API_KEY "$RKEY"
+            if [ -n "$AKEY" ] || [ -n "$OKEY" ]; then
+              say "    OpenRouter key received ($(mask "$RKEY")) — used for embeddings."
+            else
+              say "    OpenRouter key received ($(mask "$RKEY")) — also enables OpenRouter for chat/CodeGen."
+              set_env AI_PROVIDER openrouter
+            fi
+            EMB_MODE="openrouter"
+          fi ;;
         n*|N*) EMB_MODE="none" ;;
         *)     EMB_MODE="tei" ;;
       esac
     fi
-  fi
+  done
   if [ -z "$EMB_MODE" ]; then
-    if [ -n "$OKEY" ]; then EMB_MODE="openai"; else EMB_MODE="tei"; fi
+    if [ -n "$OKEY" ]; then EMB_MODE="openai"
+    elif [ -n "$RKEY" ]; then EMB_MODE="openrouter"
+    else EMB_MODE="tei"; fi
   fi
   case "$EMB_MODE" in
     openai)
@@ -301,6 +376,13 @@ else
       set_env TEI_ENABLED 0
       say "  OpenAI embeddings selected — no local embedding container."
       add_summary search openai "text-embedding-3-small (no local container)"
+      ;;
+    openrouter)
+      [ -z "$RKEY" ] && die "DATRIS_EMBEDDING=openrouter requires OPENROUTER_API_KEY"
+      set_env EMBEDDING_PROVIDER openrouter
+      set_env TEI_ENABLED 0
+      say "  OpenRouter embeddings selected — no local embedding container."
+      add_summary search openrouter "text-embedding-3-small via OpenRouter (no local container)"
       ;;
     none)
       set_env TEI_ENABLED 0

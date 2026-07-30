@@ -90,13 +90,13 @@ object AIResponseParser {
         val text =
             if (usesResponsesApi(aiConfig)) extractResponsesApiText(responseMap)
             else aiConfig.provider.toLowerCase match {
-                case "openai" | "ollama" =>
+                case "openai" | "ollama" | "openrouter" =>
                     val choices = responseMap.get("choices").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
                     if (choices == null || choices.isEmpty)
-                        throw new DatrisException("OpenAI/Ollama response contained no choices")
+                        throw new DatrisException("OpenAI/Ollama/OpenRouter response contained no choices")
                     val message = choices.get(0).get("message").asInstanceOf[java.util.Map[String, Any]]
                     if (message == null)
-                        throw new DatrisException("OpenAI/Ollama response choice had no message")
+                        throw new DatrisException("OpenAI/Ollama/OpenRouter response choice had no message")
                     message.get("content").asInstanceOf[String]
                 case _ =>
                     val contentList = responseMap.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]

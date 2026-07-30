@@ -93,18 +93,22 @@ if exists secret/oss/ai-primary && exists secret/oss/codegen; then
   echo "  secret/oss/ai-primary + secret/oss/codegen already present — skipping AI seed"
 else
   # Provider selection:
-  #   1. AI_PROVIDER (anthropic|openai) is the explicit override — always wins.
-  #      Use this in .env to pin a choice when shell env vars (e.g. a global
-  #      OPENAI_API_KEY exported from your shell rc) would otherwise leak in
-  #      and silently flip the default on every rebuild.
+  #   1. AI_PROVIDER (anthropic|openai|openrouter) is the explicit override —
+  #      always wins. Use this in .env to pin a choice when shell env vars
+  #      (e.g. a global OPENAI_API_KEY exported from your shell rc) would
+  #      otherwise leak in and silently flip the default on every rebuild.
   #   2. If AI_PROVIDER is unset, fall back to "whichever key is present",
   #      with OpenAI winning ties — preserves the historical default.
+  #      OpenRouter is picked only when it's the sole key present (or set
+  #      explicitly), so adding it never changes existing behavior.
   PROVIDER="${AI_PROVIDER:-}"
   if [ -z "$PROVIDER" ]; then
     if [ -n "${OPENAI_API_KEY:-}" ]; then
       PROVIDER="openai"
     elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
       PROVIDER="anthropic"
+    elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+      PROVIDER="openrouter"
     fi
   fi
 
@@ -145,8 +149,25 @@ else
       model="${CODEGEN_MODEL:-claude-opus-5}" \
       apiKey="${ANTHROPIC_API_KEY}" \
       version="2023-06-01"
+  elif [ "$PROVIDER" = "openrouter" ]; then
+    if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+      echo "ERROR: AI_PROVIDER=openrouter but OPENROUTER_API_KEY is not set." >&2
+      exit 1
+    fi
+    # One key, many models. Default mirrors the fresh-install Anthropic default
+    # (claude-opus-5) via OpenRouter's namespaced id. OPENROUTER_MODEL overrides.
+    seed_if_absent secret/oss/ai-primary \
+      provider="openrouter" \
+      endpoint="https://openrouter.ai/api/v1/chat/completions" \
+      model="${OPENROUTER_MODEL:-anthropic/claude-opus-5}" \
+      apiKey="${OPENROUTER_API_KEY}"
+    seed_if_absent secret/oss/codegen \
+      provider="openrouter" \
+      endpoint="https://openrouter.ai/api/v1/chat/completions" \
+      model="${CODEGEN_MODEL:-anthropic/claude-opus-5}" \
+      apiKey="${OPENROUTER_API_KEY}"
   else
-    echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2
+    echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai|openrouter), or set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY in .env." >&2
     exit 1
   fi
 fi
@@ -160,13 +181,18 @@ if exists secret/oss/embedding; then
   echo "  secret/oss/embedding already present — skipping embedding seed"
 else
   # Selection precedence:
-  #   1. EMBEDDING_PROVIDER (openai|tei|ollama) — explicit override.
+  #   1. EMBEDDING_PROVIDER (openai|openrouter|tei|ollama) — explicit override.
   #   2. Otherwise: AI_PROVIDER=openai → OpenAI embeddings;
+  #                 AI_PROVIDER=openrouter → OpenRouter hosted embeddings
+  #                 (one key covers chat, CodeGen, and embeddings — no 2.2 GB
+  #                 TEI model download);
   #                 AI_PROVIDER=anthropic → bundled TEI (bge-m3, 1024-dim).
   EMBEDDING_PROVIDER_RESOLVED="${EMBEDDING_PROVIDER:-}"
   if [ -z "$EMBEDDING_PROVIDER_RESOLVED" ]; then
     if [ "${PROVIDER:-}" = "openai" ]; then
       EMBEDDING_PROVIDER_RESOLVED="openai"
+    elif [ "${PROVIDER:-}" = "openrouter" ]; then
+      EMBEDDING_PROVIDER_RESOLVED="openrouter"
     else
       EMBEDDING_PROVIDER_RESOLVED="tei"
     fi
@@ -182,6 +208,16 @@ else
       endpoint="https://api.openai.com/v1/embeddings" \
       model="${EMBEDDING_MODEL:-text-embedding-3-small}" \
       apiKey="${OPENAI_API_KEY}"
+  elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "openrouter" ]; then
+    if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+      echo "ERROR: EMBEDDING_PROVIDER=openrouter but OPENROUTER_API_KEY is not set." >&2
+      exit 1
+    fi
+    seed_if_absent secret/oss/embedding \
+      provider="openrouter" \
+      endpoint="https://openrouter.ai/api/v1/embeddings" \
+      model="${EMBEDDING_MODEL:-openai/text-embedding-3-small}" \
+      apiKey="${OPENROUTER_API_KEY}"
   elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "tei" ]; then
     seed_if_absent secret/oss/embedding \
       provider="tei" \
@@ -195,7 +231,7 @@ else
       model="${EMBEDDING_MODEL:-bge-m3}" \
       apiKey=""
   else
-    echo "ERROR: Unknown EMBEDDING_PROVIDER='$EMBEDDING_PROVIDER_RESOLVED'. Expected: openai, tei, or ollama." >&2
+    echo "ERROR: Unknown EMBEDDING_PROVIDER='$EMBEDDING_PROVIDER_RESOLVED'. Expected: openai, openrouter, tei, or ollama." >&2
     exit 1
   fi
 fi

@@ -395,7 +395,7 @@ class StartupRunner extends ApplicationRunner {
         if (secretOpt.isEmpty) {
             if (required)
                 throw new DatrisException("AI " + label + " secret not found in Vault: " + secretName +
-                    ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|ollama> endpoint=<url> model=<model> apiKey=<key>")
+                    ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|openrouter|ollama> endpoint=<url> model=<model> apiKey=<key>")
             else return None
         }
         val secret = secretOpt.get
@@ -409,9 +409,9 @@ class StartupRunner extends ApplicationRunner {
             if (required) throw new DatrisException("'provider' not found in AI " + label + " secret: " + secretName)
             else return None
         }
-        if (!Seq("anthropic", "openai", "ollama").contains(provider.toLowerCase))
+        if (!Seq("anthropic", "openai", "openrouter", "ollama").contains(provider.toLowerCase))
             throw new DatrisException(
-                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, ollama"
+                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, openrouter, ollama"
             )
         if (endpoint.isEmpty) {
             if (required) throw new DatrisException("'endpoint' not found in AI " + label + " secret: " + secretName)

@@ -76,17 +76,41 @@
             <select class="form-input" [(ngModel)]="aiPrimaryProvider" (ngModelChange)="onAiPrimaryProviderChange()">
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
               <option value="ollama" *ngIf="!hostedOrTrial">Ollama (if optional service enabled)</option>
             </select>
           </div>
 
           <div class="form-row">
             <label class="form-label">Model</label>
-            <select class="form-input" [(ngModel)]="aiPrimaryModel" *ngIf="aiPrimaryProvider !== 'ollama'">
+            <select class="form-input" [(ngModel)]="aiPrimaryModel"
+                    *ngIf="aiPrimaryProvider !== 'ollama' && !(aiPrimaryProvider === 'openrouter' && aiPrimaryShowAllOpenrouter)">
               <option *ngFor="let m of aiPrimaryModelOptions" [value]="m.value">{{ m.label }}</option>
             </select>
+            <input class="form-input" type="text" [(ngModel)]="aiPrimaryModel" list="aiPrimaryOpenrouterAllModels"
+                   placeholder="Type to search all OpenRouter models…"
+                   *ngIf="aiPrimaryProvider === 'openrouter' && aiPrimaryShowAllOpenrouter" />
+            <datalist id="aiPrimaryOpenrouterAllModels">
+              <option *ngFor="let m of aiPrimaryModelOptions" [value]="m.value">{{ m.label }}</option>
+            </datalist>
             <input class="form-input" type="text" [(ngModel)]="aiPrimaryModel"
                    placeholder="e.g. llama3.3, qwen3, deepseek-r1" *ngIf="aiPrimaryProvider === 'ollama'" />
+          </div>
+
+          <div *ngIf="aiPrimaryProvider === 'openrouter'">
+            <label class="form-checkbox" style="margin-top: 4px;">
+              <input type="checkbox" [(ngModel)]="aiPrimaryShowAllOpenrouter" (ngModelChange)="onToggleOpenrouterShowAll('aiPrimary')" />
+              <span>Show all models</span>
+            </label>
+            <p class="section-hint" *ngIf="!aiPrimaryShowAllOpenrouter" style="margin-top: 6px;">
+              OpenRouter models vary widely in capability. The Assistant needs highly capable models — this Recommended
+              list is filtered to models with strong tool-calling and deep reasoning. Less capable models can fail agent
+              workflows.
+            </p>
+            <p class="section-hint" *ngIf="aiPrimaryShowAllOpenrouter" style="margin-top: 6px;">
+              <strong>Heads up:</strong> models outside the Recommended list may not support tool calling or deep
+              reasoning — expect degraded Assistant results.
+            </p>
           </div>
 
           <div *ngIf="!hostedOrTrial">
@@ -115,17 +139,41 @@
             <select class="form-input" [(ngModel)]="codegenProvider" (ngModelChange)="onCodegenProviderChange()">
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
               <option value="ollama" *ngIf="!hostedOrTrial">Ollama (if optional service enabled)</option>
             </select>
           </div>
 
           <div class="form-row">
             <label class="form-label">Model</label>
-            <select class="form-input" [(ngModel)]="codegenModel" *ngIf="codegenProvider !== 'ollama'">
+            <select class="form-input" [(ngModel)]="codegenModel"
+                    *ngIf="codegenProvider !== 'ollama' && !(codegenProvider === 'openrouter' && codegenShowAllOpenrouter)">
               <option *ngFor="let m of codegenModelOptions" [value]="m.value">{{ m.label }}</option>
             </select>
+            <input class="form-input" type="text" [(ngModel)]="codegenModel" list="codegenOpenrouterAllModels"
+                   placeholder="Type to search all OpenRouter models…"
+                   *ngIf="codegenProvider === 'openrouter' && codegenShowAllOpenrouter" />
+            <datalist id="codegenOpenrouterAllModels">
+              <option *ngFor="let m of codegenModelOptions" [value]="m.value">{{ m.label }}</option>
+            </datalist>
             <input class="form-input" type="text" [(ngModel)]="codegenModel"
                    placeholder="e.g. qwen3, deepseek-r1, codellama" *ngIf="codegenProvider === 'ollama'" />
+          </div>
+
+          <div *ngIf="codegenProvider === 'openrouter'">
+            <label class="form-checkbox" style="margin-top: 4px;">
+              <input type="checkbox" [(ngModel)]="codegenShowAllOpenrouter" (ngModelChange)="onToggleOpenrouterShowAll('codegen')" />
+              <span>Show all models</span>
+            </label>
+            <p class="section-hint" *ngIf="!codegenShowAllOpenrouter" style="margin-top: 6px;">
+              OpenRouter models vary widely in capability. CodeGen writes the Python scripts your pipelines run — this
+              Recommended list is filtered to models with strong coding and reasoning. Less capable models can generate
+              broken pipeline scripts.
+            </p>
+            <p class="section-hint" *ngIf="codegenShowAllOpenrouter" style="margin-top: 6px;">
+              <strong>Heads up:</strong> models outside the Recommended list may not support deep reasoning or reliable
+              code generation — expect degraded CodeGen results.
+            </p>
           </div>
 
           <div *ngIf="!hostedOrTrial">
@@ -189,6 +237,7 @@
               <label class="form-label">Provider</label>
               <select class="form-input" [(ngModel)]="embeddingProvider" (ngModelChange)="onEmbeddingProviderChange()">
                 <option value="openai">OpenAI</option>
+                <option value="openrouter">OpenRouter</option>
                 <option value="tei">bge-m3 (bundled)</option>
                 <option value="ollama">Ollama (if optional service enabled)</option>
                 <option value="ollama-local">Ollama (external)</option>
@@ -286,6 +335,11 @@
         <div class="form-row">
           <label class="form-label">OpenAI API Key</label>
           <input class="form-input" type="text" [(ngModel)]="openaiApiKey" placeholder="sk-..." />
+        </div>
+
+        <div class="form-row">
+          <label class="form-label">OpenRouter API Key</label>
+          <input class="form-input" type="text" [(ngModel)]="openrouterApiKey" placeholder="sk-or-..." />
         </div>
       </aside>
     </div>

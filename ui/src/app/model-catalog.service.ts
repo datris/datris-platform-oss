@@ -42,6 +42,14 @@ const FALLBACK: ModelCatalog = {
       { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
       { value: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
     ],
+    openrouter: [
+      { value: 'anthropic/claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'openai/gpt-5.5', label: 'GPT-5.5' },
+      { value: 'moonshotai/kimi-k3', label: 'Kimi K3 (open source)' },
+      { value: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro (open source)' },
+      { value: 'z-ai/glm-5.2', label: 'GLM-5.2 (open source)' },
+    ],
   },
   codegen: {
     anthropic: [
@@ -63,6 +71,14 @@ const FALLBACK: ModelCatalog = {
       { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
       { value: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
     ],
+    openrouter: [
+      { value: 'anthropic/claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'anthropic/claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'openai/gpt-5.5', label: 'GPT-5.5' },
+      { value: 'moonshotai/kimi-k3', label: 'Kimi K3 (open source)' },
+      { value: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro (open source)' },
+      { value: 'z-ai/glm-5.2', label: 'GLM-5.2 (open source)' },
+    ],
   },
   embedding: {
     openai: [
@@ -74,6 +90,11 @@ const FALLBACK: ModelCatalog = {
     ],
     ollama: [
       { value: 'bge-m3', label: 'bge-m3 (1024-dim, bundled)' },
+    ],
+    openrouter: [
+      { value: 'openai/text-embedding-3-small', label: 'text-embedding-3-small (recommended)', recommended: true },
+      { value: 'openai/text-embedding-3-large', label: 'text-embedding-3-large' },
+      { value: 'voyageai/voyage-multimodal-3.5', label: 'voyage-multimodal-3.5' },
     ],
   },
 };
@@ -118,5 +139,34 @@ export class ModelCatalogService {
 
   private looksValid(c: any): boolean {
     return !!(c && c.aiPrimary && c.codegen && c.embedding);
+  }
+
+  // ---- OpenRouter live catalog -------------------------------------------
+  // The backend proxies OpenRouter's two disjoint catalogs (chat models vs
+  // embedding models) and, for chat, applies the frontier capability filter
+  // behind tier=recommended. On any failure we fall back to the baked-in
+  // openrouter lists above so the dropdown never comes up empty.
+
+  private openrouterInFlight = new Map<string, Promise<ModelOption[]>>();
+
+  fetchOpenrouter(kind: 'chat' | 'embedding', tier: 'recommended' | 'all' = 'recommended'): Promise<ModelOption[]> {
+    const key = `${kind}:${tier}`;
+    const existing = this.openrouterInFlight.get(key);
+    if (existing) return existing;
+    const p = this.doFetchOpenrouter(kind, tier);
+    this.openrouterInFlight.set(key, p);
+    return p;
+  }
+
+  private async doFetchOpenrouter(kind: 'chat' | 'embedding', tier: 'recommended' | 'all'): Promise<ModelOption[]> {
+    try {
+      const data = await firstValueFrom(
+        this.http.get<ModelOption[]>(`${CATALOG_URL}/openrouter?kind=${kind}&tier=${tier}`)
+          .pipe(timeout(FETCH_TIMEOUT_MS))
+      );
+      if (Array.isArray(data) && data.length > 0) return data;
+    } catch { /* fall through to baked-in list */ }
+    this.openrouterInFlight.delete(`${kind}:${tier}`);
+    return kind === 'embedding' ? FALLBACK.embedding['openrouter'] : FALLBACK.aiPrimary['openrouter'];
   }
 }
