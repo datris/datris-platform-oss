@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { Router } from '@angular/router';
 import { Observable, Observer } from 'rxjs';
 import { AuthService } from '../auth.service';
 import { AssistantEvent, ChatMessage } from '../assistant.service';
@@ -11,7 +12,7 @@ import { CatalogChatContext } from './catalog-chat-context.service';
  *  panel renders tool cards with identical logic regardless of mode. */
 @Injectable({ providedIn: 'root' })
 export class CatalogAssistantService {
-  constructor(private auth: AuthService) {}
+  constructor(private auth: AuthService, private router: Router) {}
 
   chat(messages: ChatMessage[], context: CatalogChatContext | null): Observable<AssistantEvent> {
     return new Observable<AssistantEvent>((observer: Observer<AssistantEvent>) => {
@@ -36,6 +37,16 @@ export class CatalogAssistantService {
         signal: controller.signal
       }).then(async (response) => {
         if (!response.ok) {
+          // This fetch() path bypasses the Angular interceptors, so mirror
+          // authErrorInterceptor: a 401 means the session died — bounce to
+          // login instead of leaving the chat wedged. Critical because the
+          // server's stale-session 401 is one-shot (it clears the cookie);
+          // swallowing it here would silently degrade the whole app to the
+          // anonymous legacy path.
+          if (response.status === 401 && this.auth.userAuthEnabled) {
+            this.auth.clearUser();
+            this.router.navigate(['/login']);
+          }
           const text = await response.text().catch(() => '');
           observer.next({ type: 'error', message: 'HTTP ' + response.status + ': ' + text.substring(0, 400) });
           observer.complete();

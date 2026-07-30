@@ -45,6 +45,29 @@ export class AppComponent implements OnInit {
     this.helpMenuOpen = false;
   }
 
+  /** Last time we re-probed /me after the tab regained visibility. */
+  private lastSessionProbe = 0;
+
+  /** A session can die while the tab is hidden. The server's stale-cookie 401
+   *  is one-shot (it clears the cookie), and once the cookie is gone requests
+   *  degrade to the anonymous legacy path and never 401 again — so whichever
+   *  code path spends that 401 decides whether the user sees the login screen.
+   *  Instead of relying on every fetch()/SSE path to mirror the interceptor,
+   *  re-probe /me whenever the user comes back to the tab: /me 401s without a
+   *  live session regardless of the anonymous fallback. Throttled so rapid
+   *  alt-tabbing doesn't spam probes. */
+  @HostListener('document:visibilitychange')
+  recheckSessionOnReturn(): void {
+    if (document.visibilityState !== 'visible') return;
+    if (!this.auth.userAuthEnabled || !this.bootstrapped || this.isLoginRoute) return;
+    const now = Date.now();
+    if (now - this.lastSessionProbe < 30_000) return;
+    this.lastSessionProbe = now;
+    this.auth.refreshMe().subscribe(user => {
+      if (!user) this.router.navigate(['/login']);
+    });
+  }
+
   ngOnInit(): void {
     // Track whether we're on the login route so the chrome can hide.
     this.router.events.pipe(filter(e => e instanceof NavigationEnd))
