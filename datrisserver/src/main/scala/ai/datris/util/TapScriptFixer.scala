@@ -46,6 +46,10 @@ object TapScriptFixer {
               |  Direct HTTP calls are more reliable than SDK methods that may be version-dependent.
               |- If pip install failed, verify the correct PyPI package name (pip install name != Python import name).
               |
+              |PRESERVE the incremental-sync state handling if present: the `DATRIS_TAP_STATE` env-var read and the
+              |`DATRIS_STATE` module-global assignment are the platform's bookmark contract between runs, not dead code.
+              |Keep them working in the fixed script unless the diagnosis says they are the bug.
+              |
               |Return ONLY the JSON object, no markdown fences or commentary.""".stripMargin
 
         // Errors of this shape mean the model's training-data view of the library

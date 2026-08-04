@@ -53,7 +53,18 @@ object TapRunner {
         }
 
         try {
-            val result = TapScriptRunner.run(tapConfig, testLimit, params)
+            // Incremental-sync state from the last committed run (null on first run /
+            // non-incremental taps). Read for test runs too — a test should exercise
+            // the same window a real run would — but only real successful runs commit.
+            val previousState: String =
+                try TapStateIO.readStateJson(tapConfig.name)
+                catch {
+                    case e: Exception =>
+                        logger.warn("TapRunner: state read failed for tap: " + tapConfig.name + " — running without state: " + e.getMessage)
+                        null
+                }
+
+            val result = TapScriptRunner.run(tapConfig, testLimit, params, previousState)
             val durationMs = System.currentTimeMillis() - startMs
 
             if (result.error != null) {
@@ -144,6 +155,10 @@ object TapRunner {
                         retryCount = 0
                     )
                     TapConfigIO.write(noRecordsConfig)
+                    // "Caught up, nothing new" is a legitimate cursor advance (e.g. a
+                    // checked-through timestamp). A script that emitted no state simply
+                    // leaves the bookmark where it was.
+                    commitState(tapConfig, result, now)
                 }
                 writeRunLog(
                     tapConfig.name,
@@ -183,6 +198,11 @@ object TapRunner {
                     retryCount = 0
                 )
                 TapConfigIO.write(successConfig)
+                // Commit point for incremental state: the feed was accepted. Failure
+                // paths never reach here, so a failed run leaves the old cursor and
+                // the retry ladder re-fetches the same window (at-least-once; upsert
+                // destinations absorb the overlap).
+                commitState(tapConfig, result, now)
             }
 
             val tokensOut = if (pipelineTokens.isEmpty) null else pipelineTokens
@@ -221,6 +241,22 @@ object TapRunner {
                 }
                 writeRunLog(tapConfig.name, now, "failure", 0, null, null, e.getMessage, mode, durationMs, scriptCommitSha = tapConfig.scriptCommitSha)
                 TapScriptResult(null, 0, e.getMessage)
+        }
+    }
+
+    /** Persist the state blob a run emitted. Only called from the success and
+      * no_records paths of real runs (push) — the commit-on-success rule that
+      * makes incremental sync hole-free. Best-effort: the data already fed, so a
+      * failed commit must not fail the run; the next run just re-fetches. */
+    private def commitState(tapConfig: TapConfig, result: TapScriptResult, runTime: String): Unit = {
+        if (result.newState == null) return
+        try {
+            TapStateIO.write(TapState(tapConfig.name, result.newState, runTime, tapConfig.name + "|" + runTime))
+            logger.info("TapRunner: committed incremental state for tap: " + tapConfig.name)
+        } catch {
+            case e: Exception =>
+                logger.warn("TapRunner: state commit failed for tap: " + tapConfig.name +
+                    " — next run re-fetches the same window: " + e.getMessage)
         }
     }
 

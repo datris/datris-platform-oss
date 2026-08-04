@@ -288,6 +288,44 @@ tickers    = json.loads(os.environ.get("DATRIS_TAP_PARAM_tickers", "[]"))  # JSO
 
 **Use `params` for things that change between runs; use `secret_name` for credentials that don't.** Rewriting a tap secret on every run to smuggle per-call values through is an anti-pattern — it clobbers concurrent runs, pollutes audit history, and wastes Vault writes.
 
+### Incremental Sync (State)
+
+For taps that run on a schedule, the platform persists a small JSON **state** object (a bookmark) between runs, so each run fetches only what's new instead of re-fetching everything. A well-written incremental tap runs at constant size forever, no matter how large the source grows.
+
+**The contract:**
+
+1. Before each run, the last committed state is injected into the script as the `DATRIS_TAP_STATE` environment variable (absent on the very first run).
+2. The script saves new state by assigning a dict to the module-global `DATRIS_STATE` inside `fetch()`.
+3. The platform commits the new state **only after a successful run**. A failed run leaves the old bookmark in place, so the automatic retry re-fetches the same window — no data holes. With `keyFields` configured on the destination, overlapping re-fetches upsert safely.
+
+```python
+import os, json
+
+def fetch():
+    global DATRIS_STATE
+    state = json.loads(os.environ.get("DATRIS_TAP_STATE") or "{}")
+    since = state.get("updated_after", "1970-01-01T00:00:00Z")
+
+    rows = get_rows_updated_after(since)   # fetch only what changed
+
+    if rows:
+        newest = max(r["updated_at"] for r in rows)
+        DATRIS_STATE = {"updated_after": max(since, newest)}
+    return rows
+```
+
+**What to track** depends on what the source offers, in order of preference: a modified-since filter (state = newest timestamp seen), append-only ordering (state = highest ID seen), an opaque continuation token (store it verbatim), or — for full-fetch-only sources — a hash of the payload so unchanged runs return `[]` and record a clean `no_records`. When you create a tap from a plain-English instruction, the script generator applies this ladder automatically for scheduled taps whenever the source supports it.
+
+**Rules:**
+
+- State is a cursor, not a data store — a timestamp, an ID, a token, or a hash. The platform rejects state over 64 KB.
+- Cursors must be monotonic: advance with `max(previous, newest_seen)` so re-processing old data never moves the bookmark backwards.
+- Backfills don't move the bookmark: when an explicit window is passed via `run_tap` `params`, the script should leave `DATRIS_STATE` unset for that run.
+- Never put credentials in state — it is stored and displayed unmasked.
+- Test runs read state but never commit it.
+
+**Inspecting and resetting:** the bookmark icon on the taps list shows a tap's current state, when it was committed, and a **Reset** button (the next run then does a full first-run fetch). Agents use `get_tap_state` / `set_tap_state`; the REST surface is `GET/POST/DELETE /api/v1/tap/state`. Deleting a tap deletes its state, so a recreated tap starts fresh.
+
 ### Run Status Outcomes
 
 Each tap run produces one of three states on its `lastRunStatus` field and matching run log entry:
@@ -304,7 +342,7 @@ Cron-scheduled runs that legitimately produce zero records (incremental tap that
 
 The platform caps tap-script output at `tapMaxOutputMB` (default 100 MB, settable via the `TAP_MAX_OUTPUT_MB` env var on the datris service). Runs that exceed the cap fail fast with an actionable error before the JSON is parsed — preventing the whole batch from buffering in JVM heap and OOM-killing the server.
 
-If a backfill blows the cap, reduce the source range using `run_tap` `params` (shorter date window, smaller page, per-symbol chunks) and call again. Multiple smaller runs all land in the same destination pipeline; with `keyFields` configured on a Postgres or MongoDB pipeline, overlapping ranges upsert safely.
+If a backfill blows the cap, reduce the source range using `run_tap` `params` (shorter date window, smaller page, per-symbol chunks) and call again. Multiple smaller runs all land in the same destination pipeline; with `keyFields` configured on a Postgres or MongoDB pipeline, overlapping ranges upsert safely. For a scheduled tap that keeps growing toward the cap, the durable fix is making it incremental — see [Incremental Sync (State)](#incremental-sync-state) — so every run carries only the delta.
 
 ## Data Types
 
@@ -355,6 +393,8 @@ AI agents can manage taps via MCP:
 | `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
 | `get_tap_logs` | Get run history for a tap (last 50 entries). Each entry that submitted records includes its `publisherToken`, so an agent can pivot from a scheduled-run log entry to `get_pipeline_status(publisher_token=...)` and verify the run actually landed in the destination — not just that the script ran. |
 | `get_tap_ledger` | Document taps only: read the ledger of discovered documents (URI, filename, status, hashes, first/last seen timestamps). Pass `clear_uri` to force one file to be re-processed on the next run, or `clear_all=true` to force a full re-scan. |
+| `get_tap_state` | Read a tap's incremental-sync state (the bookmark committed by its last successful run). |
+| `set_tap_state` | Overwrite a tap's state (e.g. rewind a cursor to re-fetch a window), or pass `reset=true` to clear it so the next run does a full first-run fetch. |
 | `delete_tap` | Delete a tap and its stored script |
 
 End-to-end agent flow when a tap needs credentials:

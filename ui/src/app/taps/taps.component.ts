@@ -245,6 +245,50 @@ export class TapsComponent implements OnInit, OnDestroy {
     });
   }
 
+  // Incremental-sync state modal
+  stateTap = '';
+  stateJson = '';
+  stateUpdatedAt = '';
+  stateUpdatedBy = '';
+  stateLoading = false;
+  stateResetting = false;
+
+  viewState(event: Event, name: string): void {
+    event.stopPropagation();
+    this.stateTap = name;
+    this.stateJson = '';
+    this.stateUpdatedAt = '';
+    this.stateUpdatedBy = '';
+    this.stateLoading = true;
+    this.tapService.getTapState(name).subscribe({
+      next: (res) => {
+        this.stateJson = (res && res.state) ? JSON.stringify(res.state, null, 2) : '';
+        this.stateUpdatedAt = (res && res.updatedAt) || '';
+        this.stateUpdatedBy = (res && res.updatedBy) || '';
+        this.stateLoading = false;
+      },
+      error: () => { this.stateLoading = false; alert('Failed to load sync state'); }
+    });
+  }
+
+  closeState(): void {
+    this.stateTap = '';
+    this.stateJson = '';
+    this.stateUpdatedAt = '';
+    this.stateUpdatedBy = '';
+    this.stateResetting = false;
+  }
+
+  resetState(): void {
+    if (!this.stateTap || this.stateResetting) return;
+    if (!confirm('Reset sync state for ' + this.stateTap + '? The next run will re-fetch everything from scratch.')) return;
+    this.stateResetting = true;
+    this.tapService.resetTapState(this.stateTap).subscribe({
+      next: () => { this.stateJson = ''; this.stateUpdatedAt = ''; this.stateUpdatedBy = ''; this.stateResetting = false; },
+      error: () => { this.stateResetting = false; alert('Failed to reset sync state'); }
+    });
+  }
+
   viewLogs(event: Event, name: string): void {
     event.stopPropagation();
     this.logsTap = name;

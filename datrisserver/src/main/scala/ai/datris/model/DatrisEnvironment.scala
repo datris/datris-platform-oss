@@ -233,6 +233,12 @@ case class DatrisEnvironment(
     def codeRepoTableName: String = environment + "-code-repo"
     def pipelineVersionTableName: String = pipelineTableName + "-version"
 
+    /** Per-tap incremental-sync state (bookmarks/cursors). Kept OUT of the tap
+      * config document: TapConfigIO.write fires on status churn and user edits
+      * (a racing save would clobber the cursor), and definition versions /
+      * repo-backed taps must never snapshot runtime state. */
+    def tapStateTableName: String = tapTableName + "-state"
+
     /** True for trial-droplet tenants. Trials have AI configuration locked at the
       * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention
       * is enforced by the website's provision-trial.ts which always assigns

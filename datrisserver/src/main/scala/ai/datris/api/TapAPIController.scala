@@ -102,6 +102,17 @@ class TapAPIController {
             val response = gson.fromJson(gson.toJson(config), classOf[java.util.Map[String, Any]])
             response.put("script", scriptContent)
             if (scriptMissing) response.put("scriptMissing", java.lang.Boolean.TRUE)
+            // Incremental-sync state, when the tap has committed any — lets agents see
+            // the current cursor from get_tap without an extra call.
+            try {
+                val stateRow = TapStateIO.read(name)
+                if (stateRow != null && stateRow.state != null) {
+                    response.put("state", gson.fromJson(stateRow.state, classOf[java.util.Map[String, Any]]))
+                    response.put("stateUpdatedAt", stateRow.updatedAt)
+                }
+            } catch {
+                case e: Exception => logger.warn("Tap state read failed for '" + name + "': " + e.getMessage)
+            }
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -389,6 +400,11 @@ class TapAPIController {
             } catch {
                 case ex: Exception => logger.warn("Tap version cleanup failed for " + name + ": " + ex.getMessage)
             }
+
+            // Incremental-sync state: a recreated tap with the same name must start
+            // from scratch, not inherit the old tap's cursor.
+            try TapStateIO.delete(name)
+            catch { case ex: Exception => logger.warn("Tap state cleanup failed for " + name + ": " + ex.getMessage) }
 
             TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)
             new ResponseEntity[String]("{\"message\": \"Tap deleted: " + name + "\"}", HttpStatus.OK)
@@ -959,6 +975,89 @@ class TapAPIController {
         )
         if (accepted.get()) None
         else Some(now - TapAPIController.recentRunStarts.get(dedupKey).longValue())
+    }
+
+    @GetMapping(path = Array("/tap/state"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getTapState(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /tap/state called for tap: " + name)
+            APIKeyValidator.validate(apiKey)
+
+            val row = TapStateIO.read(name)
+            val gson = new Gson
+            val response = new java.util.HashMap[String, Any]()
+            response.put("tap", name)
+            // Parse the stored blob back to an object so the response nests it as JSON
+            // rather than a double-encoded string.
+            response.put("state", if (row != null && row.state != null) JsonParser.parseString(row.state) else JsonNull.INSTANCE)
+            if (row != null) {
+                response.put("updatedAt", row.updatedAt)
+                response.put("updatedBy", row.updatedBy)
+            }
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @PostMapping(path = Array("/tap/state"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def setTapState(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: java.util.Map[String, Any]
+    ): ResponseEntity[String] = {
+        try {
+            val name = Option(body.get("name")).map(_.toString).orNull
+            logger.info("API endpoint POST /tap/state called for tap: " + name)
+            APIKeyValidator.validate(apiKey)
+
+            if (name == null || name.isEmpty)
+                throw new DatrisException("Tap name is required")
+            if (TapConfigIO.read(DatrisEnvironment.current.tapTableName, name) == null)
+                throw new DatrisException("Tap: " + name + " not found")
+
+            val gson = new Gson
+            // `state` must be a JSON object (the same shape the wrapper accepts from
+            // DATRIS_STATE). An empty object {} is a valid "reset to first-run" value.
+            val stateJson: String = body.get("state") match {
+                case m: java.util.Map[_, _] => gson.toJson(m)
+                case null => throw new DatrisException("state object is required (use {} to reset, or DELETE /tap/state)")
+                case other => throw new DatrisException("state must be a JSON object, got: " + other.getClass.getSimpleName)
+            }
+
+            val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
+            sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
+            TapStateIO.write(TapState(name, stateJson, sdf.format(new java.util.Date()), "manual"))
+
+            val response = new java.util.HashMap[String, Any]()
+            response.put("tap", name)
+            response.put("state", JsonParser.parseString(stateJson))
+            response.put("message", "State saved. The next run receives it via DATRIS_TAP_STATE.")
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
+    @DeleteMapping(path = Array("/tap/state"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def deleteTapState(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestParam name: String): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint DELETE /tap/state called for tap: " + name)
+            APIKeyValidator.validate(apiKey)
+
+            TapStateIO.delete(name)
+            new ResponseEntity[String](
+                "{\"message\": \"State reset for tap: " + name + ". The next run starts from scratch (full fetch).\"}",
+                HttpStatus.OK
+            )
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
     }
 
     @GetMapping(path = Array("/tap/ledger"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
