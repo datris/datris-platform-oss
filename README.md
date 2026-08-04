@@ -11,7 +11,7 @@ Ingest, validate, transform, store, and retrieve your data — whether you're an
 
 ## Why Datris?
 
-- **Agent-native** — Built-in MCP server with 47 tools. Claude, Cursor, and any MCP-compatible agent can operate pipelines through natural conversation
+- **Agent-native** — Built-in MCP server with 63 tools. Claude, Cursor, and any MCP-compatible agent can operate pipelines through natural conversation
 - **Taps** — AI-generated Python scripts that fetch data from external sources (APIs, web scraping, databases) and push it into pipelines. Describe what you want, Datris generates the script. Includes AI diagnosis, CRON scheduling, and credentials via Vault
 - **AI at every stage** — AI data quality, AI transformations, AI schema generation, AI profiling, AI error explanation, natural language queries, RAG
 - **No vendor lock-in** — 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault). Runs anywhere Docker does
@@ -112,7 +112,7 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 
 | Feature | Description |
 |---------|-------------|
-| **MCP Server** | 47 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps |
+| **MCP Server** | 63 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps |
 | **AI Data Quality** | Plain English validation rules — AI generates and runs a validation script |
 | **AI Transformation** | Plain English transformations — AI generates and runs a transformation script |
 | **AI Schema Generation** | Upload a file, get a complete pipeline config |
