@@ -219,7 +219,7 @@ For S3-specific behavior — credentials secret format, per-bucket credential is
 | `dbName` | string | Required | Database name |
 | `schema` | string | Required | Schema name |
 | `table` | string | Required | Table name |
-| `keyFields` | array | null | Natural-key columns (enables upsert on PostgreSQL, MongoDB, Snowflake, and Databricks) |
+| `keyFields` | array | null | Natural-key columns (enables upsert on PostgreSQL, MongoDB, Snowflake, and Databricks). For MongoDB the keys are matched against fields *inside* the stored JSON document, so they don't need to appear as schema columns; use lowercase field names |
 | `usePostgres` | boolean | false | Write to PostgreSQL |
 | `useMongoDB` | boolean | false | Write to MongoDB |
 | `useSnowflake` | boolean | false | Write to the user's Snowflake account — see [Snowflake Destination](/destinations/snowflake) |

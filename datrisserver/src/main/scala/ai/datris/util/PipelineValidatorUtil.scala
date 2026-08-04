@@ -224,7 +224,13 @@ object PipelineValidatorUtil {
                 throw new DatrisException("If the 'destination.database' section is defined, the 'destination.database.schema' must be defined")
             if (config.destination.database.table == null)
                 throw new DatrisException("If the 'destination.database' section is defined, the 'destination.database.table' must be defined")
-            if (config.destination.database.keyFields != null) {
+            // MongoDB is exempt from the schema-membership rule: it stores each record
+            // as a whole `_json` document and MongoDBLoader.upsertJSON matches key
+            // fields INSIDE the document, so the keys legitimately never appear as
+            // schema columns (a JSON→Mongo pipeline's schema is just `_json`).
+            // Requiring membership here made Mongo upsert impossible to configure
+            // even though the loader fully supports it.
+            if (config.destination.database.keyFields != null && !config.destination.database.useMongoDB) {
                 config.destination.database.keyFields.forEach(field => {
                     if (!schemaFieldNames.contains(field))
                         throw new DatrisException("Key field: " + field + " is not in the schema properties for this pipeline")
