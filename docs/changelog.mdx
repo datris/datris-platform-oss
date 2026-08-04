@@ -3,6 +3,17 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.14.0" description="August 4, 2026">
+  **Incremental taps — scheduled taps now fetch only what's new.**
+
+  - **Taps remember where they left off.** After each successful run the platform stores a bookmark; the next run pulls only records added or changed since. Recurring syncs run at constant size instead of re-fetching everything.
+  - **No gaps, no duplicates.** The bookmark only advances when a run succeeds — failed runs leave it in place so the retry re-fetches the same window; key-field destinations absorb overlap by updating in place.
+  - **Visible and resettable.** Each tap's sync state can be viewed and reset from the Taps page; agents get the same via two new MCP tools. Manual backfills with an explicit date range never move the bookmark.
+  - **AI-built taps are incremental by default.** Described a recurring source? The generated script now uses change-detection automatically when the source supports it (modified-since filters, ID watermarks, cursors, or content hashing). See the [Taps guide](/taps#incremental-sync-state).
+  - **MongoDB upsert.** MongoDB pipelines can declare key fields, so revised records update in place instead of duplicating — previously blocked by over-strict validation.
+  - **MCP playground fixed.** All tools in the MCP tab's playground now execute (28 previously errored when run there); 63 tools total including the two new sync-state tools.
+</Update>
+
 <Update label="v1.13.1" description="July 28, 2026">
   **Store your tap scripts in GitHub — every save is a commit.**
 
