@@ -101,6 +101,22 @@ object TapScriptGenerator {
           |    source_limit = sample_cap if sample_cap is not None else -1
           |  Use `source_limit` in /query/* request bodies. Use `sample_cap` to bound per-item loops (e.g. `for i, x in enumerate(items): if sample_cap is not None and i >= sample_cap: break`).
           |
+          |Incremental sync — persistent state (`DATRIS_TAP_STATE` in, `DATRIS_STATE` out):
+          |- The platform persists a small JSON state object between runs so a recurring tap fetches only what is new. The last committed state is injected as the env var `DATRIS_TAP_STATE` (absent on the very first run). To save new state, assign a dict to the module-global `DATRIS_STATE` inside `fetch()` (declare `global DATRIS_STATE` first). The platform commits it ONLY after a successful run — a failed run automatically re-fetches the same window, so never advance state defensively.
+          |- CRITICAL: `fetch()` must STILL return the plain list of record dicts. Do NOT change the return shape to carry state — never `return {"records": rows, "state": ...}`. State travels ONLY through the `DATRIS_STATE` module-global; the return value stays exactly the record list it would be without state.
+          |- Derive the cursor from the DATA, not the clock: save the max modified-timestamp / id seen in the fetched records, not "now" — wall-clock cursors silently skip records when clocks disagree with the source.
+          |- PREFER an incremental design whenever the tap will run on a schedule and the source supports one of these, in order of preference:
+          |  1. Modified-since filtering (an updated-after/modified-since query parameter): state = the newest modification timestamp seen.
+          |  2. Append-only ordering (monotonic id or creation time): state = the highest id seen; stop paging once a page crosses that bookmark. Note this misses edits to old records — acceptable for event/log-style data.
+          |  3. An opaque continuation or cursor token from the source: store the token verbatim and resume from it.
+          |  4. Full-fetch sources: compute a hash of the serialized payload; if it equals the hash in state, return [] (nothing new); otherwise save the new hash and return everything.
+          |  If none of these fit (small, unordered source), do not use state at all — a plain full fetch every run is correct, and the destination's upsert handles re-loads.
+          |- Required read pattern at the top of `fetch()` when using state (import json at the top):
+          |    state = json.loads(os.environ.get('DATRIS_TAP_STATE') or '{}')
+          |- The cursor must be MONOTONIC: advance with max(previous_value, newest_seen) so re-processing old data can never move the bookmark backwards.
+          |- If a `DATRIS_TAP_PARAM_*` value explicitly overrides the fetch window (a backfill run), do NOT set `DATRIS_STATE` for that run — backfills must not move the bookmark.
+          |- Keep state tiny: a timestamp, an id, a token, or a hash — the platform rejects state over 64 KB. NEVER put records, large lists, or credentials in state; it is stored and displayed unmasked.
+          |
           |Where {pg_db} = os.environ.get('DATRIS_POSTGRES_DATABASE') and {mongo_db} = os.environ.get('DATRIS_MONGODB_DATABASE').
           |
           |Do NOT write defensive shape-probing code for platform endpoints:

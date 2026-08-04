@@ -38,6 +38,7 @@ object TapScriptOptimizer {
           |- Keep the `fetch()` function signature and its return shape.
           |- Keep all `os.environ.get(...)` reads for Vault-injected secrets.
           |- Keep the `DATRIS_TAP_TEST_LIMIT` env-var handling and the `sample_cap` / `source_limit` convention — test runs must still cap sample size.
+          |- Keep the incremental-sync state handling if present: the `DATRIS_TAP_STATE` env-var read and the `DATRIS_STATE` module-global assignment are the platform's bookmark contract, not dead code. Never remove them, and never change what the state tracks.
           |- Keep existing defensive error handling: request retries, HTTP 429 `Retry-After` honoring, 404 skip, stderr progress logging, session/connection reuse if already present.
           |- Do NOT change WHAT the script fetches — only HOW. If correctness and performance conflict, keep correctness.
           |- Do NOT silence exceptions to appear faster. Do NOT remove the `raise_for_status()` or explicit error checks.

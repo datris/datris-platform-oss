@@ -44,6 +44,7 @@ object TapScriptReviewer {
           |  - Keep the fetch() signature and return shape.
           |  - Keep os.environ.get(...) reads unchanged.
           |  - Keep DATRIS_TAP_TEST_LIMIT / sample_cap / source_limit handling.
+          |  - Keep DATRIS_TAP_STATE / DATRIS_STATE incremental-sync handling if present — it is the platform's bookmark contract, not dead code.
           |  - Keep request retries, 404 skip, stderr logging.
           |  - Do NOT change WHAT the script fetches, only HOW (when regenerating).
           |  - Do NOT introduce async/await. Thread-based concurrency only.

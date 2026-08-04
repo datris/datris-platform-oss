@@ -30,14 +30,20 @@ case class TapScriptResult(
     columns: java.util.List[String] = null,
     publisherToken: String = null,
     pipelineTokens: java.util.List[String] = null,
-    missingSecretFields: Seq[String] = Nil
+    missingSecretFields: Seq[String] = Nil,
+    // Incremental-sync state the script emitted (raw JSON), or null. Committed by
+    // TapRunner only after a successful real run — never on failure or test mode.
+    newState: String = null
 )
 
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
     private def scriptTimeoutSeconds: Int = DatrisEnvironment.current.tapScriptTimeoutSeconds
 
-    private val WRAPPER_TEMPLATE =
+    // private[util] so TapWrapperStateSpec can execute the real wrapper against
+    // fixture scripts — the wrapper is the wire format, and a drift here breaks
+    // every tap shape at once.
+    private[util] val WRAPPER_TEMPLATE =
         """import json, sys, os, time, importlib.util
           |# Redirect script's print() output to stderr so only JSON goes to stdout.
           |# Wrapper-emitted lifecycle lines (prefixed [wrapper]) also go to stderr so
@@ -53,6 +59,17 @@ object TapScriptRunner {
           |result = mod.fetch()
           |_elapsed = time.time() - _t0
           |sys.stdout = _real_stdout
+          |# Normalize the {"records": [...], "state": {...}} shape. The documented
+          |# contract is "return the record list, set global DATRIS_STATE" — but code
+          |# generators naturally produce this envelope instead, and without this
+          |# normalization it silently counts as 0 records (a dict is "1 json
+          |# payload"). Accept it, honor its state, and nudge toward the canonical
+          |# form on stderr.
+          |if isinstance(result, dict) and isinstance(result.get("records"), list):
+          |    print("[wrapper] fetch() returned {'records': ..., 'state': ...} — normalized. Prefer returning the list and setting the DATRIS_STATE global.", file=sys.stderr, flush=True)
+          |    if isinstance(result.get("state"), dict) and getattr(mod, "DATRIS_STATE", None) is None:
+          |        mod.DATRIS_STATE = result["state"]
+          |    result = result["records"]
           |# Detect data type from result
           |if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict) and 'uri' in result[0] and 'content' in result[0]:
           |    # Document tap: list of {uri, filename, content (base64), ...}
@@ -89,15 +106,35 @@ object TapScriptRunner {
           |else:
           |    print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
+          |# Incremental-sync state: a script that wants the platform to remember its
+          |# position sets a module-global dict DATRIS_STATE inside fetch(). Absent or
+          |# non-dict → no state key, and the previously committed state stays put.
+          |_new_state = getattr(mod, "DATRIS_STATE", None)
+          |if _new_state is not None and not isinstance(_new_state, dict):
+          |    print(f"[wrapper] DATRIS_STATE ignored: expected dict, got {type(_new_state).__name__}", file=sys.stderr, flush=True)
+          |    _new_state = None
+          |if _new_state is not None:
+          |    envelope["state"] = json.loads(json.dumps(_new_state, default=str))
+          |    print("[wrapper] fetch() emitted state: " + json.dumps(envelope["state"], default=str)[:200], file=sys.stderr, flush=True)
           |print(json.dumps(envelope))
           |""".stripMargin
+
+    // State blobs are cursors, not data stores. Anything near this size is a
+    // script bug (e.g. stuffing records into DATRIS_STATE) — fail loudly rather
+    // than silently persisting an ever-growing document to Mongo.
+    private val MaxStateBytes: Int = 64 * 1024
 
     // Per-run params are validated against this pattern so they cleanly map onto
     // env var names (DATRIS_TAP_PARAM_<key>). Reject anything else so we never
     // silently drop a param or generate an invalid env var.
     private val ParamKeyPattern = "^[A-Za-z_][A-Za-z0-9_]*$".r
 
-    def run(tapConfig: TapConfig, testLimit: Int = 0, params: Map[String, String] = Map.empty): TapScriptResult = {
+    def run(
+        tapConfig: TapConfig,
+        testLimit: Int = 0,
+        params: Map[String, String] = Map.empty,
+        previousState: String = null
+    ): TapScriptResult = {
         logger.info("TapScriptRunner: executing tap: " + tapConfig.name)
 
         // Step 1: Read script from its storage backend (MinIO or code repo)
@@ -206,7 +243,13 @@ object TapScriptRunner {
                     )
                 else Some("DATRIS_TAP_PARAM_" + key -> (if (v == null) "" else v))
             }
-            val allEnvVars = platformEnvVars ++ testLimitEnvVars ++ paramEnvVars ++ secretEnvVars
+            // Incremental-sync state committed by the last successful run. Injected in
+            // test mode too (a test should exercise the same window a real run would),
+            // but only real runs ever COMMIT new state (TapRunner gates on push).
+            val stateEnvVars: Seq[(String, String)] =
+                if (previousState != null && previousState.nonEmpty) Seq("DATRIS_TAP_STATE" -> previousState)
+                else Seq.empty
+            val allEnvVars = platformEnvVars ++ testLimitEnvVars ++ paramEnvVars ++ stateEnvVars ++ secretEnvVars
 
             // Step 5: Execute the wrapper — either in the isolated datris-tap-runner sidecar
             // (Phase 3, when USE_TAP_RUNNER is set) or in-process (default). Both receive the
@@ -257,6 +300,23 @@ object TapScriptRunner {
             val envelope = gson.fromJson(rawOutput, classOf[java.util.Map[String, Any]])
             val dataType = Option(envelope.get("type")).map(_.toString).getOrElse("json")
             val data = envelope.get("data")
+
+            // Optional incremental-sync state emitted by the script (wrapper puts it on
+            // the envelope only when the script set a dict DATRIS_STATE). Extracted with
+            // JsonParser — NOT via the gson Map above — so number literals survive
+            // verbatim: the Map path turns every JSON number into a Double and would
+            // re-serialize an integer cursor 1785850779844 as 1785850779844.0, which a
+            // script interpolating it into a source URL would send malformed. Oversized
+            // state is a script bug — a cursor should be bytes, not a payload.
+            val newStateJson: String = extractStateJson(rawOutput)
+            if (newStateJson != null && newStateJson.length > MaxStateBytes) {
+                throw new DatrisException(
+                    "Tap script emitted a DATRIS_STATE blob of ~" + (newStateJson.length / 1024) +
+                        " KB (limit " + (MaxStateBytes / 1024) + " KB). State is a cursor for the next run — " +
+                        "a timestamp, an id watermark, a page token — not a place to store records. " +
+                        "Reduce DATRIS_STATE to the minimal position marker the next run needs."
+                )
+            }
             val dataJson = gson.toJson(data)
             val recordCount = if (dataType == "json" || dataType == "csv" || dataType == "document") countRecords(dataJson) else 1
 
@@ -308,7 +368,8 @@ object TapScriptRunner {
                 if (logs.nonEmpty) logs else null,
                 dataType,
                 columns,
-                missingSecretFields = detectedMissingSecretFields
+                missingSecretFields = detectedMissingSecretFields,
+                newState = newStateJson
             )
         } catch {
             case e: DatrisException =>
@@ -327,6 +388,18 @@ object TapScriptRunner {
             Files.deleteIfExists(scriptFile)
             Files.deleteIfExists(wrapperFile)
             venvDir.foreach(deleteRecursively)
+        }
+    }
+
+    /** Pull the optional `state` object out of the wrapper envelope, preserving the
+      * exact JSON representation the script emitted (integer cursors stay integers).
+      * Returns null when absent or not an object. private[util] for direct testing. */
+    private[util] def extractStateJson(rawOutput: String): String = {
+        try {
+            val obj = JsonParser.parseString(rawOutput).getAsJsonObject
+            if (obj.has("state") && obj.get("state").isJsonObject) obj.get("state").toString else null
+        } catch {
+            case _: Exception => null
         }
     }
 

@@ -2375,6 +2375,80 @@ paths:
                 properties:
                   message: { type: string }
 
+  /api/v1/tap/state:
+    get:
+      tags: [Taps]
+      summary: Read a tap's incremental-sync state
+      description: >-
+        Returns the bookmark/cursor the tap's script saved after its last
+        successful run — the object the next run receives via the
+        DATRIS_TAP_STATE environment variable. `state` is null when the tap has
+        never committed state (non-incremental tap, or no successful run yet).
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tap: { type: string }
+                  state:
+                    type: object
+                    nullable: true
+                    additionalProperties: true
+                  updatedAt: { type: string }
+                  updatedBy:
+                    type: string
+                    description: The committing run's key (`tapName|runTime`), or `manual` for API/UI overrides.
+        '500':
+          description: Error
+    post:
+      tags: [Taps]
+      summary: Overwrite a tap's incremental-sync state
+      description: >-
+        Sets the state object the next run receives via DATRIS_TAP_STATE — e.g.
+        rewind a cursor so a window is re-fetched. The state shape is defined by
+        the tap's own script. Committed state is capped at 64 KB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, state]
+              properties:
+                name: { type: string }
+                state:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: State saved
+        '500':
+          description: Error (unknown tap, or state is not a JSON object)
+    delete:
+      tags: [Taps]
+      summary: Reset a tap's incremental-sync state
+      description: >-
+        Deletes the stored state entirely. The next run sees no
+        DATRIS_TAP_STATE and performs a full first-run fetch.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: State reset
+        '500':
+          description: Error
+
   /api/v1/vector-stores/available:
     get:
       tags: [Health]

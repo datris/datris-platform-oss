@@ -380,6 +380,7 @@ NEVER narrate a create / update / delete / run operation as completed unless the
   - If a tool call returned an error or unexpected response, do NOT paper it over with confident success language. Surface the actual response shape (error string, persistedReason, etc.) and decide the next step from that.
   - After multi-step setups (e.g., create pipeline → create tap → test → run), enumerate explicitly what completed and what didn't BEFORE summarizing. "Pipeline X: created ✓. Tap Y: created ✓, tested ✓ (7 records). Tap not yet run — say the word."
   - When in doubt — when you intended to do N steps and you can't enumerate the N tool calls in this turn — STOP and verify. Call `list_pipelines` / `list_taps` / `get_tap` to ground yourself in actual platform state before claiming anything is done.
+  - "Run it again" means CALL THE TOOL AGAIN. A repeated request ("run it again", "try once more", "re-test it") is a new operation: make the fresh `run_tap`/`test_tap` call and report THAT call's result. NEVER answer from the previous run's outcome — a run that returned 0 records five minutes ago says nothing about what a run NOW would return (sources refresh continuously; that's the entire premise of incremental taps). If the call wasn't made, the only honest report is "I didn't run it" — not a forecast dressed as a result.
   - When the verification call FINDS the resource (the pipeline / tap / collection / table is present in the list response), it exists — full stop. Do NOT retract a previous-turn claim that it was created, do NOT apologize for confabulating, and do NOT re-create it. Skim the response for the name you're looking for; if it's there, treat it as real and move on to the user's current ask. The EVIDENCE RULE prevents fake claims of success — it does NOT require retracting true claims just because they happened in a previous turn.
 The user trusts your narrative as a proxy for the platform state. Confabulating "done" when only some of it is done corrupts that trust and creates failure modes (a cron set on a tap whose pipeline doesn't exist; a "run now" call against a pipeline that was never created). Be honest about what happened in THIS turn, even if it's less than the user asked for — they can redirect, but only if your report is true.
 
@@ -1126,6 +1127,35 @@ ids = json.loads(ids_json)
 
 ---
 
+## Incremental sync — persistent state (bookmarks)
+
+The platform persists a small JSON state object per tap between runs, so a scheduled tap fetches only what's new instead of re-fetching everything. This is the right tool for RECURRING data needs; `params` is the right tool for per-call overrides. A tap using state runs at constant size forever — no growing full refreshes marching toward the output cap.
+
+### The contract
+
+- The last committed state is injected into the script as the `DATRIS_TAP_STATE` env var (absent on the very first run). Scripts read it with `state = json.loads(os.environ.get("DATRIS_TAP_STATE") or "{}")`.
+- The script saves new state by assigning a dict to the module-global `DATRIS_STATE` inside `fetch()` (with `global DATRIS_STATE`).
+- The platform commits the new state ONLY after a successful run (`success` or `no_records`). A failed run leaves the old bookmark, so the automatic retry re-fetches the same window — no data holes. Destinations with upsert absorb any overlap.
+- Test runs (`test_tap`) read state but never commit it.
+- State must stay under 64 KB — it's a cursor (timestamp, id watermark, page token, content hash), never a place to store records or credentials. It is stored and displayed unmasked.
+
+### What to track (in order of preference, by what the source supports)
+
+1. **Modified-since filter** → state = newest modification timestamp seen.
+2. **Append-only ordering** (monotonic id / created-at) → state = highest id seen; stop paging at the bookmark.
+3. **Opaque continuation token** → store it verbatim, resume from it.
+4. **Full-fetch-only source** → state = a hash of the payload; return `[]` when unchanged (a clean `no_records` run), everything when changed.
+
+If none fit (small unordered source), skip state — a full fetch each run is correct.
+
+### Rules that keep cursors sane
+
+- **Monotonic:** scripts must advance the cursor with `max(previous, newest_seen)` — re-processing old data can never move the bookmark backwards.
+- **Backfills don't move the bookmark:** when you drive an explicit window via `run_tap(params={...})`, a well-written script leaves `DATRIS_STATE` unset for that run. The scheduled cadence continues from where it was.
+- **Inspect/repair:** `get_tap_state(name)` shows the current bookmark (also included in `get_tap`). `set_tap_state(name, state={...})` rewinds/overwrites it; `set_tap_state(name, reset=true)` clears it so the next run is a full first-run fetch. Only touch state on explicit request or to recover a broken cursor.
+
+---
+
 ## Creating a tap — instruction vs script
 
 **With instruction:** pass a plain-English `instruction` to `create_tap`. Platform AI generates the Python `fetch()` function. Slower (1–2 minutes for codegen). Use when the source is well-known and the logic is straightforward.
@@ -1189,7 +1219,7 @@ Do not query the destination or report completion to the user before polling com
 
 ### Common `run_error` causes
 
-- **Output exceeded size limit** — script produced more JSON than the configured tap output cap (default 100MB). The whole batch is buffered before pipeline loading; very large fetches risk OOM. Fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
+- **Output exceeded size limit** — script produced more JSON than the configured tap output cap (default 100MB). The whole batch is buffered before pipeline loading; very large fetches risk OOM. Durable fix for a RECURRING tap: make it incremental (see "Incremental sync — persistent state" above) so every run fetches only what's new and stays small forever. One-off fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
 - **Script raised an exception** — read the `logs` field for the Python traceback. Common: 403/404 from the source API (auth, entitlements), timeout, JSON parse error on malformed response.
 - **Subprocess timed out** — script ran longer than `tapScriptTimeoutSeconds` (default 300). Either the source is genuinely slow (chunk smaller via params) or the script has a bug (infinite loop, missing pagination break).
 
@@ -1250,7 +1280,7 @@ async def list_resources():
         Resource(
             uri="datris://tap-workflow-reference",
             name="Tap Workflow Reference",
-            description="Canonical reference for everything tap-related: creation (instruction vs script), per-run params, scheduling (with CRON cookbook), run flow + polling, error handling (persistedReason table, size-limit guidance), document taps, and outcome verification via publisherToken + get_tap_logs. Re-read this any time you need to verify your understanding of how taps work — including the SCHEDULING RULE for recurring data needs.",
+            description="Canonical reference for everything tap-related: creation (instruction vs script), per-run params, incremental sync via persistent state (DATRIS_TAP_STATE bookmarks), scheduling (with CRON cookbook), run flow + polling, error handling (persistedReason table, size-limit guidance), document taps, and outcome verification via publisherToken + get_tap_logs. Re-read this any time you need to verify your understanding of how taps work — including the SCHEDULING RULE for recurring data needs.",
             mimeType="text/plain",
         ),
     ]
@@ -2126,7 +2156,7 @@ async def list_tools():
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
-                "      - `run_error`: show the `error` string. If the error says output exceeded the size limit, reduce the source range via `params` (shorter date window, smaller page, per-id chunks) and call run_tap again — multiple smaller runs all land in the same destination pipeline.\n"
+                "      - `run_error`: show the `error` string. If the error says output exceeded the size limit, reduce the source range via `params` (shorter date window, smaller page, per-id chunks) and call run_tap again — multiple smaller runs all land in the same destination pipeline. For a recurring tap, the durable fix is making the script incremental via DATRIS_TAP_STATE (see the tap-workflow-reference resource).\n"
                 "      - `no_records`: source returned nothing.\n"
                 "      - `debounced`: this tap was triggered server-side within the last 5 seconds. Do NOT retry — your previous call is still running. Use `get_tap_logs` to find the live run's `publisherToken`, then poll `get_pipeline_status`.\n"
                 "      - `already_running` (response `status: skipped`): another run_tap for this tap is already in flight in this agent session. Same handling as `debounced`: wait, then look up the live run in `get_tap_logs`.\n"
@@ -2251,6 +2281,56 @@ async def list_tools():
                     "clear_all": {
                         "type": "boolean",
                         "description": "Optional. If true, deletes the entire ledger for this tap, forcing every document to be re-processed on the next run."
+                    }
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="get_tap_state",
+            description=(
+                "Get a tap's incremental-sync state — the bookmark/cursor its script saved after the last successful run "
+                "(injected into the next run as the DATRIS_TAP_STATE env var). Returns `{tap, state, updatedAt, updatedBy}`; "
+                "`state` is null when the tap has never committed state (non-incremental tap, or no successful run yet). "
+                "Use this to see where an incremental tap will resume from, or to debug why a scheduled tap is re-fetching "
+                "or skipping a window."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap"
+                    },
+                },
+                "required": ["name"]
+            }
+        ),
+        Tool(
+            name="set_tap_state",
+            description=(
+                "Overwrite or reset a tap's incremental-sync state. Pass `state` (a JSON object) to set the bookmark the "
+                "next run receives via DATRIS_TAP_STATE — e.g. rewind a cursor so a window is re-fetched. Pass `reset: true` "
+                "to delete the state entirely: the next run sees no DATRIS_TAP_STATE and does a full first-run fetch. "
+                "The state shape is defined by the tap's own script (read its code via get_tap to see what keys it expects). "
+                "Only use this on explicit request or to recover a broken cursor — normal runs manage state themselves, "
+                "committing it only after a successful run."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the tap"
+                    },
+                    "state": {
+                        "type": "object",
+                        "description": "The state object the next run should receive. Must match the keys the tap's script reads from DATRIS_TAP_STATE.",
+                        "additionalProperties": True
+                    },
+                    "reset": {
+                        "type": "boolean",
+                        "description": "If true, delete the stored state entirely (next run = full first-run fetch). Ignores `state`."
                     }
                 },
                 "required": ["name"]
@@ -3218,6 +3298,17 @@ def _dispatch(name: str, args: dict) -> str:
         if clear_all:
             return _call("delete", f"/api/v1/tap/ledger?name={tap_name}")
         return _call("get", f"/api/v1/tap/ledger?name={tap_name}")
+
+    elif name == "get_tap_state":
+        return _call("get", f"/api/v1/tap/state?name={args['name']}")
+
+    elif name == "set_tap_state":
+        if args.get("reset"):
+            return _call("delete", f"/api/v1/tap/state?name={args['name']}")
+        state = args.get("state")
+        if not isinstance(state, dict):
+            return json.dumps({"error": "Pass a `state` object, or `reset: true` to clear the stored state."})
+        return _call("post", "/api/v1/tap/state", json={"name": args["name"], "state": state})
 
     elif name == "test_tap":
         return _call("post", "/api/v1/tap/run", json={"name": args["name"], "mode": "test"})

@@ -233,6 +233,10 @@
                     (click)="viewLedger($event, tap.name)" title="Document ledger">
               <span class="material-icons">description</span>
             </button>
+            <button class="action-btn ledger-btn" *ngIf="tap.tapType !== 'document'"
+                    (click)="viewState($event, tap.name)" title="Sync state (incremental bookmark)">
+              <span class="material-icons">bookmark</span>
+            </button>
             <button class="action-btn edit-btn" (click)="editTap($event, tap.name)" title="Edit tap" *ngIf="auth.canWrite()">
               <span class="material-icons">edit</span>
             </button>
@@ -475,6 +479,39 @@
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sync State Modal -->
+<div class="modal-overlay" *ngIf="stateTap" (click)="closeState()">
+  <div class="config-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Sync State: {{ stateTap }}</h2>
+      <button class="modal-close" (click)="closeState()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="logs-loading" *ngIf="stateLoading">Loading...</div>
+      <div class="logs-empty" *ngIf="!stateLoading && !stateJson">
+        No sync state. This tap starts from scratch on every run — either it isn't
+        incremental, or it hasn't had a successful run yet. Incremental taps save a
+        bookmark here after each successful run so the next run fetches only what's new.
+      </div>
+      <div *ngIf="!stateLoading && stateJson">
+        <div class="ledger-header">
+          <span class="ledger-header-title" *ngIf="stateUpdatedAt">
+            Committed {{ stateUpdatedAt }}<ng-container *ngIf="stateUpdatedBy"> ({{ stateUpdatedBy === 'manual' ? 'manual edit' : 'run ' + stateUpdatedBy }})</ng-container>
+          </span>
+          <button class="btn-secondary" (click)="resetState()" [disabled]="stateResetting" *ngIf="auth.canWrite()"
+                  title="Delete the bookmark — the next run re-fetches everything">
+            <span class="material-icons">refresh</span>
+            {{ stateResetting ? 'Resetting...' : 'Reset (full re-fetch)' }}
+          </button>
+        </div>
+        <pre class="config-json">{{ stateJson }}</pre>
       </div>
     </div>
   </div>

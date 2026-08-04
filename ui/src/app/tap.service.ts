@@ -91,6 +91,15 @@ export class TapService {
     return this.http.delete<any>('/api/v1/tap/ledger?name=' + encodeURIComponent(name));
   }
 
+  // --- Incremental-sync state (bookmarks) -----------------------------------
+  getTapState(name: string): Observable<any> {
+    return this.http.get<any>('/api/v1/tap/state?name=' + encodeURIComponent(name));
+  }
+
+  resetTapState(name: string): Observable<any> {
+    return this.http.delete<any>('/api/v1/tap/state?name=' + encodeURIComponent(name));
+  }
+
   getPipelines(): Observable<any[]> {
     return this.http.get<any[]>('/api/v1/pipelines');
   }
