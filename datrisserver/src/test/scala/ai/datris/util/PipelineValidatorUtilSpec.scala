@@ -61,7 +61,9 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
 
     test("mongo destination: keyFields need not be schema columns (upsert matches inside _json)") {
         val cfg = parse(keyFieldConfigTemplate.format(""""useMongoDB":true"""))
-        val thrown = try { PipelineValidatorUtil.validate(cfg); None } catch { case e: DatrisException => Some(e) }
+        val thrown =
+            try { PipelineValidatorUtil.validate(cfg); None }
+            catch { case e: DatrisException => Some(e) }
         // Other unrelated validations may still fire on this minimal config —
         // the exemption only guarantees the keyFields rule itself is skipped.
         assert(!thrown.exists(_.getMessage.contains("Key field")))
