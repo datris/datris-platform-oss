@@ -125,7 +125,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'create_tap',
-      description: 'Create a tap from an instruction (AI generates script), a user-provided script, or config only.',
+      description: 'Create a tap from an instruction (AI generates script), a user-provided script, or config only. Agent-only in this playground — it is a multi-step flow (codegen, script store, config save); use the Create Tap wizard on the Ingestion tab instead.',
       category: 'Taps',
       parameters: [
         { name: 'name', type: 'string', description: 'Unique tap name', required: true, inputType: 'text' },
@@ -137,7 +137,7 @@ export class McpComponent implements OnInit {
         { name: 'tap_type', type: 'string', description: 'structured (default) or document (for PDFs/Word/HTML into vector-store pipelines)', required: false, inputType: 'text' },
         { name: 'packages', type: 'array', description: 'Optional list of pip packages the tap script imports beyond the base set. Auto-detected from the script when omitted.', required: false, inputType: 'text' }
       ],
-      playgroundEnabled: true
+      playgroundEnabled: false
     },
     {
       name: 'list_taps',
@@ -214,6 +214,26 @@ export class McpComponent implements OnInit {
         { name: 'name', type: 'string', description: 'Name of the document tap', required: true, inputType: 'text' },
         { name: 'clear_uri', type: 'string', description: 'Optional — URI whose ledger entry to delete, forcing re-processing on next run', required: false, inputType: 'text' },
         { name: 'clear_all', type: 'boolean', description: 'Optional — if true, wipes the entire ledger for this tap', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_tap_state',
+      description: 'Read a tap\'s incremental-sync state — the bookmark/cursor its script committed after the last successful run (injected into the next run as DATRIS_TAP_STATE). Returns {tap, state, updatedAt, updatedBy}; state is null for non-incremental taps or before the first successful run.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'set_tap_state',
+      description: 'Overwrite or reset a tap\'s incremental-sync state. Pass state (a JSON object matching what the tap\'s script reads from DATRIS_TAP_STATE) to set the bookmark — e.g. rewind a cursor so a window is re-fetched. Pass reset=true to delete the state entirely: the next run does a full first-run fetch.',
+      category: 'Taps',
+      parameters: [
+        { name: 'name', type: 'string', description: 'Name of the tap', required: true, inputType: 'text' },
+        { name: 'state', type: 'object', description: 'The state object the next run should receive via DATRIS_TAP_STATE (shape is defined by the tap\'s own script)', required: false, inputType: 'textarea' },
+        { name: 'reset', type: 'boolean', description: 'If true, deletes the stored state — next run is a full first-run fetch. Ignores state.', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

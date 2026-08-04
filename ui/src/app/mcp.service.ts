@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, timer } from 'rxjs';
+import { map, switchMap } from 'rxjs/operators';
 
 @Injectable({
   providedIn: 'root'
@@ -206,6 +207,132 @@ export class McpService {
       // Secrets
       case 'update_secret':
         return this.http.put<any>('/api/v1/secrets/' + encodeURIComponent(params['name']), JSON.parse(params['fields']));
+
+      // Agent utilities
+      case 'wait_seconds': {
+        const secs = Math.min(Math.max(Number(params['seconds']) || 1, 1), 120);
+        return timer(secs * 1000).pipe(map(() => ({ waited_seconds: secs })));
+      }
+
+      // Taps
+      case 'list_taps':
+        return this.http.get<any>('/api/v1/taps');
+      case 'get_tap':
+        return this.http.get<any>('/api/v1/tap?name=' + encodeURIComponent(params['name']));
+      case 'run_tap': {
+        const body: any = { name: params['name'], mode: 'run' };
+        if (params['params']) {
+          body.params = typeof params['params'] === 'string' ? JSON.parse(params['params']) : params['params'];
+        }
+        return this.http.post<any>('/api/v1/tap/run', body);
+      }
+      case 'test_tap':
+        return this.http.post<any>('/api/v1/tap/run', { name: params['name'], mode: 'test' });
+      case 'update_tap':
+        // Read-modify-write, mirroring the MCP server flow (there is no PATCH).
+        // GET decorates the config with script/state fields the POST path doesn't
+        // take — strip them before saving.
+        return this.http.get<any>('/api/v1/tap?name=' + encodeURIComponent(params['name'])).pipe(
+          switchMap((tap: any) => {
+            const updated: any = { ...tap };
+            delete updated.script;
+            delete updated.scriptMissing;
+            delete updated.state;
+            delete updated.stateUpdatedAt;
+            if (params['enabled'] !== undefined) updated.enabled = String(params['enabled']) === 'true';
+            if (params['cron_expression'] !== undefined) updated.cronExpression = params['cron_expression'] || null;
+            if (params['target_pipeline'] !== undefined) updated.targetPipeline = params['target_pipeline'] || null;
+            if (params['description'] !== undefined) updated.description = params['description'];
+            return this.http.post<any>('/api/v1/tap', updated);
+          })
+        );
+      case 'get_tap_logs':
+        return this.http.get<any>('/api/v1/tap/logs?name=' + encodeURIComponent(params['name']));
+      case 'get_tap_ledger': {
+        const ledgerName = encodeURIComponent(params['name']);
+        if (params['clear_uri']) {
+          return this.http.delete<any>('/api/v1/tap/ledger?name=' + ledgerName + '&uri=' + encodeURIComponent(params['clear_uri']));
+        }
+        if (String(params['clear_all']) === 'true') {
+          return this.http.delete<any>('/api/v1/tap/ledger?name=' + ledgerName);
+        }
+        return this.http.get<any>('/api/v1/tap/ledger?name=' + ledgerName);
+      }
+      case 'get_tap_state':
+        return this.http.get<any>('/api/v1/tap/state?name=' + encodeURIComponent(params['name']));
+      case 'set_tap_state': {
+        if (String(params['reset']) === 'true') {
+          return this.http.delete<any>('/api/v1/tap/state?name=' + encodeURIComponent(params['name']));
+        }
+        const state = typeof params['state'] === 'string' ? JSON.parse(params['state']) : params['state'];
+        return this.http.post<any>('/api/v1/tap/state', { name: params['name'], state });
+      }
+      case 'delete_tap':
+        return this.http.delete<any>('/api/v1/tap?name=' + encodeURIComponent(params['name']));
+      case 'get_pipeline_status': {
+        if (params['publisher_token']) {
+          return this.http.get<any>('/api/v1/pipeline/status?publishertoken=' + encodeURIComponent(params['publisher_token']));
+        }
+        return this.http.get<any>('/api/v1/pipeline/status?pipelinetoken=' + encodeURIComponent(params['pipeline_token']));
+      }
+
+      // Definition versions
+      case 'list_tap_versions':
+        return this.http.get<any>('/api/v1/tap/versions?name=' + encodeURIComponent(params['name']));
+      case 'get_tap_version':
+        return this.http.get<any>('/api/v1/tap/version?name=' + encodeURIComponent(params['name']) + '&version=' + params['version']);
+      case 'diff_tap_versions':
+        return this.http.get<any>('/api/v1/tap/version/diff?name=' + encodeURIComponent(params['name']) + '&version=' + params['version'] + '&against=' + params['against']);
+      case 'restore_tap_version':
+        return this.http.post<any>('/api/v1/tap/version/restore?name=' + encodeURIComponent(params['name']) + '&version=' + params['version'], {});
+      case 'list_pipeline_versions':
+        return this.http.get<any>('/api/v1/pipeline/versions?name=' + encodeURIComponent(params['name']));
+      case 'get_pipeline_version':
+        return this.http.get<any>('/api/v1/pipeline/version?name=' + encodeURIComponent(params['name']) + '&version=' + params['version']);
+      case 'diff_pipeline_versions':
+        return this.http.get<any>('/api/v1/pipeline/version/diff?name=' + encodeURIComponent(params['name']) + '&version=' + params['version'] + '&against=' + params['against']);
+      case 'restore_pipeline_version':
+        return this.http.post<any>('/api/v1/pipeline/version/restore?name=' + encodeURIComponent(params['name']) + '&version=' + params['version'], {});
+
+      // Catalog assignment (read-modify-write on the named tap or pipeline)
+      case 'set_catalog': {
+        const catalogValue = params['catalog'] || null;
+        if (params['tap']) {
+          return this.http.get<any>('/api/v1/tap?name=' + encodeURIComponent(params['tap'])).pipe(
+            switchMap((tap: any) => {
+              const updated: any = { ...tap, catalog: catalogValue };
+              delete updated.script;
+              delete updated.scriptMissing;
+              delete updated.state;
+              delete updated.stateUpdatedAt;
+              return this.http.post<any>('/api/v1/tap', updated);
+            })
+          );
+        }
+        return this.http.get<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(params['pipeline'])).pipe(
+          switchMap((cfg: any) => this.http.post<any>('/api/v1/pipeline', { ...cfg, catalog: catalogValue }))
+        );
+      }
+
+      // Tap & platform secrets (field NAMES only are ever returned — never values)
+      case 'list_tap_secrets':
+        return this.http.get<any>('/api/v1/secrets?type=tap');
+      case 'get_tap_secret_fields':
+        return this.http.get<any>('/api/v1/secrets/' + encodeURIComponent(params['name'])).pipe(
+          map((data: any) => ({ secret: params['name'], fields: Object.keys(data || {}).filter(k => k !== '_type') }))
+        );
+      case 'create_tap_secret': {
+        const fields = typeof params['fields'] === 'string' ? JSON.parse(params['fields']) : params['fields'];
+        return this.http.put<any>('/api/v1/secrets/' + encodeURIComponent(params['name']), { ...fields, _type: 'tap' });
+      }
+      case 'delete_tap_secret':
+        return this.http.delete<any>('/api/v1/secrets/' + encodeURIComponent(params['name']));
+      case 'list_platform_secrets':
+        return this.http.get<any>('/api/v1/secrets?type=platform');
+      case 'get_platform_secret_fields':
+        return this.http.get<any>('/api/v1/secrets/' + encodeURIComponent(params['name'])).pipe(
+          map((data: any) => ({ secret: params['name'], fields: Object.keys(data || {}).filter(k => k !== '_type') }))
+        );
 
       default:
         throw new Error('Unknown tool: ' + toolName);
