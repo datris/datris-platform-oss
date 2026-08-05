@@ -120,6 +120,8 @@
             <ng-container *ngIf="deleteTarget !== tap.name">
               <button class="embed-action-btn" (click)="viewLogs($event, tap.name)" title="Run history"><span class="material-icons">history</span></button>
               <button class="embed-action-btn" (click)="openHistory($event, tap.name)" title="Version history"><span class="material-icons">manage_history</span></button>
+              <button class="embed-action-btn" *ngIf="tap.tapType !== 'document'"
+                      (click)="viewState($event, tap.name)" title="Sync state (incremental bookmark)"><span class="material-icons">bookmark</span></button>
               <button class="embed-action-btn" (click)="editTap($event, tap.name)" title="Edit" *ngIf="auth.canWrite()"><span class="material-icons">edit</span></button>
               <button class="embed-action-btn" (click)="runTap($event, tap.name)" title="Test run" *ngIf="auth.canWrite()"><span class="material-icons">play_arrow</span></button>
               <span class="embed-move-wrap" *ngIf="auth.canWrite() && moveTargets().length > 0">
