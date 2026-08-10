@@ -18,6 +18,10 @@
 #   DATRIS_REF          repo ref to fetch files from (default: main)
 #   ANTHROPIC_API_KEY   pre-set Anthropic key        (skips the prompt)
 #   OPENAI_API_KEY      pre-set OpenAI key           (skips the prompt)
+#   AZURE_OPENAI_API_KEY / AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_MODEL
+#                       pre-set Azure OpenAI trio (all three required together;
+#                       endpoint is the resource base URL, model the chat
+#                       deployment name)
 #   DATRIS_POSTGRES     bundled|external|none        (default: bundled)
 #                       external also reads POSTGRES_JDBC_URL/POSTGRES_USER/POSTGRES_PASSWORD
 #   DATRIS_EMBEDDING    openai|tei|none              (default: openai if OpenAI key present, else tei)
