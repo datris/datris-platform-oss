@@ -41,9 +41,9 @@ Each Vault secret carries its full configuration inline:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `provider` | Yes | `anthropic`, `openai`, or `ollama` |
-| `endpoint` | Yes | API endpoint URL |
-| `model` | Yes | Model identifier |
+| `provider` | Yes | `anthropic`, `openai`, `azure`, or `ollama` |
+| `endpoint` | Yes | API endpoint URL. Azure has no default — use your resource URL, e.g. `https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions` |
+| `model` | Yes | Model identifier. For Azure this is your **deployment name** |
 | `apiKey` | No (not used by ollama) | Inline provider API key. The [shared API key store](#shared-api-key-store) is checked first and takes precedence when set |
 | `version` | Optional | API version (Anthropic uses `2023-06-01`) |
 
@@ -53,17 +53,17 @@ The resolver reads each secret at the configured path and uses whatever it finds
 
 ### Shared API Key Store
 
-Provider API keys live in a shared per-provider secret, `{env}/ai-keys` (`oss/ai-keys` in single-tenant deployments), with one field per provider: `anthropicApiKey` and `openaiApiKey`. When a slot needs a key, resolution order is:
+Provider API keys live in a shared per-provider secret, `{env}/ai-keys` (`oss/ai-keys` in single-tenant deployments), with one field per provider: `anthropicApiKey`, `openaiApiKey`, and `azureApiKey`. When a slot needs a key, resolution order is:
 
 1. **Shared key store** (`{env}/ai-keys`) — checked first; takes precedence over any inline key
 2. **Inline `apiKey`** on the slot secret — legacy deployments that stored the key on the slot itself
-3. **`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`** container env vars — single-tenant only
+3. **`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AZURE_OPENAI_API_KEY`** container env vars — single-tenant only
 
 Keys are stored once per provider rather than once per slot, so switching a slot between providers never loses the other provider's key. This is the store behind the Configuration UI's shared **API Keys** panel — entering a key there writes it to `{env}/ai-keys` for all slots to use.
 
 ## Quick Start with `.env`
 
-On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set **either** `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`:
+On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the `AZURE_OPENAI_*` trio:
 
 ```bash
 # .env
@@ -80,6 +80,32 @@ When `OPENAI_API_KEY` is set, all three slots are seeded against OpenAI:
 | `oss/ai-primary` | openai | `https://api.openai.com/v1/chat/completions` | `gpt-5.5` |
 | `oss/codegen` | openai | `https://api.openai.com/v1/chat/completions` | `gpt-5.5` |
 | `oss/embedding` | openai | `https://api.openai.com/v1/embeddings` | `text-embedding-3-small` |
+
+### Azure OpenAI path
+
+Use your Azure OpenAI resource instead of api.openai.com. All three values are required together — Azure endpoints embed your resource name and models are addressed by **deployment name**, so there are no universal defaults:
+
+```bash
+# .env
+AI_PROVIDER=azure
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com
+AZURE_OPENAI_MODEL=gpt-5-2          # your chat deployment's name
+```
+
+| Slot | Provider | Endpoint | Model |
+|------|----------|----------|-------|
+| `oss/ai-primary` | azure | `{AZURE_OPENAI_ENDPOINT}/openai/v1/chat/completions` | your deployment name |
+| `oss/codegen` | azure | `{AZURE_OPENAI_ENDPOINT}/openai/v1/chat/completions` | `CODEGEN_MODEL` or same deployment |
+| `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
+
+Embeddings default to the bundled service; set `EMBEDDING_PROVIDER=azure` to use an embedding deployment on your resource instead (see [mix-and-match](#mix-and-match-anthropic-chat--openai-embeddings)).
+
+<Tip>
+**Name deployments after their model** (e.g. `gpt-5-2`, `o4-mini` — the Azure portal's default). The platform detects model-specific behavior, like omitting sampling parameters that reasoning models reject, from the model name — which for Azure is the deployment name.
+</Tip>
+
+Datris targets Azure's **v1 API** (`/openai/v1/...`), which needs no `api-version` parameter. Legacy deployment-scoped URLs also work — put the full URL including `?api-version=...` in the section's Endpoint field in the Configuration UI.
 
 ### Anthropic path (with bundled embedding service)
 
@@ -133,6 +159,7 @@ Valid values for `EMBEDDING_PROVIDER`:
 | Value | Endpoint | Default model | Requirements |
 |-------|----------|---------------|--------------|
 | `openai` | `https://api.openai.com/v1/embeddings` | `text-embedding-3-small` (1536-dim) | `OPENAI_API_KEY` set |
+| `azure` | `{AZURE_OPENAI_ENDPOINT}/openai/v1/embeddings` | `text-embedding-3-small` (deployment name) | `AZURE_OPENAI_API_KEY` set, embedding deployment created on your resource |
 | `tei` | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` (1024-dim) | bundled TEI sidecar running |
 | `ollama` | `http://ollama:11434/v1/embeddings` | `bge-m3` (1024-dim) | optional Ollama service enabled, model pulled |
 
@@ -198,6 +225,7 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 The embedding endpoint must speak the **OpenAI embeddings API** (`POST /v1/embeddings` with `{model, input}` body returning `{data: [{embedding: [...]}]}`). That contract is implemented by:
 
 - **OpenAI** — `https://api.openai.com/v1/embeddings`
+- **Azure OpenAI** — `https://YOUR-RESOURCE.openai.azure.com/openai/v1/embeddings` (model = your embedding deployment's name)
 - **TEI (bundled)** — `http://tei:80/v1/embeddings` (the bundled HuggingFace Text Embeddings Inference sidecar serves `BAAI/bge-m3` out of the box)
 - **Ollama** — `http://ollama:11434/v1/embeddings` (only when the optional Ollama service is enabled and `bge-m3` has been pulled there)
 - **Ollama (external)** — `http://host.docker.internal:11434/v1/embeddings` (your own Ollama with any embedding model)
@@ -207,7 +235,9 @@ Anthropic has no embeddings API, so `provider: "anthropic"` is not valid for the
 
 ## Chat Provider Notes
 
-The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
+The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, Azure OpenAI, and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
+
+Azure OpenAI always speaks chat/completions against your configured endpoint (never the OpenAI Responses API, whose Azure availability varies by region and model). Web search is not available on the Azure provider — pair Azure chat with Anthropic or OpenAI web search if you need it.
 
 ## Web Search (Optional)
 
@@ -286,8 +316,8 @@ Some sub-tabs are role- and flag-gated — see the [API Keys matrix](/api-keys#s
 To set your AI keys:
 
 1. Open the **Configuration** tab, then the **AI Providers** sub-tab.
-2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, and Ollama (local).
-3. For Anthropic/OpenAI, enter your API key in the right-hand panel and pick a model from the dropdown. For Ollama, type the model name directly — no API key needed.
+2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, Azure OpenAI, and Ollama (local).
+3. For Anthropic/OpenAI/Azure, enter your API key in the right-hand panel and pick a model from the dropdown. For Azure, also enter your resource endpoint and type your deployment name as the model. For Ollama, type the model name directly — no API key needed.
 4. Click **Save Configuration**. Changes take effect immediately — no restart required.
 
 To revert to defaults, click **Reset to Datris-managed**. This deletes all three per-tenant secrets and falls the tenant back to the global defaults.

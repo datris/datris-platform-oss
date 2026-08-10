@@ -18,6 +18,7 @@ export class ConfigurationComponent implements OnInit {
   // Shared API keys (entered once in the right-hand panel)
   anthropicApiKey = '';
   openaiApiKey = '';
+  azureApiKey = '';
 
   // AI Primary
   aiPrimaryProvider = 'anthropic';
@@ -282,6 +283,7 @@ export class ConfigurationComponent implements OnInit {
       if (!apiKey) return;
       if (provider === 'anthropic') this.anthropicApiKey = apiKey;
       if (provider === 'openai') this.openaiApiKey = apiKey;
+      if (provider === 'azure') this.azureApiKey = apiKey;
     };
 
     this.http.get<any>('/api/v1/secrets/ai-primary').subscribe({
@@ -401,6 +403,7 @@ export class ConfigurationComponent implements OnInit {
         if (fields) {
           if (fields.anthropicApiKey) this.anthropicApiKey = fields.anthropicApiKey;
           if (fields.openaiApiKey) this.openaiApiKey = fields.openaiApiKey;
+          if (fields.azureApiKey) this.azureApiKey = fields.azureApiKey;
         }
         done();
       },
@@ -433,6 +436,7 @@ export class ConfigurationComponent implements OnInit {
   private resetSectionState(): void {
     this.anthropicApiKey = '';
     this.openaiApiKey = '';
+    this.azureApiKey = '';
     this.aiPrimaryModel = '';
     this.aiPrimaryEndpoint = '';
     this.showAdvancedAiPrimary = false;
@@ -470,6 +474,9 @@ export class ConfigurationComponent implements OnInit {
   }
   get openaiKeyAvailable(): boolean {
     return !!(this.openaiApiKey && this.openaiApiKey.length > 0);
+  }
+  get azureKeyAvailable(): boolean {
+    return !!(this.azureApiKey && this.azureApiKey.length > 0);
   }
 
   /** Default endpoint per provider for the web-search call (mirrors the chat
@@ -511,6 +518,7 @@ export class ConfigurationComponent implements OnInit {
   private keyForProvider(provider: string): string {
     if (provider === 'anthropic') return this.anthropicApiKey;
     if (provider === 'openai') return this.openaiApiKey;
+    if (provider === 'azure') return this.azureApiKey;
     return '';  // ollama / ollama-local / tei need no key
   }
 
@@ -586,9 +594,21 @@ export class ConfigurationComponent implements OnInit {
     flagIfMissingKey(this.codegenProvider, this.codegenModel);
     flagIfMissingKey(this.embeddingProvider, this.embeddingModel);
     if (missing.size > 0) {
-      const label = (p: string) => p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : p;
+      const label = (p: string) => p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : p === 'azure' ? 'Azure OpenAI' : p;
       const names = Array.from(missing).map(label).join(' and ');
       this.error = `Enter the ${names} API key on the right — it's required by a section you've selected.`;
+      this.success = '';
+      return;
+    }
+
+    // Azure has no default endpoint — the URL embeds the customer's resource
+    // name, so a ready azure section must have one typed in.
+    const azureMissingEndpoint =
+      (this.aiPrimaryProvider === 'azure' && aiPrimaryReady && !this.aiPrimaryEndpoint.trim()) ||
+      (this.codegenProvider === 'azure' && codegenReady && !this.codegenEndpoint.trim()) ||
+      (this.embeddingProvider === 'azure' && embeddingReady && !this.embeddingEndpoint.trim());
+    if (azureMissingEndpoint) {
+      this.error = 'Enter your Azure OpenAI endpoint (e.g. https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions) in each section set to Azure OpenAI.';
       this.success = '';
       return;
     }
@@ -608,6 +628,7 @@ export class ConfigurationComponent implements OnInit {
       const keysBody: any = {};
       if (this.anthropicApiKey) keysBody.anthropicApiKey = this.anthropicApiKey;
       if (this.openaiApiKey) keysBody.openaiApiKey = this.openaiApiKey;
+      if (this.azureApiKey) keysBody.azureApiKey = this.azureApiKey;
       if (Object.keys(keysBody).length > 0) {
         tasks.push(this.http.put('/api/v1/secrets/ai-keys', keysBody, { responseType: 'text' }).toPromise());
       }

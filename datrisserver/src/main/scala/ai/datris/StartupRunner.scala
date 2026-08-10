@@ -394,8 +394,10 @@ class StartupRunner extends ApplicationRunner {
         val secretOpt = SecretsUtil.getSecretMap(secretName)
         if (secretOpt.isEmpty) {
             if (required)
-                throw new DatrisException("AI " + label + " secret not found in Vault: " + secretName +
-                    ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|ollama> endpoint=<url> model=<model> apiKey=<key>")
+                throw new DatrisException(
+                    "AI " + label + " secret not found in Vault: " + secretName +
+                        ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|azure|ollama> endpoint=<url> model=<model> apiKey=<key>"
+                )
             else return None
         }
         val secret = secretOpt.get
@@ -409,29 +411,39 @@ class StartupRunner extends ApplicationRunner {
             if (required) throw new DatrisException("'provider' not found in AI " + label + " secret: " + secretName)
             else return None
         }
-        if (!Seq("anthropic", "openai", "ollama").contains(provider.toLowerCase))
+        if (!Seq("anthropic", "openai", "azure", "ollama").contains(provider.toLowerCase))
             throw new DatrisException(
-                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, ollama"
+                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, azure, ollama"
             )
         if (endpoint.isEmpty) {
-            if (required) throw new DatrisException("'endpoint' not found in AI " + label + " secret: " + secretName)
+            if (required) throw new DatrisException(
+                if (provider.toLowerCase == "azure")
+                    "'endpoint' not found in AI " + label + " secret: " + secretName +
+                        ". Azure has no default endpoint — set your resource URL, e.g. https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions"
+                else "'endpoint' not found in AI " + label + " secret: " + secretName
+            )
             else return None
         }
         if (model.isEmpty) {
-            if (required) throw new DatrisException("'model' not found in AI " + label + " secret: " + secretName)
+            if (required) throw new DatrisException(
+                if (provider.toLowerCase == "azure")
+                    "'model' not found in AI " + label + " secret: " + secretName + ". For Azure, set it to your deployment name."
+                else "'model' not found in AI " + label + " secret: " + secretName
+            )
             else return None
         }
 
         // Resolve apiKey: secret value first, env-var fallback for single-tenant.
         // Ollama doesn't need a key; everyone else needs one.
+        val keyEnvVar = if (provider.toLowerCase == "azure") "AZURE_OPENAI_API_KEY" else provider.toUpperCase + "_API_KEY"
         val apiKey =
             if (provider.toLowerCase == "ollama") rawKey
             else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant, DatrisEnvironment.values.environment)
         if (apiKey != rawKey && apiKey.nonEmpty)
-            logger.info("AI " + label + " apiKey resolved from the shared key store or " + provider.toUpperCase + "_API_KEY env var (secret has no apiKey)")
+            logger.info("AI " + label + " apiKey resolved from the shared key store or " + keyEnvVar + " env var (secret has no apiKey)")
         if (apiKey.isEmpty && provider.toLowerCase != "ollama") {
             if (required) throw new DatrisException("'apiKey' not found in AI " + label + " secret: " + secretName +
-                " and no " + provider.toUpperCase + "_API_KEY environment variable is set")
+                " and no " + keyEnvVar + " environment variable is set")
             else return None
         }
 

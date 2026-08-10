@@ -154,6 +154,9 @@ services:
       DATRIS_UI_API_KEY: ${DATRIS_UI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_MODEL: ${AZURE_OPENAI_MODEL:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
       AI_PROVIDER: ${AI_PROVIDER:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
@@ -235,8 +238,8 @@ services:
       - datris-net
 
   datris:
-    #image: datrisai/datris-server:latest
-    build: .  # Uncomment to build from source instead of pulling from Docker Hub
+    image: datrisai/datris-server:latest
+    #build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
     ports:
       - "8080:8080"
@@ -283,6 +286,7 @@ services:
       # keys never leak across tenants.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       # JVM heap sizing for the datris-server process. Default fits an 8GB
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
@@ -328,8 +332,8 @@ services:
       - tap-net
 
   ui:
-    #image: datrisai/datris-ui:latest
-    build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
+    image: datrisai/datris-ui:latest
+    #build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: ui
     ports:
       - "4200:8080"
@@ -773,6 +777,13 @@ configs:
       # Each Vault secret carries provider/endpoint/model/apiKey/version inline so
       # the resolver never derives the path from a YAML provider field.
       #
+      # Azure endpoints embed the customer's resource name. AZURE_OPENAI_ENDPOINT
+      # is the resource base URL (https://YOUR-RESOURCE.openai.azure.com); the chat
+      # and embeddings paths are derived from it. Defined here (not inside the AI
+      # block) because the embedding block below also needs it when the AI block is
+      # skipped on reboot.
+      AZURE_BASE="$${AZURE_OPENAI_ENDPOINT%/}"
+
       # Skip the whole block once ai-primary AND codegen exist: with persistence
       # these survive reboots, and re-running the provider resolution below would
       # fail when the operator has removed keys from .env (now first-boot seed only).
@@ -780,10 +791,10 @@ configs:
         echo "  secret/oss/ai-primary + secret/oss/codegen already present — skipping AI seed"
       else
         # Provider selection:
-        #   1. AI_PROVIDER (anthropic|openai) is the explicit override — always wins.
-        #      Use this in .env to pin a choice when shell env vars (e.g. a global
-        #      OPENAI_API_KEY exported from your shell rc) would otherwise leak in
-        #      and silently flip the default on every rebuild.
+        #   1. AI_PROVIDER (anthropic|openai|azure) is the explicit override — always
+        #      wins. Use this in .env to pin a choice when shell env vars (e.g. a
+        #      global OPENAI_API_KEY exported from your shell rc) would otherwise
+        #      leak in and silently flip the default on every rebuild.
         #   2. If AI_PROVIDER is unset, fall back to "whichever key is present",
         #      with OpenAI winning ties — preserves the historical default.
         PROVIDER="$${AI_PROVIDER:-}"
@@ -792,10 +803,35 @@ configs:
             PROVIDER="openai"
           elif [ -n "$${ANTHROPIC_API_KEY:-}" ]; then
             PROVIDER="anthropic"
+          elif [ -n "$${AZURE_OPENAI_API_KEY:-}" ]; then
+            PROVIDER="azure"
           fi
         fi
 
-        if [ "$$PROVIDER" = "openai" ]; then
+        if [ "$$PROVIDER" = "azure" ]; then
+          if [ -z "$${AZURE_OPENAI_API_KEY:-}" ]; then
+            echo "ERROR: AI_PROVIDER=azure but AZURE_OPENAI_API_KEY is not set." >&2
+            exit 1
+          fi
+          if [ -z "$$AZURE_BASE" ]; then
+            echo "ERROR: AI_PROVIDER=azure requires AZURE_OPENAI_ENDPOINT (e.g. https://YOUR-RESOURCE.openai.azure.com)." >&2
+            exit 1
+          fi
+          if [ -z "$${AZURE_OPENAI_MODEL:-}" ]; then
+            echo "ERROR: AI_PROVIDER=azure requires AZURE_OPENAI_MODEL (your chat deployment name)." >&2
+            exit 1
+          fi
+          seed_if_absent secret/oss/ai-primary \
+            provider="azure" \
+            endpoint="$${AZURE_BASE}/openai/v1/chat/completions" \
+            model="$${AZURE_OPENAI_MODEL}" \
+            apiKey="$${AZURE_OPENAI_API_KEY}"
+          seed_if_absent secret/oss/codegen \
+            provider="azure" \
+            endpoint="$${AZURE_BASE}/openai/v1/chat/completions" \
+            model="$${CODEGEN_MODEL:-$${AZURE_OPENAI_MODEL}}" \
+            apiKey="$${AZURE_OPENAI_API_KEY}"
+        elif [ "$$PROVIDER" = "openai" ]; then
           if [ -z "$${OPENAI_API_KEY:-}" ]; then
             echo "ERROR: AI_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
             exit 1
@@ -833,7 +869,7 @@ configs:
             apiKey="$${ANTHROPIC_API_KEY}" \
             version="2023-06-01"
         else
-          echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai), or set ANTHROPIC_API_KEY / OPENAI_API_KEY in .env." >&2
+          echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai|azure), or set ANTHROPIC_API_KEY / OPENAI_API_KEY / AZURE_OPENAI_API_KEY in .env." >&2
           exit 1
         fi
       fi
@@ -847,9 +883,12 @@ configs:
         echo "  secret/oss/embedding already present — skipping embedding seed"
       else
         # Selection precedence:
-        #   1. EMBEDDING_PROVIDER (openai|tei|ollama) — explicit override.
+        #   1. EMBEDDING_PROVIDER (openai|azure|tei|ollama) — explicit override.
         #   2. Otherwise: AI_PROVIDER=openai → OpenAI embeddings;
-        #                 AI_PROVIDER=anthropic → bundled TEI (bge-m3, 1024-dim).
+        #                 anything else (anthropic, azure) → bundled TEI (bge-m3,
+        #                 1024-dim). Azure embeddings are opt-in only, because they
+        #                 require an embedding deployment that may not exist on the
+        #                 customer's resource.
         EMBEDDING_PROVIDER_RESOLVED="$${EMBEDDING_PROVIDER:-}"
         if [ -z "$$EMBEDDING_PROVIDER_RESOLVED" ]; then
           if [ "$${PROVIDER:-}" = "openai" ]; then
@@ -869,6 +908,22 @@ configs:
             endpoint="https://api.openai.com/v1/embeddings" \
             model="$${EMBEDDING_MODEL:-text-embedding-3-small}" \
             apiKey="$${OPENAI_API_KEY}"
+        elif [ "$$EMBEDDING_PROVIDER_RESOLVED" = "azure" ]; then
+          if [ -z "$${AZURE_OPENAI_API_KEY:-}" ]; then
+            echo "ERROR: EMBEDDING_PROVIDER=azure but AZURE_OPENAI_API_KEY is not set." >&2
+            exit 1
+          fi
+          if [ -z "$${EMBEDDING_ENDPOINT:-}" ] && [ -z "$$AZURE_BASE" ]; then
+            echo "ERROR: EMBEDDING_PROVIDER=azure requires AZURE_OPENAI_ENDPOINT or EMBEDDING_ENDPOINT." >&2
+            exit 1
+          fi
+          # EMBEDDING_MODEL must match your embedding deployment's name; the default
+          # matches the Azure portal's default deployment name for this model.
+          seed_if_absent secret/oss/embedding \
+            provider="azure" \
+            endpoint="$${EMBEDDING_ENDPOINT:-$${AZURE_BASE}/openai/v1/embeddings}" \
+            model="$${EMBEDDING_MODEL:-text-embedding-3-small}" \
+            apiKey="$${AZURE_OPENAI_API_KEY}"
         elif [ "$$EMBEDDING_PROVIDER_RESOLVED" = "tei" ]; then
           seed_if_absent secret/oss/embedding \
             provider="tei" \
@@ -882,7 +937,7 @@ configs:
             model="$${EMBEDDING_MODEL:-bge-m3}" \
             apiKey=""
         else
-          echo "ERROR: Unknown EMBEDDING_PROVIDER='$$EMBEDDING_PROVIDER_RESOLVED'. Expected: openai, tei, or ollama." >&2
+          echo "ERROR: Unknown EMBEDDING_PROVIDER='$$EMBEDDING_PROVIDER_RESOLVED'. Expected: openai, azure, tei, or ollama." >&2
           exit 1
         fi
       fi

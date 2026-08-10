@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{AIConfig, DatrisException}
 import ai.datris.util.aiutil.AIHttp.{buildHttpPost, executeWithRetry, explainAIError, sslClient}
-import ai.datris.util.aiutil.AIProviders.{rejectsSamplingParams, responsesEndpointFor}
+import ai.datris.util.aiutil.AIProviders.{addTokenLimit, rejectsSamplingParams, responsesEndpointFor}
 import org.apache.http.util.EntityUtils
 
 import java.nio.charset.StandardCharsets
@@ -108,9 +108,10 @@ object AIStreaming {
         aiConfig.provider.toLowerCase match {
             case "anthropic" => anthropicStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink, cancelled)
             case "openai" => openaiNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
+            case "azure" => chatCompletionsNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
             case other =>
                 throw new DatrisException("Provider '" + other + "' is not yet supported for chat. " +
-                    "The chat assistants run on the AI Primary provider — set it to Anthropic or OpenAI in Configuration. " +
+                    "The chat assistants run on the AI Primary provider — set it to Anthropic, OpenAI, or Azure OpenAI in Configuration. " +
                     "(Ollama chat support is planned; Ollama already works for the CodeGen provider.)")
         }
     }
@@ -669,6 +670,142 @@ object AIStreaming {
                 // Don't forward thinking to OpenAI — it's an Anthropic concept and
                 // OpenAI ignores or rejects it. The summary will be re-derived on
                 // the next call.
+            }
+        }
+        arr
+    }
+
+    // ---------- Generic chat/completions fallback (Azure OpenAI) ----------
+
+    /** Tool-use call over the plain chat/completions wire. Non-streaming —
+      * synthesizes the same sink events at the end so the UI rendering code
+      * stays provider-agnostic. Used for providers that shouldn't touch the
+      * OpenAI Responses API: Azure's /openai/v1/responses availability is
+      * region/model dependent, so azure always speaks chat/completions against
+      * the configured endpoint. Endpoint, auth, and token field all come from
+      * the AIConfig/provider, so this path is reusable for any future
+      * OpenAI-wire-compatible provider. */
+    private def chatCompletionsNonStreamingCall(
+        aiConfig: AIConfig,
+        system: String,
+        messages: Seq[(String, List[AIContentBlock])],
+        tools: List[JsonObject],
+        maxTokens: Int,
+        sink: AIStreamEvent => Unit
+    ): AIToolResponse = {
+        val req = new JsonObject()
+        req.addProperty("model", aiConfig.model)
+        addTokenLimit(req, aiConfig.provider, aiConfig.model, maxTokens)
+        req.add("messages", chatCompletionsMessages(system, messages))
+
+        if (tools.nonEmpty) {
+            val toolsArr = new JsonArray()
+            tools.foreach { t =>
+                // chat/completions tool shape: {type:"function", function:{name, description, parameters}}
+                val fn = new JsonObject()
+                fn.addProperty("name", t.get("name").getAsString)
+                if (t.has("description")) fn.addProperty("description", t.get("description").getAsString)
+                if (t.has("input_schema")) fn.add("parameters", t.get("input_schema"))
+                val ot = new JsonObject()
+                ot.addProperty("type", "function")
+                ot.add("function", fn)
+                toolsArr.add(ot)
+            }
+            req.add("tools", toolsArr)
+        }
+
+        logger.info("Assistant: " + aiConfig.provider + " chat/completions call, model=" + aiConfig.model + ", tools=" + tools.size +
+            ", maxTokens=" + maxTokens + ", messages=" + messages.size)
+
+        val raw = executeWithRetry(sslClient, () => buildHttpPost(aiConfig, req.toString, aiConfig.endpoint), aiConfig.model)
+        val response = JsonParser.parseString(raw).getAsJsonObject
+        val choices = response.getAsJsonArray("choices")
+        if (choices == null || choices.size() == 0) return AIToolResponse(Nil, wantsToolUse = false)
+        val choice = choices.get(0).getAsJsonObject
+        val message = choice.getAsJsonObject("message")
+        if (message == null) return AIToolResponse(Nil, wantsToolUse = false)
+
+        val blocks = scala.collection.mutable.ListBuffer.empty[AIContentBlock]
+        var hasToolUse = false
+
+        if (message.has("content") && !message.get("content").isJsonNull) {
+            val text = message.get("content").getAsString
+            if (text.nonEmpty) {
+                sink(AIStreamEvent.TextDelta(text))
+                blocks += AIContentBlock.TextBlock(text)
+            }
+        }
+        if (message.has("tool_calls") && message.get("tool_calls").isJsonArray) {
+            message.getAsJsonArray("tool_calls").asScala.foreach { tc =>
+                val tco = tc.getAsJsonObject
+                val id = if (tco.has("id")) tco.get("id").getAsString else java.util.UUID.randomUUID().toString
+                val fn = tco.getAsJsonObject("function")
+                val name = if (fn != null && fn.has("name")) fn.get("name").getAsString else ""
+                val argsStr = if (fn != null && fn.has("arguments")) fn.get("arguments").getAsString else "{}"
+                val args =
+                    try JsonParser.parseString(argsStr).getAsJsonObject
+                    catch {
+                        case e: Exception =>
+                            logger.warn("Malformed tool_call arguments for tool \"" + name + "\" — substituting empty input", e)
+                            new JsonObject()
+                    }
+                sink(AIStreamEvent.ToolUseStart(id, name))
+                sink(AIStreamEvent.ToolUseComplete(id, name, args))
+                blocks += AIContentBlock.ToolUseBlock(id, name, args)
+                hasToolUse = true
+            }
+        }
+
+        // Normalize finish_reason to the shared stop reasons: "length" → "max_tokens"
+        // so AgentLoop's auto-continue applies uniformly.
+        val finish =
+            if (choice.has("finish_reason") && !choice.get("finish_reason").isJsonNull) choice.get("finish_reason").getAsString else ""
+        val stopReason = if (finish == "length") "max_tokens" else ""
+        AIToolResponse(blocks.toList, wantsToolUse = hasToolUse, stopReason = stopReason)
+    }
+
+    /** Build a chat/completions `messages` array from agent-loop content blocks:
+      * text → {role, content}; assistant tool_use → assistant message carrying
+      * `tool_calls`; tool_result → {role:"tool", tool_call_id, content} (emitted
+      * before the turn's text so tool outputs directly follow the assistant's
+      * tool_calls message); thinking blocks are Anthropic-internal and never
+      * forwarded. */
+    private def chatCompletionsMessages(system: String, messages: Seq[(String, List[AIContentBlock])]): JsonArray = {
+        val arr = new JsonArray()
+        if (system != null && system.nonEmpty) {
+            val sys = new JsonObject()
+            sys.addProperty("role", "system")
+            sys.addProperty("content", system)
+            arr.add(sys)
+        }
+        messages.foreach { case (role, blocks) =>
+            val text = new StringBuilder
+            val toolCalls = new JsonArray()
+            blocks.foreach {
+                case AIContentBlock.TextBlock(t) => text.append(t)
+                case AIContentBlock.ToolUseBlock(id, name, input) =>
+                    val fn = new JsonObject()
+                    fn.addProperty("name", name)
+                    fn.addProperty("arguments", input.toString)
+                    val tc = new JsonObject()
+                    tc.addProperty("id", id)
+                    tc.addProperty("type", "function")
+                    tc.add("function", fn)
+                    toolCalls.add(tc)
+                case AIContentBlock.ToolResultBlock(toolUseId, content, _) =>
+                    val o = new JsonObject()
+                    o.addProperty("role", "tool")
+                    o.addProperty("tool_call_id", toolUseId)
+                    o.addProperty("content", content)
+                    arr.add(o)
+                case AIContentBlock.ThinkingBlock(_, _) => // never forwarded
+            }
+            if (text.nonEmpty || toolCalls.size() > 0) {
+                val m = new JsonObject()
+                m.addProperty("role", role)
+                m.addProperty("content", text.toString)
+                if (toolCalls.size() > 0) m.add("tool_calls", toolCalls)
+                arr.add(m)
             }
         }
         arr

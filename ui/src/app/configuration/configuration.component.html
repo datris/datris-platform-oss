@@ -76,20 +76,32 @@
             <select class="form-input" [(ngModel)]="aiPrimaryProvider" (ngModelChange)="onAiPrimaryProviderChange()">
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
+              <option value="azure" *ngIf="!hostedOrTrial">Azure OpenAI</option>
               <option value="ollama" *ngIf="!hostedOrTrial">Ollama (if optional service enabled)</option>
             </select>
           </div>
 
           <div class="form-row">
             <label class="form-label">Model</label>
-            <select class="form-input" [(ngModel)]="aiPrimaryModel" *ngIf="aiPrimaryProvider !== 'ollama'">
+            <select class="form-input" [(ngModel)]="aiPrimaryModel" *ngIf="aiPrimaryProvider !== 'ollama' && aiPrimaryProvider !== 'azure'">
               <option *ngFor="let m of aiPrimaryModelOptions" [value]="m.value">{{ m.label }}</option>
             </select>
             <input class="form-input" type="text" [(ngModel)]="aiPrimaryModel"
                    placeholder="e.g. llama3.3, qwen3, deepseek-r1" *ngIf="aiPrimaryProvider === 'ollama'" />
+            <input class="form-input" type="text" [(ngModel)]="aiPrimaryModel"
+                   placeholder="your Azure deployment name" *ngIf="aiPrimaryProvider === 'azure'" />
           </div>
 
-          <div *ngIf="!hostedOrTrial">
+          <div class="form-row" *ngIf="aiPrimaryProvider === 'azure'">
+            <label class="form-label">Endpoint</label>
+            <input class="form-input" type="text" [(ngModel)]="aiPrimaryEndpoint"
+                   placeholder="https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions" />
+            <p class="section-hint" style="margin-top: 6px;">
+              Azure has no universal endpoint — use your resource URL. Tip: name deployments after their model (e.g. <code>gpt-5-2</code>) so model-specific handling applies.
+            </p>
+          </div>
+
+          <div *ngIf="!hostedOrTrial && aiPrimaryProvider !== 'azure'">
             <a class="advanced-toggle" (click)="showAdvancedAiPrimary = !showAdvancedAiPrimary">
               {{ showAdvancedAiPrimary ? '▼' : '▶' }} Advanced
             </a>
@@ -115,20 +127,29 @@
             <select class="form-input" [(ngModel)]="codegenProvider" (ngModelChange)="onCodegenProviderChange()">
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
+              <option value="azure" *ngIf="!hostedOrTrial">Azure OpenAI</option>
               <option value="ollama" *ngIf="!hostedOrTrial">Ollama (if optional service enabled)</option>
             </select>
           </div>
 
           <div class="form-row">
             <label class="form-label">Model</label>
-            <select class="form-input" [(ngModel)]="codegenModel" *ngIf="codegenProvider !== 'ollama'">
+            <select class="form-input" [(ngModel)]="codegenModel" *ngIf="codegenProvider !== 'ollama' && codegenProvider !== 'azure'">
               <option *ngFor="let m of codegenModelOptions" [value]="m.value">{{ m.label }}</option>
             </select>
             <input class="form-input" type="text" [(ngModel)]="codegenModel"
                    placeholder="e.g. qwen3, deepseek-r1, codellama" *ngIf="codegenProvider === 'ollama'" />
+            <input class="form-input" type="text" [(ngModel)]="codegenModel"
+                   placeholder="your Azure deployment name" *ngIf="codegenProvider === 'azure'" />
           </div>
 
-          <div *ngIf="!hostedOrTrial">
+          <div class="form-row" *ngIf="codegenProvider === 'azure'">
+            <label class="form-label">Endpoint</label>
+            <input class="form-input" type="text" [(ngModel)]="codegenEndpoint"
+                   placeholder="https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions" />
+          </div>
+
+          <div *ngIf="!hostedOrTrial && codegenProvider !== 'azure'">
             <a class="advanced-toggle" (click)="showAdvancedCodegen = !showAdvancedCodegen">
               {{ showAdvancedCodegen ? '▼' : '▶' }} Advanced
             </a>
@@ -189,6 +210,7 @@
               <label class="form-label">Provider</label>
               <select class="form-input" [(ngModel)]="embeddingProvider" (ngModelChange)="onEmbeddingProviderChange()">
                 <option value="openai">OpenAI</option>
+                <option value="azure">Azure OpenAI</option>
                 <option value="tei">bge-m3 (bundled)</option>
                 <option value="ollama">Ollama (if optional service enabled)</option>
                 <option value="ollama-local">Ollama (external)</option>
@@ -197,21 +219,31 @@
 
             <div class="form-row">
               <label class="form-label">Model</label>
-              <select class="form-input" [(ngModel)]="embeddingModel" *ngIf="embeddingProvider !== 'ollama' && embeddingProvider !== 'ollama-local'">
+              <select class="form-input" [(ngModel)]="embeddingModel" *ngIf="embeddingProvider !== 'ollama' && embeddingProvider !== 'ollama-local' && embeddingProvider !== 'azure'">
                 <option *ngFor="let m of embeddingModelOptions" [value]="m.value">{{ m.label }}</option>
               </select>
               <input class="form-input" type="text" [(ngModel)]="embeddingModel"
                      placeholder="e.g. bge-m3, nomic-embed-text" *ngIf="embeddingProvider === 'ollama' || embeddingProvider === 'ollama-local'" />
+              <input class="form-input" type="text" [(ngModel)]="embeddingModel"
+                     placeholder="your embedding deployment name (e.g. text-embedding-3-small)" *ngIf="embeddingProvider === 'azure'" />
             </div>
 
-            <a class="advanced-toggle" (click)="showAdvancedEmbedding = !showAdvancedEmbedding">
-              {{ showAdvancedEmbedding ? '▼' : '▶' }} Advanced
-            </a>
-            <div class="form-row" *ngIf="showAdvancedEmbedding">
+            <div class="form-row" *ngIf="embeddingProvider === 'azure'">
               <label class="form-label">Endpoint</label>
               <input class="form-input" type="text" [(ngModel)]="embeddingEndpoint"
-                     placeholder="https://api.openai.com/v1/embeddings" />
+                     placeholder="https://YOUR-RESOURCE.openai.azure.com/openai/v1/embeddings" />
             </div>
+
+            <ng-container *ngIf="embeddingProvider !== 'azure'">
+              <a class="advanced-toggle" (click)="showAdvancedEmbedding = !showAdvancedEmbedding">
+                {{ showAdvancedEmbedding ? '▼' : '▶' }} Advanced
+              </a>
+              <div class="form-row" *ngIf="showAdvancedEmbedding">
+                <label class="form-label">Endpoint</label>
+                <input class="form-input" type="text" [(ngModel)]="embeddingEndpoint"
+                       placeholder="https://api.openai.com/v1/embeddings" />
+              </div>
+            </ng-container>
 
             <p class="section-hint" *ngIf="embeddingProvider === 'tei'" style="margin-top: 8px;">
               The bundled embedding service runs locally as a docker-compose sidecar — no API key needed.
@@ -286,6 +318,11 @@
         <div class="form-row">
           <label class="form-label">OpenAI API Key</label>
           <input class="form-input" type="text" [(ngModel)]="openaiApiKey" placeholder="sk-..." />
+        </div>
+
+        <div class="form-row">
+          <label class="form-label">Azure OpenAI API Key</label>
+          <input class="form-input" type="text" [(ngModel)]="azureApiKey" placeholder="from your Azure resource's Keys page" />
         </div>
       </aside>
     </div>

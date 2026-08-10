@@ -115,6 +115,12 @@ object AIHttp {
         aiConfig.provider.toLowerCase match {
             case "openai" =>
                 httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
+            case "azure" =>
+                // Azure's v1 API accepts either header; legacy deployment-scoped
+                // URLs (/openai/deployments/...?api-version=...) accept only
+                // api-key. Sending both makes every Azure endpoint shape work.
+                httpPost.addHeader("api-key", aiConfig.apiKey)
+                httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
             case "ollama" =>
                 if (aiConfig.apiKey != null && aiConfig.apiKey.nonEmpty)
                     httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)

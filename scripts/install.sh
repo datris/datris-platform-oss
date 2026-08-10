@@ -160,18 +160,22 @@ else
   # ---- AI keys (both providers, each best at a different job) ----
   AKEY="${ANTHROPIC_API_KEY:-}"
   OKEY="${OPENAI_API_KEY:-}"
+  ZKEY="${AZURE_OPENAI_API_KEY:-}"
+  ZEP="${AZURE_OPENAI_ENDPOINT:-}"
+  ZMODEL="${AZURE_OPENAI_MODEL:-}"
 
   # If a provider key was inherited from the shell environment, never adopt it
   # silently — a stray ANTHROPIC/OPENAI_API_KEY in a shell rc shouldn't decide
   # your provider without you knowing. Announce what was found, and when
   # interactive let the user keep it or ignore it and enter their own.
-  if [ -n "$AKEY" ] || [ -n "$OKEY" ]; then
+  if [ -n "$AKEY" ] || [ -n "$OKEY" ] || [ -n "$ZKEY" ]; then
     [ -n "$AKEY" ] && say "Detected ANTHROPIC_API_KEY in your environment ($(mask "$AKEY"))."
     [ -n "$OKEY" ] && say "Detected OPENAI_API_KEY in your environment ($(mask "$OKEY"))."
+    [ -n "$ZKEY" ] && say "Detected AZURE_OPENAI_API_KEY in your environment ($(mask "$ZKEY"))."
     if [ -n "$TTY" ]; then
       ask "  Use the detected key(s)? [Y/n] (n = ignore and enter your own): "
       case "$ANS" in
-        n*|N*) warn "Ignoring environment keys."; AKEY=""; OKEY="" ;;
+        n*|N*) warn "Ignoring environment keys."; AKEY=""; OKEY=""; ZKEY="" ;;
       esac
     else
       say "Non-interactive — using the detected key(s)."
@@ -194,6 +198,18 @@ else
       OKEY="$ANS"
       [ -n "$OKEY" ] && say "  OpenAI key received ($(mask "$OKEY"))."
     fi
+    # Azure OpenAI as the fallback enterprise path — offered only when neither
+    # direct key was provided (users with a direct key rarely want Azure too;
+    # it stays available any time via the Configuration tab).
+    if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -z "$ZKEY" ]; then
+      ask_hidden "  Azure OpenAI API key — use your Azure OpenAI resource instead, or Enter to skip (input hidden): "
+      ZKEY="$ANS"
+      if [ -n "$ZKEY" ]; then
+        say "  Azure OpenAI key received ($(mask "$ZKEY"))."
+        [ -z "$ZEP" ] && { ask "    Azure resource endpoint (https://YOUR-RESOURCE.openai.azure.com): "; ZEP="$ANS"; }
+        [ -z "$ZMODEL" ] && { ask "    Chat deployment name (tip: name deployments after their model, e.g. gpt-5-2): "; ZMODEL="$ANS"; }
+      fi
+    fi
   fi
 
   WROTE_KEYS=""
@@ -208,6 +224,25 @@ else
   if [ -n "$OKEY" ]; then
     set_env OPENAI_API_KEY "$OKEY"
     WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }OPENAI_API_KEY"
+  fi
+  if [ -n "$ZKEY" ]; then
+    # Azure needs all three values or vault-init fails the first boot — write
+    # nothing rather than seed a half-configured provider.
+    if [ -n "$ZEP" ] && [ -n "$ZMODEL" ]; then
+      set_env AZURE_OPENAI_API_KEY "$ZKEY"
+      set_env AZURE_OPENAI_ENDPOINT "$ZEP"
+      set_env AZURE_OPENAI_MODEL "$ZMODEL"
+      WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }AZURE_OPENAI_API_KEY"
+      # Pin only when Azure is the sole chat provider (anthropic pin above wins).
+      if [ -z "$AKEY" ] && [ -z "$OKEY" ]; then
+        set_env AI_PROVIDER azure
+        WROTE_KEYS="$WROTE_KEYS, AI_PROVIDER=azure"
+      fi
+    else
+      warn "Azure OpenAI needs AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_MODEL too — skipping."
+      warn "Add all three in $ENV_FILE (or the Configuration tab) later."
+      ZKEY=""
+    fi
   fi
   if [ -n "$WROTE_KEYS" ]; then
     ok "Wrote $WROTE_KEYS to .env"

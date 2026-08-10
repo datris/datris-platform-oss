@@ -134,6 +134,9 @@ services:
       DATRIS_UI_API_KEY: ${DATRIS_UI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_MODEL: ${AZURE_OPENAI_MODEL:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
       AI_PROVIDER: ${AI_PROVIDER:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
@@ -260,6 +263,7 @@ services:
       # keys never leak across tenants.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       # JVM heap sizing for the datris-server process. Default fits an 8GB
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.

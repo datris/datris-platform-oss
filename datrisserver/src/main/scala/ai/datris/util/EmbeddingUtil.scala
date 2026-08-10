@@ -69,7 +69,7 @@ object EmbeddingUtil {
         val rawKey = Option(secret.get("apiKey")).getOrElse("")
         val provider = Option(secret.get("provider")).map(_.trim.toLowerCase).getOrElse("")
         val apiKey =
-            if (provider == "openai" || provider == "anthropic")
+            if (provider == "openai" || provider == "anthropic" || provider == "azure")
                 AIUtil.resolveApiKey(rawKey, provider, ai.datris.model.DatrisEnvironment.values.multiTenant, secretName.takeWhile(_ != '/'))
             else rawKey
         val batchSize = Option(secret.get("batchSize"))

@@ -24,6 +24,10 @@ object AIProviders {
     // model name contains "codex" or the configured endpoint already points at
     // /v1/responses. Request/response shapes are different from chat/completions
     // (input + instructions + max_output_tokens; output[].content[].text).
+    // Deliberately restricted to provider "openai": Azure's /openai/v1/responses
+    // availability is region/model dependent, and azure `model` values are
+    // deployment names, so the codex sniff would misfire — azure always speaks
+    // chat/completions.
     private[aiutil] def usesResponsesApi(aiConfig: AIConfig): Boolean = {
         if (aiConfig == null || !aiConfig.provider.toLowerCase.equals("openai")) return false
         val model = Option(aiConfig.model).map(_.toLowerCase).getOrElse("")
@@ -52,7 +56,15 @@ object AIProviders {
     }
 
     private[aiutil] def addTokenLimit(requestObj: JsonObject, provider: String, model: String, maxTokens: Int): Unit = {
-        val field = if (provider.toLowerCase == "openai") openAiTokenField(model) else "max_tokens"
+        // Azure always gets max_completion_tokens: the `model` field is a
+        // deployment name (arbitrary, so the prefix heuristic can't apply) and
+        // Azure has deprecated max_tokens in favor of max_completion_tokens
+        // across current API versions.
+        val field = provider.toLowerCase match {
+            case "openai" => openAiTokenField(model)
+            case "azure" => "max_completion_tokens"
+            case _ => "max_tokens"
+        }
         requestObj.addProperty(field, maxTokens)
     }
 
@@ -82,13 +94,14 @@ object AIProviders {
       * uniformly, in priority order:
       *
       *   1. The shared per-provider key store at `{env}/ai-keys` (fields
-      *      `anthropicApiKey` / `openaiApiKey`). This is the authoritative home for
+      *      `anthropicApiKey` / `openaiApiKey` / `azureApiKey`). This is the authoritative home for
       *      provider keys — they live here independent of which slot uses each
       *      provider, so switching a slot's provider back and forth never loses the
       *      other provider's key. Matches the UI's "enter each key once" model.
       *   2. The slot secret's own inline `apiKey` if non-empty — legacy / pre-store
       *      deployments that stored the key on the slot itself.
-      *   3. The matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env var, but ONLY
+      *   3. The matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+      *      `AZURE_OPENAI_API_KEY` env var, but ONLY
       *      in single-tenant mode — env vars hold the platform's keys, and in
       *      multi-tenant deployments those keys belong to Datris, not to each
       *      tenant. Multi-tenant tenants must provide their own keys explicitly.
@@ -103,12 +116,13 @@ object AIProviders {
         provider.toLowerCase match {
             case "anthropic" => sys.env.getOrElse("ANTHROPIC_API_KEY", "")
             case "openai" => sys.env.getOrElse("OPENAI_API_KEY", "")
+            case "azure" => sys.env.getOrElse("AZURE_OPENAI_API_KEY", "")
             case _ => ""
         }
     }
 
     /** Read a provider's key from the shared per-provider key store `{env}/ai-keys`.
-      * Field names are `anthropicApiKey` / `openaiApiKey`. Returns "" when the store
+      * Field names are `anthropicApiKey` / `openaiApiKey` / `azureApiKey`. Returns "" when the store
       * doesn't exist, the field is absent/empty, or the provider has no shared key
       * concept (e.g. Ollama). Never throws — a Vault hiccup just falls through to the
       * next resolution tier. */
@@ -116,6 +130,7 @@ object AIProviders {
         val field = provider.toLowerCase match {
             case "anthropic" => "anthropicApiKey"
             case "openai" => "openaiApiKey"
+            case "azure" => "azureApiKey"
             case _ => return ""
         }
         try {
@@ -133,6 +148,8 @@ object AIProviders {
     private[aiutil] def defaultEndpointFor(provider: String): String = provider.toLowerCase match {
         case "anthropic" => "https://api.anthropic.com/v1/messages"
         case "openai" => "https://api.openai.com/v1/responses"
+        // azure has no universal default — the endpoint embeds the customer's
+        // resource name (https://{resource}.openai.azure.com/openai/v1/...).
         case _ => ""
     }
 
@@ -152,6 +169,7 @@ object AIProviders {
         val maxInputTokens = aiConfig.provider.toLowerCase match {
             case "ollama" => 100000
             case "openai" => 100000
+            case "azure" => 100000
             case _ => 150000
         }
         maxInputTokens * 4
