@@ -495,14 +495,34 @@ def _upload(path, file_path, data=None):
         return resp.text
 
 
+def _decode_content(content):
+    """Decode a tool's `content` field, which the schema declares as base64.
+
+    Some models put PLAIN TEXT here instead of base64. Python's lenient
+    b64decode silently strips the non-alphabet characters (commas, newlines,
+    spaces) and "decodes" what's left into deterministic garbage bytes — which
+    then flows into schema inference and destination tables as mojibake while
+    every step reports success. Decode strictly; when the value isn't real
+    base64, treat it as the raw text the model obviously meant.
+    """
+    import base64
+    import binascii
+
+    # Whitespace is legal in transported base64 (MIME wrapping); strip it
+    # before strict validation so wrapped-but-valid content still decodes.
+    compact = "".join(content.split())
+    padded = compact + "=" * (-len(compact) % 4)
+    try:
+        return base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError):
+        return content.encode("utf-8")
+
+
 def _upload_content(path, content_b64, filename, data=None):
     """Upload base64-encoded content via multipart POST to the pipeline API."""
-    import base64
     import tempfile
 
-    # Fix missing base64 padding
-    padded = content_b64 + "=" * (-len(content_b64) % 4)
-    file_bytes = base64.b64decode(padded)
+    file_bytes = _decode_content(content_b64)
     with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name

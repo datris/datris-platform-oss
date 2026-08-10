@@ -1,4 +1,7 @@
-mcp[cli]
+# Pinned below 2.0: mcp 2.x removed the Server.list_resources/list_tools
+# decorator API this server is written against. Migrate deliberately, not
+# via a surprise pull on the next image build.
+mcp[cli]>=1.28,<2
 requests
 python-dotenv
 uvicorn

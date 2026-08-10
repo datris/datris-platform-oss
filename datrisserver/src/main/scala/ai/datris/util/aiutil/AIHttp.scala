@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import com.google.gson.{JsonArray, JsonObject}
+import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException}
 import ai.datris.util.aiutil.AIProviders.{addTokenLimit, rejectsSamplingParams, responsesEndpointFor, usesResponsesApi}
 import ai.datris.util.aiutil.AIWebSearch.{attachWebSearchToolAnthropic, attachWebSearchToolResponses}
@@ -85,23 +85,126 @@ object AIHttp {
         while (result == null) {
             val httpPost = httpPostFactory()
             val startTime = System.currentTimeMillis()
-            val response = client.execute(httpPost)
-            val elapsedMs = System.currentTimeMillis() - startTime
-            val statusCode = response.getStatusLine.getStatusCode
-            if ((statusCode == 429 || statusCode == 529 || statusCode == 503) && attempt < maxRetries) {
-                EntityUtils.consume(response.getEntity)
-                attempt += 1
-                val waitSeconds = 5 * attempt
-                logger.warn("AI API returned " + statusCode + " (transient), waiting " + waitSeconds + "s before retry " + attempt + " of " + maxRetries)
-                Thread.sleep(waitSeconds * 1000L)
-            } else if (statusCode != 200) {
-                throw new DatrisException(explainAIError(statusCode, EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8), modelLabel))
-            } else {
-                result = EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
-                logger.info("AI API responded in " + elapsedMs + "ms, response length: " + result.length + " chars")
+            try {
+                val response = client.execute(httpPost)
+                val elapsedMs = System.currentTimeMillis() - startTime
+                val statusCode = response.getStatusLine.getStatusCode
+                if ((statusCode == 429 || statusCode == 529 || statusCode == 503) && attempt < maxRetries) {
+                    EntityUtils.consume(response.getEntity)
+                    attempt += 1
+                    val waitSeconds = 5 * attempt
+                    logger.warn("AI API returned " + statusCode + " (transient), waiting " + waitSeconds + "s before retry " + attempt + " of " + maxRetries)
+                    Thread.sleep(waitSeconds * 1000L)
+                } else if (statusCode != 200) {
+                    throw new DatrisException(explainAIError(statusCode, EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8), modelLabel))
+                } else {
+                    val contentType = Option(response.getEntity.getContentType).map(_.getValue.toLowerCase).getOrElse("")
+                    result =
+                        if (contentType.startsWith("text/event-stream")) assembleChatCompletionsStream(response.getEntity)
+                        else EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
+                    logger.info("AI API responded in " + elapsedMs + "ms, response length: " + result.length + " chars")
+                }
+            } catch {
+                // Dropped/stale connections (e.g. an intermediary closing a
+                // long-silent request) are as transient as a 503 — same retry.
+                case e: java.io.IOException if attempt < maxRetries =>
+                    attempt += 1
+                    val waitSeconds = 5 * attempt
+                    logger.warn("AI API connection failed (" + e.getClass.getSimpleName + ": " + e.getMessage +
+                        "), waiting " + waitSeconds + "s before retry " + attempt + " of " + maxRetries)
+                    Thread.sleep(waitSeconds * 1000L)
             }
         }
         result
+    }
+
+    /** Re-assemble a chat/completions SSE stream into the standard
+      * non-streaming response JSON, so call sites keep parsing the familiar
+      * shape. Azure's front-end closes connections that stay silent for ~60s,
+      * which non-streaming requests with long reasoning phases routinely
+      * exceed — so azure requests are sent with `stream: true` (injected in
+      * buildHttpPost) and folded back together here. */
+    private def assembleChatCompletionsStream(entity: org.apache.http.HttpEntity): String =
+        assembleChatCompletionsStream(entity.getContent)
+
+    private[aiutil] def assembleChatCompletionsStream(stream: java.io.InputStream): String = {
+        val reader = new java.io.BufferedReader(new java.io.InputStreamReader(stream, StandardCharsets.UTF_8))
+        val content = new StringBuilder
+        // insertion-ordered: index -> (id, name, arguments)
+        val toolCalls = scala.collection.mutable.LinkedHashMap.empty[Int, (String, String, StringBuilder)]
+        var finishReason: String = null
+        var role = "assistant"
+        try {
+            var line = reader.readLine()
+            var done = false
+            while (line != null && !done) {
+                if (line.startsWith("data:")) {
+                    val payload = line.substring(5).trim
+                    if (payload == "[DONE]") done = true
+                    else if (payload.nonEmpty) {
+                        val obj = JsonParser.parseString(payload).getAsJsonObject
+                        val choices = obj.getAsJsonArray("choices")
+                        if (choices != null && choices.size() > 0) {
+                            val choice = choices.get(0).getAsJsonObject
+                            if (choice.has("finish_reason") && !choice.get("finish_reason").isJsonNull)
+                                finishReason = choice.get("finish_reason").getAsString
+                            val delta = choice.getAsJsonObject("delta")
+                            if (delta != null) {
+                                if (delta.has("role") && !delta.get("role").isJsonNull)
+                                    role = delta.get("role").getAsString
+                                if (delta.has("content") && !delta.get("content").isJsonNull)
+                                    content.append(delta.get("content").getAsString)
+                                if (delta.has("tool_calls") && delta.get("tool_calls").isJsonArray) {
+                                    val arr = delta.getAsJsonArray("tool_calls")
+                                    var i = 0
+                                    while (i < arr.size()) {
+                                        val tc = arr.get(i).getAsJsonObject
+                                        val index = if (tc.has("index")) tc.get("index").getAsInt else 0
+                                        val entry = toolCalls.getOrElseUpdate(index, ("", "", new StringBuilder))
+                                        var (id, name, args) = entry
+                                        if (tc.has("id") && !tc.get("id").isJsonNull) id = tc.get("id").getAsString
+                                        val fn = tc.getAsJsonObject("function")
+                                        if (fn != null) {
+                                            if (fn.has("name") && !fn.get("name").isJsonNull) name = fn.get("name").getAsString
+                                            if (fn.has("arguments") && !fn.get("arguments").isJsonNull) args.append(fn.get("arguments").getAsString)
+                                        }
+                                        toolCalls.put(index, (id, name, args))
+                                        i += 1
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!done) line = reader.readLine()
+            }
+        } finally reader.close()
+
+        val message = new JsonObject()
+        message.addProperty("role", role)
+        message.addProperty("content", content.toString)
+        if (toolCalls.nonEmpty) {
+            val arr = new JsonArray()
+            toolCalls.values.foreach { case (id, name, args) =>
+                val fn = new JsonObject()
+                fn.addProperty("name", name)
+                fn.addProperty("arguments", args.toString)
+                val tc = new JsonObject()
+                tc.addProperty("id", id)
+                tc.addProperty("type", "function")
+                tc.add("function", fn)
+                arr.add(tc)
+            }
+            message.add("tool_calls", arr)
+        }
+        val choice = new JsonObject()
+        choice.add("message", message)
+        if (finishReason != null) choice.addProperty("finish_reason", finishReason)
+        val choicesArr = new JsonArray()
+        choicesArr.add(choice)
+        val root = new JsonObject()
+        root.add("choices", choicesArr)
+        root.toString
     }
 
     /**
@@ -112,6 +215,17 @@ object AIHttp {
      */
     private[aiutil] def buildHttpPost(aiConfig: AIConfig, jsonBody: String, endpoint: String): HttpPost = {
         val httpPost = new HttpPost(endpoint)
+        // Azure kills non-streaming requests whose response stays silent for
+        // ~60s (long reasoning phases hit this wall deterministically). Every
+        // azure call through here is a chat/completions request, so force
+        // stream:true; executeWithRetry folds the SSE stream back into the
+        // standard non-streaming response shape.
+        val effectiveBody =
+            if (aiConfig.provider.toLowerCase == "azure" && !jsonBody.contains("\"stream\"")) {
+                val obj = JsonParser.parseString(jsonBody).getAsJsonObject
+                obj.addProperty("stream", true)
+                obj.toString
+            } else jsonBody
         aiConfig.provider.toLowerCase match {
             case "openai" =>
                 httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
@@ -130,7 +244,7 @@ object AIHttp {
                 httpPost.addHeader("anthropic-version", v)
         }
         httpPost.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
-        httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8))
+        httpPost.setEntity(new StringEntity(effectiveBody, StandardCharsets.UTF_8))
         httpPost
     }
 
