@@ -3,6 +3,18 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.15.0" description="August 10, 2026">
+  **Azure OpenAI support — run Datris AI on your Azure resource.**
+
+  - **New AI provider.** Azure OpenAI joins Anthropic, OpenAI, and Ollama as a first-class provider for all three AI slots (AI Provider, CodeGen, Embedding) — mix it freely with the others. Configure it in Configuration → AI Providers with your key, resource endpoint, and deployment name.
+  - **Deployment-name aware.** Azure addresses models by your deployment names; name deployments after the model they serve so model-specific handling applies automatically.
+  - **Installer support.** The one-command installer offers Azure OpenAI when you don't have a direct Anthropic or OpenAI key, and first-boot seeding configures everything from your Azure details. See [AI Configuration](/ai-configuration#azure-openai-path).
+  - **Built for how Azure behaves.** Responses stream under the hood so long reasoning calls complete reliably; both current and legacy Azure endpoint styles work.
+  - **Fix: session-expiry login.** Signing back in after a session expires no longer requires a full page refresh.
+  - **Fix: per-provider key updates.** Updating one provider's API key through the API no longer clears the other providers' stored keys.
+  - **Fix: agent-uploaded content.** Data uploaded through the AI assistants can no longer be silently garbled when the model sends plain text where encoded content was expected.
+</Update>
+
 <Update label="v1.14.1" description="August 5, 2026">
   **Fix: the tap sync-state view is now reachable.**
 
