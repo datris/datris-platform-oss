@@ -189,7 +189,9 @@ else
   if [ -n "$TTY" ] && { [ -z "$AKEY" ] || [ -z "$OKEY" ]; }; then
     say ""
     say "Datris uses two AI providers, each best at a different job. Both are"
-    say "optional, but you'll want at least one."
+    say "optional, but you'll want at least one. Using Azure OpenAI instead?"
+    say "Press Enter through both prompts and you'll be asked for your Azure"
+    say "key next."
     # Keys are read with echo OFF (like passwords) so they never land in the
     # terminal scrollback; a masked confirmation is printed instead.
     if [ -z "$AKEY" ]; then
