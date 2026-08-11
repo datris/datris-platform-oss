@@ -232,7 +232,7 @@ vault kv put secret/oss/ai-primary \
   version="2023-06-01"
 ```
 
-`docker/vault-init.sh` seeds all three secrets automatically based on which key is present in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the `AZURE_OPENAI_*` trio). For multi-tenant deployments, per-tenant override secrets live at `{env}/ai-primary`, `{env}/codegen`, `{env}/embedding`.
+`docker/vault-init.sh` seeds all three secrets automatically based on which key is present in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the `AZURE_OPENAI_*` trio) or the explicit `AI_PROVIDER=bedrock` selection. For multi-tenant deployments, per-tenant override secrets live at `{env}/ai-primary`, `{env}/codegen`, `{env}/embedding`.
 
 These `.env` variables tune what gets seeded. They apply on the **first boot only** — after that, Vault persists and the Configuration tab is the source of truth:
 
@@ -243,7 +243,10 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | `OPENAI_MODEL` | `gpt-5.5` | Model seeded into `oss/ai-primary` on the OpenAI path. |
 | `AZURE_OPENAI_ENDPOINT` | — | Azure resource base URL (`https://YOUR-RESOURCE.openai.azure.com`). Required on the Azure path. |
 | `AZURE_OPENAI_MODEL` | — | Chat deployment name seeded into `oss/ai-primary` on the Azure path. Required on the Azure path. |
-| `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`). |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | — | AWS credentials for the Bedrock path (`AI_PROVIDER=bedrock`). Optional — leave unset to use the server's IAM role / default credential chain. Never selects Bedrock by itself. |
+| `AWS_REGION` | — | AWS region for the Bedrock path (e.g. `us-east-1`). |
+| `BEDROCK_MODEL` | `anthropic.claude-fable-5` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |
+| `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5`). |
 | `EMBEDDING_PROVIDER` | follows provider | `openai`, `azure`, `tei`, or `ollama`. When unset: `openai` when the AI provider is OpenAI, otherwise the bundled TEI sidecar (Azure embeddings are opt-in only). |
 | `EMBEDDING_MODEL` | provider default | `text-embedding-3-small` (openai; also the azure default deployment name), `BAAI/bge-m3` (tei), `bge-m3` (ollama). |
 | `EMBEDDING_ENDPOINT` | provider default | Endpoint override for the `tei`, `ollama`, and `azure` providers — useful when the service runs on a separate host or a non-standard path. |

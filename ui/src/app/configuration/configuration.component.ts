@@ -20,6 +20,25 @@ export class ConfigurationComponent implements OnInit {
   openaiApiKey = '';
   azureApiKey = '';
 
+  // AWS credentials for Amazon Bedrock (no API-key concept — SigV4). All four
+  // live in the shared ai-keys store. Keys may be left blank to use the
+  // server's IAM role / AWS default credential chain.
+  awsAccessKeyId = '';
+  awsSecretAccessKey = '';
+  awsSessionToken = '';
+  awsRegion = '';
+
+  // Live Bedrock model discovery (server calls ListFoundationModels +
+  // ListInferenceProfiles with the saved AWS credentials). null = discovery
+  // unavailable → fall back to the static catalog's bedrock list.
+  bedrockModels: ModelOption[] | null = null;
+
+  // Bedrock model ids the discovery/catalog list doesn't cover (older dated
+  // ids, region-specific inference profiles) can be typed in via a free-text
+  // toggle per section.
+  bedrockCustomModelAiPrimary = false;
+  bedrockCustomModelCodegen = false;
+
   // AI Primary
   aiPrimaryProvider = 'anthropic';
   aiPrimaryModel = '';
@@ -57,11 +76,13 @@ export class ConfigurationComponent implements OnInit {
   private webSearchHasStoredKey = false;
 
   // Models loaded from existing secrets that aren't in the predefined dropdown lists.
-  // Tracked per section so the dropdown can render whatever the secret actually contains.
-  extraAiPrimaryModel: { value: string; label: string } | null = null;
-  extraCodegenModel: { value: string; label: string } | null = null;
-  extraEmbeddingModel: { value: string; label: string } | null = null;
-  extraWebSearchModel: { value: string; label: string } | null = null;
+  // Tracked per section, WITH the provider they were saved under — the extra
+  // must only appear while that provider is selected (a Bedrock inference-profile
+  // id has no business in the Anthropic dropdown after a provider switch).
+  extraAiPrimaryModel: { provider: string; value: string; label: string } | null = null;
+  extraCodegenModel: { provider: string; value: string; label: string } | null = null;
+  extraEmbeddingModel: { provider: string; value: string; label: string } | null = null;
+  extraWebSearchModel: { provider: string; value: string; label: string } | null = null;
 
   // Remember the model the user typed/selected per provider so switching away and back restores it.
   private aiPrimaryModelMemory: Record<string, string> = {};
@@ -158,6 +179,7 @@ export class ConfigurationComponent implements OnInit {
           this.codegenModelsList = catalog.codegen;
           this.embeddingModels = catalog.embedding;
           this.loadConfig();
+          this.fetchBedrockModels();
         });
       },
       error: () => { this.loading = false; }
@@ -165,26 +187,79 @@ export class ConfigurationComponent implements OnInit {
   }
 
   /** Merge predefined model options with any "extra" model loaded from a secret
-   *  that wasn't in the predefined list (e.g. a custom Anthropic model name). */
+   *  that wasn't in the predefined list (e.g. a custom Anthropic model name).
+   *  The extra only applies while its own provider is selected. */
   private withExtra(
     base: { value: string; label: string }[],
-    extra: { value: string; label: string } | null
+    extra: { provider: string; value: string; label: string } | null,
+    provider: string
   ): { value: string; label: string }[] {
-    if (!extra) return base;
+    if (!extra || extra.provider !== provider) return base;
     if (base.find(m => m.value === extra.value)) return base;
-    return [...base, extra];
+    return [...base, { value: extra.value, label: extra.label }];
   }
 
   get aiPrimaryModelOptions(): { value: string; label: string }[] {
-    return this.withExtra(this.models[this.aiPrimaryProvider] || [], this.extraAiPrimaryModel);
+    if (this.aiPrimaryProvider === 'bedrock') {
+      return this.withExtra(this.bedrockModelList('aiPrimary'), this.extraAiPrimaryModel, 'bedrock');
+    }
+    return this.withExtra(this.models[this.aiPrimaryProvider] || [], this.extraAiPrimaryModel, this.aiPrimaryProvider);
   }
 
   get codegenModelOptions(): { value: string; label: string }[] {
-    return this.withExtra(this.codegenModelsList[this.codegenProvider] || [], this.extraCodegenModel);
+    if (this.codegenProvider === 'bedrock') {
+      return this.withExtra(this.bedrockModelList('codegen'), this.extraCodegenModel, 'bedrock');
+    }
+    return this.withExtra(this.codegenModelsList[this.codegenProvider] || [], this.extraCodegenModel, this.codegenProvider);
+  }
+
+  /** Bedrock model list: live discovery when available (models the AWS account
+   *  can actually invoke, already resolved to invokable ids), else the static
+   *  catalog's bedrock entries. Discovered models get catalog labels/recommended
+   *  flags overlaid — matched loosely, because discovery returns regional
+   *  inference-profile ids (`us.anthropic....`, `global....-v1:0`) that wrap
+   *  the catalog's bare `anthropic.` ids. Recommended entries sort first. */
+  private bedrockModelList(section: 'aiPrimary' | 'codegen'): ModelOption[] {
+    const catalog = (section === 'codegen' ? this.codegenModelsList['bedrock'] : this.models['bedrock']) || [];
+    if (!this.bedrockModels || this.bedrockModels.length === 0) return catalog;
+    const merged = this.bedrockModels.map(d => {
+      const c = catalog.find(x => d.value === x.value || d.value.includes(x.value));
+      return c ? { value: d.value, label: c.label, recommended: c.recommended } : d;
+    });
+    return [...merged.filter(m => m.recommended), ...merged.filter(m => !m.recommended)];
+  }
+
+  /** Live Bedrock model discovery via the server. Non-200 (no AWS credentials
+   *  saved yet, IAM policy without the List permissions) is expected — the
+   *  dropdowns silently fall back to the static catalog. */
+  fetchBedrockModels(): void {
+    this.http.get<any>('/api/v1/ai/models', { params: { provider: 'bedrock' } }).subscribe({
+      next: (data) => {
+        if (data && Array.isArray(data.models) && data.models.length > 0) {
+          this.bedrockModels = data.models;
+          this.defaultBedrockModels();
+        }
+      },
+      error: () => { /* discovery unavailable — static catalog fallback */ }
+    });
+  }
+
+  /** A bedrock section with no model yet gets the recommended (or first)
+   *  option pre-selected, so the dropdown never sits blank after the list
+   *  loads. Called after discovery lands and after secrets load. */
+  private defaultBedrockModels(): void {
+    if (this.aiPrimaryProvider === 'bedrock' && !this.aiPrimaryModel) {
+      const opts = this.aiPrimaryModelOptions;
+      this.aiPrimaryModel = (opts.find(o => (o as ModelOption).recommended) || opts[0])?.value || '';
+    }
+    if (this.codegenProvider === 'bedrock' && !this.codegenModel) {
+      const opts = this.codegenModelOptions;
+      this.codegenModel = (opts.find(o => (o as ModelOption).recommended) || opts[0])?.value || '';
+    }
   }
 
   get embeddingModelOptions(): { value: string; label: string }[] {
-    return this.withExtra(this.embeddingModels[this.embeddingProvider] || [], this.extraEmbeddingModel);
+    return this.withExtra(this.embeddingModels[this.embeddingProvider] || [], this.extraEmbeddingModel, this.embeddingProvider);
   }
 
   /** Web search runs general-purpose summarization (read pages → write a research
@@ -192,7 +267,7 @@ export class ConfigurationComponent implements OnInit {
    *  for the provider's model list. Slow reasoning / codex models are still in
    *  the list but the section hint warns the user off them. */
   get webSearchModelOptions(): { value: string; label: string }[] {
-    return this.withExtra(this.models[this.webSearchProvider] || [], this.extraWebSearchModel);
+    return this.withExtra(this.models[this.webSearchProvider] || [], this.extraWebSearchModel, this.webSearchProvider);
   }
 
   onAiPrimaryProviderChange(): void {
@@ -276,7 +351,15 @@ export class ConfigurationComponent implements OnInit {
     this.resetSectionState();
 
     let pending = 5;
-    const done = () => { pending--; if (pending === 0) this.loading = false; };
+    const done = () => {
+      pending--;
+      if (pending === 0) {
+        this.loading = false;
+        // Secrets are loaded — backfill any blank bedrock model selection from
+        // whatever list is available (discovery if it already landed, else catalog).
+        this.defaultBedrockModels();
+      }
+    };
 
     const recordKeyForProvider = (provider: string, apiKey: string) => {
       // Backend masks non-empty sensitive fields as ••••••••; empty stays empty.
@@ -404,6 +487,13 @@ export class ConfigurationComponent implements OnInit {
           if (fields.anthropicApiKey) this.anthropicApiKey = fields.anthropicApiKey;
           if (fields.openaiApiKey) this.openaiApiKey = fields.openaiApiKey;
           if (fields.azureApiKey) this.azureApiKey = fields.azureApiKey;
+          // Bedrock AWS credentials. Key-like fields arrive masked (••••••••)
+          // and round-trip via the server's masked-preservation; awsRegion is
+          // plain and displays as stored.
+          if (fields.awsAccessKeyId) this.awsAccessKeyId = fields.awsAccessKeyId;
+          if (fields.awsSecretAccessKey) this.awsSecretAccessKey = fields.awsSecretAccessKey;
+          if (fields.awsSessionToken) this.awsSessionToken = fields.awsSessionToken;
+          if (fields.awsRegion) this.awsRegion = fields.awsRegion;
         }
         done();
       },
@@ -426,7 +516,7 @@ export class ConfigurationComponent implements OnInit {
     else if (section === 'codegen') list = this.codegenModelsList[provider] || [];
     else list = this.models[provider] || [];
     if (list.find(m => m.value === model)) return;
-    const extra = { value: model, label: model + ' (custom)' };
+    const extra = { provider, value: model, label: model + ' (custom)' };
     if (section === 'aiPrimary') this.extraAiPrimaryModel = extra;
     else if (section === 'codegen') this.extraCodegenModel = extra;
     else if (section === 'webSearch') this.extraWebSearchModel = extra;
@@ -437,6 +527,10 @@ export class ConfigurationComponent implements OnInit {
     this.anthropicApiKey = '';
     this.openaiApiKey = '';
     this.azureApiKey = '';
+    this.awsAccessKeyId = '';
+    this.awsSecretAccessKey = '';
+    this.awsSessionToken = '';
+    this.awsRegion = '';
     this.aiPrimaryModel = '';
     this.aiPrimaryEndpoint = '';
     this.showAdvancedAiPrimary = false;
@@ -477,6 +571,14 @@ export class ConfigurationComponent implements OnInit {
   }
   get azureKeyAvailable(): boolean {
     return !!(this.azureApiKey && this.azureApiKey.length > 0);
+  }
+  /** Bedrock credentials are "available" with explicit keys OR fully blank
+   *  (IAM-role / default-chain mode) — partial entry is the only invalid state,
+   *  caught at save time. */
+  get bedrockCredsPartial(): boolean {
+    const ak = !!(this.awsAccessKeyId && this.awsAccessKeyId.trim());
+    const sk = !!(this.awsSecretAccessKey && this.awsSecretAccessKey.trim());
+    return ak !== sk;
   }
 
   /** Default endpoint per provider for the web-search call (mirrors the chat
@@ -538,9 +640,11 @@ export class ConfigurationComponent implements OnInit {
     return provider === 'tei' || provider === 'ollama';
   }
 
-  /** Returns true if the provider doesn't require an API key (local Ollama variants or bundled TEI). */
+  /** Returns true if the provider doesn't require an API key in the shared Keys
+   *  panel. Bedrock qualifies: its AWS credentials are optional (blank = the
+   *  server's IAM role / default credential chain) and validated separately. */
   private noKeyRequired(provider: string): boolean {
-    return this.isOllama(provider) || provider === 'tei';
+    return this.isOllama(provider) || provider === 'tei' || provider === 'bedrock';
   }
 
   private endpointFor(provider: string, kind: 'chat' | 'embedding'): string {
@@ -594,11 +698,30 @@ export class ConfigurationComponent implements OnInit {
     flagIfMissingKey(this.codegenProvider, this.codegenModel);
     flagIfMissingKey(this.embeddingProvider, this.embeddingModel);
     if (missing.size > 0) {
-      const label = (p: string) => p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : p === 'azure' ? 'Azure OpenAI' : p;
+      const label = (p: string) => p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : p === 'azure' ? 'Azure OpenAI' : p === 'bedrock' ? 'Amazon Bedrock' : p;
       const names = Array.from(missing).map(label).join(' and ');
       this.error = `Enter the ${names} API key on the right — it's required by a section you've selected.`;
       this.success = '';
       return;
+    }
+
+    // Bedrock credential coherence: keys are all-or-none (blank = the server's
+    // IAM role / default credential chain), and explicit keys need a region so
+    // the region stays bound to the credential that owns it.
+    const bedrockInUse =
+      (this.aiPrimaryProvider === 'bedrock' && aiPrimaryReady) ||
+      (this.codegenProvider === 'bedrock' && codegenReady);
+    if (bedrockInUse) {
+      if (this.bedrockCredsPartial) {
+        this.error = 'Bedrock AWS credentials are incomplete — enter both the Access Key ID and Secret Access Key, or leave both blank to use the server\'s IAM role.';
+        this.success = '';
+        return;
+      }
+      if (this.awsAccessKeyId.trim() && !this.awsRegion.trim()) {
+        this.error = 'Enter the AWS Region for Bedrock (e.g. us-east-1) — required when using explicit AWS keys.';
+        this.success = '';
+        return;
+      }
     }
 
     // Azure has no default endpoint — the URL embeds the customer's resource
@@ -629,6 +752,10 @@ export class ConfigurationComponent implements OnInit {
       if (this.anthropicApiKey) keysBody.anthropicApiKey = this.anthropicApiKey;
       if (this.openaiApiKey) keysBody.openaiApiKey = this.openaiApiKey;
       if (this.azureApiKey) keysBody.azureApiKey = this.azureApiKey;
+      if (this.awsAccessKeyId) keysBody.awsAccessKeyId = this.awsAccessKeyId;
+      if (this.awsSecretAccessKey) keysBody.awsSecretAccessKey = this.awsSecretAccessKey;
+      if (this.awsSessionToken) keysBody.awsSessionToken = this.awsSessionToken;
+      if (this.awsRegion) keysBody.awsRegion = this.awsRegion;
       if (Object.keys(keysBody).length > 0) {
         tasks.push(this.http.put('/api/v1/secrets/ai-keys', keysBody, { responseType: 'text' }).toPromise());
       }
@@ -697,6 +824,16 @@ export class ConfigurationComponent implements OnInit {
       if (embeddingReady) this.usingDefaultEmbedding = false;
       this.saving = false;
       this.success = 'Configuration saved. Changes take effect on the next AI call.';
+      // Mask the just-typed AWS credential values in place — the server stores
+      // them and returns ••••••••, so leaving plaintext in the fields (until a
+      // full page reload) needlessly exposes them on screen. The masked
+      // placeholder round-trips: a later save preserves the stored values.
+      const maskIfSet = (v: string) => (v && !/^[•]+$/.test(v.trim())) ? '••••••••' : v;
+      this.awsAccessKeyId = maskIfSet(this.awsAccessKeyId);
+      this.awsSecretAccessKey = maskIfSet(this.awsSecretAccessKey);
+      this.awsSessionToken = maskIfSet(this.awsSessionToken);
+      // Newly saved AWS credentials may unlock live Bedrock model discovery.
+      if (this.awsAccessKeyId || this.awsRegion) this.fetchBedrockModels();
     }).catch(() => {
       this.saving = false;
       this.error = 'Failed to save configuration.';

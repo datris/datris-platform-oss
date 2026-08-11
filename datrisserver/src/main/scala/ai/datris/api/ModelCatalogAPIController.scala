@@ -5,7 +5,9 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.DatrisEnvironment
 import ai.datris.util.{APIKeyValidator, HttpUtil}
+import ai.datris.util.aiutil.BedrockSupport
 import com.google.common.base.Throwables
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
@@ -53,6 +55,50 @@ class ModelCatalogAPIController {
                 val stale = cache.get()
                 if (stale != null) new ResponseEntity[String](stale.body, HttpStatus.OK)
                 else ResponseEntity.status(HttpStatus.BAD_GATEWAY).body[String]("{\"error\":\"catalog unavailable\"}")
+        }
+    }
+
+    // Per-provider live model discovery. Unlike the static catalog above, this
+    // reflects what the configured account can actually invoke. For bedrock,
+    // that means the AWS discovery APIs (ListFoundationModels +
+    // ListInferenceProfiles) merged into invokable ids — a model without
+    // ON_DEMAND support is surfaced as its cross-region inference-profile id.
+    // The UI overlays catalog `recommended` labels on this list and falls back
+    // to the static catalog when discovery is unavailable (no credentials yet,
+    // or an IAM policy without the two List permissions).
+    private val discoveryCache = new AtomicReference[Cached](null)
+
+    @GetMapping(path = Array("/ai/models"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getProviderModels(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam(name = "provider") provider: String
+    ): ResponseEntity[String] = {
+        try {
+            APIKeyValidator.validate(apiKey)
+            provider.toLowerCase match {
+                case "bedrock" =>
+                    val now = System.currentTimeMillis()
+                    val cached = discoveryCache.get()
+                    if (cached != null && now - cached.fetchedAt < CACHE_TTL_MS) {
+                        return new ResponseEntity[String](cached.body, HttpStatus.OK)
+                    }
+                    val env = DatrisEnvironment.current
+                    val body = BedrockSupport.listModels(env.environment, env.multiTenant)
+                    discoveryCache.set(Cached(body, now))
+                    new ResponseEntity[String](body, HttpStatus.OK)
+                case other =>
+                    ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .body[String]("{\"error\":\"model discovery is not supported for provider '" + other + "'\"}")
+            }
+        } catch {
+            case e: Exception =>
+                // Expected failure modes: no AWS credentials saved yet, or an IAM
+                // policy missing bedrock:ListFoundationModels /
+                // bedrock:ListInferenceProfiles. The UI treats non-200 as "use the
+                // static catalog" — log at info, not error.
+                logger.info("Bedrock model discovery unavailable: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body[String]("{\"error\":\"model discovery unavailable\"}")
         }
     }
 }

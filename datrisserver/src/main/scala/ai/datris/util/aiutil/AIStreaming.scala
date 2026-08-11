@@ -107,11 +107,12 @@ object AIStreaming {
 
         aiConfig.provider.toLowerCase match {
             case "anthropic" => anthropicStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink, cancelled)
+            case "bedrock" => bedrockNonStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink)
             case "openai" => openaiNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
             case "azure" => chatCompletionsNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
             case other =>
                 throw new DatrisException("Provider '" + other + "' is not yet supported for chat. " +
-                    "The chat assistants run on the AI Primary provider — set it to Anthropic, OpenAI, or Azure OpenAI in Configuration. " +
+                    "The chat assistants run on the AI Primary provider — set it to Anthropic, Amazon Bedrock, OpenAI, or Azure OpenAI in Configuration. " +
                     "(Ollama chat support is planned; Ollama already works for the CodeGen provider.)")
         }
     }
@@ -199,7 +200,11 @@ object AIStreaming {
         val m = msg.toLowerCase
         m.contains("thinking.type") ||
         (m.contains("thinking") && m.contains("not supported")) ||
-        m.contains("output_config")
+        m.contains("output_config") ||
+        // Bedrock validates the invoke body against a per-model schema and
+        // phrases unknown-field rejections as "Malformed input request:
+        // extraneous key [thinking] is not permitted" — same ladder applies.
+        (m.contains("extraneous key") && (m.contains("thinking") || m.contains("output_config")))
     }
 
     /** Issue exactly one Anthropic streaming request with the given thinking
@@ -460,6 +465,151 @@ object AIStreaming {
         var toolId: String = ""
         var toolName: String = ""
         var toolInput: JsonObject = new JsonObject()
+    }
+
+    // ---------- Bedrock non-streaming path ----------
+
+    /** Tool-use call for Claude on Amazon Bedrock. Same Anthropic Messages
+      * request/response shape as the streaming path above, but non-streaming:
+      * Bedrock's streaming endpoint uses AWS event-stream binary framing (not
+      * SSE), so we invoke non-streaming and synthesize the sink events at the
+      * end — same pattern as the Azure fallback. buildHttpPost handles the
+      * Bedrock specifics (SigV4 signing, model-in-URL, anthropic_version).
+      * Runs the same thinking-form fallback ladder as the Anthropic path,
+      * sharing thinkingFormCache. */
+    private def bedrockNonStreamingCall(
+        aiConfig: AIConfig,
+        system: String,
+        messages: Seq[(String, List[AIContentBlock])],
+        tools: List[JsonObject],
+        enableThinking: Boolean,
+        maxTokens: Int,
+        sink: AIStreamEvent => Unit
+    ): AIToolResponse = {
+        if (!enableThinking) {
+            return bedrockNonStreamingCallOnce(aiConfig, system, messages, tools, ThinkingForm.Unsupported, maxTokens, sink)
+        }
+
+        val key = thinkingCacheKey(aiConfig)
+        Option(thinkingFormCache.get(key)) match {
+            case Some(form) =>
+                bedrockNonStreamingCallOnce(aiConfig, system, messages, tools, form, maxTokens, sink)
+            case None =>
+                val ladder: List[ThinkingForm] = List(ThinkingForm.Adaptive, ThinkingForm.Enabled, ThinkingForm.Unsupported)
+                var lastEx: Option[DatrisException] = None
+                val iter = ladder.iterator
+                while (iter.hasNext) {
+                    val form = iter.next()
+                    try {
+                        val r = bedrockNonStreamingCallOnce(aiConfig, system, messages, tools, form, maxTokens, sink)
+                        thinkingFormCache.put(key, form)
+                        logger.info("Assistant: cached thinking form for " + key + " = " + form)
+                        return r
+                    } catch {
+                        case e: DatrisException if isThinkingApiError(e.getMessage) =>
+                            logger.info("Assistant: " + form + " rejected by " + key + " (" + e.getMessage.take(200) + "), trying next form")
+                            lastEx = Some(e)
+                        case e: DatrisException =>
+                            throw e
+                    }
+                }
+                throw lastEx.getOrElse(new DatrisException("Bedrock call failed with no fallback form succeeding"))
+        }
+    }
+
+    private def bedrockNonStreamingCallOnce(
+        aiConfig: AIConfig,
+        system: String,
+        messages: Seq[(String, List[AIContentBlock])],
+        tools: List[JsonObject],
+        form: ThinkingForm,
+        maxTokens: Int,
+        sink: AIStreamEvent => Unit
+    ): AIToolResponse = {
+        val req = new JsonObject()
+        // `model` is moved into the invoke URL (and stripped from the body) by
+        // BedrockSupport at request-build time; no `stream` — non-streaming only.
+        req.addProperty("model", aiConfig.model)
+        req.addProperty("max_tokens", maxTokens)
+        if (system != null && system.nonEmpty) req.addProperty("system", system)
+        req.add("messages", anthropicMessagesArray(messages))
+        if (tools.nonEmpty) {
+            val toolsArr = new JsonArray()
+            tools.foreach(t => toolsArr.add(t))
+            req.add("tools", toolsArr)
+        }
+
+        form match {
+            case ThinkingForm.Adaptive =>
+                val thinkingObj = new JsonObject()
+                thinkingObj.addProperty("type", "adaptive")
+                req.add("thinking", thinkingObj)
+                val outputCfg = new JsonObject()
+                outputCfg.addProperty("effort", "medium")
+                req.add("output_config", outputCfg)
+                if (!rejectsSamplingParams(aiConfig.model)) req.addProperty("temperature", 1.0)
+            case ThinkingForm.Enabled =>
+                val thinkingObj = new JsonObject()
+                thinkingObj.addProperty("type", "enabled")
+                val budget = Math.min(5000, Math.max(1024, maxTokens / 4))
+                thinkingObj.addProperty("budget_tokens", budget)
+                req.add("thinking", thinkingObj)
+                if (!rejectsSamplingParams(aiConfig.model)) req.addProperty("temperature", 1.0)
+            case ThinkingForm.Unsupported =>
+            // No thinking field at all.
+        }
+
+        logger.info("Assistant: Bedrock invoke call, model=" + aiConfig.model + ", tools=" + tools.size +
+            ", thinkingForm=" + form + ", maxTokens=" + maxTokens + ", messages=" + messages.size)
+
+        val raw = executeWithRetry(sslClient, () => buildHttpPost(aiConfig, req.toString, aiConfig.endpoint), aiConfig.model)
+        val response = JsonParser.parseString(raw).getAsJsonObject
+
+        val stopReason =
+            if (response.has("stop_reason") && !response.get("stop_reason").isJsonNull) response.get("stop_reason").getAsString else ""
+        // Claude Fable 5's safety classifiers decline with HTTP 200 +
+        // stop_reason "refusal" (empty or partial content) — not an HTTP error,
+        // so executeWithRetry never sees it. Surface it legibly instead of
+        // returning an empty turn.
+        if (stopReason == "refusal") {
+            val msg = "Model '" + aiConfig.model + "' declined this request (stop_reason: refusal). " +
+                "This can be a safety-classifier false positive — rephrase the request or switch the slot to a different model."
+            sink(AIStreamEvent.Error(msg))
+            throw new DatrisException(msg)
+        }
+
+        val blocks = scala.collection.mutable.ListBuffer.empty[AIContentBlock]
+        var hasToolUse = false
+        val content = if (response.has("content") && response.get("content").isJsonArray) response.getAsJsonArray("content") else new JsonArray()
+        content.asScala.map(_.getAsJsonObject).foreach { block =>
+            val t = if (block.has("type")) block.get("type").getAsString else "text"
+            t match {
+                case "text" =>
+                    val text = if (block.has("text")) block.get("text").getAsString else ""
+                    if (text.nonEmpty) {
+                        sink(AIStreamEvent.TextDelta(text))
+                        blocks += AIContentBlock.TextBlock(text)
+                    }
+                case "thinking" =>
+                    val thinking = if (block.has("thinking")) block.get("thinking").getAsString else ""
+                    val signature = if (block.has("signature")) block.get("signature").getAsString else ""
+                    if (thinking.nonEmpty) sink(AIStreamEvent.ThinkingDelta(thinking))
+                    blocks += AIContentBlock.ThinkingBlock(thinking, signature)
+                case "tool_use" =>
+                    val id = if (block.has("id")) block.get("id").getAsString else java.util.UUID.randomUUID().toString
+                    val name = if (block.has("name")) block.get("name").getAsString else ""
+                    val input =
+                        if (block.has("input") && block.get("input").isJsonObject) block.getAsJsonObject("input")
+                        else new JsonObject()
+                    sink(AIStreamEvent.ToolUseStart(id, name))
+                    sink(AIStreamEvent.ToolUseComplete(id, name, input))
+                    blocks += AIContentBlock.ToolUseBlock(id, name, input)
+                    hasToolUse = true
+                case _ => // redacted_thinking etc. — nothing renderable; drop
+            }
+        }
+
+        AIToolResponse(blocks.toList, wantsToolUse = stopReason == "tool_use" || hasToolUse, stopReason = stopReason)
     }
 
     // ---------- OpenAI non-streaming fallback ----------

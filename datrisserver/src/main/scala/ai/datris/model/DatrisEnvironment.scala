@@ -112,10 +112,18 @@ object DatrisEnvironment {
                 val provider = map.getOrElse("provider", "").trim
                 val endpoint = map.getOrElse("endpoint", "").trim
                 val rawKey = map.getOrElse("apiKey", "")
+                // Ollama needs no key; Bedrock has no API-key concept (AWS
+                // credentials resolve at request-signing time) and derives its
+                // endpoint from the AWS region when blank.
+                val keylessProviders = Set("ollama", "bedrock")
                 val apiKey =
-                    if (provider.toLowerCase == "ollama") rawKey
+                    if (keylessProviders.contains(provider.toLowerCase)) rawKey
                     else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, values.multiTenant, path.takeWhile(_ != '/'))
-                if (provider.isEmpty || endpoint.isEmpty || (apiKey.isEmpty && provider.toLowerCase != "ollama")) None
+                if (
+                    provider.isEmpty ||
+                    (endpoint.isEmpty && provider.toLowerCase != "bedrock") ||
+                    (apiKey.isEmpty && !keylessProviders.contains(provider.toLowerCase))
+                ) None
                 else Some(AIConfig(
                     provider,
                     endpoint,

@@ -100,12 +100,14 @@ if exists secret/oss/ai-primary && exists secret/oss/codegen; then
   echo "  secret/oss/ai-primary + secret/oss/codegen already present — skipping AI seed"
 else
   # Provider selection:
-  #   1. AI_PROVIDER (anthropic|openai|azure) is the explicit override — always
-  #      wins. Use this in .env to pin a choice when shell env vars (e.g. a
-  #      global OPENAI_API_KEY exported from your shell rc) would otherwise
+  #   1. AI_PROVIDER (anthropic|openai|azure|bedrock) is the explicit override —
+  #      always wins. Use this in .env to pin a choice when shell env vars (e.g.
+  #      a global OPENAI_API_KEY exported from your shell rc) would otherwise
   #      leak in and silently flip the default on every rebuild.
   #   2. If AI_PROVIDER is unset, fall back to "whichever key is present",
   #      with OpenAI winning ties — preserves the historical default.
+  #      Bedrock is EXPLICIT-ONLY: AWS_ACCESS_KEY_ID presence never implies it,
+  #      because AWS credentials are routinely set for S3 destinations.
   PROVIDER="${AI_PROVIDER:-}"
   if [ -z "$PROVIDER" ]; then
     if [ -n "${OPENAI_API_KEY:-}" ]; then
@@ -117,7 +119,32 @@ else
     fi
   fi
 
-  if [ "$PROVIDER" = "azure" ]; then
+  if [ "$PROVIDER" = "bedrock" ]; then
+    # No API key and no static endpoint: AWS credentials resolve at request
+    # time on the server (AWS_* env vars, or the IAM role / default credential
+    # chain), and the invoke URL derives from the region + model. A blank
+    # endpoint in the slot secret is the "derive it" signal.
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+      echo "ERROR: AI_PROVIDER=bedrock with AWS_ACCESS_KEY_ID set requires AWS_SECRET_ACCESS_KEY too." >&2
+      exit 1
+    fi
+    if [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+      echo "  bedrock: no AWS_ACCESS_KEY_ID in .env — the server will use its IAM role / default AWS credential chain"
+    fi
+    if [ -z "${AWS_REGION:-}${AWS_DEFAULT_REGION:-}" ]; then
+      echo "  bedrock: no AWS_REGION in .env — the server will resolve the region from the default chain (set one if the first AI call fails)"
+    fi
+    seed_if_absent secret/oss/ai-primary \
+      provider="bedrock" \
+      endpoint="" \
+      model="${BEDROCK_MODEL:-anthropic.claude-fable-5}" \
+      apiKey=""
+    seed_if_absent secret/oss/codegen \
+      provider="bedrock" \
+      endpoint="" \
+      model="${CODEGEN_MODEL:-anthropic.claude-opus-5}" \
+      apiKey=""
+  elif [ "$PROVIDER" = "azure" ]; then
     if [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
       echo "ERROR: AI_PROVIDER=azure but AZURE_OPENAI_API_KEY is not set." >&2
       exit 1
@@ -178,7 +205,7 @@ else
       apiKey="${ANTHROPIC_API_KEY}" \
       version="2023-06-01"
   else
-    echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai|azure), or set ANTHROPIC_API_KEY / OPENAI_API_KEY / AZURE_OPENAI_API_KEY in .env." >&2
+    echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai|azure|bedrock), or set ANTHROPIC_API_KEY / OPENAI_API_KEY / AZURE_OPENAI_API_KEY in .env. (Bedrock is explicit-only: AI_PROVIDER=bedrock.)" >&2
     exit 1
   fi
 fi

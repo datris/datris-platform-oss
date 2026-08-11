@@ -22,6 +22,12 @@
 #                       pre-set Azure OpenAI trio (all three required together;
 #                       endpoint is the resource base URL, model the chat
 #                       deployment name)
+#   AI_PROVIDER=bedrock pre-select Amazon Bedrock (Claude through your AWS
+#                       account; explicit-only — AWS keys alone never imply it).
+#                       Optionally with AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
+#                       AWS_REGION (leave the keys unset to use the host's IAM
+#                       role / default credential chain) and BEDROCK_MODEL
+#                       (default: anthropic.claude-sonnet-5)
 #   DATRIS_POSTGRES     bundled|external|none        (default: bundled)
 #                       external also reads POSTGRES_JDBC_URL/POSTGRES_USER/POSTGRES_PASSWORD
 #   DATRIS_EMBEDDING    openai|tei|none              (default: openai if OpenAI key present, else tei)
@@ -167,6 +173,14 @@ else
   ZKEY="${AZURE_OPENAI_API_KEY:-}"
   ZEP="${AZURE_OPENAI_ENDPOINT:-}"
   ZMODEL="${AZURE_OPENAI_MODEL:-}"
+  # Bedrock is opt-in ONLY via AI_PROVIDER=bedrock (env preset or the prompt
+  # below) — a stray AWS_ACCESS_KEY_ID must never flip the AI provider, since
+  # AWS credentials are routinely present for S3 destinations.
+  BEDROCK_SELECTED=0
+  [ "${AI_PROVIDER:-}" = "bedrock" ] && BEDROCK_SELECTED=1
+  BAK="${AWS_ACCESS_KEY_ID:-}"
+  BSK="${AWS_SECRET_ACCESS_KEY:-}"
+  BREGION="${AWS_REGION:-}"
 
   # If a provider key was inherited from the shell environment, never adopt it
   # silently — a stray ANTHROPIC/OPENAI_API_KEY in a shell rc shouldn't decide
@@ -186,12 +200,12 @@ else
     fi
   fi
 
-  if [ -n "$TTY" ] && { [ -z "$AKEY" ] || [ -z "$OKEY" ]; }; then
+  if [ -n "$TTY" ] && [ "$BEDROCK_SELECTED" = "0" ] && { [ -z "$AKEY" ] || [ -z "$OKEY" ]; }; then
     say ""
     say "Datris uses two AI providers, each best at a different job. Both are"
-    say "optional, but you'll want at least one. Using Azure OpenAI instead?"
-    say "Press Enter through both prompts and you'll be asked for your Azure"
-    say "key next."
+    say "optional, but you'll want at least one. Using Azure OpenAI or Amazon"
+    say "Bedrock instead? Press Enter through both prompts and you'll be asked"
+    say "about those next."
     # Keys are read with echo OFF (like passwords) so they never land in the
     # terminal scrollback; a masked confirmation is printed instead.
     if [ -z "$AKEY" ]; then
@@ -215,6 +229,28 @@ else
         [ -z "$ZEP" ] && { ask "    Azure resource endpoint (https://YOUR-RESOURCE.openai.azure.com): "; ZEP="$ANS"; }
         [ -z "$ZMODEL" ] && { ask "    Chat deployment name (tip: name deployments after their model, e.g. gpt-5-2): "; ZMODEL="$ANS"; }
       fi
+    fi
+    # Amazon Bedrock — Claude through the user's AWS account. Offered only when
+    # nothing else was chosen (same reasoning as the Azure fallback above).
+    if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -z "$ZKEY" ]; then
+      ask "  Use Amazon Bedrock (Claude via your AWS account)? [y/N]: "
+      case "$ANS" in
+        y*|Y*)
+          BEDROCK_SELECTED=1
+          if [ -z "$BAK" ]; then
+            ask "    AWS Access Key ID (Enter to use the host's IAM role / default credential chain): "
+            BAK="$ANS"
+            if [ -n "$BAK" ]; then
+              ask_hidden "    AWS Secret Access Key (input hidden): "
+              BSK="$ANS"
+            fi
+          fi
+          if [ -z "$BREGION" ]; then
+            ask "    AWS region [us-east-1]: "
+            BREGION="${ANS:-us-east-1}"
+          fi
+          ;;
+      esac
     fi
   fi
 
@@ -249,6 +285,24 @@ else
       warn "Add all three in $ENV_FILE (or the Configuration tab) later."
       ZKEY=""
     fi
+  fi
+  if [ "$BEDROCK_SELECTED" = "1" ]; then
+    if [ -n "$BAK" ] && [ -z "$BSK" ]; then
+      # Half a credential would fail the first AI call — drop the keys and let
+      # the default chain (or the Configuration tab) supply them instead.
+      warn "AWS_ACCESS_KEY_ID without AWS_SECRET_ACCESS_KEY — skipping the keys."
+      warn "The server will use its IAM role / default chain; or add both keys in the Configuration tab."
+      BAK=""; BSK=""
+    fi
+    # Pin only when Bedrock is the sole chat provider (a direct Anthropic key
+    # keeps its pin from above).
+    if [ -z "$AKEY" ]; then
+      set_env AI_PROVIDER bedrock
+      WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }AI_PROVIDER=bedrock"
+    fi
+    [ -n "$BAK" ] && { set_env AWS_ACCESS_KEY_ID "$BAK"; set_env AWS_SECRET_ACCESS_KEY "$BSK"; WROTE_KEYS="$WROTE_KEYS, AWS_ACCESS_KEY_ID"; }
+    [ -n "$BREGION" ] && set_env AWS_REGION "$BREGION"
+    [ -n "${BEDROCK_MODEL:-}" ] && set_env BEDROCK_MODEL "${BEDROCK_MODEL}"
   fi
   if [ -n "$WROTE_KEYS" ]; then
     ok "Wrote $WROTE_KEYS to .env"

@@ -3441,6 +3441,56 @@ paths:
         '502':
           description: Catalog unavailable and no cached copy exists
 
+  /api/v1/ai/models:
+    get:
+      tags: [AI]
+      summary: Discover invokable models for a provider
+      description: >-
+        Live per-provider model discovery, reflecting what the configured
+        account can actually invoke (unlike the static catalog). Currently
+        supports provider=bedrock: the server calls the AWS Bedrock discovery
+        APIs (ListFoundationModels + ListInferenceProfiles) with the configured
+        AWS credentials and merges them into invokable ids — a model without
+        on-demand support is returned as its cross-region inference-profile id
+        (e.g. us.anthropic....). Results are cached for 5 minutes. The
+        Configuration UI overlays catalog labels on this list and falls back to
+        the static catalog when discovery is unavailable.
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [bedrock]
+      responses:
+        '200':
+          description: Discovered models
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider:
+                    type: string
+                  models:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        value:
+                          type: string
+                          description: Invokable model or inference-profile id
+                        label:
+                          type: string
+        '400':
+          description: Discovery not supported for the given provider
+        '502':
+          description: >-
+            Discovery unavailable — typically no AWS credentials configured, or
+            an IAM policy missing bedrock:ListFoundationModels /
+            bedrock:ListInferenceProfiles. Callers should fall back to the
+            static catalog.
+
   # ── Tap Prompt Fragments ───────────────────────────────────
 
   /api/v1/tap-prompts:

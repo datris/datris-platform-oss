@@ -63,9 +63,20 @@ object AIProviders {
         val field = provider.toLowerCase match {
             case "openai" => openAiTokenField(model)
             case "azure" => "max_completion_tokens"
+            // bedrock speaks the Anthropic Messages shape — explicit for clarity.
+            case "bedrock" => "max_tokens"
             case _ => "max_tokens"
         }
         requestObj.addProperty(field, maxTokens)
+    }
+
+    /** Providers that speak the Anthropic Messages API wire shape (top-level
+      * `system`, content-block responses, Anthropic tool-use). Bedrock serves
+      * Claude over this same shape — only auth (SigV4) and endpoint differ,
+      * which BedrockSupport handles at request-build time. */
+    private[aiutil] def usesAnthropicWire(provider: String): Boolean = {
+        val p = if (provider == null) "" else provider.toLowerCase
+        p == "anthropic" || p == "bedrock"
     }
 
     /** Anthropic removed sampling parameters (`temperature`/`top_p`/`top_k`) on the
@@ -83,10 +94,14 @@ object AIProviders {
         m.contains("opus-5") || m.contains("sonnet-5")
     }
 
-    /** Whether a given AIConfig supports extended thinking — Anthropic Claude 4.x. */
+    /** Whether a given AIConfig supports extended thinking — Claude 4.x, whether
+      * served directly by Anthropic or through Bedrock. The per-model thinking
+      * form (adaptive vs enabled vs none) is still discovered at call time by
+      * AIStreaming's fallback ladder, so a non-thinking model behind either
+      * provider degrades gracefully. */
     def supportsExtendedThinking(aiConfig: AIConfig): Boolean = {
         if (aiConfig == null) return false
-        aiConfig.provider.toLowerCase == "anthropic"
+        usesAnthropicWire(aiConfig.provider)
     }
 
     /** Resolve an apiKey for an AI provider section. Used by every AI-config loader
@@ -150,6 +165,8 @@ object AIProviders {
         case "openai" => "https://api.openai.com/v1/responses"
         // azure has no universal default — the endpoint embeds the customer's
         // resource name (https://{resource}.openai.azure.com/openai/v1/...).
+        // bedrock has no static default either — the invoke URL is derived from
+        // the resolved AWS region + model at request time (BedrockSupport).
         case _ => ""
     }
 

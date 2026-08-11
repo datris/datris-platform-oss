@@ -396,7 +396,7 @@ class StartupRunner extends ApplicationRunner {
             if (required)
                 throw new DatrisException(
                     "AI " + label + " secret not found in Vault: " + secretName +
-                        ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|azure|ollama> endpoint=<url> model=<model> apiKey=<key>"
+                        ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|azure|bedrock|ollama> endpoint=<url> model=<model> apiKey=<key>"
                 )
             else return None
         }
@@ -411,11 +411,14 @@ class StartupRunner extends ApplicationRunner {
             if (required) throw new DatrisException("'provider' not found in AI " + label + " secret: " + secretName)
             else return None
         }
-        if (!Seq("anthropic", "openai", "azure", "ollama").contains(provider.toLowerCase))
+        if (!Seq("anthropic", "openai", "azure", "bedrock", "ollama").contains(provider.toLowerCase))
             throw new DatrisException(
-                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, azure, ollama"
+                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, azure, bedrock, ollama"
             )
-        if (endpoint.isEmpty) {
+        // Bedrock derives its invoke URL from the resolved AWS region + model at
+        // request time, so a blank endpoint is valid (an explicit one overrides —
+        // GovCloud / VPC endpoints).
+        if (endpoint.isEmpty && provider.toLowerCase != "bedrock") {
             if (required) throw new DatrisException(
                 if (provider.toLowerCase == "azure")
                     "'endpoint' not found in AI " + label + " secret: " + secretName +
@@ -426,22 +429,29 @@ class StartupRunner extends ApplicationRunner {
         }
         if (model.isEmpty) {
             if (required) throw new DatrisException(
-                if (provider.toLowerCase == "azure")
-                    "'model' not found in AI " + label + " secret: " + secretName + ". For Azure, set it to your deployment name."
-                else "'model' not found in AI " + label + " secret: " + secretName
+                provider.toLowerCase match {
+                    case "azure" => "'model' not found in AI " + label + " secret: " + secretName + ". For Azure, set it to your deployment name."
+                    case "bedrock" => "'model' not found in AI " + label + " secret: " + secretName +
+                        ". For Bedrock, set it to an invokable model id (e.g. anthropic.claude-sonnet-5, or a cross-region inference profile like us.anthropic....)."
+                    case _ => "'model' not found in AI " + label + " secret: " + secretName
+                }
             )
             else return None
         }
 
         // Resolve apiKey: secret value first, env-var fallback for single-tenant.
-        // Ollama doesn't need a key; everyone else needs one.
+        // Ollama doesn't need a key; Bedrock has no API-key concept at all —
+        // AWS credentials resolve separately at request-signing time (ai-keys
+        // AWS fields / env vars / default credential chain), so a missing or
+        // invalid credential surfaces on the first call, not at startup.
+        val keylessProviders = Set("ollama", "bedrock")
         val keyEnvVar = if (provider.toLowerCase == "azure") "AZURE_OPENAI_API_KEY" else provider.toUpperCase + "_API_KEY"
         val apiKey =
-            if (provider.toLowerCase == "ollama") rawKey
+            if (keylessProviders.contains(provider.toLowerCase)) rawKey
             else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant, DatrisEnvironment.values.environment)
         if (apiKey != rawKey && apiKey.nonEmpty)
             logger.info("AI " + label + " apiKey resolved from the shared key store or " + keyEnvVar + " env var (secret has no apiKey)")
-        if (apiKey.isEmpty && provider.toLowerCase != "ollama") {
+        if (apiKey.isEmpty && !keylessProviders.contains(provider.toLowerCase)) {
             if (required) throw new DatrisException("'apiKey' not found in AI " + label + " secret: " + secretName +
                 " and no " + keyEnvVar + " environment variable is set")
             else return None

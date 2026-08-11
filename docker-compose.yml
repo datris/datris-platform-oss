@@ -137,6 +137,14 @@ services:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_MODEL: ${AZURE_OPENAI_MODEL:-}
+      # Amazon Bedrock (AI_PROVIDER=bedrock — explicit-only; AWS key presence
+      # never implies Bedrock, since AWS creds are also used for S3 destinations).
+      # vault-init only needs these for its sanity checks + the BEDROCK_MODEL
+      # slot seed; the credentials themselves resolve on the server at call time.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+      BEDROCK_MODEL: ${BEDROCK_MODEL:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
       AI_PROVIDER: ${AI_PROVIDER:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
@@ -264,6 +272,14 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      # AWS credentials for the Bedrock provider (BedrockSupport resolution
+      # tier 2, single-tenant only; blank falls through to the IAM role /
+      # default credential chain — which also reads these same standard names,
+      # so they serve both tiers). Session token supported for temporary creds.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
       # JVM heap sizing for the datris-server process. Default fits an 8GB
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.

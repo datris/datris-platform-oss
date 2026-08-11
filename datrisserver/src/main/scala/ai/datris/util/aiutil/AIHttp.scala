@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException}
-import ai.datris.util.aiutil.AIProviders.{addTokenLimit, rejectsSamplingParams, responsesEndpointFor, usesResponsesApi}
+import ai.datris.util.aiutil.AIProviders.{addTokenLimit, rejectsSamplingParams, responsesEndpointFor, usesAnthropicWire, usesResponsesApi}
 import ai.datris.util.aiutil.AIWebSearch.{attachWebSearchToolAnthropic, attachWebSearchToolResponses}
 import org.apache.http.HttpHeaders
 import org.apache.http.client.methods.HttpPost
@@ -61,9 +61,11 @@ object AIHttp {
         val lower = b.toLowerCase
         val m = if (model == null || model.isEmpty) "the selected model" else "'" + model + "'"
         if (status == 400 && lower.contains("retention")) {
-            "Model " + m + " requires standard (30-day) data retention on the Anthropic account and is not " +
-                "available under zero-data-retention. Pick a different model, or enable standard data retention " +
-                "on the Anthropic organization that owns this API key. (Provider response: " + b.take(400) + ")"
+            "Model " + m + " requires standard (30-day) data retention and is not available under " +
+                "zero-data-retention. Pick a different model, or enable 30-day retention where this model is served: " +
+                "on the Anthropic organization that owns the API key (direct Anthropic), or for Amazon Bedrock via the " +
+                "account data-retention setting (PUT /data-retention with mode \"provider_data_share\" — see the Bedrock " +
+                "\"Data retention\" documentation). (Provider response: " + b.take(400) + ")"
         } else if (status == 400 && (lower.contains("temperature") || lower.contains("top_p") || lower.contains("top_k"))) {
             "Model " + m + " does not accept sampling parameters (temperature/top_p/top_k). This is a request " +
                 "configuration issue, not a problem with your input. (Provider response: " + b.take(400) + ")"
@@ -214,6 +216,17 @@ object AIHttp {
      * stored chat-completions URL without mutating AIConfig.
      */
     private[aiutil] def buildHttpPost(aiConfig: AIConfig, jsonBody: String, endpoint: String): HttpPost = {
+        // Bedrock takes a fully different auth path: the request is SigV4-signed
+        // with resolved AWS credentials, the model id moves from the body into
+        // the invoke URL (so the passed-in endpoint is recomputed), and
+        // `anthropic_version` is injected. Everything else about the body is the
+        // Anthropic Messages shape the caller already built.
+        if (aiConfig.provider.toLowerCase == "bedrock") {
+            val envValues = DatrisEnvironment.current
+            val creds = BedrockSupport.resolveCredentials(envValues.environment, envValues.multiTenant)
+            val effectiveEndpoint = BedrockSupport.invokeEndpoint(aiConfig, creds.region)
+            return BedrockSupport.signedPost(effectiveEndpoint, BedrockSupport.transformBodyForInvoke(jsonBody), creds)
+        }
         val httpPost = new HttpPost(endpoint)
         // Azure kills non-streaming requests whose response stays silent for
         // ~60s (long reasoning phases hit this wall deterministically). Every
@@ -301,7 +314,7 @@ object AIHttp {
 
         val messagesArr = new JsonArray()
 
-        if (!aiConfig.provider.toLowerCase.equals("anthropic")) {
+        if (!usesAnthropicWire(aiConfig.provider)) {
             val systemMsg = new JsonObject()
             systemMsg.addProperty("role", "system")
             systemMsg.addProperty("content", systemPrompt)
@@ -318,7 +331,7 @@ object AIHttp {
         addTokenLimit(requestObj, aiConfig.provider, aiConfig.model, 8192)
         requestObj.add("messages", messagesArr)
 
-        if (aiConfig.provider.toLowerCase.equals("anthropic")) {
+        if (usesAnthropicWire(aiConfig.provider)) {
             requestObj.addProperty("system", systemPrompt)
         }
 
@@ -367,7 +380,7 @@ object AIHttp {
         val messagesArr = new JsonArray()
 
         // For OpenAI/Ollama, system instruction goes as the first system role message
-        if (!aiConfig.provider.toLowerCase.equals("anthropic")) {
+        if (!usesAnthropicWire(aiConfig.provider)) {
             val systemMsg = new JsonObject()
             systemMsg.addProperty("role", "system")
             systemMsg.addProperty("content", systemPrompt)
@@ -389,7 +402,7 @@ object AIHttp {
         requestObj.add("messages", messagesArr)
 
         // For Anthropic, system instruction goes as a top-level field
-        if (aiConfig.provider.toLowerCase.equals("anthropic")) {
+        if (usesAnthropicWire(aiConfig.provider)) {
             requestObj.addProperty("system", systemPrompt)
         }
 
@@ -432,7 +445,7 @@ object AIHttp {
         val messagesArr = new JsonArray()
 
         // For OpenAI/Ollama, system instruction goes as a system role message
-        if (!aiConfig.provider.toLowerCase.equals("anthropic")) {
+        if (!usesAnthropicWire(aiConfig.provider)) {
             val systemMsg = new JsonObject()
             systemMsg.addProperty("role", "system")
             systemMsg.addProperty("content", systemInstruction)
@@ -450,7 +463,7 @@ object AIHttp {
         requestObj.add("messages", messagesArr)
 
         // For Anthropic, system instruction goes as a top-level field
-        if (aiConfig.provider.toLowerCase.equals("anthropic")) {
+        if (usesAnthropicWire(aiConfig.provider)) {
             requestObj.addProperty("system", systemInstruction)
         }
 

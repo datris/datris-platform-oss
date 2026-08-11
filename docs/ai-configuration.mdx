@@ -41,10 +41,10 @@ Each Vault secret carries its full configuration inline:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `provider` | Yes | `anthropic`, `openai`, `azure`, or `ollama` |
-| `endpoint` | Yes | API endpoint URL. Azure has no default — use your resource URL, e.g. `https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions` |
-| `model` | Yes | Model identifier. For Azure this is your **deployment name** |
-| `apiKey` | No (not used by ollama) | Inline provider API key. The [shared API key store](#shared-api-key-store) is checked first and takes precedence when set |
+| `provider` | Yes | `anthropic`, `openai`, `azure`, `bedrock`, or `ollama` |
+| `endpoint` | Yes (blank OK for bedrock) | API endpoint URL. Azure has no default — use your resource URL, e.g. `https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions`. Bedrock derives its endpoint from the AWS region when blank |
+| `model` | Yes | Model identifier. For Azure this is your **deployment name**; for Bedrock an invokable model id (e.g. `anthropic.claude-sonnet-5`) |
+| `apiKey` | No (not used by ollama or bedrock) | Inline provider API key. The [shared API key store](#shared-api-key-store) is checked first and takes precedence when set. Bedrock authenticates with AWS credentials instead — see the [Bedrock path](#amazon-bedrock-path) |
 | `version` | Optional | API version (Anthropic uses `2023-06-01`) |
 
 The resolver reads each secret at the configured path and uses whatever it finds inside — there is no path derivation from a YAML `provider` field. This means the three slots can independently use different providers (e.g. Anthropic for `aiPrimary`, Ollama for `codegen`, OpenAI for `embedding`).
@@ -61,9 +61,11 @@ Provider API keys live in a shared per-provider secret, `{env}/ai-keys` (`oss/ai
 
 Keys are stored once per provider rather than once per slot, so switching a slot between providers never loses the other provider's key. This is the store behind the Configuration UI's shared **API Keys** panel — entering a key there writes it to `{env}/ai-keys` for all slots to use.
 
+The same store holds the Bedrock provider's AWS credentials, in four fields: `awsAccessKeyId`, `awsSecretAccessKey`, `awsSessionToken` (optional, for temporary credentials), and `awsRegion`. Bedrock resolves them in its own order: the store, then the standard `AWS_*` container env vars (single-tenant only), then the server's IAM role / AWS default credential chain — so an instance-role deployment can run Bedrock with no stored secrets at all.
+
 ## Quick Start with `.env`
 
-On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the `AZURE_OPENAI_*` trio:
+On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the `AZURE_OPENAI_*` trio, or `AI_PROVIDER=bedrock` (see the [Bedrock path](#amazon-bedrock-path)):
 
 ```bash
 # .env
@@ -106,6 +108,37 @@ Embeddings default to the bundled service; set `EMBEDDING_PROVIDER=azure` to use
 </Tip>
 
 Datris targets Azure's **v1 API** (`/openai/v1/...`), which needs no `api-version` parameter. Legacy deployment-scoped URLs also work — put the full URL including `?api-version=...` in the section's Endpoint field in the Configuration UI.
+
+### Amazon Bedrock path
+
+Run Claude through your AWS account — IAM auth, AWS billing, no Anthropic API key. Bedrock is **explicit-only**: it activates with `AI_PROVIDER=bedrock`, never from the mere presence of AWS keys (those are routinely set for S3 destinations).
+
+```bash
+# .env
+AI_PROVIDER=bedrock
+AWS_REGION=us-east-1
+# Optional — leave both unset to use the host's IAM role / default credential chain:
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+# Optional model override (default shown):
+# BEDROCK_MODEL=anthropic.claude-fable-5
+```
+
+| Slot | Provider | Endpoint | Model |
+|------|----------|----------|-------|
+| `oss/ai-primary` | bedrock | *(blank — derived from region)* | `BEDROCK_MODEL` or `anthropic.claude-fable-5` |
+| `oss/codegen` | bedrock | *(blank — derived from region)* | `CODEGEN_MODEL` or `anthropic.claude-opus-5` |
+| `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
+
+Notes:
+
+- **Model ids** are Bedrock's `anthropic.`-prefixed forms (e.g. `anthropic.claude-opus-5`). Models that aren't on-demand invokable in your region are addressed by their **cross-region inference profile** id (e.g. `us.anthropic.claude-...`). The Configuration UI discovers the invokable list live from your account when its IAM policy allows it.
+- **Enable model access first.** Models must be enabled for your account in the AWS Bedrock console — a model can appear in listings and still fail with `AccessDeniedException` on the first call until access is granted.
+- **Claude Fable 5 needs a one-time data-retention opt-in.** Fable 5 (and Mythos 5) require Bedrock's `provider_data_share` retention mode — prompts/completions are shared with Anthropic and retained up to 30 days for trust and safety (not used for training; other Claude models are unaffected by the setting). Without it, calls fail with "data retention mode 'default' is not available for this model". Opt in once per account: `PUT /data-retention` with `{"mode": "provider_data_share"}` on the Bedrock control plane (IAM action `bedrock:PutAccountDataRetention`) — see AWS's Bedrock "Data retention" documentation. There is no console UI for this setting at the time of writing.
+- **Minimal IAM policy:** `bedrock:InvokeModel` on the models you use, plus `bedrock:ListFoundationModels` and `bedrock:ListInferenceProfiles` for the UI's live model dropdown (optional — without them the UI shows a standard list).
+- **Endpoint stays blank** in the slot secrets; the invoke URL is derived from the region and model. Set an explicit endpoint only for VPC endpoints or GovCloud.
+- **Embeddings and web search are not available on Bedrock** — embeddings default to the bundled bge-m3 service (or pair with OpenAI/Azure), and web search stays on Anthropic/OpenAI.
+- Extended thinking works the same as on the direct Anthropic provider, including Claude Fable 5's always-on thinking.
 
 ### Anthropic path (with bundled embedding service)
 
@@ -235,9 +268,11 @@ Anthropic has no embeddings API, so `provider: "anthropic"` is not valid for the
 
 ## Chat Provider Notes
 
-The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, Azure OpenAI, and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
+The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, Azure OpenAI, Amazon Bedrock, and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
 
 Azure OpenAI always speaks chat/completions against your configured endpoint (never the OpenAI Responses API, whose Azure availability varies by region and model). Web search is not available on the Azure provider — pair Azure chat with Anthropic or OpenAI web search if you need it.
+
+Amazon Bedrock serves Claude models over the same Anthropic request/response shape as the direct provider, with AWS SigV4 authentication. Web search is not available on Bedrock either — pair it with Anthropic or OpenAI web search if needed.
 
 ## Web Search (Optional)
 
@@ -316,8 +351,8 @@ Some sub-tabs are role- and flag-gated — see the [API Keys matrix](/api-keys#s
 To set your AI keys:
 
 1. Open the **Configuration** tab, then the **AI Providers** sub-tab.
-2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, Azure OpenAI, and Ollama (local).
-3. For Anthropic/OpenAI/Azure, enter your API key in the right-hand panel and pick a model from the dropdown. For Azure, also enter your resource endpoint and type your deployment name as the model. For Ollama, type the model name directly — no API key needed.
+2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, Azure OpenAI, Amazon Bedrock, and Ollama (local).
+3. For Anthropic/OpenAI/Azure, enter your API key in the right-hand panel and pick a model from the dropdown. For Azure, also enter your resource endpoint and type your deployment name as the model. For Amazon Bedrock, enter your AWS credentials and region in the right-hand panel (or leave the keys blank to use the server's IAM role) — the model dropdown then lists what your account can actually invoke. For Ollama, type the model name directly — no API key needed.
 4. Click **Save Configuration**. Changes take effect immediately — no restart required.
 
 To revert to defaults, click **Reset to Datris-managed**. This deletes all three per-tenant secrets and falls the tenant back to the global defaults.

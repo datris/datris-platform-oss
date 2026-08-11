@@ -77,19 +77,34 @@
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
               <option value="azure" *ngIf="!hostedOrTrial">Azure OpenAI</option>
+              <option value="bedrock" *ngIf="!hostedOrTrial">Amazon Bedrock</option>
               <option value="ollama" *ngIf="!hostedOrTrial">Ollama (if optional service enabled)</option>
             </select>
           </div>
 
           <div class="form-row">
             <label class="form-label">Model</label>
-            <select class="form-input" [(ngModel)]="aiPrimaryModel" *ngIf="aiPrimaryProvider !== 'ollama' && aiPrimaryProvider !== 'azure'">
+            <select class="form-input" [(ngModel)]="aiPrimaryModel"
+                    *ngIf="aiPrimaryProvider !== 'ollama' && aiPrimaryProvider !== 'azure' && !(aiPrimaryProvider === 'bedrock' && bedrockCustomModelAiPrimary)">
               <option *ngFor="let m of aiPrimaryModelOptions" [value]="m.value">{{ m.label }}</option>
             </select>
             <input class="form-input" type="text" [(ngModel)]="aiPrimaryModel"
                    placeholder="e.g. llama3.3, qwen3, deepseek-r1" *ngIf="aiPrimaryProvider === 'ollama'" />
             <input class="form-input" type="text" [(ngModel)]="aiPrimaryModel"
                    placeholder="your Azure deployment name" *ngIf="aiPrimaryProvider === 'azure'" />
+            <input class="form-input" type="text" [(ngModel)]="aiPrimaryModel"
+                   placeholder="e.g. us.anthropic.claude-sonnet-5" *ngIf="aiPrimaryProvider === 'bedrock' && bedrockCustomModelAiPrimary" />
+            <ng-container *ngIf="aiPrimaryProvider === 'bedrock'">
+              <a class="advanced-toggle" (click)="bedrockCustomModelAiPrimary = !bedrockCustomModelAiPrimary" style="margin-top: 6px;">
+                {{ bedrockCustomModelAiPrimary ? 'Choose from the list' : 'Enter a custom model id…' }}
+              </a>
+              <p class="section-hint" style="margin-top: 6px;" *ngIf="bedrockModels">
+                Model list discovered live from your AWS account/region — only invokable models are shown.
+              </p>
+              <p class="section-hint" style="margin-top: 6px;" *ngIf="!bedrockModels">
+                Showing the standard Claude-on-Bedrock list. Save your AWS credentials to discover what your account/region can actually invoke (needs <code>bedrock:ListFoundationModels</code> + <code>bedrock:ListInferenceProfiles</code>).
+              </p>
+            </ng-container>
           </div>
 
           <div class="form-row" *ngIf="aiPrimaryProvider === 'azure'">
@@ -109,6 +124,9 @@
               <label class="form-label">Endpoint</label>
               <input class="form-input" type="text" [(ngModel)]="aiPrimaryEndpoint"
                      placeholder="https://api.anthropic.com/v1/messages" />
+              <p class="section-hint" style="margin-top: 6px;" *ngIf="aiPrimaryProvider === 'bedrock'">
+                Leave blank to derive from the AWS region. Override only for VPC or GovCloud endpoints.
+              </p>
             </div>
 
             <p class="section-hint" *ngIf="aiPrimaryProvider === 'ollama'" style="margin-top: 8px;">
@@ -128,19 +146,28 @@
               <option value="anthropic">Anthropic</option>
               <option value="openai">OpenAI</option>
               <option value="azure" *ngIf="!hostedOrTrial">Azure OpenAI</option>
+              <option value="bedrock" *ngIf="!hostedOrTrial">Amazon Bedrock</option>
               <option value="ollama" *ngIf="!hostedOrTrial">Ollama (if optional service enabled)</option>
             </select>
           </div>
 
           <div class="form-row">
             <label class="form-label">Model</label>
-            <select class="form-input" [(ngModel)]="codegenModel" *ngIf="codegenProvider !== 'ollama' && codegenProvider !== 'azure'">
+            <select class="form-input" [(ngModel)]="codegenModel"
+                    *ngIf="codegenProvider !== 'ollama' && codegenProvider !== 'azure' && !(codegenProvider === 'bedrock' && bedrockCustomModelCodegen)">
               <option *ngFor="let m of codegenModelOptions" [value]="m.value">{{ m.label }}</option>
             </select>
             <input class="form-input" type="text" [(ngModel)]="codegenModel"
                    placeholder="e.g. qwen3, deepseek-r1, codellama" *ngIf="codegenProvider === 'ollama'" />
             <input class="form-input" type="text" [(ngModel)]="codegenModel"
                    placeholder="your Azure deployment name" *ngIf="codegenProvider === 'azure'" />
+            <input class="form-input" type="text" [(ngModel)]="codegenModel"
+                   placeholder="e.g. us.anthropic.claude-opus-5" *ngIf="codegenProvider === 'bedrock' && bedrockCustomModelCodegen" />
+            <ng-container *ngIf="codegenProvider === 'bedrock'">
+              <a class="advanced-toggle" (click)="bedrockCustomModelCodegen = !bedrockCustomModelCodegen" style="margin-top: 6px;">
+                {{ bedrockCustomModelCodegen ? 'Choose from the list' : 'Enter a custom model id…' }}
+              </a>
+            </ng-container>
           </div>
 
           <div class="form-row" *ngIf="codegenProvider === 'azure'">
@@ -157,6 +184,9 @@
               <label class="form-label">Endpoint</label>
               <input class="form-input" type="text" [(ngModel)]="codegenEndpoint"
                      placeholder="https://api.anthropic.com/v1/messages" />
+              <p class="section-hint" style="margin-top: 6px;" *ngIf="codegenProvider === 'bedrock'">
+                Leave blank to derive from the AWS region. Override only for VPC or GovCloud endpoints.
+              </p>
             </div>
 
             <p class="section-hint" *ngIf="codegenProvider === 'ollama'" style="margin-top: 8px;">
@@ -307,23 +337,61 @@
       </div>
 
       <aside class="keys-panel">
-        <h2 class="keys-panel-title">Your API Keys</h2>
-        <p class="keys-panel-hint">Enter each provider's key once. The sections on the left use the key for whichever provider they're set to.</p>
+        <h2 class="keys-panel-title">Your Provider Credentials</h2>
+        <p class="keys-panel-hint">One set of credentials per provider, entered once and stored securely. The sections
+          on the left just pick a provider — each then authenticates with the credentials saved here, so you can switch
+          a section between providers freely without re-entering anything. Fill in only the provider(s) you use; saved
+          values display as ••••••••. Bundled and local providers (bge-m3, Ollama) need no credentials.</p>
 
+        <h2 class="keys-panel-title" style="margin-top: 18px;">Anthropic</h2>
         <div class="form-row">
-          <label class="form-label">Anthropic API Key</label>
+          <label class="form-label">API Key</label>
           <input class="form-input" type="text" [(ngModel)]="anthropicApiKey" placeholder="sk-ant-..." />
         </div>
 
+        <h2 class="keys-panel-title" style="margin-top: 18px;">OpenAI</h2>
         <div class="form-row">
-          <label class="form-label">OpenAI API Key</label>
+          <label class="form-label">API Key</label>
           <input class="form-input" type="text" [(ngModel)]="openaiApiKey" placeholder="sk-..." />
         </div>
 
-        <div class="form-row">
-          <label class="form-label">Azure OpenAI API Key</label>
-          <input class="form-input" type="text" [(ngModel)]="azureApiKey" placeholder="from your Azure resource's Keys page" />
-        </div>
+        <ng-container *ngIf="!hostedOrTrial">
+          <h2 class="keys-panel-title" style="margin-top: 18px;">Azure OpenAI</h2>
+          <p class="keys-panel-hint">From your Azure resource's Keys page. The resource endpoint and deployment name are entered per section on the left.</p>
+          <div class="form-row">
+            <label class="form-label">API Key</label>
+            <input class="form-input" type="text" [(ngModel)]="azureApiKey" placeholder="from your Azure resource's Keys page" />
+          </div>
+        </ng-container>
+
+        <ng-container *ngIf="!hostedOrTrial">
+          <h2 class="keys-panel-title" style="margin-top: 18px;">Amazon Bedrock (AWS)</h2>
+          <p class="keys-panel-hint">Leave the keys blank to use the server's IAM role / AWS default credential chain. Region is required with explicit keys.</p>
+
+          <div class="form-row">
+            <label class="form-label">AWS Access Key ID</label>
+            <input class="form-input" type="text" [(ngModel)]="awsAccessKeyId" placeholder="AKIA..." />
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">AWS Secret Access Key</label>
+            <input class="form-input" type="text" [(ngModel)]="awsSecretAccessKey" placeholder="secret access key" />
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">AWS Session Token <span class="section-optional">(optional)</span></label>
+            <input class="form-input" type="text" [(ngModel)]="awsSessionToken" placeholder="for temporary credentials only" />
+          </div>
+
+          <div class="form-row">
+            <label class="form-label">AWS Region</label>
+            <input class="form-input" type="text" [(ngModel)]="awsRegion" placeholder="e.g. us-east-1" />
+          </div>
+
+          <p class="keys-panel-hint" *ngIf="bedrockCredsPartial" style="color: #c0392b;">
+            Enter both the Access Key ID and Secret Access Key, or leave both blank.
+          </p>
+        </ng-container>
       </aside>
     </div>
   </div>
