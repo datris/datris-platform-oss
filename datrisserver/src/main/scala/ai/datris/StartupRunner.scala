@@ -432,7 +432,7 @@ class StartupRunner extends ApplicationRunner {
                 provider.toLowerCase match {
                     case "azure" => "'model' not found in AI " + label + " secret: " + secretName + ". For Azure, set it to your deployment name."
                     case "bedrock" => "'model' not found in AI " + label + " secret: " + secretName +
-                        ". For Bedrock, set it to an invokable model id (e.g. anthropic.claude-sonnet-5, or a cross-region inference profile like us.anthropic....)."
+                            ". For Bedrock, set it to an invokable model id (e.g. anthropic.claude-sonnet-5, or a cross-region inference profile like us.anthropic....)."
                     case _ => "'model' not found in AI " + label + " secret: " + secretName
                 }
             )
