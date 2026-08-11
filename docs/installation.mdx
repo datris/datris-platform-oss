@@ -22,9 +22,11 @@ for a standard install:
 
 1. **AI keys.** Anthropic (recommended for chat, CodeGen, AI data quality,
    NL→SQL) and OpenAI (recommended for semantic-search embeddings). Both are
-   optional and each is one Enter to skip. Using Azure OpenAI instead? Skip
-   both prompts and the installer asks for your Azure key, resource
-   endpoint, and chat deployment name next.
+   optional and each is one Enter to skip. Using Azure OpenAI or Amazon
+   Bedrock instead? Skip both prompts and the installer offers those next —
+   Azure asks for your key, resource endpoint, and chat deployment name;
+   Bedrock asks for AWS credentials (or Enter to use the host's IAM role)
+   and a region.
 2. **Databases and stores.** Pick what to run — each can be **bundled** (a
    local container), **external** (point at a service you already have), or
    **skipped**:
@@ -93,7 +95,7 @@ from the checked-out compose file:
 ```bash
 git clone https://github.com/datris/datris-platform-oss.git
 cd datris-platform-oss
-cp .env.example .env       # add ANTHROPIC_API_KEY and/or OPENAI_API_KEY (or the AZURE_OPENAI_* trio)
+cp .env.example .env       # add ANTHROPIC_API_KEY and/or OPENAI_API_KEY (or the AZURE_OPENAI_* trio, or AI_PROVIDER=bedrock)
 docker compose up -d
 ```
 
@@ -229,13 +231,14 @@ Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedpar
 
 ## API Keys and AI Providers
 
-Datris supports four AI providers. Set your keys in `.env`:
+Datris supports five AI providers. Set your keys in `.env`:
 
 | Provider | Environment Variable | Used For |
 |----------|---------------------|----------|
 | **Anthropic Claude** | `ANTHROPIC_API_KEY` | AI data quality, transformations, error explanation, schema generation, profiling |
 | **OpenAI** | `OPENAI_API_KEY` | Same as above, plus embeddings for vector database / RAG |
 | **Azure OpenAI** | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` + `AZURE_OPENAI_MODEL` | Same as OpenAI, served from your Azure resource (models addressed by deployment name) |
+| **Amazon Bedrock** | `AI_PROVIDER=bedrock` + `AWS_REGION` (AWS keys optional — IAM role works) | Claude served through your AWS account with IAM auth and AWS billing |
 | **Ollama** (local) | `OLLAMA_MODEL` | Same as above — no API key needed, runs locally |
 
 At least one AI provider key is required for AI features. The embedding provider for RAG is configured via Vault secrets — see [AI Configuration](/ai-configuration) for details.

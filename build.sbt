@@ -119,6 +119,15 @@ lazy val allDependencies = Seq(
     // versions locked together; bumping one requires bumping the other.
     "org.apache.hadoop" % "hadoop-aws" % "3.3.4",
 
+    // AWS SigV4 signing + credential chain for the Bedrock AI provider.
+    // Signer-only: requests are signed here and executed on the shared Apache
+    // client in AIHttp — the full Bedrock runtime SDK client is deliberately
+    // not used. SDK v2 (software.amazon.awssdk.*) coexists with the v1 classes
+    // hadoop-aws drags in (com.amazonaws.*) — different packages, no conflict.
+    "software.amazon.awssdk" % "auth" % "2.51.4",
+    "software.amazon.awssdk" % "http-auth-aws" % "2.51.4",
+    "software.amazon.awssdk" % "regions" % "2.51.4",
+
     // Secrets: HashiCorp Vault
     "io.github.jopenlibs" % "vault-java-driver" % "6.2.1",
 

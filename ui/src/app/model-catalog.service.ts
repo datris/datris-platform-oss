@@ -26,11 +26,11 @@ const FETCH_TIMEOUT_MS = 5000;
 const FALLBACK: ModelCatalog = {
   aiPrimary: {
     anthropic: [
-      { value: 'claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'claude-fable-5', label: 'Claude Fable 5 (recommended)', recommended: true },
+      { value: 'claude-opus-5', label: 'Claude Opus 5' },
       { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-      { value: 'claude-fable-5', label: 'Claude Fable 5' },
       { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
       { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
@@ -41,6 +41,17 @@ const FALLBACK: ModelCatalog = {
       { value: 'gpt-5.4-pro', label: 'GPT-5.4 Pro' },
       { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
       { value: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
+    ],
+    // Claude on Amazon Bedrock — `anthropic.`-prefixed ids. Fallback only:
+    // when AWS credentials are saved, the UI swaps this for live discovery
+    // (only models the account/region can actually invoke).
+    bedrock: [
+      { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5 (recommended)', recommended: true },
+      { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5' },
+      { value: 'anthropic.claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'anthropic.claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { value: 'anthropic.claude-opus-4-7', label: 'Claude Opus 4.7' },
+      { value: 'anthropic.claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
   },
   codegen: {
@@ -62,6 +73,14 @@ const FALLBACK: ModelCatalog = {
       { value: 'gpt-5.4-pro', label: 'GPT-5.4 Pro' },
       { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
       { value: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
+    ],
+    bedrock: [
+      { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5' },
+      { value: 'anthropic.claude-opus-4-8', label: 'Claude Opus 4.8' },
+      { value: 'anthropic.claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'anthropic.claude-opus-4-7', label: 'Claude Opus 4.7' },
+      { value: 'anthropic.claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
   },
   embedding: {
@@ -99,7 +118,7 @@ export class ModelCatalogService {
       try {
         localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), catalog: data }));
       } catch { /* storage quota / disabled — ignore */ }
-      return data;
+      return this.withProviderFallbacks(data);
     } catch {
       return this.cachedOrFallback();
     }
@@ -110,10 +129,23 @@ export class ModelCatalogService {
       const raw = localStorage.getItem(CACHE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && this.looksValid(parsed.catalog)) return parsed.catalog;
+        if (parsed && this.looksValid(parsed.catalog)) return this.withProviderFallbacks(parsed.catalog);
       }
     } catch { /* ignore */ }
     return FALLBACK;
+  }
+
+  /** Backfill provider lists the remote catalog doesn't carry yet from the
+   *  baked-in defaults — a valid remote catalog that predates a new provider
+   *  (e.g. bedrock) must not leave that provider's dropdown empty. */
+  private withProviderFallbacks(c: ModelCatalog): ModelCatalog {
+    for (const section of ['aiPrimary', 'codegen', 'embedding'] as const) {
+      const lists = c[section] = c[section] || {};
+      for (const [provider, models] of Object.entries(FALLBACK[section])) {
+        if (!lists[provider] || lists[provider].length === 0) lists[provider] = models;
+      }
+    }
+    return c;
   }
 
   private looksValid(c: any): boolean {

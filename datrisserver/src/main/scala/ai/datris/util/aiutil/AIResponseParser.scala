@@ -99,6 +99,16 @@ object AIResponseParser {
                         throw new DatrisException("OpenAI/Ollama response choice had no message")
                     message.get("content").asInstanceOf[String]
                 case _ =>
+                    // Anthropic wire (direct or via Bedrock). Claude Fable 5's safety
+                    // classifiers can decline a request with HTTP 200 + stop_reason
+                    // "refusal" and empty/partial content — surface that legibly
+                    // instead of the generic "no content" error.
+                    val stopReason = Option(responseMap.get("stop_reason")).map(_.toString).getOrElse("")
+                    if (stopReason == "refusal")
+                        throw new DatrisException(
+                            "The model declined this request (stop_reason: refusal). This can be a safety-classifier " +
+                                "false positive — rephrase the request or switch the slot to a different model."
+                        )
                     val contentList = responseMap.get("content").asInstanceOf[java.util.List[java.util.Map[String, Any]]]
                     if (contentList == null || contentList.isEmpty)
                         throw new DatrisException("Anthropic response contained no content")

@@ -74,6 +74,63 @@ class AIProvidersSpec extends AnyFunSuite {
         assert(obj.has("max_tokens"))
     }
 
+    test("addTokenLimit: bedrock uses max_tokens (Anthropic wire shape)") {
+        val obj = new com.google.gson.JsonObject()
+        AIProviders.addTokenLimit(obj, "bedrock", "anthropic.claude-sonnet-5", 4096)
+        assert(obj.has("max_tokens"))
+        assert(!obj.has("max_completion_tokens"))
+    }
+
+    // ---- bedrock / anthropic wire ----
+
+    test("usesAnthropicWire covers anthropic and bedrock only") {
+        assert(AIProviders.usesAnthropicWire("anthropic"))
+        assert(AIProviders.usesAnthropicWire("bedrock"))
+        assert(AIProviders.usesAnthropicWire("Bedrock"))
+        assert(!AIProviders.usesAnthropicWire("openai"))
+        assert(!AIProviders.usesAnthropicWire("azure"))
+        assert(!AIProviders.usesAnthropicWire("ollama"))
+        assert(!AIProviders.usesAnthropicWire(null))
+    }
+
+    test("supportsExtendedThinking is true for bedrock Claude") {
+        val cfg = ai.datris.model.AIConfig(
+            provider = "bedrock",
+            endpoint = "",
+            model = "anthropic.claude-sonnet-5",
+            apiKey = ""
+        )
+        assert(AIProviders.supportsExtendedThinking(cfg))
+    }
+
+    test("rejectsSamplingParams fires on bedrock-prefixed and inference-profile model ids") {
+        val rejecting = List(
+            "anthropic.claude-opus-5",
+            "anthropic.claude-sonnet-5",
+            "anthropic.claude-fable-5",
+            "us.anthropic.claude-opus-5",
+            "us.anthropic.claude-sonnet-5"
+        )
+        rejecting.foreach { m =>
+            assert(AIProviders.rejectsSamplingParams(m), s"$m should reject sampling params")
+        }
+        assert(!AIProviders.rejectsSamplingParams("anthropic.claude-haiku-4-5"))
+    }
+
+    test("usesResponsesApi is false for bedrock") {
+        val cfg = ai.datris.model.AIConfig(
+            provider = "bedrock",
+            endpoint = "",
+            model = "anthropic.claude-sonnet-5",
+            apiKey = ""
+        )
+        assert(!AIProviders.usesResponsesApi(cfg))
+    }
+
+    test("defaultEndpointFor has no static default for bedrock (derived from region at call time)") {
+        assert(AIProviders.defaultEndpointFor("bedrock") == "")
+    }
+
     // ---- usesResponsesApi ----
 
     test("usesResponsesApi is false for azure even with codex in the deployment name") {

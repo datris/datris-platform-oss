@@ -157,6 +157,14 @@ services:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_MODEL: ${AZURE_OPENAI_MODEL:-}
+      # Amazon Bedrock (AI_PROVIDER=bedrock — explicit-only; AWS key presence
+      # never implies Bedrock, since AWS creds are also used for S3 destinations).
+      # vault-init only needs these for its sanity checks + the BEDROCK_MODEL
+      # slot seed; the credentials themselves resolve on the server at call time.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+      BEDROCK_MODEL: ${BEDROCK_MODEL:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
       AI_PROVIDER: ${AI_PROVIDER:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
@@ -238,8 +246,8 @@ services:
       - datris-net
 
   datris:
-    image: datrisai/datris-server:latest
-    #build: .  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-server:latest
+    build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
     ports:
       - "8080:8080"
@@ -287,6 +295,14 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      # AWS credentials for the Bedrock provider (BedrockSupport resolution
+      # tier 2, single-tenant only; blank falls through to the IAM role /
+      # default credential chain — which also reads these same standard names,
+      # so they serve both tiers). Session token supported for temporary creds.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
       # JVM heap sizing for the datris-server process. Default fits an 8GB
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
@@ -313,8 +329,8 @@ services:
   # all capabilities dropped, no privilege escalation. Only used when the datris
   # server has USE_TAP_RUNNER=true.
   datris-tap-runner:
-    image: datrisai/datris-tap-runner:latest
-    #build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-tap-runner:latest
+    build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris-tap-runner
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
@@ -332,8 +348,8 @@ services:
       - tap-net
 
   ui:
-    image: datrisai/datris-ui:latest
-    #build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-ui:latest
+    build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: ui
     ports:
       - "4200:8080"
@@ -343,8 +359,8 @@ services:
       - datris-net
 
   mcp-server:
-    image: datrisai/datris-mcp-server:latest
-    #build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-mcp-server:latest
+    build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: mcp-server
     ports:
       - "3000:3000"
@@ -791,12 +807,14 @@ configs:
         echo "  secret/oss/ai-primary + secret/oss/codegen already present — skipping AI seed"
       else
         # Provider selection:
-        #   1. AI_PROVIDER (anthropic|openai|azure) is the explicit override — always
-        #      wins. Use this in .env to pin a choice when shell env vars (e.g. a
-        #      global OPENAI_API_KEY exported from your shell rc) would otherwise
+        #   1. AI_PROVIDER (anthropic|openai|azure|bedrock) is the explicit override —
+        #      always wins. Use this in .env to pin a choice when shell env vars (e.g.
+        #      a global OPENAI_API_KEY exported from your shell rc) would otherwise
         #      leak in and silently flip the default on every rebuild.
         #   2. If AI_PROVIDER is unset, fall back to "whichever key is present",
         #      with OpenAI winning ties — preserves the historical default.
+        #      Bedrock is EXPLICIT-ONLY: AWS_ACCESS_KEY_ID presence never implies it,
+        #      because AWS credentials are routinely set for S3 destinations.
         PROVIDER="$${AI_PROVIDER:-}"
         if [ -z "$$PROVIDER" ]; then
           if [ -n "$${OPENAI_API_KEY:-}" ]; then
@@ -808,7 +826,32 @@ configs:
           fi
         fi
 
-        if [ "$$PROVIDER" = "azure" ]; then
+        if [ "$$PROVIDER" = "bedrock" ]; then
+          # No API key and no static endpoint: AWS credentials resolve at request
+          # time on the server (AWS_* env vars, or the IAM role / default credential
+          # chain), and the invoke URL derives from the region + model. A blank
+          # endpoint in the slot secret is the "derive it" signal.
+          if [ -n "$${AWS_ACCESS_KEY_ID:-}" ] && [ -z "$${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AI_PROVIDER=bedrock with AWS_ACCESS_KEY_ID set requires AWS_SECRET_ACCESS_KEY too." >&2
+            exit 1
+          fi
+          if [ -z "$${AWS_ACCESS_KEY_ID:-}" ]; then
+            echo "  bedrock: no AWS_ACCESS_KEY_ID in .env — the server will use its IAM role / default AWS credential chain"
+          fi
+          if [ -z "$${AWS_REGION:-}$${AWS_DEFAULT_REGION:-}" ]; then
+            echo "  bedrock: no AWS_REGION in .env — the server will resolve the region from the default chain (set one if the first AI call fails)"
+          fi
+          seed_if_absent secret/oss/ai-primary \
+            provider="bedrock" \
+            endpoint="" \
+            model="$${BEDROCK_MODEL:-anthropic.claude-fable-5}" \
+            apiKey=""
+          seed_if_absent secret/oss/codegen \
+            provider="bedrock" \
+            endpoint="" \
+            model="$${CODEGEN_MODEL:-anthropic.claude-opus-5}" \
+            apiKey=""
+        elif [ "$$PROVIDER" = "azure" ]; then
           if [ -z "$${AZURE_OPENAI_API_KEY:-}" ]; then
             echo "ERROR: AI_PROVIDER=azure but AZURE_OPENAI_API_KEY is not set." >&2
             exit 1
@@ -869,7 +912,7 @@ configs:
             apiKey="$${ANTHROPIC_API_KEY}" \
             version="2023-06-01"
         else
-          echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai|azure), or set ANTHROPIC_API_KEY / OPENAI_API_KEY / AZURE_OPENAI_API_KEY in .env." >&2
+          echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai|azure|bedrock), or set ANTHROPIC_API_KEY / OPENAI_API_KEY / AZURE_OPENAI_API_KEY in .env. (Bedrock is explicit-only: AI_PROVIDER=bedrock.)" >&2
           exit 1
         fi
       fi
