@@ -3,6 +3,19 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.16.0" description="August 11, 2026">
+  **Amazon Bedrock support — run Claude through your AWS account.**
+
+  - **New AI provider.** Amazon Bedrock joins Anthropic, OpenAI, Azure OpenAI, and Ollama for the chat assistants and CodeGen — Claude models served from your own AWS account with IAM authentication and AWS billing. Configure it in Configuration → AI Providers. See [AI Configuration](/ai-configuration#amazon-bedrock-path).
+  - **IAM-native auth.** Enter AWS credentials once, or leave them blank on AWS infrastructure to use the server's IAM role — zero stored secrets.
+  - **Live model discovery.** The model dropdown shows what your AWS account and region can actually invoke — including cross-region inference profiles — rather than a hardcoded list.
+  - **Claude Fable 5 support.** Chat recommends Claude Fable 5; CodeGen recommends Claude Opus 5. Fable 5's one-time AWS data-retention opt-in is explained in-product and in the docs.
+  - **Deliberate opt-in.** Bedrock is only ever selected explicitly — AWS credentials used for S3 destinations never silently become your AI provider. The installer offers Bedrock when you don't have a direct provider key.
+  - **Clearer credentials panel.** The Configuration → AI Providers key panel is now grouped per provider with a short explainer; credentials hide immediately after saving.
+  - **Fix: provider-scoped model lists.** A model saved under one provider no longer appears in another provider's dropdown after switching a section between providers.
+  - **Refreshed recommendations.** Claude Fable 5 is now the recommended chat model for the Anthropic provider.
+</Update>
+
 <Update label="v1.15.0" description="August 10, 2026">
   **Azure OpenAI support — run Datris AI on your Azure resource.**
 
