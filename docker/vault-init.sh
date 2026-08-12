@@ -145,9 +145,26 @@ else
       model="${CODEGEN_MODEL:-anthropic.claude-opus-5}" \
       apiKey=""
   elif [ "$PROVIDER" = "azure" ]; then
+    # Keyless (Entra ID) azure is allowed with an explicit AI_PROVIDER=azure:
+    # a blank apiKey in the slot secret makes the server resolve Entra
+    # credentials at request time (AZURE_TENANT_ID/AZURE_CLIENT_ID/
+    # AZURE_CLIENT_SECRET service principal, or managed identity on Azure
+    # compute). Guard the half-configured SP trio; require the key only when
+    # azure was auto-picked by key presence (then it can't be blank anyway).
     if [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
-      echo "ERROR: AI_PROVIDER=azure but AZURE_OPENAI_API_KEY is not set." >&2
-      exit 1
+      SP_SET=0
+      [ -n "${AZURE_TENANT_ID:-}" ] && SP_SET=$((SP_SET + 1))
+      [ -n "${AZURE_CLIENT_ID:-}" ] && SP_SET=$((SP_SET + 1))
+      [ -n "${AZURE_CLIENT_SECRET:-}" ] && SP_SET=$((SP_SET + 1))
+      if [ "$SP_SET" -gt 0 ] && [ "$SP_SET" -lt 3 ]; then
+        echo "ERROR: AI_PROVIDER=azure keyless auth needs all three of AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET (or none, for managed identity on Azure compute)." >&2
+        exit 1
+      fi
+      if [ "$SP_SET" -eq 3 ]; then
+        echo "  azure: no AZURE_OPENAI_API_KEY in .env — using the Entra ID service principal (AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET)"
+      else
+        echo "  azure: no AZURE_OPENAI_API_KEY and no Entra service principal in .env — the server will use its Azure managed identity (requires Azure compute + the 'Cognitive Services OpenAI User' role)"
+      fi
     fi
     if [ -z "$AZURE_BASE" ]; then
       echo "ERROR: AI_PROVIDER=azure requires AZURE_OPENAI_ENDPOINT (e.g. https://YOUR-RESOURCE.openai.azure.com)." >&2
@@ -161,12 +178,12 @@ else
       provider="azure" \
       endpoint="${AZURE_BASE}/openai/v1/chat/completions" \
       model="${AZURE_OPENAI_MODEL}" \
-      apiKey="${AZURE_OPENAI_API_KEY}"
+      apiKey="${AZURE_OPENAI_API_KEY:-}"
     seed_if_absent secret/oss/codegen \
       provider="azure" \
       endpoint="${AZURE_BASE}/openai/v1/chat/completions" \
       model="${CODEGEN_MODEL:-${AZURE_OPENAI_MODEL}}" \
-      apiKey="${AZURE_OPENAI_API_KEY}"
+      apiKey="${AZURE_OPENAI_API_KEY:-}"
   elif [ "$PROVIDER" = "openai" ]; then
     if [ -z "${OPENAI_API_KEY:-}" ]; then
       echo "ERROR: AI_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
@@ -259,7 +276,7 @@ else
       provider="azure" \
       endpoint="${EMBEDDING_ENDPOINT:-${AZURE_BASE}/openai/v1/embeddings}" \
       model="${EMBEDDING_MODEL:-text-embedding-3-small}" \
-      apiKey="${AZURE_OPENAI_API_KEY}"
+      apiKey="${AZURE_OPENAI_API_KEY:-}"
   elif [ "$EMBEDDING_PROVIDER_RESOLVED" = "tei" ]; then
     seed_if_absent secret/oss/embedding \
       provider="tei" \

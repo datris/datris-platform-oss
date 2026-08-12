@@ -243,6 +243,7 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | `OPENAI_MODEL` | `gpt-5.5` | Model seeded into `oss/ai-primary` on the OpenAI path. |
 | `AZURE_OPENAI_ENDPOINT` | — | Azure resource base URL (`https://YOUR-RESOURCE.openai.azure.com`). Required on the Azure path. |
 | `AZURE_OPENAI_MODEL` | — | Chat deployment name seeded into `oss/ai-primary` on the Azure path. Required on the Azure path. |
+| `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | — | Entra ID service principal for keyless Azure OpenAI auth (no API key stored anywhere). Single-tenant only; the Configuration tab's Azure credentials section is the equivalent UI path. On Azure compute, leave all auth unset to use the server's managed identity. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | — | AWS credentials for the Bedrock path (`AI_PROVIDER=bedrock`). Optional — leave unset to use the server's IAM role / default credential chain. Never selects Bedrock by itself. |
 | `AWS_REGION` | — | AWS region for the Bedrock path (e.g. `us-east-1`). |
 | `BEDROCK_MODEL` | `anthropic.claude-fable-5` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |

@@ -128,6 +128,18 @@ lazy val allDependencies = Seq(
     "software.amazon.awssdk" % "http-auth-aws" % "2.51.4",
     "software.amazon.awssdk" % "regions" % "2.51.4",
 
+    // Entra ID token acquisition for Azure OpenAI keyless auth (service
+    // principal / managed identity) — the Azure analogue of the Bedrock
+    // credential chain above. Token-fetch-only: AI requests still execute on
+    // the shared Apache client in AIHttp; azure-identity only talks to the
+    // Entra token endpoints. This adds no new HTTP transport to the jar:
+    // milvus-sdk-java already ships the full azure-core + azure-core-http-netty
+    // + reactor-netty stack (via azure-storage-blob) — including azure-identity
+    // 1.10.1, which this direct dependency evicts up to a current version.
+    // Jackson stays safe: the 2.15.2 dependencyOverrides pin above applies to
+    // azure-core's transitives too.
+    "com.azure" % "azure-identity" % "1.18.4",
+
     // Secrets: HashiCorp Vault
     "io.github.jopenlibs" % "vault-java-driver" % "6.2.1",
 

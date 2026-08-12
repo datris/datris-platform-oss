@@ -357,11 +357,46 @@
 
         <ng-container *ngIf="!hostedOrTrial">
           <h2 class="keys-panel-title" style="margin-top: 18px;">Azure OpenAI</h2>
-          <p class="keys-panel-hint">From your Azure resource's Keys page. The resource endpoint and deployment name are entered per section on the left.</p>
+          <p class="keys-panel-hint">The resource endpoint and deployment name are entered per section on the left.</p>
+
           <div class="form-row">
+            <label class="form-label">Authentication</label>
+            <select class="form-input" [(ngModel)]="azureAuthMode">
+              <option value="key">API key</option>
+              <option value="sp">Microsoft Entra ID — service principal</option>
+              <option value="mi">Microsoft Entra ID — managed identity</option>
+            </select>
+          </div>
+
+          <div class="form-row" *ngIf="azureAuthMode === 'key'">
             <label class="form-label">API Key</label>
             <input class="form-input" type="text" [(ngModel)]="azureApiKey" placeholder="from your Azure resource's Keys page" />
           </div>
+
+          <ng-container *ngIf="azureAuthMode === 'sp'">
+            <div class="form-row">
+              <label class="form-label">Tenant ID</label>
+              <input class="form-input" type="text" [(ngModel)]="azureTenantId" placeholder="Entra directory (tenant) ID" />
+            </div>
+            <div class="form-row">
+              <label class="form-label">Client ID</label>
+              <input class="form-input" type="text" [(ngModel)]="azureClientId" placeholder="app registration (client) ID" />
+            </div>
+            <div class="form-row">
+              <label class="form-label">Client Secret</label>
+              <input class="form-input" type="text" [(ngModel)]="azureClientSecret" placeholder="client secret value" />
+            </div>
+            <p class="keys-panel-hint">The service principal needs the "Cognitive Services OpenAI User" role on your Azure OpenAI resource.</p>
+            <p class="keys-panel-hint" *ngIf="azureSpPartial" style="color: #c0392b;">
+              Enter all three: Tenant ID, Client ID, and Client Secret.
+            </p>
+          </ng-container>
+
+          <p class="keys-panel-hint" *ngIf="azureAuthMode === 'mi'">
+            Nothing to store — the server authenticates as its Azure managed identity. Requires Datris running on
+            Azure compute (VM, AKS, App Service) with the "Cognitive Services OpenAI User" role granted on the
+            Azure OpenAI resource.
+          </p>
         </ng-container>
 
         <ng-container *ngIf="!hostedOrTrial">

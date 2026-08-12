@@ -20,6 +20,20 @@ export class ConfigurationComponent implements OnInit {
   openaiApiKey = '';
   azureApiKey = '';
 
+  // Azure OpenAI auth mode. Three modes, nothing persisted as a mode field —
+  // on load it's inferred from which ai-keys fields came back (stored key →
+  // 'key'; SP trio → 'sp'; an azure section configured with neither → 'mi').
+  // Switching modes clears the other mode's stored fields on save, so a stale
+  // API key can never shadow Entra auth (a stored key always wins server-side).
+  azureAuthMode: 'key' | 'sp' | 'mi' = 'key';
+  azureTenantId = '';
+  azureClientId = '';
+  azureClientSecret = '';
+  // What the store held at load time — tells save() whether a mode switch has
+  // stored fields from the other mode to clear.
+  private azureStoredKey = false;
+  private azureStoredSp = false;
+
   // AWS credentials for Amazon Bedrock (no API-key concept — SigV4). All four
   // live in the shared ai-keys store. Keys may be left blank to use the
   // server's IAM role / AWS default credential chain.
@@ -358,6 +372,9 @@ export class ConfigurationComponent implements OnInit {
         // Secrets are loaded — backfill any blank bedrock model selection from
         // whatever list is available (discovery if it already landed, else catalog).
         this.defaultBedrockModels();
+        // Needs both the ai-keys fields and the slot providers, so it runs
+        // only once everything has landed.
+        this.inferAzureAuthMode();
       }
     };
 
@@ -494,6 +511,11 @@ export class ConfigurationComponent implements OnInit {
           if (fields.awsSecretAccessKey) this.awsSecretAccessKey = fields.awsSecretAccessKey;
           if (fields.awsSessionToken) this.awsSessionToken = fields.awsSessionToken;
           if (fields.awsRegion) this.awsRegion = fields.awsRegion;
+          // Azure Entra service principal. The clientSecret is key-like and
+          // arrives masked (••••••••); tenant/client IDs are plain, like awsRegion.
+          if (fields.azureTenantId) this.azureTenantId = fields.azureTenantId;
+          if (fields.azureClientId) this.azureClientId = fields.azureClientId;
+          if (fields.azureClientSecret) this.azureClientSecret = fields.azureClientSecret;
         }
         done();
       },
@@ -531,6 +553,12 @@ export class ConfigurationComponent implements OnInit {
     this.awsSecretAccessKey = '';
     this.awsSessionToken = '';
     this.awsRegion = '';
+    this.azureAuthMode = 'key';
+    this.azureTenantId = '';
+    this.azureClientId = '';
+    this.azureClientSecret = '';
+    this.azureStoredKey = false;
+    this.azureStoredSp = false;
     this.aiPrimaryModel = '';
     this.aiPrimaryEndpoint = '';
     this.showAdvancedAiPrimary = false;
@@ -581,6 +609,35 @@ export class ConfigurationComponent implements OnInit {
     return ak !== sk;
   }
 
+  /** The Azure Entra service-principal trio is all-or-none; partial entry is
+   *  the only invalid state, caught at save time (mirrors bedrockCredsPartial). */
+  get azureSpPartial(): boolean {
+    const n = this.azureSpFieldCount();
+    return n > 0 && n < 3;
+  }
+  get azureSpComplete(): boolean {
+    return this.azureSpFieldCount() === 3;
+  }
+  private azureSpFieldCount(): number {
+    return [this.azureTenantId, this.azureClientId, this.azureClientSecret]
+      .filter(v => !!(v && v.trim())).length;
+  }
+
+  /** Infer the Azure auth mode from what actually loaded — a mode is never
+   *  stored. A stored API key wins (matching the server's request-time
+   *  precedence); an SP trio means Entra service principal; an azure section
+   *  configured with neither can only be running on a managed identity. */
+  private inferAzureAuthMode(): void {
+    this.azureStoredKey = !!this.azureApiKey;
+    this.azureStoredSp = !!(this.azureTenantId || this.azureClientId || this.azureClientSecret);
+    const azureConfigured =
+      this.aiPrimaryProvider === 'azure' || this.codegenProvider === 'azure' || this.embeddingProvider === 'azure';
+    if (this.azureStoredKey) this.azureAuthMode = 'key';
+    else if (this.azureStoredSp) this.azureAuthMode = 'sp';
+    else if (azureConfigured) this.azureAuthMode = 'mi';
+    else this.azureAuthMode = 'key';
+  }
+
   /** Default endpoint per provider for the web-search call (mirrors the chat
    *  endpoint defaults — Anthropic Messages, OpenAI Responses). */
   webSearchEndpointFor(provider: string): string {
@@ -616,11 +673,15 @@ export class ConfigurationComponent implements OnInit {
   }
   private prevWebSearchProvider: 'anthropic' | 'openai' = 'anthropic';
 
-  /** Look up the shared API key for a given provider. Returns empty string for local/bundled providers. */
+  /** Look up the shared API key for a given provider. Returns empty string for local/bundled providers.
+   *  Azure in an Entra mode deliberately returns '' even if the key field still
+   *  holds a (masked) value — the slot secret must store an empty apiKey so the
+   *  server's request-time resolution falls through to Entra instead of
+   *  preserving the old key via the masked round-trip. */
   private keyForProvider(provider: string): string {
     if (provider === 'anthropic') return this.anthropicApiKey;
     if (provider === 'openai') return this.openaiApiKey;
-    if (provider === 'azure') return this.azureApiKey;
+    if (provider === 'azure') return this.azureAuthMode === 'key' ? this.azureApiKey : '';
     return '';  // ollama / ollama-local / tei need no key
   }
 
@@ -642,9 +703,12 @@ export class ConfigurationComponent implements OnInit {
 
   /** Returns true if the provider doesn't require an API key in the shared Keys
    *  panel. Bedrock qualifies: its AWS credentials are optional (blank = the
-   *  server's IAM role / default credential chain) and validated separately. */
+   *  server's IAM role / default credential chain) and validated separately.
+   *  Azure qualifies in the Entra modes: SP-trio coherence is validated
+   *  separately at save time, and managed identity stores nothing at all. */
   private noKeyRequired(provider: string): boolean {
-    return this.isOllama(provider) || provider === 'tei' || provider === 'bedrock';
+    return this.isOllama(provider) || provider === 'tei' || provider === 'bedrock'
+      || (provider === 'azure' && this.azureAuthMode !== 'key');
   }
 
   private endpointFor(provider: string, kind: 'chat' | 'embedding'): string {
@@ -724,6 +788,19 @@ export class ConfigurationComponent implements OnInit {
       }
     }
 
+    // Azure Entra credential coherence: in SP mode the trio is all-or-none
+    // (mirrors the Bedrock all-or-none check); managed identity stores nothing
+    // and is validated live on the first call.
+    const azureInUse =
+      (this.aiPrimaryProvider === 'azure' && aiPrimaryReady) ||
+      (this.codegenProvider === 'azure' && codegenReady) ||
+      (this.embeddingProvider === 'azure' && embeddingReady);
+    if (azureInUse && this.azureAuthMode === 'sp' && !this.azureSpComplete) {
+      this.error = 'Azure Entra service principal is incomplete — enter the Tenant ID, Client ID, and Client Secret, or switch Azure authentication to API key or managed identity.';
+      this.success = '';
+      return;
+    }
+
     // Azure has no default endpoint — the URL embeds the customer's resource
     // name, so a ready azure section must have one typed in.
     const azureMissingEndpoint =
@@ -751,7 +828,30 @@ export class ConfigurationComponent implements OnInit {
       const keysBody: any = {};
       if (this.anthropicApiKey) keysBody.anthropicApiKey = this.anthropicApiKey;
       if (this.openaiApiKey) keysBody.openaiApiKey = this.openaiApiKey;
-      if (this.azureApiKey) keysBody.azureApiKey = this.azureApiKey;
+      // Azure follows the selected auth mode: save the active mode's fields and
+      // explicitly CLEAR the other mode's stored fields (the ai-keys merge only
+      // preserves fields the request omits — an explicit '' overwrites). This is
+      // what makes the mode switch effective: at request time a stored API key
+      // always beats Entra config, so a stale key must not survive the switch.
+      if (this.azureAuthMode === 'key') {
+        if (this.azureApiKey) keysBody.azureApiKey = this.azureApiKey;
+        if (this.azureStoredSp) {
+          keysBody.azureTenantId = '';
+          keysBody.azureClientId = '';
+          keysBody.azureClientSecret = '';
+        }
+      } else {
+        if (this.azureAuthMode === 'sp') {
+          if (this.azureTenantId) keysBody.azureTenantId = this.azureTenantId.trim();
+          if (this.azureClientId) keysBody.azureClientId = this.azureClientId.trim();
+          if (this.azureClientSecret) keysBody.azureClientSecret = this.azureClientSecret;
+        } else if (this.azureStoredSp) {
+          keysBody.azureTenantId = '';
+          keysBody.azureClientId = '';
+          keysBody.azureClientSecret = '';
+        }
+        if (this.azureStoredKey) keysBody.azureApiKey = '';
+      }
       if (this.awsAccessKeyId) keysBody.awsAccessKeyId = this.awsAccessKeyId;
       if (this.awsSecretAccessKey) keysBody.awsSecretAccessKey = this.awsSecretAccessKey;
       if (this.awsSessionToken) keysBody.awsSessionToken = this.awsSessionToken;
@@ -832,6 +932,11 @@ export class ConfigurationComponent implements OnInit {
       this.awsAccessKeyId = maskIfSet(this.awsAccessKeyId);
       this.awsSecretAccessKey = maskIfSet(this.awsSecretAccessKey);
       this.awsSessionToken = maskIfSet(this.awsSessionToken);
+      this.azureClientSecret = maskIfSet(this.azureClientSecret);
+      // The store now reflects the selected Azure auth mode — the other mode's
+      // fields were cleared by this save.
+      this.azureStoredKey = this.azureAuthMode === 'key' && !!this.azureApiKey;
+      this.azureStoredSp = this.azureAuthMode === 'sp' && this.azureSpFieldCount() > 0;
       // Newly saved AWS credentials may unlock live Bedrock model discovery.
       if (this.awsAccessKeyId || this.awsRegion) this.fetchBedrockModels();
     }).catch(() => {

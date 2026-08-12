@@ -63,6 +63,13 @@ Keys are stored once per provider rather than once per slot, so switching a slot
 
 The same store holds the Bedrock provider's AWS credentials, in four fields: `awsAccessKeyId`, `awsSecretAccessKey`, `awsSessionToken` (optional, for temporary credentials), and `awsRegion`. Bedrock resolves them in its own order: the store, then the standard `AWS_*` container env vars (single-tenant only), then the server's IAM role / AWS default credential chain — so an instance-role deployment can run Bedrock with no stored secrets at all.
 
+It also holds the Azure Entra service-principal credentials for
+[keyless Azure OpenAI auth](#keyless-auth-microsoft-entra-id), in three fields:
+`azureTenantId`, `azureClientId`, and `azureClientSecret`. Azure resolves auth per
+request: a stored API key wins; otherwise the SP trio; otherwise (single-tenant
+only) the Azure default credential chain — `AZURE_*` env vars, managed identity on
+Azure compute, workload identity, or `az login`.
+
 ## Quick Start with `.env`
 
 On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the `AZURE_OPENAI_*` trio, or `AI_PROVIDER=bedrock` (see the [Bedrock path](#amazon-bedrock-path)):
@@ -108,6 +115,36 @@ Embeddings default to the bundled service; set `EMBEDDING_PROVIDER=azure` to use
 </Tip>
 
 Datris targets Azure's **v1 API** (`/openai/v1/...`), which needs no `api-version` parameter. Legacy deployment-scoped URLs also work — put the full URL including `?api-version=...` in the section's Endpoint field in the Configuration UI.
+
+#### Keyless auth (Microsoft Entra ID)
+
+Azure OpenAI also works **without an API key** — required when your resource has
+`disableLocalAuth` set (API keys disabled, often tenant-wide by policy), and useful
+anywhere you'd rather rotate credentials centrally. Pick the authentication mode in
+the Configuration tab's Azure OpenAI credentials section:
+
+- **Service principal** — works for any Datris deployment. Enter the Entra
+  **Tenant ID**, **Client ID**, and **Client Secret** of an app registration.
+  Alternatively set the `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`
+  container env vars (single-tenant only).
+- **Managed identity** — zero stored secrets. Available when the Datris server runs
+  on Azure compute (VM, AKS, App Service, Container Apps); nothing to enter at all.
+
+Either way, the identity needs the **Cognitive Services OpenAI User** role on the
+Azure OpenAI resource:
+
+```bash
+az role assignment create \
+  --assignee <client-id-or-principal-id> \
+  --role "Cognitive Services OpenAI User" \
+  --scope /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<resource>
+```
+
+Precedence: a stored API key always wins over Entra configuration. If you're moving
+a resource to `disableLocalAuth`, switch the auth mode in the Configuration tab —
+saving the switch clears the stored key so it can't shadow Entra auth. Chat,
+CodeGen, embeddings, and the Assistant all honor the same resolution; tokens are
+acquired and refreshed automatically.
 
 ### Amazon Bedrock path
 

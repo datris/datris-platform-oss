@@ -48,7 +48,11 @@ object EmbeddingUtil {
         // When true, on a 4xx error from the embedding API, retry the failed
         // batch one chunk at a time so a single poison chunk doesn't lose the
         // whole batch. Costs N HTTP calls in the failure path; off by default.
-        retryIndividualOnFailure: Boolean = false
+        retryIndividualOnFailure: Boolean = false,
+        // Carried through to request time so azure with a blank key can resolve
+        // an Entra ID token per call (tokens expire ~hourly — they can't be
+        // baked in here the way a static key is). Other providers ignore it.
+        provider: String = ""
     )
 
     /** Pair of (fitted text, embedding) — vector-store loaders persist both. */
@@ -91,7 +95,7 @@ object EmbeddingUtil {
         val retryIndividual = Option(secret.get("retryIndividualOnFailure"))
             .map(_.trim.toLowerCase)
             .exists(s => s == "true" || s == "1" || s == "yes")
-        EmbeddingConfig(endpoint, model, apiKey, batchSize, maxTokens, tokenizer, tokensPerCharRatio, oversize, retryIndividual)
+        EmbeddingConfig(endpoint, model, apiKey, batchSize, maxTokens, tokenizer, tokensPerCharRatio, oversize, retryIndividual, provider)
     }
 
     /**
@@ -210,7 +214,14 @@ object EmbeddingUtil {
 
         try {
             val httpPost = new HttpPost(config.endpoint)
-            if (config.apiKey.nonEmpty)
+            // Azure embeddings honor the same auth resolution as the chat slots:
+            // API key when one resolved, else an Entra ID token per request
+            // (disableLocalAuth applies to embedding deployments equally).
+            if (config.provider == "azure") {
+                val envValues = ai.datris.model.DatrisEnvironment.current
+                val auth = ai.datris.util.aiutil.AzureEntraSupport.resolveAuth(config.apiKey, envValues.environment, envValues.multiTenant)
+                ai.datris.util.aiutil.AzureEntraSupport.authHeaders(auth).foreach { case (name, value) => httpPost.addHeader(name, value) }
+            } else if (config.apiKey.nonEmpty)
                 httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + config.apiKey)
             httpPost.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
             httpPost.setEntity(new StringEntity(jsonBody, StandardCharsets.UTF_8))
