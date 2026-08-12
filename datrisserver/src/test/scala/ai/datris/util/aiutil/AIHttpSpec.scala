@@ -67,4 +67,50 @@ class AIHttpSpec extends AnyFunSuite {
         val choice = root.getAsJsonArray("choices").get(0).getAsJsonObject
         assert(choice.getAsJsonObject("message").get("content").getAsString == "ok")
     }
+
+    // ---- Anthropic Messages SSE reassembly (stream injected on tool-less calls) ----
+
+    private def assembleAnthropic(payloads: List[String]): com.google.gson.JsonObject =
+        JsonParser.parseString(AIHttp.assembleAnthropicMessagesStream(payloads)).getAsJsonObject
+
+    test("assembleAnthropicMessagesStream folds text deltas into content blocks + stop_reason") {
+        val root = assembleAnthropic(List(
+            """{"type":"message_start","message":{"id":"msg_1","role":"assistant"}}""",
+            """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}""",
+            """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"import "}}""",
+            """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"requests"}}""",
+            """{"type":"content_block_stop","index":0}""",
+            """{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12}}""",
+            """{"type":"message_stop"}"""
+        ))
+        val block = root.getAsJsonArray("content").get(0).getAsJsonObject
+        assert(block.get("type").getAsString == "text")
+        assert(block.get("text").getAsString == "import requests")
+        assert(root.get("stop_reason").getAsString == "end_turn")
+    }
+
+    test("assembleAnthropicMessagesStream ignores pings and non-text delta kinds") {
+        val root = assembleAnthropic(List(
+            """{"type":"ping"}""",
+            """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hi"}}""",
+            """{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"abc"}}""",
+            """{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"!"}}"""
+        ))
+        assert(root.getAsJsonArray("content").get(0).getAsJsonObject.get("text").getAsString == "hi!")
+    }
+
+    test("assembleAnthropicMessagesStream surfaces overload errors as retryable IOExceptions") {
+        intercept[java.io.IOException] {
+            AIHttp.assembleAnthropicMessagesStream(List(
+                """{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"par"}}""",
+                """{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"""
+            ))
+        }
+        val fatal = intercept[ai.datris.model.DatrisException] {
+            AIHttp.assembleAnthropicMessagesStream(List(
+                """{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}"""
+            ))
+        }
+        assert(fatal.getMessage.contains("invalid_request_error"))
+    }
 }

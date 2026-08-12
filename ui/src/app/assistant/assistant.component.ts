@@ -1,4 +1,4 @@
-import { Component, OnInit, ViewChild, ElementRef, AfterViewInit, AfterViewChecked } from '@angular/core';
+import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { AssistantStateService, AssistantTurn, ToolCard, TextSegment } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
@@ -13,7 +13,7 @@ interface StarterPrompt {
   templateUrl: './assistant.component.html',
   styleUrls: ['./assistant.component.css']
 })
-export class AssistantComponent implements OnInit, AfterViewInit, AfterViewChecked {
+export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, AfterViewChecked {
   // Static UI config — fine to keep in the component.
   starterPrompts: StarterPrompt[] = [
     { label: 'SEC filings',  prompt: 'Find a source of US public-company SEC filings and build a tap and pipeline.' },
@@ -35,11 +35,27 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
   existingTapSecrets: string[] = [];
   private existingTapSecretsLoaded = false;
 
-  constructor(public state: AssistantStateService, private secretsService: SecretsService, private route: ActivatedRoute) { }
+  /** 1s heartbeat driving the live elapsed counter on running tool cards.
+   *  The interval runs outside Angular and only re-enters the zone while a
+   *  stream is active, so an idle tab pays nothing for it. */
+  nowTick = Date.now();
+  private tickHandle?: ReturnType<typeof setInterval>;
+
+  constructor(
+    public state: AssistantStateService,
+    private secretsService: SecretsService,
+    private route: ActivatedRoute,
+    private zone: NgZone
+  ) { }
 
   ngOnInit(): void {
     this.state.ensureInit();
     this.scrollPending = true;
+    this.zone.runOutsideAngular(() => {
+      this.tickHandle = setInterval(() => {
+        if (this.state.streaming) this.zone.run(() => { this.nowTick = Date.now(); });
+      }, 1000);
+    });
 
     // When the user navigated in from a specific catalog (e.g. clicked
     // "Describe to Assistant" inside a catalog card), start a fresh chat so
@@ -65,6 +81,35 @@ export class AssistantComponent implements OnInit, AfterViewInit, AfterViewCheck
         }
       });
     }
+  }
+
+  ngOnDestroy(): void {
+    if (this.tickHandle) clearInterval(this.tickHandle);
+  }
+
+  /** Seconds a running tool card has been going, anchored to execution start
+   *  when known (input fully streamed) else card creation. 0 when not running. */
+  toolElapsedSeconds(seg: ToolCard): number {
+    if (seg.status !== 'running') return 0;
+    const base = seg.executingSince || seg.startedAt;
+    if (!base) return 0;
+    return Math.max(0, Math.floor((this.nowTick - base) / 1000));
+  }
+
+  /** "42s" under a minute, "3m 07s" beyond. Shown once a call stops being
+   *  instant (≥5s) so quick tools stay visually quiet. */
+  toolElapsedLabel(seg: ToolCard): string {
+    const s = this.toolElapsedSeconds(seg);
+    if (s < 60) return s + 's';
+    return Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's';
+  }
+
+  /** After 45s of actual execution, explain WHY it's slow instead of letting
+   *  the spinner read as a hang — long AI generations and the server's
+   *  transient-error retry ladder both live inside a single tool call. */
+  toolSlowHint(seg: ToolCard): boolean {
+    return seg.status === 'running' && !!seg.executingSince &&
+      (this.nowTick - seg.executingSince) >= 45000;
   }
 
   /** Ensure the existing tap secrets list is loaded for the form dropdown.

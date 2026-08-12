@@ -467,11 +467,17 @@ def _headers():
     return h
 
 
-def _call(method, path, **kwargs):
-    """Make an HTTP request to the pipeline API."""
+def _call(method, path, timeout=300, **kwargs):
+    """Make an HTTP request to the pipeline API.
+
+    Default timeout suits ordinary API calls; endpoints backed by an AI
+    generation (tap script generation) pass a longer one — a large script
+    can legitimately take more than 5 minutes to generate, and the server
+    streams the generation so the connection stays demonstrably alive.
+    """
     url = f"{DATRIS_API_URL}{path}"
     try:
-        resp = getattr(requests, method)(url, headers=_headers(), timeout=300, **kwargs)
+        resp = getattr(requests, method)(url, headers=_headers(), timeout=timeout, **kwargs)
         return resp.text
     except requests.RequestException as e:
         return json.dumps({"error": str(e)})
@@ -3182,7 +3188,9 @@ def _dispatch(name: str, args: dict) -> str:
             gen_payload = {"description": instruction, "tapName": tap_name, "tapType": tap_type}
             if secret_name:
                 gen_payload["secretName"] = secret_name
-            gen_result = _call("post", "/api/v1/tap/generate", json=gen_payload)
+            # AI generation: opus-class models routinely need >5 minutes for a
+            # large tap script, so this call gets triple the default budget.
+            gen_result = _call("post", "/api/v1/tap/generate", json=gen_payload, timeout=900)
             try:
                 gen_data = json.loads(gen_result)
                 if "error" in gen_data:

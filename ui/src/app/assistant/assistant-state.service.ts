@@ -16,6 +16,13 @@ export interface ToolCard {
   /** Cumulative size of the tool input streamed so far. Only meaningful while
    *  status is 'running' — drives the live "composing (N KB)" counter. */
   inputChars?: number;
+  /** When the card appeared (tool_use_start) and when the server actually
+   *  began executing the tool (tool_use = input fully streamed). Drive the
+   *  live elapsed counter and the "still working" hint, so a slow tool call —
+   *  an AI generation, or a provider retrying transient errors server-side —
+   *  reads as visible progress instead of a frozen spinner. */
+  startedAt?: number;
+  executingSince?: number;
   /** Populated when the agent called `request_tap_secret_from_user`. The UI
    *  renders an inline credentials form using these fields. */
   secretRequest?: {
@@ -289,7 +296,8 @@ export class AssistantStateService {
           result: '',
           isError: false,
           status: 'running',
-          expanded: false
+          expanded: false,
+          startedAt: Date.now()
         });
         break;
       case 'input_delta': {
@@ -299,7 +307,11 @@ export class AssistantStateService {
       }
       case 'tool_use': {
         const card = this.findToolCard(turn, evt.id);
-        if (card) card.input = evt.input;
+        if (card) {
+          card.input = evt.input;
+          // Input fully streamed — the server is now executing the tool.
+          card.executingSince = Date.now();
+        }
         break;
       }
       case 'tool_result': {
