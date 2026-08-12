@@ -9,6 +9,8 @@ description: "Release history for Datris"
   - **Large script generations finish reliably.** Generating a big tap script can legitimately take more than five minutes — previously these could time out or hang partway. Generation responses now stream under the hood with a much larger time budget, so long generations run to completion.
   - **Live progress in the Assistant.** Running steps show an elapsed-time counter once they take more than a few seconds, plus a note after about a minute explaining that long generations are normal and temporary provider errors retry automatically.
   - **Unresponsive AI providers no longer hang requests.** AI calls fail fast during a provider outage and feed the automatic retry ladder, instead of waiting indefinitely on a response that will never come.
+
+  Standard upgrade: `docker compose pull && docker compose up -d` — no configuration changes required.
 </Update>
 
 <Update label="v1.16.0" description="August 11, 2026">
