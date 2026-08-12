@@ -121,7 +121,7 @@ object AIHttp {
                 } else {
                     val contentType = Option(response.getEntity.getContentType).map(_.getValue.toLowerCase).getOrElse("")
                     result =
-                        if (contentType.startsWith("text/event-stream")) assembleChatCompletionsStream(response.getEntity)
+                        if (contentType.startsWith("text/event-stream")) assembleEventStream(response.getEntity)
                         else EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
                     logger.info("AI API responded in " + elapsedMs + "ms, response length: " + result.length + " chars")
                 }
@@ -139,22 +139,12 @@ object AIHttp {
         result
     }
 
-    /** Re-assemble a chat/completions SSE stream into the standard
-      * non-streaming response JSON, so call sites keep parsing the familiar
-      * shape. Azure's front-end closes connections that stay silent for ~60s,
-      * which non-streaming requests with long reasoning phases routinely
-      * exceed — so azure requests are sent with `stream: true` (injected in
-      * buildHttpPost) and folded back together here. */
-    private def assembleChatCompletionsStream(entity: org.apache.http.HttpEntity): String =
-        assembleChatCompletionsStream(entity.getContent)
-
-    private[aiutil] def assembleChatCompletionsStream(stream: java.io.InputStream): String = {
+    /** Read an SSE body into its `data:` payloads, stopping at `[DONE]` or EOF.
+      * Buffering the whole stream is fine here — these are single model
+      * responses (KBs to low MBs), and reassembly needs every frame anyway. */
+    private def readSsePayloads(stream: java.io.InputStream): List[String] = {
         val reader = new java.io.BufferedReader(new java.io.InputStreamReader(stream, StandardCharsets.UTF_8))
-        val content = new StringBuilder
-        // insertion-ordered: index -> (id, name, arguments)
-        val toolCalls = scala.collection.mutable.LinkedHashMap.empty[Int, (String, String, StringBuilder)]
-        var finishReason: String = null
-        var role = "assistant"
+        val payloads = scala.collection.mutable.ListBuffer.empty[String]
         try {
             var line = reader.readLine()
             var done = false
@@ -162,44 +152,141 @@ object AIHttp {
                 if (line.startsWith("data:")) {
                     val payload = line.substring(5).trim
                     if (payload == "[DONE]") done = true
-                    else if (payload.nonEmpty) {
-                        val obj = JsonParser.parseString(payload).getAsJsonObject
-                        val choices = obj.getAsJsonArray("choices")
-                        if (choices != null && choices.size() > 0) {
-                            val choice = choices.get(0).getAsJsonObject
-                            if (choice.has("finish_reason") && !choice.get("finish_reason").isJsonNull)
-                                finishReason = choice.get("finish_reason").getAsString
-                            val delta = choice.getAsJsonObject("delta")
-                            if (delta != null) {
-                                if (delta.has("role") && !delta.get("role").isJsonNull)
-                                    role = delta.get("role").getAsString
-                                if (delta.has("content") && !delta.get("content").isJsonNull)
-                                    content.append(delta.get("content").getAsString)
-                                if (delta.has("tool_calls") && delta.get("tool_calls").isJsonArray) {
-                                    val arr = delta.getAsJsonArray("tool_calls")
-                                    var i = 0
-                                    while (i < arr.size()) {
-                                        val tc = arr.get(i).getAsJsonObject
-                                        val index = if (tc.has("index")) tc.get("index").getAsInt else 0
-                                        val entry = toolCalls.getOrElseUpdate(index, ("", "", new StringBuilder))
-                                        var (id, name, args) = entry
-                                        if (tc.has("id") && !tc.get("id").isJsonNull) id = tc.get("id").getAsString
-                                        val fn = tc.getAsJsonObject("function")
-                                        if (fn != null) {
-                                            if (fn.has("name") && !fn.get("name").isJsonNull) name = fn.get("name").getAsString
-                                            if (fn.has("arguments") && !fn.get("arguments").isJsonNull) args.append(fn.get("arguments").getAsString)
-                                        }
-                                        toolCalls.put(index, (id, name, args))
-                                        i += 1
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    else if (payload.nonEmpty) payloads += payload
                 }
                 if (!done) line = reader.readLine()
             }
         } finally reader.close()
+        payloads.toList
+    }
+
+    /** Fold an SSE response back into the standard non-streaming JSON shape,
+      * dispatching on the wire format: Anthropic Messages events carry a
+      * top-level `type` field, chat/completions chunks carry `choices`.
+      * Streaming-injected calls land here (buildHttpPost adds `stream: true`
+      * for azure and tool-less anthropic requests) so call sites keep parsing
+      * the familiar non-streaming shapes. */
+    private def assembleEventStream(entity: org.apache.http.HttpEntity): String = {
+        val payloads = readSsePayloads(entity.getContent)
+        val isAnthropic = payloads.headOption.exists { p =>
+            try JsonParser.parseString(p).getAsJsonObject.has("type")
+            catch { case _: Exception => false }
+        }
+        if (isAnthropic) assembleAnthropicMessagesStream(payloads) else assembleChatCompletionsStream(payloads)
+    }
+
+    /** Re-assemble an Anthropic Messages SSE stream into the non-streaming
+      * response shape (`content` blocks + `stop_reason`) that AIResponseParser
+      * already understands. Long generations (tap scripts, codegen) can stay
+      * silent for many minutes on a non-streaming call — past any sane read
+      * timeout — so buildHttpPost injects `stream: true` on tool-less anthropic
+      * requests and this folds the deltas back together. Only text blocks are
+      * materialized: these calls carry no tools and no thinking configuration,
+      * so other delta kinds shouldn't occur and are ignored if they do. */
+    private[aiutil] def assembleAnthropicMessagesStream(payloads: List[String]): String = {
+        // insertion-ordered: block index -> (block type, accumulated text)
+        val blocks = scala.collection.mutable.LinkedHashMap.empty[Int, (String, StringBuilder)]
+        var stopReason: String = null
+        payloads.foreach { p =>
+            val obj = JsonParser.parseString(p).getAsJsonObject
+            val eventType = if (obj.has("type") && !obj.get("type").isJsonNull) obj.get("type").getAsString else ""
+            eventType match {
+                case "content_block_start" =>
+                    val idx = if (obj.has("index")) obj.get("index").getAsInt else 0
+                    val cb = obj.getAsJsonObject("content_block")
+                    val blockType = if (cb != null && cb.has("type")) cb.get("type").getAsString else "text"
+                    val initial =
+                        if (cb != null && cb.has("text") && !cb.get("text").isJsonNull) cb.get("text").getAsString else ""
+                    blocks.put(idx, (blockType, new StringBuilder(initial)))
+                case "content_block_delta" =>
+                    val idx = if (obj.has("index")) obj.get("index").getAsInt else 0
+                    val delta = obj.getAsJsonObject("delta")
+                    if (delta != null && delta.has("type") && delta.get("type").getAsString == "text_delta") {
+                        val entry = blocks.getOrElseUpdate(idx, ("text", new StringBuilder))
+                        entry._2.append(delta.get("text").getAsString)
+                    }
+                case "message_delta" =>
+                    val delta = obj.getAsJsonObject("delta")
+                    if (delta != null && delta.has("stop_reason") && !delta.get("stop_reason").isJsonNull)
+                        stopReason = delta.get("stop_reason").getAsString
+                case "error" =>
+                    // Anthropic delivers some mid-stream failures as SSE error
+                    // events on an HTTP 200. Overload is as transient here as a
+                    // 529 status — surface it as an IOException so the retry
+                    // ladder picks it up; everything else fails loud.
+                    val err = obj.getAsJsonObject("error")
+                    val errType = if (err != null && err.has("type")) err.get("type").getAsString else ""
+                    val detail = (if (err != null) err.toString else p).take(500)
+                    if (errType == "overloaded_error" || errType == "api_error")
+                        throw new java.io.IOException("Anthropic stream error: " + detail)
+                    throw new DatrisException("Anthropic streaming error: " + detail)
+                case _ => // message_start, content_block_stop, message_stop, ping
+            }
+        }
+        val content = new JsonArray()
+        blocks.values.foreach { case (blockType, text) =>
+            if (blockType == "text") {
+                val b = new JsonObject()
+                b.addProperty("type", "text")
+                b.addProperty("text", text.toString)
+                content.add(b)
+            }
+        }
+        val root = new JsonObject()
+        root.add("content", content)
+        if (stopReason != null) root.addProperty("stop_reason", stopReason)
+        root.toString
+    }
+
+    /** Re-assemble a chat/completions SSE stream into the standard
+      * non-streaming response JSON, so call sites keep parsing the familiar
+      * shape. Azure's front-end closes connections that stay silent for ~60s,
+      * which non-streaming requests with long reasoning phases routinely
+      * exceed — so azure requests are sent with `stream: true` (injected in
+      * buildHttpPost) and folded back together here. */
+    private[aiutil] def assembleChatCompletionsStream(stream: java.io.InputStream): String =
+        assembleChatCompletionsStream(readSsePayloads(stream))
+
+    private[aiutil] def assembleChatCompletionsStream(payloads: List[String]): String = {
+        val content = new StringBuilder
+        // insertion-ordered: index -> (id, name, arguments)
+        val toolCalls = scala.collection.mutable.LinkedHashMap.empty[Int, (String, String, StringBuilder)]
+        var finishReason: String = null
+        var role = "assistant"
+        payloads.foreach { payload =>
+            val obj = JsonParser.parseString(payload).getAsJsonObject
+            val choices = obj.getAsJsonArray("choices")
+            if (choices != null && choices.size() > 0) {
+                val choice = choices.get(0).getAsJsonObject
+                if (choice.has("finish_reason") && !choice.get("finish_reason").isJsonNull)
+                    finishReason = choice.get("finish_reason").getAsString
+                val delta = choice.getAsJsonObject("delta")
+                if (delta != null) {
+                    if (delta.has("role") && !delta.get("role").isJsonNull)
+                        role = delta.get("role").getAsString
+                    if (delta.has("content") && !delta.get("content").isJsonNull)
+                        content.append(delta.get("content").getAsString)
+                    if (delta.has("tool_calls") && delta.get("tool_calls").isJsonArray) {
+                        val arr = delta.getAsJsonArray("tool_calls")
+                        var i = 0
+                        while (i < arr.size()) {
+                            val tc = arr.get(i).getAsJsonObject
+                            val index = if (tc.has("index")) tc.get("index").getAsInt else 0
+                            val entry = toolCalls.getOrElseUpdate(index, ("", "", new StringBuilder))
+                            var (id, name, args) = entry
+                            if (tc.has("id") && !tc.get("id").isJsonNull) id = tc.get("id").getAsString
+                            val fn = tc.getAsJsonObject("function")
+                            if (fn != null) {
+                                if (fn.has("name") && !fn.get("name").isJsonNull) name = fn.get("name").getAsString
+                                if (fn.has("arguments") && !fn.get("arguments").isJsonNull) args.append(fn.get("arguments").getAsString)
+                            }
+                            toolCalls.put(index, (id, name, args))
+                            i += 1
+                        }
+                    }
+                }
+            }
+        }
 
         val message = new JsonObject()
         message.addProperty("role", role)
@@ -247,13 +334,26 @@ object AIHttp {
             return BedrockSupport.signedPost(effectiveEndpoint, BedrockSupport.transformBodyForInvoke(jsonBody), creds)
         }
         val httpPost = new HttpPost(endpoint)
-        // Azure kills non-streaming requests whose response stays silent for
-        // ~60s (long reasoning phases hit this wall deterministically). Every
-        // azure call through here is a chat/completions request, so force
-        // stream:true; executeWithRetry folds the SSE stream back into the
-        // standard non-streaming response shape.
+        // Two providers get stream:true injected on otherwise non-streaming
+        // requests; executeWithRetry folds the SSE back into the standard
+        // non-streaming response shape either way.
+        //   - azure: its front-end kills responses that stay silent for ~60s,
+        //     which long reasoning phases hit deterministically.
+        //   - anthropic: long generations (tap scripts, codegen) can stay
+        //     silent for many minutes on a non-streaming call — past the
+        //     socket read timeout above, so the connection died mid-generation
+        //     (observed live 2026-08-12). Streaming keeps bytes flowing, which
+        //     makes the timeout a dead-connection detector instead of a cap on
+        //     generation time. Skipped for requests carrying tools (web
+        //     search): Anthropic tool-use SSE reassembly lives in AIStreaming,
+        //     not here. Requests that already set "stream" (AIStreaming's own
+        //     calls) pass through untouched. Bedrock never reaches this point
+        //     (early return above), and its invoke API is non-streaming.
+        val provider = aiConfig.provider.toLowerCase
+        val wantsInjectedStream =
+            provider == "azure" || (provider == "anthropic" && !jsonBody.contains("\"tools\""))
         val effectiveBody =
-            if (aiConfig.provider.toLowerCase == "azure" && !jsonBody.contains("\"stream\"")) {
+            if (wantsInjectedStream && !jsonBody.contains("\"stream\"")) {
                 val obj = JsonParser.parseString(jsonBody).getAsJsonObject
                 obj.addProperty("stream", true)
                 obj.toString
