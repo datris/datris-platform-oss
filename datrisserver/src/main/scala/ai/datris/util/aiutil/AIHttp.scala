@@ -10,6 +10,7 @@ import ai.datris.model.{AIConfig, DatrisEnvironment, DatrisException}
 import ai.datris.util.aiutil.AIProviders.{addTokenLimit, rejectsSamplingParams, responsesEndpointFor, usesAnthropicWire, usesResponsesApi}
 import ai.datris.util.aiutil.AIWebSearch.{attachWebSearchToolAnthropic, attachWebSearchToolResponses}
 import org.apache.http.HttpHeaders
+import org.apache.http.client.config.RequestConfig
 import org.apache.http.client.methods.HttpPost
 import org.apache.http.conn.ssl.SSLConnectionSocketFactory
 import org.apache.http.entity.StringEntity
@@ -27,8 +28,26 @@ import org.slf4j.{Logger, LoggerFactory}
 object AIHttp {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
+    // Explicit deadlines for every AI call. Apache HttpClient's defaults are
+    // INFINITE, which turned a provider that accepts the connection but never
+    // answers (observed live during an Anthropic incident, 2026-08-12) into an
+    // indefinite per-attempt hang: the calling thread blocked in the socket
+    // read while the Assistant UI showed a silent spinner. Connect fails fast;
+    // the socket (read) timeout is deliberately generous — it's the max gap
+    // BETWEEN bytes, and legitimate non-streaming generations can stay silent
+    // for minutes before the first byte. 300s matches the MCP layer's ceiling
+    // on tool calls, so the inner call can't outlive its caller. Streaming
+    // responses are unaffected (deltas arrive well inside the gap).
+    private val aiRequestConfig: RequestConfig = RequestConfig
+        .custom()
+        .setConnectTimeout(10000)
+        .setConnectionRequestTimeout(10000)
+        .setSocketTimeout(300000)
+        .build()
+
     // Reusable HTTP clients — one lightweight client for Ollama (no SSL), one with SSL for cloud providers
-    private lazy val ollamaClient: CloseableHttpClient = HttpClients.createDefault()
+    private lazy val ollamaClient: CloseableHttpClient =
+        HttpClients.custom().setDefaultRequestConfig(aiRequestConfig).build()
     private[aiutil] lazy val sslClient: CloseableHttpClient = {
         val sslsf = new SSLConnectionSocketFactory(
             SSLContext.getDefault,
@@ -36,7 +55,7 @@ object AIHttp {
             null,
             SSLConnectionSocketFactory.getDefaultHostnameVerifier
         )
-        HttpClients.custom().setSSLSocketFactory(sslsf).build()
+        HttpClients.custom().setSSLSocketFactory(sslsf).setDefaultRequestConfig(aiRequestConfig).build()
     }
 
     private def getClient(provider: String): CloseableHttpClient = {

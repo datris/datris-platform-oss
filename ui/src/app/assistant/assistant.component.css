@@ -306,6 +306,20 @@
   flex: 0 0 auto;
 }
 
+.tool-elapsed {
+  color: #8a8e96;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-slow-hint {
+  color: #8a8e96;
+  font-style: italic;
+  font-size: 12px;
+  padding: 4px 12px 8px 34px;
+}
+
 /* Inline three-dot pulsing indicator for in-flight tool calls. Each dot has
    its own animation-delay so motion is obvious even when the page is
    re-rendering on every streaming SSE event. */
