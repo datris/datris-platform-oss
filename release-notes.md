@@ -1,25 +1,28 @@
 # Release Notes
 
+## v1.16.2 — August 13, 2026
+
+**Azure OpenAI without API keys — Microsoft Entra ID authentication.**
+
+Azure OpenAI now works keyless. If your organization disables API keys on its Azure resources (`disableLocalAuth`, often set tenant-wide by policy), Entra ID is the only way in — and Datris now supports it end to end. It's also the right choice anywhere you'd rather rotate credentials centrally than store provider keys.
+
+Two keyless modes, chosen in **Configuration → AI Providers** under the Azure OpenAI credentials section:
+
+- **Service principal** — works for any Datris deployment. Enter your Entra Tenant ID, Client ID, and Client Secret once; tokens are acquired and refreshed automatically. Centrally rotatable and RBAC-scoped.
+- **Managed identity** — zero stored secrets. When Datris runs on Azure compute (VM, AKS, App Service), it authenticates as the server's managed identity with nothing to enter at all.
+
+Either way, grant the identity the **Cognitive Services OpenAI User** role on your Azure OpenAI resource. Chat, CodeGen, embeddings, and the Assistant all honor the same authentication — and a stored API key always takes precedence, so switching modes in the UI safely clears the one you're leaving.
+
+Keyless setup also works at install time: leave the API key out of `.env` and provide the service-principal values (or nothing, on Azure compute with a managed identity). See the [AI Configuration guide](https://docs.datris.ai/ai-configuration#keyless-auth-microsoft-entra-id) for details.
+
+**Upgrading**
+
+Standard upgrade: `docker compose pull && docker compose up -d`. No configuration changes required — existing Azure OpenAI API-key setups keep working exactly as before.
+
+---
+
 ## v1.16.1 — August 12, 2026
 
 **Reliability: long AI generations now complete, and the Assistant shows live progress.**
 
-This release fixes a hang that could stop tap-script generation at around the five-minute mark, and makes long-running Assistant work visible instead of silent.
-
-- **Large script generations finish reliably.** Generating a big tap script (many sources, many locations) can legitimately take more than five minutes — previously these could time out or hang partway. Generation responses now stream under the hood and get a much larger time budget, so long generations run to completion.
-- **Live progress in the Assistant.** Running steps now show an elapsed-time counter once they take more than a few seconds, and after about a minute a short note explains that long AI generations are normal and that temporary provider errors retry automatically — no more wondering whether a quiet spinner is working or stuck.
-- **Unresponsive AI providers no longer hang requests.** During a provider outage, AI calls used to wait indefinitely for a response that would never come. They now fail fast and feed the automatic retry ladder, so a transient outage surfaces as a clear, actionable error instead of a frozen screen.
-
-**Upgrading**
-
-Standard upgrade: `docker compose pull && docker compose up -d`. No configuration changes required.
-
----
-
-## v1.16.0 — August 11, 2026
-
-**Amazon Bedrock support — run Claude through your AWS account.**
-
-Datris now supports Amazon Bedrock as a first-class AI provider alongside Anthropic, OpenAI, Azure OpenAI, and Ollama. If your organization runs on AWS, the chat assistants and code generation can now use Claude models served from your own AWS account — IAM authentication, AWS billing, and no Anthropic API key required.
-
-See the [full v1.16.0 notes](release-notes/v1.16.0.md) for details.
+See the [full v1.16.1 notes](release-notes/v1.16.1.md) for details.

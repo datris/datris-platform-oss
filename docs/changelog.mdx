@@ -3,6 +3,17 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.16.2" description="August 13, 2026">
+  **Azure OpenAI without API keys — Microsoft Entra ID authentication.**
+
+  - **Keyless auth for Azure OpenAI.** Required for resources with `disableLocalAuth` (API keys disabled by policy), and useful anywhere you'd rather rotate credentials centrally. Chat, CodeGen, embeddings, and the Assistant all honor it. See [AI Configuration](/ai-configuration#keyless-auth-microsoft-entra-id).
+  - **Service principal mode.** Enter your Entra Tenant ID, Client ID, and Client Secret once in Configuration → AI Providers; tokens are acquired and refreshed automatically.
+  - **Managed identity mode.** Zero stored secrets when Datris runs on Azure compute (VM, AKS, App Service) — the server authenticates as its managed identity.
+  - **Safe mode switching.** A stored API key always takes precedence, so the auth-mode selector clears the mode you're leaving — a stale key can never shadow Entra auth.
+  - **Install-time support.** Keyless setup works from `.env` too: provide the service-principal values, or nothing at all on Azure compute. Grant the identity the "Cognitive Services OpenAI User" role on the resource.
+  - Existing Azure OpenAI API-key setups keep working exactly as before — no configuration changes on upgrade.
+</Update>
+
 <Update label="v1.16.1" description="August 12, 2026">
   **Reliability: long AI generations complete, and the Assistant shows live progress.**
 
