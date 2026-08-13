@@ -157,6 +157,12 @@ services:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_MODEL: ${AZURE_OPENAI_MODEL:-}
+      # Entra ID service principal — lets vault-init accept AI_PROVIDER=azure
+      # with no API key (keyless auth; the credentials themselves resolve on
+      # the server at call time, same as Bedrock's).
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
       # Amazon Bedrock (AI_PROVIDER=bedrock — explicit-only; AWS key presence
       # never implies Bedrock, since AWS creds are also used for S3 destinations).
       # vault-init only needs these for its sanity checks + the BEDROCK_MODEL
@@ -295,6 +301,13 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      # Entra ID service principal for keyless Azure OpenAI auth
+      # (AzureEntraSupport's default-chain tier, single-tenant only — the Azure
+      # default credential chain reads these standard names; blank falls
+      # through to managed identity on Azure compute).
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
       # AWS credentials for the Bedrock provider (BedrockSupport resolution
       # tier 2, single-tenant only; blank falls through to the IAM role /
       # default credential chain — which also reads these same standard names,
@@ -852,9 +865,26 @@ configs:
             model="$${CODEGEN_MODEL:-anthropic.claude-opus-5}" \
             apiKey=""
         elif [ "$$PROVIDER" = "azure" ]; then
+          # Keyless (Entra ID) azure is allowed with an explicit AI_PROVIDER=azure:
+          # a blank apiKey in the slot secret makes the server resolve Entra
+          # credentials at request time (AZURE_TENANT_ID/AZURE_CLIENT_ID/
+          # AZURE_CLIENT_SECRET service principal, or managed identity on Azure
+          # compute). Guard the half-configured SP trio; require the key only when
+          # azure was auto-picked by key presence (then it can't be blank anyway).
           if [ -z "$${AZURE_OPENAI_API_KEY:-}" ]; then
-            echo "ERROR: AI_PROVIDER=azure but AZURE_OPENAI_API_KEY is not set." >&2
-            exit 1
+            SP_SET=0
+            [ -n "$${AZURE_TENANT_ID:-}" ] && SP_SET=$$((SP_SET + 1))
+            [ -n "$${AZURE_CLIENT_ID:-}" ] && SP_SET=$$((SP_SET + 1))
+            [ -n "$${AZURE_CLIENT_SECRET:-}" ] && SP_SET=$$((SP_SET + 1))
+            if [ "$$SP_SET" -gt 0 ] && [ "$$SP_SET" -lt 3 ]; then
+              echo "ERROR: AI_PROVIDER=azure keyless auth needs all three of AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET (or none, for managed identity on Azure compute)." >&2
+              exit 1
+            fi
+            if [ "$$SP_SET" -eq 3 ]; then
+              echo "  azure: no AZURE_OPENAI_API_KEY in .env — using the Entra ID service principal (AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET)"
+            else
+              echo "  azure: no AZURE_OPENAI_API_KEY and no Entra service principal in .env — the server will use its Azure managed identity (requires Azure compute + the 'Cognitive Services OpenAI User' role)"
+            fi
           fi
           if [ -z "$$AZURE_BASE" ]; then
             echo "ERROR: AI_PROVIDER=azure requires AZURE_OPENAI_ENDPOINT (e.g. https://YOUR-RESOURCE.openai.azure.com)." >&2
@@ -868,12 +898,12 @@ configs:
             provider="azure" \
             endpoint="$${AZURE_BASE}/openai/v1/chat/completions" \
             model="$${AZURE_OPENAI_MODEL}" \
-            apiKey="$${AZURE_OPENAI_API_KEY}"
+            apiKey="$${AZURE_OPENAI_API_KEY:-}"
           seed_if_absent secret/oss/codegen \
             provider="azure" \
             endpoint="$${AZURE_BASE}/openai/v1/chat/completions" \
             model="$${CODEGEN_MODEL:-$${AZURE_OPENAI_MODEL}}" \
-            apiKey="$${AZURE_OPENAI_API_KEY}"
+            apiKey="$${AZURE_OPENAI_API_KEY:-}"
         elif [ "$$PROVIDER" = "openai" ]; then
           if [ -z "$${OPENAI_API_KEY:-}" ]; then
             echo "ERROR: AI_PROVIDER=openai but OPENAI_API_KEY is not set." >&2
@@ -966,7 +996,7 @@ configs:
             provider="azure" \
             endpoint="$${EMBEDDING_ENDPOINT:-$${AZURE_BASE}/openai/v1/embeddings}" \
             model="$${EMBEDDING_MODEL:-text-embedding-3-small}" \
-            apiKey="$${AZURE_OPENAI_API_KEY}"
+            apiKey="$${AZURE_OPENAI_API_KEY:-}"
         elif [ "$$EMBEDDING_PROVIDER_RESOLVED" = "tei" ]; then
           seed_if_absent secret/oss/embedding \
             provider="tei" \

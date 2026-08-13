@@ -137,6 +137,12 @@ services:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_MODEL: ${AZURE_OPENAI_MODEL:-}
+      # Entra ID service principal — lets vault-init accept AI_PROVIDER=azure
+      # with no API key (keyless auth; the credentials themselves resolve on
+      # the server at call time, same as Bedrock's).
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
       # Amazon Bedrock (AI_PROVIDER=bedrock — explicit-only; AWS key presence
       # never implies Bedrock, since AWS creds are also used for S3 destinations).
       # vault-init only needs these for its sanity checks + the BEDROCK_MODEL
@@ -272,6 +278,13 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      # Entra ID service principal for keyless Azure OpenAI auth
+      # (AzureEntraSupport's default-chain tier, single-tenant only — the Azure
+      # default credential chain reads these standard names; blank falls
+      # through to managed identity on Azure compute).
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
       # AWS credentials for the Bedrock provider (BedrockSupport resolution
       # tier 2, single-tenant only; blank falls through to the IAM role /
       # default credential chain — which also reads these same standard names,

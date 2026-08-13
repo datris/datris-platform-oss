@@ -92,8 +92,10 @@ object AIHttp {
             "Model " + m + " rejected the extended-thinking settings in this request. This is a request " +
                 "configuration issue, not a problem with your input. (Provider response: " + b.take(400) + ")"
         } else if (status == 401 || status == 403) {
-            "The AI provider rejected the API key (status " + status + ") for model " + m + ". Check that the " +
-                "configured key is valid and has access to this model. (Provider response: " + b.take(400) + ")"
+            "The AI provider rejected the credentials (status " + status + ") for model " + m + ". Check that the " +
+                "configured API key is valid and has access to this model. For Azure OpenAI with Entra ID auth " +
+                "(no API key), check that the identity has the \"Cognitive Services OpenAI User\" role on the " +
+                "resource and that the Tenant ID matches the tenant that owns it. (Provider response: " + b.take(400) + ")"
         } else {
             "AI API returned error status: " + status + ", body: " + b
         }
@@ -362,11 +364,15 @@ object AIHttp {
             case "openai" =>
                 httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
             case "azure" =>
-                // Azure's v1 API accepts either header; legacy deployment-scoped
-                // URLs (/openai/deployments/...?api-version=...) accept only
-                // api-key. Sending both makes every Azure endpoint shape work.
-                httpPost.addHeader("api-key", aiConfig.apiKey)
-                httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
+                // API-key mode sends both headers (Azure's v1 API accepts either;
+                // legacy deployment-scoped URLs accept only api-key). Keyless mode
+                // resolves an Entra ID token per request — the slot's apiKey is
+                // empty, so AzureEntraSupport falls through to the SP trio in
+                // ai-keys or the Azure default credential chain, and sends ONLY
+                // the Bearer header (api-key is what disableLocalAuth rejects).
+                val envValues = DatrisEnvironment.current
+                val auth = AzureEntraSupport.resolveAuth(aiConfig.apiKey, envValues.environment, envValues.multiTenant)
+                AzureEntraSupport.authHeaders(auth).foreach { case (name, value) => httpPost.addHeader(name, value) }
             case "ollama" =>
                 if (aiConfig.apiKey != null && aiConfig.apiKey.nonEmpty)
                     httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)

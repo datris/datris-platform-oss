@@ -444,14 +444,21 @@ class StartupRunner extends ApplicationRunner {
         // AWS credentials resolve separately at request-signing time (ai-keys
         // AWS fields / env vars / default credential chain), so a missing or
         // invalid credential surfaces on the first call, not at startup.
+        // Azure's key is OPTIONAL, not absent: the normal resolveApiKey tiers
+        // (ai-keys azureApiKey, slot key, AZURE_OPENAI_API_KEY env) still apply,
+        // but when they all come up empty the section is valid anyway — Entra ID
+        // credentials (ai-keys SP trio / AZURE_* env vars / managed identity)
+        // resolve per request in AzureEntraSupport, and a missing or invalid
+        // setup surfaces on the first call with an error naming every fix.
         val keylessProviders = Set("ollama", "bedrock")
+        val keyOptionalProviders = keylessProviders + "azure"
         val keyEnvVar = if (provider.toLowerCase == "azure") "AZURE_OPENAI_API_KEY" else provider.toUpperCase + "_API_KEY"
         val apiKey =
             if (keylessProviders.contains(provider.toLowerCase)) rawKey
             else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant, DatrisEnvironment.values.environment)
         if (apiKey != rawKey && apiKey.nonEmpty)
             logger.info("AI " + label + " apiKey resolved from the shared key store or " + keyEnvVar + " env var (secret has no apiKey)")
-        if (apiKey.isEmpty && !keylessProviders.contains(provider.toLowerCase)) {
+        if (apiKey.isEmpty && !keyOptionalProviders.contains(provider.toLowerCase)) {
             if (required) throw new DatrisException("'apiKey' not found in AI " + label + " secret: " + secretName +
                 " and no " + keyEnvVar + " environment variable is set")
             else return None
