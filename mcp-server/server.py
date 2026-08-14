@@ -394,6 +394,7 @@ NEVER rules:
   - NEVER respond to a recurrence/timely ask with shell commands, external cron, or off-platform schedulers — set a `cron_expression` on the tap (see SCHEDULING RULE above)
   - NEVER call `run_tap` or set `cron_expression` on a tap whose current script hasn't been validated by a successful `test_tap` (see VALIDATION RULE above)
   - NEVER narrate a create/update/delete/run as completed without the corresponding tool call in THIS turn (see EVIDENCE RULE above). If you intended to do N things and only did some, say which and finish the rest.
+  - NEVER ask the user for the platform's own database credentials so a tap script can read data already stored in Datris, and NEVER freeze a snapshot of platform data into a script because you believe the script can't reach it. Tap scripts reach platform data credential-free: every run auto-injects DATRIS_PLATFORM_HOST / DATRIS_PLATFORM_PORT / DATRIS_POSTGRES_DATABASE / DATRIS_MONGODB_DATABASE, and the script calls the platform's query API itself (see Tap workflow below).
   - NEVER use profile_data to determine how to generate a pipeline configuration
   - NEVER add dataQuality or transformation sections unless explicitly requested
   - If data quality is needed, use codegen_rule on create_pipeline (plain-English validation instruction)
@@ -418,6 +419,7 @@ Tap workflow (for step 3 Option B):
     - With instruction: provide a plain-English instruction and the platform's AI generates the script. This is slower (1-2 minutes) because the platform must generate and store the script.
     - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries.
   Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
+  Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever. Full contract in datris://tap-workflow-reference.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
   2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
@@ -1151,6 +1153,8 @@ ids = json.loads(ids_json)
 
 **Anti-pattern 2:** putting non-secret config (regions, endpoint URLs, bucket names, account IDs) into the secret form when calling `request_tap_secret_from_user`. The user just spent a turn telling you the region in chat; asking them to type it AGAIN into a secret form makes the platform feel broken. Hardcode it in the script — or read it from `DATRIS_TAP_PARAM_<key>` if it should vary per call. The secret form is for values the user wouldn't safely paste into chat; everything else goes in code or params.
 
+**Anti-pattern 3:** asking the user for the platform's own database credentials (JDBC URLs, DB usernames/passwords) so a tap can read data already stored in Datris — or freezing a copy of that data into the script because you believe the tap can't reach it. It can: every run auto-injects `DATRIS_PLATFORM_*` env vars and the script reads platform data through the platform's query API with the platform's own credentials (see "Reading platform data from a tap script"). Platform DB credentials must never enter a tap secret — the callback exists precisely so untrusted tap code never holds them.
+
 ---
 
 ## Incremental sync — persistent state (bookmarks)
@@ -1199,6 +1203,28 @@ The script MUST define `fetch()` taking no arguments and returning one of:
 ### Pre-installed packages
 
 `requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`, `boto3`, `google-cloud-storage`, `azure-storage-blob`, `openpyxl`, `pyyaml`, `python-dateutil`, `pytz`, plus the Python stdlib. If your script imports anything else, pass those package names in `packages` to `create_tap`.
+
+---
+
+## Reading platform data from a tap script
+
+Tap scripts can read data that already lives in Datris — no credentials, no extra secret. Every tap run (test, manual, and cron alike) auto-injects four env vars, independent of the tap's secret:
+
+- `DATRIS_PLATFORM_HOST` / `DATRIS_PLATFORM_PORT` — the platform API endpoint reachable from the script
+- `DATRIS_POSTGRES_DATABASE` — the PostgreSQL database name to pass to query/metadata calls
+- `DATRIS_MONGODB_DATABASE` — the MongoDB database name to pass to query/metadata calls
+
+The script calls back into the platform's own API at `http://{host}:{port}/api/v1`, and the platform executes the query with its own credentials. Read the env vars with NO fallback defaults (`os.environ['DATRIS_PLATFORM_HOST']`) — they are always present.
+
+Query endpoints (POST). Response shapes are EXACT and STABLE — trust them, do not probe alternate shapes or keys:
+- PostgreSQL: `POST /api/v1/query/postgres` with body `{"sql": "SELECT col FROM public.table_name", "database": <pg_db>, "limit": -1}` → `{results: [row dicts], count: int}`
+- MongoDB: `POST /api/v1/query/mongodb` with body `{"query": "...", "database": <mongo_db>, "collection": "...", "limit": -1}` → `{results: [document dicts], count: int}`
+
+Always pass `"limit": -1` (return everything); omitting it applies a small preview default and the tap silently reads a tiny slice. Metadata discovery is also available via GET: `/metadata/postgres/tables?database={pg_db}&schema=public`, `/metadata/postgres/columns?database={pg_db}&schema=public&table=TABLE`, `/metadata/mongodb/collections?database={mongo_db}`.
+
+Use this whenever a tap's fetch logic is driven by data in a Datris destination — e.g. a tap that reads an id/key list from a table a pipeline maintains, then fetches from the external source per id. The list stays live: no frozen copies of it hardcoded in the script, and no re-fetching data the platform already holds.
+
+Because of this, a tap NEVER needs the platform's own database credentials. Do not ask the user for them and do not put them in a tap secret — see Anti-pattern 3.
 
 ---
 
@@ -1306,7 +1332,7 @@ async def list_resources():
         Resource(
             uri="datris://tap-workflow-reference",
             name="Tap Workflow Reference",
-            description="Canonical reference for everything tap-related: creation (instruction vs script), per-run params, incremental sync via persistent state (DATRIS_TAP_STATE bookmarks), scheduling (with CRON cookbook), run flow + polling, error handling (persistedReason table, size-limit guidance), document taps, and outcome verification via publisherToken + get_tap_logs. Re-read this any time you need to verify your understanding of how taps work — including the SCHEDULING RULE for recurring data needs.",
+            description="Canonical reference for everything tap-related: creation (instruction vs script), reading platform data from a tap script (auto-injected DATRIS_PLATFORM_* env vars + query API callback — no credentials needed), per-run params, incremental sync via persistent state (DATRIS_TAP_STATE bookmarks), scheduling (with CRON cookbook), run flow + polling, error handling (persistedReason table, size-limit guidance), document taps, and outcome verification via publisherToken + get_tap_logs. Re-read this any time you need to verify your understanding of how taps work — including the SCHEDULING RULE for recurring data needs.",
             mimeType="text/plain",
         ),
     ]
@@ -2111,7 +2137,8 @@ async def list_tools():
                 "Create a tap — a Python script that fetches data from an external source and pushes it into a pipeline. Provide a plain-English instruction to have AI generate the script, or supply your own script directly. "
                 "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. Only skip target_pipeline if the user explicitly wants a fetch-only tap. "
                 "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
-                "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen."
+                "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen. "
+                "Scripts can read data already stored in Datris WITHOUT credentials: every run auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE, and the script queries via POST http://{host}:{port}/api/v1/query/postgres with {\"sql\": ..., \"database\": <pg_db>, \"limit\": -1} (or /query/mongodb with query/database/collection/limit) — the platform executes it with its own credentials and returns {results, count}. NEVER request the platform's own DB credentials in a tap secret and NEVER hardcode a snapshot of platform data into the script — read it live. The tap secret carries only the external source's credentials."
             ),
             inputSchema={
                 "type": "object",
@@ -2138,7 +2165,7 @@ async def list_tools():
                     },
                     "secret_name": {
                         "type": "string",
-                        "description": "Vault secret name containing API keys/credentials the script needs"
+                        "description": "Vault secret name containing API keys/credentials the script needs for the EXTERNAL source. Never for the platform's own databases — scripts reach platform data credential-free via the auto-injected DATRIS_PLATFORM_* env vars and the /api/v1/query/* callback."
                     },
                     "tap_type": {
                         "type": "string",
