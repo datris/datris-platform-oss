@@ -3,6 +3,14 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.16.3" description="August 14, 2026">
+  **Assistant fix: taps that read data already in Datris no longer ask for database credentials.**
+
+  - **No more credentials form for platform data.** When a tap's fetch logic depends on data a pipeline already maintains (e.g. an id list kept fresh in a Datris table), the Assistant previously asked for database credentials or offered to freeze a snapshot of the data into the script. It now builds the tap to read the platform data live on every run — no extra credentials, and the tap's secret stays limited to the external source's API key.
+  - **Same guidance for MCP agents.** Agents connected over MCP (Claude Desktop, Claude Code, and others) receive the same instructions.
+  - Standard upgrade: `docker compose pull && docker compose up -d`. Start a new Assistant conversation after upgrading — existing conversations keep the older behavior until reopened.
+</Update>
+
 <Update label="v1.16.2" description="August 13, 2026">
   **Azure OpenAI without API keys — Microsoft Entra ID authentication.**
 

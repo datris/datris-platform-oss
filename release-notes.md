@@ -1,28 +1,21 @@
 # Release Notes
 
+## v1.16.3 — August 14, 2026
+
+**Assistant fix: taps that read data already in Datris no longer ask for database credentials.**
+
+When you asked the Assistant to build a tap whose fetch logic depends on data a pipeline already maintains — for example, an external-API tap driven by a list of ids kept fresh in a Datris table — it would either ask you for database credentials or offer to freeze a snapshot of the list into the script. Neither was ever necessary: tap scripts can read platform-stored data live on every scheduled run, with no extra credentials.
+
+The Assistant now knows this. It builds such taps to read the platform data fresh each run, keeps the tap's secret limited to the external source's API key, and will no longer pop a credentials form for access it already has. The same guidance now reaches agents connected over MCP (Claude Desktop, Claude Code, and others).
+
+**Upgrading**
+
+Standard upgrade: `docker compose pull && docker compose up -d`. Start a new Assistant conversation after upgrading — existing conversations keep the older behavior until reopened.
+
+---
+
 ## v1.16.2 — August 13, 2026
 
 **Azure OpenAI without API keys — Microsoft Entra ID authentication.**
 
-Azure OpenAI now works keyless. If your organization disables API keys on its Azure resources (`disableLocalAuth`, often set tenant-wide by policy), Entra ID is the only way in — and Datris now supports it end to end. It's also the right choice anywhere you'd rather rotate credentials centrally than store provider keys.
-
-Two keyless modes, chosen in **Configuration → AI Providers** under the Azure OpenAI credentials section:
-
-- **Service principal** — works for any Datris deployment. Enter your Entra Tenant ID, Client ID, and Client Secret once; tokens are acquired and refreshed automatically. Centrally rotatable and RBAC-scoped.
-- **Managed identity** — zero stored secrets. When Datris runs on Azure compute (VM, AKS, App Service), it authenticates as the server's managed identity with nothing to enter at all.
-
-Either way, grant the identity the **Cognitive Services OpenAI User** role on your Azure OpenAI resource. Chat, CodeGen, embeddings, and the Assistant all honor the same authentication — and a stored API key always takes precedence, so switching modes in the UI safely clears the one you're leaving.
-
-Keyless setup also works at install time: leave the API key out of `.env` and provide the service-principal values (or nothing, on Azure compute with a managed identity). See the [AI Configuration guide](https://docs.datris.ai/ai-configuration#keyless-auth-microsoft-entra-id) for details.
-
-**Upgrading**
-
-Standard upgrade: `docker compose pull && docker compose up -d`. No configuration changes required — existing Azure OpenAI API-key setups keep working exactly as before.
-
----
-
-## v1.16.1 — August 12, 2026
-
-**Reliability: long AI generations now complete, and the Assistant shows live progress.**
-
-See the [full v1.16.1 notes](release-notes/v1.16.1.md) for details.
+See the [full v1.16.2 notes](release-notes/v1.16.2.md) for details.
