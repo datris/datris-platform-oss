@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.17.0" description="August 17, 2026">
+  **New AI provider: Grok (xAI).**
+
+  - **Grok for chat and CodeGen.** Grok joins Anthropic Claude and OpenAI as a third model family — the Assistant, tap script generation, AI data quality rules, transformations, and natural-language → SQL can all run on it. Configure it in Configuration → AI Providers with one key from console.x.ai; Grok 4.6 is the recommended model, with Grok Code Fast 1 available for CodeGen. Mix providers freely across sections. See [AI Configuration](/ai-configuration#grok-xai-path).
+  - **Install-time support.** The installer prompts for an xAI key alongside Anthropic and OpenAI, and first-boot `.env` seeding supports Grok as the chat/CodeGen provider.
+  - **Embeddings unaffected.** xAI has no embeddings API, so semantic search stays on OpenAI, Azure, or the bundled local model — a Grok-only setup works out of the box with the bundled embedder.
+  - Standard upgrade: `docker compose pull && docker compose up -d` — no configuration changes required.
+</Update>
+
 <Update label="v1.16.3" description="August 14, 2026">
   **Assistant fix: taps that read data already in Datris no longer ask for database credentials.**
 

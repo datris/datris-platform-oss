@@ -1,21 +1,23 @@
 # Release Notes
 
+## v1.17.0 — August 17, 2026
+
+**New AI provider: Grok (xAI).**
+
+Grok joins Anthropic Claude and OpenAI as a third model family for chat and CodeGen — the Assistant, tap script generation, AI data quality rules, transformations, and natural-language → SQL can all run on Grok. One API key from console.x.ai covers both slots; pick **Grok (xAI)** in Configuration → AI Providers and choose a model (Grok 4.6 recommended, with Grok Code Fast 1 available for CodeGen). Mix and match freely — for example Claude for chat with Grok for CodeGen, or the reverse.
+
+xAI has no embeddings API, so semantic-search embeddings stay on OpenAI, Azure, or the bundled local model — a Grok-only setup works out of the box with the bundled embedder.
+
+Fresh installs can choose Grok at install time: the installer now prompts for an xAI key alongside Anthropic and OpenAI, and `.env` seeding supports Grok as a first-boot provider.
+
+**Upgrading**
+
+Standard upgrade: `docker compose pull && docker compose up -d`. Nothing to reconfigure — to try Grok, enter your xAI API key in Configuration → AI Providers and switch a section's provider to Grok (xAI).
+
+---
+
 ## v1.16.3 — August 14, 2026
 
 **Assistant fix: taps that read data already in Datris no longer ask for database credentials.**
 
-When you asked the Assistant to build a tap whose fetch logic depends on data a pipeline already maintains — for example, an external-API tap driven by a list of ids kept fresh in a Datris table — it would either ask you for database credentials or offer to freeze a snapshot of the list into the script. Neither was ever necessary: tap scripts can read platform-stored data live on every scheduled run, with no extra credentials.
-
-The Assistant now knows this. It builds such taps to read the platform data fresh each run, keeps the tap's secret limited to the external source's API key, and will no longer pop a credentials form for access it already has. The same guidance now reaches agents connected over MCP (Claude Desktop, Claude Code, and others).
-
-**Upgrading**
-
-Standard upgrade: `docker compose pull && docker compose up -d`. Start a new Assistant conversation after upgrading — existing conversations keep the older behavior until reopened.
-
----
-
-## v1.16.2 — August 13, 2026
-
-**Azure OpenAI without API keys — Microsoft Entra ID authentication.**
-
-See the [full v1.16.2 notes](release-notes/v1.16.2.md) for details.
+See the [full v1.16.3 notes](release-notes/v1.16.3.md) for details.
