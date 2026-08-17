@@ -358,7 +358,7 @@ object AIHttp {
         // assembleChatCompletionsStream like azure's does.
         val wantsInjectedStream =
             provider == "azure" || provider == "grok" ||
-            (provider == "anthropic" && !jsonBody.contains("\"tools\""))
+                (provider == "anthropic" && !jsonBody.contains("\"tools\""))
         val effectiveBody =
             if (wantsInjectedStream && !jsonBody.contains("\"stream\"")) {
                 val obj = JsonParser.parseString(jsonBody).getAsJsonObject
