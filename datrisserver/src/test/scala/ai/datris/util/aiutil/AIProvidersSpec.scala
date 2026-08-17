@@ -168,4 +168,57 @@ class AIProvidersSpec extends AnyFunSuite {
     test("defaultModelFor has no default for azure (model is the deployment name)") {
         assert(AIProviders.defaultModelFor("azure") == "")
     }
+
+    // ---- grok (xAI) ----
+
+    test("addTokenLimit: grok always uses max_tokens") {
+        val models = List("grok-4.6", "grok-4.1-fast", "grok-code-fast-1")
+        models.foreach { m =>
+            val obj = new com.google.gson.JsonObject()
+            AIProviders.addTokenLimit(obj, "grok", m, 4096)
+            assert(obj.has("max_tokens"), s"model $m should get max_tokens")
+            assert(!obj.has("max_completion_tokens"), s"model $m should not get max_completion_tokens")
+        }
+    }
+
+    test("usesAnthropicWire is false for grok") {
+        assert(!AIProviders.usesAnthropicWire("grok"))
+        assert(!AIProviders.usesAnthropicWire("Grok"))
+    }
+
+    test("supportsExtendedThinking is false for grok (reasoning stays server-side)") {
+        val cfg = ai.datris.model.AIConfig(
+            provider = "grok",
+            endpoint = "https://api.x.ai/v1/chat/completions",
+            model = "grok-4.6",
+            apiKey = ""
+        )
+        assert(!AIProviders.supportsExtendedThinking(cfg))
+    }
+
+    test("usesResponsesApi is false for grok even with codex in the model name or /v1/responses in the endpoint") {
+        val codexModel = ai.datris.model.AIConfig(
+            provider = "grok",
+            endpoint = "https://api.x.ai/v1/chat/completions",
+            model = "grok-codex-hypothetical",
+            apiKey = ""
+        )
+        assert(!AIProviders.usesResponsesApi(codexModel))
+        val responsesEndpoint = ai.datris.model.AIConfig(
+            provider = "grok",
+            endpoint = "https://api.x.ai/v1/responses",
+            model = "grok-4.6",
+            apiKey = ""
+        )
+        assert(!AIProviders.usesResponsesApi(responsesEndpoint))
+    }
+
+    test("rejectsSamplingParams is false for grok models") {
+        assert(!AIProviders.rejectsSamplingParams("grok-4.6"))
+        assert(!AIProviders.rejectsSamplingParams("grok-code-fast-1"))
+    }
+
+    test("defaultEndpointFor grok is the xAI chat/completions URL") {
+        assert(AIProviders.defaultEndpointFor("grok") == "https://api.x.ai/v1/chat/completions")
+    }
 }

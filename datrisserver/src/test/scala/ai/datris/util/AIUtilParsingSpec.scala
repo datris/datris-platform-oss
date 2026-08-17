@@ -53,6 +53,12 @@ class AIUtilParsingSpec extends AnyFunSuite {
         assert(e.getMessage.contains("no choices"))
     }
 
+    test("Grok chat completions: message content parses on the OpenAI wire, never the Anthropic arm") {
+        val grok = AIConfig("grok", "https://api.x.ai/v1/chat/completions", "grok-4.6", "key")
+        val json = """{"choices":[{"message":{"content":"Grok says hi"}}]}"""
+        assert(AIUtil.extractText(json, grok) == "Grok says hi")
+    }
+
     test("OpenAI Responses API: routed via endpoint; skips reasoning items") {
         val json =
             """{"output":[

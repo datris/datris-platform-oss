@@ -55,7 +55,7 @@ docker compose -f docker-compose.standalone.yml up -d
 ```bash
 git clone https://github.com/datris/datris-platform-oss.git
 cd datris-platform-oss
-cp .env.example .env       # Add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY (or the AZURE_OPENAI_* trio, or AI_PROVIDER=bedrock)
+cp .env.example .env       # Add your ANTHROPIC_API_KEY and/or OPENAI_API_KEY (or the AZURE_OPENAI_* trio, XAI_API_KEY, or AI_PROVIDER=bedrock)
 docker compose up -d
 ```
 
@@ -127,7 +127,7 @@ CSV, JSON, XML, Excel, PDF, Word (DOCX), plain text
 
 ### AI Providers
 
-Anthropic Claude (Opus 4.8 default for chat and CodeGen) · OpenAI (GPT-5.5) · Azure OpenAI (bring your Azure resource; models by deployment name) · Amazon Bedrock (Claude through your AWS account — IAM auth, AWS billing, IAM-role support with zero stored keys) · Ollama (local models, optional). Embeddings via OpenAI `text-embedding-3-small` (recommended when you have an OpenAI key), Azure OpenAI, the bundled TEI sidecar (BAAI/bge-m3 — fully local, no API key), or Ollama.
+Anthropic Claude (Opus 4.8 default for chat and CodeGen) · OpenAI (GPT-5.5) · Azure OpenAI (bring your Azure resource; models by deployment name) · Amazon Bedrock (Claude through your AWS account — IAM auth, AWS billing, IAM-role support with zero stored keys) · Grok (xAI's models through their OpenAI-compatible API) · Ollama (local models, optional). Embeddings via OpenAI `text-embedding-3-small` (recommended when you have an OpenAI key), Azure OpenAI, the bundled TEI sidecar (BAAI/bge-m3 — fully local, no API key), or Ollama.
 
 ## Architecture
 

@@ -699,10 +699,10 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'update_secret',
-      description: 'Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys for AI features.',
+      description: 'Update an AI provider secret (anthropic, openai, azure, grok, ollama, embedding) to configure API keys for AI features.',
       category: 'Configuration',
       parameters: [
-        { name: 'name', type: 'string', description: 'Secret name: anthropic, openai, ollama, or embedding', required: true, inputType: 'text' },
+        { name: 'name', type: 'string', description: 'Secret name: anthropic, openai, azure, grok, ollama, or embedding', required: true, inputType: 'text' },
         { name: 'fields', type: 'object', description: 'JSON with endpoint, model, apiKey fields', required: true, inputType: 'textarea' }
       ],
       playgroundEnabled: true

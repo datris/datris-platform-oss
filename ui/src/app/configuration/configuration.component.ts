@@ -19,6 +19,7 @@ export class ConfigurationComponent implements OnInit {
   anthropicApiKey = '';
   openaiApiKey = '';
   azureApiKey = '';
+  grokApiKey = '';
 
   // Azure OpenAI auth mode. Three modes, nothing persisted as a mode field —
   // on load it's inferred from which ai-keys fields came back (stored key →
@@ -384,6 +385,7 @@ export class ConfigurationComponent implements OnInit {
       if (provider === 'anthropic') this.anthropicApiKey = apiKey;
       if (provider === 'openai') this.openaiApiKey = apiKey;
       if (provider === 'azure') this.azureApiKey = apiKey;
+      if (provider === 'grok') this.grokApiKey = apiKey;
     };
 
     this.http.get<any>('/api/v1/secrets/ai-primary').subscribe({
@@ -504,6 +506,7 @@ export class ConfigurationComponent implements OnInit {
           if (fields.anthropicApiKey) this.anthropicApiKey = fields.anthropicApiKey;
           if (fields.openaiApiKey) this.openaiApiKey = fields.openaiApiKey;
           if (fields.azureApiKey) this.azureApiKey = fields.azureApiKey;
+          if (fields.grokApiKey) this.grokApiKey = fields.grokApiKey;
           // Bedrock AWS credentials. Key-like fields arrive masked (••••••••)
           // and round-trip via the server's masked-preservation; awsRegion is
           // plain and displays as stored.
@@ -549,6 +552,7 @@ export class ConfigurationComponent implements OnInit {
     this.anthropicApiKey = '';
     this.openaiApiKey = '';
     this.azureApiKey = '';
+    this.grokApiKey = '';
     this.awsAccessKeyId = '';
     this.awsSecretAccessKey = '';
     this.awsSessionToken = '';
@@ -599,6 +603,9 @@ export class ConfigurationComponent implements OnInit {
   }
   get azureKeyAvailable(): boolean {
     return !!(this.azureApiKey && this.azureApiKey.length > 0);
+  }
+  get grokKeyAvailable(): boolean {
+    return !!(this.grokApiKey && this.grokApiKey.length > 0);
   }
   /** Bedrock credentials are "available" with explicit keys OR fully blank
    *  (IAM-role / default-chain mode) — partial entry is the only invalid state,
@@ -682,6 +689,7 @@ export class ConfigurationComponent implements OnInit {
     if (provider === 'anthropic') return this.anthropicApiKey;
     if (provider === 'openai') return this.openaiApiKey;
     if (provider === 'azure') return this.azureAuthMode === 'key' ? this.azureApiKey : '';
+    if (provider === 'grok') return this.grokApiKey;
     return '';  // ollama / ollama-local / tei need no key
   }
 
@@ -722,6 +730,7 @@ export class ConfigurationComponent implements OnInit {
     }
     if (p === 'anthropic') return 'https://api.anthropic.com/v1/messages';
     if (p === 'openai') return 'https://api.openai.com/v1/chat/completions';
+    if (p === 'grok') return 'https://api.x.ai/v1/chat/completions';
     if (p === 'ollama') return 'http://host.docker.internal:11434/v1/chat/completions';
     return '';
   }
@@ -762,7 +771,7 @@ export class ConfigurationComponent implements OnInit {
     flagIfMissingKey(this.codegenProvider, this.codegenModel);
     flagIfMissingKey(this.embeddingProvider, this.embeddingModel);
     if (missing.size > 0) {
-      const label = (p: string) => p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : p === 'azure' ? 'Azure OpenAI' : p === 'bedrock' ? 'Amazon Bedrock' : p;
+      const label = (p: string) => p === 'anthropic' ? 'Anthropic' : p === 'openai' ? 'OpenAI' : p === 'azure' ? 'Azure OpenAI' : p === 'bedrock' ? 'Amazon Bedrock' : p === 'grok' ? 'Grok (xAI)' : p;
       const names = Array.from(missing).map(label).join(' and ');
       this.error = `Enter the ${names} API key on the right — it's required by a section you've selected.`;
       this.success = '';
@@ -828,6 +837,7 @@ export class ConfigurationComponent implements OnInit {
       const keysBody: any = {};
       if (this.anthropicApiKey) keysBody.anthropicApiKey = this.anthropicApiKey;
       if (this.openaiApiKey) keysBody.openaiApiKey = this.openaiApiKey;
+      if (this.grokApiKey) keysBody.grokApiKey = this.grokApiKey;
       // Azure follows the selected auth mode: save the active mode's fields and
       // explicitly CLEAR the other mode's stored fields (the ai-keys merge only
       // preserves fields the request omits — an explicit '' overwrites). This is

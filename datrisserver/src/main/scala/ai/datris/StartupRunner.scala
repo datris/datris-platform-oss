@@ -396,7 +396,7 @@ class StartupRunner extends ApplicationRunner {
             if (required)
                 throw new DatrisException(
                     "AI " + label + " secret not found in Vault: " + secretName +
-                        ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|azure|bedrock|ollama> endpoint=<url> model=<model> apiKey=<key>"
+                        ". Create it with: vault kv put secret/" + secretName + " provider=<anthropic|openai|azure|bedrock|grok|ollama> endpoint=<url> model=<model> apiKey=<key>"
                 )
             else return None
         }
@@ -411,9 +411,9 @@ class StartupRunner extends ApplicationRunner {
             if (required) throw new DatrisException("'provider' not found in AI " + label + " secret: " + secretName)
             else return None
         }
-        if (!Seq("anthropic", "openai", "azure", "bedrock", "ollama").contains(provider.toLowerCase))
+        if (!Seq("anthropic", "openai", "azure", "bedrock", "grok", "ollama").contains(provider.toLowerCase))
             throw new DatrisException(
-                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, azure, bedrock, ollama"
+                "Unsupported AI provider in " + label + " secret '" + secretName + "': '" + provider + "'. Valid values are: anthropic, openai, azure, bedrock, grok, ollama"
             )
         // Bedrock derives its invoke URL from the resolved AWS region + model at
         // request time, so a blank endpoint is valid (an explicit one overrides —
@@ -452,7 +452,13 @@ class StartupRunner extends ApplicationRunner {
         // setup surfaces on the first call with an error naming every fix.
         val keylessProviders = Set("ollama", "bedrock")
         val keyOptionalProviders = keylessProviders + "azure"
-        val keyEnvVar = if (provider.toLowerCase == "azure") "AZURE_OPENAI_API_KEY" else provider.toUpperCase + "_API_KEY"
+        // grok's env var follows xAI's convention (XAI_API_KEY), not the derived
+        // GROK_API_KEY the generic rule would produce.
+        val keyEnvVar = provider.toLowerCase match {
+            case "azure" => "AZURE_OPENAI_API_KEY"
+            case "grok" => "XAI_API_KEY"
+            case _ => provider.toUpperCase + "_API_KEY"
+        }
         val apiKey =
             if (keylessProviders.contains(provider.toLowerCase)) rawKey
             else ai.datris.util.AIUtil.resolveApiKey(rawKey, provider, DatrisEnvironment.values.multiTenant, DatrisEnvironment.values.environment)

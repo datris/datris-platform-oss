@@ -65,6 +65,9 @@ object AIProviders {
             case "azure" => "max_completion_tokens"
             // bedrock speaks the Anthropic Messages shape — explicit for clarity.
             case "bedrock" => "max_tokens"
+            // grok (xAI) is OpenAI-compatible but takes the legacy max_tokens
+            // field for all models — explicit for clarity.
+            case "grok" => "max_tokens"
             case _ => "max_tokens"
         }
         requestObj.addProperty(field, maxTokens)
@@ -109,14 +112,14 @@ object AIProviders {
       * uniformly, in priority order:
       *
       *   1. The shared per-provider key store at `{env}/ai-keys` (fields
-      *      `anthropicApiKey` / `openaiApiKey` / `azureApiKey`). This is the authoritative home for
+      *      `anthropicApiKey` / `openaiApiKey` / `azureApiKey` / `grokApiKey`). This is the authoritative home for
       *      provider keys — they live here independent of which slot uses each
       *      provider, so switching a slot's provider back and forth never loses the
       *      other provider's key. Matches the UI's "enter each key once" model.
       *   2. The slot secret's own inline `apiKey` if non-empty — legacy / pre-store
       *      deployments that stored the key on the slot itself.
       *   3. The matching `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
-      *      `AZURE_OPENAI_API_KEY` env var, but ONLY
+      *      `AZURE_OPENAI_API_KEY` / `XAI_API_KEY` env var, but ONLY
       *      in single-tenant mode — env vars hold the platform's keys, and in
       *      multi-tenant deployments those keys belong to Datris, not to each
       *      tenant. Multi-tenant tenants must provide their own keys explicitly.
@@ -132,12 +135,14 @@ object AIProviders {
             case "anthropic" => sys.env.getOrElse("ANTHROPIC_API_KEY", "")
             case "openai" => sys.env.getOrElse("OPENAI_API_KEY", "")
             case "azure" => sys.env.getOrElse("AZURE_OPENAI_API_KEY", "")
+            // xAI's official env-var convention is XAI_API_KEY, not GROK_API_KEY.
+            case "grok" => sys.env.getOrElse("XAI_API_KEY", "")
             case _ => ""
         }
     }
 
     /** Read a provider's key from the shared per-provider key store `{env}/ai-keys`.
-      * Field names are `anthropicApiKey` / `openaiApiKey` / `azureApiKey`. Returns "" when the store
+      * Field names are `anthropicApiKey` / `openaiApiKey` / `azureApiKey` / `grokApiKey`. Returns "" when the store
       * doesn't exist, the field is absent/empty, or the provider has no shared key
       * concept (e.g. Ollama). Never throws — a Vault hiccup just falls through to the
       * next resolution tier. */
@@ -146,6 +151,7 @@ object AIProviders {
             case "anthropic" => "anthropicApiKey"
             case "openai" => "openaiApiKey"
             case "azure" => "azureApiKey"
+            case "grok" => "grokApiKey"
             case _ => return ""
         }
         try {
@@ -163,6 +169,7 @@ object AIProviders {
     private[aiutil] def defaultEndpointFor(provider: String): String = provider.toLowerCase match {
         case "anthropic" => "https://api.anthropic.com/v1/messages"
         case "openai" => "https://api.openai.com/v1/responses"
+        case "grok" => "https://api.x.ai/v1/chat/completions"
         // azure has no universal default — the endpoint embeds the customer's
         // resource name (https://{resource}.openai.azure.com/openai/v1/...).
         // bedrock has no static default either — the invoke URL is derived from

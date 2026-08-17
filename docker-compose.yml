@@ -151,6 +151,9 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_REGION: ${AWS_REGION:-}
       BEDROCK_MODEL: ${BEDROCK_MODEL:-}
+      # Grok (xAI) — XAI_API_KEY follows xAI's env-var convention.
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      GROK_MODEL: ${GROK_MODEL:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b-instruct}
       AI_PROVIDER: ${AI_PROVIDER:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
@@ -278,6 +281,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
       # Entra ID service principal for keyless Azure OpenAI auth
       # (AzureEntraSupport's default-chain tier, single-tenant only — the Azure
       # default credential chain reads these standard names; blank falls

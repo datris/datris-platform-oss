@@ -120,7 +120,7 @@ For a document tap, `create_tap` **requires** the `target_pipeline` to have an `
 | Tool | Description |
 |------|-------------|
 | `upload_config` | Upload a JSON Schema config file (base64-encoded content) |
-| `update_secret` | Update an AI provider secret (anthropic, openai, ollama, embedding) to configure API keys |
+| `update_secret` | Update an AI provider secret (anthropic, openai, azure, grok, ollama, embedding) to configure API keys |
 | `list_platform_secrets` | List the names of human-owned platform secrets (the Platform tab in Configuration → Secrets). These hold destination credentials and infrastructure connections. Read-only — agents cannot create, modify, or delete them. |
 | `get_platform_secret_fields` | Return the field NAMES (no values) of a platform secret. Use after `list_platform_secrets` to verify a candidate has the required keys for a destination — e.g. an S3 `credentialsSecret` must contain `accessKey`, `secretKey`, `region`. |
 

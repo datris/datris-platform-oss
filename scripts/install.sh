@@ -28,6 +28,8 @@
 #                       AWS_REGION (leave the keys unset to use the host's IAM
 #                       role / default credential chain) and BEDROCK_MODEL
 #                       (default: anthropic.claude-sonnet-5)
+#   XAI_API_KEY         pre-set Grok (xAI) key       (skips the prompt;
+#                       optionally with GROK_MODEL, default grok-4.6)
 #   DATRIS_POSTGRES     bundled|external|none        (default: bundled)
 #                       external also reads POSTGRES_JDBC_URL/POSTGRES_USER/POSTGRES_PASSWORD
 #   DATRIS_EMBEDDING    openai|tei|none              (default: openai if OpenAI key present, else tei)
@@ -173,6 +175,7 @@ else
   ZKEY="${AZURE_OPENAI_API_KEY:-}"
   ZEP="${AZURE_OPENAI_ENDPOINT:-}"
   ZMODEL="${AZURE_OPENAI_MODEL:-}"
+  GKEY="${XAI_API_KEY:-}"
   # Bedrock is opt-in ONLY via AI_PROVIDER=bedrock (env preset or the prompt
   # below) — a stray AWS_ACCESS_KEY_ID must never flip the AI provider, since
   # AWS credentials are routinely present for S3 destinations.
@@ -186,26 +189,27 @@ else
   # silently — a stray ANTHROPIC/OPENAI_API_KEY in a shell rc shouldn't decide
   # your provider without you knowing. Announce what was found, and when
   # interactive let the user keep it or ignore it and enter their own.
-  if [ -n "$AKEY" ] || [ -n "$OKEY" ] || [ -n "$ZKEY" ]; then
+  if [ -n "$AKEY" ] || [ -n "$OKEY" ] || [ -n "$ZKEY" ] || [ -n "$GKEY" ]; then
     [ -n "$AKEY" ] && say "Detected ANTHROPIC_API_KEY in your environment ($(mask "$AKEY"))."
     [ -n "$OKEY" ] && say "Detected OPENAI_API_KEY in your environment ($(mask "$OKEY"))."
     [ -n "$ZKEY" ] && say "Detected AZURE_OPENAI_API_KEY in your environment ($(mask "$ZKEY"))."
+    [ -n "$GKEY" ] && say "Detected XAI_API_KEY in your environment ($(mask "$GKEY"))."
     if [ -n "$TTY" ]; then
       ask "  Use the detected key(s)? [Y/n] (n = ignore and enter your own): "
       case "$ANS" in
-        n*|N*) warn "Ignoring environment keys."; AKEY=""; OKEY=""; ZKEY="" ;;
+        n*|N*) warn "Ignoring environment keys."; AKEY=""; OKEY=""; ZKEY=""; GKEY="" ;;
       esac
     else
       say "Non-interactive — using the detected key(s)."
     fi
   fi
 
-  if [ -n "$TTY" ] && [ "$BEDROCK_SELECTED" = "0" ] && { [ -z "$AKEY" ] || [ -z "$OKEY" ]; }; then
+  if [ -n "$TTY" ] && [ "$BEDROCK_SELECTED" = "0" ] && { [ -z "$AKEY" ] || [ -z "$OKEY" ] || [ -z "$GKEY" ]; }; then
     say ""
-    say "Datris uses two AI providers, each best at a different job. Both are"
-    say "optional, but you'll want at least one. Using Azure OpenAI or Amazon"
-    say "Bedrock instead? Press Enter through both prompts and you'll be asked"
-    say "about those next."
+    say "Datris can use Anthropic Claude, OpenAI, or Grok (xAI). Enter any keys"
+    say "you have — one is enough. If you prefer Claude through Amazon Bedrock,"
+    say "or OpenAI through your Azure OpenAI resource, press Enter through the"
+    say "key prompts and you'll be offered those routes next."
     # Keys are read with echo OFF (like passwords) so they never land in the
     # terminal scrollback; a masked confirmation is printed instead.
     if [ -z "$AKEY" ]; then
@@ -218,10 +222,16 @@ else
       OKEY="$ANS"
       [ -n "$OKEY" ] && say "  OpenAI key received ($(mask "$OKEY"))."
     fi
-    # Azure OpenAI as the fallback enterprise path — offered only when neither
-    # direct key was provided (users with a direct key rarely want Azure too;
+    # Grok (xAI) — the third direct-key provider, prompted like the first two.
+    if [ -z "$GKEY" ]; then
+      ask_hidden "  Grok (xAI) API key from console.x.ai — powers chat and CodeGen (xAI has no embeddings), or Enter to skip (input hidden): "
+      GKEY="$ANS"
+      [ -n "$GKEY" ] && say "  Grok key received ($(mask "$GKEY"))."
+    fi
+    # Azure OpenAI as a fallback route to the OpenAI models — offered only when
+    # no direct key was provided (users with a direct key rarely want Azure too;
     # it stays available any time via the Configuration tab).
-    if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -z "$ZKEY" ]; then
+    if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -z "$GKEY" ] && [ -z "$ZKEY" ]; then
       ask_hidden "  Azure OpenAI API key — use your Azure OpenAI resource instead, or Enter to skip (input hidden): "
       ZKEY="$ANS"
       if [ -n "$ZKEY" ]; then
@@ -232,7 +242,7 @@ else
     fi
     # Amazon Bedrock — Claude through the user's AWS account. Offered only when
     # nothing else was chosen (same reasoning as the Azure fallback above).
-    if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -z "$ZKEY" ]; then
+    if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -z "$ZKEY" ] && [ -z "$GKEY" ]; then
       ask "  Use Amazon Bedrock (Claude via your AWS account)? [y/N]: "
       case "$ANS" in
         y*|Y*)
@@ -284,6 +294,15 @@ else
       warn "Azure OpenAI needs AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_MODEL too — skipping."
       warn "Add all three in $ENV_FILE (or the Configuration tab) later."
       ZKEY=""
+    fi
+  fi
+  if [ -n "$GKEY" ]; then
+    set_env XAI_API_KEY "$GKEY"
+    WROTE_KEYS="${WROTE_KEYS:+$WROTE_KEYS, }XAI_API_KEY"
+    # Pin only when Grok is the sole chat provider (any pin above wins).
+    if [ -z "$AKEY" ] && [ -z "$OKEY" ] && [ -z "$ZKEY" ]; then
+      set_env AI_PROVIDER grok
+      WROTE_KEYS="$WROTE_KEYS, AI_PROVIDER=grok"
     fi
   fi
   if [ "$BEDROCK_SELECTED" = "1" ]; then

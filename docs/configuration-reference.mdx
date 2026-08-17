@@ -232,13 +232,13 @@ vault kv put secret/oss/ai-primary \
   version="2023-06-01"
 ```
 
-`docker/vault-init.sh` seeds all three secrets automatically based on which key is present in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the `AZURE_OPENAI_*` trio) or the explicit `AI_PROVIDER=bedrock` selection. For multi-tenant deployments, per-tenant override secrets live at `{env}/ai-primary`, `{env}/codegen`, `{env}/embedding`.
+`docker/vault-init.sh` seeds all three secrets automatically based on which key is present in `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, or the `AZURE_OPENAI_*` trio) or the explicit `AI_PROVIDER=bedrock` selection. For multi-tenant deployments, per-tenant override secrets live at `{env}/ai-primary`, `{env}/codegen`, `{env}/embedding`.
 
 These `.env` variables tune what gets seeded. They apply on the **first boot only** — after that, Vault persists and the Configuration tab is the source of truth:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AI_PROVIDER` | auto | Explicit provider pick (`anthropic`, `openai`, or `azure`) for the `ai-primary` and `codegen` slots. When unset, whichever API key is present wins (OpenAI wins ties; azure is auto-picked only when it holds the sole key). |
+| `AI_PROVIDER` | auto | Explicit provider pick (`anthropic`, `openai`, `azure`, `bedrock`, or `grok`) for the `ai-primary` and `codegen` slots. When unset, whichever API key is present wins (OpenAI wins ties; azure and grok are auto-picked only when they hold the sole key; bedrock is never auto-picked). |
 | `ANTHROPIC_MODEL` | `claude-opus-5` | Model seeded into `oss/ai-primary` on the Anthropic path. |
 | `OPENAI_MODEL` | `gpt-5.5` | Model seeded into `oss/ai-primary` on the OpenAI path. |
 | `AZURE_OPENAI_ENDPOINT` | — | Azure resource base URL (`https://YOUR-RESOURCE.openai.azure.com`). Required on the Azure path. |
@@ -247,7 +247,9 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | — | AWS credentials for the Bedrock path (`AI_PROVIDER=bedrock`). Optional — leave unset to use the server's IAM role / default credential chain. Never selects Bedrock by itself. |
 | `AWS_REGION` | — | AWS region for the Bedrock path (e.g. `us-east-1`). |
 | `BEDROCK_MODEL` | `anthropic.claude-fable-5` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |
-| `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5`). |
+| `XAI_API_KEY` | — | Grok (xAI) API key from console.x.ai, for the Grok path (`AI_PROVIDER=grok`, or auto-picked when it's the sole key). |
+| `GROK_MODEL` | `grok-4.6` | Grok model seeded into `oss/ai-primary` on the Grok path. |
+| `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5`; the Grok path defaults to `grok-4.6`). |
 | `EMBEDDING_PROVIDER` | follows provider | `openai`, `azure`, `tei`, or `ollama`. When unset: `openai` when the AI provider is OpenAI, otherwise the bundled TEI sidecar (Azure embeddings are opt-in only). |
 | `EMBEDDING_MODEL` | provider default | `text-embedding-3-small` (openai; also the azure default deployment name), `BAAI/bge-m3` (tei), `bge-m3` (ollama). |
 | `EMBEDDING_ENDPOINT` | provider default | Endpoint override for the `tei`, `ollama`, and `azure` providers — useful when the service runs on a separate host or a non-standard path. |

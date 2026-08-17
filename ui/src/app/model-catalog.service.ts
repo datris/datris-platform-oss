@@ -53,6 +53,11 @@ const FALLBACK: ModelCatalog = {
       { value: 'anthropic.claude-opus-4-7', label: 'Claude Opus 4.7' },
       { value: 'anthropic.claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
+    grok: [
+      { value: 'grok-4.6', label: 'Grok 4.6 (recommended)', recommended: true },
+      { value: 'grok-4.5', label: 'Grok 4.5' },
+      { value: 'grok-4.1-fast', label: 'Grok 4.1 Fast' },
+    ],
   },
   codegen: {
     anthropic: [
@@ -81,6 +86,11 @@ const FALLBACK: ModelCatalog = {
       { value: 'anthropic.claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic.claude-opus-4-7', label: 'Claude Opus 4.7' },
       { value: 'anthropic.claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    ],
+    grok: [
+      { value: 'grok-4.6', label: 'Grok 4.6 (recommended)', recommended: true },
+      { value: 'grok-code-fast-1', label: 'Grok Code Fast 1' },
+      { value: 'grok-4.1-fast', label: 'Grok 4.1 Fast' },
     ],
   },
   embedding: {

@@ -43,12 +43,12 @@
       <div class="status-block-row">
         <span class="status-label">AI Provider</span>
         <span class="status-value" *ngIf="usingDefaultAiPrimary">Datris-managed (default)</span>
-        <span class="status-value accent" *ngIf="!usingDefaultAiPrimary">Your own {{ aiPrimaryProvider === 'anthropic' ? 'Anthropic' : (aiPrimaryProvider === 'ollama' ? 'Ollama' : 'OpenAI') }} key</span>
+        <span class="status-value accent" *ngIf="!usingDefaultAiPrimary">Your own {{ aiPrimaryProvider === 'anthropic' ? 'Anthropic' : (aiPrimaryProvider === 'ollama' ? 'Ollama' : (aiPrimaryProvider === 'grok' ? 'Grok (xAI)' : 'OpenAI')) }} key</span>
       </div>
       <div class="status-block-row">
         <span class="status-label">CodeGen Provider</span>
         <span class="status-value" *ngIf="usingDefaultCodegen">Datris-managed (default)</span>
-        <span class="status-value accent" *ngIf="!usingDefaultCodegen">Your own {{ codegenProvider === 'anthropic' ? 'Anthropic' : (codegenProvider === 'ollama' ? 'Ollama' : 'OpenAI') }} CodeGen key</span>
+        <span class="status-value accent" *ngIf="!usingDefaultCodegen">Your own {{ codegenProvider === 'anthropic' ? 'Anthropic' : (codegenProvider === 'ollama' ? 'Ollama' : (codegenProvider === 'grok' ? 'Grok (xAI)' : 'OpenAI')) }} CodeGen key</span>
       </div>
       <div class="status-block-row">
         <span class="status-label">Embedding Provider</span>
@@ -78,6 +78,7 @@
               <option value="openai">OpenAI</option>
               <option value="azure" *ngIf="!hostedOrTrial">Azure OpenAI</option>
               <option value="bedrock" *ngIf="!hostedOrTrial">Amazon Bedrock</option>
+              <option value="grok" *ngIf="!hostedOrTrial">Grok (xAI)</option>
               <option value="ollama" *ngIf="!hostedOrTrial">Ollama (if optional service enabled)</option>
             </select>
           </div>
@@ -147,6 +148,7 @@
               <option value="openai">OpenAI</option>
               <option value="azure" *ngIf="!hostedOrTrial">Azure OpenAI</option>
               <option value="bedrock" *ngIf="!hostedOrTrial">Amazon Bedrock</option>
+              <option value="grok" *ngIf="!hostedOrTrial">Grok (xAI)</option>
               <option value="ollama" *ngIf="!hostedOrTrial">Ollama (if optional service enabled)</option>
             </select>
           </div>
@@ -354,6 +356,14 @@
           <label class="form-label">API Key</label>
           <input class="form-input" type="text" [(ngModel)]="openaiApiKey" placeholder="sk-..." />
         </div>
+
+        <ng-container *ngIf="!hostedOrTrial">
+          <h2 class="keys-panel-title" style="margin-top: 18px;">Grok (xAI)</h2>
+          <div class="form-row">
+            <label class="form-label">API Key</label>
+            <input class="form-input" type="text" [(ngModel)]="grokApiKey" placeholder="from console.x.ai" />
+          </div>
+        </ng-container>
 
         <ng-container *ngIf="!hostedOrTrial">
           <h2 class="keys-panel-title" style="margin-top: 18px;">Azure OpenAI</h2>
