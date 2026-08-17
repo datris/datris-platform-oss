@@ -113,4 +113,23 @@ class AIHttpSpec extends AnyFunSuite {
         }
         assert(fatal.getMessage.contains("invalid_request_error"))
     }
+
+    test("buildHttpPost for grok sends Bearer auth and injects stream:true, never Anthropic headers") {
+        val cfg = ai.datris.model.AIConfig("grok", "https://api.x.ai/v1/chat/completions", "grok-4.6", "sk-test")
+        val post = AIHttp.buildHttpPost(cfg, """{"model":"grok-4.6","messages":[]}""", cfg.endpoint)
+        assert(post.getFirstHeader("Authorization").getValue == "Bearer sk-test")
+        assert(post.getFirstHeader("x-api-key") == null)
+        assert(post.getFirstHeader("anthropic-version") == null)
+        val body = new String(post.getEntity.getContent.readAllBytes(), StandardCharsets.UTF_8)
+        val obj = JsonParser.parseString(body).getAsJsonObject
+        assert(obj.get("stream").getAsBoolean)
+    }
+
+    test("buildHttpPost for grok leaves an explicit stream setting untouched") {
+        val cfg = ai.datris.model.AIConfig("grok", "https://api.x.ai/v1/chat/completions", "grok-4.6", "sk-test")
+        val post = AIHttp.buildHttpPost(cfg, """{"model":"grok-4.6","messages":[],"stream":false}""", cfg.endpoint)
+        val body = new String(post.getEntity.getContent.readAllBytes(), StandardCharsets.UTF_8)
+        val obj = JsonParser.parseString(body).getAsJsonObject
+        assert(!obj.get("stream").getAsBoolean)
+    }
 }

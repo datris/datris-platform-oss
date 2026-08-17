@@ -352,8 +352,13 @@ object AIHttp {
         //     calls) pass through untouched. Bedrock never reaches this point
         //     (early return above), and its invoke API is non-streaming.
         val provider = aiConfig.provider.toLowerCase
+        // grok gets the same treatment as azure: long reasoning phases on
+        // grok-4.x can stay silent past the socket read timeout on a
+        // non-streaming call, and its chat/completions SSE folds back through
+        // assembleChatCompletionsStream like azure's does.
         val wantsInjectedStream =
-            provider == "azure" || (provider == "anthropic" && !jsonBody.contains("\"tools\""))
+            provider == "azure" || provider == "grok" ||
+            (provider == "anthropic" && !jsonBody.contains("\"tools\""))
         val effectiveBody =
             if (wantsInjectedStream && !jsonBody.contains("\"stream\"")) {
                 val obj = JsonParser.parseString(jsonBody).getAsJsonObject
@@ -361,7 +366,7 @@ object AIHttp {
                 obj.toString
             } else jsonBody
         aiConfig.provider.toLowerCase match {
-            case "openai" =>
+            case "openai" | "grok" =>
                 httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + aiConfig.apiKey)
             case "azure" =>
                 // API-key mode sends both headers (Azure's v1 API accepts either;

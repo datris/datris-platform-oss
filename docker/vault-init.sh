@@ -100,7 +100,7 @@ if exists secret/oss/ai-primary && exists secret/oss/codegen; then
   echo "  secret/oss/ai-primary + secret/oss/codegen already present — skipping AI seed"
 else
   # Provider selection:
-  #   1. AI_PROVIDER (anthropic|openai|azure|bedrock) is the explicit override —
+  #   1. AI_PROVIDER (anthropic|openai|azure|bedrock|grok) is the explicit override —
   #      always wins. Use this in .env to pin a choice when shell env vars (e.g.
   #      a global OPENAI_API_KEY exported from your shell rc) would otherwise
   #      leak in and silently flip the default on every rebuild.
@@ -116,6 +116,8 @@ else
       PROVIDER="anthropic"
     elif [ -n "${AZURE_OPENAI_API_KEY:-}" ]; then
       PROVIDER="azure"
+    elif [ -n "${XAI_API_KEY:-}" ]; then
+      PROVIDER="grok"
     fi
   fi
 
@@ -199,6 +201,21 @@ else
       endpoint="https://api.openai.com/v1/chat/completions" \
       model="${CODEGEN_MODEL:-gpt-5.5}" \
       apiKey="${OPENAI_API_KEY}"
+  elif [ "$PROVIDER" = "grok" ]; then
+    if [ -z "${XAI_API_KEY:-}" ]; then
+      echo "ERROR: AI_PROVIDER=grok but XAI_API_KEY is not set." >&2
+      exit 1
+    fi
+    seed_if_absent secret/oss/ai-primary \
+      provider="grok" \
+      endpoint="https://api.x.ai/v1/chat/completions" \
+      model="${GROK_MODEL:-grok-4.6}" \
+      apiKey="${XAI_API_KEY}"
+    seed_if_absent secret/oss/codegen \
+      provider="grok" \
+      endpoint="https://api.x.ai/v1/chat/completions" \
+      model="${CODEGEN_MODEL:-grok-4.6}" \
+      apiKey="${XAI_API_KEY}"
   elif [ "$PROVIDER" = "anthropic" ]; then
     if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
       echo "ERROR: AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set." >&2
@@ -222,7 +239,7 @@ else
       apiKey="${ANTHROPIC_API_KEY}" \
       version="2023-06-01"
   else
-    echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai|azure|bedrock), or set ANTHROPIC_API_KEY / OPENAI_API_KEY / AZURE_OPENAI_API_KEY in .env. (Bedrock is explicit-only: AI_PROVIDER=bedrock.)" >&2
+    echo "ERROR: No AI provider configured. Set AI_PROVIDER=(anthropic|openai|azure|bedrock|grok), or set ANTHROPIC_API_KEY / OPENAI_API_KEY / AZURE_OPENAI_API_KEY / XAI_API_KEY in .env. (Bedrock is explicit-only: AI_PROVIDER=bedrock.)" >&2
     exit 1
   fi
 fi
@@ -238,7 +255,7 @@ else
   # Selection precedence:
   #   1. EMBEDDING_PROVIDER (openai|azure|tei|ollama) — explicit override.
   #   2. Otherwise: AI_PROVIDER=openai → OpenAI embeddings;
-  #                 anything else (anthropic, azure) → bundled TEI (bge-m3,
+  #                 anything else (anthropic, azure, bedrock, grok) → bundled TEI (bge-m3,
   #                 1024-dim). Azure embeddings are opt-in only, because they
   #                 require an embedding deployment that may not exist on the
   #                 customer's resource.

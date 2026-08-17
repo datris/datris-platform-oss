@@ -124,6 +124,7 @@ seems to be "hanging" mid-run, it's waiting between polls on purpose.
 | OpenAI GPT-5 | ✅ | ✅ | Reasoning summary |
 | Azure OpenAI | ✅ | ✅ | None (reasoning happens server-side but isn't surfaced) |
 | Claude via Amazon Bedrock | ✅ | ✅ | Full thinking blocks (same as direct Anthropic; responses arrive at the end of each turn rather than streaming) |
+| Grok (xAI) | ✅ | ✅ | None (reasoning happens server-side but isn't surfaced) |
 | Ollama / Llama | ✅ | If the model supports tool calling | None |
 
 Set `ai.extendedThinking: "false"` in `application.yaml` to disable the

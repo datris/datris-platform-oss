@@ -41,7 +41,7 @@ Each Vault secret carries its full configuration inline:
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `provider` | Yes | `anthropic`, `openai`, `azure`, `bedrock`, or `ollama` |
+| `provider` | Yes | `anthropic`, `openai`, `azure`, `bedrock`, `grok`, or `ollama` |
 | `endpoint` | Yes (blank OK for bedrock) | API endpoint URL. Azure has no default — use your resource URL, e.g. `https://YOUR-RESOURCE.openai.azure.com/openai/v1/chat/completions`. Bedrock derives its endpoint from the AWS region when blank |
 | `model` | Yes | Model identifier. For Azure this is your **deployment name**; for Bedrock an invokable model id (e.g. `anthropic.claude-sonnet-5`) |
 | `apiKey` | No (not used by ollama or bedrock) | Inline provider API key. The [shared API key store](#shared-api-key-store) is checked first and takes precedence when set. Bedrock authenticates with AWS credentials instead — see the [Bedrock path](#amazon-bedrock-path) |
@@ -53,11 +53,11 @@ The resolver reads each secret at the configured path and uses whatever it finds
 
 ### Shared API Key Store
 
-Provider API keys live in a shared per-provider secret, `{env}/ai-keys` (`oss/ai-keys` in single-tenant deployments), with one field per provider: `anthropicApiKey`, `openaiApiKey`, and `azureApiKey`. When a slot needs a key, resolution order is:
+Provider API keys live in a shared per-provider secret, `{env}/ai-keys` (`oss/ai-keys` in single-tenant deployments), with one field per provider: `anthropicApiKey`, `openaiApiKey`, `azureApiKey`, and `grokApiKey`. When a slot needs a key, resolution order is:
 
 1. **Shared key store** (`{env}/ai-keys`) — checked first; takes precedence over any inline key
 2. **Inline `apiKey`** on the slot secret — legacy deployments that stored the key on the slot itself
-3. **`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AZURE_OPENAI_API_KEY`** container env vars — single-tenant only
+3. **`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AZURE_OPENAI_API_KEY` / `XAI_API_KEY`** container env vars — single-tenant only
 
 Keys are stored once per provider rather than once per slot, so switching a slot between providers never loses the other provider's key. This is the store behind the Configuration UI's shared **API Keys** panel — entering a key there writes it to `{env}/ai-keys` for all slots to use.
 
@@ -72,7 +72,7 @@ Azure compute, workload identity, or `az login`.
 
 ## Quick Start with `.env`
 
-On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the `AZURE_OPENAI_*` trio, or `AI_PROVIDER=bedrock` (see the [Bedrock path](#amazon-bedrock-path)):
+On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the `AZURE_OPENAI_*` trio, `XAI_API_KEY` (see the [Grok path](#grok-xai-path)), or `AI_PROVIDER=bedrock` (see the [Bedrock path](#amazon-bedrock-path)):
 
 ```bash
 # .env
@@ -177,6 +177,30 @@ Notes:
 - **Embeddings and web search are not available on Bedrock** — embeddings default to the bundled bge-m3 service (or pair with OpenAI/Azure), and web search stays on Anthropic/OpenAI.
 - Extended thinking works the same as on the direct Anthropic provider, including Claude Fable 5's always-on thinking.
 
+### Grok (xAI) path
+
+Run chat and CodeGen on Grok through xAI's OpenAI-compatible API. One key from [console.x.ai](https://console.x.ai) covers both slots:
+
+```bash
+# .env
+XAI_API_KEY=...
+# Optional model override (default shown):
+# GROK_MODEL=grok-4.6
+```
+
+| Slot | Provider | Endpoint | Model |
+|------|----------|----------|-------|
+| `oss/ai-primary` | grok | `https://api.x.ai/v1/chat/completions` | `GROK_MODEL` or `grok-4.6` |
+| `oss/codegen` | grok | `https://api.x.ai/v1/chat/completions` | `CODEGEN_MODEL` or `grok-4.6` |
+| `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
+
+Notes:
+
+- xAI has **no embeddings API**, so embeddings default to the bundled bge-m3 service (or pair with OpenAI/Azure via `EMBEDDING_PROVIDER` — see [mix-and-match](#mix-and-match-anthropic-chat--openai-embeddings)).
+- **Web search is not available on Grok** — pair it with Anthropic or OpenAI web search if you need it.
+- Grok's reasoning happens server-side; unlike Claude's extended thinking it isn't surfaced in the Assistant's thinking panel.
+- With multiple keys in `.env`, pin the choice explicitly with `AI_PROVIDER=grok` (auto-detection only picks Grok when `XAI_API_KEY` is the sole key).
+
 ### Anthropic path (with bundled embedding service)
 
 When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic has no embeddings API, so `embedding` falls back to a **bundled embedding service** running `bge-m3` (a strong open-source 1024-dimension embedding model). No OpenAI key required, vector destinations work out of the box.
@@ -210,7 +234,8 @@ Override the seeded models by setting these in `.env`:
 ```bash
 ANTHROPIC_MODEL=claude-opus-5
 OPENAI_MODEL=gpt-5.5
-CODEGEN_MODEL=claude-opus-5   # or gpt-5.5 if using OpenAI
+GROK_MODEL=grok-4.6
+CODEGEN_MODEL=claude-opus-5   # or gpt-5.5 if using OpenAI, grok-4.6 for Grok
 ```
 
 ### Mix-and-match: Anthropic chat + OpenAI embeddings
@@ -305,11 +330,13 @@ Anthropic has no embeddings API, so `provider: "anthropic"` is not valid for the
 
 ## Chat Provider Notes
 
-The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, Azure OpenAI, Amazon Bedrock, and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
+The `aiPrimary` and `codegen` slots support Anthropic, OpenAI, Azure OpenAI, Amazon Bedrock, Grok (xAI), and Ollama. Ollama must expose the **OpenAI chat completions API** (`POST /v1/chat/completions`), which it does by default. When running Ollama on your host machine, the endpoint from inside Docker is `http://host.docker.internal:11434/v1/chat/completions`.
 
 Azure OpenAI always speaks chat/completions against your configured endpoint (never the OpenAI Responses API, whose Azure availability varies by region and model). Web search is not available on the Azure provider — pair Azure chat with Anthropic or OpenAI web search if you need it.
 
 Amazon Bedrock serves Claude models over the same Anthropic request/response shape as the direct provider, with AWS SigV4 authentication. Web search is not available on Bedrock either — pair it with Anthropic or OpenAI web search if needed.
+
+Grok speaks the OpenAI chat completions API against `https://api.x.ai/v1/chat/completions` with Bearer authentication. Like Azure, it never routes to the OpenAI Responses API, and web search is not available on it.
 
 ## Web Search (Optional)
 
@@ -377,7 +404,7 @@ A per-tenant secret takes effect on the next AI call — no restart needed. The 
 
 Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI. The Configuration page is organized into sub-tabs:
 
-- **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right (backed by the `{env}/ai-keys` secret — see [Shared API Key Store](#shared-api-key-store)). This is where you enter your Anthropic / OpenAI key and pick models.
+- **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right (backed by the `{env}/ai-keys` secret — see [Shared API Key Store](#shared-api-key-store)). This is where you enter your provider API keys and pick models.
 - **Secrets** — operator-facing platform credentials (Vault-backed). Admin-only when user-auth is on.
 - **Users** — user accounts and roles. Visible when `USE_USER_AUTH=true`.
 - **API-Keys** — issue and revoke scoped credentials for the CLI, MCP agents, and other programmatic clients. Visible when `USE_API_KEYS=true`. See [API Keys](/api-keys).
@@ -388,8 +415,8 @@ Some sub-tabs are role- and flag-gated — see the [API Keys matrix](/api-keys#s
 To set your AI keys:
 
 1. Open the **Configuration** tab, then the **AI Providers** sub-tab.
-2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, Azure OpenAI, Amazon Bedrock, and Ollama (local).
-3. For Anthropic/OpenAI/Azure, enter your API key in the right-hand panel and pick a model from the dropdown. For Azure, also enter your resource endpoint and type your deployment name as the model. For Amazon Bedrock, enter your AWS credentials and region in the right-hand panel (or leave the keys blank to use the server's IAM role) — the model dropdown then lists what your account can actually invoke. For Ollama, type the model name directly — no API key needed.
+2. Each section (AI Provider, CodeGen Provider, Embedding Provider) has its own provider and model selector. Providers include Anthropic, OpenAI, Azure OpenAI, Amazon Bedrock, Grok (xAI), and Ollama (local).
+3. For Anthropic/OpenAI/Azure/Grok, enter your API key in the right-hand panel and pick a model from the dropdown. For Azure, also enter your resource endpoint and type your deployment name as the model. For Amazon Bedrock, enter your AWS credentials and region in the right-hand panel (or leave the keys blank to use the server's IAM role) — the model dropdown then lists what your account can actually invoke. For Ollama, type the model name directly — no API key needed.
 4. Click **Save Configuration**. Changes take effect immediately — no restart required.
 
 To revert to defaults, click **Reset to Datris-managed**. This deletes all three per-tenant secrets and falls the tenant back to the global defaults.

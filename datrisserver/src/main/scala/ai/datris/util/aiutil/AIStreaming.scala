@@ -109,10 +109,10 @@ object AIStreaming {
             case "anthropic" => anthropicStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink, cancelled)
             case "bedrock" => bedrockNonStreamingCall(aiConfig, system, messages, tools, enableThinking, maxTokens, sink)
             case "openai" => openaiNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
-            case "azure" => chatCompletionsNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
+            case "azure" | "grok" => chatCompletionsNonStreamingCall(aiConfig, system, messages, tools, maxTokens, sink)
             case other =>
                 throw new DatrisException("Provider '" + other + "' is not yet supported for chat. " +
-                    "The chat assistants run on the AI Primary provider — set it to Anthropic, Amazon Bedrock, OpenAI, or Azure OpenAI in Configuration. " +
+                    "The chat assistants run on the AI Primary provider — set it to Anthropic, Amazon Bedrock, OpenAI, Azure OpenAI, or Grok in Configuration. " +
                     "(Ollama chat support is planned; Ollama already works for the CodeGen provider.)")
         }
     }
