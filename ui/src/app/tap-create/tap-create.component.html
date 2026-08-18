@@ -378,12 +378,13 @@
       <button class="test-btn" (click)="runTest()" [disabled]="testing"
               *ngIf="!testing && !applyingDiagnosis && !optimizing && !reviewing">
         <span class="material-icons">science</span>
-        Test Script
+        {{ isHttpTap ? 'Test Endpoint' : 'Test Script' }}
       </button>
 
       <div class="testing-indicator" *ngIf="testing">
         <div class="spinner"></div>
-        <span *ngIf="autoFixAttempts === 0">Running script — this may take a few minutes for large data fetches...</span>
+        <span *ngIf="autoFixAttempts === 0 && !isHttpTap">Running script — this may take a few minutes for large data fetches...</span>
+        <span *ngIf="autoFixAttempts === 0 && isHttpTap">Calling your endpoint — this may take a few minutes for large data fetches...</span>
         <span *ngIf="autoFixAttempts > 0">Re-running after auto-applied AI fix (attempt {{ autoFixAttempts }} of 3)...</span>
         <button class="indicator-stop-btn" (click)="stopActive()" title="Stop test">
           <span class="material-icons">stop</span>
