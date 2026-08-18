@@ -46,7 +46,7 @@ User-Agent: datris-tap/1
 | `tap` | string | The tap's name — useful when one service implements several taps. |
 | `params` | object | Per-run parameters from `run_tap(params={...})`. `{}` on scheduled runs, so apply sensible defaults. Keys match `[A-Za-z_][A-Za-z0-9_]*`; values are strings. |
 | `state` | object or null | The state your endpoint returned on the last **successful** real run; `null` on the first run. |
-| `testLimit` | number or null | `null` on real runs. A positive integer on test runs — cap the records you fetch and return. |
+| `testLimit` | number or null | Usually `null`. A positive integer when the caller requests a capped sample (e.g. an API test with a limit) — cap the records you fetch and return when present. Test runs never persist regardless. |
 
 The request times out after the platform's tap timeout (default 300 seconds, the same knob as
 script taps). Answer well within it — see [Long fetches](#long-fetches-chunk-with-state).

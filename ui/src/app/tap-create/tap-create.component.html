@@ -321,7 +321,7 @@
       </p>
       <p class="step-desc" *ngIf="!bringYourOwnCode && !isHttpTap">Review and edit the generated script, manage packages, then test it.</p>
       <p class="step-desc" *ngIf="bringYourOwnCode">Review and edit your script, manage packages, then test it.</p>
-      <p class="step-desc" *ngIf="isHttpTap">A test run POSTs the run context to your endpoint with the sample limit set, and previews what comes back — nothing is persisted.</p>
+      <p class="step-desc" *ngIf="isHttpTap">A test run POSTs the run context to your endpoint and previews what comes back — nothing is persisted.</p>
 
       <div class="form-group" *ngIf="isHttpTap">
         <label class="form-label">Endpoint URL</label>
@@ -366,7 +366,7 @@
         AI diagnosis has been applied to the script. Run the test again to verify the fix.
       </div>
 
-      <label class="checkbox-row test-sample-toggle" *ngIf="!testing">
+      <label class="checkbox-row test-sample-toggle" *ngIf="!testing && !isHttpTap">
         <input type="checkbox" [(ngModel)]="limitTestSample">
         <span>
           Limit test sample to

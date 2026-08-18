@@ -605,7 +605,9 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           packages: this.packages.length > 0 ? this.packages : null,
           secretName: this.secretName || null
         };
-    if (this.limitTestSample && this.testSampleLimit > 0) {
+    // HTTP taps get no sample cap: whether an endpoint honors testLimit is up
+    // to its author, so the platform doesn't promise one from the wizard.
+    if (!this.isHttpTap && this.limitTestSample && this.testSampleLimit > 0) {
       config.testLimit = this.testSampleLimit;
     }
 
