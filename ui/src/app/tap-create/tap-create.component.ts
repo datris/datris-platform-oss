@@ -65,6 +65,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   driftDetected = false;
   driftScript = '';
   driftHeadSha = '';
+  // True when the editor auto-loaded the repo head on open because it was
+  // newer than the tap's pinned commit. Informational banner only — the tap's
+  // runs keep using the pinned commit until the user saves.
+  driftAutoLoaded = false;
 
   // BYO: user pastes their own Python script instead of having the LLM generate
   // one. The wizard now offers only two kinds — own code or HTTP endpoint — so
@@ -262,7 +266,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             this.userScript = this.script;
           }
           if (this.scriptStorage === 'github') {
-            this.checkDrift();
+            this.checkDrift(true);
           }
         },
         error: () => { this.error = 'Failed to load tap'; }
@@ -1274,15 +1278,27 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   }
 
   /** Repo-backed taps: compare the branch head against the pinned commit and
-   *  raise the drift banner when someone committed the script externally. */
-  checkDrift(): void {
+   *  surface external commits. With autoLoad (the on-open path), the repo's
+   *  latest version is loaded into the editor straight away — opening a stale
+   *  pinned copy just sends the user through a Load-latest → 409-on-save
+   *  detour; the tap's runs keep the pinned commit until save. Without
+   *  autoLoad (manual re-check, save-conflict handling) the banner offers
+   *  Load latest instead, because the editor may hold unsaved edits that an
+   *  automatic swap would destroy. */
+  checkDrift(autoLoad: boolean = false): void {
     if (!this.tapName.trim()) { return; }
     this.codeRepoService.pullScript(this.tapName.trim()).subscribe({
       next: (result) => {
         if (result && result.drifted && result.script) {
-          this.driftDetected = true;
           this.driftScript = result.script;
           this.driftHeadSha = result.headCommitSha || '';
+          if (autoLoad) {
+            this.loadDriftedScript();
+            this.driftAutoLoaded = true;
+          } else {
+            this.driftDetected = true;
+            this.driftAutoLoaded = false;
+          }
         } else {
           this.driftDetected = false;
         }
@@ -1294,8 +1310,11 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   /** Replace the editor content with the repo's latest version and advance the
    *  local pin so the next save commits on top of it. */
   loadDriftedScript(): void {
-    if (!this.driftDetected) { return; }
+    if (!this.driftScript) { return; }
     this.script = this.driftScript;
+    // Keep the BYO paste box in lockstep — the step-1 "uploaded copy matches"
+    // gate compares the two.
+    this.userScript = this.driftScript;
     this.scriptCommitSha = this.driftHeadSha;
     this.scriptDirty = true;
     this.driftDetected = false;

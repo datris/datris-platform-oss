@@ -19,13 +19,24 @@
     </div>
   </div>
 
+  <div class="drift-banner" *ngIf="driftAutoLoaded">
+    <span class="material-icons">cloud_sync</span>
+    <div>
+      <div class="banner-title">Loaded the latest script from {{ repoName }}{{ driftHeadSha ? ' (' + driftHeadSha.substring(0, 9) + ')' : '' }}.</div>
+      <div class="banner-body">
+        It changed in the repository since this tap was last saved. Scheduled and manual runs keep using the
+        previously saved version until you test and save — that pins the tap to this latest commit.
+      </div>
+    </div>
+  </div>
+
   <div class="drift-banner" *ngIf="driftDetected">
     <span class="material-icons">cloud_sync</span>
     <div>
       <div class="banner-title">This script was changed in {{ repoName }} since the tap was last saved.</div>
       <div class="banner-body">
         The repository's {{ driftHeadSha ? '(' + driftHeadSha.substring(0, 9) + ')' : '' }} version differs from the
-        commit this tap is pinned to. Load it to review and save, or keep editing your local version.
+        copy you're editing. Load it to review and save — this replaces your unsaved edits — or keep editing your local version.
       </div>
     </div>
     <button class="secondary-btn" (click)="loadDriftedScript()">Load latest</button>
