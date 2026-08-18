@@ -229,6 +229,14 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(result.error.contains("upstream down"))
     }
 
+    test("405 leads with the accept-POST hint") {
+        install(405, "<html>Method Not Allowed</html>")
+        val result = TapScriptRunner.run(httpTap())
+        assert(result.error != null)
+        assert(result.error.contains("POST"))
+        assert(result.error.contains("405"))
+    }
+
     test("timeout produces a failed run mentioning chunked runs") {
         install(200, """{"type": "json", "data": []}""", delayMs = 4000L)
         val result = TapScriptRunner.run(httpTap())

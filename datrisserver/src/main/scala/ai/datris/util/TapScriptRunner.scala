@@ -549,11 +549,20 @@ object TapScriptRunner {
                 } finally in.close()
             }
 
-            if (response.statusCode() != 200)
+            if (response.statusCode() != 200) {
+                // 405 almost always means a GET-only route — the single most
+                // common first-contact mistake. Lead with the fix, not the
+                // endpoint's HTML error page.
+                val methodHint =
+                    if (response.statusCode() == 405)
+                        "Datris sends the run context as a POST — make sure your endpoint route accepts " +
+                            "POST requests (e.g. methods=[\"POST\"] in Flask, @app.post in FastAPI). "
+                    else ""
                 throw new DatrisException(
-                    "Tap endpoint returned HTTP " + response.statusCode() + ": " +
-                        maskSecrets(rawBody.take(1000), tokenForMasking)
+                    "Tap endpoint returned HTTP " + response.statusCode() + ". " + methodHint +
+                        "Response: " + maskSecrets(rawBody.take(1000), tokenForMasking)
                 )
+            }
 
             // Parse the envelope with JsonParser — NOT via a gson Map — so number
             // literals survive verbatim (same rationale as extractStateJson).
