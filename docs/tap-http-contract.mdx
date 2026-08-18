@@ -1,0 +1,158 @@
+---
+title: "HTTP Tap Contract"
+description: "Implement a tap as an HTTP endpoint you host — in any language"
+---
+
+An **HTTP tap** is a tap whose fetch logic runs as a service *you* operate instead of a Python
+script the platform executes. On every run — manual, scheduled, or test — Datris POSTs the run
+context to your endpoint, and your endpoint responds with the same JSON envelope a Python tap
+script produces. Everything downstream is identical: envelope parsing, data types, incremental
+state, output caps, run history, retries, and scheduling.
+
+Use an HTTP tap when you want to write the tap in Rust, Go, TypeScript, or anything else — or
+when the fetch logic already exists inside a service you run. Your endpoint holds its own
+upstream credentials; Datris only ever sends it one optional auth token. No tap code runs on
+the platform at all.
+
+<Note>
+HTTP taps cannot use the [platform-data callback](/taps#querying-datris-data) — the
+`DATRIS_PLATFORM_*` query API is reachable only from scripts running on the platform. If your
+tap's fetch logic depends on data already stored in Datris, keep it as a Python tap.
+</Note>
+
+## The request
+
+On each run, Datris sends:
+
+```http
+POST {endpointUrl}
+Content-Type: application/json
+Authorization: Bearer <endpoint_token>     # only when the tap has a secret (see Auth)
+X-Datris-Tap: my-tap
+User-Agent: datris-tap/1
+```
+
+```json
+{
+  "tap": "my-tap",
+  "params": {"start_date": "2026-08-01"},
+  "state": {"cursor": "abc123"},
+  "testLimit": 100
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `tap` | string | The tap's name — useful when one service implements several taps. |
+| `params` | object | Per-run parameters from `run_tap(params={...})`. `{}` on scheduled runs, so apply sensible defaults. Keys match `[A-Za-z_][A-Za-z0-9_]*`; values are strings. |
+| `state` | object or null | The state your endpoint returned on the last **successful** real run; `null` on the first run. |
+| `testLimit` | number or null | `null` on real runs. A positive integer on test runs — cap the records you fetch and return. |
+
+The request times out after the platform's tap timeout (default 300 seconds, the same knob as
+script taps). Answer well within it — see [Long fetches](#long-fetches-chunk-with-state).
+
+## The response
+
+Reply `200 OK` with the tap envelope:
+
+```json
+{
+  "type": "json",
+  "data": [{"id": 1, "price": 42.5}, {"id": 2, "price": 43.1}],
+  "state": {"cursor": "def456"},
+  "logs": "fetched 2 records from source in 0.4s"
+}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `type` | **yes** | One of `json`, `csv`, `xml`, `text`, `document`. There is no type-sniffing on this path — you declare it. A missing or unknown `type` fails the run. |
+| `data` | **yes** | The records. For `json`/`csv`/`document`: an array (an **empty array is the correct way to report "no new data"**). For `xml`/`text`: a string. |
+| `state` | no | JSON object bookmark for incremental sync, max 64 KB. Committed only after a successful real run; test runs never commit. Omit it to leave the previous bookmark in place. |
+| `logs` | no | Free-text log string, shown in the tap's run history — your stderr equivalent. |
+
+Anything else — a non-200 status, a timeout, a malformed envelope — records a failed run, with
+your response body (truncated) as the error message. Failed scheduled runs enter the platform's
+normal cron retry ladder.
+
+`document`-type records use the same shape as document taps:
+`{"uri": "...", "filename": "...", "content": "<base64>", "content_hash": "...", "metadata": {...}}`.
+
+The whole response is capped at the platform's tap output limit (default 100 MB). Bigger
+fetches should be chunked — see below.
+
+## Auth
+
+If the tap references a secret, the secret's **`endpoint_token`** field is sent as
+`Authorization: Bearer <value>`. That is the **only** secret field ever forwarded — upstream
+source credentials (API keys for the systems your service fetches from) belong to your service's
+own configuration, not to Datris. A tap that names a secret with no usable `endpoint_token`
+fails loudly before the call.
+
+Use `https://` for any non-local endpoint — the token travels in a header.
+
+## Long fetches: chunk with state
+
+Multi-minute HTTP requests are fragile through proxies and load balancers. Don't answer one run
+with a giant slow response — return one page quickly plus a `state` cursor, and let the next
+run continue where you left off:
+
+1. Run 1: request has `"state": null` → fetch the first page, respond with
+   `"data": [...page 1...], "state": {"offset": 1000}`.
+2. Run 2: request has `"state": {"offset": 1000}` → fetch the next page, respond with
+   `"data": [...page 2...], "state": {"offset": 2000}`.
+3. Caught up: respond `"data": [], "state": {"offset": 2000}` — a clean `no_records` run that
+   keeps the bookmark.
+
+Because state commits only on success, a failed run leaves the old cursor and the retry
+re-fetches the same window — design your pages to be safe to re-deliver (upsert destinations
+absorb the overlap).
+
+## A minimal endpoint in Rust
+
+Any HTTP stack works; here is the whole contract in one axum handler:
+
+```rust
+use axum::{routing::post, Json, Router};
+use serde_json::{json, Value};
+
+async fn tap(Json(req): Json<Value>) -> Json<Value> {
+    let offset = req["state"]["offset"].as_u64().unwrap_or(0);
+    let limit = req["testLimit"].as_u64().unwrap_or(1000);
+
+    // Fetch from your source here — this service holds its own API keys.
+    let records: Vec<Value> = (offset..offset + limit.min(1000))
+        .map(|i| json!({"id": i, "value": format!("row-{i}")}))
+        .collect();
+
+    Json(json!({
+        "type": "json",
+        "data": records,
+        "state": {"offset": offset + records.len() as u64},
+        "logs": format!("returned {} records from offset {}", records.len(), offset)
+    }))
+}
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new().route("/tap", post(tap));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+The same shape ports directly to Go (`net/http` + `encoding/json`), Node/TypeScript
+(`express`/`fastify`), or a serverless function — read the JSON body, write the envelope.
+
+## Creating an HTTP tap
+
+- **UI**: Catalog → Create Tap → choose **HTTP Endpoint**, paste the URL, optionally attach a
+  secret whose `endpoint_token` your service checks. Test Script POSTs to your endpoint with
+  `testLimit` set and previews the response without persisting.
+- **CLI**: `datris tap create --name my-tap --kind http --endpoint-url https://taps.example.com/my-tap --pipeline my-pipeline --cron "0 0 6 * * ?"`
+- **MCP**: `create_tap` with `kind: "http"` and `endpoint_url`.
+
+Params, scheduling, run history, `run_tap`, `get_pipeline_status` polling, and the sync-state
+viewer all work exactly as they do for Python taps. What doesn't apply: AI script
+generation/fix/review/optimize (there is no script), pip packages, script storage, and the
+platform-data callback.

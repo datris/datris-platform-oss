@@ -156,6 +156,13 @@ components:
         scriptCommitSha:
           type: string
           description: Commit SHA the script is pinned to when `scriptStorage` is `github`; runs read exactly this commit
+        scriptKind:
+          type: string
+          enum: [python, http]
+          description: Tap implementation kind. Absent or `python` = a script the platform executes; `http` = a user-hosted endpoint speaking the tap HTTP contract (`endpointUrl` is authoritative; script/packages fields do not apply).
+        endpointUrl:
+          type: string
+          description: For `scriptKind` `http` only — absolute http(s) URL Datris POSTs the run context to on each run
         targetPipeline:
           type: string
           description: Pipeline this tap feeds into (may be empty for unattached taps)

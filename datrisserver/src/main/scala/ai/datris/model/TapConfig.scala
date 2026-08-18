@@ -56,5 +56,18 @@ case class TapConfig(
     scriptRepoPath: String = null,
     // Commit SHA the script is pinned to. Runs read exactly this commit; the
     // drift-pull endpoint advances it when the user accepts external edits.
-    scriptCommitSha: String = null
-)
+    scriptCommitSha: String = null,
+    // Tap implementation kind: null/"python" ⇒ Python script executed by the
+    // platform (current behavior); "http" ⇒ user-hosted endpoint speaking the
+    // tap HTTP contract (endpointUrl is authoritative; script/packages fields
+    // unused). Flat string for the same Gson round-trip reason as scriptStorage.
+    scriptKind: String = null,
+    // Endpoint POSTed to on each run when scriptKind == "http".
+    endpointUrl: String = null
+) {
+
+    /** True when this tap is a user-hosted HTTP endpoint rather than a
+      * platform-executed Python script. Gson serializes fields only, so this
+      * derived accessor never appears in stored documents. */
+    def isHttp: Boolean = "http".equalsIgnoreCase(scriptKind)
+}

@@ -592,9 +592,12 @@ def tap():
 @click.option("--secret", default=None, help="Vault secret name for credentials")
 @click.option("--type", "tap_type", type=click.Choice(["structured", "document"]), default="structured",
               help="Tap type: 'structured' returns rows of records (default); 'document' returns file bytes for a vector-store pipeline")
+@click.option("--kind", type=click.Choice(["python", "http"]), default=None,
+              help="Tap implementation kind: 'python' (default) runs a script on the platform; 'http' calls a user-hosted endpoint speaking the tap HTTP contract")
+@click.option("--endpoint-url", default=None, help="For --kind http: absolute http(s) URL Datris POSTs the run context to on each run")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
-def tap_create(instruction, pipeline, name, script_path, cron, secret, tap_type, json_output):
-    """Create a tap from an instruction (AI generates script), script file, or config only."""
+def tap_create(instruction, pipeline, name, script_path, cron, secret, tap_type, kind, endpoint_url, json_output):
+    """Create a tap from an instruction (AI generates script), script file, HTTP endpoint, or config only."""
     # Derive tap name if not provided
     if name:
         tap_name = name
@@ -608,7 +611,20 @@ def tap_create(instruction, pipeline, name, script_path, cron, secret, tap_type,
 
     args = {"name": tap_name, "tap_type": tap_type}
 
-    if script_path:
+    if kind == "http":
+        if script_path or instruction:
+            click.echo("  Error: --kind http taps have no platform-side script — drop the instruction/--script and pass --endpoint-url")
+            sys.exit(1)
+        if not endpoint_url:
+            click.echo("  Error: --endpoint-url is required with --kind http")
+            sys.exit(1)
+        args["kind"] = "http"
+        args["endpoint_url"] = endpoint_url
+        click.echo(f"  Creating HTTP tap '{tap_name}' → {endpoint_url}...")
+    elif endpoint_url:
+        click.echo("  Error: --endpoint-url requires --kind http")
+        sys.exit(1)
+    elif script_path:
         with open(script_path, "r") as f:
             args["script"] = f.read()
         click.echo(f"  Storing script for tap '{tap_name}'...")
@@ -695,6 +711,9 @@ def tap_show(name, json_output):
             sys.exit(1)
         click.echo(f"  Name:        {result.get('name')}")
         click.echo(f"  Description: {result.get('description')}")
+        if (result.get("scriptKind") or "").lower() == "http":
+            click.echo(f"  Kind:        http")
+            click.echo(f"  Endpoint:    {result.get('endpointUrl')}")
         click.echo(f"  Pipeline:    {result.get('targetPipeline')}")
         click.echo(f"  Schedule:    {result.get('cronExpression', 'manual')}")
         click.echo(f"  Enabled:     {result.get('enabled')}")
@@ -764,8 +783,9 @@ def tap_logs(name, json_output):
 @click.option("--cron", default=None, help="CRON expression for scheduling")
 @click.option("--pipeline", "-p", default=None, help="Target pipeline name")
 @click.option("--description", "-d", default=None, help="New description")
+@click.option("--endpoint-url", default=None, help="New endpoint URL (HTTP taps only)")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
-def tap_update(name, enabled, cron, pipeline, description, json_output):
+def tap_update(name, enabled, cron, pipeline, description, endpoint_url, json_output):
     """Update a tap's configuration without regenerating the script."""
     args = {"name": name}
     if enabled is not None:
@@ -776,9 +796,11 @@ def tap_update(name, enabled, cron, pipeline, description, json_output):
         args["target_pipeline"] = pipeline
     if description is not None:
         args["description"] = description
+    if endpoint_url is not None:
+        args["endpoint_url"] = endpoint_url
 
     if len(args) == 1:
-        click.echo("  Nothing to update. Specify at least one option (--enabled/--disabled, --cron, --pipeline, --description).")
+        click.echo("  Nothing to update. Specify at least one option (--enabled/--disabled, --cron, --pipeline, --description, --endpoint-url).")
         sys.exit(1)
 
     result = mcp("update_tap", args)

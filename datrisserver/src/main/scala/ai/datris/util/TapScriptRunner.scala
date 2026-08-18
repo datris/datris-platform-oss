@@ -135,6 +135,12 @@ object TapScriptRunner {
         params: Map[String, String] = Map.empty,
         previousState: String = null
     ): TapScriptResult = {
+        // HTTP taps run zero code on the platform: the "script" is a user-hosted
+        // endpoint speaking the same envelope contract, so the entire Python lane
+        // (storage read, wrapper, venv/pip, sidecar, secret-field inference) is
+        // skipped and everything downstream of the envelope is shared.
+        if (tapConfig.isHttp) return runHttp(tapConfig, testLimit, params, previousState)
+
         logger.info("TapScriptRunner: executing tap: " + tapConfig.name)
 
         // Step 1: Read script from its storage backend (MinIO or code repo)
@@ -324,39 +330,9 @@ object TapScriptRunner {
             // (which only allows [A-Za-z0-9_]+) and so downstream SQL doesn't need quoting.
             // Rewrites BOTH the records (key by key) and the extracted columns array.
             // No-op for json/xml/text — those go to mongo destinations as raw blobs.
-            val (normalizedDataJson, columns): (String, java.util.List[String]) = if (dataType == "csv" && recordCount > 0) {
-                try {
-                    val list = gson.fromJson(dataJson, classOf[java.util.List[java.util.Map[String, Any]]])
-                    if (list != null && !list.isEmpty) {
-                        // Compute the union of keys across ALL records (first-seen order).
-                        // Some sources emit variable-shape rows; using only the first
-                        // record's keys silently drops columns that appear in later records and
-                        // breaks downstream pipeline schemas built from this list.
-                        val seen = scala.collection.mutable.LinkedHashSet[String]()
-                        list.asScala.foreach(row => row.keySet().asScala.foreach(seen.add))
-                        val allKeys = seen.toList
-                        val keyMap: Map[String, String] = allKeys.map(k => k -> normalizeColumnName(k)).toMap
-                        val normalizedCols = new java.util.ArrayList[String](allKeys.map(keyMap).asJava)
-                        val rewrittenList = new java.util.ArrayList[java.util.Map[String, Any]](list.size())
-                        list.asScala.foreach { row =>
-                            val newRow = new java.util.LinkedHashMap[String, Any]()
-                            // Insert in union order so every record has the same key order;
-                            // missing keys become null.
-                            allKeys.foreach { k =>
-                                val normalized = keyMap(k)
-                                if (row.containsKey(k)) newRow.put(normalized, row.get(k))
-                                else newRow.put(normalized, null)
-                            }
-                            rewrittenList.add(newRow)
-                        }
-                        (gson.toJson(rewrittenList), normalizedCols)
-                    } else (dataJson, null)
-                } catch {
-                    case e: Exception =>
-                        logger.warn("Column-name normalization of tap output failed — passing data through unnormalized", e)
-                        (dataJson, null)
-                }
-            } else (dataJson, null)
+            val (normalizedDataJson, columns): (String, java.util.List[String]) =
+                if (dataType == "csv" && recordCount > 0) normalizeCsvColumns(dataJson, gson)
+                else (dataJson, null)
 
             logger.info("TapScriptRunner: dataType=" + dataType + ", fetched " + recordCount + " records" +
                 (if (columns != null) ", columns=" + columns else ""))
@@ -388,6 +364,261 @@ object TapScriptRunner {
             Files.deleteIfExists(scriptFile)
             Files.deleteIfExists(wrapperFile)
             venvDir.foreach(deleteRecursively)
+        }
+    }
+
+    /** For CSV-shaped data: normalize column names so they pass PipelineValidatorUtil
+      * (which only allows [A-Za-z0-9_]+) and so downstream SQL doesn't need quoting.
+      * Rewrites BOTH the records (key by key) and the extracted columns array.
+      * Shared by the script and HTTP paths; no-op fallback on any parse trouble. */
+    private def normalizeCsvColumns(dataJson: String, gson: com.google.gson.Gson): (String, java.util.List[String]) = {
+        try {
+            val list = gson.fromJson(dataJson, classOf[java.util.List[java.util.Map[String, Any]]])
+            if (list != null && !list.isEmpty) {
+                // Compute the union of keys across ALL records (first-seen order).
+                // Some sources emit variable-shape rows; using only the first
+                // record's keys silently drops columns that appear in later records and
+                // breaks downstream pipeline schemas built from this list.
+                val seen = scala.collection.mutable.LinkedHashSet[String]()
+                list.asScala.foreach(row => row.keySet().asScala.foreach(seen.add))
+                val allKeys = seen.toList
+                val keyMap: Map[String, String] = allKeys.map(k => k -> normalizeColumnName(k)).toMap
+                val normalizedCols = new java.util.ArrayList[String](allKeys.map(keyMap).asJava)
+                val rewrittenList = new java.util.ArrayList[java.util.Map[String, Any]](list.size())
+                list.asScala.foreach { row =>
+                    val newRow = new java.util.LinkedHashMap[String, Any]()
+                    // Insert in union order so every record has the same key order;
+                    // missing keys become null.
+                    allKeys.foreach { k =>
+                        val normalized = keyMap(k)
+                        if (row.containsKey(k)) newRow.put(normalized, row.get(k))
+                        else newRow.put(normalized, null)
+                    }
+                    rewrittenList.add(newRow)
+                }
+                (gson.toJson(rewrittenList), normalizedCols)
+            } else (dataJson, null)
+        } catch {
+            case e: Exception =>
+                logger.warn("Column-name normalization of tap output failed — passing data through unnormalized", e)
+                (dataJson, null)
+        }
+    }
+
+    // ---- HTTP taps: user-hosted endpoint speaking the tap envelope contract -------------------
+
+    /** Envelope `type` values a tap may declare. The Python wrapper's type-sniffing
+      * doesn't exist for HTTP taps — the endpoint declares its type explicitly. */
+    private val HttpEnvelopeTypes: Set[String] = Set("json", "csv", "xml", "text", "document")
+
+    /** The one secret field forwarded to an HTTP tap endpoint (as a Bearer token).
+      * Upstream source credentials belong to the endpoint, never to Datris. */
+    private[util] val EndpointTokenField = "endpoint_token"
+
+    private val ContractPointer =
+        "See the tap HTTP contract (docs.datris.ai → Taps → HTTP tap contract)."
+
+    /** Execute an HTTP tap: POST the run context to the tap's endpoint and feed the
+      * response through the same envelope handling as script taps. No retries at
+      * this layer — the cron retry ladder owns retry semantics, and a failed HTTP
+      * call provably fed nothing downstream (TapRunner marks script-phase failures
+      * retry-safe). */
+    private def runHttp(
+        tapConfig: TapConfig,
+        testLimit: Int,
+        params: Map[String, String],
+        previousState: String
+    ): TapScriptResult = {
+        logger.info("TapScriptRunner: executing HTTP tap: " + tapConfig.name + " → " + tapConfig.endpointUrl)
+        // The endpoint auth token is the only secret in play; used for masking below.
+        var tokenForMasking: Seq[String] = Seq.empty
+        try {
+            // Endpoint auth. Mirrors the script-tap rule: a tap that DECLARES a secret
+            // whose credentials can't be injected is a loud misconfiguration, not a
+            // silent unauthenticated call. Only endpoint_token is ever forwarded.
+            val endpointToken: Option[String] = if (tapConfig.secretName != null && tapConfig.secretName.nonEmpty) {
+                val secretPath = DatrisEnvironment.current.environment + "/" + tapConfig.secretName
+                val fields = SecretsUtil.getSecretMap(secretPath)
+                    .map(_.asScala.filterNot(_._1 == "_type").toMap)
+                    .getOrElse(Map.empty[String, String])
+                if (fields.isEmpty)
+                    throw new DatrisException(
+                        "Tap references secret '" + tapConfig.secretName + "' but no credentials were injected — " +
+                            "the secret is missing or empty in the vault. Recreate the secret under Configuration → Secrets, " +
+                            "or update the tap to reference an existing secret."
+                    )
+                val token = fields.get(EndpointTokenField).map(_.trim).filter(_.nonEmpty)
+                if (token.isEmpty)
+                    throw new DatrisException(
+                        "Tap references secret '" + tapConfig.secretName + "' but it has no '" + EndpointTokenField +
+                            "' field. HTTP taps send exactly one credential — the secret's '" + EndpointTokenField +
+                            "' value, as an Authorization: Bearer header. Add that field to the secret, or remove the " +
+                            "secret from the tap if the endpoint needs no auth."
+                    )
+                token
+            } else None
+            tokenForMasking = endpointToken.toSeq
+
+            // Request body: the same run context script taps get via env vars.
+            val body = new JsonObject()
+            body.addProperty("tap", tapConfig.name)
+            val paramsObj = new JsonObject()
+            params.foreach { case (k, v) =>
+                val key = if (k == null) "" else k.trim
+                if (key.nonEmpty) {
+                    if (ParamKeyPattern.findFirstIn(key).isEmpty)
+                        throw new DatrisException(
+                            "Invalid tap param key '" + key + "'. Keys must match [A-Za-z_][A-Za-z0-9_]* " +
+                                "so they map cleanly onto env var names. Got: " + key
+                        )
+                    paramsObj.addProperty(key, if (v == null) "" else v)
+                }
+            }
+            body.add("params", paramsObj)
+            val stateElem: com.google.gson.JsonElement =
+                if (previousState != null && previousState.nonEmpty)
+                    try JsonParser.parseString(previousState)
+                    catch { case _: Exception => com.google.gson.JsonNull.INSTANCE }
+                else com.google.gson.JsonNull.INSTANCE
+            body.add("state", stateElem)
+            if (testLimit > 0) body.addProperty("testLimit", Integer.valueOf(testLimit))
+            else body.add("testLimit", com.google.gson.JsonNull.INSTANCE)
+
+            val client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(10))
+                .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+                .build()
+            val requestBuilder = java.net.http.HttpRequest.newBuilder()
+                .uri(java.net.URI.create(tapConfig.endpointUrl))
+                .timeout(java.time.Duration.ofSeconds(scriptTimeoutSeconds.toLong))
+                .header("Content-Type", "application/json")
+                .header("X-Datris-Tap", tapConfig.name)
+                .header("User-Agent", "datris-tap/1")
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body.toString, java.nio.charset.StandardCharsets.UTF_8))
+            endpointToken.foreach(t => requestBuilder.header("Authorization", "Bearer " + t))
+
+            val response =
+                try client.send(requestBuilder.build(), java.net.http.HttpResponse.BodyHandlers.ofInputStream())
+                catch {
+                    case _: java.net.http.HttpTimeoutException =>
+                        throw new DatrisException(
+                            "Tap endpoint did not respond within " + scriptTimeoutSeconds + " seconds. " +
+                                "Long fetches should be chunked: return one page plus a state cursor and let " +
+                                "the next run continue. " + ContractPointer
+                        )
+                    case e: java.net.ConnectException =>
+                        throw new DatrisException("Could not connect to tap endpoint " + tapConfig.endpointUrl + ": " + e.getMessage)
+                }
+
+            // Response bodies are untrusted input: stream up to the same output cap
+            // script taps get, then abort — never buffer an unbounded body.
+            val maxBytes: Long = DatrisEnvironment.current.tapMaxOutputMB.toLong * 1024L * 1024L
+            val rawBody: String = {
+                val in = response.body()
+                try {
+                    val buf = new java.io.ByteArrayOutputStream()
+                    val chunk = new Array[Byte](64 * 1024)
+                    var n = in.read(chunk)
+                    while (n >= 0) {
+                        buf.write(chunk, 0, n)
+                        if (buf.size().toLong > maxBytes)
+                            throw new DatrisException(
+                                "Tap endpoint response exceeded the " + DatrisEnvironment.current.tapMaxOutputMB +
+                                    " MB limit. The whole batch is buffered in memory before loading to the " +
+                                    "pipeline, so very large fetches risk OOM-ing the server. Return a smaller " +
+                                    "page plus a state cursor and let the next run continue."
+                            )
+                        n = in.read(chunk)
+                    }
+                    new String(buf.toByteArray, java.nio.charset.StandardCharsets.UTF_8)
+                } finally in.close()
+            }
+
+            if (response.statusCode() != 200)
+                throw new DatrisException(
+                    "Tap endpoint returned HTTP " + response.statusCode() + ": " +
+                        maskSecrets(rawBody.take(1000), tokenForMasking)
+                )
+
+            // Parse the envelope with JsonParser — NOT via a gson Map — so number
+            // literals survive verbatim (same rationale as extractStateJson).
+            val envelope =
+                try JsonParser.parseString(rawBody).getAsJsonObject
+                catch {
+                    case _: Exception =>
+                        throw new DatrisException(
+                            "Tap endpoint response is not a JSON envelope. Expected " +
+                                "{\"type\": \"json|csv|xml|text|document\", \"data\": ...}. Got: " +
+                                maskSecrets(rawBody.take(500), tokenForMasking) + " " + ContractPointer
+                        )
+                }
+            val dataType = Option(envelope.get("type"))
+                .filter(e => !e.isJsonNull && e.isJsonPrimitive)
+                .map(_.getAsString)
+                .getOrElse("")
+            if (!HttpEnvelopeTypes.contains(dataType))
+                throw new DatrisException(
+                    "Tap endpoint envelope is missing a valid \"type\" field (got: " +
+                        (if (dataType.isEmpty) "absent" else "'" + dataType + "'") +
+                        "). HTTP taps must declare one of json|csv|xml|text|document — there is no " +
+                        "type-sniffing on this path. " + ContractPointer
+                )
+            if (!envelope.has("data") || envelope.get("data").isJsonNull)
+                throw new DatrisException(
+                    "Tap endpoint envelope has no \"data\" field. Return {\"type\": \"" + dataType +
+                        "\", \"data\": [...]} — an empty array is the correct way to report no records. " +
+                        ContractPointer
+                )
+
+            // Optional logs — the endpoint's stderr equivalent, carried into the run
+            // log and masked exactly like script stderr.
+            val logs: String = Option(envelope.get("logs"))
+                .filter(e => !e.isJsonNull && e.isJsonPrimitive)
+                .map(e => maskSecrets(e.getAsString, tokenForMasking))
+                .orNull
+            if (logs != null && logs.nonEmpty) logger.info("TapScriptRunner: HTTP tap logs:\n" + logs)
+
+            // element.toString preserves the endpoint's exact JSON (integers stay
+            // integers); for xml/text the data element is a JSON string and toString
+            // yields its quoted form — byte-identical to what the wrapper path stores.
+            val dataJson = envelope.get("data").toString
+            val recordCount =
+                if (dataType == "json" || dataType == "csv" || dataType == "document") countRecords(dataJson) else 1
+
+            val newStateJson: String = extractStateJson(rawBody)
+            if (newStateJson != null && newStateJson.length > MaxStateBytes)
+                throw new DatrisException(
+                    "Tap endpoint emitted a state blob of ~" + (newStateJson.length / 1024) +
+                        " KB (limit " + (MaxStateBytes / 1024) + " KB). State is a cursor for the next run — " +
+                        "a timestamp, an id watermark, a page token — not a place to store records. " +
+                        "Reduce the envelope's \"state\" to the minimal position marker the next run needs."
+                )
+
+            val gson = new com.google.gson.Gson
+            val (normalizedDataJson, columns): (String, java.util.List[String]) =
+                if (dataType == "csv" && recordCount > 0) normalizeCsvColumns(dataJson, gson)
+                else (dataJson, null)
+
+            logger.info("TapScriptRunner: HTTP tap dataType=" + dataType + ", fetched " + recordCount + " records" +
+                (if (columns != null) ", columns=" + columns else ""))
+
+            TapScriptResult(
+                normalizedDataJson,
+                recordCount,
+                null,
+                logs,
+                dataType,
+                columns,
+                newState = newStateJson
+            )
+        } catch {
+            case e: DatrisException =>
+                val masked = maskSecrets(e.getMessage, tokenForMasking)
+                logger.error("TapScriptRunner (HTTP tap) failed: " + masked)
+                TapScriptResult(null, 0, masked)
+            case e: Exception =>
+                logger.error("TapScriptRunner (HTTP tap) failed", e)
+                TapScriptResult(null, 0, maskSecrets("Tap endpoint request failed: " + e.getMessage, tokenForMasking))
         }
     }
 

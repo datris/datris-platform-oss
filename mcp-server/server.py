@@ -419,7 +419,7 @@ Tap workflow (for step 3 Option B):
     - With instruction: provide a plain-English instruction and the platform's AI generates the script. This is slower (1-2 minutes) because the platform must generate and store the script.
     - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries.
   Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
-  Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever. Full contract in datris://tap-workflow-reference.
+  Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
   2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
@@ -1032,6 +1032,7 @@ If the user already has the file in hand, prefer `upload_data` against an existi
 
 1. **Check existing.** Call `list_taps`. If a tap with the right purpose exists, prefer running it (or updating its config) over creating a new one.
 2. **Create.** Call `create_tap` with either `instruction` (AI generates the Python `fetch()` function) or `script` (you provide it directly). Writing the script yourself is usually faster and more reliable than AI generation. Pass `target_pipeline` so the tap actually persists to a destination — without it, runs come back with `persistedReason: no_target_pipeline`.
+   - **HTTP taps** (`kind: "http"` + `endpoint_url`): the tap is a service the USER hosts, in any language; Datris POSTs `{tap, params, state, testLimit}` to the endpoint each run and the endpoint responds with the same envelope a script produces (`{"type": ..., "data": [...], "state": {...}}`). Auth: if the tap's secret has an `endpoint_token` field it is sent as `Authorization: Bearer` — no other secret fields are ever forwarded. Everything else in this reference (params, state, scheduling, run flow, polling, verification) applies identically. What does NOT apply: `instruction`/`script`/`packages`, AI codegen actions, and the platform-data callback below — an HTTP tap cannot read platform data, so keep platform-data-driven taps as Python taps. Only suggest HTTP kind when the user says they want to implement the tap themselves outside the platform (existing service, non-Python language).
 3. **Test.** Call `test_tap` to validate the script without persisting. **MANDATORY for any newly-created or just-updated script** — see the VALIDATION RULE below. If the script errors, fix it by calling `create_tap` again with the same name and a corrected `instruction` or revised `script` (create_tap upserts and replaces the existing script), and re-test until it succeeds.
 4. **Schedule (if recurring).** If the user mentioned any recurrence cue, set `cron_expression` — see the SCHEDULING RULE below.
 5. **Run.** Call `run_tap` with `name` and optional `params`. Read the response — see the run-flow section below.
@@ -1215,6 +1216,8 @@ Tap scripts can read data that already lives in Datris — no credentials, no ex
 - `DATRIS_MONGODB_DATABASE` — the MongoDB database name to pass to query/metadata calls
 
 The script calls back into the platform's own API at `http://{host}:{port}/api/v1`, and the platform executes the query with its own credentials. Read the env vars with NO fallback defaults (`os.environ['DATRIS_PLATFORM_HOST']`) — they are always present.
+
+This callback lane is **Python-only**: an HTTP tap runs on the user's own infrastructure, has no route to the platform's localhost API, and receives no `DATRIS_PLATFORM_*` values. A tap whose fetch logic depends on platform-stored data must be a Python tap — never recommend or convert such a tap to HTTP kind.
 
 Query endpoints (POST). Response shapes are EXACT and STABLE — trust them, do not probe alternate shapes or keys:
 - PostgreSQL: `POST /api/v1/query/postgres` with body `{"sql": "SELECT col FROM public.table_name", "database": <pg_db>, "limit": -1}` → `{results: [row dicts], count: int}`
@@ -2134,7 +2137,7 @@ async def list_tools():
         Tool(
             name="create_tap",
             description=(
-                "Create a tap — a Python script that fetches data from an external source and pushes it into a pipeline. Provide a plain-English instruction to have AI generate the script, or supply your own script directly. "
+                "Create a tap — a fetcher that pulls data from an external source and pushes it into a pipeline. Two kinds: a Python script the platform executes (default — provide a plain-English `instruction` to have AI generate the script, or supply your own `script` directly), or `kind: \"http\"` — a user-hosted HTTP endpoint (any language) that Datris POSTs the run context to on each run and which responds with the tap envelope; pass `endpoint_url` and see the tap-http-contract doc. HTTP taps run no code on the platform; AI script generation and the DATRIS_PLATFORM_* platform-data callback do NOT apply to them, so keep any tap whose fetch logic reads platform data as a Python tap. "
                 "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. Only skip target_pipeline if the user explicitly wants a fetch-only tap. "
                 "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
                 "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen. "
@@ -2176,6 +2179,15 @@ async def list_tools():
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Extra pip packages the script imports that aren't pre-installed. Required when `script` imports non-stdlib modules beyond the pre-installed set (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, google-cloud-storage, azure-storage-blob, openpyxl, pyyaml, python-dateutil, pytz). Pass the PyPI package names as a list of strings. When `instruction` is used instead of `script`, the AI populates this automatically — if you pass it anyway, your value wins."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["python", "http"],
+                        "description": "Tap implementation kind. 'python' (default): a script the platform executes. 'http': a user-hosted endpoint speaking the tap HTTP contract — requires `endpoint_url`; `instruction`, `script`, and `packages` do not apply and are rejected."
+                    },
+                    "endpoint_url": {
+                        "type": "string",
+                        "description": "For kind 'http' only: absolute http(s) URL Datris POSTs {tap, params, state, testLimit} to on each run. The endpoint responds with the tap envelope {type, data, state?, logs?}. If the tap's secret has an `endpoint_token` field, it is sent as an Authorization: Bearer header — no other secret fields are ever forwarded."
                     },
                 },
                 "required": ["name"]
@@ -2434,6 +2446,10 @@ async def list_tools():
                     "description": {
                         "type": "string",
                         "description": "New plain-English description"
+                    },
+                    "endpoint_url": {
+                        "type": "string",
+                        "description": "For HTTP taps only: new endpoint URL Datris POSTs the run context to. Rejected on Python taps."
                     },
                 },
                 "required": ["name"]
@@ -3186,6 +3202,64 @@ def _dispatch(name: str, args: dict) -> str:
         secret_name = args.get("secret_name")
         tap_type = args.get("tap_type", "structured")
         caller_packages = args.get("packages")
+        kind = args.get("kind")
+        endpoint_url = args.get("endpoint_url")
+
+        # HTTP taps: user-hosted endpoint, no code on the platform. The whole
+        # script lane (AI generation included) does not apply.
+        if endpoint_url and kind != "http":
+            return json.dumps({"error": "endpoint_url is only valid with kind 'http'."})
+        if kind == "http":
+            if instruction:
+                return json.dumps({"error": (
+                    "AI script generation does not apply to HTTP taps — the tap's code is a "
+                    "service you host, in any language. Drop `instruction` and pass `endpoint_url`, "
+                    "or omit `kind` to create an AI-generated Python tap instead."
+                )})
+            if script or caller_packages:
+                return json.dumps({"error": (
+                    "HTTP taps run no code on the platform, so `script` and `packages` do not apply. "
+                    "Pass `endpoint_url` only, or omit `kind` to create a Python tap."
+                )})
+            if not endpoint_url:
+                return json.dumps({"error": "endpoint_url is required for kind 'http'."})
+            tap_config = {
+                "name": tap_name,
+                "enabled": True,
+                "tapType": tap_type,
+                "scriptKind": "http",
+                "endpointUrl": endpoint_url,
+            }
+            if target_pipeline:
+                tap_config["targetPipeline"] = target_pipeline
+            if cron_expression:
+                tap_config["cronExpression"] = cron_expression
+            if secret_name:
+                tap_config["secretName"] = secret_name
+            save_result = _call("post", "/api/v1/tap", json=tap_config)
+            try:
+                saved = json.loads(save_result)
+                if "error" in saved:
+                    return save_result
+                return json.dumps({"message": f"HTTP tap '{tap_name}' created successfully", "tap": saved})
+            except (json.JSONDecodeError, TypeError):
+                return json.dumps({"message": f"HTTP tap '{tap_name}' created"})
+
+        # Regenerating over an existing HTTP tap with `instruction` would silently
+        # convert it to a Python tap — refuse; converting is an explicit `script`
+        # (or UI) act, and codegen never applies to HTTP taps.
+        if instruction and not script:
+            try:
+                existing = json.loads(_call("get", f"/api/v1/tap?name={tap_name}"))
+                if isinstance(existing, dict) and (existing.get("scriptKind") or "").lower() == "http":
+                    return json.dumps({"error": (
+                        f"Tap '{tap_name}' is an HTTP tap (a user-hosted endpoint) — AI script "
+                        "generation and the other codegen actions do not apply to it. Update its "
+                        "endpoint_url via update_tap, or supply an explicit `script` to convert "
+                        "it to a Python tap."
+                    )})
+            except (json.JSONDecodeError, TypeError):
+                pass  # tap doesn't exist yet — normal create path
 
         script_path = None
         script_storage = None
@@ -3297,6 +3371,8 @@ def _dispatch(name: str, args: dict) -> str:
                         "name": t.get("name"),
                         "description": t.get("description"),
                         "tapType": t.get("tapType") or "structured",
+                        "kind": "http" if (t.get("scriptKind") or "").lower() == "http" else "python",
+                        "endpointUrl": t.get("endpointUrl"),
                         "targetPipeline": t.get("targetPipeline"),
                         "cronExpression": t.get("cronExpression"),
                         "enabled": t.get("enabled"),
@@ -3440,6 +3516,13 @@ def _dispatch(name: str, args: dict) -> str:
             tap_config["targetPipeline"] = args["target_pipeline"]
         if "description" in args:
             tap_config["description"] = args["description"]
+        if "endpoint_url" in args and args["endpoint_url"]:
+            if (tap_config.get("scriptKind") or "").lower() != "http":
+                return json.dumps({"error": (
+                    f"Tap '{args['name']}' is a Python tap — endpoint_url only applies to HTTP taps "
+                    "(scriptKind 'http'). To change the script, call create_tap with the same name."
+                )})
+            tap_config["endpointUrl"] = args["endpoint_url"]
 
         # Remove the script content field (GET /tap adds it but POST /tap doesn't expect it)
         tap_config.pop("script", None)

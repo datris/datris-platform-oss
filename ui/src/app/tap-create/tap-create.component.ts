@@ -72,6 +72,11 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   storingUserScript = false;
   useMyCodeSuccess = '';
 
+  // HTTP taps: the tap is a user-hosted endpoint speaking the tap HTTP
+  // contract — no script on the platform, no AI actions, no packages.
+  scriptKind = '';
+  endpointUrl = '';
+
   // Step 3 — Edit & Test
   testing = false;
   testRecords: any = null;
@@ -205,6 +210,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     return !this.auth.userAuthEnabled || this.auth.current()?.role === 'admin';
   }
 
+  get isHttpTap(): boolean {
+    return this.scriptKind === 'http';
+  }
+
   ngOnInit(): void {
     const name = this.route.snapshot.paramMap.get('name');
     // Pre-fill the catalog field when the user entered Create from a specific
@@ -239,6 +248,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.scriptStorage = tap.scriptStorage || '';
           this.scriptRepoPath = tap.scriptRepoPath || '';
           this.scriptCommitSha = tap.scriptCommitSha || '';
+          this.scriptKind = tap.scriptKind || '';
+          this.endpointUrl = tap.endpointUrl || '';
           if (this.scriptStorage === 'github') {
             this.checkDrift();
           }
@@ -355,7 +366,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.error = '';
     if (this.step === 1) {
       if (!this.tapName.trim()) { this.error = 'Tap name is required'; return; }
-      if (this.bringYourOwnCode) {
+      if (this.isHttpTap) {
+        if (!this.endpointUrl.trim()) { this.error = 'Endpoint URL is required'; return; }
+        if (!/^https?:\/\//i.test(this.endpointUrl.trim())) { this.error = 'Endpoint URL must start with http:// or https://'; return; }
+      } else if (this.bringYourOwnCode) {
         if (!this.userScript.trim()) { this.error = 'Paste your Python script first'; return; }
         if (!this.script) { this.error = 'Click Use My Code to upload the script before continuing'; return; }
       } else {
@@ -434,17 +448,30 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.generateScript();
   }
 
-  selectMode(mode: 'structured' | 'document' | 'custom'): void {
+  selectMode(mode: 'structured' | 'document' | 'custom' | 'http'): void {
     if (mode === 'custom') {
       this.bringYourOwnCode = true;
+      this.scriptKind = '';
       // Leave tapType as-is so the backend still knows whether this tap feeds a
       // structured pipeline or a document one. Default to structured when nothing
       // meaningful has been set yet.
       if (this.tapType !== 'structured' && this.tapType !== 'document') {
         this.tapType = 'structured';
       }
+    } else if (mode === 'http') {
+      this.bringYourOwnCode = false;
+      this.scriptKind = 'http';
+      this.userScript = '';
+      this.useMyCodeSuccess = '';
+      this.script = '';
+      this.packages = [];
+      if (this.tapType !== 'structured' && this.tapType !== 'document') {
+        this.tapType = 'structured';
+      }
     } else {
       this.bringYourOwnCode = false;
+      this.scriptKind = '';
+      this.endpointUrl = '';
       this.tapType = mode;
       this.userScript = '';
       this.useMyCodeSuccess = '';
@@ -545,16 +572,24 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.testRecords = [];
     this.testRecordCount = 0;
 
-    const config: any = {
-      name: this.tapName.trim(),
-      description: this.description,
-      scriptPath: this.scriptPath,
-      scriptStorage: this.scriptStorage || null,
-      scriptRepoPath: this.scriptRepoPath || null,
-      scriptCommitSha: this.scriptCommitSha || null,
-      packages: this.packages.length > 0 ? this.packages : null,
-      secretName: this.secretName || null
-    };
+    const config: any = this.isHttpTap
+      ? {
+          name: this.tapName.trim(),
+          description: this.description,
+          scriptKind: 'http',
+          endpointUrl: this.endpointUrl.trim(),
+          secretName: this.secretName || null
+        }
+      : {
+          name: this.tapName.trim(),
+          description: this.description,
+          scriptPath: this.scriptPath,
+          scriptStorage: this.scriptStorage || null,
+          scriptRepoPath: this.scriptRepoPath || null,
+          scriptCommitSha: this.scriptCommitSha || null,
+          packages: this.packages.length > 0 ? this.packages : null,
+          secretName: this.secretName || null
+        };
     if (this.limitTestSample && this.testSampleLimit > 0) {
       config.testLimit = this.testSampleLimit;
     }
@@ -611,7 +646,9 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         // Post-test flow: review first (functional signals in script output),
         // then optimize (perf). If the reviewer rewrites the script we re-test
         // and stop — correctness-from-output beats speed.
-        const succeeded = !failed;
+        // HTTP taps have no platform-side script — the AI review/optimize
+        // chain (which rewrites the script) does not apply.
+        const succeeded = !failed && !this.isHttpTap;
         if (succeeded && this.reviewAttempts < TapCreateComponent.MAX_REVIEW_ATTEMPTS) {
           this.reviewAttempts++;
           this.reviewScript(lastDurationMs);
@@ -1119,24 +1156,40 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.error = '';
 
     const writeTapConfig = (scriptPathToUse: string) => {
-      const config: any = {
-        name: this.tapName.trim(),
-        description: this.description,
-        scriptPath: scriptPathToUse,
-        scriptStorage: this.scriptStorage || null,
-        scriptRepoPath: this.scriptRepoPath || null,
-        scriptCommitSha: this.scriptCommitSha || null,
-        packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
-        secretName: this.secretName || null,
-        targetPipeline: this.targetPipeline || null,
-        cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
-        enabled: this.enabled,
-        tapType: this.tapType,
-        lastTestRunDataType: this.testDataType || null,
-        lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
-        lastTestRunRecordCount: this.testRecordCount || 0,
-        catalog: this.catalog || null
-      };
+      const config: any = this.isHttpTap
+        ? {
+            name: this.tapName.trim(),
+            description: this.description,
+            scriptKind: 'http',
+            endpointUrl: this.endpointUrl.trim(),
+            secretName: this.secretName || null,
+            targetPipeline: this.targetPipeline || null,
+            cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
+            enabled: this.enabled,
+            tapType: this.tapType,
+            lastTestRunDataType: this.testDataType || null,
+            lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
+            lastTestRunRecordCount: this.testRecordCount || 0,
+            catalog: this.catalog || null
+          }
+        : {
+            name: this.tapName.trim(),
+            description: this.description,
+            scriptPath: scriptPathToUse,
+            scriptStorage: this.scriptStorage || null,
+            scriptRepoPath: this.scriptRepoPath || null,
+            scriptCommitSha: this.scriptCommitSha || null,
+            packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
+            secretName: this.secretName || null,
+            targetPipeline: this.targetPipeline || null,
+            cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
+            enabled: this.enabled,
+            tapType: this.tapType,
+            lastTestRunDataType: this.testDataType || null,
+            lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
+            lastTestRunRecordCount: this.testRecordCount || 0,
+            catalog: this.catalog || null
+          };
 
       this.tapService.createOrUpdateTap(config).subscribe({
         next: () => {
@@ -1163,7 +1216,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     // browser memory until something pushes them. Without this, save can
     // commit a scriptPath whose file in MinIO doesn't match what the user
     // sees (or doesn't exist at all, after a regression auto-revert).
-    if (this.script && this.script.trim()) {
+    if (!this.isHttpTap && this.script && this.script.trim()) {
       this.tapService.storeScript(this.tapName.trim(), this.script, this.scriptPath, this.storageParam(), this.scriptCommitSha).subscribe({
         next: (result) => {
           this.applyStoredScript(result);

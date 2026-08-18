@@ -36,6 +36,21 @@ Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DO
 
 **I Have My Own Code** produces either Structured or Document output depending on what the pasted `fetch()` returns — the shape rules in [Data Types](#data-types) are what determine downstream routing, not the radio button. In practice pick this when you already have Python code you trust; if you change your mind and want AI help later, create a new tap.
 
+### HTTP taps: bring your own service, in any language
+
+Besides Python scripts, a tap can be an **HTTP endpoint you host** — written in Rust, Go,
+TypeScript, a serverless function, or an existing internal service. Datris POSTs the run
+context (params, sync state, test limit) to your URL on each run, and your endpoint responds
+with the same envelope a script produces. Scheduling, per-run params, incremental state, run
+history, and retries all work identically; no code runs on the platform at all, and your
+service keeps its own upstream credentials.
+
+Choose **HTTP Endpoint** in the wizard, or `--kind http --endpoint-url ...` in the CLI. AI
+generation, fix/review/optimize, pip packages, and the [platform-data
+callback](#querying-datris-data) don't apply to HTTP taps — a tap that reads data already in
+Datris must stay a Python tap. Full wire spec and a worked Rust example:
+[HTTP Tap Contract](/tap-http-contract).
+
 ## Creating a Tap
 
 The Tap creation wizard walks you through 4 steps — or 5, if you link the tap to a pipeline (the optional 5th step lets you run the tap immediately and push data through the pipeline before leaving the wizard).
@@ -380,7 +395,7 @@ AI agents can manage taps via MCP:
 
 | Tool | Description |
 |---|---|
-| `create_tap` | Create a tap from a plain-English instruction (AI generates the script), a user-provided script, or config only |
+| `create_tap` | Create a tap from a plain-English instruction (AI generates the script), a user-provided script, config only, or `kind: "http"` + `endpoint_url` for a [user-hosted HTTP endpoint](/tap-http-contract) |
 | `create_tap_secret` | Create a tap secret the agent can then reference via `secret_name` on `create_tap`. Fails on name collision unless `overwrite=true`. Reserved AI-slot names are blocked. Agents can only overwrite secrets tagged `_type=tap` — human-owned secrets are refused. |
 | `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be deleted by an agent; human-owned secrets must be removed from Configuration → Secrets in the UI. |
 | `list_tap_secrets` | List the names of existing tap secrets (tagged `_type=tap`). Call before `create_tap_secret` to reuse a suitable existing secret instead of asking the user for credentials again. |
@@ -415,6 +430,9 @@ datris tap create "Fetch weather data from Open-Meteo API" --pipeline weather --
 
 # Create a tap with your own script
 datris tap create --script ./my_script.py --name my-tap --pipeline weather
+
+# Create an HTTP tap — a service you host speaks the tap contract (see HTTP Tap Contract doc)
+datris tap create --name my-tap --kind http --endpoint-url https://taps.example.com/my-tap --pipeline weather
 
 # Create a tap config only (add script later)
 datris tap create --name my-tap --pipeline weather
