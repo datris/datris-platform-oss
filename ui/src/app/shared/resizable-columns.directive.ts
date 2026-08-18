@@ -1,5 +1,12 @@
 import { AfterViewInit, Directive, ElementRef, Input, OnDestroy } from '@angular/core';
 
+/** True while a column-resize drag is in progress anywhere on the page.
+ *  List components use this to skip their periodic reload — a re-render
+ *  mid-drag replaces the very elements being dragged. */
+export function isColumnDragActive(): boolean {
+  return document.body.dataset['datrisColDrag'] === 'true';
+}
+
 /**
  * Makes a table's columns drag-resizable:
  *
@@ -117,9 +124,11 @@ export class ResizableColumnsDirective implements AfterViewInit, OnDestroy {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
+      delete document.body.dataset['datrisColDrag'];
       this.save();
     };
     document.body.style.cursor = 'col-resize';
+    document.body.dataset['datrisColDrag'] = 'true';
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }

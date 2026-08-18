@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, ViewChildren, ElementRef, QueryList, Input, HostListener } from '@angular/core';
 import { Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
+import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { PipelineStatusService } from '../pipeline-status.service';
 import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
@@ -58,9 +59,10 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     this.loadPipelines();
     this.loadTaps();
     this.refreshInterval = setInterval(() => {
-      // Pause auto-refresh while the user is editing a row name so the input
-      // doesn't get destroyed mid-edit when the table re-renders.
-      if (this.editingName) return;
+      // Pause auto-refresh during any row-level interaction a re-render would
+      // destroy: an inline name edit, an open move-to-catalog menu, or an
+      // in-flight column-resize drag.
+      if (this.editingName || this.moveMenuOpen || isColumnDragActive()) return;
       this.loadPipelines();
       this.loadTaps();
     }, 5000);
