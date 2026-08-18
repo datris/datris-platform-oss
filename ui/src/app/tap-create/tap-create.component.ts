@@ -66,8 +66,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   driftScript = '';
   driftHeadSha = '';
 
-  // BYO: user pastes their own Python script instead of having the LLM generate one.
-  bringYourOwnCode = false;
+  // BYO: user pastes their own Python script instead of having the LLM generate
+  // one. The wizard now offers only two kinds — own code or HTTP endpoint — so
+  // BYO is the default; AI generation lives in the Assistant/MCP flows.
+  bringYourOwnCode = true;
   userScript = '';
   storingUserScript = false;
   useMyCodeSuccess = '';
@@ -250,6 +252,15 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.scriptCommitSha = tap.scriptCommitSha || '';
           this.scriptKind = tap.scriptKind || '';
           this.endpointUrl = tap.endpointUrl || '';
+          // Map the loaded tap onto the two remaining kind options: HTTP taps
+          // select HTTP Endpoint; every script tap (including legacy AI-generated
+          // ones) selects I Have My Own Code. Mirror the script into the BYO
+          // textarea so the step-1 "uploaded copy matches" gate passes without a
+          // pointless re-upload.
+          this.bringYourOwnCode = !this.isHttpTap;
+          if (this.bringYourOwnCode) {
+            this.userScript = this.script;
+          }
           if (this.scriptStorage === 'github') {
             this.checkDrift();
           }
@@ -606,6 +617,12 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           : (this.testRecords.length > 0 ? Object.keys(this.testRecords[0]) : []);
         this.aiExplanation = result.aiExplanation || '';
         this.testing = false;
+        // The kind selector no longer asks structured-vs-document — infer it
+        // from what the tap actually returned, so document-specific pipeline
+        // validation and the vector-store attach flow still engage.
+        if (!this.testError && this.testRecordCount > 0 && this.testDataType) {
+          this.tapType = this.testDataType === 'document' ? 'document' : 'structured';
+        }
         const lastDurationMs = result.durationMs || 0;
         if (this.testRecordCount > 0 && !this.testError) {
           this.scriptDirty = false;

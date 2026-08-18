@@ -88,28 +88,8 @@
       </div>
 
       <div class="form-group">
-        <label class="form-label">Tap Type</label>
+        <label class="form-label">Tap Kind</label>
         <div class="tap-type-toggle">
-          <label class="tap-type-option" [class.selected]="tapType === 'structured' && !bringYourOwnCode && !isHttpTap">
-            <input type="radio" name="tapMode"
-                   [checked]="tapType === 'structured' && !bringYourOwnCode && !isHttpTap"
-                   (change)="selectMode('structured')"
-                   [disabled]="isEditMode">
-            <div class="tap-type-label">
-              <span class="tap-type-name">Structured/Semi-Structured</span>
-              <span class="tap-type-hint">Records that flow into a structured pipeline destination.</span>
-            </div>
-          </label>
-          <label class="tap-type-option" [class.selected]="tapType === 'document' && !bringYourOwnCode && !isHttpTap">
-            <input type="radio" name="tapMode"
-                   [checked]="tapType === 'document' && !bringYourOwnCode && !isHttpTap"
-                   (change)="selectMode('document')"
-                   [disabled]="isEditMode">
-            <div class="tap-type-label">
-              <span class="tap-type-name">Document Ingestion</span>
-              <span class="tap-type-hint">Discover and stage files for a vector-store pipeline. Uses a ledger so each file is processed once.</span>
-            </div>
-          </label>
           <label class="tap-type-option" [class.selected]="bringYourOwnCode">
             <input type="radio" name="tapMode"
                    [checked]="bringYourOwnCode"

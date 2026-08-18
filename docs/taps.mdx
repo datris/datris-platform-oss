@@ -18,13 +18,12 @@ team can review and edit tap code with normal git tooling. See
 
 ## Tap Types
 
-Every tap is one of three types. Choose the type when you create the tap; it can't be changed later because the target pipeline shape differs.
+The wizard offers two ways to implement a tap:
 
-- **Structured/Semi-Structured** — the script returns records that flow into a structured pipeline destination.
-- **Document Ingestion** — the script returns `{uri, filename, content}` dicts for each file; the pipeline handles text extraction, chunking, and embedding.
-- **I Have My Own Code** — skip the AI and paste your own Python `fetch()` script directly. The script still runs through the same test / auto-fix / post-run review / auto-optimize flow and can use any of the pre-installed packages or bring its own.
+- **I Have My Own Code** — paste your own Python `fetch()` script directly. The script runs through the same test / auto-fix / post-run review / auto-optimize flow and can use any of the pre-installed packages or bring its own. (AI-generated scripts are still available through the Assistant and MCP `create_tap` with an `instruction`.)
+- **HTTP Endpoint** — you host the tap as an HTTP service, in any language; no code runs on the platform. See [HTTP taps](#http-taps-bring-your-own-service-in-any-language) below.
 
-Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DOCX, HTML, etc.) and you want retrieval over its text. Pick Structured for everything else AI-generated. Pick **I Have My Own Code** when you already have a working Python script you want to schedule and feed a pipeline with.
+Whichever you pick, the tap's **output shape** — structured records vs. documents — is determined by what it returns, not by a setting. A tap that returns `{uri, filename, content}` dicts is a document tap (files staged for a vector-store pipeline, deduplicated via a ledger); anything else is structured. The wizard detects the shape from your test run and applies the matching pipeline rules.
 
 | | Structured/Semi-Structured | Document |
 |---|---|---|
@@ -33,8 +32,6 @@ Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DO
 | **What the pipeline does** | Validates schema, applies data-quality/transformation rules, writes records | Extracts text from each document, chunks it, embeds it, upserts vectors |
 | **Deduplication** | Pipeline-level (truncate-before-write, upserts) | Per-document **ledger** — each `uri` + content-hash is processed once. See [Document Taps](#document-taps) |
 | **Chunking / embedding** | N/A | Configured on the **pipeline**, not the tap |
-
-**I Have My Own Code** produces either Structured or Document output depending on what the pasted `fetch()` returns — the shape rules in [Data Types](#data-types) are what determine downstream routing, not the radio button. In practice pick this when you already have Python code you trust; if you change your mind and want AI help later, create a new tap.
 
 ### HTTP taps: bring your own service, in any language
 
