@@ -6,14 +6,19 @@ import { AfterViewInit, Directive, ElementRef, Input, OnDestroy } from '@angular
  *   <table appResizableColumns="taps-embed">
  *
  * Every header cell except the last (which absorbs leftover space) gets an
- * invisible grip on its right edge; dragging it sets explicit pixel widths,
- * switching the table to fixed layout on first use. Widths persist per table
- * key in localStorage, so a layout survives reloads and applies to every
- * table sharing the key (e.g. the taps table in each catalog card).
+ * invisible grip on its right edge. Dragging moves the shared edge between a
+ * column and its right neighbor (zero-sum, so fixed layout honors both widths
+ * exactly). Widths are written to the table's <col> elements when a colgroup
+ * exists — in fixed layout <col> widths outrank header-cell widths — and to
+ * the th elements otherwise. Widths persist per table key in localStorage, so
+ * a layout survives reloads and applies to every table sharing the key (e.g.
+ * the taps table in each catalog card).
  */
 @Directive({ selector: 'table[appResizableColumns]' })
 export class ResizableColumnsDirective implements AfterViewInit, OnDestroy {
   @Input('appResizableColumns') tableKey = '';
+
+  private static readonly MinColPx = 60;
 
   private cleanups: Array<() => void> = [];
 
@@ -38,6 +43,17 @@ export class ResizableColumnsDirective implements AfterViewInit, OnDestroy {
     return row ? Array.from(row.cells) : [];
   }
 
+  /** The elements whose `width` style actually controls column sizing: the
+   *  colgroup's <col>s when present (they outrank th widths in fixed layout),
+   *  the header cells otherwise. */
+  private widthTargets(): HTMLElement[] {
+    const cols = Array.from(
+      this.el.nativeElement.querySelectorAll(':scope > colgroup > col')
+    ) as HTMLElement[];
+    const cells = this.headerCells();
+    return cols.length === cells.length ? cols : cells;
+  }
+
   private init(): void {
     const cells = this.headerCells();
     if (cells.length === 0) { return; }
@@ -50,7 +66,7 @@ export class ResizableColumnsDirective implements AfterViewInit, OnDestroy {
         'position:absolute;top:0;right:-4px;width:8px;height:100%;cursor:col-resize;user-select:none;z-index:2;';
       const onEnter = () => { grip.style.background = 'rgba(0, 229, 160, 0.35)'; };
       const onLeave = () => { grip.style.background = 'transparent'; };
-      const onDown = (e: MouseEvent) => this.startDrag(e, th);
+      const onDown = (e: MouseEvent) => this.startDrag(e, i);
       grip.addEventListener('mouseenter', onEnter);
       grip.addEventListener('mouseleave', onLeave);
       grip.addEventListener('mousedown', onDown);
@@ -64,38 +80,38 @@ export class ResizableColumnsDirective implements AfterViewInit, OnDestroy {
   }
 
   /** Before the first drag the browser owns the layout; pin every column at
-   *  its current width so only the dragged one moves. */
+   *  its currently rendered width so only the dragged edge moves. */
   private freezeWidths(): void {
     const table = this.el.nativeElement;
-    if (table.style.tableLayout === 'fixed') { return; }
-    this.headerCells().forEach(th => {
-      th.style.width = th.getBoundingClientRect().width + 'px';
+    if (table.dataset['colwidthsFrozen'] === 'true') { return; }
+    const targets = this.widthTargets();
+    const cells = this.headerCells();
+    cells.forEach((th, i) => {
+      targets[i].style.width = th.getBoundingClientRect().width + 'px';
     });
     table.style.tableLayout = 'fixed';
     table.style.width = '100%';
+    table.dataset['colwidthsFrozen'] = 'true';
   }
 
-  private static readonly MinColPx = 60;
-
-  private startDrag(e: MouseEvent, th: HTMLTableCellElement): void {
+  private startDrag(e: MouseEvent, index: number): void {
     e.preventDefault();
     e.stopPropagation();
     this.freezeWidths();
-    // Zero-sum resize against the next column: with every column pinned and
-    // the table at fixed layout / 100% width, growing one column alone just
-    // makes the browser rescale everything back — visually a no-op. Moving
-    // the shared edge (this column grows, its right neighbor shrinks) keeps
-    // the total constant, so the browser honors both widths exactly.
-    const neighbor = th.nextElementSibling as HTMLTableCellElement | null;
-    if (!neighbor) { return; }
+    const cells = this.headerCells();
+    const targets = this.widthTargets();
+    if (index + 1 >= cells.length) { return; }
+    // Zero-sum resize against the next column: the dragged column grows, its
+    // right neighbor shrinks, and the total stays constant — otherwise a
+    // 100%-wide fixed table rescales every column and the drag is a no-op.
     const startX = e.clientX;
-    const startWidth = th.getBoundingClientRect().width;
-    const neighborStart = neighbor.getBoundingClientRect().width;
+    const startWidth = cells[index].getBoundingClientRect().width;
+    const neighborStart = cells[index + 1].getBoundingClientRect().width;
     const min = ResizableColumnsDirective.MinColPx;
     const onMove = (ev: MouseEvent) => {
       const dx = Math.max(min - startWidth, Math.min(neighborStart - min, ev.clientX - startX));
-      th.style.width = (startWidth + dx) + 'px';
-      neighbor.style.width = (neighborStart - dx) + 'px';
+      targets[index].style.width = (startWidth + dx) + 'px';
+      targets[index + 1].style.width = (neighborStart - dx) + 'px';
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
@@ -123,12 +139,14 @@ export class ResizableColumnsDirective implements AfterViewInit, OnDestroy {
       // A column-count mismatch means the table changed shape since the save;
       // stale widths would land on the wrong columns, so start fresh.
       if (!Array.isArray(widths) || widths.length !== cells.length) { return; }
-      cells.forEach((th, i) => {
-        if (typeof widths[i] === 'number' && widths[i] > 0) { th.style.width = widths[i] + 'px'; }
+      const targets = this.widthTargets();
+      widths.forEach((w, i) => {
+        if (typeof w === 'number' && w > 0) { targets[i].style.width = w + 'px'; }
       });
       const table = this.el.nativeElement;
       table.style.tableLayout = 'fixed';
       table.style.width = '100%';
+      table.dataset['colwidthsFrozen'] = 'true';
     } catch { /* ignore unreadable stored state */ }
   }
 }
