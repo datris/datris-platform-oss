@@ -42,7 +42,7 @@
     <!-- Catalog-embedded view: unified 7-column row so Taps and Pipelines
          tables visually align inside a catalog card. Same colgroup as the
          taps embedded table; shared typography lives in styles.css. -->
-    <table *ngIf="group.expanded && isEmbedded" class="embed-table">
+    <table *ngIf="group.expanded && isEmbedded" class="embed-table" appResizableColumns="pipelines-embed">
       <colgroup>
         <col style="width: 14%">
         <col style="width: 22%">
@@ -130,7 +130,7 @@
     </table>
 
     <!-- Standalone /pipelines view (currently unreached; route redirects to /catalog) -->
-    <table *ngIf="group.expanded && !isEmbedded">
+    <table *ngIf="group.expanded && !isEmbedded" appResizableColumns="pipelines">
       <thead>
         <tr>
           <th>Name</th>
