@@ -237,10 +237,11 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(result.error.toLowerCase.contains("chunk"))
     }
 
-    test("connection refused produces a failed run, not an exception") {
+    test("connection refused produces a failed run with the container-localhost hint") {
         // Port 1 on localhost is essentially guaranteed closed.
         val result = TapScriptRunner.run(httpTap(url = "http://127.0.0.1:1/tap"))
         assert(result.error != null)
+        assert(result.error.contains("host.docker.internal"))
     }
 
     test("oversized response aborts with the output-cap message") {

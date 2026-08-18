@@ -149,6 +149,12 @@ The same shape ports directly to Go (`net/http` + `encoding/json`), Node/TypeScr
 - **UI**: Catalog → Create Tap → choose **HTTP Endpoint**, paste the URL, optionally attach a
   secret whose `endpoint_token` your service checks. Test Script POSTs to your endpoint with
   `testLimit` set and previews the response without persisting.
+
+<Note>
+The request comes from **inside the Datris container**. For an endpoint running on the same
+machine as Docker, use `http://host.docker.internal:<port>/...` — `localhost` would point at
+the container itself and the connection will be refused.
+</Note>
 - **CLI**: `datris tap create --name my-tap --kind http --endpoint-url https://taps.example.com/my-tap --pipeline my-pipeline --cron "0 0 6 * * ?"`
 - **MCP**: `create_tap` with `kind: "http"` and `endpoint_url`.
 

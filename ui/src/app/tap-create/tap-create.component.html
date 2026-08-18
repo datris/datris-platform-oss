@@ -128,7 +128,8 @@
         <label class="form-label">Endpoint URL</label>
         <input class="form-input" [(ngModel)]="endpointUrl" placeholder="https://taps.example.com/my-tap">
         <p class="form-hint">Datris POSTs <code>{{'{'}}"tap", "params", "state", "testLimit"{{'}'}}</code> to this URL on every run and expects the tap envelope back
-          (<code>{{'{'}}"type", "data", "state?", "logs?"{{'}'}}</code>). See the <a href="https://docs.datris.ai/tap-http-contract" target="_blank" rel="noopener">tap HTTP contract</a>.</p>
+          (<code>{{'{'}}"type", "data", "state?", "logs?"{{'}'}}</code>). See the <a href="https://docs.datris.ai/tap-http-contract" target="_blank" rel="noopener">tap HTTP contract</a>.
+          The call is made from inside the Datris container — for a service running on your own machine, use <code>http://host.docker.internal:&lt;port&gt;/...</code>, not <code>localhost</code>.</p>
       </div>
 
       <div class="form-group" *ngIf="repoConfigured && !isEditMode && !isHttpTap">

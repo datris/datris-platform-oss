@@ -507,7 +507,22 @@ object TapScriptRunner {
                                 "the next run continue. " + ContractPointer
                         )
                     case e: java.net.ConnectException =>
-                        throw new DatrisException("Could not connect to tap endpoint " + tapConfig.endpointUrl + ": " + e.getMessage)
+                        // ConnectException frequently carries a null message; and the
+                        // most common cause on a fresh setup is "localhost" meaning
+                        // the datris container rather than the user's machine.
+                        val host =
+                            try java.net.URI.create(tapConfig.endpointUrl).getHost
+                            catch { case _: Exception => null }
+                        val localhostHint =
+                            if (host == "localhost" || host == "127.0.0.1")
+                                " Note: Datris runs inside a container, where localhost is the container itself — " +
+                                    "if your endpoint runs on the machine hosting Docker, use " +
+                                    "http://host.docker.internal:<port>/... instead."
+                            else ""
+                        val reason = Option(e.getMessage).getOrElse("connection refused")
+                        throw new DatrisException(
+                            "Could not connect to tap endpoint " + tapConfig.endpointUrl + ": " + reason + "." + localhostHint
+                        )
                 }
 
             // Response bodies are untrusted input: stream up to the same output cap
@@ -618,7 +633,8 @@ object TapScriptRunner {
                 TapScriptResult(null, 0, masked)
             case e: Exception =>
                 logger.error("TapScriptRunner (HTTP tap) failed", e)
-                TapScriptResult(null, 0, maskSecrets("Tap endpoint request failed: " + e.getMessage, tokenForMasking))
+                val reason = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                TapScriptResult(null, 0, maskSecrets("Tap endpoint request failed: " + reason, tokenForMasking))
         }
     }
 
