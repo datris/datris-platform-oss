@@ -864,13 +864,16 @@ class TapAPIController {
             // actions don't apply to them.
             val needsExplanation = (result.error != null || result.recordCount == 0 || logsHaveIssues) && !tapConfig.isHttp
             if (needsExplanation) {
+                // Read via TapCodeStore so repo-backed taps (scriptStorage == "github",
+                // empty scriptPath) resolve too — a direct MinIO read throws
+                // "object name must be a non-empty string" for those and the
+                // diagnosis would run against an empty script.
                 val script =
                     try {
-                        val env = DatrisEnvironment.current.environment
-                        ObjectStoreUtil.readBucketObject(env + "-config", tapConfig.scriptPath).getOrElse("")
+                        TapCodeStore.forTap(tapConfig).readScript(tapConfig).getOrElse("")
                     } catch {
                         case e: Exception =>
-                            logger.warn("Failed to read tap script '" + tapConfig.scriptPath + "' for AI run explanation", e)
+                            logger.warn("Failed to read tap script for AI run explanation (tap: " + tapConfig.name + ")", e)
                             ""
                     }
                 val aiExplanation = TapRunDiagnoser.explain(tapConfig.description, script, result)
