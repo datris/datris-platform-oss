@@ -92,7 +92,7 @@ Leave it at `https://api.github.com` for github.com.
 |---|---|
 | Save a script (wizard, Assistant, or API) | A commit on the configured branch; the tap pins to that commit |
 | Run a tap (manual or cron) | Nothing — the pinned commit is read from a local cache |
-| Edit the file directly in GitHub | Datris shows a drift banner when the tap is opened, with a **Load latest** button |
+| Edit the file directly in GitHub | Opening the tap loads the repository's latest version into the editor, with a banner explaining that runs keep the previously saved version until you test and save |
 | Save when the file changed externally | Rejected with a conflict message — pull the latest, reapply your edits, save again |
 | Delete the tap | A delete commit removes the file from the branch head; **git history is preserved** |
 

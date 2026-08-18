@@ -142,7 +142,19 @@ class CodeRepoAPIController {
                     result.addProperty("found", false)
                     result.addProperty("drifted", false)
                 case Some((content, headSha)) =>
-                    val drifted = tap.scriptCommitSha == null || tap.scriptCommitSha != headSha
+                    // Drift means THIS tap's script changed, not that the branch
+                    // moved: comparing the pin against the branch-head sha flags
+                    // every repo-backed tap as drifted whenever ANY other file in
+                    // the repo gets a commit (each tap save moves the shared head).
+                    // Compare the file's content at head with the pinned commit's
+                    // content instead; an unreadable pin counts as drifted so the
+                    // user still gets a runnable copy.
+                    val pinnedContent: Option[String] =
+                        if (tap.scriptCommitSha == null || tap.scriptCommitSha.isEmpty) None
+                        else
+                            try GithubCodeStore.readScript(tap)
+                            catch { case _: Exception => None }
+                    val drifted = !pinnedContent.contains(content)
                     result.addProperty("found", true)
                     result.addProperty("drifted", drifted)
                     result.addProperty("headCommitSha", headSha)
