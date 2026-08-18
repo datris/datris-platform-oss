@@ -75,14 +75,27 @@ export class ResizableColumnsDirective implements AfterViewInit, OnDestroy {
     table.style.width = '100%';
   }
 
+  private static readonly MinColPx = 60;
+
   private startDrag(e: MouseEvent, th: HTMLTableCellElement): void {
     e.preventDefault();
     e.stopPropagation();
     this.freezeWidths();
+    // Zero-sum resize against the next column: with every column pinned and
+    // the table at fixed layout / 100% width, growing one column alone just
+    // makes the browser rescale everything back — visually a no-op. Moving
+    // the shared edge (this column grows, its right neighbor shrinks) keeps
+    // the total constant, so the browser honors both widths exactly.
+    const neighbor = th.nextElementSibling as HTMLTableCellElement | null;
+    if (!neighbor) { return; }
     const startX = e.clientX;
     const startWidth = th.getBoundingClientRect().width;
+    const neighborStart = neighbor.getBoundingClientRect().width;
+    const min = ResizableColumnsDirective.MinColPx;
     const onMove = (ev: MouseEvent) => {
-      th.style.width = Math.max(60, startWidth + (ev.clientX - startX)) + 'px';
+      const dx = Math.max(min - startWidth, Math.min(neighborStart - min, ev.clientX - startX));
+      th.style.width = (startWidth + dx) + 'px';
+      neighbor.style.width = (neighborStart - dx) + 'px';
     };
     const onUp = () => {
       document.removeEventListener('mousemove', onMove);
