@@ -405,14 +405,6 @@
         </button>
       </div>
 
-      <div class="testing-indicator" *ngIf="optimizing && !testing">
-        <div class="spinner"></div>
-        <span>Test passed — asking AI to optimize the script for performance...</span>
-        <button class="indicator-stop-btn" (click)="stopActive()" title="Skip optimization">
-          <span class="material-icons">stop</span>
-        </button>
-      </div>
-
       <div class="test-logs" *ngIf="testLogs">
         <div class="logs-header">Script Output</div>
         <pre class="logs-content">{{ testLogs }}</pre>
@@ -464,25 +456,6 @@
             <li *ngFor="let change of reviewChanges">{{ change }}</li>
           </ul>
         </div>
-      </div>
-
-      <div class="diagnosis-applied optimize-banner" *ngIf="optimizeChanges.length > 0 && !optimizing && !testing">
-        <span class="material-icons">bolt</span>
-        <div class="optimize-banner-body">
-          <div class="optimize-banner-title">
-            Auto-optimized: {{ formatMs(optimizeBeforeMs()) }} → {{ formatMs(optimizeDurationMs) }}
-            <span *ngIf="optimizeSpeedup() > 1.05">({{ optimizeSpeedup() | number:'1.1-1' }}×)</span>
-          </div>
-          <ul class="optimize-changes-list">
-            <li *ngFor="let change of optimizeChanges">{{ change }}</li>
-          </ul>
-          <a class="optimize-revert-link" (click)="revertOptimization()">Revert to original</a>
-        </div>
-      </div>
-
-      <div class="diagnosis-applied optimize-banner regression" *ngIf="optimizeRegressionReverted && !optimizing && !testing">
-        <span class="material-icons">undo</span>
-        <span>Optimization regressed timing — reverted to the original script.</span>
       </div>
 
       <div class="error-box" *ngIf="testError">{{ testError }}</div>

@@ -644,50 +644,14 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.applyDiagnosis();
           return;
         }
-        // Regression check: if this test was triggered by an auto-optimize, the
-        // previous passing snapshot is stored. If the optimized script is
-        // materially slower, auto-revert.
-        if (!failed && this.previousPassingTest &&
-            lastDurationMs > this.previousPassingTest.durationMs * TapCreateComponent.OPTIMIZE_REGRESSION_THRESHOLD) {
-          this.optimizeDurationMs = lastDurationMs;
-          this.optimizeRegressionReverted = true;
-          // Mark the just-recorded iteration as a regression so the next AI
-          // call understands "passed but reverted" and doesn't repeat the
-          // optimization that lost too much speed.
-          if (this.iterationHistory.length > 0) {
-            this.iterationHistory[this.iterationHistory.length - 1].outcome = 'regressed';
-          }
-          this.revertOptimization();
-          return;
-        }
-        // Record the optimized run's duration for the banner
-        if (!failed && this.previousPassingTest) {
-          this.optimizeDurationMs = lastDurationMs;
-        }
-        // Post-test flow: review first (functional signals in script output),
-        // then optimize (perf). If the reviewer rewrites the script we re-test
-        // and stop — correctness-from-output beats speed.
-        // HTTP taps have no platform-side script — the AI review/optimize
-        // chain (which rewrites the script) does not apply.
+        // Post-test flow: review only (functional signals in script output —
+        // rate limits, deprecations, pagination hints). The perf auto-optimize
+        // pass is intentionally disabled: a passing script is kept exactly as
+        // tested. HTTP taps have no platform-side script, so no review either.
         const succeeded = !failed && !this.isHttpTap;
         if (succeeded && this.reviewAttempts < TapCreateComponent.MAX_REVIEW_ATTEMPTS) {
           this.reviewAttempts++;
           this.reviewScript(lastDurationMs);
-        } else if (succeeded && this.optimizeAttempts < TapCreateComponent.MAX_AUTO_OPTIMIZE_ATTEMPTS &&
-            !this.optimizingSkipped && !this.previousPassingTest) {
-          this.previousPassingTest = {
-            script: this.script,
-            scriptPath: this.scriptPath,
-            packages: [...this.packages],
-            testRecords: this.testRecords,
-            testRecordCount: this.testRecordCount,
-            testLogs: this.testLogs,
-            testDataType: this.testDataType,
-            testColumns: [...this.testColumns],
-            durationMs: lastDurationMs
-          };
-          this.optimizeAttempts++;
-          this.optimizeScript(lastDurationMs);
         }
       },
       error: (err) => {
@@ -776,23 +740,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         const changes: string[] = result?.changes || [];
         this.reviewing = false;
         if (!rewritten || newScript === this.script) {
-          // Output was clean — hand off to the perf optimizer.
-          if (this.optimizeAttempts < TapCreateComponent.MAX_AUTO_OPTIMIZE_ATTEMPTS &&
-              !this.optimizingSkipped && !this.previousPassingTest) {
-            this.previousPassingTest = {
-              script: this.script,
-              scriptPath: this.scriptPath,
-              packages: [...this.packages],
-              testRecords: this.testRecords,
-              testRecordCount: this.testRecordCount,
-              testLogs: this.testLogs,
-              testDataType: this.testDataType,
-              testColumns: [...this.testColumns],
-              durationMs: previousDurationMs
-            };
-            this.optimizeAttempts++;
-            this.optimizeScript(previousDurationMs);
-          }
+          // Output was clean — done. The perf auto-optimize pass is
+          // intentionally disabled; the tested script stands as-is.
           return;
         }
         // Reviewer regenerated the script based on output signals. Swap it

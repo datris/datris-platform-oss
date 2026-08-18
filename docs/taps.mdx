@@ -20,7 +20,7 @@ team can review and edit tap code with normal git tooling. See
 
 The wizard offers two ways to implement a tap:
 
-- **I Have My Own Code** — paste your own Python `fetch()` script directly. The script runs through the same test / auto-fix / post-run review / auto-optimize flow and can use any of the pre-installed packages or bring its own. (AI-generated scripts are still available through the Assistant and MCP `create_tap` with an `instruction`.)
+- **I Have My Own Code** — paste your own Python `fetch()` script directly. The script runs through the same test / auto-fix / post-run review flow and can use any of the pre-installed packages or bring its own. (AI-generated scripts are still available through the Assistant and MCP `create_tap` with an `instruction`.)
 - **HTTP Endpoint** — you host the tap as an HTTP service, in any language; no code runs on the platform. See [HTTP taps](#http-taps-bring-your-own-service-in-any-language) below.
 
 Whichever you pick, the tap's **output shape** — structured records vs. documents — is determined by what it returns, not by a setting. A tap that returns `{uri, filename, content}` dicts is a document tap (files staged for a vector-store pipeline, deduplicated via a ledger); anything else is structured. The wizard detects the shape from your test run and applies the matching pipeline rules.
@@ -118,18 +118,9 @@ When a test passes, the platform first sends the working script and its captured
 - **Pagination / partial-response hints** ("truncated", "page 1 of 5", "next_cursor=…") — add pagination so the tap keeps fetching until the source says no more
 - **Schema-drift / auth warnings** — update parsing for renamed fields; for auth errors, add a clear stderr note naming the suspect env var
 
-If the reviewer finds a signal, it regenerates the script with the fix applied, the UI swaps it in, and the test auto-reruns. An amber banner then lists what the reviewer changed (e.g. *Added 0.25s sleep between API calls — source reported burst pattern*). **When the reviewer rewrites the script, the perf optimizer below is skipped** — correctness-from-output outranks speed on that pass. If the reviewer finds nothing worth changing, the flow falls through to the auto-optimizer.
+If the reviewer finds a signal, it regenerates the script with the fix applied, the UI swaps it in, and the test auto-reruns. An amber banner then lists what the reviewer changed (e.g. *Added 0.25s sleep between API calls — source reported burst pattern*). A passing script is otherwise kept exactly as tested — there is no automatic performance rewrite.
 
 This review step runs once per successful test, so the reviewer won't loop on its own output. If you edit the script yourself and click Test again, the reviewer gets a fresh look at the new output.
-
-#### Auto-optimize after a successful test
-
-If the post-run review left the script unchanged, the platform sends the working script back to the LLM with the measured duration and record count, asks it to restructure for performance, and re-tests the rewrite:
-
-- One pass per successful test. The optimizer is instructed to preserve `fetch()`, `DATRIS_TAP_TEST_LIMIT` handling, error handling, and Vault env-var reads — it only changes *how* the script fetches, not *what*
-- If the optimized re-test runs ≥20% slower than the original, or fails, the platform **auto-reverts** to the original script with no user action
-- On success, an amber banner shows `"Auto-optimized: 12.4s → 1.1s (11.3×)"` with a list of the changes the AI made (e.g. *Parallelized ticker fetches with ThreadPoolExecutor(10)*, *Removed per-item sleep*) and a **Revert to original** link
-- If you revert or edit the script, the auto-optimize pass won't rerun until you click Generate again
 
 The test must return records successfully before you can proceed to step 3.
 
