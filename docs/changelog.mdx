@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.18.0" description="August 18, 2026">
+  **Build taps in any language — HTTP taps.**
+
+  - **HTTP taps.** A tap can now be a service you host — Rust, Go, TypeScript, a serverless function, or an existing internal system. Datris calls your endpoint on every run and everything else works exactly like a Python tap: schedules, per-run params, incremental sync state, run history, retries. Your service keeps its own upstream credentials, and no tap code runs on the platform. Wire contract and a complete Rust example: [HTTP Tap Contract](/tap-http-contract). Create one from the wizard, the CLI, or an agent over MCP.
+  - **A more focused tap wizard.** Two choices: paste your own Python script, or point at an HTTP endpoint. AI generation stays available through the Assistant and connected agents. Structured vs. document output is detected automatically from the test run, and a passing script is kept exactly as tested — the automatic performance-rewrite pass is gone.
+  - **GitHub-stored taps open at the latest code.** The editor loads the newest repo version on open (runs keep the previously saved version until you test and save). False "script was changed" warnings caused by unrelated repository commits are fixed, and the AI test diagnosis now works for repository-stored scripts.
+  - **Catalog quality of life.** Drag-resizable columns on the taps and pipelines tables (layout remembered), and background refresh no longer interrupts column resizing, move-to-catalog menus, or delete confirmations.
+  - Standard upgrade: `docker compose pull && docker compose up -d` — everything is additive; existing taps and schedules work unchanged.
+</Update>
+
 <Update label="v1.17.0" description="August 17, 2026">
   **New AI provider: Grok (xAI).**
 

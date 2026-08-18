@@ -1,23 +1,33 @@
 # Release Notes
 
+## v1.18.0 — August 18, 2026
+
+**Build taps in any language — HTTP taps.**
+
+A tap can now be a service **you** host — written in Rust, Go, TypeScript, a serverless function, or an existing internal system. Datris calls your endpoint on every run (manual, scheduled, or test) and everything else works exactly like a Python tap: schedules, per-run parameters, incremental sync state, run history, and automatic retries. Your service keeps its own upstream credentials — at most a single optional token is ever sent to it — and no tap code runs on the Datris platform at all.
+
+Create one by choosing **HTTP Endpoint** in the tap wizard, with the CLI, or by asking an agent over MCP. The wire contract, an incremental-sync pattern, and a complete Rust example are documented at [docs.datris.ai/tap-http-contract](https://docs.datris.ai/tap-http-contract). Test-run errors also got smarter about the most common first-contact mistakes when pointing Datris at a new endpoint.
+
+**A more focused tap wizard.**
+
+Creating a tap in the UI is now a two-way choice: paste your own Python script, or point at an HTTP endpoint you host. AI-generated scripts remain fully available through the Assistant and connected agents. The wizard detects structured vs. document output automatically from your test run, and a passing script is kept exactly as you tested it — the automatic performance-rewrite pass after a successful test has been removed.
+
+**GitHub-stored taps: the editor always opens the latest code.**
+
+Opening a repository-backed tap now loads the newest version of its script from the repo, with a notice explaining that runs keep the previously saved version until you test and save. Two long-standing annoyances are fixed: taps no longer show a false "script was changed" warning whenever an unrelated file in the repository was updated, and the AI test diagnosis now works for repository-stored scripts.
+
+**Catalog quality of life.**
+
+Columns in the taps and pipelines tables can be drag-resized, and your layout is remembered. Background refresh no longer interrupts what you're doing — resizing a column, choosing a catalog to move an item into, or confirming a delete all hold steady until you're done.
+
+**Upgrading**
+
+Standard upgrade: `docker compose pull && docker compose up -d`. Everything is additive — existing taps, schedules, and scripts work unchanged.
+
+---
+
 ## v1.17.0 — August 17, 2026
 
 **New AI provider: Grok (xAI).**
 
-Grok joins Anthropic Claude and OpenAI as a third model family for chat and CodeGen — the Assistant, tap script generation, AI data quality rules, transformations, and natural-language → SQL can all run on Grok. One API key from console.x.ai covers both slots; pick **Grok (xAI)** in Configuration → AI Providers and choose a model (Grok 4.6 recommended, with Grok Code Fast 1 available for CodeGen). Mix and match freely — for example Claude for chat with Grok for CodeGen, or the reverse.
-
-xAI has no embeddings API, so semantic-search embeddings stay on OpenAI, Azure, or the bundled local model — a Grok-only setup works out of the box with the bundled embedder.
-
-Fresh installs can choose Grok at install time: the installer now prompts for an xAI key alongside Anthropic and OpenAI, and `.env` seeding supports Grok as a first-boot provider.
-
-**Upgrading**
-
-Standard upgrade: `docker compose pull && docker compose up -d`. Nothing to reconfigure — to try Grok, enter your xAI API key in Configuration → AI Providers and switch a section's provider to Grok (xAI).
-
----
-
-## v1.16.3 — August 14, 2026
-
-**Assistant fix: taps that read data already in Datris no longer ask for database credentials.**
-
-See the [full v1.16.3 notes](release-notes/v1.16.3.md) for details.
+See the [full v1.17.0 notes](release-notes/v1.17.0.md) for details.
