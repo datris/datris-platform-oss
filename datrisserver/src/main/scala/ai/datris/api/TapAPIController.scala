@@ -240,6 +240,68 @@ class TapAPIController {
             if (tapConfig.name == null || tapConfig.name.isEmpty)
                 throw new DatrisException("Tap name is required")
 
+            // Tap-kind validation. null/"python" is the script lane; "http" is a
+            // user-hosted endpoint speaking the tap HTTP contract. Anything else is
+            // a typo we reject rather than silently treating as a script tap.
+            val isHttpTap = tapConfig.isHttp
+            if (
+                tapConfig.scriptKind != null && tapConfig.scriptKind.nonEmpty &&
+                !isHttpTap && !tapConfig.scriptKind.equalsIgnoreCase("python")
+            )
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                    "{\"error\": \"Unknown scriptKind '" + tapConfig.scriptKind + "'. Valid values: python (default), http.\"}"
+                )
+            if (isHttpTap) {
+                val urlProblem: Option[String] =
+                    if (tapConfig.endpointUrl == null || tapConfig.endpointUrl.trim.isEmpty)
+                        Some("endpointUrl is required for HTTP taps")
+                    else
+                        try {
+                            val u = new java.net.URI(tapConfig.endpointUrl.trim)
+                            if (!u.isAbsolute || u.getHost == null) Some("endpointUrl must be an absolute http:// or https:// URL")
+                            else if (u.getScheme != "http" && u.getScheme != "https")
+                                Some("endpointUrl scheme must be http or https (got: " + u.getScheme + ")")
+                            else {
+                                // Plain http to a non-local host sends the bearer token in
+                                // the clear. Operator-configured on a self-hosted instance,
+                                // so warn rather than fail.
+                                if (u.getScheme == "http" && u.getHost != "localhost" && u.getHost != "127.0.0.1" && u.getHost != "host.docker.internal")
+                                    logger.warn("HTTP tap '" + tapConfig.name + "' uses plain http:// to a non-local host — " +
+                                        "the endpoint token (if any) is sent unencrypted: " + tapConfig.endpointUrl)
+                                None
+                            }
+                        } catch {
+                            case _: Exception => Some("endpointUrl is not a valid URL: " + tapConfig.endpointUrl)
+                        }
+                urlProblem match {
+                    case Some(p) =>
+                        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                            "{\"error\": \"" + p.replace("\"", "'") + "\"}"
+                        )
+                    case None => // valid
+                }
+                // Script-lane fields have no meaning for an HTTP tap. Reject rather
+                // than silently ignore, naming the conflict so the client can fix it.
+                val conflicting = Seq(
+                    "scriptPath" -> tapConfig.scriptPath,
+                    "scriptStorage" -> tapConfig.scriptStorage,
+                    "scriptRepoPath" -> tapConfig.scriptRepoPath,
+                    "scriptCommitSha" -> tapConfig.scriptCommitSha
+                ).collect {
+                    case (n, v) if v != null && v.nonEmpty => n
+                } ++
+                    (if (tapConfig.packages != null && !tapConfig.packages.isEmpty) Seq("packages") else Nil)
+                if (conflicting.nonEmpty)
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                        "{\"error\": \"HTTP taps run no code on the platform, so these field(s) do not apply: " +
+                            conflicting.mkString(", ") + ". Remove them, or set scriptKind to python.\"}"
+                    )
+            } else if (tapConfig.endpointUrl != null && tapConfig.endpointUrl.nonEmpty) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](
+                    "{\"error\": \"endpointUrl is only valid when scriptKind is 'http'.\"}"
+                )
+            }
+
             // Document-tap pipeline compatibility guard: document taps push raw bytes,
             // so the target pipeline must be unstructured + vector-store or the bytes
             // will crash the destination loader (e.g. PDF into MongoDBLoader).
@@ -289,15 +351,33 @@ class TapAPIController {
             val bodyHasScriptRef =
                 (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
                     (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
-            val tapConfigWithScript =
-                if (!bodyHasScriptRef && existing != null)
+            // Kind preservation, mirroring script-reference preservation below: a
+            // partial update that omits scriptKind must not silently convert an HTTP
+            // tap into a script tap with no script. Sending a script reference (or an
+            // explicit scriptKind) is the deliberate way to convert back to python.
+            val tapConfigWithKind =
+                if (
+                    (tapConfig.scriptKind == null || tapConfig.scriptKind.isEmpty) &&
+                    existing != null && existing.isHttp && !bodyHasScriptRef
+                )
                     tapConfig.copy(
+                        scriptKind = existing.scriptKind,
+                        endpointUrl =
+                            if (tapConfig.endpointUrl != null && tapConfig.endpointUrl.nonEmpty) tapConfig.endpointUrl
+                            else existing.endpointUrl
+                    )
+                else tapConfig
+            // Script-reference preservation is a script-lane concern: an HTTP tap save
+            // (including a python→http conversion) must NOT re-attach the old script.
+            val tapConfigWithScript =
+                if (!bodyHasScriptRef && existing != null && !tapConfigWithKind.isHttp)
+                    tapConfigWithKind.copy(
                         scriptStorage = existing.scriptStorage,
                         scriptPath = existing.scriptPath,
                         scriptRepoPath = existing.scriptRepoPath,
                         scriptCommitSha = existing.scriptCommitSha
                     )
-                else tapConfig
+                else tapConfigWithKind
 
             // Set timestamps and stamp the issuing key's label on first create.
             // On update we preserve the original `createdByKeyLabel` — ownership
@@ -739,11 +819,14 @@ class TapAPIController {
             logger.info("API endpoint POST /tap/test called for tap: " + tapConfig.name + (if (testLimit != null) s" (testLimit=$testLimit)" else ""))
             APIKeyValidator.validate(apiKey)
 
+            // HTTP taps have no script — a test run is just a call with testLimit set.
             val hasTestScriptRef =
                 (tapConfig.scriptPath != null && tapConfig.scriptPath.nonEmpty) ||
                     (tapConfig.scriptRepoPath != null && tapConfig.scriptRepoPath.nonEmpty)
-            if (!hasTestScriptRef)
+            if (!tapConfig.isHttp && !hasTestScriptRef)
                 throw new DatrisException("Script path is required for testing")
+            if (tapConfig.isHttp && (tapConfig.endpointUrl == null || tapConfig.endpointUrl.trim.isEmpty))
+                throw new DatrisException("endpointUrl is required for testing an HTTP tap")
 
             // Run in test mode (no push to pipeline). testLimit > 0 tells the
             // runner to inject DATRIS_TAP_TEST_LIMIT into the script env so a
@@ -776,15 +859,21 @@ class TapAPIController {
                 lower.contains("traceback") || lower.contains("deprecat") ||
                 lower.contains("warning")
             }
-            val needsExplanation = result.error != null || result.recordCount == 0 || logsHaveIssues
+            // AI diagnosis reads the tap's script — HTTP taps have none, and their
+            // code lives outside the platform, so Fix/Review/Optimize/Diagnose AI
+            // actions don't apply to them.
+            val needsExplanation = (result.error != null || result.recordCount == 0 || logsHaveIssues) && !tapConfig.isHttp
             if (needsExplanation) {
+                // Read via TapCodeStore so repo-backed taps (scriptStorage == "github",
+                // empty scriptPath) resolve too — a direct MinIO read throws
+                // "object name must be a non-empty string" for those and the
+                // diagnosis would run against an empty script.
                 val script =
                     try {
-                        val env = DatrisEnvironment.current.environment
-                        ObjectStoreUtil.readBucketObject(env + "-config", tapConfig.scriptPath).getOrElse("")
+                        TapCodeStore.forTap(tapConfig).readScript(tapConfig).getOrElse("")
                     } catch {
                         case e: Exception =>
-                            logger.warn("Failed to read tap script '" + tapConfig.scriptPath + "' for AI run explanation", e)
+                            logger.warn("Failed to read tap script for AI run explanation (tap: " + tapConfig.name + ")", e)
                             ""
                     }
                 val aiExplanation = TapRunDiagnoser.explain(tapConfig.description, script, result)

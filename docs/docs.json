@@ -44,6 +44,7 @@
             "group": "Taps",
             "pages": [
               "taps",
+              "tap-http-contract",
               "tap-prompts",
               "tap-github-storage",
               "tap-execution-isolation"

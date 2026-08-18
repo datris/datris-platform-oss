@@ -18,13 +18,12 @@ team can review and edit tap code with normal git tooling. See
 
 ## Tap Types
 
-Every tap is one of three types. Choose the type when you create the tap; it can't be changed later because the target pipeline shape differs.
+The wizard offers two ways to implement a tap:
 
-- **Structured/Semi-Structured** — the script returns records that flow into a structured pipeline destination.
-- **Document Ingestion** — the script returns `{uri, filename, content}` dicts for each file; the pipeline handles text extraction, chunking, and embedding.
-- **I Have My Own Code** — skip the AI and paste your own Python `fetch()` script directly. The script still runs through the same test / auto-fix / post-run review / auto-optimize flow and can use any of the pre-installed packages or bring its own.
+- **I Have My Own Code** — paste your own Python `fetch()` script directly. The script runs through the same test / auto-fix / post-run review flow and can use any of the pre-installed packages or bring its own. (AI-generated scripts are still available through the Assistant and MCP `create_tap` with an `instruction`.)
+- **HTTP Endpoint** — you host the tap as an HTTP service, in any language; no code runs on the platform. See [HTTP taps](#http-taps-bring-your-own-service-in-any-language) below.
 
-Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DOCX, HTML, etc.) and you want retrieval over its text. Pick Structured for everything else AI-generated. Pick **I Have My Own Code** when you already have a working Python script you want to schedule and feed a pipeline with.
+Whichever you pick, the tap's **output shape** — structured records vs. documents — is determined by what it returns, not by a setting. A tap that returns `{uri, filename, content}` dicts is a document tap (files staged for a vector-store pipeline, deduplicated via a ledger); anything else is structured. The wizard detects the shape from your test run and applies the matching pipeline rules.
 
 | | Structured/Semi-Structured | Document |
 |---|---|---|
@@ -34,7 +33,20 @@ Pick Document Ingestion when the thing you want to ingest is a **file** (PDF, DO
 | **Deduplication** | Pipeline-level (truncate-before-write, upserts) | Per-document **ledger** — each `uri` + content-hash is processed once. See [Document Taps](#document-taps) |
 | **Chunking / embedding** | N/A | Configured on the **pipeline**, not the tap |
 
-**I Have My Own Code** produces either Structured or Document output depending on what the pasted `fetch()` returns — the shape rules in [Data Types](#data-types) are what determine downstream routing, not the radio button. In practice pick this when you already have Python code you trust; if you change your mind and want AI help later, create a new tap.
+### HTTP taps: bring your own service, in any language
+
+Besides Python scripts, a tap can be an **HTTP endpoint you host** — written in Rust, Go,
+TypeScript, a serverless function, or an existing internal service. Datris POSTs the run
+context (params, sync state, test limit) to your URL on each run, and your endpoint responds
+with the same envelope a script produces. Scheduling, per-run params, incremental state, run
+history, and retries all work identically; no code runs on the platform at all, and your
+service keeps its own upstream credentials.
+
+Choose **HTTP Endpoint** in the wizard, or `--kind http --endpoint-url ...` in the CLI. AI
+generation, fix/review/optimize, pip packages, and the [platform-data
+callback](#querying-datris-data) don't apply to HTTP taps — a tap that reads data already in
+Datris must stay a Python tap. Full wire spec and a worked Rust example:
+[HTTP Tap Contract](/tap-http-contract).
 
 ## Creating a Tap
 
@@ -106,18 +118,9 @@ When a test passes, the platform first sends the working script and its captured
 - **Pagination / partial-response hints** ("truncated", "page 1 of 5", "next_cursor=…") — add pagination so the tap keeps fetching until the source says no more
 - **Schema-drift / auth warnings** — update parsing for renamed fields; for auth errors, add a clear stderr note naming the suspect env var
 
-If the reviewer finds a signal, it regenerates the script with the fix applied, the UI swaps it in, and the test auto-reruns. An amber banner then lists what the reviewer changed (e.g. *Added 0.25s sleep between API calls — source reported burst pattern*). **When the reviewer rewrites the script, the perf optimizer below is skipped** — correctness-from-output outranks speed on that pass. If the reviewer finds nothing worth changing, the flow falls through to the auto-optimizer.
+If the reviewer finds a signal, it regenerates the script with the fix applied, the UI swaps it in, and the test auto-reruns. An amber banner then lists what the reviewer changed (e.g. *Added 0.25s sleep between API calls — source reported burst pattern*). A passing script is otherwise kept exactly as tested — there is no automatic performance rewrite.
 
 This review step runs once per successful test, so the reviewer won't loop on its own output. If you edit the script yourself and click Test again, the reviewer gets a fresh look at the new output.
-
-#### Auto-optimize after a successful test
-
-If the post-run review left the script unchanged, the platform sends the working script back to the LLM with the measured duration and record count, asks it to restructure for performance, and re-tests the rewrite:
-
-- One pass per successful test. The optimizer is instructed to preserve `fetch()`, `DATRIS_TAP_TEST_LIMIT` handling, error handling, and Vault env-var reads — it only changes *how* the script fetches, not *what*
-- If the optimized re-test runs ≥20% slower than the original, or fails, the platform **auto-reverts** to the original script with no user action
-- On success, an amber banner shows `"Auto-optimized: 12.4s → 1.1s (11.3×)"` with a list of the changes the AI made (e.g. *Parallelized ticker fetches with ThreadPoolExecutor(10)*, *Removed per-item sleep*) and a **Revert to original** link
-- If you revert or edit the script, the auto-optimize pass won't rerun until you click Generate again
 
 The test must return records successfully before you can proceed to step 3.
 
@@ -380,7 +383,7 @@ AI agents can manage taps via MCP:
 
 | Tool | Description |
 |---|---|
-| `create_tap` | Create a tap from a plain-English instruction (AI generates the script), a user-provided script, or config only |
+| `create_tap` | Create a tap from a plain-English instruction (AI generates the script), a user-provided script, config only, or `kind: "http"` + `endpoint_url` for a [user-hosted HTTP endpoint](/tap-http-contract) |
 | `create_tap_secret` | Create a tap secret the agent can then reference via `secret_name` on `create_tap`. Fails on name collision unless `overwrite=true`. Reserved AI-slot names are blocked. Agents can only overwrite secrets tagged `_type=tap` — human-owned secrets are refused. |
 | `delete_tap_secret` | Delete a tap secret. Only `_type=tap` secrets can be deleted by an agent; human-owned secrets must be removed from Configuration → Secrets in the UI. |
 | `list_tap_secrets` | List the names of existing tap secrets (tagged `_type=tap`). Call before `create_tap_secret` to reuse a suitable existing secret instead of asking the user for credentials again. |
@@ -415,6 +418,9 @@ datris tap create "Fetch weather data from Open-Meteo API" --pipeline weather --
 
 # Create a tap with your own script
 datris tap create --script ./my_script.py --name my-tap --pipeline weather
+
+# Create an HTTP tap — a service you host speaks the tap contract (see HTTP Tap Contract doc)
+datris tap create --name my-tap --kind http --endpoint-url https://taps.example.com/my-tap --pipeline weather
 
 # Create a tap config only (add script later)
 datris tap create --name my-tap --pipeline weather

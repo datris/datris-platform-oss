@@ -65,12 +65,23 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   driftDetected = false;
   driftScript = '';
   driftHeadSha = '';
+  // True when the editor auto-loaded the repo head on open because it was
+  // newer than the tap's pinned commit. Informational banner only — the tap's
+  // runs keep using the pinned commit until the user saves.
+  driftAutoLoaded = false;
 
-  // BYO: user pastes their own Python script instead of having the LLM generate one.
-  bringYourOwnCode = false;
+  // BYO: user pastes their own Python script instead of having the LLM generate
+  // one. The wizard now offers only two kinds — own code or HTTP endpoint — so
+  // BYO is the default; AI generation lives in the Assistant/MCP flows.
+  bringYourOwnCode = true;
   userScript = '';
   storingUserScript = false;
   useMyCodeSuccess = '';
+
+  // HTTP taps: the tap is a user-hosted endpoint speaking the tap HTTP
+  // contract — no script on the platform, no AI actions, no packages.
+  scriptKind = '';
+  endpointUrl = '';
 
   // Step 3 — Edit & Test
   testing = false;
@@ -205,6 +216,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     return !this.auth.userAuthEnabled || this.auth.current()?.role === 'admin';
   }
 
+  get isHttpTap(): boolean {
+    return this.scriptKind === 'http';
+  }
+
   ngOnInit(): void {
     const name = this.route.snapshot.paramMap.get('name');
     // Pre-fill the catalog field when the user entered Create from a specific
@@ -239,8 +254,19 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.scriptStorage = tap.scriptStorage || '';
           this.scriptRepoPath = tap.scriptRepoPath || '';
           this.scriptCommitSha = tap.scriptCommitSha || '';
+          this.scriptKind = tap.scriptKind || '';
+          this.endpointUrl = tap.endpointUrl || '';
+          // Map the loaded tap onto the two remaining kind options: HTTP taps
+          // select HTTP Endpoint; every script tap (including legacy AI-generated
+          // ones) selects I Have My Own Code. Mirror the script into the BYO
+          // textarea so the step-1 "uploaded copy matches" gate passes without a
+          // pointless re-upload.
+          this.bringYourOwnCode = !this.isHttpTap;
+          if (this.bringYourOwnCode) {
+            this.userScript = this.script;
+          }
           if (this.scriptStorage === 'github') {
-            this.checkDrift();
+            this.checkDrift(true);
           }
         },
         error: () => { this.error = 'Failed to load tap'; }
@@ -355,7 +381,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.error = '';
     if (this.step === 1) {
       if (!this.tapName.trim()) { this.error = 'Tap name is required'; return; }
-      if (this.bringYourOwnCode) {
+      if (this.isHttpTap) {
+        if (!this.endpointUrl.trim()) { this.error = 'Endpoint URL is required'; return; }
+        if (!/^https?:\/\//i.test(this.endpointUrl.trim())) { this.error = 'Endpoint URL must start with http:// or https://'; return; }
+      } else if (this.bringYourOwnCode) {
         if (!this.userScript.trim()) { this.error = 'Paste your Python script first'; return; }
         if (!this.script) { this.error = 'Click Use My Code to upload the script before continuing'; return; }
       } else {
@@ -434,17 +463,30 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.generateScript();
   }
 
-  selectMode(mode: 'structured' | 'document' | 'custom'): void {
+  selectMode(mode: 'structured' | 'document' | 'custom' | 'http'): void {
     if (mode === 'custom') {
       this.bringYourOwnCode = true;
+      this.scriptKind = '';
       // Leave tapType as-is so the backend still knows whether this tap feeds a
       // structured pipeline or a document one. Default to structured when nothing
       // meaningful has been set yet.
       if (this.tapType !== 'structured' && this.tapType !== 'document') {
         this.tapType = 'structured';
       }
+    } else if (mode === 'http') {
+      this.bringYourOwnCode = false;
+      this.scriptKind = 'http';
+      this.userScript = '';
+      this.useMyCodeSuccess = '';
+      this.script = '';
+      this.packages = [];
+      if (this.tapType !== 'structured' && this.tapType !== 'document') {
+        this.tapType = 'structured';
+      }
     } else {
       this.bringYourOwnCode = false;
+      this.scriptKind = '';
+      this.endpointUrl = '';
       this.tapType = mode;
       this.userScript = '';
       this.useMyCodeSuccess = '';
@@ -545,17 +587,27 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.testRecords = [];
     this.testRecordCount = 0;
 
-    const config: any = {
-      name: this.tapName.trim(),
-      description: this.description,
-      scriptPath: this.scriptPath,
-      scriptStorage: this.scriptStorage || null,
-      scriptRepoPath: this.scriptRepoPath || null,
-      scriptCommitSha: this.scriptCommitSha || null,
-      packages: this.packages.length > 0 ? this.packages : null,
-      secretName: this.secretName || null
-    };
-    if (this.limitTestSample && this.testSampleLimit > 0) {
+    const config: any = this.isHttpTap
+      ? {
+          name: this.tapName.trim(),
+          description: this.description,
+          scriptKind: 'http',
+          endpointUrl: this.endpointUrl.trim(),
+          secretName: this.secretName || null
+        }
+      : {
+          name: this.tapName.trim(),
+          description: this.description,
+          scriptPath: this.scriptPath,
+          scriptStorage: this.scriptStorage || null,
+          scriptRepoPath: this.scriptRepoPath || null,
+          scriptCommitSha: this.scriptCommitSha || null,
+          packages: this.packages.length > 0 ? this.packages : null,
+          secretName: this.secretName || null
+        };
+    // HTTP taps get no sample cap: whether an endpoint honors testLimit is up
+    // to its author, so the platform doesn't promise one from the wizard.
+    if (!this.isHttpTap && this.limitTestSample && this.testSampleLimit > 0) {
       config.testLimit = this.testSampleLimit;
     }
 
@@ -571,6 +623,12 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           : (this.testRecords.length > 0 ? Object.keys(this.testRecords[0]) : []);
         this.aiExplanation = result.aiExplanation || '';
         this.testing = false;
+        // The kind selector no longer asks structured-vs-document — infer it
+        // from what the tap actually returned, so document-specific pipeline
+        // validation and the vector-store attach flow still engage.
+        if (!this.testError && this.testRecordCount > 0 && this.testDataType) {
+          this.tapType = this.testDataType === 'document' ? 'document' : 'structured';
+        }
         const lastDurationMs = result.durationMs || 0;
         if (this.testRecordCount > 0 && !this.testError) {
           this.scriptDirty = false;
@@ -588,48 +646,14 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.applyDiagnosis();
           return;
         }
-        // Regression check: if this test was triggered by an auto-optimize, the
-        // previous passing snapshot is stored. If the optimized script is
-        // materially slower, auto-revert.
-        if (!failed && this.previousPassingTest &&
-            lastDurationMs > this.previousPassingTest.durationMs * TapCreateComponent.OPTIMIZE_REGRESSION_THRESHOLD) {
-          this.optimizeDurationMs = lastDurationMs;
-          this.optimizeRegressionReverted = true;
-          // Mark the just-recorded iteration as a regression so the next AI
-          // call understands "passed but reverted" and doesn't repeat the
-          // optimization that lost too much speed.
-          if (this.iterationHistory.length > 0) {
-            this.iterationHistory[this.iterationHistory.length - 1].outcome = 'regressed';
-          }
-          this.revertOptimization();
-          return;
-        }
-        // Record the optimized run's duration for the banner
-        if (!failed && this.previousPassingTest) {
-          this.optimizeDurationMs = lastDurationMs;
-        }
-        // Post-test flow: review first (functional signals in script output),
-        // then optimize (perf). If the reviewer rewrites the script we re-test
-        // and stop — correctness-from-output beats speed.
-        const succeeded = !failed;
+        // Post-test flow: review only (functional signals in script output —
+        // rate limits, deprecations, pagination hints). The perf auto-optimize
+        // pass is intentionally disabled: a passing script is kept exactly as
+        // tested. HTTP taps have no platform-side script, so no review either.
+        const succeeded = !failed && !this.isHttpTap;
         if (succeeded && this.reviewAttempts < TapCreateComponent.MAX_REVIEW_ATTEMPTS) {
           this.reviewAttempts++;
           this.reviewScript(lastDurationMs);
-        } else if (succeeded && this.optimizeAttempts < TapCreateComponent.MAX_AUTO_OPTIMIZE_ATTEMPTS &&
-            !this.optimizingSkipped && !this.previousPassingTest) {
-          this.previousPassingTest = {
-            script: this.script,
-            scriptPath: this.scriptPath,
-            packages: [...this.packages],
-            testRecords: this.testRecords,
-            testRecordCount: this.testRecordCount,
-            testLogs: this.testLogs,
-            testDataType: this.testDataType,
-            testColumns: [...this.testColumns],
-            durationMs: lastDurationMs
-          };
-          this.optimizeAttempts++;
-          this.optimizeScript(lastDurationMs);
         }
       },
       error: (err) => {
@@ -718,23 +742,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         const changes: string[] = result?.changes || [];
         this.reviewing = false;
         if (!rewritten || newScript === this.script) {
-          // Output was clean — hand off to the perf optimizer.
-          if (this.optimizeAttempts < TapCreateComponent.MAX_AUTO_OPTIMIZE_ATTEMPTS &&
-              !this.optimizingSkipped && !this.previousPassingTest) {
-            this.previousPassingTest = {
-              script: this.script,
-              scriptPath: this.scriptPath,
-              packages: [...this.packages],
-              testRecords: this.testRecords,
-              testRecordCount: this.testRecordCount,
-              testLogs: this.testLogs,
-              testDataType: this.testDataType,
-              testColumns: [...this.testColumns],
-              durationMs: previousDurationMs
-            };
-            this.optimizeAttempts++;
-            this.optimizeScript(previousDurationMs);
-          }
+          // Output was clean — done. The perf auto-optimize pass is
+          // intentionally disabled; the tested script stands as-is.
           return;
         }
         // Reviewer regenerated the script based on output signals. Swap it
@@ -1119,24 +1128,40 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.error = '';
 
     const writeTapConfig = (scriptPathToUse: string) => {
-      const config: any = {
-        name: this.tapName.trim(),
-        description: this.description,
-        scriptPath: scriptPathToUse,
-        scriptStorage: this.scriptStorage || null,
-        scriptRepoPath: this.scriptRepoPath || null,
-        scriptCommitSha: this.scriptCommitSha || null,
-        packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
-        secretName: this.secretName || null,
-        targetPipeline: this.targetPipeline || null,
-        cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
-        enabled: this.enabled,
-        tapType: this.tapType,
-        lastTestRunDataType: this.testDataType || null,
-        lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
-        lastTestRunRecordCount: this.testRecordCount || 0,
-        catalog: this.catalog || null
-      };
+      const config: any = this.isHttpTap
+        ? {
+            name: this.tapName.trim(),
+            description: this.description,
+            scriptKind: 'http',
+            endpointUrl: this.endpointUrl.trim(),
+            secretName: this.secretName || null,
+            targetPipeline: this.targetPipeline || null,
+            cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
+            enabled: this.enabled,
+            tapType: this.tapType,
+            lastTestRunDataType: this.testDataType || null,
+            lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
+            lastTestRunRecordCount: this.testRecordCount || 0,
+            catalog: this.catalog || null
+          }
+        : {
+            name: this.tapName.trim(),
+            description: this.description,
+            scriptPath: scriptPathToUse,
+            scriptStorage: this.scriptStorage || null,
+            scriptRepoPath: this.scriptRepoPath || null,
+            scriptCommitSha: this.scriptCommitSha || null,
+            packages: this.packages.filter(p => p.trim()).length > 0 ? this.packages.filter(p => p.trim()) : null,
+            secretName: this.secretName || null,
+            targetPipeline: this.targetPipeline || null,
+            cronExpression: this.useSchedule && this.cronExpression ? this.cronExpression : null,
+            enabled: this.enabled,
+            tapType: this.tapType,
+            lastTestRunDataType: this.testDataType || null,
+            lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
+            lastTestRunRecordCount: this.testRecordCount || 0,
+            catalog: this.catalog || null
+          };
 
       this.tapService.createOrUpdateTap(config).subscribe({
         next: () => {
@@ -1163,7 +1188,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     // browser memory until something pushes them. Without this, save can
     // commit a scriptPath whose file in MinIO doesn't match what the user
     // sees (or doesn't exist at all, after a regression auto-revert).
-    if (this.script && this.script.trim()) {
+    if (!this.isHttpTap && this.script && this.script.trim()) {
       this.tapService.storeScript(this.tapName.trim(), this.script, this.scriptPath, this.storageParam(), this.scriptCommitSha).subscribe({
         next: (result) => {
           this.applyStoredScript(result);
@@ -1204,15 +1229,27 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   }
 
   /** Repo-backed taps: compare the branch head against the pinned commit and
-   *  raise the drift banner when someone committed the script externally. */
-  checkDrift(): void {
+   *  surface external commits. With autoLoad (the on-open path), the repo's
+   *  latest version is loaded into the editor straight away — opening a stale
+   *  pinned copy just sends the user through a Load-latest → 409-on-save
+   *  detour; the tap's runs keep the pinned commit until save. Without
+   *  autoLoad (manual re-check, save-conflict handling) the banner offers
+   *  Load latest instead, because the editor may hold unsaved edits that an
+   *  automatic swap would destroy. */
+  checkDrift(autoLoad: boolean = false): void {
     if (!this.tapName.trim()) { return; }
     this.codeRepoService.pullScript(this.tapName.trim()).subscribe({
       next: (result) => {
         if (result && result.drifted && result.script) {
-          this.driftDetected = true;
           this.driftScript = result.script;
           this.driftHeadSha = result.headCommitSha || '';
+          if (autoLoad) {
+            this.loadDriftedScript();
+            this.driftAutoLoaded = true;
+          } else {
+            this.driftDetected = true;
+            this.driftAutoLoaded = false;
+          }
         } else {
           this.driftDetected = false;
         }
@@ -1224,8 +1261,11 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   /** Replace the editor content with the repo's latest version and advance the
    *  local pin so the next save commits on top of it. */
   loadDriftedScript(): void {
-    if (!this.driftDetected) { return; }
+    if (!this.driftScript) { return; }
     this.script = this.driftScript;
+    // Keep the BYO paste box in lockstep — the step-1 "uploaded copy matches"
+    // gate compares the two.
+    this.userScript = this.driftScript;
     this.scriptCommitSha = this.driftHeadSha;
     this.scriptDirty = true;
     this.driftDetected = false;

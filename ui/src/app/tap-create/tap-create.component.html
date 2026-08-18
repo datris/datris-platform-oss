@@ -19,13 +19,24 @@
     </div>
   </div>
 
+  <div class="drift-banner" *ngIf="driftAutoLoaded">
+    <span class="material-icons">cloud_sync</span>
+    <div>
+      <div class="banner-title">Loaded the latest script from {{ repoName }}{{ driftHeadSha ? ' (' + driftHeadSha.substring(0, 9) + ')' : '' }}.</div>
+      <div class="banner-body">
+        It changed in the repository since this tap was last saved. Scheduled and manual runs keep using the
+        previously saved version until you test and save — that pins the tap to this latest commit.
+      </div>
+    </div>
+  </div>
+
   <div class="drift-banner" *ngIf="driftDetected">
     <span class="material-icons">cloud_sync</span>
     <div>
       <div class="banner-title">This script was changed in {{ repoName }} since the tap was last saved.</div>
       <div class="banner-body">
         The repository's {{ driftHeadSha ? '(' + driftHeadSha.substring(0, 9) + ')' : '' }} version differs from the
-        commit this tap is pinned to. Load it to review and save, or keep editing your local version.
+        copy you're editing. Load it to review and save — this replaces your unsaved edits — or keep editing your local version.
       </div>
     </div>
     <button class="secondary-btn" (click)="loadDriftedScript()">Load latest</button>
@@ -53,7 +64,7 @@
     <div class="nav-buttons nav-buttons-top">
       <button class="secondary-btn" *ngIf="step > 1 && step < 5" (click)="prevStep()" [disabled]="isBusy()">Back</button>
       <div class="spacer"></div>
-      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 1 && bringYourOwnCode && (!script || script !== userScript)) || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
+      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 1 && bringYourOwnCode && (!script || script !== userScript)) || (step === 1 && isHttpTap && !endpointUrl.trim()) || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
       <button class="primary-btn" *ngIf="step === 4" (click)="save()" [disabled]="saving || isBusy()">
         {{ saving ? 'Saving...' : (targetPipeline ? 'Save Tap & Continue' : 'Save Tap') }}
       </button>
@@ -68,11 +79,13 @@
 
     <!-- Step 1: Describe -->
     <div *ngIf="step === 1">
-      <h2 class="step-title" *ngIf="!bringYourOwnCode">Describe Your Data Source</h2>
+      <h2 class="step-title" *ngIf="!bringYourOwnCode && !isHttpTap">Describe Your Data Source</h2>
       <h2 class="step-title" *ngIf="bringYourOwnCode">Provide Your Tap Script</h2>
-      <p class="step-desc" *ngIf="!bringYourOwnCode && tapType !== 'document'">Give your tap a name and describe in plain English what data you want to fetch.</p>
-      <p class="step-desc" *ngIf="!bringYourOwnCode && tapType === 'document'">Give your tap a name and describe in plain English which documents you want to discover and where they live.</p>
+      <h2 class="step-title" *ngIf="isHttpTap">Point at Your HTTP Endpoint</h2>
+      <p class="step-desc" *ngIf="!bringYourOwnCode && !isHttpTap && tapType !== 'document'">Give your tap a name and describe in plain English what data you want to fetch.</p>
+      <p class="step-desc" *ngIf="!bringYourOwnCode && !isHttpTap && tapType === 'document'">Give your tap a name and describe in plain English which documents you want to discover and where they live.</p>
       <p class="step-desc" *ngIf="bringYourOwnCode">Give your tap a name and paste your Python <code>fetch()</code> script below.</p>
+      <p class="step-desc" *ngIf="isHttpTap">Give your tap a name and the URL of a service you host — in any language — that speaks the tap HTTP contract. Datris POSTs the run context to it on each run.</p>
 
       <div class="form-group">
         <label class="form-label">Tap Name</label>
@@ -86,28 +99,8 @@
       </div>
 
       <div class="form-group">
-        <label class="form-label">Tap Type</label>
+        <label class="form-label">Tap Kind</label>
         <div class="tap-type-toggle">
-          <label class="tap-type-option" [class.selected]="tapType === 'structured' && !bringYourOwnCode">
-            <input type="radio" name="tapMode"
-                   [checked]="tapType === 'structured' && !bringYourOwnCode"
-                   (change)="selectMode('structured')"
-                   [disabled]="isEditMode">
-            <div class="tap-type-label">
-              <span class="tap-type-name">Structured/Semi-Structured</span>
-              <span class="tap-type-hint">Records that flow into a structured pipeline destination.</span>
-            </div>
-          </label>
-          <label class="tap-type-option" [class.selected]="tapType === 'document' && !bringYourOwnCode">
-            <input type="radio" name="tapMode"
-                   [checked]="tapType === 'document' && !bringYourOwnCode"
-                   (change)="selectMode('document')"
-                   [disabled]="isEditMode">
-            <div class="tap-type-label">
-              <span class="tap-type-name">Document Ingestion</span>
-              <span class="tap-type-hint">Discover and stage files for a vector-store pipeline. Uses a ledger so each file is processed once.</span>
-            </div>
-          </label>
           <label class="tap-type-option" [class.selected]="bringYourOwnCode">
             <input type="radio" name="tapMode"
                    [checked]="bringYourOwnCode"
@@ -118,10 +111,28 @@
               <span class="tap-type-hint">Skip AI generation and paste your own Python <code>fetch()</code> script.</span>
             </div>
           </label>
+          <label class="tap-type-option" [class.selected]="isHttpTap">
+            <input type="radio" name="tapMode"
+                   [checked]="isHttpTap"
+                   (change)="selectMode('http')"
+                   [disabled]="isEditMode">
+            <div class="tap-type-label">
+              <span class="tap-type-name">HTTP Endpoint</span>
+              <span class="tap-type-hint">You host the tap as an HTTP service, in any language. No code runs on the platform.</span>
+            </div>
+          </label>
         </div>
       </div>
 
-      <div class="form-group" *ngIf="repoConfigured && !isEditMode">
+      <div class="form-group" *ngIf="isHttpTap">
+        <label class="form-label">Endpoint URL</label>
+        <input class="form-input" [(ngModel)]="endpointUrl" placeholder="https://taps.example.com/my-tap">
+        <p class="form-hint">Datris POSTs <code>{{'{'}}"tap", "params", "state", "testLimit"{{'}'}}</code> to this URL on every run and expects the tap envelope back
+          (<code>{{'{'}}"type", "data", "state?", "logs?"{{'}'}}</code>). See the <a href="https://docs.datris.ai/tap-http-contract" target="_blank" rel="noopener">tap HTTP contract</a>.
+          The call is made from inside the Datris container — for a service running on your own machine, use <code>http://host.docker.internal:&lt;port&gt;/...</code>, not <code>localhost</code>.</p>
+      </div>
+
+      <div class="form-group" *ngIf="repoConfigured && !isEditMode && !isHttpTap">
         <label class="form-label">Script Storage</label>
         <select class="form-select" [(ngModel)]="storageChoice">
           <option value="github">GitHub repository ({{ repoName }}) — default</option>
@@ -144,7 +155,7 @@
         </div>
       </div>
 
-      <div class="form-group" *ngIf="!bringYourOwnCode">
+      <div class="form-group" *ngIf="!bringYourOwnCode && !isHttpTap">
         <label class="form-label">
           <span class="material-icons brainstorm-icon">auto_awesome</span>
           Brainstorm with AI (Optional)
@@ -179,10 +190,16 @@
         </div>
       </div>
 
-      <div class="form-group" *ngIf="!bringYourOwnCode">
+      <div class="form-group" *ngIf="!bringYourOwnCode && !isHttpTap">
         <label class="form-label">Instruction</label>
         <textarea class="form-textarea" [(ngModel)]="description" rows="5"
                   [placeholder]="tapType === 'document' ? 'e.g., Discover and download all PDF and DOCX files in the S3 bucket \'legal-contracts\' under the 2026/ prefix' : 'e.g., Fetch current weather data for New York from the Open-Meteo API, including temperature, humidity, and wind speed'"></textarea>
+      </div>
+
+      <div class="form-group" *ngIf="isHttpTap">
+        <label class="form-label">Description (optional)</label>
+        <textarea class="form-textarea" [(ngModel)]="description" rows="3"
+                  placeholder="What this endpoint fetches, for the catalog and your teammates"></textarea>
       </div>
 
       <div class="form-group" *ngIf="suggestedEnvVars.length > 0">
@@ -201,7 +218,8 @@
       <!-- Credentials -->
       <div class="form-group">
         <label class="form-label">Credentials (optional)</label>
-        <p class="form-hint">Select an existing tap secret, edit one, or create a new one. Secret keys are available as environment variables in your script.</p>
+        <p class="form-hint" *ngIf="!isHttpTap">Select an existing tap secret, edit one, or create a new one. Secret keys are available as environment variables in your script.</p>
+        <p class="form-hint" *ngIf="isHttpTap">Only the secret's <code>endpoint_token</code> field is sent to your endpoint, as an <code>Authorization: Bearer</code> header. No other fields are ever forwarded — your service holds its own upstream credentials.</p>
         <div class="secret-select-row">
           <select class="form-select" [ngModel]="secretName || ''" (ngModelChange)="onSecretChange($event)">
             <option value="">None</option>
@@ -267,7 +285,7 @@
         </ng-container>
       </div>
 
-      <button *ngIf="!bringYourOwnCode" class="generate-btn" (click)="generateScript()" [disabled]="generating || !description.trim()">
+      <button *ngIf="!bringYourOwnCode && !isHttpTap" class="generate-btn" (click)="generateScript()" [disabled]="generating || !description.trim()">
         <span class="material-icons">{{ generating ? 'hourglass_empty' : 'auto_awesome' }}</span>
         {{ generating ? 'Generating...' : script ? 'Regenerate Script' : 'Generate Script' }}
       </button>
@@ -280,14 +298,14 @@
         </button>
       </div>
 
-      <div class="code-preview script-preview" *ngIf="script && !bringYourOwnCode">
+      <div class="code-preview script-preview" *ngIf="script && !bringYourOwnCode && !isHttpTap">
         <button class="copy-script-btn" (click)="copyScript()" [title]="scriptCopied ? 'Copied!' : 'Copy script to clipboard'">
           <span class="material-icons">{{ scriptCopied ? 'check' : 'content_copy' }}</span>
         </button>
         <pre>{{ script }}</pre>
       </div>
 
-      <div class="packages-info" *ngIf="packages.length > 0 && !bringYourOwnCode">
+      <div class="packages-info" *ngIf="packages.length > 0 && !bringYourOwnCode && !isHttpTap">
         <span class="packages-label">Required packages:</span>
         <span class="package-chip" *ngFor="let pkg of packages">{{ pkg }}</span>
       </div>
@@ -295,15 +313,22 @@
 
     <!-- Step 2: Edit & Test -->
     <div *ngIf="step === 2">
-      <h2 class="step-title">Edit & Test</h2>
+      <h2 class="step-title" *ngIf="!isHttpTap">Edit & Test</h2>
+      <h2 class="step-title" *ngIf="isHttpTap">Test Your Endpoint</h2>
       <p class="step-desc" *ngIf="scriptStorage === 'github'">
         Stored in {{ repoName }} at {{ scriptRepoPath }}<span *ngIf="scriptCommitSha"> ({{ scriptCommitSha.substring(0, 9) }})</span>
         — <a href="javascript:void(0)" (click)="checkDrift()">check for external edits</a>
       </p>
-      <p class="step-desc" *ngIf="!bringYourOwnCode">Review and edit the generated script, manage packages, then test it.</p>
+      <p class="step-desc" *ngIf="!bringYourOwnCode && !isHttpTap">Review and edit the generated script, manage packages, then test it.</p>
       <p class="step-desc" *ngIf="bringYourOwnCode">Review and edit your script, manage packages, then test it.</p>
+      <p class="step-desc" *ngIf="isHttpTap">A test run POSTs the run context to your endpoint and previews what comes back — nothing is persisted.</p>
 
-      <div class="form-group" *ngIf="!bringYourOwnCode">
+      <div class="form-group" *ngIf="isHttpTap">
+        <label class="form-label">Endpoint URL</label>
+        <input class="form-input" [(ngModel)]="endpointUrl" placeholder="https://taps.example.com/my-tap">
+      </div>
+
+      <div class="form-group" *ngIf="!bringYourOwnCode && !isHttpTap">
         <label class="form-label">Instruction</label>
         <div class="instruction-row">
           <textarea class="form-textarea" [(ngModel)]="description" rows="5"></textarea>
@@ -314,7 +339,7 @@
         </div>
       </div>
 
-      <div class="form-group">
+      <div class="form-group" *ngIf="!isHttpTap">
         <div class="script-label-row">
           <label class="form-label">Python Script</label>
           <button class="copy-script-btn" (click)="copyScript()" [title]="scriptCopied ? 'Copied!' : 'Copy script to clipboard'">
@@ -325,7 +350,7 @@
         <textarea class="form-textarea code-editor" [(ngModel)]="script" rows="16"></textarea>
       </div>
 
-      <div class="form-group">
+      <div class="form-group" *ngIf="!isHttpTap">
         <label class="form-label">Extra Pip Packages</label>
         <div class="packages-list">
           <div class="package-row" *ngFor="let pkg of packages; let i = index; trackBy: trackByIndex">
@@ -341,7 +366,7 @@
         AI diagnosis has been applied to the script. Run the test again to verify the fix.
       </div>
 
-      <label class="checkbox-row test-sample-toggle" *ngIf="!testing">
+      <label class="checkbox-row test-sample-toggle" *ngIf="!testing && !isHttpTap">
         <input type="checkbox" [(ngModel)]="limitTestSample">
         <span>
           Limit test sample to
@@ -353,12 +378,13 @@
       <button class="test-btn" (click)="runTest()" [disabled]="testing"
               *ngIf="!testing && !applyingDiagnosis && !optimizing && !reviewing">
         <span class="material-icons">science</span>
-        Test Script
+        {{ isHttpTap ? 'Test Endpoint' : 'Test Script' }}
       </button>
 
       <div class="testing-indicator" *ngIf="testing">
         <div class="spinner"></div>
-        <span *ngIf="autoFixAttempts === 0">Running script — this may take a few minutes for large data fetches...</span>
+        <span *ngIf="autoFixAttempts === 0 && !isHttpTap">Running script — this may take a few minutes for large data fetches...</span>
+        <span *ngIf="autoFixAttempts === 0 && isHttpTap">Calling your endpoint — this may take a few minutes for large data fetches...</span>
         <span *ngIf="autoFixAttempts > 0">Re-running after auto-applied AI fix (attempt {{ autoFixAttempts }} of 3)...</span>
         <button class="indicator-stop-btn" (click)="stopActive()" title="Stop test">
           <span class="material-icons">stop</span>
@@ -377,14 +403,6 @@
         <div class="spinner"></div>
         <span>Test passed — reviewing script output for signals the script should change...</span>
         <button class="indicator-stop-btn" (click)="stopActive()" title="Skip review">
-          <span class="material-icons">stop</span>
-        </button>
-      </div>
-
-      <div class="testing-indicator" *ngIf="optimizing && !testing">
-        <div class="spinner"></div>
-        <span>Test passed — asking AI to optimize the script for performance...</span>
-        <button class="indicator-stop-btn" (click)="stopActive()" title="Skip optimization">
           <span class="material-icons">stop</span>
         </button>
       </div>
@@ -440,25 +458,6 @@
             <li *ngFor="let change of reviewChanges">{{ change }}</li>
           </ul>
         </div>
-      </div>
-
-      <div class="diagnosis-applied optimize-banner" *ngIf="optimizeChanges.length > 0 && !optimizing && !testing">
-        <span class="material-icons">bolt</span>
-        <div class="optimize-banner-body">
-          <div class="optimize-banner-title">
-            Auto-optimized: {{ formatMs(optimizeBeforeMs()) }} → {{ formatMs(optimizeDurationMs) }}
-            <span *ngIf="optimizeSpeedup() > 1.05">({{ optimizeSpeedup() | number:'1.1-1' }}×)</span>
-          </div>
-          <ul class="optimize-changes-list">
-            <li *ngFor="let change of optimizeChanges">{{ change }}</li>
-          </ul>
-          <a class="optimize-revert-link" (click)="revertOptimization()">Revert to original</a>
-        </div>
-      </div>
-
-      <div class="diagnosis-applied optimize-banner regression" *ngIf="optimizeRegressionReverted && !optimizing && !testing">
-        <span class="material-icons">undo</span>
-        <span>Optimization regressed timing — reverted to the original script.</span>
       </div>
 
       <div class="error-box" *ngIf="testError">{{ testError }}</div>
@@ -809,7 +808,7 @@
     <div class="nav-buttons">
       <button class="secondary-btn" *ngIf="step > 1 && step < 5" (click)="prevStep()" [disabled]="isBusy()">Back</button>
       <div class="spacer"></div>
-      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 1 && bringYourOwnCode && (!script || script !== userScript)) || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
+      <button class="primary-btn" *ngIf="step < 4" (click)="nextStep()" [disabled]="isBusy() || (step === 1 && bringYourOwnCode && (!script || script !== userScript)) || (step === 1 && isHttpTap && !endpointUrl.trim()) || (step === 2 && scriptDirty && !testPassed()) || (step === 3 && !!cronError())">Next</button>
       <button class="primary-btn" *ngIf="step === 4" (click)="save()" [disabled]="saving || isBusy()">
         {{ saving ? 'Saving...' : (targetPipeline ? 'Save Tap & Continue' : 'Save Tap') }}
       </button>

@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, HostListener } from '@angular/core';
 import { Router } from '@angular/router';
 import { Subscription } from 'rxjs';
+import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
 import { sanitizeLabel } from '../shared/sanitize';
@@ -61,7 +62,13 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.loadCatalogs();
-    this.refreshInterval = setInterval(() => this.loadCatalogs(), 10000);
+    this.refreshInterval = setInterval(() => {
+      // Pause auto-refresh during interactions a re-render would destroy: an
+      // open move-contents menu, a pending delete confirmation, or a
+      // column-resize drag in one of the embedded tables.
+      if (this.moveCatalogMenuOpen || this.deleteTarget || isColumnDragActive()) return;
+      this.loadCatalogs();
+    }, 10000);
     // The curation chat reloads the tree as soon as it moves an item, so the
     // user sees the change without waiting for the 10s tick.
     this.changedSub = this.chatState.changed$.subscribe(() => this.loadCatalogs());

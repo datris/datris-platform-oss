@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
+import { isColumnDragActive } from '../shared/resizable-columns.directive';
 
 @Component({
   selector: 'app-taps',
@@ -66,7 +67,11 @@ export class TapsComponent implements OnInit, OnDestroy {
     });
     this.loadPipelines();
     this.refreshInterval = setInterval(() => {
-      if (!this.editingName && !this.editingPipeline && !this.editingCronTap) this.loadTaps();
+      // Pause auto-refresh during any row-level interaction a re-render would
+      // destroy: inline edits, an open move-to-catalog menu, a pending delete
+      // confirmation, or an in-flight column-resize drag.
+      if (!this.editingName && !this.editingPipeline && !this.editingCronTap &&
+          !this.moveMenuOpen && !this.deleteTarget && !isColumnDragActive()) this.loadTaps();
     }, 5000);
   }
 

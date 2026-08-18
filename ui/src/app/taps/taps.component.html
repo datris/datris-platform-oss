@@ -55,7 +55,7 @@
     <!-- Catalog-embedded view: unified 7-column row so Taps and Pipelines
          tables visually align inside a catalog card. Same colgroup as the
          pipelines embedded table; shared typography lives in styles.css. -->
-    <table *ngIf="group.expanded && isEmbedded" class="embed-table">
+    <table *ngIf="group.expanded && isEmbedded" class="embed-table" appResizableColumns="taps-embed">
       <colgroup>
         <col style="width: 14%">
         <col style="width: 22%">
@@ -83,6 +83,8 @@
               <a class="embed-name-link" [title]="tap.name" [routerLink]="['/taps', tap.name, 'edit']">{{ tap.name }}</a>
               <span class="storage-badge" *ngIf="tap.scriptStorage === 'github'"
                     [title]="'Script in repository: ' + (tap.scriptRepoPath || '') + (tap.scriptCommitSha ? ' @ ' + tap.scriptCommitSha.substring(0, 9) : '')">GitHub</span>
+              <span class="storage-badge" *ngIf="tap.scriptKind === 'http'"
+                    [title]="'User-hosted HTTP endpoint: ' + (tap.endpointUrl || '')">HTTP</span>
               <button class="embed-name-edit-btn" *ngIf="auth.canWrite()" (click)="startEditName($event, tap)" title="Rename">
                 <span class="material-icons">edit</span>
               </button>
@@ -134,7 +136,7 @@
                   </button>
                 </div>
               </span>
-              <button class="embed-action-btn" *ngIf="auth.canWrite() && repoConfigured"
+              <button class="embed-action-btn" *ngIf="auth.canWrite() && repoConfigured && tap.scriptKind !== 'http'"
                       (click)="migrateStorage($event, tap)"
                       [disabled]="migratingTap === tap.name"
                       [title]="tap.scriptStorage === 'github' ? 'Move script to built-in storage' : 'Move script to GitHub'">
@@ -158,7 +160,7 @@
     </table>
 
     <!-- Standalone /taps view (currently unreached; route redirects to /catalog) -->
-    <table *ngIf="group.expanded && !isEmbedded">
+    <table *ngIf="group.expanded && !isEmbedded" appResizableColumns="taps">
       <thead>
         <tr>
           <th>Name</th>
@@ -245,7 +247,7 @@
             <button class="action-btn run-btn" (click)="runTap($event, tap.name)" title="Test run now" *ngIf="auth.canWrite()">
               <span class="material-icons">play_arrow</span>
             </button>
-            <button class="action-btn script-btn" (click)="openScriptEditor($event, tap)" title="Edit script" *ngIf="auth.canWrite()">
+            <button class="action-btn script-btn" (click)="openScriptEditor($event, tap)" title="Edit script" *ngIf="auth.canWrite() && tap.scriptKind !== 'http'">
               <span class="material-icons">terminal</span>
             </button>
             <button class="action-btn delete-btn" (click)="promptDelete($event, tap.name)" title="Delete tap"
