@@ -1,0 +1,77 @@
+# Dependabot — automated dependency-update PRs for known-vulnerable and
+# outdated dependencies. Covers every ecosystem Dependabot supports natively.
+#
+# NOT covered here: the Scala/sbt server dependencies — Dependabot has no sbt
+# support. Those are scanned in CI via Trivy (see .github/workflows/security-scan.yml,
+# the published-image scan) and, if deeper coverage is wanted, sbt-dependency-check.
+version: 2
+updates:
+  # GitHub Actions used in our workflows (keeps the SHA-pinned actions patched).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # UI (Angular) npm dependencies.
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      # One PR for the low-risk patch/minor bumps; majors stay individual so
+      # they can be reviewed on their own.
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # MCP server (Python) dependencies.
+  - package-ecosystem: "pip"
+    directory: "/mcp-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      pip-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Docker base images — one entry per Dockerfile. Keeps FROM base images
+  # (JRE, nginx, python) patched against OS-package CVEs.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/mcp-server"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+  - package-ecosystem: "docker"
+    directory: "/tap-runner"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"

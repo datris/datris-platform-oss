@@ -1,0 +1,116 @@
+name: Security Scan
+
+# Trivy-based scanning that complements Dependabot:
+#   - dependency-scan: filesystem scan of the repo — vulnerable deps in
+#     lockfiles (npm/pip), accidentally-committed secrets, and IaC misconfig
+#     (Dockerfiles / compose). Runs on every PR and push so regressions are
+#     caught before merge.
+#   - image-scan: scans the PUBLISHED datrisai/* images for OS-package and
+#     language CVEs (this is what covers the Scala/JVM + OS layers that the
+#     filesystem scan and Dependabot can't see). Runs on a weekly schedule so
+#     newly-disclosed CVEs in already-shipped images surface without a rebuild.
+#
+# Findings are report-only for now (exit-code 0) so a backlog of pre-existing
+# CVEs doesn't block every PR on day one. Flip exit-code to '1' on the
+# dependency-scan step to make new HIGH/CRITICAL findings fail the build once
+# the initial backlog is triaged. Results also upload to the Security tab.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write # upload SARIF to the code-scanning (Security) tab
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  dependency-scan:
+    name: Dependencies / secrets / misconfig
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Trivy filesystem scan (log output)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # v0.29.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true # only surface CVEs that have a fix available
+          format: table
+          exit-code: "0" # report-only; set to "1" to fail the build on findings
+
+      - name: Trivy filesystem scan (SARIF)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # v0.29.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-fs.sarif
+
+      - name: Upload filesystem SARIF
+        uses: github/codeql-action/upload-sarif@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3.37.7
+        continue-on-error: true # degrade gracefully if code scanning isn't enabled
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  image-scan:
+    name: Published image CVEs
+    # Published images don't change per PR — scan on the schedule (and on demand)
+    # to catch CVEs newly disclosed against already-shipped images.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - datris-server
+          - datris-ui
+          - datris-mcp-server
+          - datris-tap-runner
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Trivy image scan (log output)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # v0.29.0
+        with:
+          scan-type: image
+          image-ref: datrisai/${{ matrix.image }}:latest
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "0"
+
+      - name: Trivy image scan (SARIF)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # v0.29.0
+        with:
+          scan-type: image
+          image-ref: datrisai/${{ matrix.image }}:latest
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-${{ matrix.image }}.sarif
+
+      - name: Upload image SARIF
+        uses: github/codeql-action/upload-sarif@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3.37.7
+        continue-on-error: true
+        with:
+          sarif_file: trivy-${{ matrix.image }}.sarif
+          category: trivy-image-${{ matrix.image }}
