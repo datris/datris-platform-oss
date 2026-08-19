@@ -168,7 +168,8 @@ Region lives in the credentials secret rather than on the pipeline config so the
 
 Vault connection is configured via environment variables:
 - `VAULT_ADDR` - Vault server URL (e.g., `http://vault:8200`)
-- `VAULT_TOKEN` - Authentication token
+- `VAULT_TOKEN_FILE` - Path to a file holding the auth token (preferred; the bundled Compose writes a random per-install token here). Takes precedence over `VAULT_TOKEN`.
+- `VAULT_TOKEN` - Authentication token, used when `VAULT_TOKEN_FILE` is unset (local dev, custom setups)
 
 ### ActiveMQ (Queue & Notifications)
 

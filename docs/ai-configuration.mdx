@@ -299,7 +299,8 @@ The next boot re-initializes Vault and seeds from `.env`.
 To write a secret directly to Vault (note: manual Vault writes do **not** trigger hot reload — restart the server or re-save from the UI):
 
 ```bash
-docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+docker compose exec -e VAULT_ADDR=http://vault:8200 \
+  -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault \
   vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
@@ -311,7 +312,8 @@ docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token va
 Same shape for `oss/codegen` and `oss/embedding`. Verify with:
 
 ```bash
-docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+docker compose exec -e VAULT_ADDR=http://vault:8200 \
+  -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault \
   vault kv get secret/oss/ai-primary
 ```
 
@@ -426,7 +428,8 @@ To revert to defaults, click **Reset to Datris-managed**. This deletes all three
 For operators provisioning tenants programmatically:
 
 ```bash
-docker compose exec -e VAULT_ADDR=http://vault:8200 -e VAULT_TOKEN=root-token vault \
+docker compose exec -e VAULT_ADDR=http://vault:8200 \
+  -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault \
   vault kv put secret/trial-acme/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \

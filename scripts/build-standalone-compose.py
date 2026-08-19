@@ -53,6 +53,8 @@ REPLACEMENTS = [
         "      # Shares vault-data so bootstrap can read/write the init file (unseal key\n"
         "      # + root token) and unseal the same storage the vault service uses.\n"
         "      - vault-data:/vault/file\n"
+        "      # Writes the server's random token here for the datris service to read.\n"
+        "      - datris-vault-token:/vault-token\n"
         "      - ./docker/vault-bootstrap.sh:/vault-bootstrap.sh\n"
         "      - ./docker/vault-init.sh:/vault-init.sh\n",
         "    configs:\n"
@@ -63,7 +65,8 @@ REPLACEMENTS = [
         "        target: /vault-init.sh\n"
         "        mode: 0755\n"
         "    volumes:\n"
-        "      - vault-data:/vault/file\n",
+        "      - vault-data:/vault/file\n"
+        "      - datris-vault-token:/vault-token\n",
     ),
     (
         "    volumes:\n"
@@ -77,12 +80,17 @@ REPLACEMENTS = [
         # datris: inline the config override, keep the pip-cache named volume.
         "    volumes:\n"
         "      - ./docker/config:/config\n"
-        "      - pip-cache:/root/.cache/pip\n",
+        "      - pip-cache:/root/.cache/pip\n"
+        "      # Read-only: the server reads its Vault token (written by vault-init) but\n"
+        "      # can't modify it. Dedicated volume so the server never sees the Vault\n"
+        "      # root token / unseal key that live on the vault-data volume.\n"
+        "      - datris-vault-token:/vault-token:ro\n",
         "    configs:\n"
         "      - source: datris-app-yaml\n"
         "        target: /config/application.yaml\n"
         "    volumes:\n"
-        "      - pip-cache:/root/.cache/pip\n",
+        "      - pip-cache:/root/.cache/pip\n"
+        "      - datris-vault-token:/vault-token:ro\n",
     ),
 ]
 
