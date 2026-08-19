@@ -1,6 +1,12 @@
 # Dependabot — automated dependency-update PRs for known-vulnerable and
 # outdated dependencies. Covers every ecosystem Dependabot supports natively.
 #
+# Major version bumps are NOT proposed as version-update PRs (see the `ignore`
+# blocks): they are noisy and risky (whole-framework bumps like Angular, base
+# JRE/node/python) and should be done deliberately, not auto-merged. This
+# suppresses only VERSION updates — Dependabot SECURITY updates still fix
+# vulnerable deps, including a major bump when that's the only fix.
+#
 # Scala/sbt server dependencies: Dependabot has no native sbt ecosystem, so the
 # sbt dependency graph is submitted to GitHub separately (see
 # .github/workflows/scala-dependency-graph.yml). That makes Dependabot raise
@@ -8,6 +14,8 @@
 version: 2
 updates:
   # GitHub Actions used in our workflows (keeps the SHA-pinned actions patched).
+  # Grouped into one low-volume PR; action majors are allowed (they matter, e.g.
+  # runner Node bumps) and arrive in that single grouped PR.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -29,12 +37,15 @@ updates:
     labels:
       - "dependencies"
     groups:
-      # One PR for the low-risk patch/minor bumps; majors stay individual so
-      # they can be reviewed on their own.
       npm-minor-patch:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # No major version-update PRs (the Angular family, etc.). Majors are done
+      # deliberately; security updates are unaffected.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # MCP server (Python) dependencies.
   - package-ecosystem: "pip"
@@ -49,30 +60,47 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
 
   # Docker base images — one entry per Dockerfile. Keeps FROM base images
-  # (JRE, nginx, python) patched against OS-package CVEs.
+  # (JRE, nginx, python) patched against OS-package CVEs. Major base-image bumps
+  # (e.g. temurin 17 -> 24, node 20 -> 26) are ignored — they need deliberate
+  # testing, not auto-PRs.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
     labels:
       - "dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/ui"
     schedule:
       interval: "weekly"
     labels:
       - "dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/mcp-server"
     schedule:
       interval: "weekly"
     labels:
       - "dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/tap-runner"
     schedule:
       interval: "weekly"
     labels:
       - "dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
