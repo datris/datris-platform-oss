@@ -31,11 +31,29 @@ object SandboxedPython {
       * environment. Deliberately excludes anything credential-bearing. Kept in
       * sync with `TapScriptRunner.NonSecretEnvVars`. */
     private val NonSecretEnvVars: Set[String] = Set(
-        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "OLDPWD",
-        "LANG", "TERM", "TZ", "TMPDIR", "TMP", "TEMP", "HOSTNAME",
-        "PYTHONPATH", "PYTHONHOME", "PYTHONUNBUFFERED", "VIRTUAL_ENV",
-        "LD_LIBRARY_PATH", "SSL_CERT_FILE", "SSL_CERT_DIR",
-        "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "PWD",
+        "OLDPWD",
+        "LANG",
+        "TERM",
+        "TZ",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "HOSTNAME",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONUNBUFFERED",
+        "VIRTUAL_ENV",
+        "LD_LIBRARY_PATH",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE"
     )
 
     case class Result(exitCode: Int, stdout: String, stderr: String)

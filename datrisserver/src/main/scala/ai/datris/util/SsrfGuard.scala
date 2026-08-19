@@ -43,12 +43,12 @@ object SsrfGuard {
     /** True if `addr` is in a range the platform must not be tricked into
       * reaching on a user's behalf. */
     def isBlocked(addr: InetAddress): Boolean = {
-        addr.isLoopbackAddress ||        // 127.0.0.0/8, ::1
-            addr.isLinkLocalAddress ||   // 169.254.0.0/16 (incl. cloud metadata), fe80::/10
-            addr.isSiteLocalAddress ||   // 10/8, 172.16/12, 192.168/16
-            addr.isAnyLocalAddress ||    // 0.0.0.0, ::
-            addr.isMulticastAddress ||
-            isUniqueLocalIPv6(addr)      // fc00::/7
+        addr.isLoopbackAddress || // 127.0.0.0/8, ::1
+        addr.isLinkLocalAddress || // 169.254.0.0/16 (incl. cloud metadata), fe80::/10
+        addr.isSiteLocalAddress || // 10/8, 172.16/12, 192.168/16
+        addr.isAnyLocalAddress || // 0.0.0.0, ::
+        addr.isMulticastAddress ||
+        isUniqueLocalIPv6(addr) // fc00::/7
     }
 
     // java.net has no predicate for IPv6 ULA (fc00::/7); check the top 7 bits.

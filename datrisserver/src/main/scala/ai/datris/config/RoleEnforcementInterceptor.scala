@@ -85,8 +85,10 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                     // full-access identity present in useApiKeys=false mode is
                     // deliberately excluded so an admin gate is never satisfied
                     // by an unauthenticated caller.
-                    if (DatrisEnvironment.values.useApiKeys &&
-                        resolvedKey(request).exists(_.matchesResourceAction("*", "*")))
+                    if (
+                        DatrisEnvironment.values.useApiKeys &&
+                        resolvedKey(request).exists(_.matchesResourceAction("*", "*"))
+                    )
                         return true
                     return reject(response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
 

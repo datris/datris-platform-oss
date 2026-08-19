@@ -16,6 +16,7 @@ import javax.xml.transform.stream.StreamSource
 import javax.xml.validation.SchemaFactory
 
 object SchemaValidationUtil {
+
     /** Apply an XML parser hardening setting, tolerating parsers that don't
       * recognize it (older/alternate JAXP impls throw SAXNotRecognized/
       * NotSupported). Best-effort: any recognized setting still takes effect. */
