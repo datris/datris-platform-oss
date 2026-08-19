@@ -29,9 +29,12 @@ services:
   minio:
     image: minio/minio:latest
     container_name: minio
+    # Bound to loopback: reachable from the host (dev tools, console) but not
+    # from other machines. Ships with default creds (minioadmin), so a public
+    # bind would expose object storage to the network.
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -58,8 +61,9 @@ services:
   mongodb:
     image: mongo:7
     container_name: mongodb
+    # Loopback-only: reachable from the host but not from other machines.
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongodb-data:/data/db
       - mongodb-configdb:/data/configdb
@@ -78,7 +82,8 @@ services:
     deploy:
       replicas: ${POSTGRES_ENABLED:-1}
     ports:
-      - "5432:5432"
+      # Loopback-only: reachable from the host but not from other machines.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     environment:
@@ -96,8 +101,12 @@ services:
   vault:
     image: hashicorp/vault:1.15
     container_name: vault
+    # Loopback-only. Vault holds every platform secret and the server
+    # authenticates with a well-known token id, so the host port must not be
+    # reachable from other machines. Services reach Vault over the compose
+    # network (http://vault:8200), which is unaffected by this binding.
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     # File storage on a named volume — secrets PERSIST across container
     # recreation (`--build`, `down && up`, host reboot). Replaces dev mode,
     # which kept everything in memory and wiped it on every restart. The
@@ -262,6 +271,11 @@ services:
       USEUSERAUTH: "${USE_USER_AUTH:-false}"
       USEAPIKEYS: "${USE_API_KEYS:-false}"
       MULTITENANT: "${MULTI_TENANT:-false}"
+      # Shared secret authenticating the MinIO -> /minio-events webhook. When set,
+      # the server requires MinIO to present it as a bearer token (see
+      # minio-init.sh auth_token). Empty by default so existing deployments keep
+      # working; set it in .env to close the unauthenticated-webhook exposure.
+      MINIO_WEBHOOK_TOKEN: "${MINIO_WEBHOOK_TOKEN:-}"
       # Capability enforcement: `enforce` (default) returns HTTP 403 on policy
       # violations by scoped keys. Override to `log-only` in .env to emit
       # would-deny log lines without rejecting — useful only when iterating
@@ -525,6 +539,10 @@ services:
         condition: service_healthy
       datris:
         condition: service_started
+    environment:
+      # Must match the datris service's MINIO_WEBHOOK_TOKEN so the webhook
+      # auth_token MinIO sends matches what the server expects.
+      MINIO_WEBHOOK_TOKEN: "${MINIO_WEBHOOK_TOKEN:-}"
     volumes:
       - ./docker/minio-init.sh:/minio-init.sh
     entrypoint: ["/bin/sh", "/minio-init.sh"]

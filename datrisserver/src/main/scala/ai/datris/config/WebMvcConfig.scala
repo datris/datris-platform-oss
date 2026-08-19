@@ -60,10 +60,17 @@ class WebMvcConfig extends WebMvcConfigurer {
         val mapping = registry.addMapping("/api/**")
             .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             .allowedHeaders("*")
-            .allowCredentials(true)
             .maxAge(3600)
-        // allowedOriginPatterns supports "*" with credentials; allowedOrigins does not
-        if (origins.contains("*")) mapping.allowedOriginPatterns("*")
-        else mapping.allowedOrigins(origins: _*)
+        if (origins.contains("*")) {
+            // SECURITY: never pair a wildcard origin with credentials — that
+            // reflects ANY site's Origin back with Access-Control-Allow-
+            // Credentials, letting any page make credentialed cross-origin
+            // calls. Wildcard stays allowed but WITHOUT credentials. To enable
+            // credentialed cross-origin requests, set cors.allowedOrigins to an
+            // explicit allowlist (the else branch).
+            mapping.allowedOriginPatterns("*").allowCredentials(false)
+        } else {
+            mapping.allowedOrigins(origins: _*).allowCredentials(true)
+        }
     }
 }

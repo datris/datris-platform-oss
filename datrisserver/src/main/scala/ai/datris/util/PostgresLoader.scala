@@ -29,6 +29,15 @@ class PostgresLoader(jobContext: JobContext) {
     def process(): Unit = {
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
 
+        // Defense in depth: dbName/schema/table are interpolated into DDL/DML
+        // below (both quoted identifiers and an unquoted CREATE SCHEMA), never
+        // bound as parameters. PipelineValidatorUtil enforces the safe charset
+        // at config time; re-check here so any config that reaches the loader
+        // by another path still can't inject SQL.
+        PipelineValidatorUtil.validateSqlIdentifier(dbName, "destination.database.dbName")
+        PipelineValidatorUtil.validateSqlIdentifier(config.destination.database.schema, "destination.database.schema")
+        PipelineValidatorUtil.validateSqlIdentifier(config.destination.database.table, "destination.database.table")
+
         statusUtil.info("begin", "Loading the data into Postgres database: " + dbName + ", table: " + config.destination.database.table)
 
         val secrets = SecretsRetrieverUtil.postgresSecrets()

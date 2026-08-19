@@ -23,6 +23,13 @@ object SessionAuthenticator {
       * the cookie — so RoleEnforcementInterceptor turns it into a hard 401
       * instead of letting the request degrade to the anonymous legacy path. */
     val StaleSessionAttribute = "datris.staleSession"
+
+    /** Whether to set the `Secure` flag on the session cookie. Default false so
+      * local HTTP dev keeps working; set SESSION_COOKIE_SECURE=true in any
+      * TLS-served deployment so the session token is never sent over plain HTTP
+      * (mixed content, a stray http link, or a TLS-stripping MITM). */
+    def cookieSecure: Boolean =
+        sys.env.get("SESSION_COOKIE_SECURE").exists(_.equalsIgnoreCase("true"))
 }
 
 @Component

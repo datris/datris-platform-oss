@@ -57,13 +57,16 @@ class AuthAPIController {
             }
             val user = userOpt.get
 
-            // First-login flow: passwordHash is null/empty. Accept any password (typically empty)
-            // and force the client through change-password before doing anything else.
-            if (!user.mustSetPassword) {
-                if (!PasswordHasher.verify(password, user.passwordHash)) {
-                    logger.info("Login failed: bad password for: " + username)
-                    return unauthorized()
-                }
+            // Always verify the password. A null/empty stored hash used to be
+            // treated as "first login, accept any password", which let anyone
+            // claim an unclaimed account (notably the seeded admin) before its
+            // owner. Accounts are now always seeded/created with a real hash
+            // (see StartupRunner and createUser), and PasswordHasher.verify
+            // returns false for a null/empty hash — so a stale null-hash account
+            // simply cannot be logged into until an admin resets it.
+            if (!PasswordHasher.verify(password, user.passwordHash)) {
+                logger.info("Login failed: bad password for: " + username)
+                return unauthorized()
             }
 
             val session = SessionStore.create(user.username)
@@ -163,9 +166,22 @@ class AuthAPIController {
             if (UserStore.find(username).isDefined)
                 return ResponseEntity.status(HttpStatus.CONFLICT).body("""{"error":"User already exists"}""")
 
-            val hash = if (password == null || password.isEmpty) null else PasswordHasher.hash(password)
+            // Never create an account with a null hash — that was loginable with
+            // any password. When the admin doesn't supply one, generate a random
+            // temporary password and return it once so it can be handed to the
+            // user out-of-band; they log in with it and change it.
+            val (temporaryPassword, hash) =
+                if (password == null || password.isEmpty) {
+                    val temp = PasswordHasher.generateTemporary()
+                    (Some(temp), PasswordHasher.hash(temp))
+                } else {
+                    (None, PasswordHasher.hash(password))
+                }
             UserStore.create(username, hash, role)
-            ResponseEntity.status(HttpStatus.CREATED).body("""{"ok":true}""")
+            val resp = new JsonObject
+            resp.addProperty("ok", true)
+            temporaryPassword.foreach(resp.addProperty("temporaryPassword", _))
+            ResponseEntity.status(HttpStatus.CREATED).body(gson.toJson(resp))
         } catch {
             case e: Exception =>
                 logger.error("Error in POST /auth/users: " + Throwables.getStackTraceAsString(e))
@@ -254,7 +270,9 @@ class AuthAPIController {
     private def buildSessionCookie(value: String, maxAgeSeconds: Int): Cookie = {
         val cookie = new Cookie(sessionAuth.SessionCookieName, value)
         cookie.setHttpOnly(true)
-        cookie.setSecure(false) // dev: HTTP. Prod ingress (nginx) terminates TLS and rewrites.
+        // Secure is env-driven: false for local HTTP dev, true (via
+        // SESSION_COOKIE_SECURE) for any TLS-served deployment.
+        cookie.setSecure(SessionAuthenticator.cookieSecure)
         cookie.setPath("/")
         cookie.setMaxAge(maxAgeSeconds)
         cookie.setAttribute("SameSite", "Strict")

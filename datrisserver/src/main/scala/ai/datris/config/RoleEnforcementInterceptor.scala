@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, User, UserContext}
+import ai.datris.model.{DatrisEnvironment, ResolvedKey, User, UserContext}
 import jakarta.servlet.http.{Cookie, HttpServletRequest, HttpServletResponse}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.HttpStatus
@@ -18,13 +18,20 @@ import org.springframework.web.servlet.HandlerInterceptor
   * Decision order:
   *  1. useUserAuth=false → noop (existing deploys unchanged).
   *  2. Non-controller / static handler → noop.
-  *  3. AuthAPIController, /api/v1/version → public (auth controller handles its own gating).
-  *  4. Request carries an x-api-key → programmatic path, already validated upstream → allow.
-  *  5. No UserContext → 401.
-  *  6. Method or class has @RequiresRole → restrict to those roles.
-  *  7. Default rule: GET allowed for all logged-in roles; non-GET requires admin or editor.
+  *  3. Public endpoints — the auth controller's credential-free methods
+  *     (login/logout/me/change-password) and /api/v1/version — are exempt,
+  *     but ONLY when they carry no @RequiresRole. The auth controller also
+  *     hosts admin user-management methods that ARE role-gated; those must
+  *     not ride the class exemption.
+  *  4. No UserContext (programmatic path):
+  *       - role-gated endpoint → require a *validated* full-access API key
+  *         (mere x-api-key presence, or the anonymous full-access identity in
+  *         useApiKeys=false mode, is NOT sufficient for an admin gate);
+  *       - otherwise → x-api-key validated per-controller, or legacy no-auth.
+  *  5. Method or class has @RequiresRole → restrict to those roles.
+  *  6. Default rule: GET allowed for all logged-in roles; non-GET requires admin or editor.
   *
-  * Step 7 keeps the diff small — we don't have to annotate every write endpoint. */
+  * Step 6 keeps the diff small — we don't have to annotate every write endpoint. */
 @Component
 class RoleEnforcementInterceptor extends HandlerInterceptor {
     private val logger: Logger = LoggerFactory.getLogger(classOf[RoleEnforcementInterceptor])
@@ -36,11 +43,22 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
         if (!handler.isInstanceOf[HandlerMethod]) return true
         val method = handler.asInstanceOf[HandlerMethod]
 
+        // @RequiresRole may sit on the method or the controller class. Resolve
+        // it up front: it decides whether an endpoint is public or role-gated,
+        // independent of which controller hosts it. This is what stops the
+        // admin user-management methods in AuthAPIController from inheriting
+        // the controller's public exemption.
+        val ann = Option(method.getMethodAnnotation(classOf[RequiresRole]))
+            .orElse(Option(method.getBeanType.getAnnotation(classOf[RequiresRole])))
+
         val classFqn = method.getBeanType.getName
-        if (classFqn == "ai.datris.api.AuthAPIController") return true
+        // The auth controller's credential-free endpoints (login/logout/me/
+        // change-password) must be reachable without a session — but only the
+        // ones with no role annotation. A role-gated method here falls through.
+        if (ann.isEmpty && classFqn == "ai.datris.api.AuthAPIController") return true
 
         val uri = request.getRequestURI
-        if (uri != null && uri.startsWith("/api/v1/version")) return true
+        if (ann.isEmpty && uri != null && uri.startsWith("/api/v1/version")) return true
 
         val userOpt = UserContext.get()
         if (userOpt.isEmpty) {
@@ -55,23 +73,40 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                 response.addCookie(expiredSessionCookie())
                 return reject(response, HttpStatus.UNAUTHORIZED, """{"error":"Session expired"}""")
             }
-            // No session — programmatic / service-to-service path (CLI, MCP server, etc).
-            // x-api-key is validated by APIKeyValidator inside each controller; we just
-            // let the request through here.
-            val apiKey = request.getHeader("x-api-key")
-            if (apiKey != null && !apiKey.isEmpty) return true
-            // If api keys are not required either, this is the legacy "no API auth" mode
-            // (the OSS default). useUserAuth governs UI auth; it does not retroactively
-            // require server-to-server callers to authenticate.
-            if (!DatrisEnvironment.values.useApiKeys) return true
-            return reject(response, HttpStatus.UNAUTHORIZED, """{"error":"Authentication required"}""")
+            ann match {
+                case Some(_) =>
+                    // Role-gated endpoint (e.g. key minting, user management)
+                    // reached without a user session. A bare x-api-key header
+                    // is NOT enough: the old code accepted any non-empty value,
+                    // which let a forged or read-only key mint a `*:*` master
+                    // key and create admin users. Require a *validated* key
+                    // that resolves to full ('*:*') access — which exists only
+                    // when useApiKeys is on and the key is real. The anonymous
+                    // full-access identity present in useApiKeys=false mode is
+                    // deliberately excluded so an admin gate is never satisfied
+                    // by an unauthenticated caller.
+                    if (DatrisEnvironment.values.useApiKeys &&
+                        resolvedKey(request).exists(_.matchesResourceAction("*", "*")))
+                        return true
+                    return reject(response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
+
+                case None =>
+                    // No session — programmatic / service-to-service path (CLI, MCP server, etc).
+                    // x-api-key is validated by APIKeyValidator inside each controller; we just
+                    // let the request through here.
+                    val apiKey = request.getHeader("x-api-key")
+                    if (apiKey != null && !apiKey.isEmpty) return true
+                    // If api keys are not required either, this is the legacy "no API auth" mode
+                    // (the OSS default). useUserAuth governs UI auth; it does not retroactively
+                    // require server-to-server callers to authenticate.
+                    if (!DatrisEnvironment.values.useApiKeys) return true
+                    return reject(response, HttpStatus.UNAUTHORIZED, """{"error":"Authentication required"}""")
+            }
         }
         // Session present — role check applies even if a stale x-api-key is also being sent.
         // Otherwise a viewer with an old admin api key in localStorage could bypass roles.
         val user = userOpt.get
 
-        val ann = Option(method.getMethodAnnotation(classOf[RequiresRole]))
-            .orElse(Option(method.getBeanType.getAnnotation(classOf[RequiresRole])))
         ann match {
             case Some(a) =>
                 val allowed = a.value().toSet
@@ -86,11 +121,23 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
         }
     }
 
+    // The ResolvedKey attached by TenantInterceptor from a validated x-api-key.
+    // Absent when no valid key was presented (in useApiKeys=true mode a bad key
+    // resolves to nothing); present as anonymous full-access in useApiKeys=false
+    // mode — which is why the admin-gate check above additionally requires
+    // useApiKeys to be on before trusting a full-access resolution.
+    private def resolvedKey(request: HttpServletRequest): Option[ResolvedKey] = {
+        request.getAttribute(TenantInterceptor.ResolvedKeyAttr) match {
+            case rk: ResolvedKey => Some(rk)
+            case _ => None
+        }
+    }
+
     // Mirrors AuthAPIController.buildSessionCookie's attributes with maxAge=0.
     private def expiredSessionCookie(): Cookie = {
         val cookie = new Cookie("datris-session", "")
         cookie.setHttpOnly(true)
-        cookie.setSecure(false)
+        cookie.setSecure(SessionAuthenticator.cookieSecure)
         cookie.setPath("/")
         cookie.setMaxAge(0)
         cookie.setAttribute("SameSite", "Strict")

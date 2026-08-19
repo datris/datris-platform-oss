@@ -35,6 +35,10 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
     private val responseDelayMs = new AtomicReference[Long](0L)
 
     override def beforeAll(): Unit = {
+        // The tap fixture endpoint runs on loopback, which SsrfGuard blocks by
+        // default. These tests exercise the tap wire contract, not SSRF policy,
+        // so opt into private egress for the duration of the suite.
+        System.setProperty("datris.allowPrivateEgress", "true")
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext(
             "/tap",
@@ -65,6 +69,7 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
 
     override def afterAll(): Unit = {
         TenantContext.clear()
+        System.clearProperty("datris.allowPrivateEgress")
         if (server != null) server.stop(0)
     }
 

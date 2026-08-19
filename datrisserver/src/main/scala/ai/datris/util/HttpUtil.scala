@@ -165,6 +165,11 @@ object HttpUtil {
     }
 
     private def getHttpClient(url: String): CloseableHttpClient = {
+        // SECURITY: route DNS through SsrfGuard so the platform can't be tricked
+        // into fetching internal/metadata endpoints on a user's behalf. The
+        // resolver rejects private/loopback/link-local targets, and because the
+        // client connects using this same resolution, it also closes the
+        // DNS-rebinding gap a separate pre-flight check would leave.
         if (url.toLowerCase.startsWith("https")) {
             val sslsf = new SSLConnectionSocketFactory(
                 SSLContext.getDefault,
@@ -172,8 +177,13 @@ object HttpUtil {
                 null,
                 SSLConnectionSocketFactory.getDefaultHostnameVerifier
             )
-            HttpClients.custom().setSSLSocketFactory(sslsf).build()
+            HttpClients.custom()
+                .setSSLSocketFactory(sslsf)
+                .setDnsResolver(SsrfGuard.filteringDnsResolver)
+                .build()
         } else
-            HttpClients.createDefault
+            HttpClients.custom()
+                .setDnsResolver(SsrfGuard.filteringDnsResolver)
+                .build()
     }
 }

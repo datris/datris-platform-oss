@@ -73,7 +73,8 @@ class SecretsAPIController {
     @GetMapping(path = Array("/secrets"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def listSecrets(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
-        @RequestParam(required = false, name = "type") secretType: String
+        @RequestParam(required = false, name = "type") secretType: String,
+        request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /secrets called" + (if (secretType != null) ", type=" + secretType else ""))
@@ -95,8 +96,21 @@ class SecretsAPIController {
                 }
             } else allSecrets
 
+            // Read-scope filtering. Short-circuit when the key holds unscoped
+            // `secret:read` (or is legacy full-access) — the common case, no
+            // extra lookups. Only a scoped key (e.g. secret:read:_type=tap)
+            // triggers per-secret _type resolution so it sees only what its
+            // scope permits, rather than every secret name.
+            val visible =
+                if (CapabilityCheck.grants(request, "secret", "read", Map.empty[String, String])) secrets
+                else secrets.filter { name =>
+                    val t = SecretsUtil.getSecretMap(env + "/" + name).flatMap(m => Option(m.get("_type"))).getOrElse("")
+                    val ctx = if (t.nonEmpty) Map("_type" -> t) else Map.empty[String, String]
+                    CapabilityCheck.grants(request, "secret", "read", ctx)
+                }
+
             val gson = new Gson
-            new ResponseEntity[String](gson.toJson(secrets.asJava), HttpStatus.OK)
+            new ResponseEntity[String](gson.toJson(visible.asJava), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -105,7 +119,11 @@ class SecretsAPIController {
     }
 
     @GetMapping(path = Array("/secrets/{name}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def getSecret(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @PathVariable name: String): ResponseEntity[String] = {
+    def getSecret(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable name: String,
+        request: HttpServletRequest
+    ): ResponseEntity[String] = {
         try {
             logger.info("API endpoint GET /secrets/" + name + " called")
             APIKeyValidator.validate(apiKey)
@@ -116,6 +134,15 @@ class SecretsAPIController {
 
             secretMap match {
                 case Some(data) =>
+                    // In-action read-scope check. The interceptor gate is
+                    // scope-agnostic, so a key issued as `secret:read:_type=tap`
+                    // could otherwise read ANY secret. Enforce the actual
+                    // target's _type here — untyped/platform secrets fail a
+                    // tap-scoped key (empty _type context can't satisfy _type=tap).
+                    val existingType = data.asScala.get("_type").getOrElse("")
+                    val scopeContext = if (existingType.nonEmpty) Map("_type" -> existingType) else Map.empty[String, String]
+                    CapabilityCheck.assertScope(request, "secret", "read", scopeContext)
+
                     val result = new java.util.LinkedHashMap[String, Any]()
                     result.put("name", name)
 
@@ -124,7 +151,12 @@ class SecretsAPIController {
                         if (isSensitive(key) && value != null && value.nonEmpty) {
                             fields.put(key, "••••••••")
                         } else {
-                            fields.put(key, value)
+                            // Value-level redaction for credential-bearing URLs/DSNs
+                            // whose field NAME doesn't trip a sensitive marker
+                            // (connectionString, jdbcUrl, uri, ...). redactJdbcUrl
+                            // strips embedded user:pass@ / password= and leaves
+                            // plain values untouched.
+                            fields.put(key, ai.datris.util.LogRedactUtil.redactJdbcUrl(value))
                         }
                     }
                     result.put("fields", fields)
