@@ -113,7 +113,6 @@ if [ -n "${DATRIS_VAULT_TOKEN:-}" ]; then
   fi
   mkdir -p "$(dirname "$SERVER_TOKEN_FILE")"
   printf '%s' "$SERVER_TOKEN_ID" > "$SERVER_TOKEN_FILE"
-  chmod 600 "$SERVER_TOKEN_FILE" 2>/dev/null || true
 else
   # Default path: a RANDOM per-install token (no well-known id). Persist it to
   # the shared vault-token volume and reuse it across reboots (renew) so we
@@ -127,13 +126,20 @@ else
     echo "vault-bootstrap: creating random datris server token..."
     NEW_TOKEN=$(vault token create -policy=datris -orphan -period=87600h -field=token)
     printf '%s' "$NEW_TOKEN" > "$SERVER_TOKEN_FILE"
-    chmod 600 "$SERVER_TOKEN_FILE" 2>/dev/null || true
   fi
   # Revoke the legacy well-known `root-token` if a prior install created it, so
   # upgrades don't leave a guessable server token valid. Best-effort; harmless
   # if it never existed.
   vault token revoke root-token >/dev/null 2>&1 || true
 fi
+
+# The datris container runs as a non-root user (USER datris) and mounts this
+# volume read-only, so the token file must be world-readable INSIDE the shared
+# volume — a 0600 file owned by root (this init container) is unreadable by the
+# server, which then fails to start. The volume is dedicated to vault-init +
+# datris only, so 0644 exposes nothing further. Applied unconditionally (create
+# AND renew paths) so an already-written 0600 file is repaired on the next run.
+chmod 644 "$SERVER_TOKEN_FILE" 2>/dev/null || true
 
 # 6. Seed (create-if-absent). vault-init.sh inherits VAULT_TOKEN from the env.
 echo "vault-bootstrap: handing off to vault-init.sh for seeding..."

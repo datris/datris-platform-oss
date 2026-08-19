@@ -84,6 +84,17 @@ object VaultSecretsUtilBuilder {
                     case _: Exception => None
                 }
             }
-        fromFile.getOrElse(sys.env("VAULT_TOKEN"))
+        fromFile.orElse(sys.env.get("VAULT_TOKEN")).getOrElse {
+            val hint = sys.env
+                .get("VAULT_TOKEN_FILE")
+                .map(p =>
+                    " VAULT_TOKEN_FILE=" + p + " is set but the file was missing, empty, or unreadable" +
+                        " (the server runs as a non-root user — ensure the token file is world-readable)."
+                )
+                .getOrElse("")
+            throw new IllegalStateException(
+                "No Vault token available: neither VAULT_TOKEN_FILE nor VAULT_TOKEN provided one." + hint
+            )
+        }
     }
 }
