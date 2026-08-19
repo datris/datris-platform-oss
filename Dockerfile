@@ -1,4 +1,4 @@
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:24-jre
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip python3-venv && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --break-system-packages requests beautifulsoup4 pandas lxml feedparser boto3 pyyaml openpyxl python-dateutil pytz google-cloud-storage azure-storage-blob
 ARG JAR_FILE=datrisserver/target/scala-*/*.jar
