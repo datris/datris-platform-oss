@@ -11,16 +11,20 @@ set -e
 #      shared vault-data volume),
 #   3. unseals it from the stored Shamir key,
 #   4. enables KV v2 at secret/ (dev mode did this implicitly),
-#   5. mints a fixed-id token so the datris server's `VAULT_TOKEN: root-token`
-#      keeps working unchanged,
+#   5. mints the datris server token — a RANDOM per-install token written to the
+#      shared vault-token volume for the server to read (VAULT_TOKEN_FILE), or a
+#      fixed-id token when DATRIS_VAULT_TOKEN is set (operator override / legacy),
 #   6. hands off to vault-init.sh for create-if-absent seeding.
 #
 # Everything after first run is idempotent: secrets persist on the volume, so
-# reboots only unseal + re-mint the server token (if absent) and skip seeding
-# of any path that already exists.
+# reboots only unseal + renew/re-mint the server token and skip seeding of any
+# path that already exists.
 
 INIT_FILE=/vault/file/datris-init.txt
-SERVER_TOKEN_ID="${DATRIS_VAULT_TOKEN:-root-token}"
+# Where the server reads its token from (VAULT_TOKEN_FILE on the datris service
+# points here). On a dedicated volume — NOT the vault-data volume — so the
+# server never gets read access to the root token / unseal key in the init file.
+SERVER_TOKEN_FILE=/vault-token/token
 
 echo "vault-bootstrap: waiting for Vault to respond..."
 # `vault status` exit codes: 0 = unsealed, 2 = sealed (both mean reachable),
@@ -83,33 +87,59 @@ if ! vault secrets list 2>/dev/null | grep -q '^secret/'; then
   vault secrets enable -path=secret -version=2 kv >/dev/null
 fi
 
-# 5. Policy + fixed-id token for the datris server. The server authenticates
-#    with `VAULT_TOKEN: root-token` (unchanged from dev mode) — we mint a
-#    token with that exact id so nothing downstream has to change.
+# 5. Policy + token for the datris server.
 vault policy write datris - >/dev/null <<'EOF'
 path "secret/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
 EOF
 
-if VAULT_TOKEN="$SERVER_TOKEN_ID" vault token lookup >/dev/null 2>&1; then
-  # Token still valid — renew so its TTL is re-extended to the full period on
-  # every boot. Tokens minted before max_lease_ttl was raised to 87600h were
-  # clamped to a 768h TTL and would otherwise die a month after install.
-  vault token renew "$SERVER_TOKEN_ID" >/dev/null 2>&1 || true
+# Orphan + periodic so the token survives reboots without a parent. The 10-year
+# period, combined with max_lease_ttl=87600h in vault.hcl (the initial TTL is
+# clamped to max_lease_ttl regardless of period) and the renew-on-boot below,
+# makes it effectively non-expiring.
+if [ -n "${DATRIS_VAULT_TOKEN:-}" ]; then
+  # Operator override / legacy path: mint a fixed-id token. Kept so an operator
+  # who pins DATRIS_VAULT_TOKEN (e.g. to preserve an existing setup) still works.
+  SERVER_TOKEN_ID="$DATRIS_VAULT_TOKEN"
+  if VAULT_TOKEN="$SERVER_TOKEN_ID" vault token lookup >/dev/null 2>&1; then
+    vault token renew "$SERVER_TOKEN_ID" >/dev/null 2>&1 || true
+  else
+    echo "vault-bootstrap: creating datris server token (fixed id from DATRIS_VAULT_TOKEN)..."
+    # Revoke defensively so the re-mint can't fail with "duplicate ID" on a live
+    # zombie entry left by the expiration manager after an upgrade restart.
+    vault token revoke "$SERVER_TOKEN_ID" >/dev/null 2>&1 || true
+    vault token create -id="$SERVER_TOKEN_ID" -policy=datris -orphan -period=87600h >/dev/null
+  fi
+  mkdir -p "$(dirname "$SERVER_TOKEN_FILE")"
+  printf '%s' "$SERVER_TOKEN_ID" > "$SERVER_TOKEN_FILE"
 else
-  echo "vault-bootstrap: creating datris server token (id=$SERVER_TOKEN_ID)..."
-  # An expired token's entry can linger until the expiration manager reaps it
-  # (which happens during the lease restore after the Vault restart that
-  # accompanies an upgrade). Revoke defensively so the re-mint below can't fail
-  # with "cannot create a token with a duplicate ID" on a live zombie entry.
-  vault token revoke "$SERVER_TOKEN_ID" >/dev/null 2>&1 || true
-  # Orphan + periodic so it survives reboots without a parent. The 10-year
-  # period, combined with max_lease_ttl=87600h in vault.hcl (the initial TTL is
-  # clamped to max_lease_ttl regardless of period) and the renew-on-boot above,
-  # makes it effectively non-expiring — matching the old dev-mode root-token.
-  vault token create -id="$SERVER_TOKEN_ID" -policy=datris -orphan -period=87600h >/dev/null
+  # Default path: a RANDOM per-install token (no well-known id). Persist it to
+  # the shared vault-token volume and reuse it across reboots (renew) so we
+  # don't leak a fresh token every boot.
+  mkdir -p "$(dirname "$SERVER_TOKEN_FILE")"
+  EXISTING_TOKEN=""
+  [ -f "$SERVER_TOKEN_FILE" ] && EXISTING_TOKEN=$(cat "$SERVER_TOKEN_FILE" 2>/dev/null)
+  if [ -n "$EXISTING_TOKEN" ] && VAULT_TOKEN="$EXISTING_TOKEN" vault token lookup >/dev/null 2>&1; then
+    vault token renew "$EXISTING_TOKEN" >/dev/null 2>&1 || true
+  else
+    echo "vault-bootstrap: creating random datris server token..."
+    NEW_TOKEN=$(vault token create -policy=datris -orphan -period=87600h -field=token)
+    printf '%s' "$NEW_TOKEN" > "$SERVER_TOKEN_FILE"
+  fi
+  # Revoke the legacy well-known `root-token` if a prior install created it, so
+  # upgrades don't leave a guessable server token valid. Best-effort; harmless
+  # if it never existed.
+  vault token revoke root-token >/dev/null 2>&1 || true
 fi
+
+# The datris container runs as a non-root user (USER datris) and mounts this
+# volume read-only, so the token file must be world-readable INSIDE the shared
+# volume — a 0600 file owned by root (this init container) is unreadable by the
+# server, which then fails to start. The volume is dedicated to vault-init +
+# datris only, so 0644 exposes nothing further. Applied unconditionally (create
+# AND renew paths) so an already-written 0600 file is repaired on the next run.
+chmod 644 "$SERVER_TOKEN_FILE" 2>/dev/null || true
 
 # 6. Seed (create-if-absent). vault-init.sh inherits VAULT_TOKEN from the env.
 echo "vault-bootstrap: handing off to vault-init.sh for seeding..."

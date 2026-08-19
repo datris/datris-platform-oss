@@ -173,17 +173,45 @@ class StartupRunner extends ApplicationRunner {
     private def initUserAuth(): Unit = {
         try {
             SessionStore.ensureIndex()
-            if (UserStore.list().isEmpty) {
+            val existingUsers = UserStore.list()
+            if (existingUsers.nonEmpty) {
+                // Upgrade safety: any pre-existing account with a null/empty
+                // hash was previously loginable with ANY password (the takeover
+                // hole). Login now always verifies, which would lock these
+                // accounts out — so rotate each to a random bootstrap password,
+                // printed once, and close the hole at the same time.
+                existingUsers.filter(_.mustSetPassword).foreach { u =>
+                    val pw = ai.datris.util.PasswordHasher.generateTemporary()
+                    UserStore.updatePasswordHash(u.username, ai.datris.util.PasswordHasher.hash(pw))
+                    logger.warn(
+                        "User '" + u.username + "' had no password set (previously loginable with any password). " +
+                            "Assigned a bootstrap password: " + pw + "  (shown once; log in and change it immediately)"
+                    )
+                }
+            }
+            if (existingUsers.isEmpty) {
                 val now = java.time.Instant.now().toString
+                // Seed with a random bootstrap password rather than a null hash.
+                // A null hash made the admin account claimable by anyone who
+                // reached /auth/login first (any password was accepted), so an
+                // attacker could take over admin on a fresh deploy before the
+                // operator's first login. The password is printed to the server
+                // log exactly once here; the operator reads it from the logs to
+                // log in, then changes it. It is never stored in plaintext.
+                val bootstrapPassword = ai.datris.util.PasswordHasher.generateTemporary()
                 UserStore.insert(User(
                     username = "admin",
-                    passwordHash = null, // null = forces set-password on first login
+                    passwordHash = ai.datris.util.PasswordHasher.hash(bootstrapPassword),
                     role = User.RoleAdmin,
                     createdAt = now,
                     updatedAt = now,
                     lastLoginAt = null
                 ))
-                logger.info("Seeded default admin user (no password set — first login will prompt)")
+                logger.info(
+                    "Seeded default admin user. Bootstrap login — username: admin  password: {}  " +
+                        "(shown once; log in and change it immediately)",
+                    bootstrapPassword
+                )
             }
         } catch {
             case e: Exception =>

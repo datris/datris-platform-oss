@@ -1,0 +1,49 @@
+name: Scala Dependency Graph
+
+# Submits the sbt dependency graph (server + all transitive JVM deps) to
+# GitHub's Dependency Graph. GitHub then raises Dependabot alerts — and, where
+# possible, Dependabot update PRs — for the Scala/JVM dependencies against the
+# GitHub Advisory Database. This is what closes the one gap Dependabot's native
+# ecosystems can't: sbt has no built-in Dependabot support.
+#
+# Maintained by the Scala Center; uses GitHub's advisory data (no NVD API key).
+# Runs on pushes to the default branch, since the dependency graph is tracked
+# per default branch.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write # required to submit the dependency snapshot
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Java 17 and SBT
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
+
+      - name: Install SBT via Coursier
+        run: |
+          curl -fL "https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz" | gzip -d > cs
+          chmod +x cs
+          # Pin the sbt launcher to 1.x (matches project/build.properties), same
+          # as ci.yml — bare `--apps sbt` now resolves sbt 2.x.
+          ./cs setup --yes --apps sbt:1.12.5
+          echo "$HOME/.local/share/coursier/bin" >> $GITHUB_PATH
+
+      - name: Submit dependency graph
+        uses: scalacenter/sbt-dependency-submission@d84eef4c09e633bcf5f113bcad7fd5e9af1baee9 # v3.2.3

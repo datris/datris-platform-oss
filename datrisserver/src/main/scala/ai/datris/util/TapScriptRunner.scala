@@ -484,6 +484,12 @@ object TapScriptRunner {
             if (testLimit > 0) body.addProperty("testLimit", Integer.valueOf(testLimit))
             else body.add("testLimit", com.google.gson.JsonNull.INSTANCE)
 
+            // SECURITY: reject endpoints that resolve to internal/metadata
+            // addresses before connecting, so a tap can't be used to read cloud
+            // metadata (169.254.169.254) or internal services. followRedirects
+            // is already NEVER, so a redirect can't bypass this check.
+            SsrfGuard.assertAllowed(tapConfig.endpointUrl)
+
             val client = java.net.http.HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(10))
                 .followRedirects(java.net.http.HttpClient.Redirect.NEVER)

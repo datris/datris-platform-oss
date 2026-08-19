@@ -19,10 +19,22 @@ done
 echo "Pipeline server is reachable."
 
 echo "Configuring MinIO webhook notification endpoint..."
-mc admin config set myminio notify_webhook:1 \
-  endpoint=http://datris:8080/minio-events \
-  queue_limit=1000 \
-  queue_dir=/tmp/minio-events
+# When MINIO_WEBHOOK_TOKEN is set, MinIO sends it as `Authorization: Bearer <token>`
+# and the datris server (same env var) requires it — closing the otherwise
+# unauthenticated /minio-events endpoint. Empty by default for back-compat.
+if [ -n "${MINIO_WEBHOOK_TOKEN}" ]; then
+  mc admin config set myminio notify_webhook:1 \
+    endpoint=http://datris:8080/minio-events \
+    auth_token="${MINIO_WEBHOOK_TOKEN}" \
+    queue_limit=1000 \
+    queue_dir=/tmp/minio-events
+else
+  echo "WARNING: MINIO_WEBHOOK_TOKEN is not set — the /minio-events webhook will be unauthenticated."
+  mc admin config set myminio notify_webhook:1 \
+    endpoint=http://datris:8080/minio-events \
+    queue_limit=1000 \
+    queue_dir=/tmp/minio-events
+fi
 
 echo "Restarting MinIO to apply notification config..."
 mc admin service restart myminio --json 2>/dev/null || true

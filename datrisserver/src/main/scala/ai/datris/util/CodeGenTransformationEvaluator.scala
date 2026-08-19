@@ -9,10 +9,6 @@ import ai.datris.model.{DatrisEnvironment, DatrisException}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.file.{Files, Path}
-import scala.concurrent.{Await, Future}
-import scala.concurrent.duration._
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.sys.process._
 
 object CodeGenTransformationEvaluator {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -134,30 +130,15 @@ object CodeGenTransformationEvaluator {
     }
 
     private def executeWithTimeout(scriptPath: String, inputPath: String, outputPath: String, timeoutSec: Int): Unit = {
-        val stderr = new StringBuilder
-        val processLogger = ProcessLogger(
-            _ => (), // ignore stdout
-            line => stderr.append(line).append("\n")
-        )
-
-        val process = Process(Seq("python3", scriptPath, inputPath, outputPath))
-        val future = Future {
-            process.!(processLogger)
-        }
-
-        try {
-            val exitCode = Await.result(future, timeoutSec.seconds)
-            if (exitCode != 0) {
-                val errOutput = stderr.toString.take(1000)
-                logger.error("CodeGen transformation script exited with code " + exitCode + ": " + errOutput)
-                throw new DatrisException("CodeGen transformation script failed (exit code " + exitCode + "): " + errOutput)
-            }
-        } catch {
-            case _: java.util.concurrent.TimeoutException =>
-                throw new DatrisException("CodeGen transformation script timed out after " + timeoutSec + " seconds")
-            case e: DatrisException => throw e
-            case e: Exception =>
-                throw new DatrisException("CodeGen transformation script execution error: " + e.getMessage)
+        // SECURITY: the script is LLM-generated and shaped by untrusted ingested
+        // data, so it runs through SandboxedPython — a scrubbed environment with
+        // no platform secrets in os.environ. Never use scala.sys.process here;
+        // it would inherit the JVM's full secret environment.
+        val result = SandboxedPython.run(Seq("python3", scriptPath, inputPath, outputPath), timeoutSec)
+        if (result.exitCode != 0) {
+            val errOutput = result.stderr.take(1000)
+            logger.error("CodeGen transformation script exited with code " + result.exitCode + ": " + errOutput)
+            throw new DatrisException("CodeGen transformation script failed (exit code " + result.exitCode + "): " + errOutput)
         }
     }
 

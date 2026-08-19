@@ -52,7 +52,7 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
 object VaultSecretsUtilBuilder {
     def build(): SecretsManagerUtility = {
         val address = sys.env.getOrElse("VAULT_ADDR", "http://127.0.0.1:8200")
-        val token = sys.env("VAULT_TOKEN")
+        val token = resolveToken()
 
         val config = new VaultConfig()
             .address(address)
@@ -61,5 +61,40 @@ object VaultSecretsUtilBuilder {
             .build()
 
         new VaultSecretsUtil(Vault.create(config))
+    }
+
+    /** Resolve the Vault token. Prefer VAULT_TOKEN_FILE (a path to a file
+      * holding the token) so the bootstrap can hand the server a RANDOM,
+      * per-install token instead of the old well-known `root-token` — the
+      * file never appears in `docker inspect`/process env the way a value does.
+      * Falls back to the VAULT_TOKEN env var for setups that still pass it
+      * directly (local dev, existing deployments). */
+    private def resolveToken(): String = {
+        val fromFile = sys.env.get("VAULT_TOKEN_FILE")
+            .map(_.trim)
+            .filter(_.nonEmpty)
+            .flatMap { path =>
+                try {
+                    val t = new String(
+                        java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(path)),
+                        java.nio.charset.StandardCharsets.UTF_8
+                    ).trim
+                    if (t.nonEmpty) Some(t) else None
+                } catch {
+                    case _: Exception => None
+                }
+            }
+        fromFile.orElse(sys.env.get("VAULT_TOKEN")).getOrElse {
+            val hint = sys.env
+                .get("VAULT_TOKEN_FILE")
+                .map(p =>
+                    " VAULT_TOKEN_FILE=" + p + " is set but the file was missing, empty, or unreadable" +
+                        " (the server runs as a non-root user — ensure the token file is world-readable)."
+                )
+                .getOrElse("")
+            throw new IllegalStateException(
+                "No Vault token available: neither VAULT_TOKEN_FILE nor VAULT_TOKEN provided one." + hint
+            )
+        }
     }
 }

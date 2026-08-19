@@ -224,6 +224,29 @@ object PipelineValidatorUtil {
                 throw new DatrisException("If the 'destination.database' section is defined, the 'destination.database.schema' must be defined")
             if (config.destination.database.table == null)
                 throw new DatrisException("If the 'destination.database' section is defined, the 'destination.database.table' must be defined")
+
+            // SECURITY: these identifiers are interpolated into DDL/DML by the
+            // SQL loaders (PostgresLoader et al.), not bound as parameters, so
+            // an unvalidated value like `public; DROP TABLE x; --` would be
+            // second-order SQL injection against the destination. Restrict them
+            // to the same safe identifier charset the schema columns already use.
+            validateSqlIdentifier(config.destination.database.dbName, "destination.database.dbName")
+            if (!config.destination.database.useMongoDB) {
+                validateSqlIdentifier(config.destination.database.schema, "destination.database.schema")
+                validateSqlIdentifier(config.destination.database.table, "destination.database.table")
+                if (config.destination.database.warehouse != null)
+                    validateSqlIdentifier(config.destination.database.warehouse, "destination.database.warehouse")
+            }
+            // COPY options legitimately hold SQL option syntax (FORMAT csv,
+            // DELIMITER ',', FORCE_NULL (col), ...) so they can't be charset-
+            // restricted, but they must not carry a statement separator that
+            // would let them stack a second command after the COPY clause.
+            if (config.destination.database.options != null) {
+                config.destination.database.options.asScala.foreach { opt =>
+                    if (opt != null && opt.contains(";"))
+                        throw new DatrisException("destination.database.options entries must not contain ';'")
+                }
+            }
             // MongoDB is exempt from the schema-membership rule: it stores each record
             // as a whole `_json` document and MongoDBLoader.upsertJSON matches key
             // fields INSIDE the document, so the keys legitimately never appear as
@@ -309,6 +332,19 @@ object PipelineValidatorUtil {
         validateColumns(sourceSchema = true, config)
         if (config.destination.schemaProperties != null)
             validateColumns(sourceSchema = false, config)
+    }
+
+    /** SQL identifiers (db/schema/table/warehouse names) are interpolated into
+      * loader SQL rather than bound as parameters, so they must be constrained
+      * to a safe charset to prevent injection. Matches the column-name rule:
+      * letters, digits, and underscore only. */
+    private[util] def validateSqlIdentifier(value: String, label: String): Unit = {
+        if (value == null || value.isEmpty)
+            throw new DatrisException("'" + label + "' must not be empty")
+        if (!value.matches("[A-Za-z0-9_]+"))
+            throw new DatrisException(
+                "'" + label + "' value '" + value + "' is invalid. Valid characters are a-z, A-Z, 0-9 and _"
+            )
     }
 
     private def validateColumns(sourceSchema: Boolean, config: PipelineConfig): Unit = {

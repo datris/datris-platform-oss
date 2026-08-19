@@ -11,6 +11,7 @@ volumes:
   pip-cache:
   tei-data:
   vault-data:        # persists Vault secrets across container recreation (drops dev mode)
+  datris-vault-token: # holds the server's random Vault token (written by vault-init, read by datris)
   # Named data volumes for the three stateful stores. These MUST be named:
   # anonymous volumes survive a plain recreate but are orphaned (left behind,
   # not reattached) whenever the container is removed — `down` + `up`, or a
@@ -29,9 +30,12 @@ services:
   minio:
     image: minio/minio:latest
     container_name: minio
+    # Bound to loopback: reachable from the host (dev tools, console) but not
+    # from other machines. Ships with default creds (minioadmin), so a public
+    # bind would expose object storage to the network.
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -58,8 +62,9 @@ services:
   mongodb:
     image: mongo:7
     container_name: mongodb
+    # Loopback-only: reachable from the host but not from other machines.
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - mongodb-data:/data/db
       - mongodb-configdb:/data/configdb
@@ -78,7 +83,8 @@ services:
     deploy:
       replicas: ${POSTGRES_ENABLED:-1}
     ports:
-      - "5432:5432"
+      # Loopback-only: reachable from the host but not from other machines.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     environment:
@@ -96,8 +102,12 @@ services:
   vault:
     image: hashicorp/vault:1.15
     container_name: vault
+    # Loopback-only. Vault holds every platform secret and the server
+    # authenticates with a well-known token id, so the host port must not be
+    # reachable from other machines. Services reach Vault over the compose
+    # network (http://vault:8200), which is unaffected by this binding.
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     # File storage on a named volume — secrets PERSIST across container
     # recreation (`--build`, `down && up`, host reboot). Replaces dev mode,
     # which kept everything in memory and wiped it on every restart. The
@@ -130,7 +140,8 @@ services:
       VAULT_ADDR: http://vault:8200
       # No static VAULT_TOKEN — a non-dev Vault generates a random root token at
       # init. vault-bootstrap.sh reads it from the init file on the shared
-      # vault-data volume and mints a fixed-id `root-token` token for the server.
+      # vault-data volume and mints a RANDOM per-install token for the server,
+      # written to the shared vault-token volume (VAULT_TOKEN_FILE on datris).
       DATRIS_UI_API_KEY: ${DATRIS_UI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -193,6 +204,8 @@ services:
       # Shares vault-data so bootstrap can read/write the init file (unseal key
       # + root token) and unseal the same storage the vault service uses.
       - vault-data:/vault/file
+      # Writes the server's random token here for the datris service to read.
+      - datris-vault-token:/vault-token
       - ./docker/vault-bootstrap.sh:/vault-bootstrap.sh
       - ./docker/vault-init.sh:/vault-init.sh
     entrypoint: ["/bin/sh", "/vault-bootstrap.sh"]
@@ -232,8 +245,8 @@ services:
       - datris-net
 
   datris:
-    image: datrisai/datris-server:latest
-    #build: .  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-server:latest
+    build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
     ports:
       - "8080:8080"
@@ -251,10 +264,11 @@ services:
         condition: service_started
     environment:
       VAULT_ADDR: http://vault:8200
-      # The server authenticates with this token id. vault-bootstrap.sh mints a
-      # token with the fixed id `root-token` (the real root token is random on a
-      # non-dev Vault), so this value is unchanged from the old dev-mode setup.
-      VAULT_TOKEN: root-token
+      # The server reads its Vault token from this file. vault-bootstrap.sh mints
+      # a RANDOM per-install token and writes it to the shared vault-token volume
+      # mounted read-only below — no well-known `root-token`. An operator can pin
+      # a fixed token instead by setting DATRIS_VAULT_TOKEN (passed to vault-init).
+      VAULT_TOKEN_FILE: /vault-token/token
       # Auth / multi-tenancy toggles. Defaults preserve OSS single-tenant behavior;
       # flip these in your .env to enable user auth, API-key gating, or multi-tenant
       # mode without rebuilding the JAR. Spring's relaxed binding maps these env
@@ -262,6 +276,11 @@ services:
       USEUSERAUTH: "${USE_USER_AUTH:-false}"
       USEAPIKEYS: "${USE_API_KEYS:-false}"
       MULTITENANT: "${MULTI_TENANT:-false}"
+      # Shared secret authenticating the MinIO -> /minio-events webhook. When set,
+      # the server requires MinIO to present it as a bearer token (see
+      # minio-init.sh auth_token). Empty by default so existing deployments keep
+      # working; set it in .env to close the unauthenticated-webhook exposure.
+      MINIO_WEBHOOK_TOKEN: "${MINIO_WEBHOOK_TOKEN:-}"
       # Capability enforcement: `enforce` (default) returns HTTP 403 on policy
       # violations by scoped keys. Override to `log-only` in .env to emit
       # would-deny log lines without rejecting — useful only when iterating
@@ -311,6 +330,10 @@ services:
     volumes:
       - ./docker/config:/config
       - pip-cache:/root/.cache/pip
+      # Read-only: the server reads its Vault token (written by vault-init) but
+      # can't modify it. Dedicated volume so the server never sees the Vault
+      # root token / unseal key that live on the vault-data volume.
+      - datris-vault-token:/vault-token:ro
     networks:
       - datris-net
       - tap-net
@@ -321,8 +344,8 @@ services:
   # all capabilities dropped, no privilege escalation. Only used when the datris
   # server has USE_TAP_RUNNER=true.
   datris-tap-runner:
-    image: datrisai/datris-tap-runner:latest
-    #build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-tap-runner:latest
+    build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris-tap-runner
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
@@ -340,8 +363,8 @@ services:
       - tap-net
 
   ui:
-    image: datrisai/datris-ui:latest
-    #build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-ui:latest
+    build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: ui
     ports:
       - "4200:8080"
@@ -351,8 +374,8 @@ services:
       - datris-net
 
   mcp-server:
-    image: datrisai/datris-mcp-server:latest
-    #build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-mcp-server:latest
+    build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: mcp-server
     ports:
       - "3000:3000"
@@ -525,6 +548,10 @@ services:
         condition: service_healthy
       datris:
         condition: service_started
+    environment:
+      # Must match the datris service's MINIO_WEBHOOK_TOKEN so the webhook
+      # auth_token MinIO sends matches what the server expects.
+      MINIO_WEBHOOK_TOKEN: "${MINIO_WEBHOOK_TOKEN:-}"
     volumes:
       - ./docker/minio-init.sh:/minio-init.sh
     entrypoint: ["/bin/sh", "/minio-init.sh"]

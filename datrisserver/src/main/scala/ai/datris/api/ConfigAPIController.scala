@@ -24,6 +24,21 @@ class ConfigAPIController {
     private val VALID_TYPES = Set("validation-schema", "javascript")
     private val VALID_SCHEMA_TYPES = Set("json-schema", "xsd")
 
+    /** Reduce a user-supplied filename to a safe single object-key segment.
+      * Without this, a name like `../tap-scripts/x.py` escapes the intended
+      * prefix and can write into another prefix of the same config bucket —
+      * including the tap-scripts prefix, whose files are later executed. Strip
+      * any path, reject traversal, and restrict to a safe charset. */
+    private def sanitizeKeySegment(name: String): String = {
+        if (name == null) throw new DatrisException("File name is required")
+        val base = name.replace("\\", "/").split("/").filter(_.nonEmpty).lastOption.getOrElse("")
+        if (base.isEmpty || base == "." || base == "..")
+            throw new DatrisException("Invalid file name: " + name)
+        if (!base.matches("[A-Za-z0-9._-]+"))
+            throw new DatrisException("File name '" + base + "' contains invalid characters. Allowed: letters, digits, . _ -")
+        base
+    }
+
     @PostMapping(path = Array("/config/upload"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def uploadConfigFile(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
@@ -37,9 +52,7 @@ class ConfigAPIController {
             if (!VALID_TYPES.contains(fileType))
                 throw new DatrisException("Invalid config file type: " + fileType + ". Must be one of: " + VALID_TYPES.mkString(", "))
 
-            val filename = file.getOriginalFilename
-            if (filename == null || filename.isEmpty)
-                throw new DatrisException("File must have a name")
+            val filename = sanitizeKeySegment(file.getOriginalFilename)
 
             val bucket = DatrisEnvironment.current.environment + "-config"
             val key = fileType + "/" + filename
@@ -88,7 +101,7 @@ class ConfigAPIController {
                 case "xsd" => (AISchemaUtil.generateXsdSchema(sampleData), ".xsd")
             }
 
-            val filename = name.trim + extension
+            val filename = sanitizeKeySegment(name.trim) + extension
             val bucket = DatrisEnvironment.current.environment + "-config"
             val key = "validation-schema/" + filename
 

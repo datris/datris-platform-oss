@@ -11,10 +11,6 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.file.{Files, Path}
 import scala.collection.JavaConverters._
-import scala.concurrent.{Await, Future}
-import scala.concurrent.duration._
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.sys.process._
 
 object CodeGenRuleEvaluator {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
@@ -131,33 +127,17 @@ object CodeGenRuleEvaluator {
     }
 
     private def executeWithTimeout(scriptPath: String, dataPath: String, timeoutSec: Int): String = {
-        val stdout = new StringBuilder
-        val stderr = new StringBuilder
-        val processLogger = ProcessLogger(
-            line => stdout.append(line).append("\n"),
-            line => stderr.append(line).append("\n")
-        )
-
-        val process = Process(Seq("python3", scriptPath, dataPath))
-        val future = Future {
-            process.!(processLogger)
+        // SECURITY: the script is LLM-generated and shaped by untrusted ingested
+        // data, so it runs through SandboxedPython — a scrubbed environment with
+        // no platform secrets in os.environ. Never use scala.sys.process here;
+        // it would inherit the JVM's full secret environment.
+        val result = SandboxedPython.run(Seq("python3", scriptPath, dataPath), timeoutSec)
+        if (result.exitCode != 0) {
+            val errOutput = result.stderr.take(1000)
+            logger.error("CodeGen script exited with code " + result.exitCode + ": " + errOutput)
+            throw new DatrisException("CodeGen validation script failed (exit code " + result.exitCode + "): " + errOutput)
         }
-
-        try {
-            val exitCode = Await.result(future, timeoutSec.seconds)
-            if (exitCode != 0) {
-                val errOutput = stderr.toString.take(1000)
-                logger.error("CodeGen script exited with code " + exitCode + ": " + errOutput)
-                throw new DatrisException("CodeGen validation script failed (exit code " + exitCode + "): " + errOutput)
-            }
-            stdout.toString.trim
-        } catch {
-            case _: java.util.concurrent.TimeoutException =>
-                throw new DatrisException("CodeGen validation script timed out after " + timeoutSec + " seconds")
-            case e: DatrisException => throw e
-            case e: Exception =>
-                throw new DatrisException("CodeGen script execution error: " + e.getMessage)
-        }
+        result.stdout
     }
 
     private def cleanGeneratedScript(script: String): String = {

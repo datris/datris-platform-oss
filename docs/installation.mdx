@@ -149,7 +149,7 @@ Your data is preserved across upgrades — Postgres pipelines, Vault secrets, Mi
 
 Datris occasionally deprecates secret paths between versions (for example, v1.5.6 split AI configuration into three new Vault slots and stopped reading the old single-slot path). Because Vault data persists across upgrades, deprecated entries stay in Vault and continue to appear in the Configuration → Secrets list even though the server ignores them. To clean them up:
 
-- **Targeted (preserves your data):** delete the stale entries one at a time from Configuration → Secrets in the UI, or run `docker compose exec -e VAULT_TOKEN=root-token vault vault kv delete secret/oss/<name>` for each deprecated path.
+- **Targeted (preserves your data):** delete the stale entries one at a time from Configuration → Secrets in the UI, or run `docker compose exec -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault vault kv delete secret/oss/<name>` for each deprecated path.
 - **Total reset (destroys all data):** see the next section.
 
 ### Reset everything (destroys all data)
@@ -227,7 +227,7 @@ Commonly used packages (`requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedpar
 | **MinIO Console** | [http://localhost:9001](http://localhost:9001) | `minioadmin` / `minioadmin` |
 | **ActiveMQ Console** | [http://localhost:8161](http://localhost:8161) | `admin` / `admin` |
 | **Kafka UI** (opt-in) | [http://localhost:8085](http://localhost:8085) | none — only with `COMPOSE_PROFILES=kafka` |
-| **Vault UI** | [http://localhost:8200](http://localhost:8200) | Token: `root-token` |
+| **Vault UI** | [http://localhost:8200](http://localhost:8200) | Token: run `docker compose exec -T datris cat /vault-token/token` (random per install) |
 
 ## API Keys and AI Providers
 
