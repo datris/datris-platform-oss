@@ -3,6 +3,17 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.19.0" description="August 19, 2026">
+  **Security hardening.**
+
+  - A broad security pass across authentication, authorization, credential handling, and input validation, plus updated bundled dependencies for published advisories. A standard upgrade needs no configuration changes.
+  - **Initial admin login** (when user login is enabled): the first admin password is now generated and printed once to the server logs — `docker compose logs datris`, sign in, and change it.
+  - **Taps calling internal addresses** are blocked by default; set `DATRIS_ALLOW_PRIVATE_EGRESS=true` if an endpoint legitimately runs on an internal network.
+  - **Bundled Vault** uses a unique per-install token; for manual `vault` commands read it with `docker compose exec -T datris cat /vault-token/token`.
+  - **Fix:** the default Docker Compose config pulls the published images again (a recent change had it building from source).
+  - Standard upgrade: `docker compose pull && docker compose up -d`.
+</Update>
+
 <Update label="v1.18.0" description="August 18, 2026">
   **Build taps in any language — HTTP taps.**
 
