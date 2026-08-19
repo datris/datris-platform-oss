@@ -1,9 +1,10 @@
 # Dependabot — automated dependency-update PRs for known-vulnerable and
 # outdated dependencies. Covers every ecosystem Dependabot supports natively.
 #
-# NOT covered here: the Scala/sbt server dependencies — Dependabot has no sbt
-# support. Those are scanned in CI via Trivy (see .github/workflows/security-scan.yml,
-# the published-image scan) and, if deeper coverage is wanted, sbt-dependency-check.
+# Scala/sbt server dependencies: Dependabot has no native sbt ecosystem, so the
+# sbt dependency graph is submitted to GitHub separately (see
+# .github/workflows/scala-dependency-graph.yml). That makes Dependabot raise
+# alerts for the Scala/JVM deps too, using the GitHub Advisory Database.
 version: 2
 updates:
   # GitHub Actions used in our workflows (keeps the SHA-pinned actions patched).

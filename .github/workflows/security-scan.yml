@@ -6,9 +6,12 @@ name: Security Scan
 #     (Dockerfiles / compose). Runs on every PR and push so regressions are
 #     caught before merge.
 #   - image-scan: scans the PUBLISHED datrisai/* images for OS-package and
-#     language CVEs (this is what covers the Scala/JVM + OS layers that the
-#     filesystem scan and Dependabot can't see). Runs on a weekly schedule so
-#     newly-disclosed CVEs in already-shipped images surface without a rebuild.
+#     language CVEs (the OS layer that the filesystem scan and Dependabot can't
+#     see). Runs on a weekly schedule so newly-disclosed CVEs in already-shipped
+#     images surface without a rebuild.
+#
+# Scala/JVM library CVEs are covered separately via the GitHub Dependency Graph
+# (see .github/workflows/scala-dependency-graph.yml), which feeds Dependabot.
 #
 # Findings are report-only for now (exit-code 0) so a backlog of pre-existing
 # CVEs doesn't block every PR on day one. Flip exit-code to '1' on the
