@@ -1,6 +1,6 @@
 # datris-tap-runner — isolated tap execution sidecar (tap-execution-isolation Phase 3).
 # Holds NO platform secrets: no JVM, no Vault, no /datris/.env, no /config, no Docker socket.
-FROM python:3.12-slim-bookworm
+FROM python:3.14-slim-bookworm
 
 # Pre-bake the same common package set the server image carries, so taps that don't
 # declare extras run with no per-run install. (Tap-declared extras install into a
