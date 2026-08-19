@@ -36,3 +36,28 @@ jobs:
 
       - name: Format check and test
         run: sbt scalafmtCheckAll test
+
+  # Builds the Angular UI so a dependency bump that breaks the UI (peer-dep
+  # conflict on `npm ci`, or a build error) fails CI instead of merging green.
+  # The `test` job above only covers the Scala server — a UI-breaking dep
+  # (e.g. a zone.js/typescript bump past Angular's supported range) slipped
+  # through before this existed.
+  ui-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install and build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
