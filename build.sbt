@@ -42,7 +42,16 @@ lazy val datrisserver = project
             // applies to every transitive consumer too.
             "org.apache.hadoop" % "hadoop-common" % "3.3.4",
             "org.apache.hadoop" % "hadoop-client-api" % "3.3.4",
-            "org.apache.hadoop" % "hadoop-client-runtime" % "3.3.4"
+            "org.apache.hadoop" % "hadoop-client-runtime" % "3.3.4",
+            // Embedded Tomcat (Spring Boot's servlet container — the process
+            // serving the API). Bump from the 10.1.33 that Boot 3.2.12 ships to
+            // 10.1.55 to clear 4 critical CVEs: partial-PUT RCE, HTTP/2 header
+            // validation, digest-auth bypass, and security-constraint bypass.
+            // All three tomcat-embed-* artifacts MUST move together — a version
+            // mismatch between them makes the embedded server fail to start.
+            "org.apache.tomcat.embed" % "tomcat-embed-core" % "10.1.55",
+            "org.apache.tomcat.embed" % "tomcat-embed-el" % "10.1.55",
+            "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.55"
         ),
         buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion, sbtVersion),
         buildInfoPackage := "ai.datris.build.sbt",
