@@ -18,7 +18,7 @@
     "@angular/forms": "^18.0.0",
     "@angular/material": "^18.0.2",
     "@angular/platform-browser": "^18.0.0",
-    "@angular/platform-browser-dynamic": "^18.0.0",
+    "@angular/platform-browser-dynamic": "^20.0.7",
     "@angular/router": "^18.0.0",
     "echarts": "^5.6.0",
     "ngx-echarts": "^18.0.0",
