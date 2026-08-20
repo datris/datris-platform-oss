@@ -9,7 +9,7 @@ done
 echo "Creating buckets for environment: $ENVIRONMENT"
 mc mb --ignore-existing myminio/${ENVIRONMENT}-config
 mc mb --ignore-existing myminio/${ENVIRONMENT}-raw
-mc mb --ignore-existing myminio/${ENVIRONMENT}-raw-plus
+mc mb --ignore-existing myminio/${ENVIRONMENT}-data
 mc mb --ignore-existing myminio/${ENVIRONMENT}-temp
 
 echo "Waiting for Datris server to be reachable..."

@@ -84,7 +84,7 @@ echo "MongoDB migration complete."
 # ---- Step 3: Migrate MinIO buckets ----
 echo "[3/4] Migrating MinIO buckets..."
 
-BUCKETS="${TRIAL_ENV}-config ${TRIAL_ENV}-raw ${TRIAL_ENV}-raw-plus ${TRIAL_ENV}-temp"
+BUCKETS="${TRIAL_ENV}-config ${TRIAL_ENV}-raw ${TRIAL_ENV}-data ${TRIAL_ENV}-temp"
 
 for BUCKET in $BUCKETS; do
     NEW_BUCKET=$(echo "$BUCKET" | sed "s/${TRIAL_ENV}/${NEW_ENV}/")
