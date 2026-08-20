@@ -21,20 +21,21 @@ lazy val datrisserver = project
         assemblySettings,
         libraryDependencies ++= allDependencies,
         libraryDependencySchemes += "com.github.luben" % "zstd-jni" % VersionScheme.Always,
-        // Pin Jackson to 2.15.x to match what Spark 3.5.4 ships with — its
-        // jackson-module-scala 2.15.2 strictly checks for jackson-databind in
-        // [2.15.0, 2.16.0). Without this override, transitive deps (vault driver,
-        // weaviate client, etc.) drag in jackson-databind 2.18.x and Spark blows
-        // up with ExceptionInInitializerError the first time RDDOperationScope
-        // loads (which is any time a destination uses SparkSession — objectStore
-        // writes, in particular). Spring Boot 3.2.12 also ships 2.15.x, so this
-        // is the natural floor for the whole stack.
+        // Pin the entire Jackson family to ONE version. jackson-module-scala
+        // strictly checks that jackson-databind matches its own minor version
+        // ([2.18.0, 2.19.0) for 2.18.x) — a mismatched pair blows up with
+        // ExceptionInInitializerError the first time RDDOperationScope loads
+        // (which is any time a destination uses SparkSession — objectStore
+        // writes, in particular). Spark 3.5.x ships 2.15.2; overriding all four
+        // artifacts together to 2.18.8 keeps the pair consistent and clears the
+        // jackson-core/databind high CVEs (2.18.8 is the patched release).
+        // Bump all four together or none.
         dependencyOverrides ++= Seq(
-            "com.fasterxml.jackson.core" % "jackson-core" % "2.15.2",
-            "com.fasterxml.jackson.core" % "jackson-annotations" % "2.15.2",
-            "com.fasterxml.jackson.core" % "jackson-databind" % "2.15.2",
-            "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.15.2",
-            // Lock the entire Hadoop family to 3.3.4 — what Spark 3.5.4 ships.
+            "com.fasterxml.jackson.core" % "jackson-core" % "2.18.8",
+            "com.fasterxml.jackson.core" % "jackson-annotations" % "2.18.8",
+            "com.fasterxml.jackson.core" % "jackson-databind" % "2.18.8",
+            "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.18.8",
+            // Lock the entire Hadoop family to 3.3.4 — what Spark 3.5.x ships.
             // S3A and the rest of the Hadoop FileSystem layer share private
             // interfaces (IOStatistics, DurationTracker, CallableRaisingIOE);
             // a version skew between hadoop-aws and hadoop-common surfaces as
@@ -52,7 +53,7 @@ lazy val datrisserver = project
             "org.apache.tomcat.embed" % "tomcat-embed-core" % "10.1.55",
             "org.apache.tomcat.embed" % "tomcat-embed-el" % "10.1.55",
             "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.55",
-            // CVE patch bumps over what Spark 3.5.4 pulls transitively. Avro
+            // CVE patch bumps over what Spark 3.5.x pulls transitively. Avro
             // 1.11.4 is a patch release over Spark's 1.11.2 (CVE-2024-47561,
             // code execution reading untrusted Avro). ZooKeeper 3.7.2 replaces
             // the 3.6.3 client jar Spark/Curator drag in (CVE-2023-44981);
@@ -60,10 +61,65 @@ lazy val datrisserver = project
             // wire protocol is compatible with the 3.5+ servers Spark supports.
             "org.apache.avro" % "avro" % "1.11.4",
             "org.apache.zookeeper" % "zookeeper" % "3.7.2",
-            // minio (even at 8.5.17) still ships bcprov 1.78.1, which carries
-            // CVE-2025-14813 (GOST 28147 keystream reuse — cipher unused here,
-            // but the override clears the alert). 1.80.2 is the patched line.
-            "org.bouncycastle" % "bcprov-jdk18on" % "1.80.2"
+            // minio still ships a stale bcprov, which carries CVE-2025-14813
+            // (GOST 28147 keystream reuse — cipher unused here, but the
+            // override clears the alert). 1.80.2 is the patched line. Keep
+            // this override when bumping minio.
+            "org.bouncycastle" % "bcprov-jdk18on" % "1.80.2",
+            // Netty: Spark/azure-core-http-netty/qdrant drag in assorted 4.1.x
+            // jars with HTTP/2 + SPDY decoder DoS CVEs, patched in
+            // 4.1.136.Final. All io.netty artifacts MUST stay on one version —
+            // mixed netty jars fail at runtime with NoSuchMethodError. The
+            // full family is listed; overrides are inert for absent artifacts.
+            "io.netty" % "netty-all" % "4.1.136.Final",
+            "io.netty" % "netty-buffer" % "4.1.136.Final",
+            "io.netty" % "netty-codec" % "4.1.136.Final",
+            "io.netty" % "netty-codec-http" % "4.1.136.Final",
+            "io.netty" % "netty-codec-http2" % "4.1.136.Final",
+            "io.netty" % "netty-codec-socks" % "4.1.136.Final",
+            "io.netty" % "netty-common" % "4.1.136.Final",
+            "io.netty" % "netty-handler" % "4.1.136.Final",
+            "io.netty" % "netty-handler-proxy" % "4.1.136.Final",
+            "io.netty" % "netty-resolver" % "4.1.136.Final",
+            "io.netty" % "netty-resolver-dns" % "4.1.136.Final",
+            "io.netty" % "netty-resolver-dns-classes-macos" % "4.1.136.Final",
+            "io.netty" % "netty-resolver-dns-native-macos" % "4.1.136.Final",
+            "io.netty" % "netty-transport" % "4.1.136.Final",
+            "io.netty" % "netty-transport-classes-epoll" % "4.1.136.Final",
+            "io.netty" % "netty-transport-classes-kqueue" % "4.1.136.Final",
+            "io.netty" % "netty-transport-native-epoll" % "4.1.136.Final",
+            "io.netty" % "netty-transport-native-kqueue" % "4.1.136.Final",
+            "io.netty" % "netty-transport-native-unix-common" % "4.1.136.Final",
+            // gRPC (qdrant + milvus clients): MadeYouReset HTTP/2 DDoS
+            // (CVE in grpc-netty-shaded < 1.75.0). All io.grpc artifacts move
+            // together — mixed grpc versions misbehave at runtime.
+            "io.grpc" % "grpc-api" % "1.75.0",
+            "io.grpc" % "grpc-core" % "1.75.0",
+            "io.grpc" % "grpc-context" % "1.75.0",
+            "io.grpc" % "grpc-netty-shaded" % "1.75.0",
+            "io.grpc" % "grpc-protobuf" % "1.75.0",
+            "io.grpc" % "grpc-protobuf-lite" % "1.75.0",
+            "io.grpc" % "grpc-stub" % "1.75.0",
+            "io.grpc" % "grpc-util" % "1.75.0",
+            "io.grpc" % "grpc-services" % "1.75.0",
+            "io.grpc" % "grpc-inprocess" % "1.75.0",
+            // Apache HttpComponents 5.x (transitive via weaviate/snowflake):
+            // HTTP/1 header-parsing memory exhaustion + HPACK decoder DoS +
+            // disabled domain checks, all patched in 5.4.3. Client and core
+            // move together.
+            "org.apache.httpcomponents.client5" % "httpclient5" % "5.4.3",
+            "org.apache.httpcomponents.core5" % "httpcore5" % "5.4.3",
+            "org.apache.httpcomponents.core5" % "httpcore5-h2" % "5.4.3",
+            // Single-artifact CVE patch bumps over stale transitives:
+            // beanutils RCE/deserialization (everit), json-smart recursion DoS
+            // (azure msal), org.json DoS (everit), aircompressor buffer leak +
+            // lz4 OOB (Spark compression codecs), ivy XXE (Spark).
+            "commons-beanutils" % "commons-beanutils" % "1.11.0",
+            "net.minidev" % "json-smart" % "2.5.2",
+            "org.json" % "json" % "20231013",
+            "io.airlift" % "aircompressor" % "2.0.3",
+            "org.lz4" % "lz4-java" % "1.8.1",
+            "org.apache.ivy" % "ivy" % "2.5.2"
         ),
         buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion, sbtVersion),
         buildInfoPackage := "ai.datris.build.sbt",
@@ -87,7 +143,13 @@ lazy val datrisserver = project
 
 lazy val allDependencies = Seq(
     // Object store
-    "io.minio" % "minio" % "8.5.17",
+    "io.minio" % "minio" % "8.6.0",
+    // minio 8.6.0 depends on okhttp 5.x, whose base `okhttp` artifact is a
+    // Gradle-metadata redirect with NO classes under Maven/sbt resolution —
+    // the fat jar builds green and then dies at runtime with
+    // ClassNotFoundException: okhttp3.RequestBody on the first MinIO call.
+    // okhttp-jvm is the artifact that actually contains the classes.
+    "com.squareup.okhttp3" % "okhttp-jvm" % "5.1.0",
 
     // HTTP
     "org.apache.httpcomponents" % "httpclient" % "4.5.14",
@@ -107,18 +169,18 @@ lazy val allDependencies = Seq(
     "org.quartz-scheduler" % "quartz" % "2.5.0",
 
     // Databases
-    "org.postgresql" % "postgresql" % "42.7.7",
+    "org.postgresql" % "postgresql" % "42.7.12",
     // Connection pooling for Postgres (slf4j-only transitives; no Spark conflicts)
     "com.zaxxer" % "HikariCP" % "5.1.0",
     "com.mysql" % "mysql-connector-j" % "8.4.0",
-    "net.snowflake" % "snowflake-jdbc" % "3.20.0",
+    "net.snowflake" % "snowflake-jdbc" % "3.22.0",
     // Databricks OSS JDBC driver (Apache 2.0) — an uber jar with its own deps
     // shaded under com.databricks.jdbc.internal.*, so it can't collide with
     // Spark's arrow/netty. Used by DatabricksLoader / DatabricksQueryUtil.
     "com.databricks" % "databricks-jdbc" % "3.4.1",
 
     // Kafka
-    "org.apache.kafka" % "kafka-clients" % "3.9.1",
+    "org.apache.kafka" % "kafka-clients" % "3.9.2",
 
     // Logging
     "org.slf4j" % "slf4j-api" % "2.0.16",
@@ -127,13 +189,16 @@ lazy val allDependencies = Seq(
     "org.springframework.boot" % "spring-boot-starter" % "3.2.12",
     "org.springframework.boot" % "spring-boot-starter-web" % "3.2.12",
 
-    // Password hashing for UI user auth (BCrypt)
-    "org.springframework.security" % "spring-security-crypto" % "6.2.7",
+    // Password hashing for UI user auth (BCrypt). The crypto module is
+    // standalone (no spring-framework deps), so it can run ahead of the Boot
+    // version: 6.2.x OSS ended at 6.2.9 (the 6.2.10 CVE fix is
+    // commercial-only), so the password-length fix comes from the 6.4 line.
+    "org.springframework.security" % "spring-security-crypto" % "6.4.13",
 
     // Spark
-    "org.apache.spark" %% "spark-core" % "3.5.4",
-    "org.apache.spark" %% "spark-sql" % "3.5.4",
-    // hadoop-aws must match the hadoop-common that Spark ships. Spark 3.5.4
+    "org.apache.spark" %% "spark-core" % "3.5.7",
+    "org.apache.spark" %% "spark-sql" % "3.5.7",
+    // hadoop-aws must match the hadoop-common that Spark ships. Spark 3.5.x
     // bundles hadoop 3.3.4 — using a newer hadoop-aws (3.3.5+) leaves it
     // calling IOStatisticsBinding overloads that don't exist in 3.3.4, with
     // a NoSuchMethodError on the first Parquet read from S3A. Keep these
@@ -164,8 +229,8 @@ lazy val allDependencies = Seq(
     "io.github.jopenlibs" % "vault-java-driver" % "6.2.1",
 
     // Queue + notifications: ActiveMQ
-    "org.apache.activemq" % "activemq-client" % "5.18.6",
-    "org.apache.activemq" % "activemq-pool" % "5.18.6",
+    "org.apache.activemq" % "activemq-client" % "5.19.4",
+    "org.apache.activemq" % "activemq-pool" % "5.19.4",
 
     // NoSQL: MongoDB
     "org.mongodb" % "mongodb-driver-sync" % "4.11.4",
