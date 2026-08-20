@@ -490,6 +490,44 @@ class PipelineAPIController {
             }
         }
 
-        // Object Store — skipped (no bulk delete API available)
+        // Object Store — recursively delete s3a://<bucket>/<prefixKey> through
+        // the Hadoop FileSystem with per-bucket config applied (same route as
+        // deleteBeforeWrite in SparkObjectStoreLoader), so it works for both
+        // the built-in MinIO and provider=s3 buckets. prefixKey is not forced
+        // to be unique across pipelines, so refuse to delete when another
+        // pipeline's objectStore destination shares or nests with this prefix —
+        // a blind prefix delete would take out data a live pipeline still reads.
+        if (dest.objectStore != null) {
+            try {
+                val sharedWith = pipelinesSharingObjectStorePrefix(config)
+                if (sharedWith.nonEmpty) {
+                    logger.warn(
+                        "Skipped object store data delete for pipeline '" + config.name + "': prefixKey '" +
+                            dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
+                    )
+                } else {
+                    ObjectStoreSpark.deleteDestinationData(dest.objectStore)
+                }
+            } catch {
+                case e: Exception => logger.warn("Failed to delete object store data: " + e.getMessage)
+            }
+        }
+    }
+
+    /** Names of other pipelines whose objectStore destination would be hit by a
+     * recursive delete of this pipeline's prefix (same effective bucket, equal
+     * or nested prefix). Called before the config row is removed, so this
+     * pipeline itself is still in the table and is excluded by name.
+     */
+    private def pipelinesSharingObjectStorePrefix(config: PipelineConfig): List[String] = {
+        val table = DatrisEnvironment.current.pipelineTableName
+        NoSQLDbUtil.getItemsKeysByKeyName(table, "name")
+            .filter(_ != config.name)
+            .map(name => PipelineConfigIO.read(table, name))
+            .filter(other =>
+                other != null && other.destination != null && other.destination.objectStore != null &&
+                    ObjectStoreSpark.destinationsOverlap(config.destination.objectStore, other.destination.objectStore)
+            )
+            .map(_.name)
     }
 }
