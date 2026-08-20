@@ -9,7 +9,7 @@ done
 echo "Creating buckets..."
 mc mb --ignore-existing myminio/oss-config
 mc mb --ignore-existing myminio/oss-raw
-mc mb --ignore-existing myminio/oss-raw-plus
+mc mb --ignore-existing myminio/oss-data
 mc mb --ignore-existing myminio/oss-temp
 
 echo "Waiting for Pipeline server to be reachable..."

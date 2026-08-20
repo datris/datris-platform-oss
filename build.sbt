@@ -51,7 +51,19 @@ lazy val datrisserver = project
             // mismatch between them makes the embedded server fail to start.
             "org.apache.tomcat.embed" % "tomcat-embed-core" % "10.1.55",
             "org.apache.tomcat.embed" % "tomcat-embed-el" % "10.1.55",
-            "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.55"
+            "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.55",
+            // CVE patch bumps over what Spark 3.5.4 pulls transitively. Avro
+            // 1.11.4 is a patch release over Spark's 1.11.2 (CVE-2024-47561,
+            // code execution reading untrusted Avro). ZooKeeper 3.7.2 replaces
+            // the 3.6.3 client jar Spark/Curator drag in (CVE-2023-44981);
+            // nothing in the stack runs a ZooKeeper server, and the 3.7 client
+            // wire protocol is compatible with the 3.5+ servers Spark supports.
+            "org.apache.avro" % "avro" % "1.11.4",
+            "org.apache.zookeeper" % "zookeeper" % "3.7.2",
+            // minio (even at 8.5.17) still ships bcprov 1.78.1, which carries
+            // CVE-2025-14813 (GOST 28147 keystream reuse — cipher unused here,
+            // but the override clears the alert). 1.80.2 is the patched line.
+            "org.bouncycastle" % "bcprov-jdk18on" % "1.80.2"
         ),
         buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion, sbtVersion),
         buildInfoPackage := "ai.datris.build.sbt",
@@ -75,7 +87,7 @@ lazy val datrisserver = project
 
 lazy val allDependencies = Seq(
     // Object store
-    "io.minio" % "minio" % "8.5.14",
+    "io.minio" % "minio" % "8.5.17",
 
     // HTTP
     "org.apache.httpcomponents" % "httpclient" % "4.5.14",
@@ -141,12 +153,11 @@ lazy val allDependencies = Seq(
     // principal / managed identity) — the Azure analogue of the Bedrock
     // credential chain above. Token-fetch-only: AI requests still execute on
     // the shared Apache client in AIHttp; azure-identity only talks to the
-    // Entra token endpoints. This adds no new HTTP transport to the jar:
-    // milvus-sdk-java already ships the full azure-core + azure-core-http-netty
-    // + reactor-netty stack (via azure-storage-blob) — including azure-identity
-    // 1.10.1, which this direct dependency evicts up to a current version.
-    // Jackson stays safe: the 2.15.2 dependencyOverrides pin above applies to
-    // azure-core's transitives too.
+    // Entra token endpoints. azure-identity declares its own azure-core +
+    // azure-core-http-netty transport (milvus-sdk-java 2.5+ no longer ships
+    // the azure-storage-blob stack it used to piggyback on). Jackson stays
+    // safe: the 2.15.2 dependencyOverrides pin above applies to azure-core's
+    // transitives too.
     "com.azure" % "azure-identity" % "1.18.4",
 
     // Secrets: HashiCorp Vault
@@ -165,8 +176,14 @@ lazy val allDependencies = Seq(
     // Vector database: Weaviate
     "io.weaviate" % "client" % "4.9.0",
 
-    // Vector database: Milvus
-    "io.milvus" % "milvus-sdk-java" % "2.4.4",
+    // Vector database: Milvus. 2.5.x dropped the bulkwriter dependency tree
+    // (hadoop-client, parquet-avro, minio, azure-storage-blob) that 2.4.x
+    // shipped — we only use the io.milvus.v2 client API, never the bulkwriter,
+    // and that tree carried three critical CVEs (parquet-avro RCE, the
+    // unpatchable jackson-mapper-asl, and hadoop's old avro/zookeeper).
+    // 2.5.10 rather than 2.6.x: users bring their own Milvus server, and the
+    // 2.5 SDK has the wider server-compat window.
+    "io.milvus" % "milvus-sdk-java" % "2.5.10",
 
     // Document text extraction
     "org.apache.pdfbox" % "pdfbox" % "3.0.4",
