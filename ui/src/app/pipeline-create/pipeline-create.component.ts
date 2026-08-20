@@ -13,9 +13,10 @@ interface SchemaField {
 }
 
 @Component({
-  selector: 'app-pipeline-create',
-  templateUrl: './pipeline-create.component.html',
-  styleUrls: ['./pipeline-create.component.css']
+    selector: 'app-pipeline-create',
+    templateUrl: './pipeline-create.component.html',
+    styleUrls: ['./pipeline-create.component.css'],
+    standalone: false
 })
 export class PipelineCreateComponent implements OnInit {
   isEditMode = false;

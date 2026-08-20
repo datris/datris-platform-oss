@@ -7,9 +7,10 @@ import { SearchService, QueryResponse } from '../search.service';
 import { HealthService } from '../health.service';
 
 @Component({
-  selector: 'app-search',
-  templateUrl: './search.component.html',
-  styleUrls: ['./search.component.css']
+    selector: 'app-search',
+    templateUrl: './search.component.html',
+    styleUrls: ['./search.component.css'],
+    standalone: false
 })
 export class SearchComponent implements OnInit, OnDestroy {
   queryType = 'postgres';

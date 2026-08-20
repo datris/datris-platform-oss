@@ -4,9 +4,10 @@ import { PipelineService } from '../pipeline.service';
 import { Observable } from 'rxjs';
 
 @Component({
-  selector: 'app-version-history',
-  templateUrl: './version-history.component.html',
-  styleUrls: ['./version-history.component.css']
+    selector: 'app-version-history',
+    templateUrl: './version-history.component.html',
+    styleUrls: ['./version-history.component.css'],
+    standalone: false
 })
 export class VersionHistoryComponent implements OnChanges {
   @Input() entityType: 'tap' | 'pipeline' = 'tap';

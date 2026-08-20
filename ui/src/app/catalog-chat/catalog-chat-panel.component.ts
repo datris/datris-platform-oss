@@ -13,9 +13,10 @@ interface StarterPrompt {
  *  leaving /catalog and returning. Mirrors OpsChatPanelComponent — same
  *  layout, same CSS-var width handshake — but drives the curation agent. */
 @Component({
-  selector: 'app-catalog-chat-panel',
-  templateUrl: './catalog-chat-panel.component.html',
-  styleUrls: ['./catalog-chat-panel.component.css']
+    selector: 'app-catalog-chat-panel',
+    templateUrl: './catalog-chat-panel.component.html',
+    styleUrls: ['./catalog-chat-panel.component.css'],
+    standalone: false
 })
 export class CatalogChatPanelComponent implements OnInit, OnDestroy, AfterViewChecked {
   private static readonly STORAGE_KEY = 'catalog.chatPanel.expanded';

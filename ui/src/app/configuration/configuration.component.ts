@@ -7,9 +7,10 @@ import { AuthService } from '../auth.service';
 type ConfigTab = 'environment' | 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources' | 'code-repo';
 
 @Component({
-  selector: 'app-configuration',
-  templateUrl: './configuration.component.html',
-  styleUrls: ['./configuration.component.css']
+    selector: 'app-configuration',
+    templateUrl: './configuration.component.html',
+    styleUrls: ['./configuration.component.css'],
+    standalone: false
 })
 export class ConfigurationComponent implements OnInit {
   activeTab: ConfigTab = 'ai-providers';

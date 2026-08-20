@@ -14,9 +14,10 @@ interface StarterPrompt {
  *  body. Transcript, draft, and catalog scope live in root singletons so they
  *  survive navigating away from /search and back. */
 @Component({
-  selector: 'app-search-chat-panel',
-  templateUrl: './search-chat-panel.component.html',
-  styleUrls: ['./search-chat-panel.component.css']
+    selector: 'app-search-chat-panel',
+    templateUrl: './search-chat-panel.component.html',
+    styleUrls: ['./search-chat-panel.component.css'],
+    standalone: false
 })
 export class SearchChatPanelComponent implements OnInit, AfterViewChecked {
   /** 'All' plus any named catalogs, plus 'Uncataloged' when bare items exist. */

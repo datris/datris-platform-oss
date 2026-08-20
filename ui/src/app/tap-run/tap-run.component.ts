@@ -4,9 +4,10 @@ import { Subscription } from 'rxjs';
 import { TapService } from '../tap.service';
 
 @Component({
-  selector: 'app-tap-run',
-  templateUrl: './tap-run.component.html',
-  styleUrls: ['./tap-run.component.css']
+    selector: 'app-tap-run',
+    templateUrl: './tap-run.component.html',
+    styleUrls: ['./tap-run.component.css'],
+    standalone: false
 })
 export class TapRunComponent implements OnInit, OnDestroy {
   tapName = '';

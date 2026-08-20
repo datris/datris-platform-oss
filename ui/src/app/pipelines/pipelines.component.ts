@@ -7,9 +7,10 @@ import { TapService } from '../tap.service';
 import { AuthService } from '../auth.service';
 
 @Component({
-  selector: 'app-pipelines',
-  templateUrl: './pipelines.component.html',
-  styleUrls: ['./pipelines.component.css']
+    selector: 'app-pipelines',
+    templateUrl: './pipelines.component.html',
+    styleUrls: ['./pipelines.component.css'],
+    standalone: false
 })
 export class PipelinesComponent implements OnInit, OnDestroy {
   /** When set, renders only the pipelines that belong to this catalog and hides

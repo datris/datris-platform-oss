@@ -22,9 +22,10 @@ interface CatalogInfo {
 }
 
 @Component({
-  selector: 'app-data-catalog',
-  templateUrl: './data-catalog.component.html',
-  styleUrls: ['./data-catalog.component.css']
+    selector: 'app-data-catalog',
+    templateUrl: './data-catalog.component.html',
+    styleUrls: ['./data-catalog.component.css'],
+    standalone: false
 })
 export class DataCatalogComponent implements OnInit, OnDestroy {
   catalogs: CatalogInfo[] = [];

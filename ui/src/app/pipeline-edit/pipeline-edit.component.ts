@@ -3,9 +3,10 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 
 @Component({
-  selector: 'app-pipeline-edit',
-  templateUrl: './pipeline-edit.component.html',
-  styleUrls: ['./pipeline-edit.component.css']
+    selector: 'app-pipeline-edit',
+    templateUrl: './pipeline-edit.component.html',
+    styleUrls: ['./pipeline-edit.component.css'],
+    standalone: false
 })
 export class PipelineEditComponent implements OnInit {
   name = '';

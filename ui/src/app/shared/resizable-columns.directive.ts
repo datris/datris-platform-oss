@@ -21,7 +21,10 @@ export function isColumnDragActive(): boolean {
  * a layout survives reloads and applies to every table sharing the key (e.g.
  * the taps table in each catalog card).
  */
-@Directive({ selector: 'table[appResizableColumns]' })
+@Directive({
+    selector: 'table[appResizableColumns]',
+    standalone: false
+})
 export class ResizableColumnsDirective implements AfterViewInit, OnDestroy {
   @Input('appResizableColumns') tableKey = '';
 

@@ -6,9 +6,10 @@ import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 import { isColumnDragActive } from '../shared/resizable-columns.directive';
 
 @Component({
-  selector: 'app-taps',
-  templateUrl: './taps.component.html',
-  styleUrls: ['./taps.component.css']
+    selector: 'app-taps',
+    templateUrl: './taps.component.html',
+    styleUrls: ['./taps.component.css'],
+    standalone: false
 })
 export class TapsComponent implements OnInit, OnDestroy {
   /** When set, renders only the taps that belong to this catalog and hides the
