@@ -3,6 +3,14 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.19.1" description="August 20, 2026">
+  **Dependency security updates and an install fix.**
+
+  - Updated bundled server dependencies to resolve all critical published advisories against third-party libraries, and removed an unused legacy dependency tree from the server entirely. No functional changes.
+  - Fresh installs now create the default object-store output bucket automatically — previously the first pipeline writing to the built-in object store with default settings failed until the bucket was created by hand.
+  - Standard upgrade: refresh your checkout (or re-download `docker-compose.standalone.yml`), then `docker compose pull && docker compose up -d`. If you update images without refreshing the Compose files, create a bucket named `{environment}-data` (default: `oss-data`) once in the MinIO console.
+</Update>
+
 <Update label="v1.19.0" description="August 19, 2026">
   **Security hardening.**
 
