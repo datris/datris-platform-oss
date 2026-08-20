@@ -3,9 +3,10 @@ import { NavigationEnd, Router } from '@angular/router';
 import { Subscription, filter } from 'rxjs';
 
 @Component({
-  selector: 'app-mcp-shell',
-  templateUrl: './mcp-shell.component.html',
-  styleUrls: ['./mcp-shell.component.css']
+    selector: 'app-mcp-shell',
+    templateUrl: './mcp-shell.component.html',
+    styleUrls: ['./mcp-shell.component.css'],
+    standalone: false
 })
 export class McpShellComponent implements OnInit, OnDestroy {
   private static readonly KEY = 'mcp.lastChild';

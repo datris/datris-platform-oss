@@ -5,9 +5,10 @@ import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
 
 @Component({
-  selector: 'app-pipeline-status',
-  templateUrl: './pipeline-status.component.html',
-  styleUrls: ['./pipeline-status.component.css']
+    selector: 'app-pipeline-status',
+    templateUrl: './pipeline-status.component.html',
+    styleUrls: ['./pipeline-status.component.css'],
+    standalone: false
 })
 export class PipelineStatusComponent implements OnInit, OnDestroy {
   pipelines: PipelineStatus[] = [];

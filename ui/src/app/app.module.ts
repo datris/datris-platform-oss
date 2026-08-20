@@ -1,4 +1,4 @@
-import { NgModule } from '@angular/core';
+import { NgModule, provideZoneChangeDetection } from '@angular/core';
 import { BrowserModule } from '@angular/platform-browser';
 import { FormsModule } from '@angular/forms';
 import { AppComponent } from './app.component';
@@ -86,7 +86,10 @@ import { NgxEchartsModule } from 'ngx-echarts';
     MaterialModule,
     NgxEchartsModule.forRoot({ echarts: () => import('echarts') })
   ],
-  providers: [provideHttpClient(withInterceptors([apiKeyInterceptor, authErrorInterceptor]))],
+  providers: [
+    provideZoneChangeDetection({ eventCoalescing: true }),
+    provideHttpClient(withInterceptors([apiKeyInterceptor, authErrorInterceptor]))
+  ],
   bootstrap: [AppComponent]
 })
 export class AppModule { }

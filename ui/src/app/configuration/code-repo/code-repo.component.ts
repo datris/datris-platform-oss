@@ -15,9 +15,10 @@ const DEFAULTS: CodeRepoConfig = {
 };
 
 @Component({
-  selector: 'app-code-repo',
-  templateUrl: './code-repo.component.html',
-  styleUrls: ['./code-repo.component.css']
+    selector: 'app-code-repo',
+    templateUrl: './code-repo.component.html',
+    styleUrls: ['./code-repo.component.css'],
+    standalone: false
 })
 export class CodeRepoComponent implements OnInit {
   config: CodeRepoConfig = { ...DEFAULTS };

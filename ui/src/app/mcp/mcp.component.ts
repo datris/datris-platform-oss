@@ -20,9 +20,10 @@ export interface McpTool {
 }
 
 @Component({
-  selector: 'app-mcp',
-  templateUrl: './mcp.component.html',
-  styleUrls: ['./mcp.component.css']
+    selector: 'app-mcp',
+    templateUrl: './mcp.component.html',
+    styleUrls: ['./mcp.component.css'],
+    standalone: false
 })
 export class McpComponent implements OnInit {
   @ViewChild('playgroundSection') playgroundSection!: ElementRef;

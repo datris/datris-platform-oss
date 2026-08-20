@@ -12,9 +12,10 @@ interface StarterPrompt {
  *  The component lives in the shell so transcript state survives
  *  Activity ↔ Ingestion navigation. */
 @Component({
-  selector: 'app-ops-chat-panel',
-  templateUrl: './ops-chat-panel.component.html',
-  styleUrls: ['./ops-chat-panel.component.css']
+    selector: 'app-ops-chat-panel',
+    templateUrl: './ops-chat-panel.component.html',
+    styleUrls: ['./ops-chat-panel.component.css'],
+    standalone: false
 })
 export class OpsChatPanelComponent implements OnInit, OnDestroy, AfterViewChecked {
   private static readonly STORAGE_KEY = 'ops.chatPanel.expanded';

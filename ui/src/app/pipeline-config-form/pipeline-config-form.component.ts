@@ -1,9 +1,10 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
 
 @Component({
-  selector: 'app-pipeline-config-form',
-  templateUrl: './pipeline-config-form.component.html',
-  styleUrls: ['./pipeline-config-form.component.css']
+    selector: 'app-pipeline-config-form',
+    templateUrl: './pipeline-config-form.component.html',
+    styleUrls: ['./pipeline-config-form.component.css'],
+    standalone: false
 })
 export class PipelineConfigFormComponent {
   @Input() configJson = '';

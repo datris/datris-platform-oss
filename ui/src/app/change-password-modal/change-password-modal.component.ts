@@ -3,9 +3,10 @@ import { Router } from '@angular/router';
 import { AuthService } from '../auth.service';
 
 @Component({
-  selector: 'app-change-password-modal',
-  templateUrl: './change-password-modal.component.html',
-  styleUrl: './change-password-modal.component.css'
+    selector: 'app-change-password-modal',
+    templateUrl: './change-password-modal.component.html',
+    styleUrl: './change-password-modal.component.css',
+    standalone: false
 })
 export class ChangePasswordModalComponent {
   /** True for the forced first-login flow — hides the current-password field and disables close. */

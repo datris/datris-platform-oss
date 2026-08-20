@@ -2,9 +2,10 @@ import { Component, OnInit } from '@angular/core';
 import { AuthService, UserListItem } from '../../auth.service';
 
 @Component({
-  selector: 'app-users',
-  templateUrl: './users.component.html',
-  styleUrl: './users.component.css'
+    selector: 'app-users',
+    templateUrl: './users.component.html',
+    styleUrl: './users.component.css',
+    standalone: false
 })
 export class UsersComponent implements OnInit {
   users: UserListItem[] = [];

@@ -8,9 +8,10 @@ interface SecretField {
 }
 
 @Component({
-  selector: 'app-secrets',
-  templateUrl: './secrets.component.html',
-  styleUrls: ['./secrets.component.css']
+    selector: 'app-secrets',
+    templateUrl: './secrets.component.html',
+    styleUrls: ['./secrets.component.css'],
+    standalone: false
 })
 export class SecretsComponent implements OnInit {
   // List view

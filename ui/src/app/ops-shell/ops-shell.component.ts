@@ -3,9 +3,10 @@ import { NavigationEnd, Router } from '@angular/router';
 import { Subscription, filter } from 'rxjs';
 
 @Component({
-  selector: 'app-ops-shell',
-  templateUrl: './ops-shell.component.html',
-  styleUrls: ['./ops-shell.component.css']
+    selector: 'app-ops-shell',
+    templateUrl: './ops-shell.component.html',
+    styleUrls: ['./ops-shell.component.css'],
+    standalone: false
 })
 export class OpsShellComponent implements OnInit, OnDestroy {
   private static readonly KEY = 'ops.lastChild';

@@ -9,9 +9,10 @@ interface StarterPrompt {
 }
 
 @Component({
-  selector: 'app-assistant',
-  templateUrl: './assistant.component.html',
-  styleUrls: ['./assistant.component.css']
+    selector: 'app-assistant',
+    templateUrl: './assistant.component.html',
+    styleUrls: ['./assistant.component.css'],
+    standalone: false
 })
 export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, AfterViewChecked {
   // Static UI config — fine to keep in the component.

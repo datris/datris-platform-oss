@@ -15,9 +15,10 @@ import {
  *  time — same UX as Stripe restricted keys and GitHub fine-grained PATs.
  *  Listing this view never returns key values. */
 @Component({
-  selector: 'app-keys',
-  templateUrl: './keys.component.html',
-  styleUrl: './keys.component.css'
+    selector: 'app-keys',
+    templateUrl: './keys.component.html',
+    styleUrl: './keys.component.css',
+    standalone: false
 })
 export class KeysComponent implements OnInit {
   keys: KeyRow[] = [];

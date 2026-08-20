@@ -70,9 +70,10 @@ interface PipelineVolume {
 }
 
 @Component({
-  selector: 'app-activity',
-  templateUrl: './activity.component.html',
-  styleUrls: ['./activity.component.css']
+    selector: 'app-activity',
+    templateUrl: './activity.component.html',
+    styleUrls: ['./activity.component.css'],
+    standalone: false
 })
 export class ActivityComponent implements OnInit, OnDestroy {
   window: Window = '24h';

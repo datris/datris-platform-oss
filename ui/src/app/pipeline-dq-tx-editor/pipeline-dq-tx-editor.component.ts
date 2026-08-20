@@ -8,9 +8,10 @@ export interface DqTxValue {
 }
 
 @Component({
-  selector: 'app-pipeline-dq-tx-editor',
-  templateUrl: './pipeline-dq-tx-editor.component.html',
-  styleUrls: ['./pipeline-dq-tx-editor.component.css']
+    selector: 'app-pipeline-dq-tx-editor',
+    templateUrl: './pipeline-dq-tx-editor.component.html',
+    styleUrls: ['./pipeline-dq-tx-editor.component.css'],
+    standalone: false
 })
 export class PipelineDqTxEditorComponent implements OnChanges {
   @Input() sourceType = 'json';

@@ -28,9 +28,10 @@ interface LogRow {
 }
 
 @Component({
-  selector: 'app-agent-monitor',
-  templateUrl: './agent-monitor.component.html',
-  styleUrls: ['./agent-monitor.component.css']
+    selector: 'app-agent-monitor',
+    templateUrl: './agent-monitor.component.html',
+    styleUrls: ['./agent-monitor.component.css'],
+    standalone: false
 })
 export class AgentMonitorComponent implements OnInit, OnDestroy, AfterViewChecked {
   @ViewChild('logScroll') logScroll?: ElementRef<HTMLDivElement>;

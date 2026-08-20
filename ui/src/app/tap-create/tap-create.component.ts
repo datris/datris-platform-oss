@@ -10,9 +10,10 @@ import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 import { sanitizeLabel } from '../shared/sanitize';
 
 @Component({
-  selector: 'app-tap-create',
-  templateUrl: './tap-create.component.html',
-  styleUrls: ['./tap-create.component.css']
+    selector: 'app-tap-create',
+    templateUrl: './tap-create.component.html',
+    styleUrls: ['./tap-create.component.css'],
+    standalone: false
 })
 export class TapCreateComponent implements OnInit, OnDestroy {
   isEditMode = false;

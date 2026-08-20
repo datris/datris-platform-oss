@@ -8,9 +8,10 @@ const REGISTRY_KEY = 'data-sources';
 const LENGTH_WARN_CHARS = 4000;
 
 @Component({
-  selector: 'app-data-sources',
-  templateUrl: './data-sources.component.html',
-  styleUrls: ['./data-sources.component.css']
+    selector: 'app-data-sources',
+    templateUrl: './data-sources.component.html',
+    styleUrls: ['./data-sources.component.css'],
+    standalone: false
 })
 export class DataSourcesComponent implements OnInit {
   content = '';

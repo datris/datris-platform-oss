@@ -4,9 +4,10 @@ import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
 
 @Component({
-  selector: 'app-pipeline-view',
-  templateUrl: './pipeline-view.component.html',
-  styleUrls: ['./pipeline-view.component.css']
+    selector: 'app-pipeline-view',
+    templateUrl: './pipeline-view.component.html',
+    styleUrls: ['./pipeline-view.component.css'],
+    standalone: false
 })
 export class PipelineViewComponent implements OnInit, OnDestroy {
   name = '';
