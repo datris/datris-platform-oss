@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.19.2" description="August 20, 2026">
+  **Security updates across the UI and server, and a pipeline-delete fix.**
+
+  - Upgraded the web UI's underlying framework to the current long-term-support line, resolving all published critical- and high-severity advisories affecting the UI. No visual or functional changes intended.
+  - Updated bundled server dependencies to resolve the remaining published high-severity advisories against third-party libraries. No functional changes.
+  - **Deleting a pipeline now also removes its data from the built-in object store destination**, matching every other destination type. Previously the files were left behind, and recreating a pipeline with the same output prefix silently picked them up. Shared output prefixes are detected and safely skipped. Files orphaned by deletes on earlier versions are not removed retroactively.
+  - Hardened the UI container image configuration. No behavior change.
+  - Standard upgrade: `docker compose pull && docker compose up -d`. Existing pipelines, taps, and schedules are unaffected.
+</Update>
+
 <Update label="v1.19.1" description="August 20, 2026">
   **Dependency security updates and an install fix.**
 
