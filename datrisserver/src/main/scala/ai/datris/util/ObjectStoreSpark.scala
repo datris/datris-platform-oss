@@ -26,6 +26,49 @@ object ObjectStoreSpark {
             DatrisEnvironment.current.environment + "-data"
     }
 
+    /** Normalize a prefix key for path comparison and deletion: null-safe,
+      *  trimmed, leading/trailing slashes stripped. */
+    def normalizePrefix(prefixKey: String): String =
+        Option(prefixKey).getOrElse("").trim.stripPrefix("/").stripSuffix("/")
+
+    /** True when recursively deleting one destination's prefix would also hit
+      *  the other's data — same effective bucket, and one normalized prefix
+      *  equals or contains the other on a path-segment boundary. "city" vs
+      *  "city-forecasts" do NOT overlap; "city" vs "city/2026" do. An empty
+      *  prefix spans the whole bucket, so it overlaps everything in it. */
+    def destinationsOverlap(a: ObjectStore, b: ObjectStore): Boolean = {
+        if (resolveBucket(a) != resolveBucket(b)) return false
+        val pa = normalizePrefix(a.prefixKey)
+        val pb = normalizePrefix(b.prefixKey)
+        if (pa.isEmpty || pb.isEmpty) return true
+        pa == pb || pa.startsWith(pb + "/") || pb.startsWith(pa + "/")
+    }
+
+    /** Recursively delete an objectStore destination's data at
+      *  s3a://<bucket>/<prefixKey>. Routed through the Hadoop FileSystem with
+      *  the per-bucket config applied — same rationale as deleteBeforeWrite in
+      *  SparkObjectStoreLoader: the global MinIO SDK client only reaches the
+      *  built-in MinIO, which is wrong for provider=s3 or
+      *  destinationBucketOverride buckets. */
+    def deleteDestinationData(objectStore: ObjectStore): Unit = {
+        val bucket = resolveBucket(objectStore)
+        val prefix = normalizePrefix(objectStore.prefixKey)
+        if (prefix.isEmpty)
+            throw new IllegalStateException(
+                "objectStore prefixKey is empty — refusing to delete the entire bucket s3a://" + bucket + "/"
+            )
+        val spark = SparkSessionManager.getOrCreate()
+        applyPerBucketConfig(spark, bucket, objectStore)
+        val path = new org.apache.hadoop.fs.Path("s3a://" + bucket + "/" + prefix)
+        val fs = path.getFileSystem(spark.sparkContext.hadoopConfiguration)
+        if (fs.exists(path)) {
+            fs.delete(path, true)
+            logger.info("Deleted object store destination data at: s3a://" + bucket + "/" + prefix)
+        } else {
+            logger.info("No object store destination data to delete at: s3a://" + bucket + "/" + prefix)
+        }
+    }
+
     /** Apply per-bucket S3A settings on top of the global SparkSession config.
       *  Per-bucket keys (`fs.s3a.bucket.<bucket>.*`) override globals only for
       *  that bucket, so MinIO writes elsewhere keep using the global config set
