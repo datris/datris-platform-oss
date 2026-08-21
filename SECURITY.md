@@ -105,5 +105,13 @@ This repository has the following GitHub security features enabled:
 
 - **Secret scanning** (default for public repositories)
 - **Push protection** (blocks commits containing detected secrets at push time)
-- **Dependabot security updates** (planned)
+- **Dependabot security updates** — enabled for GitHub Actions, npm (UI), pip
+  (MCP server), and Docker base images across all four Dockerfiles. Scala/sbt
+  dependencies are covered via the GitHub dependency graph, so advisory alerts
+  fire for JVM dependencies too.
+- **Trivy vulnerability scanning** (`.github/workflows/security-scan.yml`) — a
+  filesystem scan (vulnerable dependencies, committed secrets, IaC misconfig)
+  runs on every pull request and push to `main`, and the published
+  `datrisai/*` container images are scanned weekly for OS-package CVEs.
+  Findings upload to the repository's Security tab.
 - **Private vulnerability reporting** (via the security advisory link above)
