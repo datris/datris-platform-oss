@@ -34,7 +34,8 @@ for a standard install:
    - **Semantic search embeddings** — OpenAI `text-embedding-3-small`
      (recommended: no 2.2 GB model download, no resident container) or the
      bundled local TEI server for data that can't leave the machine
-   - **Vector stores** — qdrant, weaviate, chroma (default: none)
+   - **Vector stores** — pgvector by default (included with Postgres, no
+     extra container); optionally add qdrant, weaviate, or chroma
    - **Kafka** — local test broker or external (default: none)
    - **Snowflake / Databricks** — optionally store destination credentials
      now so pipelines can use them on day one

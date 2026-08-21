@@ -426,15 +426,38 @@ else
       ;;
   esac
 
-  # Vector stores — opt-in, bundled (profile) or external per store.
+  # Vector stores — pgvector is the default: it rides on Postgres (the bundled
+  # image is pgvector/pgvector) and vault-init always seeds its secret, so it
+  # needs no extra container and no prompt. The rest are opt-in additions,
+  # bundled (profile) or external per store.
+  if [ "$PG_MODE" != "none" ]; then
+    if [ "$PG_MODE" = "external" ]; then
+      add_summary pgvector external "via Postgres (needs the pgvector extension)"
+    else
+      add_summary pgvector bundled "via Postgres (no extra container)"
+    fi
+  fi
   VEC_CHOICE=""
   if [ -n "$TTY" ] && [ -z "${DATRIS_PROFILES:-}${QDRANT_HOST:-}${WEAVIATE_HOST:-}${CHROMA_HOST:-}${MILVUS_HOST:-}" ]; then
     say ""
-    ask "  Vector stores (qdrant, weaviate, chroma; milvus external-only) — comma-separated, or Enter for none: "
+    if [ "$PG_MODE" != "none" ]; then
+      say "  Vector search runs on pgvector inside your Postgres by default —"
+      say "  nothing extra to install."
+      ask "  Additional vector stores (qdrant, weaviate, chroma; milvus external-only) — comma-separated, or Enter for pgvector only: "
+    else
+      ask "  Vector stores (qdrant, weaviate, chroma; milvus external-only) — comma-separated, or Enter for none: "
+    fi
     VEC_CHOICE="$ANS"
   fi
   for store in $(printf '%s' "$VEC_CHOICE" | tr ',' ' '); do
     case "$store" in
+      pgvector)
+        if [ "$PG_MODE" = "none" ]; then
+          warn "  pgvector rides on Postgres, which is set to 'none' — skipping."
+        else
+          say "    pgvector is already included via Postgres — nothing to add."
+        fi
+        continue ;;
       qdrant|weaviate|chroma|milvus) ;;
       *) warn "  Unknown vector store '$store' — skipping."; continue ;;
     esac
