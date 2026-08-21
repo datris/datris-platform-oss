@@ -58,14 +58,15 @@ lazy val datrisserver = project
             "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.55",
             // CVE patch bumps over what Spark 3.5.x pulls transitively. Avro
             // 1.11.4 is a patch release over Spark's 1.11.2 (CVE-2024-47561,
-            // code execution reading untrusted Avro). ZooKeeper 3.8.4 replaces
+            // code execution reading untrusted Avro). ZooKeeper 3.8.6 replaces
             // the 3.6.3 client jar Spark/Curator drag in (CVE-2023-44981 +
             // CVE-2024-23944 persistent-watcher info disclosure — no fix on
-            // the 3.7 line); nothing in the stack runs a ZooKeeper server, and
-            // the 3.8 client wire protocol is compatible with the 3.5+ servers
-            // Spark supports.
+            // the 3.7 line — plus the 3.8.0–3.8.5 ZKTrustManager reverse-DNS
+            // hostname-verification bypass and config-handling advisories);
+            // nothing in the stack runs a ZooKeeper server, and the 3.8 client
+            // wire protocol is compatible with the 3.5+ servers Spark supports.
             "org.apache.avro" % "avro" % "1.11.4",
-            "org.apache.zookeeper" % "zookeeper" % "3.8.4",
+            "org.apache.zookeeper" % "zookeeper" % "3.8.6",
             // minio still ships a stale bcprov. 1.84 patches the LDAP
             // injection (CertPath/X509LDAP) on top of the earlier GOST
             // keystream fix — neither code path is used here, but the
