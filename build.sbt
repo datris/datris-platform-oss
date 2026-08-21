@@ -45,9 +45,11 @@ lazy val datrisserver = project
             "org.apache.hadoop" % "hadoop-client-api" % "3.3.4",
             "org.apache.hadoop" % "hadoop-client-runtime" % "3.3.4",
             // Embedded Tomcat (Spring Boot's servlet container — the process
-            // serving the API). Bump from the 10.1.33 that Boot 3.2.12 ships to
-            // 10.1.55 to clear 4 critical CVEs: partial-PUT RCE, HTTP/2 header
-            // validation, digest-auth bypass, and security-constraint bypass.
+            // serving the API). Boot 3.5.16 manages this same version; the
+            // override stays as an explicit floor so a Boot downgrade can't
+            // silently reintroduce the 4 critical CVEs fixed here: partial-PUT
+            // RCE, HTTP/2 header validation, digest-auth bypass, and
+            // security-constraint bypass.
             // All three tomcat-embed-* artifacts MUST move together — a version
             // mismatch between them makes the embedded server fail to start.
             "org.apache.tomcat.embed" % "tomcat-embed-core" % "10.1.55",
@@ -185,9 +187,12 @@ lazy val allDependencies = Seq(
     // Logging
     "org.slf4j" % "slf4j-api" % "2.0.16",
 
-    // Spring Boot
-    "org.springframework.boot" % "spring-boot-starter" % "3.2.12",
-    "org.springframework.boot" % "spring-boot-starter-web" % "3.2.12",
+    // Spring Boot. 3.5.x because the 3.2.x/6.1.x lines are past OSS EOL —
+    // their CVE fixes are commercial-only. 3.5.16 manages Spring Framework
+    // 6.2.19, which carries the OSS fixes for the 2025/2026 Framework CVEs
+    // (spring-core auth flaw, webmvc XSS/DoS, SpEL DoS).
+    "org.springframework.boot" % "spring-boot-starter" % "3.5.16",
+    "org.springframework.boot" % "spring-boot-starter-web" % "3.5.16",
 
     // Password hashing for UI user auth (BCrypt). The crypto module is
     // standalone (no spring-framework deps), so it can run ahead of the Boot
