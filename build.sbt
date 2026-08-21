@@ -27,14 +27,15 @@ lazy val datrisserver = project
         // ExceptionInInitializerError the first time RDDOperationScope loads
         // (which is any time a destination uses SparkSession — objectStore
         // writes, in particular). Spark 3.5.x ships 2.15.2; overriding all four
-        // artifacts together to 2.18.8 keeps the pair consistent and clears the
-        // jackson-core/databind high CVEs (2.18.8 is the patched release).
-        // Bump all four together or none.
+        // artifacts together to 2.18.9 keeps the pair consistent and clears the
+        // jackson-core/databind CVEs (2.18.9 patches the @JsonView bypasses and
+        // case-insensitive @JsonIgnoreProperties bypass on top of the 2.18.8
+        // high fixes). Bump all four together or none.
         dependencyOverrides ++= Seq(
-            "com.fasterxml.jackson.core" % "jackson-core" % "2.18.8",
-            "com.fasterxml.jackson.core" % "jackson-annotations" % "2.18.8",
-            "com.fasterxml.jackson.core" % "jackson-databind" % "2.18.8",
-            "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.18.8",
+            "com.fasterxml.jackson.core" % "jackson-core" % "2.18.9",
+            "com.fasterxml.jackson.core" % "jackson-annotations" % "2.18.9",
+            "com.fasterxml.jackson.core" % "jackson-databind" % "2.18.9",
+            "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.18.9",
             // Lock the entire Hadoop family to 3.3.4 — what Spark 3.5.x ships.
             // S3A and the rest of the Hadoop FileSystem layer share private
             // interfaces (IOStatistics, DurationTracker, CallableRaisingIOE);
@@ -57,41 +58,45 @@ lazy val datrisserver = project
             "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.55",
             // CVE patch bumps over what Spark 3.5.x pulls transitively. Avro
             // 1.11.4 is a patch release over Spark's 1.11.2 (CVE-2024-47561,
-            // code execution reading untrusted Avro). ZooKeeper 3.7.2 replaces
-            // the 3.6.3 client jar Spark/Curator drag in (CVE-2023-44981);
-            // nothing in the stack runs a ZooKeeper server, and the 3.7 client
-            // wire protocol is compatible with the 3.5+ servers Spark supports.
+            // code execution reading untrusted Avro). ZooKeeper 3.8.4 replaces
+            // the 3.6.3 client jar Spark/Curator drag in (CVE-2023-44981 +
+            // CVE-2024-23944 persistent-watcher info disclosure — no fix on
+            // the 3.7 line); nothing in the stack runs a ZooKeeper server, and
+            // the 3.8 client wire protocol is compatible with the 3.5+ servers
+            // Spark supports.
             "org.apache.avro" % "avro" % "1.11.4",
-            "org.apache.zookeeper" % "zookeeper" % "3.7.2",
-            // minio still ships a stale bcprov, which carries CVE-2025-14813
-            // (GOST 28147 keystream reuse — cipher unused here, but the
-            // override clears the alert). 1.80.2 is the patched line. Keep
-            // this override when bumping minio.
-            "org.bouncycastle" % "bcprov-jdk18on" % "1.80.2",
+            "org.apache.zookeeper" % "zookeeper" % "3.8.4",
+            // minio still ships a stale bcprov. 1.84 patches the LDAP
+            // injection (CertPath/X509LDAP) on top of the earlier GOST
+            // keystream fix — neither code path is used here, but the
+            // override clears the alerts. Keep this override when bumping
+            // minio.
+            "org.bouncycastle" % "bcprov-jdk18on" % "1.84",
             // Netty: Spark/azure-core-http-netty/qdrant drag in assorted 4.1.x
-            // jars with HTTP/2 + SPDY decoder DoS CVEs, patched in
-            // 4.1.136.Final. All io.netty artifacts MUST stay on one version —
-            // mixed netty jars fail at runtime with NoSuchMethodError. The
-            // full family is listed; overrides are inert for absent artifacts.
-            "io.netty" % "netty-all" % "4.1.136.Final",
-            "io.netty" % "netty-buffer" % "4.1.136.Final",
-            "io.netty" % "netty-codec" % "4.1.136.Final",
-            "io.netty" % "netty-codec-http" % "4.1.136.Final",
-            "io.netty" % "netty-codec-http2" % "4.1.136.Final",
-            "io.netty" % "netty-codec-socks" % "4.1.136.Final",
-            "io.netty" % "netty-common" % "4.1.136.Final",
-            "io.netty" % "netty-handler" % "4.1.136.Final",
-            "io.netty" % "netty-handler-proxy" % "4.1.136.Final",
-            "io.netty" % "netty-resolver" % "4.1.136.Final",
-            "io.netty" % "netty-resolver-dns" % "4.1.136.Final",
-            "io.netty" % "netty-resolver-dns-classes-macos" % "4.1.136.Final",
-            "io.netty" % "netty-resolver-dns-native-macos" % "4.1.136.Final",
-            "io.netty" % "netty-transport" % "4.1.136.Final",
-            "io.netty" % "netty-transport-classes-epoll" % "4.1.136.Final",
-            "io.netty" % "netty-transport-classes-kqueue" % "4.1.136.Final",
-            "io.netty" % "netty-transport-native-epoll" % "4.1.136.Final",
-            "io.netty" % "netty-transport-native-kqueue" % "4.1.136.Final",
-            "io.netty" % "netty-transport-native-unix-common" % "4.1.136.Final",
+            // jars with HTTP/2 + SPDY decoder DoS CVEs; 4.1.137.Final also
+            // patches the CORS Vary-header cache-poisoning advisory. All
+            // io.netty artifacts MUST stay on one version — mixed netty jars
+            // fail at runtime with NoSuchMethodError. The full family is
+            // listed; overrides are inert for absent artifacts.
+            "io.netty" % "netty-all" % "4.1.137.Final",
+            "io.netty" % "netty-buffer" % "4.1.137.Final",
+            "io.netty" % "netty-codec" % "4.1.137.Final",
+            "io.netty" % "netty-codec-http" % "4.1.137.Final",
+            "io.netty" % "netty-codec-http2" % "4.1.137.Final",
+            "io.netty" % "netty-codec-socks" % "4.1.137.Final",
+            "io.netty" % "netty-common" % "4.1.137.Final",
+            "io.netty" % "netty-handler" % "4.1.137.Final",
+            "io.netty" % "netty-handler-proxy" % "4.1.137.Final",
+            "io.netty" % "netty-resolver" % "4.1.137.Final",
+            "io.netty" % "netty-resolver-dns" % "4.1.137.Final",
+            "io.netty" % "netty-resolver-dns-classes-macos" % "4.1.137.Final",
+            "io.netty" % "netty-resolver-dns-native-macos" % "4.1.137.Final",
+            "io.netty" % "netty-transport" % "4.1.137.Final",
+            "io.netty" % "netty-transport-classes-epoll" % "4.1.137.Final",
+            "io.netty" % "netty-transport-classes-kqueue" % "4.1.137.Final",
+            "io.netty" % "netty-transport-native-epoll" % "4.1.137.Final",
+            "io.netty" % "netty-transport-native-kqueue" % "4.1.137.Final",
+            "io.netty" % "netty-transport-native-unix-common" % "4.1.137.Final",
             // gRPC (qdrant + milvus clients): MadeYouReset HTTP/2 DDoS
             // (CVE in grpc-netty-shaded < 1.75.0). All io.grpc artifacts move
             // together — mixed grpc versions misbehave at runtime.
@@ -107,11 +112,29 @@ lazy val datrisserver = project
             "io.grpc" % "grpc-inprocess" % "1.75.0",
             // Apache HttpComponents 5.x (transitive via weaviate/snowflake):
             // HTTP/1 header-parsing memory exhaustion + HPACK decoder DoS +
-            // disabled domain checks, all patched in 5.4.3. Client and core
-            // move together.
-            "org.apache.httpcomponents.client5" % "httpclient5" % "5.4.3",
+            // disabled domain checks (5.4.3), plus the connection-pool
+            // exhaustion leak on Content-Encoding decode errors (client5
+            // 5.6.3). httpclient5 5.6.3 builds against httpcore5 5.4.3, so
+            // core stays put — check the httpclient5-parent pom before moving
+            // either one.
+            "org.apache.httpcomponents.client5" % "httpclient5" % "5.6.3",
             "org.apache.httpcomponents.core5" % "httpcore5" % "5.4.3",
             "org.apache.httpcomponents.core5" % "httpcore5-h2" % "5.4.3",
+            // Log4j 2.x (transitive via Spark, which ships 2.20.0): TLS
+            // hostname-verification gaps in the Socket Appender config and
+            // XML/JSON layout encoding flaws, patched across 2.25.3–2.25.5.
+            // None of these appenders/layouts are used here, but the bump
+            // clears the alerts. All four artifacts move together — a
+            // core/api skew breaks logging init at startup.
+            "org.apache.logging.log4j" % "log4j-api" % "2.25.5",
+            "org.apache.logging.log4j" % "log4j-core" % "2.25.5",
+            "org.apache.logging.log4j" % "log4j-1.2-api" % "2.25.5",
+            "org.apache.logging.log4j" % "log4j-slf4j2-impl" % "2.25.5",
+            // nimbus-jose-jwt (transitive via weaviate's oauth2-oidc-sdk, same
+            // tree as the json-smart override below): DoS on deeply nested
+            // JSON, patched in 10.0.2. Only exercised when a Weaviate
+            // destination authenticates via OIDC.
+            "com.nimbusds" % "nimbus-jose-jwt" % "10.0.2",
             // Single-artifact CVE patch bumps over stale transitives:
             // beanutils RCE/deserialization (everit), json-smart recursion DoS
             // (azure msal), org.json DoS (everit), aircompressor buffer leak +
@@ -121,6 +144,12 @@ lazy val datrisserver = project
             "org.json" % "json" % "20231013",
             "io.airlift" % "aircompressor" % "2.0.3",
             "org.lz4" % "lz4-java" % "1.8.1",
+            // kafka-clients 3.9.x switched lz4 to the at.yawk.lz4 fork (the
+            // org.lz4 pin above still covers Spark). 1.11.1 patches the native
+            // XXHash JVM crash on invalid byte ranges. Both lz4 jars ship the
+            // same net.jpountz classes; the assembly MergeStrategy.first
+            // dedupe handles the overlap, as it already did before this bump.
+            "at.yawk.lz4" % "lz4-java" % "1.11.1",
             "org.apache.ivy" % "ivy" % "2.5.2"
         ),
         buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion, sbtVersion),
@@ -175,7 +204,11 @@ lazy val allDependencies = Seq(
     // Connection pooling for Postgres (slf4j-only transitives; no Spark conflicts)
     "com.zaxxer" % "HikariCP" % "5.1.0",
     "com.mysql" % "mysql-connector-j" % "8.4.0",
-    "net.snowflake" % "snowflake-jdbc" % "3.22.0",
+    // 3.23.1 patches the client-side encryption key leak into DEBUG logs.
+    // The SdkProxyRoutePlanner resource-consumption advisory has no patched
+    // release (every version through 4.0.1 is flagged) — revisit on the next
+    // driver release.
+    "net.snowflake" % "snowflake-jdbc" % "3.23.1",
     // Databricks OSS JDBC driver (Apache 2.0) — an uber jar with its own deps
     // shaded under com.databricks.jdbc.internal.*, so it can't collide with
     // Spark's arrow/netty. Used by DatabricksLoader / DatabricksQueryUtil.
@@ -257,10 +290,13 @@ lazy val allDependencies = Seq(
 
     // Document text extraction
     "org.apache.pdfbox" % "pdfbox" % "3.0.4",
-    "org.apache.poi" % "poi" % "5.3.0",
-    "org.apache.poi" % "poi-ooxml" % "5.3.0",
-    "org.apache.poi" % "poi-scratchpad" % "5.3.0",
-    "org.jsoup" % "jsoup" % "1.17.2",
+    // POI 5.4.x patches the OOXML input-validation advisory; jsoup 1.23.1
+    // patches the Cleaner raw-text-element exposure. All three POI artifacts
+    // move together.
+    "org.apache.poi" % "poi" % "5.4.1",
+    "org.apache.poi" % "poi-ooxml" % "5.4.1",
+    "org.apache.poi" % "poi-scratchpad" % "5.4.1",
+    "org.jsoup" % "jsoup" % "1.23.1",
 
     // Email parsing
     "org.eclipse.angus" % "angus-mail" % "2.0.3",
