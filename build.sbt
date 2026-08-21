@@ -204,7 +204,11 @@ lazy val allDependencies = Seq(
     // Connection pooling for Postgres (slf4j-only transitives; no Spark conflicts)
     "com.zaxxer" % "HikariCP" % "5.1.0",
     "com.mysql" % "mysql-connector-j" % "8.4.0",
-    "net.snowflake" % "snowflake-jdbc" % "3.22.0",
+    // 3.23.1 patches the client-side encryption key leak into DEBUG logs.
+    // The SdkProxyRoutePlanner resource-consumption advisory has no patched
+    // release (every version through 4.0.1 is flagged) — revisit on the next
+    // driver release.
+    "net.snowflake" % "snowflake-jdbc" % "3.23.1",
     // Databricks OSS JDBC driver (Apache 2.0) — an uber jar with its own deps
     // shaded under com.databricks.jdbc.internal.*, so it can't collide with
     // Spark's arrow/netty. Used by DatabricksLoader / DatabricksQueryUtil.
