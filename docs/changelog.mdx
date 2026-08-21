@@ -3,6 +3,14 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.19.4" description="August 21, 2026">
+  **Dependency security cleanup across the server and UI.**
+
+  - Updated server and UI dependencies to resolve every remaining published medium-severity advisory (and one low). One low-severity advisory remains open upstream with no fixed release available. No functional changes intended.
+  - The Activity tab's charts moved to the current major version of the charting library as part of the security updates — same charts, slightly refreshed default colors.
+  - Standard upgrade: `docker compose pull && docker compose up -d`. Existing pipelines, taps, and schedules are unaffected.
+</Update>
+
 <Update label="v1.19.3" description="August 21, 2026">
   **Server security updates and a friendlier vector-store default in the installer.**
 
