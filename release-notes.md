@@ -1,13 +1,11 @@
 # Release Notes
 
-## v1.19.2 — August 20, 2026
+## v1.19.3 — August 21, 2026
 
-**Security updates across the UI and server, and a pipeline-delete fix.**
+**Server security updates and a friendlier vector-store default in the installer.**
 
-- Upgraded the web UI's underlying framework to the current long-term-support line, resolving all published critical- and high-severity advisories affecting the UI. No visual or functional changes intended.
-- Updated bundled server dependencies to resolve the remaining published high-severity advisories against third-party libraries. No functional changes.
-- **Deleting a pipeline now also removes its data from the built-in object store destination**, matching the behavior of every other destination type. Previously the written files were left behind, and recreating a pipeline with the same output prefix would silently pick them up. If two pipelines share an output prefix, the delete safely skips the shared data. Files orphaned by deletes made on earlier versions are not removed retroactively — clear those once by hand if needed.
-- Hardened the UI container image configuration. No behavior change.
+- Upgraded the server's embedded web framework to its current supported release line, resolving all remaining published high-severity advisories against server dependencies (and a number of medium- and low-severity ones). No functional changes intended.
+- **The installer now presents pgvector as the default vector store.** It ships inside the bundled Postgres, so vector search works out of the box with no extra container. Additional vector stores (Qdrant, Weaviate, Chroma, Milvus) remain available as opt-in additions at install time. Existing installs are unaffected — this changes prompts and the install summary only.
 
 **Upgrading**
 
@@ -15,8 +13,8 @@ Standard upgrade: `docker compose pull && docker compose up -d`. Existing pipeli
 
 ---
 
-## v1.19.1 — August 20, 2026
+## v1.19.2 — August 20, 2026
 
-**Dependency security updates and an install fix.**
+**Security updates across the UI and server, and a pipeline-delete fix.**
 
-See the [full v1.19.1 notes](release-notes/v1.19.1.md) for details.
+See the [full v1.19.2 notes](release-notes/v1.19.2.md) for details.
