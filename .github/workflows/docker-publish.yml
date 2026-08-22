@@ -101,3 +101,38 @@ jobs:
           tags: |
             ${{ env.DOCKERHUB_ORG }}/datris-tap-runner:${{ steps.tag.outputs.version }}
             ${{ env.DOCKERHUB_ORG }}/datris-tap-runner:latest
+
+      # SBOMs (CycloneDX via Syft) for each published image, attached as workflow
+      # artifacts — the distributable supply-chain artifact that the GitHub
+      # dependency graph alerting does not provide.
+      - name: Generate SBOM — datris-server
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.DOCKERHUB_ORG }}/datris-server:${{ steps.tag.outputs.version }}
+          format: cyclonedx-json
+          output-file: sbom-datris-server-${{ steps.tag.outputs.version }}.cdx.json
+          artifact-name: sbom-datris-server-${{ steps.tag.outputs.version }}.cdx.json
+
+      - name: Generate SBOM — datris-ui
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.DOCKERHUB_ORG }}/datris-ui:${{ steps.tag.outputs.version }}
+          format: cyclonedx-json
+          output-file: sbom-datris-ui-${{ steps.tag.outputs.version }}.cdx.json
+          artifact-name: sbom-datris-ui-${{ steps.tag.outputs.version }}.cdx.json
+
+      - name: Generate SBOM — datris-mcp-server
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.DOCKERHUB_ORG }}/datris-mcp-server:${{ steps.tag.outputs.version }}
+          format: cyclonedx-json
+          output-file: sbom-datris-mcp-server-${{ steps.tag.outputs.version }}.cdx.json
+          artifact-name: sbom-datris-mcp-server-${{ steps.tag.outputs.version }}.cdx.json
+
+      - name: Generate SBOM — datris-tap-runner
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.DOCKERHUB_ORG }}/datris-tap-runner:${{ steps.tag.outputs.version }}
+          format: cyclonedx-json
+          output-file: sbom-datris-tap-runner-${{ steps.tag.outputs.version }}.cdx.json
+          artifact-name: sbom-datris-tap-runner-${{ steps.tag.outputs.version }}.cdx.json
