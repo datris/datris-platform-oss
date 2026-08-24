@@ -2,6 +2,10 @@
 
 ## Unreleased — August 24, 2026
 
+**Opt-in Postgres TLS enforcement.**
+
+- Set `DATRIS_ENV=production` and the platform refuses to start when its Postgres connection points at an external host without TLS (`sslmode=require` or stricter in the connection URL). Opt out with `DATRIS_ALLOW_PLAINTEXT_DB=true`. The bundled in-network Postgres is exempt. Nothing changes unless you set the flag — existing deployments are unaffected; a plaintext connection to an external database now logs a startup warning either way.
+
 **Observability: Prometheus metrics and structured logs.**
 
 - New `/actuator/prometheus` endpoint exposes server metrics for Prometheus scraping. It is reachable only from inside the deployment's network — the bundled edge proxy does not expose it publicly.

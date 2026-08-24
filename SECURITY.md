@@ -71,7 +71,15 @@ a discussion; it's on the roadmap.
 - **At rest**: Datris does **not** enforce at-rest encryption on Postgres,
   MongoDB, MinIO, or Kafka. Operators are expected to enable
   `sslmode=require`, MinIO server-side encryption, etc., for production
-  deployments. (We plan to fail-fast on plaintext Postgres in a future release)
+  deployments.
+- **Postgres TLS enforcement (opt-in)**: set `DATRIS_ENV=production` and Datris
+  **enforces** Postgres TLS at startup — it refuses to boot when a JDBC URL
+  points at an external host without `sslmode=require` (or stricter). To opt
+  out, set `DATRIS_ALLOW_PLAINTEXT_DB=true` and accept the risk. The bundled
+  in-network Postgres is exempt: the compose host network is the trust boundary
+  (see above), and enforcement targets external databases, where traffic
+  crosses a real network. Without the flag, behavior is unchanged — an
+  external-looking plaintext URL logs a startup warning for visibility.
 
 ### Network controls
 - No built-in rate limiting or WAF. Place Cloudflare, AWS WAF, or equivalent in
