@@ -476,9 +476,15 @@ object KeysAPIController {
                 "pipeline:read",
                 "pipeline:run:owner=self",
                 "tap:create",
+                "tap:read",
                 "tap:run:owner=self",
                 "document:upload",
                 "search:vector",
+                // Read stays scoped to tap-typed secrets: the canonical
+                // workflow (list secrets → create tap secret → create tap)
+                // does GET pre-reads, and SecretsAPIController filters reads
+                // per-secret by scope, so platform/AI keys stay invisible.
+                "secret:read:_type=tap",
                 "secret:write:_type=tap",
                 "job:read"
             )
