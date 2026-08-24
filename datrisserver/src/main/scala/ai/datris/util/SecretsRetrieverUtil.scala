@@ -23,6 +23,7 @@ object SecretsRetrieverUtil {
         val jdbcUrl = dbSecret.get("jdbcUrl")
         if (jdbcUrl == null)
             throw new DatrisException("Could not retrieve the Postgres jdbcUrl from Secrets Manager")
+        PostgresTlsGuard.validate(jdbcUrl, "platform Postgres")
 
         PostgresSecrets(
             username,

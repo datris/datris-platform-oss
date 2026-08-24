@@ -57,6 +57,7 @@ class PGVectorLoader(jobContext: JobContext) {
         val jdbcUrl = if (DatrisEnvironment.current.multiTenant) {
             rawJdbcUrl.replaceFirst("/[^/]*$", "/" + DatrisEnvironment.current.environment)
         } else rawJdbcUrl
+        PostgresTlsGuard.validate(jdbcUrl, "pgvector")
         val username = Option(pgSecret.get("username")).getOrElse("postgres")
         val password = Option(pgSecret.get("password")).getOrElse("")
 
