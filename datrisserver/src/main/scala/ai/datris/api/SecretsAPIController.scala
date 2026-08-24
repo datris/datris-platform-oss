@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonParser}
-import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess}
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess}
 import ai.datris.config.RequiresRole
 import ai.datris.model.DatrisEnvironment
 import ai.datris.util.{APIKeyValidator, SecretsRetrieverUtil, SecretsUtil}
@@ -112,6 +112,14 @@ class SecretsAPIController {
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(visible.asJava), HttpStatus.OK)
         } catch {
+            case e: CapabilityDeniedException =>
+                // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
+                // deny — a stack-trace 500 reads to agents as a server fault,
+                // not a permission boundary.
+                logger.info("capability scope denial: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
+                        e.getMessage.replace("\"", "\\\"") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -167,6 +175,14 @@ class SecretsAPIController {
                     ResponseEntity.status(HttpStatus.NOT_FOUND).body[String]("{\"error\": \"Secret not found: " + name + "\"}")
             }
         } catch {
+            case e: CapabilityDeniedException =>
+                // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
+                // deny — a stack-trace 500 reads to agents as a server fault,
+                // not a permission boundary.
+                logger.info("capability scope denial: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
+                        e.getMessage.replace("\"", "\\\"") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -191,19 +207,27 @@ class SecretsAPIController {
                 // when the request sends them as the masked placeholder.
                 val existing = SecretsUtil.getSecretMap(secretPath).map(_.asScala).getOrElse(scala.collection.mutable.Map.empty[String, String])
 
+                val json = JsonParser.parseString(body).getAsJsonObject
+
                 // In-action capability scope check for `secret:write:_type=tap`
                 // keys. The interceptor's scope-agnostic gate already confirmed
                 // the key holds `secret:write` for some scope; we now verify
-                // the actual target (existing secret's _type, or "tap" for a
-                // brand-new tap secret) satisfies the key's scope predicates.
+                // the actual target satisfies the key's scope predicates.
+                // For an EXISTING secret its stored _type is authoritative — a
+                // scoped key cannot re-tag a platform secret by claiming
+                // `_type: tap` in the payload. A BRAND-NEW secret is scoped by
+                // the _type it declares (a tap-scoped key creating a secret
+                // tagged tap is exactly the intended workflow; declaring no
+                // _type leaves the context empty and the scoped key denied).
                 // Server-side parallel to the Python `_type=tap` filter on the
                 // MCP path — both retained for defense in depth.
                 val existingType = existing.get("_type").getOrElse("")
-                val scopeContext = if (existingType.nonEmpty) Map("_type" -> existingType)
+                val incomingType =
+                    if (json.has("_type") && json.get("_type").isJsonPrimitive) json.get("_type").getAsString else ""
+                val effectiveType = if (existing.nonEmpty) existingType else incomingType
+                val scopeContext = if (effectiveType.nonEmpty) Map("_type" -> effectiveType)
                 else Map.empty[String, String]
                 CapabilityCheck.assertScope(request, "secret", "write", scopeContext)
-
-                val json = JsonParser.parseString(body).getAsJsonObject
                 val incoming = new java.util.LinkedHashMap[String, Object]()
                 json.entrySet().asScala.foreach { entry =>
                     val value = entry.getValue
@@ -321,6 +345,14 @@ class SecretsAPIController {
                 new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
             }
         } catch {
+            case e: CapabilityDeniedException =>
+                // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
+                // deny — a stack-trace 500 reads to agents as a server fault,
+                // not a permission boundary.
+                logger.info("capability scope denial: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
+                        e.getMessage.replace("\"", "\\\"") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
@@ -353,6 +385,14 @@ class SecretsAPIController {
                 new ResponseEntity[String]("{\"status\": \"ok\"}", HttpStatus.OK)
             }
         } catch {
+            case e: CapabilityDeniedException =>
+                // Same clean-JSON shape as a CapabilityInterceptor enforce-mode
+                // deny — a stack-trace 500 reads to agents as a server fault,
+                // not a permission boundary.
+                logger.info("capability scope denial: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body[String]("{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":\"" +
+                        e.getMessage.replace("\"", "\\\"") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))

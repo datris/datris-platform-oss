@@ -9,6 +9,12 @@ import ai.datris.config.TenantInterceptor
 import ai.datris.model.{DatrisException, ResolvedKey}
 import jakarta.servlet.http.HttpServletRequest
 
+/** Thrown by [[CapabilityCheck.assertScope]] on a scope denial. A distinct
+  * type so controller catch blocks can map it to a clean 403 (matching the
+  * CapabilityInterceptor's enforce-mode denials) instead of the generic
+  * 500-with-stacktrace path. */
+class CapabilityDeniedException(msg: String) extends DatrisException(msg)
+
 /** In-action scope check helper, called by controllers AFTER loading the
   * target resource. The CapabilityInterceptor's pre-action gate is scope-
   * agnostic: it confirms the request's key holds SOME capability for the
@@ -44,7 +50,7 @@ object CapabilityCheck {
         val resolved = readResolvedKey(request)
         resolved.foreach { rk =>
             if (!rk.grants(resource, action, context)) {
-                throw new DatrisException(
+                throw new CapabilityDeniedException(
                     "capability denied: key '" + rk.label + "' does not hold capability '" +
                         resource + ":" + action + "' for the targeted resource " +
                         "(scope: " + scopeStr(context) + ")"

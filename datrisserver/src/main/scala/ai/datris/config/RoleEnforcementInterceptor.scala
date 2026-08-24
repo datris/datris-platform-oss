@@ -85,9 +85,23 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                     // full-access identity present in useApiKeys=false mode is
                     // deliberately excluded so an admin gate is never satisfied
                     // by an unauthenticated caller.
+                    //
+                    // A scoped key on a CAPABILITY-MAPPED route is the other
+                    // legitimate programmatic identity: the capability check
+                    // (which already ran — WebMvcConfig ordering) granted the
+                    // route, and controllers still enforce scope predicates.
+                    // Role gates govern UI sessions; for server-to-server
+                    // callers the capability bundle is the permission model.
+                    // Routes OUTSIDE the capability table (key minting, user
+                    // management — skip-listed there) still require `*:*`, so
+                    // an admin gate is never satisfied by a scoped key.
                     if (
                         DatrisEnvironment.values.useApiKeys &&
-                        resolvedKey(request).exists(_.matchesResourceAction("*", "*"))
+                        resolvedKey(request).exists(rk =>
+                            RoleEnforcementInterceptor.programmaticKeySatisfiesRoleGate(
+                                rk, request.getMethod, request.getRequestURI
+                            )
+                        )
                     )
                         return true
                     return reject(response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
@@ -151,5 +165,27 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
         response.setContentType("application/json")
         response.getWriter.write(body)
         false
+    }
+}
+
+object RoleEnforcementInterceptor {
+
+    /** Does this validated key satisfy a role-gated endpoint reached without
+      * a user session? Full access (`*:*`) always does. A scoped key does
+      * only when the route is capability-mapped and the key holds the
+      * required capability — the same grant the CapabilityInterceptor
+      * already enforced earlier in the chain. Skip-listed and unmapped
+      * routes (key minting, user management) never accept a scoped key. */
+    private[config] def programmaticKeySatisfiesRoleGate(
+        rk: ResolvedKey,
+        method: String,
+        path: String
+    ): Boolean = {
+        if (rk.matchesResourceAction("*", "*")) return true
+        ai.datris.auth.CapabilityRoutes.lookup(method, path) match {
+            case ai.datris.auth.RouteCheck.Require(resource, action) =>
+                rk.matchesResourceAction(resource, action)
+            case _ => false
+        }
     }
 }
