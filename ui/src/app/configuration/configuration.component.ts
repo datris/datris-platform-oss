@@ -120,6 +120,7 @@ export class ConfigurationComponent implements OnInit {
   isHosted = false;
   multiTenant = false;
   useApiKeys = false;
+  useTapRunner = true;
   saving = false;
   success = '';
   error = '';
@@ -176,6 +177,7 @@ export class ConfigurationComponent implements OnInit {
         this.isHosted = String(data.hosted) === 'true';
         this.multiTenant = String(data.multiTenant) === 'true';
         this.useUserAuth = String(data.useUserAuth) === 'true';
+        this.useTapRunner = String(data.useTapRunner) === 'true';
         this.useApiKeys = String(data.useApiKeys) === 'true';
         // The Users sub-tab only exists when user-auth is on. If a deep-link
         // (or stale URL) put us on activeTab='users' before we knew that,

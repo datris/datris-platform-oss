@@ -343,4 +343,34 @@ if [ -n "${CHROMA_HOST:-}" ]; then
     host="${CHROMA_HOST}" port="${CHROMA_PORT:-8000}"
 fi
 
+
+# Mint TAP_RUNNER_TOKEN so compose isolation default-on works without a .env token.
+# Prefer a persisted file, then a non-changeme env value, else generate.
+TAP_RUNNER_TOKEN_FILE="${TAP_RUNNER_TOKEN_FILE:-/tap-runner-token/token}"
+tap_token_weak() {
+  case "$1" in
+    ""|changeme-tap-runner-token|change-me-to-a-long-random-string) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if mkdir -p "$(dirname "$TAP_RUNNER_TOKEN_FILE")" 2>/dev/null; then
+  _existing=""
+  [ -f "$TAP_RUNNER_TOKEN_FILE" ] && _existing=$(cat "$TAP_RUNNER_TOKEN_FILE" 2>/dev/null || true)
+  _from_env="${TAP_RUNNER_TOKEN:-}"
+  if ! tap_token_weak "$_existing"; then
+    echo "  TAP_RUNNER_TOKEN already minted — keeping persisted value"
+  elif ! tap_token_weak "$_from_env"; then
+    printf '%s' "$_from_env" > "$TAP_RUNNER_TOKEN_FILE"
+    echo "  persisted TAP_RUNNER_TOKEN from environment"
+  else
+    _tok=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    if [ ${#_tok} -lt 32 ]; then
+      echo "ERROR: failed to mint TAP_RUNNER_TOKEN" >&2
+      exit 1
+    fi
+    printf '%s' "$_tok" > "$TAP_RUNNER_TOKEN_FILE"
+    echo "  minted TAP_RUNNER_TOKEN"
+  fi
+  chmod 644 "$TAP_RUNNER_TOKEN_FILE" 2>/dev/null || true
+fi
 echo "Vault secrets seeded successfully."

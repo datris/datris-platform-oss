@@ -629,6 +629,22 @@ else
   ok "Wrote store configuration to .env (permissions set to 600)."
 fi
 
+# Isolation default-on: mint TAP_RUNNER_TOKEN so compose up is not changeme.
+if [ -f "$ENV_FILE" ]; then
+  _tok=$(grep '^TAP_RUNNER_TOKEN=' "$ENV_FILE" 2>/dev/null | sed 's/^TAP_RUNNER_TOKEN=//' | tr -d '"' | tr -d "'")
+  case "$_tok" in
+    ""|changeme-tap-runner-token|change-me-to-a-long-random-string)
+      _tok=$(openssl rand -hex 32 2>/dev/null || dd if=/dev/urandom bs=32 count=1 2>/dev/null | xxd -p | tr -d '\n')
+      if [ ${#_tok} -lt 32 ]; then
+        die "failed to mint TAP_RUNNER_TOKEN (need openssl or /dev/urandom)"
+      fi
+      set_env TAP_RUNNER_TOKEN "$_tok"
+      ok "Minted TAP_RUNNER_TOKEN (tap isolation on for compose)."
+      chmod 600 "$ENV_FILE" 2>/dev/null || true
+      ;;
+  esac
+fi
+
 # --- launch ---------------------------------------------------------------
 if [ "${DATRIS_NO_START:-}" = "1" ]; then
   ok "Files written to $DIR. Skipping start (DATRIS_NO_START=1)."

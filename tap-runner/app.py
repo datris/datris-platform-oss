@@ -18,7 +18,22 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("TAP_RUNNER_PORT", "8090"))
-TOKEN = os.environ.get("TAP_RUNNER_TOKEN", "")
+def _token():
+    env = os.environ.get("TAP_RUNNER_TOKEN", "")
+    weak = {"", "changeme-tap-runner-token", "change-me-to-a-long-random-string"}
+    if env not in weak:
+        return env
+    path = os.environ.get("TAP_RUNNER_TOKEN_FILE", "/tap-runner-token/token")
+    try:
+        with open(path) as f:
+            minted = f.read().strip()
+        if minted:
+            return minted
+    except OSError:
+        pass
+    return env
+
+TOKEN = _token()
 
 # Benign system env vars the Python runtime / TLS may need. Mirror of the server's
 # NonSecretEnvVars. The tap subprocess gets exactly these (from the runner's own env)

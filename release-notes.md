@@ -1,5 +1,14 @@
 # Release Notes
 
+## Unreleased — August 24, 2026
+
+**Tap isolation on by default for docker compose.**
+
+- Compose (and prod compose) now default `USE_TAP_RUNNER=true`. Isolated taps cannot open direct DB / MinIO / Vault connections — they return records; this is existing behavior, called out because isolation is now the compose default.
+- `install.sh` / `vault-init` mint `TAP_RUNNER_TOKEN` on first boot. The server refuses to start isolated with an empty or `changeme` token. `sbt`/IDE without the sidecar stays in-process (loud warning). Set `USE_TAP_RUNNER=false` to force in-process.
+
+---
+
 ## v1.19.4 — August 21, 2026
 
 **Dependency security cleanup across the server and UI.**

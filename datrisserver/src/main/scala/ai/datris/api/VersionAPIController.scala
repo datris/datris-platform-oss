@@ -44,7 +44,8 @@ class VersionAPIController {
                 "useUserAuth" -> DatrisEnvironment.values.useUserAuth.toString,
                 "useApiKeys" -> DatrisEnvironment.values.useApiKeys.toString,
                 "postgresDatabase" -> DatrisEnvironment.current.postgresDatabase,
-                "mongodbDatabase" -> mongodbDatabase
+                "mongodbDatabase" -> mongodbDatabase,
+                "useTapRunner" -> ai.datris.util.TapScriptRunner.useTapRunner.toString
             ).asJava
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(map), HttpStatus.OK)

@@ -29,6 +29,7 @@ volumes:
   tei-data:
   vault-data:        # persists Vault secrets across container recreation (drops dev mode)
   datris-vault-token: # holds the server's random Vault token (written by vault-init, read by datris)
+  tap-runner-token:  # TAP_RUNNER_TOKEN minted by vault-init on first boot
   # Named data volumes for the three stateful stores. These MUST be named:
   # anonymous volumes survive a plain recreate but are orphaned (left behind,
   # not reattached) whenever the container is removed — `down` + `up`, or a
@@ -220,6 +221,7 @@ services:
       DATABRICKS_CLIENT_ID: ${DATABRICKS_CLIENT_ID:-}
       DATABRICKS_CLIENT_SECRET: ${DATABRICKS_CLIENT_SECRET:-}
       DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+      TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
     configs:
       - source: vault-bootstrap-sh
         target: /vault-bootstrap.sh
@@ -230,6 +232,7 @@ services:
     volumes:
       - vault-data:/vault/file
       - datris-vault-token:/vault-token
+      - tap-runner-token:/tap-runner-token
     entrypoint: ["/bin/sh", "/vault-bootstrap.sh"]
     restart: "no"
     networks:
@@ -342,19 +345,20 @@ services:
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
       JAVA_OPTS: "${JAVA_OPTS:--Xms512m -Xmx2g}"
-      # Tap execution isolation (Phase 3). When USE_TAP_RUNNER=true, tap fetch()
-      # code runs in the datris-tap-runner sidecar (no secrets, no Vault route)
-      # instead of in-process. Default false preserves the zero-dependency OSS
-      # quick-start. The shared token authenticates the server→runner call.
-      USE_TAP_RUNNER: "${USE_TAP_RUNNER:-false}"
+      # Tap execution isolation (Phase 3). Compose/prod default ON: tap fetch()
+      # runs in the datris-tap-runner sidecar. Set USE_TAP_RUNNER=false for
+      # in-process (sbt/IDE without the sidecar). Token minted by install.sh/vault-init.
+      USE_TAP_RUNNER: "${USE_TAP_RUNNER:-true}"
       TAP_RUNNER_URL: "http://datris-tap-runner:8090"
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
+      TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
     configs:
       - source: datris-app-yaml
         target: /config/application.yaml
     volumes:
       - pip-cache:/root/.cache/pip
       - datris-vault-token:/vault-token:ro
+      - tap-runner-token:/tap-runner-token:ro
     networks:
       - datris-net
       - tap-net
@@ -370,6 +374,12 @@ services:
     container_name: datris-tap-runner
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
+      TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
+    volumes:
+      - tap-runner-token:/tap-runner-token:ro
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
     read_only: true
     # Scratch must allow exec: runtime-installed packages (venv interpreter, pip, and
     # any C-extension .so) live here and must be loadable. Safe — the tap is already
@@ -1120,6 +1130,36 @@ configs:
           host="$${CHROMA_HOST}" port="$${CHROMA_PORT:-8000}"
       fi
 
+
+      # Mint TAP_RUNNER_TOKEN so compose isolation default-on works without a .env token.
+      # Prefer a persisted file, then a non-changeme env value, else generate.
+      TAP_RUNNER_TOKEN_FILE="$${TAP_RUNNER_TOKEN_FILE:-/tap-runner-token/token}"
+      tap_token_weak() {
+        case "$$1" in
+          ""|changeme-tap-runner-token|change-me-to-a-long-random-string) return 0 ;;
+          *) return 1 ;;
+        esac
+      }
+      if mkdir -p "$$(dirname "$$TAP_RUNNER_TOKEN_FILE")" 2>/dev/null; then
+        _existing=""
+        [ -f "$$TAP_RUNNER_TOKEN_FILE" ] && _existing=$$(cat "$$TAP_RUNNER_TOKEN_FILE" 2>/dev/null || true)
+        _from_env="$${TAP_RUNNER_TOKEN:-}"
+        if ! tap_token_weak "$$_existing"; then
+          echo "  TAP_RUNNER_TOKEN already minted — keeping persisted value"
+        elif ! tap_token_weak "$$_from_env"; then
+          printf '%s' "$$_from_env" > "$$TAP_RUNNER_TOKEN_FILE"
+          echo "  persisted TAP_RUNNER_TOKEN from environment"
+        else
+          _tok=$$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+          if [ $${#_tok} -lt 32 ]; then
+            echo "ERROR: failed to mint TAP_RUNNER_TOKEN" >&2
+            exit 1
+          fi
+          printf '%s' "$$_tok" > "$$TAP_RUNNER_TOKEN_FILE"
+          echo "  minted TAP_RUNNER_TOKEN"
+        fi
+        chmod 644 "$$TAP_RUNNER_TOKEN_FILE" 2>/dev/null || true
+      fi
       echo "Vault secrets seeded successfully."
   minio-init-sh:
     content: |
