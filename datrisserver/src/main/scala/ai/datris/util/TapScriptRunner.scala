@@ -808,6 +808,7 @@ object TapScriptRunner {
             }
         } catch { case _: Exception => None }
     }
+
     /** Env token if it is a real minted value; otherwise the vault-init file. */
     private[datris] def resolvedTapRunnerToken: String = {
         val envTok = envTapRunnerToken
@@ -825,10 +826,10 @@ object TapScriptRunner {
     private[datris] def warnInProcess(where: String): Unit = {
         logger.warn(
             "************************************************************************\n" +
-            "TAP EXECUTION IS IN-PROCESS (" + where + "; USE_TAP_RUNNER is not true).\n" +
-            "fetch() shares this JVM network and can reach DB / MinIO / Vault directly.\n" +
-            "Compose/prod should isolate (USE_TAP_RUNNER=true). sbt/IDE without a sidecar is expected.\n" +
-            "************************************************************************"
+                "TAP EXECUTION IS IN-PROCESS (" + where + "; USE_TAP_RUNNER is not true).\n" +
+                "fetch() shares this JVM network and can reach DB / MinIO / Vault directly.\n" +
+                "Compose/prod should isolate (USE_TAP_RUNNER=true). sbt/IDE without a sidecar is expected.\n" +
+                "************************************************************************"
         )
     }
     // Host a tap should use to call back into the platform when running in the sidecar
