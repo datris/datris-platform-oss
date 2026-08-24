@@ -2,6 +2,11 @@
 
 ## Unreleased — August 24, 2026
 
+**Observability: Prometheus metrics and structured logs.**
+
+- New `/actuator/prometheus` endpoint exposes server metrics for Prometheus scraping. It is reachable only from inside the deployment's network — the bundled edge proxy does not expose it publicly.
+- Production deployments now emit one JSON log line per event, ready for SIEM / log-aggregator ingestion. Development logs stay human-readable.
+
 **Tap isolation on by default for docker compose.**
 
 - Compose (and prod compose) now default `USE_TAP_RUNNER=true`. Isolated taps cannot open direct DB / MinIO / Vault connections — they return records; this is existing behavior, called out because isolation is now the compose default.

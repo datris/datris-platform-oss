@@ -233,6 +233,9 @@ services:
       # ignore them so platform keys never leak across tenants.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # production profile switches server logs to JSON (one line per event) for
+      # SIEM ingestion; unset/override to get human-readable console logs.
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-production}"
       USE_TAP_RUNNER: "${USE_TAP_RUNNER:-true}"
       TAP_RUNNER_URL: "http://datris-tap-runner:8090"
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"

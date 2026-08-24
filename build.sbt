@@ -227,6 +227,12 @@ lazy val allDependencies = Seq(
     // (spring-core auth flaw, webmvc XSS/DoS, SpEL DoS).
     "org.springframework.boot" % "spring-boot-starter" % "3.5.16",
     "org.springframework.boot" % "spring-boot-starter-web" % "3.5.16",
+    // Actuator + Prometheus metrics (/actuator/prometheus). The registry version
+    // must match what Boot 3.5.16 manages (micrometer 1.15.12) — sbt has no BOM.
+    "org.springframework.boot" % "spring-boot-starter-actuator" % "3.5.16",
+    "io.micrometer" % "micrometer-registry-prometheus" % "1.15.12",
+    // JSON console logs when the production profile is active (see logback-spring.xml).
+    "net.logstash.logback" % "logstash-logback-encoder" % "8.1",
 
     // Password hashing for UI user auth (BCrypt). The crypto module is
     // standalone (no spring-framework deps), so it can run ahead of the Boot

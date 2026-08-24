@@ -2,13 +2,29 @@
 <!--
   Datris logging config.
 
-  Includes Spring Boot's default console (and optional file) setup unchanged,
-  so log format and the per-logger levels in application.yaml still apply. The
-  only addition is a turbo filter that drops benign client-disconnect stack
+  Two modes, switched by Spring profile:
+  - default (dev / sbt / IDE): Spring Boot's stock human-readable console setup,
+    unchanged, so log format and the per-logger levels in application.yaml apply.
+  - production profile: one JSON line per event (logstash-logback-encoder), for
+    SIEM / log-aggregator ingestion. Same levels from application.yaml.
+
+  Both modes keep the turbo filter that drops benign client-disconnect stack
   traces (broken pipe / connection reset) the servlet container raises when an
   SSE stream's browser closes mid-response. See ClientAbortLogFilter.
 -->
 <configuration>
-    <include resource="org/springframework/boot/logging/logback/base.xml"/>
     <turboFilter class="ai.datris.util.ClientAbortLogFilter"/>
+
+    <springProfile name="production">
+        <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder"/>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!production">
+        <include resource="org/springframework/boot/logging/logback/base.xml"/>
+    </springProfile>
 </configuration>
