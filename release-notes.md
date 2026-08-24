@@ -1,6 +1,11 @@
 # Release Notes
 
-## Unreleased — August 24, 2026
+## v1.20.0 — August 24, 2026
+
+**Tap isolation on by default for docker compose.**
+
+- Compose (and prod compose) now default `USE_TAP_RUNNER=true`. Isolated taps cannot open direct DB / MinIO / Vault connections — they return records; this is existing behavior, called out because isolation is now the compose default.
+- `install.sh` / `vault-init` mint `TAP_RUNNER_TOKEN` on first boot. The server refuses to start isolated with an empty or `changeme` token. `sbt`/IDE without the sidecar stays in-process (loud warning). Set `USE_TAP_RUNNER=false` to force in-process.
 
 **Opt-in Postgres TLS enforcement.**
 
@@ -11,10 +16,14 @@
 - New `/actuator/prometheus` endpoint exposes server metrics for Prometheus scraping. It is reachable only from inside the deployment's network — the bundled edge proxy does not expose it publicly.
 - Production deployments now emit one JSON log line per event, ready for SIEM / log-aggregator ingestion. Development logs stay human-readable.
 
-**Tap isolation on by default for docker compose.**
+**Supply chain.**
 
-- Compose (and prod compose) now default `USE_TAP_RUNNER=true`. Isolated taps cannot open direct DB / MinIO / Vault connections — they return records; this is existing behavior, called out because isolation is now the compose default.
-- `install.sh` / `vault-init` mint `TAP_RUNNER_TOKEN` on first boot. The server refuses to start isolated with an empty or `changeme` token. `sbt`/IDE without the sidecar stays in-process (loud warning). Set `USE_TAP_RUNNER=false` to force in-process.
+- Container base images are now pinned by digest and kept current automatically.
+- Every release publishes a software bill of materials (CycloneDX SBOM) for each of the four container images.
+
+**Upgrading**
+
+`docker compose pull && docker compose up -d --force-recreate`. **Pull all images together** — a new server with an old tap-runner image will fail tap runs until both are updated. Existing pipelines, taps, and schedules are unaffected. Taps that opened direct connections to the platform's internal databases must use the platform data API instead, or set `USE_TAP_RUNNER=false`.
 
 ---
 
@@ -22,12 +31,7 @@
 
 **Dependency security cleanup across the server and UI.**
 
-- Updated server and UI dependencies to resolve every remaining published medium-severity advisory (and one low). One low-severity advisory remains open upstream with no fixed release available; it will be picked up as soon as a fix ships. No functional changes intended.
-- The Activity tab's charts moved to the current major version of the charting library as part of the security updates — same charts, slightly refreshed default colors.
-
-**Upgrading**
-
-Standard upgrade: `docker compose pull && docker compose up -d`. Existing pipelines, taps, and schedules are unaffected.
+See the [full v1.19.4 notes](release-notes/v1.19.4.md) for details.
 
 ---
 

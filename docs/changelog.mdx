@@ -3,7 +3,7 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
-<Update label="Unreleased" description="August 24, 2026">
+<Update label="v1.20.0" description="August 24, 2026">
   **Opt-in Postgres TLS enforcement.**
 
   - Set `DATRIS_ENV=production` and the platform refuses to start when its Postgres connection points at an external host without TLS (`sslmode=require` or stricter). Opt out with `DATRIS_ALLOW_PLAINTEXT_DB=true`. The bundled in-network Postgres is exempt; existing deployments are unaffected unless the flag is set. Plaintext connections to external databases now log a startup warning either way.
