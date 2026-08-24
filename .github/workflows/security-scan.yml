@@ -13,10 +13,11 @@ name: Security Scan
 # Scala/JVM library CVEs are covered separately via the GitHub Dependency Graph
 # (see .github/workflows/scala-dependency-graph.yml), which feeds Dependabot.
 #
-# Findings are report-only for now (exit-code 0) so a backlog of pre-existing
-# CVEs doesn't block every PR on day one. Flip exit-code to '1' on the
-# dependency-scan step to make new HIGH/CRITICAL findings fail the build once
-# the initial backlog is triaged. Results also upload to the Security tab.
+# dependency-scan is ENFORCING (exit-code 1): new HIGH/CRITICAL findings fail
+# the build. The pre-existing CVE backlog that justified report-only mode was
+# cleared in v1.19.1–v1.19.4. image-scan stays report-only — a CVE newly
+# disclosed against an already-shipped image should page a human via the
+# Security tab, not fail a scheduled run. Results also upload to the Security tab.
 
 on:
   pull_request:
@@ -51,10 +52,11 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true # only surface CVEs that have a fix available
           format: table
-          exit-code: "0" # report-only; set to "1" to fail the build on findings
+          exit-code: "1" # enforcing: new HIGH/CRITICAL findings fail the build
 
       - name: Trivy filesystem scan (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        if: always() # still record findings in the Security tab when the enforcing step fails
         with:
           scan-type: fs
           scan-ref: .
@@ -66,6 +68,7 @@ jobs:
 
       - name: Upload filesystem SARIF
         uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        if: always()
         continue-on-error: true # degrade gracefully if code scanning isn't enabled
         with:
           sarif_file: trivy-fs.sarif
