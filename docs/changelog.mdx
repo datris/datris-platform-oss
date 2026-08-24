@@ -4,6 +4,11 @@ description: "Release history for Datris"
 ---
 
 <Update label="Unreleased" description="August 24, 2026">
+  **Observability: Prometheus metrics and structured logs.**
+
+  - New `/actuator/prometheus` endpoint for Prometheus scraping, reachable only from inside the deployment's network (the bundled edge proxy blocks it publicly).
+  - Production deployments emit one JSON log line per event for SIEM / log-aggregator ingestion; development logs stay human-readable.
+
   **Tap isolation on by default for docker compose.**
 
   - `docker-compose.yml` / `docker-compose.standalone.yml` / `deploy/docker-compose.prod.yml` now default `USE_TAP_RUNNER=true`. `scripts/install.sh` and `docker/vault-init.sh` mint `TAP_RUNNER_TOKEN` on first boot (including upgrades whose token was missing or `changeme`). The server fails fast if isolation is on and the token is still empty/`changeme` — a minted token is accepted.

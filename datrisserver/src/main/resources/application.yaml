@@ -9,14 +9,20 @@ spring:
   data:
     mongodb:
       uri: mongodb://localhost:27017/datris
-  management:
+
+# Actuator: health probes plus the Prometheus scrape endpoint
+# (/actuator/prometheus). Actuator endpoints carry no secrets but describe the
+# runtime — nginx blocks /actuator from the outside; scrape it from inside the
+# compose network (http://datris:8080/actuator/prometheus).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
     health:
       probes:
-        enabled: "true"
-      livenessState:
-        enabled: "true"
-      readinessState:
-        enabled: "true"
+        enabled: true
 logging:
   level:
     root: INFO
