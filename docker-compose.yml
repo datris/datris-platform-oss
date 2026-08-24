@@ -12,6 +12,7 @@ volumes:
   tei-data:
   vault-data:        # persists Vault secrets across container recreation (drops dev mode)
   datris-vault-token: # holds the server's random Vault token (written by vault-init, read by datris)
+  tap-runner-token:  # TAP_RUNNER_TOKEN minted by vault-init on first boot
   # Named data volumes for the three stateful stores. These MUST be named:
   # anonymous volumes survive a plain recreate but are orphaned (left behind,
   # not reattached) whenever the container is removed — `down` + `up`, or a
@@ -200,12 +201,15 @@ services:
       DATABRICKS_CLIENT_ID: ${DATABRICKS_CLIENT_ID:-}
       DATABRICKS_CLIENT_SECRET: ${DATABRICKS_CLIENT_SECRET:-}
       DATABRICKS_TOKEN: ${DATABRICKS_TOKEN:-}
+      TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
     volumes:
       # Shares vault-data so bootstrap can read/write the init file (unseal key
       # + root token) and unseal the same storage the vault service uses.
       - vault-data:/vault/file
       # Writes the server's random token here for the datris service to read.
       - datris-vault-token:/vault-token
+      # TAP_RUNNER_TOKEN file minted on first boot so compose up works without a .env token.
+      - tap-runner-token:/tap-runner-token
       - ./docker/vault-bootstrap.sh:/vault-bootstrap.sh
       - ./docker/vault-init.sh:/vault-init.sh
     entrypoint: ["/bin/sh", "/vault-bootstrap.sh"]
@@ -320,13 +324,13 @@ services:
       # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
       # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
       JAVA_OPTS: "${JAVA_OPTS:--Xms512m -Xmx2g}"
-      # Tap execution isolation (Phase 3). When USE_TAP_RUNNER=true, tap fetch()
-      # code runs in the datris-tap-runner sidecar (no secrets, no Vault route)
-      # instead of in-process. Default false preserves the zero-dependency OSS
-      # quick-start. The shared token authenticates the server→runner call.
-      USE_TAP_RUNNER: "${USE_TAP_RUNNER:-false}"
+      # Tap execution isolation (Phase 3). Compose/prod default ON: tap fetch()
+      # runs in the datris-tap-runner sidecar. Set USE_TAP_RUNNER=false for
+      # in-process (sbt/IDE without the sidecar). Token minted by install.sh/vault-init.
+      USE_TAP_RUNNER: "${USE_TAP_RUNNER:-true}"
       TAP_RUNNER_URL: "http://datris-tap-runner:8090"
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
+      TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
     volumes:
       - ./docker/config:/config
       - pip-cache:/root/.cache/pip
@@ -334,6 +338,7 @@ services:
       # can't modify it. Dedicated volume so the server never sees the Vault
       # root token / unseal key that live on the vault-data volume.
       - datris-vault-token:/vault-token:ro
+      - tap-runner-token:/tap-runner-token:ro
     networks:
       - datris-net
       - tap-net
@@ -349,6 +354,12 @@ services:
     container_name: datris-tap-runner
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
+      TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
+    volumes:
+      - tap-runner-token:/tap-runner-token:ro
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
     read_only: true
     # Scratch must allow exec: runtime-installed packages (venv interpreter, pip, and
     # any C-extension .so) live here and must be loadable. Safe — the tap is already

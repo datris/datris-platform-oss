@@ -3,6 +3,14 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="Unreleased" description="August 24, 2026">
+  **Tap isolation on by default for docker compose.**
+
+  - `docker-compose.yml` / `docker-compose.standalone.yml` / `deploy/docker-compose.prod.yml` now default `USE_TAP_RUNNER=true`. `scripts/install.sh` and `docker/vault-init.sh` mint `TAP_RUNNER_TOKEN` on first boot (including upgrades whose token was missing or `changeme`). The server fails fast if isolation is on and the token is still empty/`changeme` — a minted token is accepted.
+  - `sbt` / IDE (no sidecar) stays in-process and logs a warning. Isolated taps still cannot open direct connections to internal DB / object store / Vault — they return records; this is existing behavior, called out because compose now isolates by default.
+  - Set `USE_TAP_RUNNER=false` to keep in-process on compose. No host allowlist in this change.
+</Update>
+
 <Update label="v1.19.4" description="August 21, 2026">
   **Dependency security cleanup across the server and UI.**
 

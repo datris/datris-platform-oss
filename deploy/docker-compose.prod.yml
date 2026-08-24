@@ -1,6 +1,11 @@
 networks:
   datris-net:
     driver: bridge
+  tap-net:
+    driver: bridge
+
+volumes:
+  tap-runner-token:
 
 services:
   nginx:
@@ -151,9 +156,11 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
+      TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
     volumes:
       - ./vault/vault-init-prod.sh:/vault-init-prod.sh:ro
       - /data/secrets:/secrets
+      - tap-runner-token:/tap-runner-token
     entrypoint: ["/bin/sh", "/vault-init-prod.sh"]
     restart: "no"
     networks:
@@ -226,9 +233,14 @@ services:
       # ignore them so platform keys never leak across tenants.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      USE_TAP_RUNNER: "${USE_TAP_RUNNER:-true}"
+      TAP_RUNNER_URL: "http://datris-tap-runner:8090"
+      TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
+      TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
     volumes:
       - ./config:/config:ro
       - /data/secrets:/secrets:ro
+      - tap-runner-token:/tap-runner-token:ro
     restart: unless-stopped
     logging:
       driver: json-file
@@ -237,6 +249,29 @@ services:
         max-file: "5"
     networks:
       - datris-net
+      - tap-net
+
+  datris-tap-runner:
+    image: datrisai/datris-tap-runner:latest
+    container_name: datris-tap-runner
+    environment:
+      TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
+      TAP_RUNNER_TOKEN_FILE: /tap-runner-token/token
+    volumes:
+      - tap-runner-token:/tap-runner-token:ro
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777,exec
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    networks:
+      - tap-net
 
   ui:
     image: datrisai/datris-ui:latest

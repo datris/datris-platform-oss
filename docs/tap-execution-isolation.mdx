@@ -9,14 +9,16 @@ dedicated, isolated **runner** container, cut off from the platform's credential
 services.
 
 <Note>
-The isolated runner is **opt-in** (off by default). Enable it by setting `USE_TAP_RUNNER=true`.
-Tap behavior is identical either way — the same `fetch()` contract, the same environment
-variables, the same packages. The only difference is *where* the code runs and what it can reach.
+On **docker compose / prod**, the isolated runner is **on by default** (`USE_TAP_RUNNER=true`).
+`sbt` / IDE runs (no sidecar) stay in-process. Tap behavior is identical either way — the same
+`fetch()` contract, the same environment variables, the same packages. The only difference is
+*where* the code runs and what it can reach. `scripts/install.sh` and `docker/vault-init.sh` mint `TAP_RUNNER_TOKEN`;
+the server refuses to start with isolation on and a missing or `changeme` token.
 </Note>
 
 ## Execution modes
 
-| | In-process (default) | Isolated runner (opt-in) |
+| | In-process (`sbt` / IDE, or `USE_TAP_RUNNER=false`) | Isolated runner (compose/prod default) |
 |---|---|---|
 | Where tap code runs | Inside the datris server container | A separate `datris-tap-runner` container |
 | Platform secrets reachable | Limited (see [always-on protections](#always-on-protections)) | **No** |
@@ -24,9 +26,9 @@ variables, the same packages. The only difference is *where* the code runs and w
 | Internet + platform API reachable | Yes | Yes |
 | Extra packages | Installed in an isolated, throwaway environment | Installed in an isolated, throwaway environment |
 
-**In-process** mode (the default) runs tap code inside the server. Tap code in this mode
+**In-process** mode runs tap code inside the server. Tap code in this mode
 shares the server's filesystem and network, so it can reach internal services. This is
-appropriate for a trusted, single-operator install where you author all taps yourself.
+the `sbt` / IDE path (no sidecar). Compose/prod should keep the isolated runner on.
 
 In **isolated runner** mode (`USE_TAP_RUNNER=true`), tap code runs in a container that holds
 no platform credentials and sits on a network with no route to the platform's internal
@@ -83,18 +85,17 @@ Set these on the `datris` service (for example in your `.env`). Defaults work ou
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `USE_TAP_RUNNER` | `false` | Run taps in the isolated runner. Leave unset/`false` to run in-process. |
+| `USE_TAP_RUNNER` | `true` (compose) / unset=`false` (sbt) | Isolated runner. Set `false` to run in-process. |
 | `TAP_RUNNER_URL` | `http://datris-tap-runner:8090` | Address of the runner service. |
-| `TAP_RUNNER_TOKEN` | _(compose default)_ | Shared token authenticating the server → runner call. **Set a strong value.** |
+| `TAP_RUNNER_TOKEN` | minted on first boot | Shared token authenticating the server to runner call. install.sh / vault-init mint it; changeme or empty fails fast when isolation is on. |
 | `TAP_RUNNER_CALLBACK_HOST` | `datris` | Host a tap uses to call back into the platform API from the runner. The datris service name on the shared network. |
 
 The runner is defined as the `datris-tap-runner` service in `docker-compose.yml`; a normal
-`docker compose up` starts it alongside the server, but taps only route to it when
-`USE_TAP_RUNNER=true`. To enable isolation, set the flag and recreate the `datris` container:
+`docker compose up` starts it alongside the server and routes taps there unless you set
+`USE_TAP_RUNNER=false`. To force in-process (for example a no-sidecar `sbt` run):
 
 ```bash
-# enable the isolated runner, then recreate
-USE_TAP_RUNNER=true docker compose up -d datris
+USE_TAP_RUNNER=false sbt -Dconfig.file=... run
 ```
 
 ## What changes for tap authors
@@ -141,9 +142,5 @@ through the API is the supported path and works regardless of mode.
 
 ## When to use which
 
-- **In-process (default)** — fine for a trusted single-operator install where you author all
-  taps yourself, or for a tap that needs direct access to an internal service. The
-  [always-on protections](#always-on-protections) still apply; internal services are reachable.
-- **Isolated runner (`USE_TAP_RUNNER=true`)** — enable for defense-in-depth: tap code stays
-  separated from platform credentials and internal services. Recommended if you run taps you
-  don't fully control, or simply want the extra boundary.
+- **Isolated runner (compose/prod default)** — tap code stays separated from platform credentials and internal services. Isolated taps cannot open a *direct* connection to internal DB / MinIO / Vault; they return records and the pipeline writes destinations.
+- **In-process (`sbt` / IDE, or `USE_TAP_RUNNER=false`)** — tap `fetch()` runs inside the server JVM. Fine for local development without the sidecar, or a legacy tap that still opens a direct internal connection. The server logs a loud warning. Do not treat a laptop compose install as in-process — compose isolates by default.

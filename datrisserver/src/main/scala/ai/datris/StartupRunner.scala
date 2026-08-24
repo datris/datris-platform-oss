@@ -157,6 +157,9 @@ class StartupRunner extends ApplicationRunner {
 
     @Override
     def run(args: ApplicationArguments): Unit = {
+        ai.datris.util.TapScriptRunner.assertIsolationConfig()
+        if (!ai.datris.util.TapScriptRunner.useTapRunner)
+            ai.datris.util.TapScriptRunner.warnInProcess("startup")
         initDatrisEnvironment()
         initUserAuth()
         // Seed v1 definition snapshots for any pre-versioning taps/pipelines so

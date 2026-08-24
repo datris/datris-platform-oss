@@ -39,6 +39,11 @@
       </div>
     </div>
 
+    <div class="note-banner" *ngIf="!useTapRunner">
+      <p class="note-title">Taps are running in-process.</p>
+      <p>This server has <code>USE_TAP_RUNNER</code> off, so tap <code>fetch()</code> shares the server network and can reach internal DB, object storage, and Vault. Docker Compose defaults to isolated taps. Keep <code>USE_TAP_RUNNER=false</code> only for sbt/IDE without the sidecar.</p>
+    </div>
+
     <div class="status-block" *ngIf="multiTenant">
       <div class="status-block-row">
         <span class="status-label">AI Provider</span>

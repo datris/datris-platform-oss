@@ -257,16 +257,15 @@ object TapScriptRunner {
                 else Seq.empty
             val allEnvVars = platformEnvVars ++ testLimitEnvVars ++ paramEnvVars ++ stateEnvVars ++ secretEnvVars
 
-            // Step 5: Execute the wrapper — either in the isolated datris-tap-runner sidecar
-            // (Phase 3, when USE_TAP_RUNNER is set) or in-process (default). Both receive the
-            // same allEnvVars and return (stdout, stderr); the wrapper/envelope protocol is
-            // identical, so everything downstream is unchanged.
+            // Step 5: Execute the wrapper — isolated sidecar (compose/prod default) or
+            // in-process (sbt/IDE, or USE_TAP_RUNNER=false). Same allEnvVars and envelope.
             val secretValues = secretEnvVars.map(_._2)
             secretValuesForMasking = secretValues
             val (rawOutput, rawLogs) =
                 if (useTapRunner) {
                     executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, scriptTimeoutSeconds, secretValues)
                 } else {
+                    warnInProcess("tap " + tapConfig.name)
                     // In-process path: materialize the script/wrapper, install any extra
                     // packages into a throwaway venv, and run with the chosen interpreter.
                     Files.write(scriptFile, scriptContent.getBytes("UTF-8"))
@@ -787,13 +786,52 @@ object TapScriptRunner {
 
     // ---- Phase 3: isolated sidecar execution -------------------------------------------------
     // When USE_TAP_RUNNER is set, tap code runs in the datris-tap-runner container, which holds
-    // no platform secrets and has no route to Vault. Default off so the OSS quick-start keeps
-    // in-process execution with zero extra dependencies.
-    private def useTapRunner: Boolean =
+    // no platform secrets and has no route to Vault. Compose/prod defaults the flag on;
+    // sbt/IDE without the sidecar leaves it unset (in-process).
+    private val WeakTapRunnerTokens = Set("", "changeme-tap-runner-token", "change-me-to-a-long-random-string")
+    private val TapRunnerTokenFile = sys.env.getOrElse("TAP_RUNNER_TOKEN_FILE", "/tap-runner-token/token")
+
+    private[datris] def useTapRunner: Boolean =
         sys.env.getOrElse("USE_TAP_RUNNER", "false").equalsIgnoreCase("true")
     private def tapRunnerUrl: String =
         sys.env.getOrElse("TAP_RUNNER_URL", "http://datris-tap-runner:8090")
-    private def tapRunnerToken: String = sys.env.getOrElse("TAP_RUNNER_TOKEN", "")
+    private def envTapRunnerToken: String = sys.env.getOrElse("TAP_RUNNER_TOKEN", "")
+    private def isWeakTapRunnerToken(t: String): Boolean =
+        t == null || WeakTapRunnerTokens.contains(t.trim)
+    private def readMintedTapRunnerToken(): Option[String] = {
+        try {
+            val p = java.nio.file.Paths.get(TapRunnerTokenFile)
+            if (!java.nio.file.Files.isRegularFile(p)) None
+            else {
+                val s = new String(java.nio.file.Files.readAllBytes(p), java.nio.charset.StandardCharsets.UTF_8).trim
+                if (s.isEmpty) None else Some(s)
+            }
+        } catch { case _: Exception => None }
+    }
+
+    /** Env token if it is a real minted value; otherwise the vault-init file. */
+    private[datris] def resolvedTapRunnerToken: String = {
+        val envTok = envTapRunnerToken
+        if (!isWeakTapRunnerToken(envTok)) envTok
+        else readMintedTapRunnerToken().filterNot(isWeakTapRunnerToken).getOrElse(envTok)
+    }
+    private def tapRunnerToken: String = resolvedTapRunnerToken
+    private[datris] def assertIsolationConfig(): Unit = {
+        if (useTapRunner && isWeakTapRunnerToken(resolvedTapRunnerToken))
+            throw new DatrisException(
+                "USE_TAP_RUNNER=true but TAP_RUNNER_TOKEN is empty or the changeme default. " +
+                    "scripts/install.sh and docker/vault-init.sh mint a token on first boot."
+            )
+    }
+    private[datris] def warnInProcess(where: String): Unit = {
+        logger.warn(
+            "************************************************************************\n" +
+                "TAP EXECUTION IS IN-PROCESS (" + where + "; USE_TAP_RUNNER is not true).\n" +
+                "fetch() shares this JVM network and can reach DB / MinIO / Vault directly.\n" +
+                "Compose/prod should isolate (USE_TAP_RUNNER=true). sbt/IDE without a sidecar is expected.\n" +
+                "************************************************************************"
+        )
+    }
     // Host a tap should use to call back into the platform when running in the sidecar
     // (the datris server's name on tap-net). Replaces "localhost", which in the runner
     // would point at the runner itself.
