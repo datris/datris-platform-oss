@@ -5,6 +5,9 @@ LABEL io.modelcontextprotocol.server.name="io.github.datris/datris"
 
 WORKDIR /app
 
+# The pip bundled with the slim image lags behind its own security fixes.
+RUN pip install --no-cache-dir --upgrade pip
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
