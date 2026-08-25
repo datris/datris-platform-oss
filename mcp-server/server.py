@@ -27,6 +27,7 @@ import asyncio
 import contextvars
 import json
 import os
+import sys
 import threading
 import time
 import uuid
@@ -1357,8 +1358,52 @@ async def read_resource(uri):
 # MCP Tools
 # ---------------------------------------------------------------------------
 
+# Profile filter: ask the Scala server which tools this session's key may
+# see, so list_tools matches what the REST capability layer would actually
+# allow. The tool→route mapping lives ONLY on the server (MCPToolRoutes) —
+# never copy it here, it would drift. Cached per key with a short TTL so a
+# template edit applies on reconnect without hammering the endpoint.
+_allowed_tools_cache: dict[str, tuple[float, set | None]] = {}
+_allowed_tools_lock = threading.Lock()
+_ALLOWED_TOOLS_TTL = 60.0
+
+
+def _allowed_tool_names() -> set | None:
+    """Return the set of tool names this session's key may see, or None for
+    'no filtering' (keys off, legacy full-access key, or the server could
+    not answer — visibility is UX, the REST 403 stays the boundary)."""
+    key = _effective_api_key()
+    now = time.time()
+    with _allowed_tools_lock:
+        cached = _allowed_tools_cache.get(key)
+        if cached and now - cached[0] < _ALLOWED_TOOLS_TTL:
+            return cached[1]
+    allowed: set | None = None
+    try:
+        data = json.loads(_call("get", "/api/v1/mcp/tools", timeout=15))
+        if isinstance(data, dict) and data.get("filtered") and isinstance(data.get("tools"), list):
+            allowed = set(data["tools"])
+        elif isinstance(data, dict) and "error" in data:
+            # Unauthorized key or older server without the endpoint — fall
+            # back to the full catalog; every call still 403s at REST.
+            print(f"mcp/tools filter unavailable ({str(data['error'])[:120]}); serving full catalog", file=sys.stderr)
+    except (json.JSONDecodeError, TypeError) as e:
+        print(f"mcp/tools filter unavailable ({e}); serving full catalog", file=sys.stderr)
+    with _allowed_tools_lock:
+        _allowed_tools_cache[key] = (now, allowed)
+    return allowed
+
+
 @server.list_tools()
 async def list_tools():
+    allowed = await asyncio.to_thread(_allowed_tool_names)
+    tools = _all_tools()
+    if allowed is None:
+        return tools
+    return [t for t in tools if t.name in allowed]
+
+
+def _all_tools():
     return [
         # --- Pipeline Management ---
         Tool(
@@ -3594,6 +3639,15 @@ def _dispatch(name: str, args: dict) -> str:
 
 async def run_stdio():
     from mcp.server.stdio import stdio_server
+    # stdio has no headers — the key comes from the environment. Same
+    # REQUIRE_API_KEY contract as the SSE/HTTP transports: keys-on installs
+    # must not fall back to an unkeyed (full-catalog) session.
+    stdio_key = os.getenv("DATRIS_API_KEY", "")
+    if REQUIRE_API_KEY and not stdio_key:
+        print("REQUIRE_API_KEY is set but DATRIS_API_KEY is empty — set DATRIS_API_KEY "
+              "to this agent's API key in the MCP client config.", file=sys.stderr)
+        sys.exit(1)
+    _session_api_key.set(stdio_key)
     async with stdio_server() as (read_stream, write_stream):
         # Refresh the instructions' baked-in destination list for this session
         # (create_initialization_options reads server.instructions). to_thread

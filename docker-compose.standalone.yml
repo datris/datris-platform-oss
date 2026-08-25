@@ -412,6 +412,9 @@ services:
       - "3000:3000"
     environment:
       DATRIS_API_URL: http://datris:8080
+      # Mirrors the server's USEAPIKEYS: when keys are on, MCP sessions
+      # without an x-api-key are rejected instead of silently connecting.
+      REQUIRE_API_KEY: ${USE_API_KEYS:-false}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_ENDPOINT: ${EMBEDDING_ENDPOINT:-http://host.docker.internal:11434}

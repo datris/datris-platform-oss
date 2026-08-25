@@ -50,6 +50,9 @@ object CapabilityRoutes {
         "/api/v1/health/**",
         "/api/v1/version",
         "/api/v1/mcp/activity",
+        // Any valid key may ask which MCP tools it can see; the controller
+        // itself rejects requests that resolve to no key at all.
+        "/api/v1/mcp/tools",
         "/api/v1/assistant/**",
         "/api/v1/ops-chat/**",
         "/api/v1/catalog-chat/**"
@@ -88,6 +91,11 @@ object CapabilityRoutes {
         Route("POST", "/api/v1/tap/brainstorm", "tap", "read"),
         Route("GET", "/api/v1/tap/ledger", "tap", "read"),
         Route("DELETE", "/api/v1/tap/ledger", "tap", "update"),
+        // Tap incremental sync state (read = read; set/reset mutate the
+        // cursor a scheduled run resumes from, so they gate like an update)
+        Route("GET", "/api/v1/tap/state", "tap", "read"),
+        Route("POST", "/api/v1/tap/state", "tap", "update"),
+        Route("DELETE", "/api/v1/tap/state", "tap", "update"),
         Route("GET", "/api/v1/tap/logs", "job", "read"),
         // Tap definition versions (read/diff = read; restore = update)
         Route("GET", "/api/v1/tap/versions", "tap", "read"),
