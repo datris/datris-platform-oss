@@ -99,7 +99,9 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                         DatrisEnvironment.values.useApiKeys &&
                         resolvedKey(request).exists(rk =>
                             RoleEnforcementInterceptor.programmaticKeySatisfiesRoleGate(
-                                rk, request.getMethod, request.getRequestURI
+                                rk,
+                                request.getMethod,
+                                request.getRequestURI
                             )
                         )
                     )

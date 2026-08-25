@@ -66,24 +66,50 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         // The canonical workflow: list secrets → create tap secret →
         // create tap → test → run → poll.
         val expected = Seq(
-            "list_pipelines", "get_pipeline", "create_pipeline", "upload_data",
-            "list_taps", "get_tap", "create_tap", "update_tap", "run_tap", "test_tap",
-            "get_tap_ledger", "get_tap_state", "get_tap_logs",
-            "list_tap_secrets", "get_tap_secret_fields", "create_tap_secret",
-            "delete_tap_secret", "update_secret",
-            "search_qdrant", "search_pgvector",
-            "get_pipeline_status", "get_job_status",
-            "wait_seconds", "get_version", "check_service_health"
+            "list_pipelines",
+            "get_pipeline",
+            "create_pipeline",
+            "upload_data",
+            "list_taps",
+            "get_tap",
+            "create_tap",
+            "update_tap",
+            "run_tap",
+            "test_tap",
+            "get_tap_ledger",
+            "get_tap_state",
+            "get_tap_logs",
+            "list_tap_secrets",
+            "get_tap_secret_fields",
+            "create_tap_secret",
+            "delete_tap_secret",
+            "update_secret",
+            "search_qdrant",
+            "search_pgvector",
+            "get_pipeline_status",
+            "get_job_status",
+            "wait_seconds",
+            "get_version",
+            "check_service_health"
         )
         val missing = expected.filterNot(allowed.contains)
         assert(missing.isEmpty, s"rag-builder should see: $missing")
 
         // Invisible: no delete/update/kill grants, no query/metadata/config.
         val forbidden = Seq(
-            "delete_pipeline", "delete_tap", "kill_job",
-            "set_tap_state", "restore_tap_version", "restore_pipeline_version",
-            "query_postgres", "query_mongodb", "query_natural", "ai_answer",
-            "list_postgres_databases", "list_mongodb_databases", "profile_data",
+            "delete_pipeline",
+            "delete_tap",
+            "kill_job",
+            "set_tap_state",
+            "restore_tap_version",
+            "restore_pipeline_version",
+            "query_postgres",
+            "query_mongodb",
+            "query_natural",
+            "ai_answer",
+            "list_postgres_databases",
+            "list_mongodb_databases",
+            "profile_data",
             "upload_config"
         )
         val leaked = forbidden.filter(allowed.contains)
@@ -98,8 +124,14 @@ class MCPToolRoutesSpec extends AnyFunSuite {
 
     test("read-only-shaped key gets reads plus local tools, nothing mutating") {
         val readOnly = key(
-            "pipeline:read", "tap:read", "job:read", "metadata:read",
-            "config:read", "query:postgres", "query:mongodb", "search:vector"
+            "pipeline:read",
+            "tap:read",
+            "job:read",
+            "metadata:read",
+            "config:read",
+            "query:postgres",
+            "query:mongodb",
+            "search:vector"
         )
         val allowed = MCPToolRoutes.allowedTools(readOnly).toSet
         assert(allowed.contains("list_pipelines"))
