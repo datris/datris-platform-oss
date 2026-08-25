@@ -3,8 +3,8 @@
 # Pinned by digest (multi-arch manifest list); Dependabot docker sends digest-bump PRs.
 FROM python:3.12-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579
 
-# The pip bundled with the bookworm image lags behind its own security fixes.
-RUN pip install --no-cache-dir --upgrade pip
+# The pip/setuptools bundled with the bookworm image lag behind their own security fixes.
+RUN pip install --no-cache-dir --upgrade pip setuptools
 
 # Pre-bake the same common package set the server image carries, so taps that don't
 # declare extras run with no per-run install. (Tap-declared extras install into a

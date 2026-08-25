@@ -1,0 +1,10 @@
+# Findings accepted after review. Trivy reads this file from the repo root for
+# both the fs scan and the image scans in .github/workflows/security-scan.yml.
+
+# setuptools + msgpack VENDORED INSIDE pip (pip/_vendor/vendor.txt). Even the
+# newest pip release pins setuptools 70.3.0 (pkg_resources subset) and msgpack
+# 1.1.2 there; no pip upgrade clears these, and the vulnerable code paths
+# (PackageIndex.download, msgpack unpacking of untrusted streams) are not
+# reachable through pip's vendored usage. Re-check when pip bumps its vendor set.
+CVE-2025-47273
+GHSA-6v7p-g79w-8964
