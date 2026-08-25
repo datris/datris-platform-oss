@@ -1,4 +1,7 @@
 my-env
+.venv
+venv
+dist
 __pycache__
 .env
 *.md
