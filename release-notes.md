@@ -1,29 +1,26 @@
 # Release Notes
 
-## v1.20.0 — August 24, 2026
+## v1.20.1 — August 25, 2026
 
-**Tap isolation on by default for docker compose.**
+**MCP tool catalog now matches API-key permissions.**
 
-- Compose (and prod compose) now default `USE_TAP_RUNNER=true`. Isolated taps cannot open direct DB / MinIO / Vault connections — they return records; this is existing behavior, called out because isolation is now the compose default.
-- `install.sh` / `vault-init` mint `TAP_RUNNER_TOKEN` on first boot. The server refuses to start isolated with an empty or `changeme` token. `sbt`/IDE without the sidecar stays in-process (loud warning). Set `USE_TAP_RUNNER=false` to force in-process.
-
-**Opt-in Postgres TLS enforcement.**
-
-- Set `DATRIS_ENV=production` and the platform refuses to start when its Postgres connection points at an external host without TLS (`sslmode=require` or stricter in the connection URL). Opt out with `DATRIS_ALLOW_PLAINTEXT_DB=true`. The bundled in-network Postgres is exempt. Nothing changes unless you set the flag — existing deployments are unaffected; a plaintext connection to an external database now logs a startup warning either way.
-
-**Observability: Prometheus metrics and structured logs.**
-
-- New `/actuator/prometheus` endpoint exposes server metrics for Prometheus scraping. It is reachable only from inside the deployment's network — the bundled edge proxy does not expose it publicly.
-- Production deployments now emit one JSON log line per event, ready for SIEM / log-aggregator ingestion. Development logs stay human-readable.
-
-**Supply chain.**
-
-- Container base images are now pinned by digest and kept current automatically.
-- Every release publishes a software bill of materials (CycloneDX SBOM) for each of the four container images.
+- When API keys are enabled, each MCP session's tool list is filtered to what its key is actually allowed to do — agents no longer see (and plan around) tools that could only fail with a permission error at call time. Full-access keys and installs without API keys keep the complete catalog.
+- The `rag-builder` key template gained the read permissions its workflow was missing: agents using it can now list taps and manage their own tap credentials end to end. Existing issued keys keep their original permissions — re-issue (or edit) rag-builder keys to pick up the additions.
+- With API keys enabled, MCP sessions that present no key are now refused instead of silently connecting. Installs without API keys are unaffected.
+- Permission denials now return a clear, structured error instead of a generic server error, so agents recognize a permission boundary rather than retrying or misreporting a server fault.
+- Tightened API-key permission enforcement on the server.
 
 **Upgrading**
 
-`docker compose pull && docker compose up -d --force-recreate`. **Pull all images together** — a new server with an old tap-runner image will fail tap runs until both are updated. Existing pipelines, taps, and schedules are unaffected. Taps that opened direct connections to the platform's internal databases must use the platform data API instead, or set `USE_TAP_RUNNER=false`.
+`docker compose pull && docker compose up -d --force-recreate`. No action needed for installs without API keys (the default). If API keys are enabled: ensure MCP clients send their key (header for remote connections, `DATRIS_API_KEY` environment variable for stdio), and re-issue rag-builder-template keys to pick up the new permissions.
+
+---
+
+## v1.20.0 — August 24, 2026
+
+**Tap isolation on by default, opt-in Postgres TLS, Prometheus metrics + JSON logs, digest-pinned images + SBOMs.**
+
+See the [full v1.20.0 notes](release-notes/v1.20.0.md) for details.
 
 ---
 

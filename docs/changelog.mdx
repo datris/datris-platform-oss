@@ -3,6 +3,17 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.20.1" description="August 25, 2026">
+  **MCP tool catalog now matches API-key permissions.**
+
+  - With API keys enabled, each MCP session's tool list is filtered to what its key is actually allowed to do — agents no longer see tools that could only fail with a permission error at call time. Full-access keys and installs without API keys keep the complete catalog.
+  - The `rag-builder` key template gained the read permissions its workflow was missing (list taps, manage its own tap credentials). Existing issued keys are unchanged — re-issue or edit rag-builder keys to pick up the additions.
+  - With API keys enabled, MCP sessions that present no key are refused instead of silently connecting. Installs without API keys are unaffected.
+  - Permission denials return a clear, structured error instead of a generic server error, so agents recognize a permission boundary rather than retrying.
+  - Tightened API-key permission enforcement on the server.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. If API keys are enabled, ensure MCP clients send their key (header for remote connections, `DATRIS_API_KEY` environment variable for stdio).
+</Update>
+
 <Update label="v1.20.0" description="August 24, 2026">
   **Opt-in Postgres TLS enforcement.**
 
