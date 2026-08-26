@@ -210,6 +210,9 @@
                  after a tool completes while the model digests the result. -->
             <div class="streaming-indicator" *ngIf="!turn.done && state.streaming && !hasRunningTool(turn)">
               <span class="dots"><span></span><span></span><span></span></span>
+              <!-- After 10s with nothing visible (adaptive thinking streams no
+                   content), say how long — silence with a clock beats silence. -->
+              <span class="streaming-elapsed" *ngIf="streamingElapsedLabel(turn)">{{ streamingElapsedLabel(turn) }}</span>
             </div>
 
             <!-- Action links: Open tap / Open pipeline -->

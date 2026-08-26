@@ -490,6 +490,12 @@
   margin: 8px 0;
   color: #8a8e96;
 }
+.streaming-elapsed {
+  margin-left: 10px;
+  font-size: 12px;
+  color: #8a8e96;
+  font-variant-numeric: tabular-nums;
+}
 .dots {
   display: inline-flex;
   gap: 4px;

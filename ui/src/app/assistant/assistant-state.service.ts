@@ -75,6 +75,11 @@ export interface AssistantTurn {
   segments: AssistantSegment[];
   done: boolean;
   errorMessage: string;
+  /** Last moment the user could SEE progress — turn start, a text delta, a
+   *  tool card appearing, or a tool result. Drives the "thinking — 45s"
+   *  elapsed on the streaming dots, so a long adaptive-thinking stretch
+   *  (which streams nothing visible) doesn't read as a hang. */
+  lastVisibleProgressAt?: number;
 }
 
 export type Turn = UserTurn | AssistantTurn;
@@ -198,7 +203,8 @@ export class AssistantStateService {
       thinkingExpanded: false,
       segments: [],
       done: false,
-      errorMessage: ''
+      errorMessage: '',
+      lastVisibleProgressAt: Date.now()
     };
     this.turns.push(assistantTurn);
     this.draft = '';
@@ -276,6 +282,10 @@ export class AssistantStateService {
   }
 
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {
+    // Anything the user can see counts as visible progress: streamed text, a
+    // tool card appearing, a result landing, a thinking ticker updating.
+    // Only iteration boundaries don't (nothing on screen changes).
+    if (evt.type !== 'iteration_start') turn.lastVisibleProgressAt = Date.now();
     switch (evt.type) {
       case 'iteration_start':
         break;

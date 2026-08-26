@@ -118,6 +118,17 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
       (this.nowTick - seg.executingSince) >= 45000;
   }
 
+  /** Elapsed label for a silent streaming stretch — long adaptive-thinking
+   *  runs stream nothing visible, and bare dots read as a hang after a
+   *  while. Empty until 10s of no visible progress, then "thinking — 45s". */
+  streamingElapsedLabel(turn: AssistantTurn): string {
+    if (turn.done || !turn.lastVisibleProgressAt) return '';
+    const s = Math.floor((this.nowTick - turn.lastVisibleProgressAt) / 1000);
+    if (s < 10) return '';
+    const label = s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's';
+    return 'thinking — ' + label;
+  }
+
   /** Per-card last-poll timestamps for the tap-generation progress poll. */
   private genPollLast = new Map<string, number>();
 
