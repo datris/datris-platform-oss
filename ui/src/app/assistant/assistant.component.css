@@ -496,6 +496,18 @@
   color: #8a8e96;
   font-variant-numeric: tabular-nums;
 }
+.streaming-thinking-tail {
+  margin-left: 10px;
+  font-size: 12px;
+  font-style: italic;
+  color: #8a8e96;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 70%;
+  display: inline-block;
+  vertical-align: middle;
+}
 .dots {
   display: inline-flex;
   gap: 4px;

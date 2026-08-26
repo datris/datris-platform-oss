@@ -80,6 +80,11 @@ export interface AssistantTurn {
    *  elapsed on the streaming dots, so a long adaptive-thinking stretch
    *  (which streams nothing visible) doesn't read as a hang. */
   lastVisibleProgressAt?: number;
+  /** When the last thinking_delta arrived. The turn's thinking renders as one
+   *  block at the TOP of the turn, so mid-turn reasoning (between tool calls)
+   *  lands far above where the user is reading — the streaming dots use this
+   *  to show the live thinking tail inline while summaries are arriving. */
+  lastThinkingDeltaAt?: number;
 }
 
 export type Turn = UserTurn | AssistantTurn;
@@ -291,6 +296,7 @@ export class AssistantStateService {
         break;
       case 'thinking_delta':
         turn.thinking += evt.text;
+        turn.lastThinkingDeltaAt = Date.now();
         break;
       case 'text_delta': {
         const tail = turn.segments[turn.segments.length - 1];

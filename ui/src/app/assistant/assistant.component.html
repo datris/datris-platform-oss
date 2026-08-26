@@ -210,9 +210,15 @@
                  after a tool completes while the model digests the result. -->
             <div class="streaming-indicator" *ngIf="!turn.done && state.streaming && !hasRunningTool(turn)">
               <span class="dots"><span></span><span></span><span></span></span>
-              <!-- After 10s with nothing visible (adaptive thinking streams no
-                   content), say how long — silence with a clock beats silence. -->
-              <span class="streaming-elapsed" *ngIf="streamingElapsedLabel(turn)">{{ streamingElapsedLabel(turn) }}</span>
+              <!-- Live thinking tail while summaries arrive — mid-turn
+                   reasoning otherwise lands in the block at the turn's top,
+                   far above the reading position. -->
+              <span class="streaming-thinking-tail" *ngIf="streamingThinkingTail(turn) as tail; else elapsedOnly">{{ tail }}</span>
+              <!-- After 10s with nothing visible at all, say how long —
+                   silence with a clock beats silence. -->
+              <ng-template #elapsedOnly>
+                <span class="streaming-elapsed" *ngIf="streamingElapsedLabel(turn)">{{ streamingElapsedLabel(turn) }}</span>
+              </ng-template>
             </div>
 
             <!-- Action links: Open tap / Open pipeline -->

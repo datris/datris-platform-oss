@@ -129,6 +129,17 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     return 'thinking — ' + label;
   }
 
+  /** Live thinking tail for the streaming dots. The turn's full reasoning
+   *  renders in one block at the TOP of the turn, so mid-turn thinking
+   *  (between tool calls) would otherwise scroll in far above the reading
+   *  position. Shown only while summaries are actively arriving (a delta in
+   *  the last 8s) — a stale tail during a non-thinking wait would mislead. */
+  streamingThinkingTail(turn: AssistantTurn): string {
+    if (turn.done || !turn.thinking || !turn.lastThinkingDeltaAt) return '';
+    if (this.nowTick - turn.lastThinkingDeltaAt > 8000) return '';
+    return this.thinkingTicker(turn);
+  }
+
   /** Per-card last-poll timestamps for the tap-generation progress poll. */
   private genPollLast = new Map<string, number>();
 
