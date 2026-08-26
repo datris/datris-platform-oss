@@ -125,7 +125,12 @@ object AIHttp {
                     result =
                         if (contentType.startsWith("text/event-stream")) assembleEventStream(response.getEntity)
                         else EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
-                    logger.info("AI API responded in " + elapsedMs + "ms, response length: " + result.length + " chars")
+                    // Measure through body/stream assembly: execute() returns at the
+                    // response HEADERS, and for SSE the generation happens while the
+                    // stream is consumed — headers-only timing once logged a 104s
+                    // codegen call as "1137ms" and sent a live debug down a dead end.
+                    val totalMs = System.currentTimeMillis() - startTime
+                    logger.info("AI API responded in " + totalMs + "ms (first byte " + elapsedMs + "ms), response length: " + result.length + " chars")
                 }
             } catch {
                 // Dropped/stale connections (e.g. an intermediary closing a

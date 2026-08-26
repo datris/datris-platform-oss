@@ -103,12 +103,17 @@
                 </button>
 
                 <!-- Long-running call: say what's happening so the spinner
-                     doesn't read as a hang. AI generations legitimately take
-                     minutes, and transient provider errors retry server-side
-                     inside this same call. -->
-                <div class="tool-slow-hint" *ngIf="toolSlowHint(seg)">
-                  Still working — AI generations can take a few minutes, and temporary provider errors are retried automatically.
+                     doesn't read as a hang. For create_tap script generation
+                     the server reports its live phase; anything else gets the
+                     generic reassurance after 45s. -->
+                <div class="tool-slow-hint" *ngIf="toolGenHint(seg) as genHint; else genericSlowHint">
+                  {{ genHint }}
                 </div>
+                <ng-template #genericSlowHint>
+                  <div class="tool-slow-hint" *ngIf="toolSlowHint(seg)">
+                    Still working — AI generations can take a few minutes, and temporary provider errors are retried automatically.
+                  </div>
+                </ng-template>
 
                 <!-- Inline credentials form: rendered instead of the generic
                      tool body when this is a request_tap_secret_from_user

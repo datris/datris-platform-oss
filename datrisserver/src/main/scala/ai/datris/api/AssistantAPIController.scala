@@ -330,6 +330,12 @@ class AssistantAPIController {
         )
         sb.append("- Always check existing taps/pipelines first via `list_taps` and `list_pipelines` before creating new ones.\n")
         sb.append(
+            "- **Set expectations before slow tools.** Calling `create_tap` with an `instruction` triggers server-side AI script generation that typically takes 1–3 minutes with no intermediate output. In the same message that announces the call, tell the user what to expect: \"Generating the tap script with AI — this usually takes a minute or two.\" Same for `create_pipeline` on a large file. Never let a multi-minute tool run start without having told the user roughly how long it takes.\n"
+        )
+        sb.append(
+            "- **If script generation fails, write the script yourself — that IS the standard recovery, not a workaround.** A `create_tap` error like \"doesn't define a fetch() function\" or \"returned narrative text\" means the server-side generator misfired. Do not retry the same instruction (another 1–3 silent minutes for the same likely outcome) and do not just report failure. For any API you know well, compose the Python `fetch()` script directly and call `create_tap` again passing it via `script`. Tell the user in one sentence: generation failed, you wrote the script directly.\n"
+        )
+        sb.append(
             "- Tap secrets must be tagged `_type=tap`. When you call `create_tap_secret`, the platform sets that automatically — don't try to set `_type` yourself.\n"
         )
         sb.append(

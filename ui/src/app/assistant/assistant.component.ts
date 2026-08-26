@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, Aft
 import { ActivatedRoute } from '@angular/router';
 import { AssistantStateService, AssistantTurn, ToolCard, TextSegment } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
+import { TapService } from '../tap.service';
 
 interface StarterPrompt {
   label: string;
@@ -45,6 +46,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
   constructor(
     public state: AssistantStateService,
     private secretsService: SecretsService,
+    private tapService: TapService,
     private route: ActivatedRoute,
     private zone: NgZone
   ) { }
@@ -54,7 +56,10 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     this.scrollPending = true;
     this.zone.runOutsideAngular(() => {
       this.tickHandle = setInterval(() => {
-        if (this.state.streaming) this.zone.run(() => { this.nowTick = Date.now(); });
+        if (this.state.streaming) {
+          this.zone.run(() => { this.nowTick = Date.now(); });
+          this.pollTapGeneration();
+        }
       }, 1000);
     });
 
@@ -111,6 +116,48 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
   toolSlowHint(seg: ToolCard): boolean {
     return seg.status === 'running' && !!seg.executingSince &&
       (this.nowTick - seg.executingSince) >= 45000;
+  }
+
+  /** Per-card last-poll timestamps for the tap-generation progress poll. */
+  private genPollLast = new Map<string, number>();
+
+  /** While a `create_tap` with an `instruction` is executing, poll the
+   *  server's generation-progress endpoint (every ~3s per card, starting a
+   *  few seconds in) so the card can say what the 1–3 minute call is doing.
+   *  Best-effort: a failed poll just leaves the generic hint in place. */
+  private pollTapGeneration(): void {
+    const turn = this.state.turns[this.state.turns.length - 1];
+    if (!turn || turn.role !== 'assistant') return;
+    for (const seg of turn.segments) {
+      if (seg.kind !== 'tool' || seg.status !== 'running' || seg.name !== 'create_tap') continue;
+      const tapName = seg.input && seg.input.name;
+      if (!tapName || !seg.input.instruction || !seg.executingSince) continue;
+      if (this.nowTick - seg.executingSince < 4000) continue;
+      const last = this.genPollLast.get(seg.id) || 0;
+      if (this.nowTick - last < 3000) continue;
+      this.genPollLast.set(seg.id, this.nowTick);
+      this.tapService.generateStatus(tapName).subscribe({
+        next: (s) => this.zone.run(() => { seg.genProgress = s && s.active ? s : undefined; }),
+        error: () => { /* keep the generic hint */ }
+      });
+    }
+  }
+
+  /** Phase-specific text for a running create_tap generation; empty when no
+   *  live progress is known (the generic slow hint covers that case). */
+  toolGenHint(seg: ToolCard): string {
+    const p = seg.genProgress;
+    if (seg.status !== 'running' || !p || !p.active) return '';
+    const s = p.elapsedSeconds || 0;
+    const elapsed = s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's';
+    switch (p.phase) {
+      case 'retrying-format':
+        return 'Model output needed reformatting — running a second attempt (' + elapsed + ' total).';
+      case 'storing':
+        return 'Storing the generated script…';
+      default:
+        return 'Generating the tap script with AI — ' + elapsed + ' so far (typically 1–3 minutes).';
+    }
   }
 
   /** Ensure the existing tap secrets list is loaded for the form dropdown.

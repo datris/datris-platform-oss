@@ -23,6 +23,10 @@ export interface ToolCard {
    *  reads as visible progress instead of a frozen spinner. */
   startedAt?: number;
   executingSince?: number;
+  /** Live server-side phase for a running `create_tap` script generation,
+   *  polled from /tap/generate/status — replaces the generic "still working"
+   *  hint with what the generation is actually doing. */
+  genProgress?: { active: boolean; phase?: string; attempt?: number; elapsedSeconds?: number };
   /** Populated when the agent called `request_tap_secret_from_user`. The UI
    *  renders an inline credentials form using these fields. */
   secretRequest?: {

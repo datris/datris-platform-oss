@@ -677,6 +677,39 @@ class TapAPIController {
         }
     }
 
+    /** Live progress of an in-flight `/tap/generate` for this tap, so a client
+      * can show what the 1–3 minute blocking call is doing. `active: false`
+      * means no generation is running — either it finished (the blocking call
+      * carries the outcome) or none was started. Deliberately not logged per
+      * call: clients poll this every couple of seconds. */
+    @GetMapping(path = Array("/tap/generate/status"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def generateStatus(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestParam tap: String
+    ): ResponseEntity[String] = {
+        try {
+            APIKeyValidator.validate(apiKey)
+            val gson = new Gson
+            val response = new java.util.LinkedHashMap[String, Any]()
+            TapGenerationProgress.get(tap) match {
+                case Some(p) =>
+                    val now = System.currentTimeMillis()
+                    response.put("active", java.lang.Boolean.TRUE)
+                    response.put("phase", p.phase)
+                    response.put("attempt", Integer.valueOf(p.attempt))
+                    response.put("elapsedSeconds", java.lang.Long.valueOf((now - p.startedAtMs) / 1000))
+                    response.put("phaseElapsedSeconds", java.lang.Long.valueOf((now - p.phaseStartedAtMs) / 1000))
+                case None =>
+                    response.put("active", java.lang.Boolean.FALSE)
+            }
+            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @PostMapping(path = Array("/tap/fix"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def fixScript(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,

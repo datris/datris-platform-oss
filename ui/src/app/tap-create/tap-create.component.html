@@ -292,7 +292,7 @@
 
       <div class="testing-indicator" *ngIf="generating">
         <div class="spinner"></div>
-        <span>Generating script — this may take a minute...</span>
+        <span>{{ genProgressLabel() }}</span>
         <button class="indicator-stop-btn" (click)="stopActive()" title="Stop">
           <span class="material-icons">stop</span>
         </button>

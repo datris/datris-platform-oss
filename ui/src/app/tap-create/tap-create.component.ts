@@ -376,6 +376,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.testing = false;
     this.applyingDiagnosis = false;
     this.brainstorming = false;
+    this.stopGenPolling();
   }
 
   nextStep(): void {
@@ -436,9 +437,16 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     });
   }
 
+  // Live phase of the in-flight generate call, polled from
+  // /tap/generate/status so the minute-plus wait shows real progress
+  // instead of a static "may take a minute" line.
+  genProgress: any = null;
+  private genPollHandle?: ReturnType<typeof setInterval>;
+
   generateScript(): void {
     this.generating = true;
     this.error = '';
+    this.startGenPolling();
     this.activeSub = this.tapService.generateScript(this.description, this.tapName.trim(), this.scriptPath, this.secretName, this.tapType).subscribe({
       next: (result) => {
         this.script = result.script || '';
@@ -446,13 +454,51 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.packages = result.packages || [];
         if (Array.isArray(result.injectedPrompts)) this.injectedPrompts = result.injectedPrompts;
         this.generating = false;
+        this.stopGenPolling();
         this.scriptDirty = true;
       },
       error: (err) => {
         this.error = 'Generation failed: ' + (err.error || err.message);
         this.generating = false;
+        this.stopGenPolling();
       }
     });
+  }
+
+  private startGenPolling(): void {
+    this.stopGenPolling();
+    const tap = this.tapName.trim();
+    if (!tap) return;
+    this.genPollHandle = setInterval(() => {
+      if (!this.generating) { this.stopGenPolling(); return; }
+      this.tapService.generateStatus(tap).subscribe({
+        next: (s) => { this.genProgress = s && s.active ? s : null; },
+        error: () => { /* progress is best-effort; the generate call itself reports the outcome */ }
+      });
+    }, 3000);
+  }
+
+  private stopGenPolling(): void {
+    if (this.genPollHandle) { clearInterval(this.genPollHandle); this.genPollHandle = undefined; }
+    this.genProgress = null;
+  }
+
+  /** Human line for the generating indicator; falls back to the static text
+   *  until the first poll lands. */
+  genProgressLabel(): string {
+    const p = this.genProgress;
+    if (!p || !p.active) return 'Generating script — this may take a minute...';
+    const mins = Math.floor((p.elapsedSeconds || 0) / 60);
+    const secs = (p.elapsedSeconds || 0) % 60;
+    const elapsed = mins > 0 ? mins + 'm ' + String(secs).padStart(2, '0') + 's' : secs + 's';
+    switch (p.phase) {
+      case 'retrying-format':
+        return 'Model output needed reformatting — running a second attempt (' + elapsed + ' total)...';
+      case 'storing':
+        return 'Storing the generated script...';
+      default:
+        return 'Generating script with AI — ' + elapsed + ' so far (typically 1–3 minutes)...';
+    }
   }
 
   regenerateScript(): void {
