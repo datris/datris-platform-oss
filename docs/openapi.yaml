@@ -1868,6 +1868,43 @@ paths:
                   scriptPath:
                     type: string
 
+  /api/v1/tap/generate/status:
+    get:
+      tags: [Taps]
+      summary: Live progress of an in-flight script generation
+      description: >-
+        Reports what a blocking `/tap/generate` call is currently doing so
+        clients can show real progress during the 1–3 minute wait. Poll every
+        few seconds while a generate request is in flight. `active: false`
+        means no generation is running for this tap.
+      parameters:
+        - name: tap
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Progress snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active:
+                    type: boolean
+                  phase:
+                    type: string
+                    enum: [calling-model, retrying-format, storing]
+                  attempt:
+                    type: integer
+                  elapsedSeconds:
+                    type: integer
+                  phaseElapsedSeconds:
+                    type: integer
+        '500':
+          description: Error
+
   /api/v1/tap/fix:
     post:
       tags: [Taps]

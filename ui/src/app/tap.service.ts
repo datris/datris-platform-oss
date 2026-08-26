@@ -36,6 +36,13 @@ export class TapService {
     return this.http.post<any>('/api/v1/tap/generate', { description, tapName, oldScriptPath: oldScriptPath || null, secretName: secretName || null, tapType: tapType || 'structured' });
   }
 
+  /** Live phase of an in-flight generateScript call for this tap — polled
+   *  while the blocking generate request runs, so the wait shows real
+   *  progress ({active, phase, attempt, elapsedSeconds}). */
+  generateStatus(tapName: string): Observable<any> {
+    return this.http.get<any>('/api/v1/tap/generate/status', { params: { tap: tapName } });
+  }
+
   storeScript(tapName: string, script: string, oldScriptPath?: string, storage?: string, baseCommitSha?: string): Observable<any> {
     return this.http.post<any>('/api/v1/tap/script', {
       tapName, script,

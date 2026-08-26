@@ -242,6 +242,22 @@ object TapScriptGenerator {
         if (!DatrisEnvironment.current.aiEnabled)
             throw new DatrisException("AI is not enabled. Set 'ai.enabled: true' in application.yaml")
 
+        TapGenerationProgress.start(tapName)
+        try {
+            generateInternal(description, tapName, oldScriptPath, secretName, tapType)
+        } finally {
+            TapGenerationProgress.finish(tapName)
+        }
+    }
+
+    private def generateInternal(
+        description: String,
+        tapName: String,
+        oldScriptPath: String,
+        secretName: String,
+        tapType: String
+    ): TapGenerateResult = {
+
         // Build user prompt with available secret keys if configured
         val secretKeysHint = if (secretName != null && secretName.nonEmpty) {
             val secretPath = DatrisEnvironment.current.environment + "/" + secretName
@@ -322,7 +338,12 @@ object TapScriptGenerator {
         // packages manually in Edit & Test.
         val (script, packages): (String, java.util.List[String]) =
             tryParseAsJsonObject(cleaned).orElse {
-                logger.warn("TapScriptGenerator: first response did not parse as JSON — retrying with format reminder")
+                // Log the head of the unparseable response: without it a systematic
+                // envelope break (a model preamble, a new fence style) is invisible
+                // in the logs and costs a full extra generation on every tap.
+                logger.warn("TapScriptGenerator: first response did not parse as JSON — retrying with format reminder. " +
+                    "Response head: " + cleaned.take(400).replace("\n", "\\n"))
+                TapGenerationProgress.phase(tapName, "retrying-format", attempt = 2)
                 val preview = if (cleaned.length > 2000) cleaned.take(2000) + "\n... (truncated)" else cleaned
                 val retrySystemPrompt =
                     """Return ONLY a JSON object with exactly two fields:
@@ -380,6 +401,7 @@ object TapScriptGenerator {
             )
 
         // Store script in MinIO (cleanup old)
+        TapGenerationProgress.phase(tapName, "storing")
         val scriptPath = storeScript(tapName, script, oldScriptPath)
 
         logger.info("TapScriptGenerator: script stored at: " + scriptPath + ", packages: " + packages)

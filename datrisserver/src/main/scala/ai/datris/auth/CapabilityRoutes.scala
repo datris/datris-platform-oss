@@ -85,6 +85,7 @@ object CapabilityRoutes {
         Route("POST", "/api/v1/tap/script", "tap", "update"),
         Route("POST", "/api/v1/tap/test", "tap", "run"),
         Route("POST", "/api/v1/tap/generate", "tap", "create"),
+        Route("GET", "/api/v1/tap/generate/status", "tap", "read"),
         Route("POST", "/api/v1/tap/fix", "tap", "update"),
         Route("POST", "/api/v1/tap/review", "tap", "read"),
         Route("POST", "/api/v1/tap/optimize", "tap", "update"),

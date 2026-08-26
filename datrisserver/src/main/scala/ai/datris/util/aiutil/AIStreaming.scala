@@ -199,6 +199,10 @@ object AIStreaming {
         if (msg == null) return false
         val m = msg.toLowerCase
         m.contains("thinking.type") ||
+        // display: "summarized" is sent with the adaptive form; a model that
+        // takes adaptive but rejects the display field should fall down the
+        // ladder like any other thinking-shape rejection.
+        m.contains("thinking.display") ||
         (m.contains("thinking") && m.contains("not supported")) ||
         m.contains("output_config") ||
         // Bedrock validates the invoke body against a per-model schema and
@@ -236,6 +240,11 @@ object AIStreaming {
             case ThinkingForm.Adaptive =>
                 val thinkingObj = new JsonObject()
                 thinkingObj.addProperty("type", "adaptive")
+                // Claude 5-family default is display "omitted": thinking blocks
+                // stream with EMPTY text, so the UI's reasoning block/ticker
+                // never appears and a long think reads as a hang. "summarized"
+                // streams a readable summary; billing is identical either way.
+                thinkingObj.addProperty("display", "summarized")
                 req.add("thinking", thinkingObj)
                 val outputCfg = new JsonObject()
                 outputCfg.addProperty("effort", "medium")
@@ -543,6 +552,11 @@ object AIStreaming {
             case ThinkingForm.Adaptive =>
                 val thinkingObj = new JsonObject()
                 thinkingObj.addProperty("type", "adaptive")
+                // Claude 5-family default is display "omitted": thinking blocks
+                // stream with EMPTY text, so the UI's reasoning block/ticker
+                // never appears and a long think reads as a hang. "summarized"
+                // streams a readable summary; billing is identical either way.
+                thinkingObj.addProperty("display", "summarized")
                 req.add("thinking", thinkingObj)
                 val outputCfg = new JsonObject()
                 outputCfg.addProperty("effort", "medium")
