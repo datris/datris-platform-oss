@@ -3,6 +3,17 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.21.0" description="August 26, 2026">
+  **Live progress feedback across the Assistant and tap building.**
+
+  - The Assistant shows what it's thinking about while it reasons — a live summary streams next to the progress indicator with an elapsed timer, instead of silent dots. The full reasoning stays available in the expandable thinking block.
+  - AI tap-script generation shows live progress: the tap wizard and the Assistant's tool cards report what the generation is doing and how long it has been running.
+  - The Assistant sets time expectations before long-running operations, and when AI script generation fails for a well-known API it writes the script directly instead of retrying — turning a multi-minute failure into a quick recovery.
+  - The Assistant only reports an action as completed when it actually ran and observed the result — tightened guarantees against overstated progress reports.
+  - Dependency updates across the UI and build tooling.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required.
+</Update>
+
 <Update label="v1.20.2" description="August 25, 2026">
   **Security refresh across all container images.**
 
