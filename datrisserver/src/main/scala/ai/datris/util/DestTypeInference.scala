@@ -81,16 +81,19 @@ object DestTypeInference {
         }
 
         if (decimalPattern.pattern.matcher(v).matches()) {
-            return try { v.toDouble; Some("double") } catch { case _: NumberFormatException => Some("string") }
+            return try { v.toDouble; Some("double") }
+            catch { case _: NumberFormatException => Some("string") }
         }
 
         if (datePattern.pattern.matcher(v).matches()) {
-            return try { LocalDate.parse(v, isoDate); Some("date") } catch { case _: Exception => Some("string") }
+            return try { LocalDate.parse(v, isoDate); Some("date") }
+            catch { case _: Exception => Some("string") }
         }
 
         if (timestampPattern.pattern.matcher(v).matches()) {
             // The date part must still be a real calendar date.
-            return try { LocalDate.parse(v.substring(0, 10), isoDate); Some("timestamp") } catch { case _: Exception => Some("string") }
+            return try { LocalDate.parse(v.substring(0, 10), isoDate); Some("timestamp") }
+            catch { case _: Exception => Some("string") }
         }
 
         Some("string")

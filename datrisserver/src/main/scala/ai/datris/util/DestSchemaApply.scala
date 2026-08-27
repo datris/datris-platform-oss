@@ -78,15 +78,17 @@ object DestSchemaApply {
             throw new DatrisException("Pipeline not found: " + pipelineName)
 
         val destKind = inScopeDest(config).getOrElse(
-            return ineligible(pipelineName, ReasonNotSupported,
-                "This pipeline's destination does not support on-demand typing (postgres, snowflake, databricks only)")
+            return ineligible(
+                pipelineName,
+                ReasonNotSupported,
+                "This pipeline's destination does not support on-demand typing (postgres, snowflake, databricks only)"
+            )
         )
         if (!DestTypeInference.allString(effectiveFields(config)))
             return ineligible(pipelineName, ReasonAlreadyTyped, "Destination fields already carry types")
 
         val rows: Seq[Map[String, Any]] = sampleLanded(config, destKind).getOrElse(
-            return ineligible(pipelineName, ReasonNoLandedRows,
-                "No landed data to infer from — run the pipeline once first")
+            return ineligible(pipelineName, ReasonNoLandedRows, "No landed data to infer from — run the pipeline once first")
         )
 
         val names = effectiveFields(config).asScala.map(_.name).toList
@@ -111,14 +113,16 @@ object DestSchemaApply {
             case "snowflake" =>
                 val exists = SnowflakeConnectionUtil.withConnection(config.destination.database) { conn =>
                     val statement = conn.createStatement()
-                    try snowflakeTableExists(statement, config) finally Try(statement.close())
+                    try snowflakeTableExists(statement, config)
+                    finally Try(statement.close())
                 }
                 if (!exists) return None
                 SnowflakeQueryUtil.query(config.name, None, sampleLimit).results.asScala.map(_.asScala.toMap).toSeq
             case "databricks" =>
                 val exists = DatabricksConnectionUtil.withConnection(config.destination.database) { conn =>
                     val statement = conn.createStatement()
-                    try databricksTableExists(statement, config) finally Try(statement.close())
+                    try databricksTableExists(statement, config)
+                    finally Try(statement.close())
                 }
                 if (!exists) return None
                 DatabricksQueryUtil.query(config.name, None, sampleLimit).results.asScala.map(_.asScala.toMap).toSeq
@@ -215,7 +219,8 @@ object DestSchemaApply {
             val rs = statement.executeQuery(
                 "SELECT to_regclass('\"" + db.schema + "\".\"" + db.table + "\"')"
             )
-            try { rs.next() && rs.getString(1) != null } finally Try(rs.close())
+            try { rs.next() && rs.getString(1) != null }
+            finally Try(rs.close())
         }
     }
 
@@ -253,7 +258,8 @@ object DestSchemaApply {
         val jdbcUrl = secrets.jdbcUrl + "/" + postgresDbName(config)
         PostgresPool.withConnection(jdbcUrl, secrets.username, secrets.password) { conn =>
             val statement = conn.createStatement()
-            try f(statement) finally Try(statement.close())
+            try f(statement)
+            finally Try(statement.close())
         }
     }
 
@@ -283,7 +289,8 @@ object DestSchemaApply {
                 " WHERE TABLE_SCHEMA = " + sqlString(effectiveName(db.schema)) +
                 " AND TABLE_NAME = " + sqlString(effectiveName(db.table))
         )
-        try { rs.next() && rs.getLong(1) > 0 } finally Try(rs.close())
+        try { rs.next() && rs.getLong(1) > 0 }
+        finally Try(rs.close())
     }
 
     private def migrateSnowflake(statement: Statement, config: PipelineConfig, fields: java.util.List[SchemaField]): Unit = {
@@ -318,7 +325,8 @@ object DestSchemaApply {
                 " WHERE table_schema = " + sqlString(effectiveName(db.schema)) +
                 " AND table_name = " + sqlString(effectiveName(db.table))
         )
-        try { rs.next() && rs.getLong(1) > 0 } finally Try(rs.close())
+        try { rs.next() && rs.getLong(1) > 0 }
+        finally Try(rs.close())
     }
 
     private def migrateDatabricks(statement: Statement, config: PipelineConfig, fields: java.util.List[SchemaField]): Unit = {
@@ -350,7 +358,13 @@ object DestSchemaApply {
     /** One validation query for all typed columns: per column, count non-empty
       * values TRY_CAST rejects. Any nonzero count aborts with the column named.
       * `colRef` renders a column reference in the destination's dialect. */
-    private def validateCasts(statement: Statement, table: String, fields: java.util.List[SchemaField], colRef: String => String, tryCastExpr: (String, String) => String): Unit = {
+    private def validateCasts(
+        statement: Statement,
+        table: String,
+        fields: java.util.List[SchemaField],
+        colRef: String => String,
+        tryCastExpr: (String, String) => String
+    ): Unit = {
         val typed = fields.asScala.filter(f => !f.`type`.equalsIgnoreCase("string")).toList
         if (typed.isEmpty) return
         val counts = typed.map { f =>

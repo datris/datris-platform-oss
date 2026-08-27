@@ -60,16 +60,15 @@ class DestSchemaApplySpec extends AnyFunSuite {
 
     test("validateFields rejects a missing, extra, or renamed column") {
         assertThrows[DatrisException](DestSchemaApply.validateFields(pg, List(SchemaField("a", "int")).asJava))
-        assertThrows[DatrisException](DestSchemaApply.validateFields(pg,
-            List(SchemaField("a", "int"), SchemaField("b", "int"), SchemaField("c", "int")).asJava))
-        assertThrows[DatrisException](DestSchemaApply.validateFields(pg,
-            List(SchemaField("a", "int"), SchemaField("renamed", "int")).asJava))
+        assertThrows[DatrisException](DestSchemaApply.validateFields(
+            pg,
+            List(SchemaField("a", "int"), SchemaField("b", "int"), SchemaField("c", "int")).asJava
+        ))
+        assertThrows[DatrisException](DestSchemaApply.validateFields(pg, List(SchemaField("a", "int"), SchemaField("renamed", "int")).asJava))
     }
 
     test("validateFields rejects unsupported types") {
-        assertThrows[DatrisException](DestSchemaApply.validateFields(pg,
-            List(SchemaField("a", "uuid"), SchemaField("b", "string")).asJava))
-        assertThrows[DatrisException](DestSchemaApply.validateFields(pg,
-            List(SchemaField("a", null), SchemaField("b", "string")).asJava))
+        assertThrows[DatrisException](DestSchemaApply.validateFields(pg, List(SchemaField("a", "uuid"), SchemaField("b", "string")).asJava))
+        assertThrows[DatrisException](DestSchemaApply.validateFields(pg, List(SchemaField("a", null), SchemaField("b", "string")).asJava))
     }
 }
