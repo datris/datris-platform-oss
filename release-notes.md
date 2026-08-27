@@ -1,18 +1,25 @@
 # Release Notes
 
-## v1.21.0 — August 26, 2026
+## v1.22.0 — August 27, 2026
 
-**Live progress feedback across the Assistant and tap building.**
+**Set real column types on pipelines that landed as text.**
 
-- The Assistant now shows what it's thinking about while it reasons — a live summary streams next to the progress indicator, with an elapsed timer, instead of silent dots. The full reasoning stays available in the expandable thinking block.
-- AI tap-script generation shows live progress: the tap wizard and the Assistant's tool cards report what the generation is doing and how long it has been running, instead of a static "this may take a minute."
-- The Assistant sets time expectations before long-running operations, and when AI script generation fails for a well-known API it now writes the script directly instead of retrying — turning a multi-minute failure into a quick recovery.
-- The Assistant only reports an action as completed when it actually ran and observed the result — tightened guarantees against overstated progress reports.
-- Dependency updates across the UI and build tooling.
+- Pipelines created through agents store every destination column as text. The Catalog now marks such pipelines (PostgreSQL, Snowflake, and Databricks destinations) with a quiet "text" badge — click it to review proposed column types and apply them. The same action is available from the pipeline view.
+- Proposed types are inferred from the data already loaded, and every column shows real sample values so you can check the proposal at a glance. When a column stays text because of a stray value, the dialog shows the offending value and the type it blocked (for example: found "N/A", would otherwise be a number) so overriding is an informed choice.
+- Applying is safe by design: every loaded value is validated first, the destination table is retyped, and the pipeline definition is updated as a new version. A value that won't convert fails the whole apply with the column named and nothing changed. From then on, incoming data is type-checked on every load.
+- Agents get the same capability through two new MCP tools, `get_dest_types` and `apply_dest_types` — applying always requires the user's explicit approval.
 
 **Upgrading**
 
 `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required.
+
+---
+
+## v1.21.0 — August 26, 2026
+
+**Live progress feedback across the Assistant and tap building.**
+
+See the [full v1.21.0 notes](release-notes/v1.21.0.md) for details.
 
 ---
 
