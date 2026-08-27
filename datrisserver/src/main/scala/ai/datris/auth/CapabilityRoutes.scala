@@ -74,6 +74,10 @@ object CapabilityRoutes {
         Route("GET", "/api/v1/pipeline/version", "pipeline", "read"),
         Route("GET", "/api/v1/pipeline/version/diff", "pipeline", "read"),
         Route("POST", "/api/v1/pipeline/version/restore", "pipeline", "update"),
+        // Destination-side typing: proposing reads landed data; applying
+        // changes the pipeline definition (and may migrate the dest table).
+        Route("GET", "/api/v1/pipeline/dest-types", "pipeline", "read"),
+        Route("POST", "/api/v1/pipeline/dest-types", "pipeline", "update"),
 
         // Taps
         Route("GET", "/api/v1/tap", "tap", "read"),

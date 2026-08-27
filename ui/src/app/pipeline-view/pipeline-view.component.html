@@ -38,8 +38,20 @@
     <pre>{{ error }}</pre>
   </div>
 
+  <!-- Destination-typing banner: this dataset is stored all-text on a typable
+       destination. Quiet by design — a line, not a modal. -->
+  <div class="text-types-banner" *ngIf="isAllText()">
+    <span class="material-icons">text_fields</span>
+    <span>All destination columns are stored as text.</span>
+    <button class="banner-btn" *ngIf="auth.canWrite()" (click)="showDestTypes = true">Set types…</button>
+  </div>
+
   <div class="config-container" *ngIf="configJson">
     <pre class="config-json" [innerText]="configJson"></pre>
   </div>
   <div class="copy-toast" *ngIf="copySuccess">Copied to clipboard</div>
 </div>
+
+<app-dest-types-dialog *ngIf="showDestTypes"
+                       [pipeline]="name"
+                       (closed)="showDestTypes = false"></app-dest-types-dialog>

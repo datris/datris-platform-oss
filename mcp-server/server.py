@@ -1704,6 +1704,46 @@ def _all_tools():
             }
         ),
         Tool(
+            name="get_dest_types",
+            description="Propose real column types for a pipeline whose destination columns are all stored as text (the default for agent-created pipelines). Stateless: samples up to 1000 rows that already landed in the destination, infers types deterministically, and returns per-column evidence — a few sample values, plus (for columns kept as string by a dirty value) the offending value and the type it blocked. Only for postgres, snowflake, and databricks destinations; `eligible: false` with a `reason` of destination-not-supported, already-typed, or no-landed-rows (run the pipeline once first) otherwise. Nothing is stored or changed by this call.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline": {
+                        "type": "string",
+                        "description": "Pipeline name"
+                    },
+                },
+                "required": ["pipeline"]
+            }
+        ),
+        Tool(
+            name="apply_dest_types",
+            description="Apply destination column types to an all-string pipeline. REQUIRES explicit user approval first. Landed data is migrated before the config changes (postgres retypes in place; snowflake/databricks validate then swap the table) — the migration locks or replaces the table, so do NOT apply while a run is in flight. Any landed value that will not cast fails the whole apply with the column named and NOTHING changed — then either re-apply with that field set back to string, or fix the data. `fields` must list EVERY destination column (same names as get_dest_types returned) with its intended type; keep a column as-is by passing type string.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pipeline": {
+                        "type": "string",
+                        "description": "Pipeline name"
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "Every destination column with its intended type. Types: string, boolean, int, bigint, float, double, date, timestamp.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "type": {"type": "string"}
+                            },
+                            "required": ["name", "type"]
+                        }
+                    },
+                },
+                "required": ["pipeline", "fields"]
+            }
+        ),
+        Tool(
             name="get_version",
             description="Get the Datris server version.",
             inputSchema={
@@ -2990,6 +3030,13 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("sample_size"):
             data["sampleSize"] = str(args["sample_size"])
         return _upload_content("/api/v1/pipeline/profile", args["content"], args["filename"], data)
+
+    elif name == "get_dest_types":
+        return _call("get", "/api/v1/pipeline/dest-types", params={"pipeline": args["pipeline"]})
+
+    elif name == "apply_dest_types":
+        return _call("post", "/api/v1/pipeline/dest-types",
+                     json={"pipeline": args["pipeline"], "fields": args["fields"]})
 
     elif name == "get_version":
         return _call("get", "/api/v1/version")

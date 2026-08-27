@@ -153,6 +153,29 @@ tr:hover .embed-name-edit-btn { opacity: 1; }
   letter-spacing: 0.03em;
 }
 
+/* Destination-typing badge: shown when every destination column is still
+   stored as text on a typable destination. Clicking opens the typing dialog;
+   the badge clears itself once the config carries types. */
+.text-type-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(217, 164, 65, 0.14);
+  color: #d9a441;
+  border: none;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.text-type-badge:hover {
+  background: rgba(217, 164, 65, 0.28);
+}
+
 .embed-cron {
   font-family: var(--font-mono);
   font-size: 12px;

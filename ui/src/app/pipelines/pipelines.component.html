@@ -80,7 +80,12 @@
                    (click)="$event.stopPropagation()"
                    #nameInput>
           </td>
-          <td class="embed-details" [title]="getDestinations(ds)">{{ getDestinations(ds) || '—' }}</td>
+          <td class="embed-details" [title]="getDestinations(ds)">
+            {{ getDestinations(ds) || '—' }}
+            <button class="text-type-badge" *ngIf="isAllText(ds)"
+                    (click)="openDestTypesDialog($event, ds.name)"
+                    title="All destination columns are stored as text — set real types">text</button>
+          </td>
           <td>
             <span *ngIf="pipelineToTap[ds.name]" class="embed-connection" [title]="pipelineToTap[ds.name]">← {{ pipelineToTap[ds.name] }}</span>
             <span *ngIf="!pipelineToTap[ds.name]" class="embed-muted">—</span>
@@ -159,7 +164,12 @@
             <span *ngIf="!pipelineToTap[ds.name]" class="tap-none">—</span>
           </td>
           <td>{{ getSourceType(ds) }}</td>
-          <td>{{ getDestinations(ds) }}</td>
+          <td>
+            {{ getDestinations(ds) }}
+            <button class="text-type-badge" *ngIf="isAllText(ds)"
+                    (click)="openDestTypesDialog($event, ds.name)"
+                    title="All destination columns are stored as text — set real types">text</button>
+          </td>
           <td class="actions-cell">
             <button class="action-btn view-btn" (click)="viewPipeline($event, ds.name)" title="View configuration"><span class="material-icons">visibility</span></button>
             <button class="action-btn ingest-btn" (click)="openUploadModal($event, ds.name)" title="Ingest data" *ngIf="auth.canWrite()"><span class="material-icons">upload_file</span></button>
@@ -191,6 +201,12 @@
     <p>No pipelines registered. Use the Create Pipeline button, the API or MCP server to create one.</p>
   </div>
 </div>
+
+<!-- Destination-typing dialog (opened from the "text" badge) -->
+<app-dest-types-dialog *ngIf="destTypesPipeline"
+                       [pipeline]="destTypesPipeline"
+                       (closed)="destTypesPipeline = ''"
+                       (applied)="loadPipelines()"></app-dest-types-dialog>
 
 <!-- Pipeline Architecture Diagram Modal -->
 <div class="modal-overlay" *ngIf="showDiagram" (click)="showDiagram = false">

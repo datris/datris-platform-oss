@@ -53,6 +53,17 @@ export class PipelineService {
     return this.http.post<any>('/api/v1/pipeline/generate', formData);
   }
 
+  // --- Destination-side typing ----------------------------------------------
+  // Stateless propose/apply pair: GET infers types on demand from landed
+  // rows; POST migrates the destination table and writes the typed config.
+  getDestTypes(name: string): Observable<any> {
+    return this.http.get<any>('/api/v1/pipeline/dest-types?pipeline=' + encodeURIComponent(name));
+  }
+
+  applyDestTypes(name: string, fields: Array<{name: string, type: string}>): Observable<any> {
+    return this.http.post<any>('/api/v1/pipeline/dest-types', { pipeline: name, fields });
+  }
+
   // --- Definition version history -------------------------------------------
   getPipelineVersions(name: string): Observable<any[]> {
     return this.http.get<any[]>('/api/v1/pipeline/versions?name=' + encodeURIComponent(name));

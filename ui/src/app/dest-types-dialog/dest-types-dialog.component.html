@@ -1,0 +1,84 @@
+<div class="modal-overlay" (click)="close()">
+  <div class="modal dest-types-modal" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <h2 class="modal-title">Set Destination Column Types</h2>
+      <button class="modal-close" (click)="close()">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="pipeline-name-label">Pipeline: <strong>{{ pipeline }}</strong></div>
+
+      <div class="loading-row" *ngIf="loading">
+        <span class="material-icons spin">progress_activity</span>
+        Inferring types from landed data…
+      </div>
+
+      <ng-container *ngIf="!loading && proposal && !appliedResult">
+        <!-- Ineligible: explain instead of proposing -->
+        <div class="ineligible-box" *ngIf="!proposal.eligible">
+          <span class="material-icons">info</span>
+          <span>
+            {{ proposal.message }}
+            <ng-container *ngIf="proposal.reason === 'no-landed-rows'">
+              Types are inferred from data that has already landed in the destination.
+            </ng-container>
+          </span>
+        </div>
+
+        <ng-container *ngIf="proposal.eligible">
+          <p class="dialog-hint">
+            Proposed from <strong>{{ proposal.sampleRowCount }}</strong> landed
+            row{{ proposal.sampleRowCount === 1 ? '' : 's' }}. Adjust any column,
+            then Apply — the destination table is retyped and the pipeline
+            definition is updated as a new version. Every landed value is
+            validated first; a value that won't cast fails the apply with
+            nothing changed. Don't apply while a run is in flight.
+          </p>
+          <div class="types-table-wrap">
+            <table class="types-table">
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  <th>Type</th>
+                  <th>Sample values</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let f of fields">
+                  <td class="col-name" [title]="f.name">{{ f.name }}</td>
+                  <td>
+                    <select class="type-select" [(ngModel)]="f.type" [disabled]="!auth.canWrite()">
+                      <option *ngFor="let t of types" [value]="t">{{ t }}</option>
+                    </select>
+                    <div class="string-reason" *ngIf="f.stringReason">
+                      stayed text — found "{{ f.stringReason.value }}", would otherwise be {{ f.stringReason.blocked }}
+                    </div>
+                  </td>
+                  <td class="col-samples" [title]="samplesFor(f)">{{ samplesFor(f) || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </ng-container>
+      </ng-container>
+
+      <div class="success-box" *ngIf="appliedResult">
+        Types applied.
+        {{ appliedResult.migrated ? 'The landed data was migrated to the new types.' : 'No data had landed yet — the table will be created typed on the first load.' }}
+        (Pipeline version {{ appliedResult.version }}.)
+      </div>
+      <div class="error-box" *ngIf="error">{{ error }}</div>
+    </div>
+    <div class="modal-footer">
+      <button class="secondary-btn" (click)="close()">{{ appliedResult ? 'Close' : 'Cancel' }}</button>
+      <button class="primary-btn"
+              *ngIf="auth.canWrite() && proposal?.eligible && !appliedResult"
+              (click)="apply()"
+              [disabled]="applying || !hasTypedField()"
+              [title]="hasTypedField() ? '' : 'All columns are set to string — nothing to apply'">
+        {{ applying ? 'Applying…' : 'Apply Types' }}
+      </button>
+    </div>
+  </div>
+</div>
