@@ -59,6 +59,8 @@ object MCPToolRoutes {
         "get_job_status" -> Mapped("GET", "/api/v1/pipeline/status"),
         "kill_job" -> Mapped("POST", "/api/v1/job/kill"),
         "profile_data" -> Mapped("POST", "/api/v1/pipeline/profile"),
+        "get_dest_types" -> Mapped("GET", "/api/v1/pipeline/dest-types"),
+        "apply_dest_types" -> Mapped("POST", "/api/v1/pipeline/dest-types"),
 
         // Infrastructure
         "get_version" -> Local,

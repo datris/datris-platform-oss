@@ -2,6 +2,7 @@ import { Component, OnInit, OnDestroy } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
+import { isAllTextDestination } from '../shared/dest-types';
 
 @Component({
     selector: 'app-pipeline-view',
@@ -17,6 +18,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
   copySuccess = false;
   confirmDelete = false;
   deleteLoading = false;
+  showDestTypes = false;
   private refreshInterval: any = null;
 
   constructor(private route: ActivatedRoute, private router: Router, private pipelineService: PipelineService, public auth: AuthService) { }
@@ -46,6 +48,12 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
         this.error = err.error || err.message || 'Failed to load pipeline';
       }
     });
+  }
+
+  /** "Stored as text" banner condition — computed from the loaded config, so
+   *  it clears on the next refresh after types are applied. */
+  isAllText(): boolean {
+    return isAllTextDestination(this.config);
   }
 
   copyConfig(): void {

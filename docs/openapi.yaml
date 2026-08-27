@@ -631,6 +631,129 @@ paths:
         '500':
           description: Error
 
+  /api/v1/pipeline/dest-types:
+    get:
+      tags: [Pipelines]
+      summary: Propose destination column types from landed data
+      description: >-
+        Agent-created pipelines store every destination column as text. This
+        stateless call samples up to 1000 rows that already landed in the
+        destination (postgres, snowflake, or databricks), infers real column
+        types deterministically, and returns them with per-column evidence:
+        a few distinct sample values, and — for columns kept as string by a
+        dirty value — the offending value and the type it blocked. Nothing is
+        stored or changed.
+      parameters:
+        - name: pipeline
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The proposal, or the reason there is none
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  eligible:
+                    type: boolean
+                  reason:
+                    type: string
+                    enum: [destination-not-supported, already-typed, no-landed-rows]
+                    description: Present when eligible is false.
+                  message:
+                    type: string
+                  sampleRowCount:
+                    type: integer
+                  fields:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        type:
+                          type: string
+                          enum: [string, boolean, int, bigint, double, date, timestamp]
+                        samples:
+                          type: array
+                          description: Up to 5 distinct landed values, truncated.
+                          items:
+                            type: string
+                        stringReason:
+                          type: object
+                          description: Why the column stayed string, when a dirty value blocked a type.
+                          properties:
+                            value:
+                              type: string
+                            blocked:
+                              type: string
+        '400':
+          description: Pipeline not found
+        '500':
+          description: Error
+    post:
+      tags: [Pipelines]
+      summary: Apply destination column types
+      description: >-
+        Applies column types to an all-string destination. Destination-first:
+        if data has already landed the table is migrated before the config
+        changes — postgres retypes in place, snowflake/databricks validate
+        every landed value with TRY_CAST and then swap the table. Any landed
+        value that will not cast fails the whole apply with the column named
+        and nothing changed. On success the pipeline definition is updated as
+        a new version. The migration locks or replaces the table — do not
+        apply while a run is in flight.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipeline, fields]
+              properties:
+                pipeline:
+                  type: string
+                fields:
+                  type: array
+                  description: Every destination column with its intended type (keep a column as-is with type string).
+                  items:
+                    type: object
+                    required: [name, type]
+                    properties:
+                      name:
+                        type: string
+                      type:
+                        type: string
+                        enum: [string, boolean, int, bigint, float, double, date, timestamp]
+      responses:
+        '200':
+          description: What was applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  migrated:
+                    type: boolean
+                    description: True when a landed table was retyped (vs. config-only).
+                  version:
+                    type: integer
+                  fields:
+                    type: array
+                    items:
+                      type: object
+        '400':
+          description: Unsupported destination, already typed, invalid fields, or a landed value would not cast
+        '500':
+          description: Error
+
   # ── File Upload & AI ────────────────────────────────────────
 
   /api/v1/pipeline/upload:

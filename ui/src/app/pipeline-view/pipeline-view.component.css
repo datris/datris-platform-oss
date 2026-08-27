@@ -196,3 +196,39 @@
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* "Stored as text" banner — quiet, sits above the config JSON. */
+.text-types-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: rgba(217, 164, 65, 0.1);
+  border: 1px solid rgba(217, 164, 65, 0.3);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.text-types-banner .material-icons {
+  font-size: 18px;
+  color: #d9a441;
+}
+
+.banner-btn {
+  margin-left: auto;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid rgba(217, 164, 65, 0.5);
+  border-radius: 6px;
+  background: transparent;
+  color: #d9a441;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.banner-btn:hover {
+  background: rgba(217, 164, 65, 0.15);
+}

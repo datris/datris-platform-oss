@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, ViewChildren, ElementRef, QueryList, Input, HostListener } from '@angular/core';
 import { Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
+import { isAllTextDestination } from '../shared/dest-types';
 import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { PipelineStatusService } from '../pipeline-status.service';
 import { TapService } from '../tap.service';
@@ -44,6 +45,10 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   private refreshInterval: any;
 
   deleteCatalogTarget = '';
+
+  // Destination-typing dialog (the Catalog "text" badge). Holds the pipeline
+  // name the dialog is open for, or '' when closed.
+  destTypesPipeline = '';
 
   // Upload modal
   showUploadModal = false;
@@ -309,6 +314,17 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     if (dataset.destination.chroma) dests.push('Chroma');
     if (dataset.destination.pgvector) dests.push('pgvector');
     return dests.join(', ');
+  }
+
+  /** "text" badge condition: in-scope destination whose columns are all
+   *  still stored as text. Computed from the config each render. */
+  isAllText(dataset: any): boolean {
+    return isAllTextDestination(dataset);
+  }
+
+  openDestTypesDialog(event: Event, name: string): void {
+    event.stopPropagation();
+    this.destTypesPipeline = name;
   }
 
   // Upload modal
