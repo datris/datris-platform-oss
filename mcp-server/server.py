@@ -48,6 +48,13 @@ WEBSITE_URL = os.getenv("WEBSITE_URL", "https://datris.ai")
 
 # Per-session API key for multi-tenant SSE/HTTP connections
 _session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("_session_api_key", default="")
+# The human an in-platform chat (Assistant / Ops / Catalog) is acting for,
+# relayed from the `X-Datris-On-Behalf-Of` header the Datris server sends on
+# its /mcp calls. Forwarded verbatim on every REST hop so the platform's audit
+# log and version history attribute the action to the person, not to the
+# shared `ui` key. The server only honors it from the `ui` key; any other
+# caller sending it is ignored (and logged) there.
+_session_on_behalf_of: contextvars.ContextVar[str] = contextvars.ContextVar("_session_on_behalf_of", default="")
 # Per-session id used for agent-monitor attribution
 _session_id: contextvars.ContextVar[str] = contextvars.ContextVar("_session_id", default="")
 
@@ -461,12 +468,28 @@ def _effective_api_key() -> str:
     return _session_api_key.get()
 
 
-def _headers():
-    """Build request headers."""
-    h = {"Content-Type": "application/json"}
+def _identity_headers():
+    """Headers that identify who is behind this tool call, for the platform's
+    audit log: the per-session API key, the MCP session id (joins an audit
+    entry to the Agent Monitor's activity buffer), and — for in-platform chats
+    only — the user being acted for."""
+    h = {}
     key = _effective_api_key()
     if key:
         h["x-api-key"] = key
+    sess = _session_id.get()
+    if sess:
+        h["X-Datris-Agent-Session"] = sess
+    obo = _session_on_behalf_of.get()
+    if obo:
+        h["X-Datris-On-Behalf-Of"] = obo
+    return h
+
+
+def _headers():
+    """Build request headers."""
+    h = {"Content-Type": "application/json"}
+    h.update(_identity_headers())
     return h
 
 
@@ -490,10 +513,7 @@ def _upload(path, file_path, data=None):
     """Upload a file via multipart POST to the pipeline API (local file path)."""
     with open(file_path, "rb") as f:
         files = {"file": (os.path.basename(file_path), f)}
-        h = {}
-        key = _effective_api_key()
-        if key:
-            h["x-api-key"] = key
+        h = _identity_headers()
         resp = requests.post(
             f"{DATRIS_API_URL}{path}",
             headers=h,
@@ -538,10 +558,7 @@ def _upload_content(path, content_b64, filename, data=None):
     try:
         with open(tmp_path, "rb") as f:
             files = {"file": (filename, f)}
-            h = {}
-            key = _effective_api_key()
-            if key:
-                h["x-api-key"] = key
+            h = _identity_headers()
             resp = requests.post(
                 f"{DATRIS_API_URL}{path}",
                 headers=h,
@@ -3703,6 +3720,14 @@ async def run_stdio():
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
+def _extract_header(scope, name: bytes) -> str:
+    """Return one request header from the ASGI scope, or "" when absent."""
+    for header_name, header_value in scope.get("headers", []):
+        if header_name == name:
+            return header_value.decode("utf-8", errors="replace").strip()
+    return ""
+
+
 def _extract_api_key(scope) -> str:
     """Extract x-api-key from ASGI scope headers or query string."""
     # Check headers first
@@ -3777,6 +3802,7 @@ async def run_sse(port: int):
                                 "body": b'{"error":"x-api-key header required. Sign up at datris.ai to get an API key."}'})
                     return
                 _session_api_key.set(api_key)
+                _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
@@ -3811,6 +3837,7 @@ async def run_sse(port: int):
                                 "body": b'{"error":"x-api-key header required."}'})
                     return
                 _session_api_key.set(api_key)
+                _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
@@ -3865,6 +3892,7 @@ async def run_streamable_http(port: int):
                                 "body": b'{"error":"x-api-key header required. Sign up at datris.ai to get an API key."}'})
                     return
                 _session_api_key.set(api_key)
+                _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)

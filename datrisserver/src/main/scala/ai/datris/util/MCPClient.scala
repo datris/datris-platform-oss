@@ -6,7 +6,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{JsonArray, JsonObject, JsonParser}
-import ai.datris.model.DatrisException
+import ai.datris.audit.AuditActor
+import ai.datris.model.{DatrisException, UserContext}
 import org.apache.http.HttpHeaders
 import org.apache.http.client.methods.HttpPost
 import org.apache.http.entity.StringEntity
@@ -176,6 +177,12 @@ object MCPClient {
         httpPost.addHeader(HttpHeaders.ACCEPT, "application/json, text/event-stream")
         if (apiKey != null && apiKey.nonEmpty)
             httpPost.addHeader("x-api-key", apiKey)
+        // The chat controllers restore the request's UserContext on their
+        // worker thread, so the human behind an Assistant / Ops / Catalog chat
+        // is known here. Forward them; the MCP server relays the header on its
+        // REST hop and TenantInterceptor attributes the resulting actions to
+        // the user (only for the trusted `ui` key — see AuditActor).
+        UserContext.get().foreach(u => httpPost.addHeader(AuditActor.HeaderOnBehalfOf, u.username))
         httpPost.setEntity(new StringEntity(body, StandardCharsets.UTF_8))
 
         val response = httpClient.execute(httpPost)

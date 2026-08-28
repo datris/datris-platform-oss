@@ -301,6 +301,11 @@ services:
       USEUSERAUTH: "${USE_USER_AUTH:-false}"
       USEAPIKEYS: "${USE_API_KEYS:-false}"
       MULTITENANT: "${MULTI_TENANT:-false}"
+      # Audit log: durable record of who created / changed / ran / deleted what,
+      # readable by admins under Configuration → Audit Log. Off by default.
+      # AUDITLOG_RETENTIONDAYS maps to auditLog.retentionDays (0 = keep forever).
+      USEAUDITLOG: "${USE_AUDIT_LOG:-false}"
+      AUDITLOG_RETENTIONDAYS: "${AUDIT_LOG_RETENTION_DAYS:-90}"
       # Shared secret authenticating the MinIO -> /minio-events webhook. When set,
       # the server requires MinIO to present it as a bearer token (see
       # minio-init.sh auth_token). Empty by default so existing deployments keep

@@ -137,20 +137,23 @@ object APIKeyValidator {
 
         metadataMap.get(label) match {
             case Some(json) =>
-                val (revoked, capabilities) = parseMetadata(label, json)
+                val (revoked, capabilities, keyId) = parseMetadata(label, json)
                 if (revoked) throw new DatrisException(s"API key '$label' is revoked")
-                ResolvedKey(None, label, capabilities, isLegacyFullAccess = false)
+                ResolvedKey(None, label, capabilities, isLegacyFullAccess = false, keyId = keyId)
             case None =>
                 ResolvedKey(None, label, Seq(Capability.FullAccess), isLegacyFullAccess = true)
         }
     }
 
-    private def parseMetadata(label: String, json: String): (Boolean, Seq[Capability]) = {
+    private def parseMetadata(label: String, json: String): (Boolean, Seq[Capability], Option[String]) = {
         try {
             val obj = JsonParser.parseString(json).getAsJsonObject
             val revoked =
                 if (obj.has("revoked") && !obj.get("revoked").isJsonNull) obj.get("revoked").getAsBoolean
                 else false
+            val keyId =
+                if (obj.has("keyId") && !obj.get("keyId").isJsonNull) Option(obj.get("keyId").getAsString).filter(_.nonEmpty)
+                else None
             val caps: Seq[Capability] =
                 if (obj.has("capabilities") && obj.get("capabilities").isJsonArray) {
                     val arr = obj.getAsJsonArray("capabilities")
@@ -161,7 +164,7 @@ object APIKeyValidator {
                     }
                     builder.result()
                 } else Seq.empty
-            (revoked, caps)
+            (revoked, caps, keyId)
         } catch {
             case e: DatrisException => throw e
             case e: Exception =>

@@ -87,8 +87,14 @@ class KafkaConsumerRunner(
 
         if (config == null)
             logger.error("Pipeline: " + pipeline + " is not configured in the NoSQL database")
-        else
+        else {
+            val md = new com.google.gson.JsonObject()
+            md.addProperty("trigger", "kafka")
+            md.addProperty("topic", topic)
+            // Collapsed by the audit writer: one record per pipeline per minute with a count.
+            ai.datris.audit.AuditLog.system("pipeline", "ingest", "pipeline", config.name, md)
             processData(config, value)
+        }
     }
 
     private def processData(config: PipelineConfig, data: String): Unit = {

@@ -39,7 +39,7 @@ docker compose up -d --force-recreate datris
 
 ### 3. Use the platform
 
-- **The UI**: log in with your admin account. The session cookie authenticates browser flows — no `x-api-key` is sent, no Connect prompt appears. The Assistant inherits your session for capability checks; its tool calls and audit log are tagged `session:<your username>`.
+- **The UI**: log in with your admin account. The session cookie authenticates browser flows — no `x-api-key` is sent, no Connect prompt appears. The Assistant inherits your session for capability checks; its tool calls, version-history entries, and [audit log](/audit-log) records are attributed to you (`session:<your username>`), not to the platform's internal `ui` key.
 - **Programmatic clients** (CLI, MCP agents, scripts): each one needs its own key, issued from **Configuration → API-Keys**. See [the issuance flow](#issuing-keys-for-cli-mcp-and-other-clients) below.
 
 That's it. No env var to track, no value to paste anywhere.
@@ -70,7 +70,7 @@ Open **Configuration → API-Keys → Issue new key**.
 4. **Copy the value immediately** — it's shown once. The platform stores a hashed copy; the plaintext is not retrievable after this modal closes.
 5. Paste the value into the agent's MCP client config (or CLI env var, etc.).
 
-Each label is a distinct identity in the audit log and can be revoked independently of the others.
+Each label is a distinct identity in the [audit log](/audit-log) and can be revoked independently of the others. Every issued key also gets a stable id (shown in the audit log) so a label that is revoked and later re-issued is not confused with its predecessor.
 
 <Note>
 The Vault label `ui` is reserved for the seeded fallback UI key (used in legacy `USE_USER_AUTH=false` mode and for the Assistant's internal MCP-to-REST hop). You don't issue this one from the UI — it's seeded by `vault-init.sh` on first boot and rotated from the API-Keys tab like any other key.

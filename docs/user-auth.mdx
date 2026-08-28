@@ -10,7 +10,7 @@ By default, the Datris OSS install runs single-tenant with no login screen — a
 When `USE_USER_AUTH=true`:
 
 - The UI shows a **login screen** before any tab is reachable.
-- Sensitive **Configuration** sub-tabs (Secrets, API-Keys) are gated to **admin** users. The AI Providers and Environment sub-tabs remain visible to all roles. The Users and API-Keys sub-tabs appear based on the active flags (see the [matrix](/api-keys#supported-configurations) for full visibility rules).
+- Sensitive **Configuration** sub-tabs (Secrets, API-Keys, [Audit Log](/audit-log)) are gated to **admin** users. The AI Providers and Environment sub-tabs remain visible to all roles. The Users and API-Keys sub-tabs appear based on the active flags (see the [matrix](/api-keys#supported-configurations) for full visibility rules).
 - A new **Users** sub-tab appears under Configuration for adding, removing, and changing roles (admin-only by virtue of being inside Configuration).
 - Sessions are server-side, with a TTL index cleaning them up automatically.
 

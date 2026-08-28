@@ -44,7 +44,26 @@ class MinioWebhookController {
 
         logger.info(s"Received MinIO event: $payload")
         QueueUtil.add(DatrisEnvironment.current.fileNotifierQueue, payload)
+        auditTrigger(payload)
         ResponseEntity.ok("OK")
+    }
+
+    /** One collapsed audit record per bucket per minute ("N objects landed in
+      * bucket X triggered ingestion"). Best-effort — a malformed payload just
+      * records the bucket as unknown. */
+    private def auditTrigger(payload: String): Unit = {
+        if (!ai.datris.audit.AuditLog.enabled) return
+        val bucket =
+            try {
+                val root = com.google.gson.JsonParser.parseString(payload).getAsJsonObject
+                val records = root.getAsJsonArray("Records")
+                if (records != null && records.size() > 0)
+                    records.get(0).getAsJsonObject.getAsJsonObject("s3").getAsJsonObject("bucket").get("name").getAsString
+                else "unknown"
+            } catch { case _: Exception => "unknown" }
+        val md = new com.google.gson.JsonObject()
+        md.addProperty("trigger", "minio-webhook")
+        ai.datris.audit.AuditLog.system("pipeline", "ingest-trigger", "bucket", bucket, md)
     }
 
     private def bearerToken(request: HttpServletRequest): String = {

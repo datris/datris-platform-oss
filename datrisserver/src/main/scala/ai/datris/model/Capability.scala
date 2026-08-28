@@ -144,7 +144,14 @@ case class ResolvedKey(
     tenantEnvironment: Option[String],
     label: String,
     capabilities: Seq[Capability],
-    isLegacyFullAccess: Boolean
+    isLegacyFullAccess: Boolean,
+    /** Stable per-issue identifier from the key's metadata blob. A label can
+      * be revoked and re-issued — rotate keeps the identity (same label, new
+      * secret) but revoke + issue with the same label is a *new* key wearing
+      * the old name. The audit log stores this alongside the label so those
+      * two are distinguishable. None for keys seeded before ids existed,
+      * for session-derived identities, and in anonymous mode. */
+    keyId: Option[String] = None
 ) {
 
     /** Does this key grant (resource, action) given a runtime context?
