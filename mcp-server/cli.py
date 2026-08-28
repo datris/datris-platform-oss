@@ -141,7 +141,7 @@ def b64_file(path):
 @click.group()
 @click.version_option(version="1.22.0")
 def cli():
-    """Datris CLI — The Agent-Native Data Platform"""
+    """Datris CLI — The Data Control Plane for AI Agents"""
     pass
 
 

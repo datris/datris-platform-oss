@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.datris/datris",
   "title": "Datris",
-  "description": "AI Agent-Native Data Platform — ingest, validate, transform, and query data.",
+  "description": "The data control plane for AI agents — acquire, validate, land, and query data over MCP.",
   "repository": {
     "url": "https://github.com/datris/datris-platform-oss",
     "source": "github"

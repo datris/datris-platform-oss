@@ -1,17 +1,35 @@
 ---
 title: "Datris"
-description: "The first AI Agent-native data platform"
+description: "The data control plane for AI agents"
 ---
 
 [datris.ai](https://datris.ai)
 
-Ingest, validate, transform, store, and retrieve your data — whether you're an AI agent talking through MCP or a developer writing config. One platform for both.
+Agents ask Datris for data. Datris finds it, acquires it, validates it, lands it in the stores you already run, and returns it with provenance — over MCP, without ever holding your keys. Developers get the same platform through JSON configuration, the UI, the CLI, and the REST API.
 
-Deploy on any cloud provider, on-premise, or locally — with no vendor lock-in. Define your entire data pipeline through simple JSON configuration, or extend it with AI instructions and preprocessors at every stage of the flow. Built entirely on open-source infrastructure, it runs anywhere Docker does.
+Datris sits beside your warehouse and lake; it doesn't replace them. It runs on-prem, in any cloud, or on your laptop — anywhere Docker runs — on open-source infrastructure with no proprietary services and no vendor lock-in. There is no managed service; your deployment lives inside your perimeter.
 
-### Agent-Ready: Built-In MCP Server
+### One Control Plane, Every Agent
 
-Your AI agents are first-class pipeline operators. Datris ships with a native MCP (Model Context Protocol) server — the first open-source data platform natively accessible to AI agents. Claude, Cursor, OpenClaw, and any MCP-compatible agent can register pipelines, upload files, trigger processing, monitor job status, profile data, run semantic searches across vector databases, and query PostgreSQL and MongoDB — all through natural conversation. Supports stdio and SSE transports.
+Your agents already acquire, validate, and load data. Without a control plane, they do it badly: credentials scattered across configs and prompts, the chat log as the only record, generated scripts that lose state when regenerated. Datris puts that work behind one governed surface:
+
+- **One MCP door** — 63 capabilities behind a single [MCP server](/mcp-server) (stdio and SSE). Claude, Cursor, OpenClaw, and any MCP-compatible agent learn one interface instead of 63 integrations
+- **Vault-brokered credentials** — the agent references a secret by name; it never holds a key. Agent-written code runs in an [isolated container](/tap-execution-isolation) with no keys inside
+- **Every run recorded** — job state, row counts, and provenance for every run; every generated script [versioned in git](/tap-github-storage)
+- **Durable state** — pipelines and [sync bookmarks](/taps) live in the platform, not in the agent's context, so a regenerated script picks up where the old one left off
+- **Explain and repair** — when a run fails, [AI Error Explanation](/ai-error-explanation) returns the root cause in plain English instead of a stack trace
+
+### The Operating Loop
+
+Same loop every run, same audit trail every time — so the agent's job is reasoning about the data, not improvising infrastructure.
+
+| Step | What Datris does |
+|------|------------------|
+| **Acquire** | [Taps](/taps) — AI-generated scripts pull from APIs, websites, files, or databases, on demand or on a schedule |
+| **Validate** | Plain-English [AI rules](/data-quality/ai-rules) plus JSON/XML schema validation; failures abort the run or are logged as warnings — your call per rule |
+| **Land** | Multi-destination [pipelines](/pipeline-configuration) write to warehouses, databases, object stores, queues, and vector stores in parallel |
+| **Observe** | Job state, provenance, and the [Data Catalog](/data-catalog) — queryable by agents and humans over MCP and REST |
+| **Explain & Repair** | [AI Error Explanation](/ai-error-explanation) diagnoses failures; the Assistant proposes and applies the fix |
 
 ## AI-Powered Features
 
@@ -58,7 +76,7 @@ Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any
 
 ## Architecture
 
-Push and pull — one platform, two interfaces. AI agents and humans ingest data through the pipeline, store it across databases and vector stores, and retrieve it back — via MCP or API.
+The plane Datris controls: every source, every destination, every AI call, every job — one MCP surface, one audit trail, one place credentials live. Datris owns acquisition, validation, storage, and observability so your agents can focus on reasoning, not integration. Humans get the same plane through the UI, CLI, and REST API.
 
 Self-hosted on proven open-source infrastructure — no proprietary services, no vendor lock-in, no surprise bills:
 

@@ -1,6 +1,6 @@
 # Datris MCP Server
 
-MCP (Model Context Protocol) server for the [Datris AI Agent-Native Data Platform](https://datris.ai). Enables AI agents (Claude Desktop, Claude Code, Cursor, and custom frameworks) to natively interact with the platform — discover data, create pipelines, upload files, monitor jobs, search vector databases, query structured data, and answer questions with AI.
+MCP (Model Context Protocol) server for [Datris](https://datris.ai), the data control plane for AI agents. Enables AI agents (Claude Desktop, Claude Code, Cursor, and custom frameworks) to natively interact with the platform — discover data, create pipelines, upload files, monitor jobs, search vector databases, query structured data, and answer questions with AI.
 
 <!-- mcp-name: io.github.datris/datris -->
 
