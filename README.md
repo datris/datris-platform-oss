@@ -1,4 +1,4 @@
-# Datris — The First AI Agent-Native Data Platform
+# Datris — The Data Control Plane for AI Agents
 
 [![PyPI](https://img.shields.io/pypi/v/datris-mcp-server)](https://pypi.org/project/datris-mcp-server/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.datris%2Fdatris-blue)](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris)
@@ -7,15 +7,18 @@
 
 [datris.ai](https://datris.ai) · [Documentation](https://docs.datris.ai) · [MCP Registry](https://registry.modelcontextprotocol.io/servers/io.github.datris/datris) · [PyPI](https://pypi.org/project/datris-mcp-server/)
 
-Ingest, validate, transform, store, and retrieve your data — whether you're an AI agent talking through MCP or a developer writing config. One platform for both.
+Agents ask Datris for data. Datris finds it, acquires it, validates it, lands it in the stores you already run, and returns it with provenance — over MCP, without ever holding your keys. It sits beside your warehouse and lake; it doesn't replace them.
 
 ## Why Datris?
 
-- **Agent-native** — Built-in MCP server with 63 tools. Claude, Cursor, and any MCP-compatible agent can operate pipelines through natural conversation
-- **Taps** — AI-generated Python scripts that fetch data from external sources (APIs, web scraping, databases) and push it into pipelines. Describe what you want, Datris generates the script. Includes AI diagnosis, CRON scheduling, and credentials via Vault
-- **AI at every stage** — AI data quality, AI transformations, AI schema generation, AI profiling, AI error explanation, natural language queries, RAG
-- **No vendor lock-in** — 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault). Runs anywhere Docker does
-- **Configuration-driven** — Define pipelines through JSON. No code required
+Your agents already acquire, validate, and load data. Without a control plane, they do it badly. Datris puts that work behind one governed surface:
+
+- **One MCP door** — 63 capabilities behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 63 integrations
+- **Vault-brokered credentials** — the agent references a secret by name and never holds a key; agent-written code runs in an isolated container with no keys inside
+- **Every run recorded** — job state, row counts, and provenance for every run; every generated script versioned in git
+- **Durable state** — pipelines and sync bookmarks live in the platform, not the chat, so regenerating a script never loses its place
+- **The operating loop** — Acquire (AI-generated taps) → Validate (plain-English rules) → Land (multi-destination pipelines) → Observe (provenance and job state) → Explain & Repair (AI error explanation), with the same audit trail every time
+- **Self-host anywhere** — on-prem, any cloud, or your laptop; 100% open-source infrastructure (MinIO, PostgreSQL, MongoDB, Kafka, Vault), AGPL-3.0, no managed service
 
 ## Quick Start
 
