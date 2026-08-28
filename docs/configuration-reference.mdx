@@ -85,8 +85,9 @@ Two independent flags control access. Set them together — see [the supported m
 | `CAPABILITY_ENFORCEMENT` | `enforce` | Default: scoped keys missing the required capability get HTTP 403. Override to `log-only` to emit `would-deny` log lines without rejecting — useful only when iterating on a new scope policy and you want a trial run before flipping enforcement on. Legacy `*:*` keys are unaffected either way |
 | `USE_AUDIT_LOG` | `false` | Record who created, changed, ran, or deleted what — readable by admins under Configuration → Audit Log and mirrored to the server log. Restart to change. See [Audit Log](/audit-log) |
 | `AUDIT_LOG_RETENTION_DAYS` | `90` | Days to keep audit entries in the config store; `0` keeps them forever. Maps to `auditLog.retentionDays` |
+| `AUDIT_LOG_READS` | `false` | Also record reads — queries, searches, listings, metadata. Off by default because they dwarf the write trail. Maps to `auditLog.logReads` |
 
-Two further audit settings live only in `application.yaml`: `auditLog.logReads` (default `false`; also record query/search/metadata/GET requests) and `auditLog.emitLogLine` (default `true`; mirror each entry to the `ai.datris.audit` logger for SIEM pickup).
+One further audit setting lives only in `application.yaml`: `auditLog.emitLogLine` (default `true`; mirror each entry to the `ai.datris.audit` logger for SIEM pickup).
 
 With `USE_USER_AUTH=true` + `USE_API_KEYS=true` (recommended), the UI authenticates via session cookie — no `x-api-key` value to seed or paste. Issue programmatic-client keys from **Configuration → API-Keys**.
 
@@ -363,3 +364,4 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `CAPABILITY_ENFORCEMENT` | `enforce` | `enforce` returns HTTP 403 on policy violations by scoped keys. Set to `log-only` to emit would-deny log lines without rejecting — useful when iterating on a new scope policy. |
 | `USE_AUDIT_LOG` | `false` | Enable the [Audit Log](/audit-log) — who did what, by login or API key. |
 | `AUDIT_LOG_RETENTION_DAYS` | `90` | Days to keep audit entries; `0` = forever. |
+| `AUDIT_LOG_READS` | `false` | Also record reads (queries, searches, listings). |

@@ -249,8 +249,8 @@ services:
       - datris-net
 
   datris:
-    image: datrisai/datris-server:latest
-    #build: .  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-server:latest
+    build: .  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris
     ports:
       - "8080:8080"
@@ -283,8 +283,11 @@ services:
       # Audit log: durable record of who created / changed / ran / deleted what,
       # readable by admins under Configuration → Audit Log. Off by default.
       # AUDITLOG_RETENTIONDAYS maps to auditLog.retentionDays (0 = keep forever).
+      # AUDITLOG_LOGREADS maps to auditLog.logReads — also record query/search/
+      # metadata/GET requests (off by default: high volume, low audit value).
       USEAUDITLOG: "${USE_AUDIT_LOG:-false}"
       AUDITLOG_RETENTIONDAYS: "${AUDIT_LOG_RETENTION_DAYS:-90}"
+      AUDITLOG_LOGREADS: "${AUDIT_LOG_READS:-false}"
       # Shared secret authenticating the MinIO -> /minio-events webhook. When set,
       # the server requires MinIO to present it as a bearer token (see
       # minio-init.sh auth_token). Empty by default so existing deployments keep
@@ -354,8 +357,8 @@ services:
   # all capabilities dropped, no privilege escalation. Only used when the datris
   # server has USE_TAP_RUNNER=true.
   datris-tap-runner:
-    image: datrisai/datris-tap-runner:latest
-    #build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-tap-runner:latest
+    build: ./tap-runner  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: datris-tap-runner
     environment:
       TAP_RUNNER_TOKEN: "${TAP_RUNNER_TOKEN:-changeme-tap-runner-token}"
@@ -379,8 +382,8 @@ services:
       - tap-net
 
   ui:
-    image: datrisai/datris-ui:latest
-    #build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-ui:latest
+    build: ./ui  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: ui
     ports:
       - "4200:8080"
@@ -390,8 +393,8 @@ services:
       - datris-net
 
   mcp-server:
-    image: datrisai/datris-mcp-server:latest
-    #build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
+    #image: datrisai/datris-mcp-server:latest
+    build: ./mcp-server  # Uncomment to build from source instead of pulling from Docker Hub
     container_name: mcp-server
     ports:
       - "3000:3000"

@@ -17,6 +17,8 @@ Off by default — existing installs are unchanged until you opt in.
    USE_AUDIT_LOG=true
    # optional — days to keep entries (0 = keep forever)
    AUDIT_LOG_RETENTION_DAYS=90
+   # optional — also record reads (queries, searches, listings)
+   AUDIT_LOG_READS=false
    ```
 
 2. Recreate the Datris container:
@@ -73,7 +75,7 @@ Writes, runs, deletes, logins, key and user management, and every denied request
 
 Each entry also carries the outcome (`success`, `failure`, `denied`), the HTTP status, how long the request took, the caller's IP address (first hop of `X-Forwarded-For` when the UI sits behind a proxy) and user agent, and the name of the resource touched.
 
-To record reads as well, set `auditLog.logReads: true` in `application.yaml`. Expect a lot more rows.
+To record reads as well — every query, search, and listing an agent runs — set `AUDIT_LOG_READS=true` in `.env` and recreate the container. Expect a lot more rows: each query is its own entry, so filter by category when you're looking for changes rather than activity.
 
 ### What is never recorded
 
