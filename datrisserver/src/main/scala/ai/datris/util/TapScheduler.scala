@@ -82,7 +82,15 @@ object TapScheduler {
             } catch {
                 case e: Exception =>
                     logger.error("TapScheduler: error running tap: " + tap.name, e)
-                    ai.datris.audit.AuditLog.system("tap", "run", "tap", tap.name, md, outcome = "failure", errorMessage = Option(e.getMessage).map(_.take(500)).orNull)
+                    ai.datris.audit.AuditLog.system(
+                        "tap",
+                        "run",
+                        "tap",
+                        tap.name,
+                        md,
+                        outcome = "failure",
+                        errorMessage = Option(e.getMessage).map(_.take(500)).orNull
+                    )
             }
             try {
                 maybeSuggestFix(tap.name)

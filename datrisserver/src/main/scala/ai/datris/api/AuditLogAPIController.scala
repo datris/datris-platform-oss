@@ -132,8 +132,16 @@ class AuditLogAPIController {
 
         val md = new JsonObject()
         md.addProperty("rows", n)
-        Seq("since" -> since, "until" -> until, "category" -> category, "action" -> action, "actor" -> actor,
-            "actorType" -> actorType, "outcome" -> outcome, "resource" -> resource)
+        Seq(
+            "since" -> since,
+            "until" -> until,
+            "category" -> category,
+            "action" -> action,
+            "actor" -> actor,
+            "actorType" -> actorType,
+            "outcome" -> outcome,
+            "resource" -> resource
+        )
             .foreach { case (k, v) => if (v != null && v.nonEmpty) md.addProperty(k, v) }
         AuditLog.record(request, "audit", "export", "audit-log", DatrisEnvironment.current.auditLogTableName, metadata = md)
     }
@@ -141,8 +149,16 @@ class AuditLogAPIController {
     // ------------------------------------------------------------------
 
     private def buildQuery(
-        since: String, until: String, category: String, action: String, actor: String,
-        actorType: String, outcome: String, resource: String, limit: Integer, cursor: String
+        since: String,
+        until: String,
+        category: String,
+        action: String,
+        actor: String,
+        actorType: String,
+        outcome: String,
+        resource: String,
+        limit: Integer,
+        cursor: String
     ): AuditLogIO.Query = {
         AuditLogIO.Query(
             since = parseInstant("since", since),
@@ -177,9 +193,23 @@ class AuditLogAPIController {
         val req = Option(d.get("request", classOf[Document])).getOrElse(new Document())
         def s(doc: Document, k: String): String = Option(doc.get(k)).map(_.toString).getOrElse("")
         Seq(
-            s(d, "ts"), s(actor, "type"), s(actor, "label"), s(actor, "keyLabel"), s(actor, "keyId"), s(actor, "username"),
-            s(d, "category"), s(d, "action"), s(res, "type"), s(res, "name"), s(d, "outcome"), s(d, "httpStatus"),
-            s(d, "durationMs"), s(req, "ip"), s(req, "method"), s(req, "path"), s(d, "errorMessage")
+            s(d, "ts"),
+            s(actor, "type"),
+            s(actor, "label"),
+            s(actor, "keyLabel"),
+            s(actor, "keyId"),
+            s(actor, "username"),
+            s(d, "category"),
+            s(d, "action"),
+            s(res, "type"),
+            s(res, "name"),
+            s(d, "outcome"),
+            s(d, "httpStatus"),
+            s(d, "durationMs"),
+            s(req, "ip"),
+            s(req, "method"),
+            s(req, "path"),
+            s(d, "errorMessage")
         ).map(csvEscape).mkString(",")
     }
 

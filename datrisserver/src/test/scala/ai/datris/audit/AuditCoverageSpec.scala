@@ -19,7 +19,6 @@ import scala.collection.JavaConverters._
   * this spec turns into a build failure. */
 class AuditCoverageSpec extends AnyFunSuite {
 
-
     private case class Mapped(method: String, path: String, controller: String)
 
     private def routes(): Seq[Mapped] = {

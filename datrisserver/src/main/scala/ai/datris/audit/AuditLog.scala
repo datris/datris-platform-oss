@@ -237,7 +237,10 @@ object AuditLog {
         try {
             system("system", "stop")
             val pending = queue.drain()
-            pending.foreach(e => try write(e) catch { case _: Throwable => })
+            pending.foreach(e =>
+                try write(e)
+                catch { case _: Throwable => }
+            )
         } catch {
             case _: Throwable =>
         }
@@ -345,7 +348,10 @@ object AuditLog {
             val now = System.currentTimeMillis()
             val last = lastQueueWarnMs.get()
             if (now - last > 60000L && lastQueueWarnMs.compareAndSet(last, now))
-                logger.warn("Audit log queue is " + depth + "/" + QueueCapacity + " full — entries will be dropped if the config store cannot keep up (dropped so far: " + dropped.get() + ")")
+                logger.warn(
+                    "Audit log queue is " + depth + "/" + QueueCapacity + " full — entries will be dropped if the config store cannot keep up (dropped so far: " + dropped
+                        .get() + ")"
+                )
         }
     }
 }

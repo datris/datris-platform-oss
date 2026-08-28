@@ -14,8 +14,23 @@ class AuditRedactSpec extends AnyFunSuite {
     private val Sentinel = "s3cr3t-SENTINEL-value"
 
     test("sensitive field names match by substring, case-insensitively") {
-        Seq("password", "Password", "passwd", "clientSecret", "secret_key", "token", "refreshToken",
-            "apiKey", "api_key", "x-api-key", "Authorization", "cookie", "credentials", "privateKey", "private_key")
+        Seq(
+            "password",
+            "Password",
+            "passwd",
+            "clientSecret",
+            "secret_key",
+            "token",
+            "refreshToken",
+            "apiKey",
+            "api_key",
+            "x-api-key",
+            "Authorization",
+            "cookie",
+            "credentials",
+            "privateKey",
+            "private_key"
+        )
             .foreach(n => assert(LogRedactUtil.isSensitiveField(n), n))
         Seq("name", "username", "role", "catalog", "endpoint", "model", "provider")
             .foreach(n => assert(!LogRedactUtil.isSensitiveField(n), n))
@@ -57,10 +72,13 @@ class AuditRedactSpec extends AnyFunSuite {
         val e = AuditEntry(
             ts = java.time.Instant.now(),
             actor = AuditActorInfo.System,
-            category = "user", action = "update",
-            resourceType = Some("user"), resourceName = Some("bob"),
+            category = "user",
+            action = "update",
+            resourceType = Some("user"),
+            resourceName = Some("bob"),
             outcome = "success",
-            request = Some(AuditRequestInfo("PATCH", "/api/v1/auth/users/bob", Some(LogRedactUtil.redactQueryString(s"secret=$Sentinel")), Some("10.0.0.1"), None)),
+            request =
+                Some(AuditRequestInfo("PATCH", "/api/v1/auth/users/bob", Some(LogRedactUtil.redactQueryString(s"secret=$Sentinel")), Some("10.0.0.1"), None)),
             metadata = Some(md)
         )
         assert(!e.toJson.toString.contains(Sentinel))

@@ -79,8 +79,7 @@ class TenantInterceptor extends HandlerInterceptor {
             // Attach the key first so the security entry names the offending
             // key rather than resolving to "anonymous".
             request.setAttribute(TenantInterceptor.ResolvedKeyAttr, resolved)
-            AuditLog.record(request, "security", "spoofed-on-behalf-of", "key", resolved.label,
-                outcome = "denied", httpStatus = 200, metadata = md)
+            AuditLog.record(request, "security", "spoofed-on-behalf-of", "key", resolved.label, outcome = "denied", httpStatus = 200, metadata = md)
             // Let the request proceed under the key's own identity; the
             // capability check still applies. Clear the mark so the audit
             // interceptor also records the underlying action normally.
