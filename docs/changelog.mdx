@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.23.0" description="August 28, 2026">
+  **Audit log: who did what, by login or API key.**
+
+  - A new opt-in Audit Log records every create, change, run, delete, login, and denied request — humans by their login, agents by their API key, scheduled runs as system. Admins read it under Configuration → Audit Log with filters by time, category, actor, and outcome, a detail view per entry, and CSV export. Entries are also written to the server log so an existing log aggregator picks them up.
+  - Actions the Assistant takes for you are attributed to you — in the audit log and in pipeline and tap version history — instead of to the platform's internal key. Every issued API key now carries a stable id, so a key that is revoked and later re-issued under the same name is never confused with its predecessor.
+  - Reads are left out by default to keep the trail focused on changes; turn them on to see every query and search an agent runs. Reading a secret is always recorded.
+  - Tap scripts that read platform data now work when API keys are required. Each run gets a short-lived, read-only credential that is attached automatically — scripts need no changes and no platform credential in their secret — and the audit log names the tap that made each call.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required; set `USE_AUDIT_LOG=true` to turn the audit log on.
+</Update>
+
 <Update label="v1.22.0" description="August 27, 2026">
   **Set real column types on pipelines that landed as text.**
 
