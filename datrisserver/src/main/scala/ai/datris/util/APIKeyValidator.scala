@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.auth.TapRunTokens
 import ai.datris.model.{Capability, DatrisEnvironment, DatrisException, ResolvedKey, User, UserContext}
 import com.google.common.cache.CacheBuilder
 import com.google.gson.JsonParser
@@ -43,6 +44,10 @@ object APIKeyValidator {
             // agents) that don't carry a session cookie.
             if (UserContext.get().isDefined) return
 
+            // A running tap calling back into the platform presents the
+            // per-run token TapScriptRunner minted for it (see TapRunTokens).
+            if (TapRunTokens.lookup(apiKey).isDefined) return
+
             if (apiKey == null)
                 throw new DatrisException("x-api-key does not exist or is invalid")
 
@@ -61,6 +66,9 @@ object APIKeyValidator {
         if (DatrisEnvironment.values.multiTenant) {
             if (apiKey == null || apiKey.isEmpty)
                 return None // No API key — fall back to global environment
+
+            // Tap-run token: route to the tenant the run was started for.
+            TapRunTokens.lookup(apiKey).foreach(t => return t.tenantEnvironment)
 
             val mappings = ai.datris.util.SecretsUtil.getSecretMap("api-key-mappings")
                 .getOrElse(return None) // Mappings not found — fall back to global
@@ -88,6 +96,11 @@ object APIKeyValidator {
       * or single-tenant + useApiKeys=true) and the value is missing or
       * unknown. */
     def resolveKey(apiKey: String): ResolvedKey = {
+        // Per-run tap token → read-only `tap:<name>` identity. Checked before
+        // the cache: tokens are minted and revoked per run, so a 60s cache
+        // entry could outlive the run.
+        TapRunTokens.resolve(apiKey).foreach(rk => return rk)
+
         val cacheKey = if (apiKey == null) "" else apiKey
         val cached = resolvedKeyCache.getIfPresent(cacheKey)
         if (cached != null) return cached

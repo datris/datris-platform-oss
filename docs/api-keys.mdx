@@ -41,6 +41,7 @@ docker compose up -d --force-recreate datris
 
 - **The UI**: log in with your admin account. The session cookie authenticates browser flows — no `x-api-key` is sent, no Connect prompt appears. The Assistant inherits your session for capability checks; its tool calls, version-history entries, and [audit log](/audit-log) records are attributed to you (`session:<your username>`), not to the platform's internal `ui` key.
 - **Programmatic clients** (CLI, MCP agents, scripts): each one needs its own key, issued from **Configuration → API-Keys**. See [the issuance flow](#issuing-keys-for-cli-mcp-and-other-clients) below.
+- **Tap scripts** reading platform data need nothing: each run gets a short-lived, read-only token that the tap wrapper attaches automatically (see [Taps → Querying Datris Data](/taps#querying-datris-data)).
 
 That's it. No env var to track, no value to paste anywhere.
 

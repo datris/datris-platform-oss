@@ -40,7 +40,7 @@ Every entry names an actor. The type tells you which kind of identity it was:
 | `user` | The logged-in session (requires [User Authentication](/user-auth)) | `tfearn`, role `admin` |
 | `api-key` | The API key's **label** plus a stable **key id** | `claude-desktop`, `k_7f3a9c1b2d4e` |
 | `assistant` | The in-platform Assistant (or Ops / Catalog chat) acting **on behalf of** the logged-in user | `tfearn via Assistant` |
-| `tap` | A tap script calling back into the platform during a run | `crypto-prices` |
+| `tap` | A tap script reading platform data during a run, via its per-run token | `crypto-prices` |
 | `system` | No request behind it: scheduled runs, Kafka / object-store triggers, server start | — |
 
 Agents are identified by their API key, humans by their session. The key's **label** is the identity you already see in the API-Keys tab, version history, and the Agent Monitor. The key's **value** is a secret and is never written anywhere — not hashed, not truncated.

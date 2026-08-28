@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.auth.ResolvedKeyAccess
+import ai.datris.auth.{ResolvedKeyAccess, TapRunTokens}
 import ai.datris.model.{ResolvedKey, User, UserContext}
 import jakarta.servlet.http.HttpServletRequest
 
@@ -25,8 +25,10 @@ object AuditActor {
       * Agent Monitor's activity buffer while that buffer still holds it. */
     val HeaderAgentSession = "X-Datris-Agent-Session"
 
-    /** Set by TapScriptRunner on HTTP-tap endpoint calls and by taps reading
-      * platform data back through DATRIS_PLATFORM_*. */
+    /** Sent by TapScriptRunner on outbound HTTP-tap endpoint calls. NOT used
+      * for inbound actor resolution — a tap's identity on the platform
+      * callback comes from its per-run token (label `tap:<name>`), which
+      * cannot be forged by setting a header. */
     val HeaderTap = "X-Datris-Tap"
 
     /** Request attribute (a [[User]]) TenantInterceptor sets when an
@@ -58,9 +60,10 @@ object AuditActor {
         resolved: Option[ResolvedKey],
         sessionUser: Option[User],
         onBehalfOf: Option[User],
-        carrierKeyLabel: Option[String],
-        tapName: Option[String]
+        carrierKeyLabel: Option[String]
     ): AuditActorInfo = {
+        // A tap-run token resolves to label `tap:<name>` (see TapRunTokens).
+        val tapName = resolved.map(_.label).filter(TapRunTokens.isTapLabel).map(TapRunTokens.tapName)
         (sessionUser, onBehalfOf, tapName, resolved) match {
             case (Some(u), _, _, _) =>
                 AuditActorInfo(
@@ -80,14 +83,8 @@ object AuditActor {
                     role = Some(u.role),
                     legacyFullAccess = rk.exists(_.isLegacyFullAccess)
                 )
-            case (None, None, Some(tap), rk) =>
-                AuditActorInfo(
-                    actorType = "tap",
-                    label = tap,
-                    keyLabel = rk.map(_.label),
-                    keyId = rk.flatMap(_.keyId),
-                    legacyFullAccess = rk.exists(_.isLegacyFullAccess)
-                )
+            case (None, None, Some(tap), _) =>
+                AuditActorInfo(actorType = "tap", label = tap)
             case (None, None, None, Some(rk)) =>
                 AuditActorInfo(
                     actorType = "api-key",
@@ -106,7 +103,6 @@ object AuditActor {
     def resolve(request: HttpServletRequest): AuditActorInfo = {
         val onBehalfOf = Option(request.getAttribute(OnBehalfOfAttr)).collect { case u: User => u }
         val carrier = Option(request.getAttribute(CarrierKeyLabelAttr)).collect { case s: String => s }
-        val tap = Option(request.getHeader(HeaderTap)).map(_.trim).filter(_.nonEmpty)
-        from(ResolvedKeyAccess.fromRequest(request), UserContext.get(), onBehalfOf, carrier, tap)
+        from(ResolvedKeyAccess.fromRequest(request), UserContext.get(), onBehalfOf, carrier)
     }
 }
