@@ -76,6 +76,9 @@ class TenantInterceptor extends HandlerInterceptor {
             logger.warn("Ignoring " + AuditActor.HeaderOnBehalfOf + " from key '" + resolved.label + "' — only the ui key may act on behalf of a user")
             val md = new com.google.gson.JsonObject()
             md.addProperty("claimedUser", header.get.take(64))
+            // Attach the key first so the security entry names the offending
+            // key rather than resolving to "anonymous".
+            request.setAttribute(TenantInterceptor.ResolvedKeyAttr, resolved)
             AuditLog.record(request, "security", "spoofed-on-behalf-of", "key", resolved.label,
                 outcome = "denied", httpStatus = 200, metadata = md)
             // Let the request proceed under the key's own identity; the

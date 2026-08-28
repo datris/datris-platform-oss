@@ -335,9 +335,12 @@ object AuditLog {
     private def emitLogLine: Boolean =
         Option(DatrisEnvironment.values).forall(_.auditLogEmitLogLine)
 
-    private def warnIfNearlyFull(): Unit = {
-        val depth = queue.size
+    // Registered once; micrometer warns on re-registration.
+    private lazy val queueDepthGauge: AuditQueue =
         Metrics.gauge("datris_audit_queue_depth", queue, (q: AuditQueue) => q.size.toDouble)
+
+    private def warnIfNearlyFull(): Unit = {
+        val depth = queueDepthGauge.size
         if (depth > QueueCapacity * WarnFraction) {
             val now = System.currentTimeMillis()
             val last = lastQueueWarnMs.get()

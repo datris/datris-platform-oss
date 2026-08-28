@@ -191,8 +191,9 @@ class StartupRunner extends ApplicationRunner {
     private def auditServerStart(): Unit = {
         val md = new com.google.gson.JsonObject()
         md.addProperty("version", ai.datris.build.sbt.BuildInfo.version)
-        md.addProperty("useUserAuth", useUserAuth)
-        md.addProperty("useApiKeys", useApiKeys)
+        // Field names deliberately avoid "apiKey" so the redactor leaves the booleans alone.
+        md.addProperty("userAuth", useUserAuth)
+        md.addProperty("programmaticKeys", useApiKeys)
         ai.datris.audit.AuditLog.system("system", "start", metadata = md)
     }
 

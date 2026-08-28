@@ -62,6 +62,13 @@ class AuditInterceptor extends HandlerInterceptor {
                         .orElse(Option(ex).map(e => Option(e.getMessage).getOrElse(e.getClass.getSimpleName).take(500)))
                         .orElse(if (outcome == "success") None else Some("HTTP " + status))
                 val metadata = Option(request.getAttribute(AuditLog.MetadataAttr)).collect { case o: JsonObject => AuditLog.redact(o) }
+                // MCP session id forwarded by the MCP server — joins this entry
+                // to the Agent Monitor's activity buffer while it still holds it.
+                val withSession = Option(request.getHeader(AuditActor.HeaderAgentSession)).map(_.trim).filter(_.nonEmpty).map { sid =>
+                    val o = metadata.getOrElse(new JsonObject())
+                    o.addProperty("agentSession", sid.take(64))
+                    o
+                }.orElse(metadata)
 
                 AuditLog.submit(AuditEntry(
                     ts = Instant.now(),
@@ -75,7 +82,7 @@ class AuditInterceptor extends HandlerInterceptor {
                     durationMs = durationMs,
                     errorMessage = errorMessage,
                     request = Some(AuditLog.requestInfo(request)),
-                    metadata = metadata
+                    metadata = withSession
                 ))
             }
         } catch {
