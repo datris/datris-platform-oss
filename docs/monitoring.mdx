@@ -189,7 +189,7 @@ Each agent label uses the most descriptive identifier available, in this order:
 
 The activity log below the visualization lists every tool call as it happens — timestamped per the platform's configured [date format and timezone](/configuration-reference), with the calling agent, tool name, argument preview, record count, response size, status, and latency. Clicking a row expands it to reveal the full arguments and response bodies as pretty-printed JSON (capped at 2 KB per blob). A header toolbar lets you copy the full log (with per-row detail) to the clipboard or clear the on-screen history.
 
-Activity is held in an in-memory ring buffer on the MCP server (the most recent 200 calls) and served via the UI's internal `/api/v1/mcp/activity` proxy. It is not persisted — restarts clear the history.
+Activity is held in an in-memory ring buffer on the MCP server (the most recent 200 calls) and served via the UI's internal `/api/v1/mcp/activity` proxy. It is not persisted — restarts clear the history. For a durable, queryable record of what each agent (and each human) actually changed, enable the [Audit Log](/audit-log); its entries carry the same key label the monitor shows.
 
 Session liveness is tracked from the MCP connection itself: agents appear when their SSE/HTTP session opens and disappear when it closes. A long-idle agent stays visible as long as the connection is open — useful when an agent is between tool calls and you don't want it disappearing from the Connections pane every few seconds.
 

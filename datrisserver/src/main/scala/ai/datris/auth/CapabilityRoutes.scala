@@ -150,7 +150,12 @@ object CapabilityRoutes {
 
         // Config
         Route("POST", "/api/v1/config/upload", "config", "write"),
-        Route("GET", "/api/v1/ai/model-catalog", "config", "read")
+        Route("GET", "/api/v1/ai/model-catalog", "config", "read"),
+
+        // Audit log — admin surface. Full-access keys hold it implicitly; a
+        // scoped key needs `audit:read` explicitly (see the Keys catalog).
+        Route("GET", "/api/v1/audit-log", "audit", "read"),
+        Route("GET", "/api/v1/audit-log/**", "audit", "read")
     )
 
     def lookup(method: String, path: String): RouteCheck = {

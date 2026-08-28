@@ -7,6 +7,8 @@ import { Observable } from 'rxjs';
  *  response. */
 export interface KeyRow {
   label: string;
+  /** Stable per-issue id (audit-log identity). Absent on keys seeded before ids existed. */
+  keyId?: string;
   capabilities: string[];
   isLegacyFullAccess: boolean;
   revoked: boolean;
@@ -19,6 +21,7 @@ export interface KeyRow {
 export interface IssueKeyResponse {
   label: string;
   value: string;
+  keyId?: string;
   capabilities: string[];
   createdAt: string;
   createdBy: string;

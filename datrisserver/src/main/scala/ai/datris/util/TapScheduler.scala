@@ -72,11 +72,25 @@ object TapScheduler {
       * left, or not safe to retry). */
     private def fireCronRun(tap: TapConfig): Unit = {
         val thread = new Thread(() => {
+            val md = new com.google.gson.JsonObject()
+            md.addProperty("trigger", "cron")
+            md.addProperty("cron", tap.cronExpression)
+            if (tap.retryCount > 0) md.addProperty("retryAttempt", tap.retryCount)
             try {
                 TapRunner.run(tap, mode = "run", trigger = "cron")
+                ai.datris.audit.AuditLog.system("tap", "run", "tap", tap.name, md)
             } catch {
                 case e: Exception =>
                     logger.error("TapScheduler: error running tap: " + tap.name, e)
+                    ai.datris.audit.AuditLog.system(
+                        "tap",
+                        "run",
+                        "tap",
+                        tap.name,
+                        md,
+                        outcome = "failure",
+                        errorMessage = Option(e.getMessage).map(_.take(500)).orNull
+                    )
             }
             try {
                 maybeSuggestFix(tap.name)

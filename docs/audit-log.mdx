@@ -1,0 +1,109 @@
+---
+title: "Audit Log"
+description: "A durable, admin-readable record of who created, changed, ran, or deleted what — humans by login, agents by API key, and the Assistant on the user's behalf."
+---
+
+The audit log answers questions like *who deleted that pipeline last Tuesday*, *which key rotated that secret*, *did anyone log in from a new address overnight*, and *what did the `claude-desktop` agent do against pipeline X*.
+
+It is separate from the [Agent Monitor](/monitoring#agent-monitor), which is a live, in-memory view of the last 200 MCP tool calls. The audit log is durable, covers every platform write (not just MCP), is admin-only, and is queryable.
+
+## Enabling it
+
+Off by default — existing installs are unchanged until you opt in.
+
+1. Add the flag to your `.env`:
+
+   ```bash
+   USE_AUDIT_LOG=true
+   # optional — days to keep entries (0 = keep forever)
+   AUDIT_LOG_RETENTION_DAYS=90
+   # optional — also record reads (queries, searches, listings)
+   AUDIT_LOG_READS=false
+   ```
+
+2. Recreate the Datris container:
+
+   ```bash
+   docker compose up -d --force-recreate datris
+   ```
+
+3. Open **Configuration → Audit Log**. With user authentication on, the sub-tab is visible to admins only.
+
+A restart is required to turn the flag on or off — it is read once at startup, like the other auth flags.
+
+## Who is recorded
+
+Every entry names an actor. The type tells you which kind of identity it was:
+
+| Actor type | How it is identified | Example |
+|---|---|---|
+| `user` | The logged-in session (requires [User Authentication](/user-auth)) | `tfearn`, role `admin` |
+| `api-key` | The API key's **label** plus a stable **key id** | `claude-desktop`, `k_7f3a9c1b2d4e` |
+| `assistant` | The in-platform Assistant (or Ops / Catalog chat) acting **on behalf of** the logged-in user | `tfearn via Assistant` |
+| `tap` | A tap script reading platform data during a run, via its per-run token | `crypto-prices` |
+| `system` | No request behind it: scheduled runs, Kafka / object-store triggers, server start | — |
+
+Agents are identified by their API key, humans by their session. The key's **label** is the identity you already see in the API-Keys tab, version history, and the Agent Monitor. The key's **value** is a secret and is never written anywhere — not hashed, not truncated.
+
+The **key id** exists because a label can be revoked and re-issued. Rotating a key keeps the identity (same label, new secret). Revoking `claude-desktop` and issuing a new `claude-desktop` next week is a *different* key wearing the same name; the id tells them apart. Keys issued before this feature have no id and are attributed by label only.
+
+<Note>
+Actions the Assistant takes for you show up as `assistant` with your username — not as the platform's internal `ui` key. The same attribution applies to pipeline and tap version history, so "who changed this?" has the same answer in both places.
+</Note>
+
+In the legacy no-auth mode (`USE_USER_AUTH=false`, `USE_API_KEYS=false`) there is no identity to record; entries are attributed to `anonymous`.
+
+## What is recorded
+
+Writes, runs, deletes, logins, key and user management, and every denied request. Reads are not recorded by default — they are high-volume and rarely what an audit is about — with one exception: reading a **secret** is always logged.
+
+| Category | Actions |
+|---|---|
+| `pipeline` | create, update, delete, version restore, destination type changes |
+| `tap` | create, update, delete, run (manual and scheduled), script and state changes |
+| `secret` | read, write, delete |
+| `config` | AI provider, embedding, and platform configuration changes |
+| `job` | kill |
+| `document` | upload (bursts are folded into one row with a count) |
+| `code-repo` | repository connection changes |
+| `auth` | login (success and failure), logout, password change |
+| `user` | create, update (role change, password reset), delete |
+| `key` | issue, revoke, rotate |
+| `security` | any denied request — insufficient role, missing capability, expired session, and a non-`ui` key attempting to act on behalf of a user |
+| `system` | server start and stop |
+| `audit` | CSV export of the audit log itself |
+
+Each entry also carries the outcome (`success`, `failure`, `denied`), the HTTP status, how long the request took, the caller's IP address (first hop of `X-Forwarded-For` when the UI sits behind a proxy) and user agent, and the name of the resource touched.
+
+To record reads as well — every query, search, and listing an agent runs — set `AUDIT_LOG_READS=true` in `.env` and recreate the container. Expect a lot more rows: each query is its own entry, so filter by category when you're looking for changes rather than activity.
+
+### What is never recorded
+
+Passwords, password hashes, API-key values, session cookies, secret values, and credentials embedded in connection strings. Request bodies are not stored. Where an entry does carry extra detail (a role change records `from` and `to`, for example), every field whose name looks like a credential is masked before it is written.
+
+## Reading it
+
+**Configuration → Audit Log** shows the newest entries first with filters for time range, category, action, actor type, actor, outcome, and resource name. Click a row for the full entry. **Export CSV** downloads the current filter (up to 50,000 rows); the export itself is recorded as an `audit / export` event.
+
+The same data is available programmatically:
+
+```bash
+curl "http://localhost:8080/api/v1/audit-log?category=pipeline&action=delete&since=2026-08-01T00:00:00Z" \
+  -H "x-api-key: $DATRIS_API_KEY"
+```
+
+Parameters: `since`, `until` (ISO-8601 or epoch millis), `category`, `action`, `actor` (label), `actorType`, `outcome`, `resource` (substring match), `limit` (default 100, max 1000), and `cursor` from the previous page's `nextCursor`. `/api/v1/audit-log/facets` lists the values seen in the last 30 days; `/api/v1/audit-log/export` returns CSV with the same filters.
+
+Reading requires the `admin` role for a user session, or the `audit:read` capability for an API key. Full-access keys hold it implicitly; a scoped key must be issued with it. Entries cannot be edited or deleted through the API.
+
+## Retention and long-term storage
+
+Entries live in the platform's MongoDB config store (collection `{environment}-audit-log`) and expire after `AUDIT_LOG_RETENTION_DAYS` (default 90). Set it to `0` to keep them until you remove them yourself.
+
+Every entry is **also written to the server log** on the logger `ai.datris.audit`, one line per event. Under the `production` Spring profile that line is a JSON object, so any log aggregator or SIEM already reading the container's output gets the full audit trail with no extra integration. That stream is the long-term record; Mongo is the queryable window. Turn the mirror off with `auditLog.emitLogLine: false` if you only want the database copy.
+
+Two Prometheus metrics track health on the existing `/actuator/prometheus` endpoint: `datris_audit_events_total{category,outcome}` and `datris_audit_dropped_total`. Entries are written asynchronously and never slow a request; if the config store cannot keep up, the oldest pending entries are dropped and counted, and the Audit Log tab shows a warning.
+
+## Cross-referencing the Agent Monitor
+
+Audit entries produced by an MCP agent carry the same key label the Agent Monitor displays, so you can match a tool call in the monitor to the platform-side record of what it did. The audit log is the durable record that something happened; the monitor is the ephemeral detail of the tool call, kept only while the MCP server is running.

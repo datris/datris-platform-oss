@@ -1,0 +1,133 @@
+<div class="audit-pane">
+  <div class="header">
+    <div>
+      <h3>Audit Log</h3>
+      <p class="hint">Who created, changed, ran, or deleted what — humans by login, agents by API key, the Assistant on the user's behalf.</p>
+    </div>
+    <div class="header-actions" *ngIf="enabled">
+      <button class="btn-secondary" (click)="reload()" [disabled]="loading" title="Refresh">Refresh</button>
+      <button class="btn-primary" (click)="exportCsv()" [disabled]="exporting || loading" title="Download the current filter as CSV (this export is itself recorded)">
+        {{ exporting ? 'Exporting…' : 'Export CSV' }}
+      </button>
+    </div>
+  </div>
+
+  <p class="error" *ngIf="error">{{ error }}</p>
+
+  <!-- Disabled state -->
+  <div class="disabled-card" *ngIf="status && !enabled">
+    <p class="note-title">Audit logging is off on this server.</p>
+    <p>Set <code>USE_AUDIT_LOG=true</code> in your <code>.env</code> and recreate the container:</p>
+    <pre>docker compose up -d --force-recreate datris</pre>
+    <p>Entries are kept for <code>AUDIT_LOG_RETENTION_DAYS</code> (default 90; 0 keeps them forever) and are also written to the server log for SIEM pickup.</p>
+  </div>
+
+  <ng-container *ngIf="enabled">
+    <!-- Filters -->
+    <div class="filters">
+      <div class="range-group">
+        <button class="chip" [class.chip-active]="range === '1h'" (click)="setRange('1h')">1h</button>
+        <button class="chip" [class.chip-active]="range === '24h'" (click)="setRange('24h')">24h</button>
+        <button class="chip" [class.chip-active]="range === '7d'" (click)="setRange('7d')">7d</button>
+        <button class="chip" [class.chip-active]="range === '30d'" (click)="setRange('30d')">30d</button>
+        <button class="chip" [class.chip-active]="range === 'custom'" (click)="setRange('custom')">Custom</button>
+      </div>
+      <div class="custom-range" *ngIf="range === 'custom'">
+        <input type="datetime-local" [(ngModel)]="customSince" name="customSince" (change)="reload()" title="From" />
+        <span class="sep">→</span>
+        <input type="datetime-local" [(ngModel)]="customUntil" name="customUntil" (change)="reload()" title="To" />
+      </div>
+
+      <select [(ngModel)]="filter.category" name="category" (change)="reload()" title="Category">
+        <option value="">All categories</option>
+        <option *ngFor="let c of facets?.categories" [value]="c">{{ c }}</option>
+      </select>
+      <select [(ngModel)]="filter.action" name="action" (change)="reload()" title="Action">
+        <option value="">All actions</option>
+        <option *ngFor="let a of facets?.actions" [value]="a">{{ a }}</option>
+      </select>
+      <select [(ngModel)]="filter.actorType" name="actorType" (change)="reload()" title="Actor type">
+        <option value="">All actor types</option>
+        <option *ngFor="let t of facets?.actorTypes" [value]="t">{{ t }}</option>
+      </select>
+      <select [(ngModel)]="filter.actor" name="actor" (change)="reload()" title="Actor">
+        <option value="">All actors</option>
+        <option *ngFor="let a of facets?.actors" [value]="a">{{ a }}</option>
+      </select>
+      <select [(ngModel)]="filter.outcome" name="outcome" (change)="reload()" title="Outcome">
+        <option value="">Any outcome</option>
+        <option value="success">success</option>
+        <option value="failure">failure</option>
+        <option value="denied">denied</option>
+      </select>
+      <input type="text" placeholder="Resource name…" [ngModel]="filter.resource" (ngModelChange)="onResourceInput($event)" name="resource" />
+      <button class="btn-secondary" (click)="clearFilters()" *ngIf="hasFilters">Clear</button>
+    </div>
+
+    <p class="drop-warning" *ngIf="status && status.dropped > 0">
+      {{ status.dropped }} entr{{ status.dropped === 1 ? 'y was' : 'ies were' }} dropped under load since the server started — the config store could not keep up. Recent history may be incomplete.
+    </p>
+
+    <!-- Table + detail panel -->
+    <div class="body" [class.with-detail]="!!selected">
+      <div class="table-wrap">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Category</th>
+              <th>Action</th>
+              <th>Resource</th>
+              <th>Outcome</th>
+              <th class="num">ms</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr *ngFor="let e of entries; trackBy: trackById" (click)="select(e)" [class.row-selected]="selected?.id === e.id" [class.row-denied]="e.outcome === 'denied'" [class.row-failure]="e.outcome === 'failure'">
+              <td class="ts">{{ formatTs(e.ts) }}</td>
+              <td [title]="actorTitle(e)">
+                <span class="actor-type" [class]="'actor-type type-' + e.actor.type">{{ e.actor.type }}</span>
+                {{ actorDisplay(e) }}
+              </td>
+              <td>{{ e.category }}</td>
+              <td>{{ e.action }}</td>
+              <td class="resource">
+                {{ resourceDisplay(e) }}
+                <span class="count-badge" *ngIf="countBadge(e) as n" [title]="n + ' events folded into this row'">×{{ n }}</span>
+              </td>
+              <td><span class="outcome" [class]="'outcome outcome-' + e.outcome">{{ e.outcome }}</span><span class="status" *ngIf="e.httpStatus"> {{ e.httpStatus }}</span></td>
+              <td class="num">{{ e.durationMs ?? '' }}</td>
+            </tr>
+            <tr *ngIf="!loading && entries.length === 0">
+              <td colspan="7" class="empty">No audit entries match this filter.</td>
+            </tr>
+            <tr *ngIf="loading">
+              <td colspan="7" class="empty">Loading…</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="load-more" *ngIf="nextCursor">
+          <button class="btn-secondary" (click)="loadMore()" [disabled]="loadingMore">{{ loadingMore ? 'Loading…' : 'Load more' }}</button>
+        </div>
+      </div>
+
+      <aside class="detail" *ngIf="selected">
+        <div class="detail-header">
+          <span>{{ selected.category }} / {{ selected.action }}</span>
+          <button class="icon-btn" (click)="selected = null" title="Close" aria-label="Close">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+        <dl class="detail-summary">
+          <dt>Actor</dt><dd>{{ actorDisplay(selected) }} <span class="muted">({{ selected.actor.type }}<ng-container *ngIf="selected.actor.keyId">, {{ selected.actor.keyId }}</ng-container>)</span></dd>
+          <dt>Resource</dt><dd>{{ resourceDisplay(selected) }}</dd>
+          <dt>Outcome</dt><dd>{{ selected.outcome }}<span *ngIf="selected.httpStatus"> · HTTP {{ selected.httpStatus }}</span></dd>
+          <dt *ngIf="selected.errorMessage">Error</dt><dd *ngIf="selected.errorMessage">{{ selected.errorMessage }}</dd>
+          <dt *ngIf="selected.request">Request</dt><dd *ngIf="selected.request">{{ selected.request.method }} {{ selected.request.path }}<span *ngIf="selected.request.query">?{{ selected.request.query }}</span><span class="muted" *ngIf="selected.request.ip"> · {{ selected.request.ip }}</span></dd>
+        </dl>
+        <pre class="json">{{ json(selected) }}</pre>
+      </aside>
+    </div>
+  </ng-container>
+</div>

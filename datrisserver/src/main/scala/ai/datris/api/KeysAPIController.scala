@@ -113,12 +113,16 @@ class KeysAPIController {
             val value = generateKeyValue()
             val now = nowTimestamp()
             val createdBy = currentAdminUsername()
+            // Stable per-issue id. Survives rotate (same label, new secret);
+            // a revoke + re-issue under the same label mints a new one, so
+            // the audit log can tell the two keys apart.
+            val keyId = generateKeyId()
 
             // 1) Add to oss/api-keys (preserve other labels).
             writeApiKeysWithLabel(existingKeys, label, value)
 
             // 2) Write metadata blob.
-            val metaJson = buildMetadataJson(capabilities.map(_.raw), now, createdBy, revoked = false, None, None)
+            val metaJson = buildMetadataJson(capabilities.map(_.raw), now, createdBy, revoked = false, None, None, Some(keyId))
             writeMetadataWithLabel(label, metaJson)
 
             APIKeyValidator.invalidateCache()
@@ -126,6 +130,7 @@ class KeysAPIController {
             val response = new JsonObject()
             response.addProperty("label", label)
             response.addProperty("value", value)
+            response.addProperty("keyId", keyId)
             response.add("capabilities", stringArray(capabilities.map(_.raw)))
             response.addProperty("createdAt", now)
             response.addProperty("createdBy", createdBy)
@@ -162,7 +167,8 @@ class KeysAPIController {
                 createdBy = existingMeta.flatMap(m => Option(m.get("createdBy")).filterNot(_.isJsonNull).map(_.getAsString)).getOrElse(""),
                 revoked = true,
                 revokedAt = Some(now),
-                revokedBy = Some(revokedBy)
+                revokedBy = Some(revokedBy),
+                keyId = existingMeta.flatMap(m => Option(m.get("keyId")).filterNot(_.isJsonNull).map(_.getAsString))
             )
             writeMetadataWithLabel(label, newMeta)
             APIKeyValidator.invalidateCache()
@@ -278,6 +284,7 @@ class KeysAPIController {
                     if (obj.has("createdBy") && !obj.get("createdBy").isJsonNull) row.addProperty("createdBy", obj.get("createdBy").getAsString)
                     if (obj.has("revokedAt") && !obj.get("revokedAt").isJsonNull) row.addProperty("revokedAt", obj.get("revokedAt").getAsString)
                     if (obj.has("revokedBy") && !obj.get("revokedBy").isJsonNull) row.addProperty("revokedBy", obj.get("revokedBy").getAsString)
+                    if (obj.has("keyId") && !obj.get("keyId").isJsonNull) row.addProperty("keyId", obj.get("keyId").getAsString)
                     row.addProperty("isLegacyFullAccess", false)
                 } catch {
                     case e: Exception =>
@@ -322,7 +329,8 @@ class KeysAPIController {
         createdBy: String,
         revoked: Boolean,
         revokedAt: Option[String],
-        revokedBy: Option[String]
+        revokedBy: Option[String],
+        keyId: Option[String]
     ): String = {
         val obj = new JsonObject()
         obj.add("capabilities", stringArray(capabilities))
@@ -331,6 +339,7 @@ class KeysAPIController {
         obj.addProperty("revoked", java.lang.Boolean.valueOf(revoked))
         revokedAt.foreach(v => obj.addProperty("revokedAt", v))
         revokedBy.foreach(v => obj.addProperty("revokedBy", v))
+        keyId.foreach(v => obj.addProperty("keyId", v))
         new Gson().toJson(obj)
     }
 
@@ -386,6 +395,14 @@ class KeysAPIController {
         val bytes = new Array[Byte](32)
         secureRandom.nextBytes(bytes)
         bytes.map(b => f"${b & 0xff}%02x").mkString
+    }
+
+    /** `k_` + 12 hex chars — enough to be unique per install, short enough to
+      * read in an audit-log detail panel. Not a secret. */
+    private def generateKeyId(): String = {
+        val bytes = new Array[Byte](6)
+        secureRandom.nextBytes(bytes)
+        "k_" + bytes.map(b => f"${b & 0xff}%02x").mkString
     }
 
     private def nowTimestamp(): String = {
@@ -447,7 +464,8 @@ object KeysAPIController {
         ("job", Seq("read", "kill"), Seq("owner")),
         ("metadata", Seq("read"), Seq.empty),
         ("config", Seq("read", "write"), Seq.empty),
-        ("mcp", Seq("tool"), Seq.empty)
+        ("mcp", Seq("tool"), Seq.empty),
+        ("audit", Seq("read"), Seq.empty)
     )
 
     /** Capability templates the Keys-UI wizard offers as starting points.

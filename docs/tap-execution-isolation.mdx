@@ -135,6 +135,8 @@ def fetch():
     return tickers
 ```
 
+Note there is no credential in that call. When the deployment requires API keys, the platform mints a per-run token (`DATRIS_PLATFORM_TOKEN`) and the tap wrapper attaches it to `requests` / `urllib` calls aimed at `DATRIS_PLATFORM_HOST` automatically — the script above works unchanged in both modes and with keys on or off. The token is read-only and scoped to the run; the audit log records the callback as the tap.
+
 Use `/api/v1/query/mongodb` (or `/api/v1/query/natural`) the same way for Mongo-backed data.
 In the **isolated runner**, a tap **cannot** instead open a direct database connection (e.g. to
 `postgres:5432`) — internal services aren't reachable from the runner's network. Querying

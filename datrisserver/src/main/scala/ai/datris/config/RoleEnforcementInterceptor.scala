@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.audit.AuditLog
 import ai.datris.model.{DatrisEnvironment, ResolvedKey, User, UserContext}
 import jakarta.servlet.http.{Cookie, HttpServletRequest, HttpServletResponse}
 import org.slf4j.{Logger, LoggerFactory}
@@ -71,7 +72,7 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
             // dead session must force re-login, not fall back to a key.
             if (request.getAttribute(SessionAuthenticator.StaleSessionAttribute) != null) {
                 response.addCookie(expiredSessionCookie())
-                return reject(response, HttpStatus.UNAUTHORIZED, """{"error":"Session expired"}""")
+                return reject(request, response, HttpStatus.UNAUTHORIZED, """{"error":"Session expired"}""")
             }
             ann match {
                 case Some(_) =>
@@ -106,7 +107,7 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                         )
                     )
                         return true
-                    return reject(response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
+                    return reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
 
                 case None =>
                     // No session — programmatic / service-to-service path (CLI, MCP server, etc).
@@ -118,7 +119,7 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
                     // (the OSS default). useUserAuth governs UI auth; it does not retroactively
                     // require server-to-server callers to authenticate.
                     if (!DatrisEnvironment.values.useApiKeys) return true
-                    return reject(response, HttpStatus.UNAUTHORIZED, """{"error":"Authentication required"}""")
+                    return reject(request, response, HttpStatus.UNAUTHORIZED, """{"error":"Authentication required"}""")
             }
         }
         // Session present — role check applies even if a stale x-api-key is also being sent.
@@ -129,13 +130,13 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
             case Some(a) =>
                 val allowed = a.value().toSet
                 if (allowed.contains(user.role)) true
-                else reject(response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
+                else reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Insufficient role"}""")
             case None =>
                 // Default rule: viewers can GET; writes need admin or editor.
                 val httpMethod = request.getMethod
                 if (httpMethod == "GET" || httpMethod == "HEAD" || httpMethod == "OPTIONS") true
                 else if (WriteRoles.contains(user.role)) true
-                else reject(response, HttpStatus.FORBIDDEN, """{"error":"Read-only role"}""")
+                else reject(request, response, HttpStatus.FORBIDDEN, """{"error":"Read-only role"}""")
         }
     }
 
@@ -162,10 +163,13 @@ class RoleEnforcementInterceptor extends HandlerInterceptor {
         cookie
     }
 
-    private def reject(response: HttpServletResponse, status: HttpStatus, body: String): Boolean = {
+    private def reject(request: HttpServletRequest, response: HttpServletResponse, status: HttpStatus, body: String): Boolean = {
         response.setStatus(status.value())
         response.setContentType("application/json")
         response.getWriter.write(body)
+        // Reason is the JSON error text without the envelope, e.g. "Insufficient role".
+        val reason = body.replaceAll("^\\{\"error\":\"|\"\\}$", "")
+        AuditLog.denied(request, reason, status.value())
         false
     }
 }

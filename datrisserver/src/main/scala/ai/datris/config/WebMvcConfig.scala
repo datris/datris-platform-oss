@@ -24,6 +24,9 @@ class WebMvcConfig extends WebMvcConfigurer {
     @Autowired
     var roleEnforcementInterceptor: RoleEnforcementInterceptor = _
 
+    @Autowired
+    var auditInterceptor: AuditInterceptor = _
+
     @Value("${cors.allowedOrigins:*}")
     var allowedOrigins: String = _
 
@@ -41,6 +44,11 @@ class WebMvcConfig extends WebMvcConfigurer {
         //      so logged-in browser flows are first-class identities too.
         //   4. RoleEnforcementInterceptor — gates @RequiresRole methods using
         //      UserContext.
+        //   5. AuditInterceptor — MUST stay last. afterCompletion runs in
+        //      reverse order, so last-registered runs first and still sees
+        //      UserContext / TenantContext / the ResolvedKey before the
+        //      earlier interceptors clear them. Denials upstream never reach
+        //      it; those interceptors call AuditLog.denied themselves.
         registry.addInterceptor(tenantInterceptor)
             .addPathPatterns("/api/**")
             .excludePathPatterns("/minio-events")
@@ -51,6 +59,9 @@ class WebMvcConfig extends WebMvcConfigurer {
             .addPathPatterns("/api/**")
             .excludePathPatterns("/minio-events")
         registry.addInterceptor(roleEnforcementInterceptor)
+            .addPathPatterns("/api/**")
+            .excludePathPatterns("/minio-events")
+        registry.addInterceptor(auditInterceptor)
             .addPathPatterns("/api/**")
             .excludePathPatterns("/minio-events")
     }

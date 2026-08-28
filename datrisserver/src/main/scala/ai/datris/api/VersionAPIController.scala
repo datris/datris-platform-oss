@@ -43,6 +43,7 @@ class VersionAPIController {
                 "hosted" -> DatrisEnvironment.current.hosted.toString,
                 "useUserAuth" -> DatrisEnvironment.values.useUserAuth.toString,
                 "useApiKeys" -> DatrisEnvironment.values.useApiKeys.toString,
+                "useAuditLog" -> DatrisEnvironment.values.useAuditLog.toString,
                 "postgresDatabase" -> DatrisEnvironment.current.postgresDatabase,
                 "mongodbDatabase" -> mongodbDatabase,
                 "useTapRunner" -> ai.datris.util.TapScriptRunner.useTapRunner.toString

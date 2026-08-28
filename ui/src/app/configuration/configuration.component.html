@@ -17,6 +17,9 @@
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'keys'"
             *ngIf="canSeeKeys"
             (click)="activeTab = 'keys'">API-Keys</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'audit-log'"
+            *ngIf="canSeeAuditLog"
+            (click)="activeTab = 'audit-log'">Audit Log</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'environment'"
             (click)="activeTab = 'environment'">Environment</button>
   </div>
@@ -24,6 +27,7 @@
   <app-users *ngIf="activeTab === 'users' && useUserAuth"></app-users>
   <app-secrets *ngIf="activeTab === 'secrets' && canSeeSecrets"></app-secrets>
   <app-keys *ngIf="activeTab === 'keys' && canSeeKeys"></app-keys>
+  <app-audit-log *ngIf="activeTab === 'audit-log' && canSeeAuditLog"></app-audit-log>
   <app-data-sources *ngIf="activeTab === 'data-sources'"></app-data-sources>
   <app-code-repo *ngIf="activeTab === 'code-repo'"></app-code-repo>
 

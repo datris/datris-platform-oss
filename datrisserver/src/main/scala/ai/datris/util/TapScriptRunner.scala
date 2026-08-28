@@ -50,6 +50,45 @@ object TapScriptRunner {
           |# every run has some log content even when the user's script is silent.
           |_real_stdout = sys.stdout
           |sys.stdout = sys.stderr
+          |# Platform-callback auth. The platform mints a per-run token (DATRIS_PLATFORM_TOKEN)
+          |# so a script can read platform data through DATRIS_PLATFORM_HOST with no credential
+          |# of its own even when API keys are required. Attach it transparently to requests /
+          |# urllib calls aimed at the platform host — and ONLY that host — so existing scripts
+          |# keep working unchanged and the token never travels to a third-party API.
+          |_dp_token = os.environ.get("DATRIS_PLATFORM_TOKEN", "")
+          |_dp_host = os.environ.get("DATRIS_PLATFORM_HOST", "")
+          |if _dp_token and _dp_host:
+          |    from urllib.parse import urlsplit as _dp_urlsplit
+          |    def _dp_is_platform(url):
+          |        try:
+          |            return (_dp_urlsplit(str(url)).hostname or "").lower() == _dp_host.lower()
+          |        except Exception:
+          |            return False
+          |    try:
+          |        import requests as _dp_requests
+          |        _dp_orig_request = _dp_requests.Session.request
+          |        def _dp_request(self, method, url, *args, **kwargs):
+          |            if _dp_is_platform(url):
+          |                headers = dict(kwargs.get("headers") or {})
+          |                if not any(k.lower() == "x-api-key" for k in headers):
+          |                    headers["x-api-key"] = _dp_token
+          |                kwargs["headers"] = headers
+          |            return _dp_orig_request(self, method, url, *args, **kwargs)
+          |        _dp_requests.Session.request = _dp_request
+          |    except ImportError:
+          |        pass
+          |    try:
+          |        import urllib.request as _dp_urllib
+          |        import socket as _dp_socket
+          |        _dp_orig_open = _dp_urllib.OpenerDirector.open
+          |        def _dp_open(self, fullurl, data=None, timeout=_dp_socket._GLOBAL_DEFAULT_TIMEOUT):
+          |            req = fullurl if isinstance(fullurl, _dp_urllib.Request) else _dp_urllib.Request(fullurl)
+          |            if _dp_is_platform(req.full_url) and not req.has_header("X-api-key"):
+          |                req.add_unredirected_header("x-api-key", _dp_token)
+          |            return _dp_orig_open(self, req, data, timeout)
+          |        _dp_urllib.OpenerDirector.open = _dp_open
+          |    except Exception:
+          |        pass
           |print("[wrapper] loading tap script", flush=True)
           |spec = importlib.util.spec_from_file_location("tap", sys.argv[1])
           |mod = importlib.util.module_from_spec(spec)
@@ -166,6 +205,10 @@ object TapScriptRunner {
         // None when the tap declares no extras and the run uses the system python3.
         var venvDir: Option[Path] = None
 
+        // Per-run credential for the platform callback (see TapRunTokens). Minted
+        // here, revoked in finally — it must not outlive the run.
+        var platformToken: String = null
+
         // Secret field(s) the script requires (reads from the env with no fallback)
         // that the referenced secret does NOT provide. Carried out on TapScriptResult
         // so TapRunner can turn an otherwise-graceful 0-record run into a failure with
@@ -222,11 +265,20 @@ object TapScriptRunner {
             // container, so localhost is the runner itself — use the datris service name
             // (reachable on tap-net), overridable via TAP_RUNNER_CALLBACK_HOST.
             val platformHost = if (useTapRunner) tapRunnerCallbackHost else "localhost"
+            // Per-run token so the callback authenticates when API keys are on.
+            // The wrapper attaches it to platform-host requests automatically;
+            // it resolves server-side to a read-only `tap:<name>` identity.
+            platformToken = ai.datris.auth.TapRunTokens.issue(
+                tapConfig.name,
+                if (DatrisEnvironment.current.multiTenant) Some(DatrisEnvironment.current.environment) else None,
+                scriptTimeoutSeconds + 60
+            )
             val platformEnvVars = Seq(
                 "DATRIS_POSTGRES_DATABASE" -> DatrisEnvironment.current.postgresDatabase,
                 "DATRIS_MONGODB_DATABASE" -> mongoDatabase,
                 "DATRIS_PLATFORM_HOST" -> platformHost,
-                "DATRIS_PLATFORM_PORT" -> "8080"
+                "DATRIS_PLATFORM_PORT" -> "8080",
+                "DATRIS_PLATFORM_TOKEN" -> platformToken
             )
             // Test-only sample cap. Only set when the UI Test Script checkbox is
             // enabled. Cron/manual runs never get this env var, so the script's
@@ -259,7 +311,9 @@ object TapScriptRunner {
 
             // Step 5: Execute the wrapper — isolated sidecar (compose/prod default) or
             // in-process (sbt/IDE, or USE_TAP_RUNNER=false). Same allEnvVars and envelope.
-            val secretValues = secretEnvVars.map(_._2)
+            // The platform token is masked like any other secret so it never
+            // surfaces in run logs or error messages.
+            val secretValues = secretEnvVars.map(_._2) :+ platformToken
             secretValuesForMasking = secretValues
             val (rawOutput, rawLogs) =
                 if (useTapRunner) {
@@ -360,6 +414,7 @@ object TapScriptRunner {
                 val masked = if (secretValuesForMasking.nonEmpty) maskSecrets(e.getMessage, secretValuesForMasking) else e.getMessage
                 TapScriptResult(null, 0, masked)
         } finally {
+            ai.datris.auth.TapRunTokens.revoke(platformToken)
             Files.deleteIfExists(scriptFile)
             Files.deleteIfExists(wrapperFile)
             venvDir.foreach(deleteRecursively)

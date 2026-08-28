@@ -173,6 +173,9 @@ Tap scripts can query data already stored in the Datris platform. The following 
 | `DATRIS_MONGODB_DATABASE` | MongoDB database name (configured via `mongodb.database` in `application.yaml`, or the tenant name in multi-tenant mode) |
 | `DATRIS_PLATFORM_HOST` | Hostname of the Datris platform (`localhost` inside the Docker container) |
 | `DATRIS_PLATFORM_PORT` | Port of the Datris platform (`8080` by default) |
+| `DATRIS_PLATFORM_TOKEN` | A per-run credential for the platform API, minted when the run starts and revoked when it ends. You normally never touch it — see below |
+
+Calls to the platform are authenticated for you. When [API keys](/api-keys) are required, the platform attaches `DATRIS_PLATFORM_TOKEN` as `x-api-key` to any `requests` or `urllib` call whose host is `DATRIS_PLATFORM_HOST` — and only that host, so it never reaches a third-party API. The token is read-only (queries, search, metadata), scoped to the one run, and shows up in the [audit log](/audit-log) as the tap itself. If your script uses a different HTTP client, send the header yourself: `{"x-api-key": os.environ["DATRIS_PLATFORM_TOKEN"]}`. A tap never needs a platform credential in its secret.
 
 In single-tenant deployments the postgres and mongo database names may differ (postgres defaults to `datris`, mongo defaults to `oss`); in multi-tenant mode both resolve to the same tenant name. Always use the variable that matches the backend you are querying.
 

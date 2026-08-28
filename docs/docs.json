@@ -109,6 +109,7 @@
               "configuration-reference",
               "user-auth",
               "api-keys",
+              "audit-log",
               "monitoring",
               "notifications"
             ]

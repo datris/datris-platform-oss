@@ -4,7 +4,7 @@ import { ActivatedRoute } from '@angular/router';
 import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
 
-type ConfigTab = 'environment' | 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources' | 'code-repo';
+type ConfigTab = 'environment' | 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources' | 'code-repo' | 'audit-log';
 
 @Component({
     selector: 'app-configuration',
@@ -158,12 +158,18 @@ export class ConfigurationComponent implements OnInit {
     return this.useApiKeys && !this.isTrial && (!this.useUserAuth || this.isAdmin());
   }
 
+  /** Admin-only like Secrets / API-Keys. Shown even when USE_AUDIT_LOG is off
+   *  so the tab can explain how to turn it on. */
+  get canSeeAuditLog(): boolean {
+    return !this.isTrial && (!this.useUserAuth || this.isAdmin());
+  }
+
   ngOnInit(): void {
     // Honor ?tab=<name> for deep-links (e.g. the redirect from /secrets).
     this.route.queryParamMap.subscribe(p => {
       const t = p.get('tab');
       if (t === 'environment' || t === 'ai-providers' ||
-          t === 'users' || t === 'secrets' || t === 'keys' || t === 'data-sources') {
+          t === 'users' || t === 'secrets' || t === 'keys' || t === 'data-sources' || t === 'audit-log') {
         this.activeTab = t;
       }
     });
@@ -188,6 +194,9 @@ export class ConfigurationComponent implements OnInit {
         // Same fallback for the API-Keys tab when USE_API_KEYS is off — the
         // tab is hidden, so a deep-link landing on it would show nothing.
         if (this.activeTab === 'keys' && !this.canSeeKeys) {
+          this.activeTab = 'ai-providers';
+        }
+        if (this.activeTab === 'audit-log' && !this.canSeeAuditLog) {
           this.activeTab = 'ai-providers';
         }
         // Load the model catalog before reading secrets so maybeAddExtraModel compares

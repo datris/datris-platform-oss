@@ -29,6 +29,20 @@ class StartupRunner extends ApplicationRunner {
     @Value("${multiTenant:false}")
     var multiTenant: Boolean = _
 
+    // Audit log — durable record of who did what. Off by default; flipping it
+    // on needs a restart (read once here, like the sibling auth flags).
+    @Value("${useAuditLog:false}")
+    var useAuditLog: Boolean = _
+
+    @Value("${auditLog.retentionDays:90}")
+    var auditLogRetentionDays: Int = _
+
+    @Value("${auditLog.logReads:false}")
+    var auditLogLogReads: Boolean = _
+
+    @Value("${auditLog.emitLogLine:true}")
+    var auditLogEmitLogLine: Boolean = _
+
     @Value("${secrets.apiKeysSecretName:}")
     var apiKeysSecretName: String = _
 
@@ -161,6 +175,9 @@ class StartupRunner extends ApplicationRunner {
         if (!ai.datris.util.TapScriptRunner.useTapRunner)
             ai.datris.util.TapScriptRunner.warnInProcess("startup")
         initDatrisEnvironment()
+        if (useAuditLog)
+            logger.info("Audit log enabled: collection=" + environment + "-audit-log, retentionDays=" + auditLogRetentionDays +
+                ", logReads=" + auditLogLogReads + ", emitLogLine=" + auditLogEmitLogLine)
         initUserAuth()
         // Seed v1 definition snapshots for any pre-versioning taps/pipelines so
         // their version history isn't empty. Idempotent — skips entities that
@@ -168,6 +185,16 @@ class StartupRunner extends ApplicationRunner {
         ai.datris.util.VersionBackfill.run()
         if (kafkaConsumerEnabled)
             initKafkaConsumerRunner()
+        auditServerStart()
+    }
+
+    private def auditServerStart(): Unit = {
+        val md = new com.google.gson.JsonObject()
+        md.addProperty("version", ai.datris.build.sbt.BuildInfo.version)
+        // Field names deliberately avoid "apiKey" so the redactor leaves the booleans alone.
+        md.addProperty("userAuth", useUserAuth)
+        md.addProperty("programmaticKeys", useApiKeys)
+        ai.datris.audit.AuditLog.system("system", "start", metadata = md)
     }
 
     /** Idempotent: ensure the user-session TTL index exists and seed a default admin
@@ -215,6 +242,7 @@ class StartupRunner extends ApplicationRunner {
                         "(shown once; log in and change it immediately)",
                     bootstrapPassword
                 )
+                ai.datris.audit.AuditLog.system("user", "seed-admin", "user", "admin")
             }
         } catch {
             case e: Exception =>
@@ -295,7 +323,12 @@ class StartupRunner extends ApplicationRunner {
             versionCap = versionCap,
             cronRetryEnabled = cronRetryEnabled,
             cronRetryCap = cronRetryCap,
-            cronRetryBackoffMinutes = cronRetryBackoffMinutes
+            cronRetryBackoffMinutes = cronRetryBackoffMinutes,
+            useAuditLog = useAuditLog,
+            auditLogTableName = environment + "-audit-log",
+            auditLogRetentionDays = auditLogRetentionDays,
+            auditLogLogReads = auditLogLogReads,
+            auditLogEmitLogLine = auditLogEmitLogLine
         )
 
         DatrisEnvironment.init(pipelineEnvironment)

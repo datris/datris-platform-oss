@@ -217,6 +217,11 @@ class MongoDBUtil(database: MongoDatabase) extends NoSQLDbUtility {
         collection.replaceOne(session, filter, doc, new ReplaceOptions().upsert(true))
     }
 
+    /** Raw collection handle for callers that need filtered / cursor queries
+      * the generic trait doesn't model (the audit log's paginated reads). */
+    def collection(tableName: String): com.mongodb.client.MongoCollection[Document] =
+        database.getCollection(tableName)
+
     /** Create a TTL index on a BSON Date field. Mongo auto-deletes documents whose
       * field value is older than `expireAfterSeconds` past now. Idempotent — Mongo
       * accepts re-creation of an identical index. The field MUST be a BSON Date

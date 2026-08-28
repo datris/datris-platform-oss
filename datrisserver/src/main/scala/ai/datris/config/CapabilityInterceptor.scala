@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.audit.AuditLog
 import ai.datris.auth.{CapabilityRoutes, RouteCheck}
 import ai.datris.model.{ResolvedKey, UserContext}
 import ai.datris.util.APIKeyValidator
@@ -130,6 +131,12 @@ class CapabilityInterceptor extends HandlerInterceptor {
                                     "or the operator must use a different key with the required capability.\"}"
                             response.getWriter.write(body)
                             response.getWriter.flush()
+                            AuditLog.denied(
+                                request,
+                                "capability denied for key '" + rk.label + "'",
+                                HttpServletResponse.SC_FORBIDDEN,
+                                required = Some(resource + ":" + action)
+                            )
                             false
                         } else {
                             logger.warn(

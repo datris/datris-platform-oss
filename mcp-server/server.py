@@ -48,6 +48,13 @@ WEBSITE_URL = os.getenv("WEBSITE_URL", "https://datris.ai")
 
 # Per-session API key for multi-tenant SSE/HTTP connections
 _session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("_session_api_key", default="")
+# The human an in-platform chat (Assistant / Ops / Catalog) is acting for,
+# relayed from the `X-Datris-On-Behalf-Of` header the Datris server sends on
+# its /mcp calls. Forwarded verbatim on every REST hop so the platform's audit
+# log and version history attribute the action to the person, not to the
+# shared `ui` key. The server only honors it from the `ui` key; any other
+# caller sending it is ignored (and logged) there.
+_session_on_behalf_of: contextvars.ContextVar[str] = contextvars.ContextVar("_session_on_behalf_of", default="")
 # Per-session id used for agent-monitor attribution
 _session_id: contextvars.ContextVar[str] = contextvars.ContextVar("_session_id", default="")
 
@@ -420,7 +427,7 @@ Tap workflow (for step 3 Option B):
     - With instruction: provide a plain-English instruction and the platform's AI generates the script. This is slower (1-2 minutes) because the platform must generate and store the script.
     - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries.
   Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
-  Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
+  Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever — the platform authenticates the callback per run by itself (a run-scoped DATRIS_PLATFORM_TOKEN the wrapper attaches to requests/urllib calls aimed at DATRIS_PLATFORM_HOST), so never add an x-api-key to these calls or ask the user for one. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
   2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
@@ -461,12 +468,28 @@ def _effective_api_key() -> str:
     return _session_api_key.get()
 
 
-def _headers():
-    """Build request headers."""
-    h = {"Content-Type": "application/json"}
+def _identity_headers():
+    """Headers that identify who is behind this tool call, for the platform's
+    audit log: the per-session API key, the MCP session id (joins an audit
+    entry to the Agent Monitor's activity buffer), and — for in-platform chats
+    only — the user being acted for."""
+    h = {}
     key = _effective_api_key()
     if key:
         h["x-api-key"] = key
+    sess = _session_id.get()
+    if sess:
+        h["X-Datris-Agent-Session"] = sess
+    obo = _session_on_behalf_of.get()
+    if obo:
+        h["X-Datris-On-Behalf-Of"] = obo
+    return h
+
+
+def _headers():
+    """Build request headers."""
+    h = {"Content-Type": "application/json"}
+    h.update(_identity_headers())
     return h
 
 
@@ -490,10 +513,7 @@ def _upload(path, file_path, data=None):
     """Upload a file via multipart POST to the pipeline API (local file path)."""
     with open(file_path, "rb") as f:
         files = {"file": (os.path.basename(file_path), f)}
-        h = {}
-        key = _effective_api_key()
-        if key:
-            h["x-api-key"] = key
+        h = _identity_headers()
         resp = requests.post(
             f"{DATRIS_API_URL}{path}",
             headers=h,
@@ -538,10 +558,7 @@ def _upload_content(path, content_b64, filename, data=None):
     try:
         with open(tmp_path, "rb") as f:
             files = {"file": (filename, f)}
-            h = {}
-            key = _effective_api_key()
-            if key:
-                h["x-api-key"] = key
+            h = _identity_headers()
             resp = requests.post(
                 f"{DATRIS_API_URL}{path}",
                 headers=h,
@@ -3703,6 +3720,14 @@ async def run_stdio():
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
+def _extract_header(scope, name: bytes) -> str:
+    """Return one request header from the ASGI scope, or "" when absent."""
+    for header_name, header_value in scope.get("headers", []):
+        if header_name == name:
+            return header_value.decode("utf-8", errors="replace").strip()
+    return ""
+
+
 def _extract_api_key(scope) -> str:
     """Extract x-api-key from ASGI scope headers or query string."""
     # Check headers first
@@ -3777,6 +3802,7 @@ async def run_sse(port: int):
                                 "body": b'{"error":"x-api-key header required. Sign up at datris.ai to get an API key."}'})
                     return
                 _session_api_key.set(api_key)
+                _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
@@ -3811,6 +3837,7 @@ async def run_sse(port: int):
                                 "body": b'{"error":"x-api-key header required."}'})
                     return
                 _session_api_key.set(api_key)
+                _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
@@ -3865,6 +3892,7 @@ async def run_streamable_http(port: int):
                                 "body": b'{"error":"x-api-key header required. Sign up at datris.ai to get an API key."}'})
                     return
                 _session_api_key.set(api_key)
+                _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)

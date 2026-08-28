@@ -86,6 +86,7 @@ object DatrisEnvironment {
             tapPromptTableName = env + "-tap-prompt",
             userTableName = env + "-user",
             userSessionTableName = env + "-user-session",
+            auditLogTableName = env + "-audit-log",
             postgresDatabase = env
         )
     }
@@ -230,7 +231,15 @@ case class DatrisEnvironment(
     cronRetryCap: Int = 3,
     // Minutes to wait before retry attempt N; the last entry repeats when
     // attempts outnumber entries.
-    cronRetryBackoffMinutes: String = "5,15"
+    cronRetryBackoffMinutes: String = "5,15",
+    // Durable audit log of who did what (see ai.datris.audit.AuditLog).
+    // Default off so existing deploys are unchanged; when on, entries land in
+    // `{env}-audit-log` and are also emitted on logger `ai.datris.audit`.
+    useAuditLog: Boolean = false,
+    auditLogTableName: String = null,
+    auditLogRetentionDays: Int = 90, // 0 = never expire
+    auditLogLogReads: Boolean = false, // query/search/metadata/GET routes
+    auditLogEmitLogLine: Boolean = true
 ) {
 
     /** Append-only definition-version collections. Derived from the live table

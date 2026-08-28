@@ -40,6 +40,14 @@ environment: oss
 useApiKeys: "false"
 useUserAuth: "false"
 multiTenant: "false"
+# Durable audit log of who did what (admin-readable under Configuration →
+# Audit Log). Off by default so existing deploys are unchanged; a restart is
+# required to flip it. Env var: USE_AUDIT_LOG.
+useAuditLog: "false"
+auditLog:
+  retentionDays: 90       # Mongo TTL on entries; 0 = never expire
+  logReads: false         # also record query/search/metadata/GET routes (high volume)
+  emitLogLine: true       # mirror each entry to logger ai.datris.audit (JSON under the production profile)
 
 # CORS allowed origins (comma-separated). Use "*" for any origin (dev only).
 # Production: lock down to specific origins, e.g. "https://app.datris.ai,https://admin.datris.ai"
