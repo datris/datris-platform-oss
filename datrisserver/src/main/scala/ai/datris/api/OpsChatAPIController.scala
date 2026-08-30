@@ -370,6 +370,10 @@ class OpsChatAPIController {
             "- **Tap secrets are tagged `_type=tap`.** You can read and rotate them but you can only modify secrets the platform owns (the MCP layer enforces this). If a rotation fails with an ownership error, surface that clearly — don't retry.\n\n"
         )
 
+        sb.append("## Actions that wait for approval\n\n")
+        sb.append(
+            "- **A `pending_approval` result means the action was NOT performed.** The agent policy on this instance may require a person to approve some actions. When a tool returns `status: pending_approval`, say the action is queued (approval `<approvalId>`, under Activity → Approvals on this same page) and never describe it as done; do not re-issue the call. `errorKind: policy_denied` means it is refused for agents here — report that and stop.\n\n"
+        )
         sb.append("## When the snapshot looks empty\n\n")
         sb.append(
             "If the dashboard snapshot has no failures, no stale taps, and no volume anomalies, the platform is healthy. Say so plainly. Offer to spot-check anything the operator names, but don't fabricate problems to solve.\n\n"

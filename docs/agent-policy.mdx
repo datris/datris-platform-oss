@@ -1,0 +1,92 @@
+---
+title: "Agent Policy"
+description: "Decide, per action, whether agents run it on their own, wait for a person to approve it, or are refused — enforced by the platform, not by a prompt."
+---
+
+The agent policy is the boundary between agents being useful and agents being safe. For every kind of change an agent can make through Datris — create a tap, run it, delete a pipeline, migrate a destination table's column types — an administrator decides one of three things:
+
+| Mode | What happens when an agent tries it |
+|------|-------------------------------------|
+| **Auto** | It runs, exactly as today. |
+| **Approve** | It does **not** run. The request is parked, the agent is told it is waiting for approval, and a person approves or rejects it under **Activity → Approvals**. On approval the platform performs the original request on the approver's behalf. |
+| **Deny** | It is refused with a clear error the agent can read. |
+
+Anything you have not set is **Auto**, so turning the feature on changes nothing until you set a rule. People using the Datris UI are never gated — they are the approvers.
+
+This is infrastructure, not a system prompt. An agent cannot talk its way past it, and it applies to every client — the in-platform Assistant, Claude Desktop, Cursor, the CLI, or any script holding an API key.
+
+## Enabling it
+
+Off by default — existing installs are unchanged until you opt in.
+
+1. Add the flag to your `.env`:
+
+   ```bash
+   USE_AGENT_POLICY=true
+   ```
+
+2. Recreate the Datris container:
+
+   ```bash
+   docker compose up -d --force-recreate datris
+   ```
+
+3. Open **Configuration → Agent Policy** (admins only when user authentication is on). Set the actions you care about, or click **Use recommended** for a starting point that pauses deletes, job kills and destination-type migrations and refuses secret and connection changes.
+
+The policy applies within a few seconds of saving; no restart.
+
+## What counts as an agent
+
+| Caller | Gated? |
+|--------|--------|
+| A person clicking in the Datris UI | No |
+| The in-platform Assistant, Ops or Catalog chat acting for a logged-in user | **Yes** — attributed to the user, but it is still the agent proposing |
+| An external MCP client (Claude Desktop, Cursor, Claude Code, …) or a script with an API key | **Yes** |
+| A scheduled tap run, Kafka or object-store trigger | No — these are the platform's own work |
+| A tap script reading platform data during a run | No |
+
+## Actions
+
+The actions you can set are exactly the ones the [capability model](/api-keys) already recognizes — `pipeline:create`, `tap:delete`, `job:kill`, `secret:write`, and so on — plus one refinement: `pipeline:update:dest-types`, the destination column-type migration, which shares a capability with an ordinary pipeline save but rewrites a landed table. A sub-action inherits its parent's mode unless set; `resource:*` sets every action on a resource.
+
+Reads, queries, searches and metadata lookups are never gated. What a key may read is governed by its [capabilities](/api-keys).
+
+Two rules are not part of the policy and cannot be changed by it: an agent can never edit the policy, and an agent can never approve or reject an approval — whatever capabilities its key holds.
+
+### Per-resource overrides
+
+An override tightens the policy for one pipeline or tap: `tap:prices → tap:run = approve` pauses runs of that one tap while every other tap runs freely. Overrides can only make an action stricter, never looser.
+
+## Approvals
+
+When an agent's request hits an **Approve** rule, the agent receives a `pending_approval` response with an approval id instead of a result. The Assistant will tell you plainly that the action is waiting, and it can poll for the decision. The request itself — method, path and body, with secret-looking values masked — is shown on the approval card so you see exactly what will run.
+
+Approve, and the platform performs the original request, attributed to you. The audit log then holds two linked entries: the agent's queued request (with the reason it gave, if any) and your approval executing it. Reject, and the agent is told so on its next poll. Approvals not decided within the configured time (24 hours by default) expire on their own.
+
+An approval executes what was proposed, not what the agent would propose now: if the pipeline or tap changed in the meantime, the approval is refused as stale and the agent has to propose again.
+
+Some requests cannot be parked — file uploads, and bodies over 256 KB. If such an action is set to **Approve**, the agent is told to ask you to do it in the UI instead.
+
+## For agents
+
+Three MCP tools support the flow:
+
+| Tool | Purpose |
+|------|---------|
+| `get_agent_policy` | Read the policy before acting, to know whether a delete or migration will run or queue |
+| `list_pending_approvals` | The actions this agent has queued, with their state |
+| `get_approval` | Poll one approval by id until it is executed, rejected or expired |
+
+Every mutating tool also accepts an optional `reason` — one line stating why the agent wants the change. It is stored in the [audit log](/audit-log) and shown on the approval card.
+
+## Limits
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| Pending approval TTL | 24 hours | Undecided approvals expire after this |
+| Max pending per agent | 50 | An agent with this many undecided approvals is told to wait |
+
+## Related
+
+- [API Keys](/api-keys) — what a key *may* do; the policy decides what it may do *unattended*
+- [Audit Log](/audit-log) — where queued requests, decisions and executions are recorded

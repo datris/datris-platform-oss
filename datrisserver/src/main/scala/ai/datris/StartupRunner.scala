@@ -43,6 +43,15 @@ class StartupRunner extends ApplicationRunner {
     @Value("${auditLog.emitLogLine:true}")
     var auditLogEmitLogLine: Boolean = _
 
+    // Agent policy — approval gate for agent-initiated actions. Off by
+    // default; needs a restart to flip, like the sibling flags.
+    @Value("${useAgentPolicy:false}")
+    var useAgentPolicy: Boolean = _
+
+    // Where an approved agent action is replayed to (this server).
+    @Value("${server.port:8080}")
+    var serverPort: Int = _
+
     @Value("${secrets.apiKeysSecretName:}")
     var apiKeysSecretName: String = _
 
@@ -175,6 +184,11 @@ class StartupRunner extends ApplicationRunner {
         if (!ai.datris.util.TapScriptRunner.useTapRunner)
             ai.datris.util.TapScriptRunner.warnInProcess("startup")
         initDatrisEnvironment()
+        ai.datris.policy.PolicyReplay.port = serverPort
+        if (useAgentPolicy)
+            logger.info(
+                "Agent policy enabled: collections=" + environment + "-agent-policy, " + environment + "-pending-action; approvals replay to port " + serverPort
+            )
         if (useAuditLog)
             logger.info("Audit log enabled: collection=" + environment + "-audit-log, retentionDays=" + auditLogRetentionDays +
                 ", logReads=" + auditLogLogReads + ", emitLogLine=" + auditLogEmitLogLine)
@@ -327,6 +341,9 @@ class StartupRunner extends ApplicationRunner {
             useAuditLog = useAuditLog,
             auditLogTableName = environment + "-audit-log",
             auditLogRetentionDays = auditLogRetentionDays,
+            useAgentPolicy = useAgentPolicy,
+            agentPolicyTableName = environment + "-agent-policy",
+            pendingActionTableName = environment + "-pending-action",
             auditLogLogReads = auditLogLogReads,
             auditLogEmitLogLine = auditLogEmitLogLine
         )

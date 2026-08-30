@@ -1,5 +1,5 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { firstValueFrom, forkJoin, of, Subscription } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import type { EChartsOption } from 'echarts';
@@ -10,6 +10,7 @@ import { AuthService } from '../auth.service';
 import { OpsChatContextService } from '../ops-chat/ops-chat-context.service';
 import { OpsActionBus } from '../ops-chat/ops-action-bus.service';
 import { OpsAssistantStateService } from '../ops-chat/ops-assistant-state.service';
+import { Approval, ApprovalsService } from '../approvals.service';
 
 type Window = '24h' | '7d' | '30d';
 
@@ -107,6 +108,28 @@ export class ActivityComponent implements OnInit, OnDestroy {
   private refreshTimer: any;
   private readonly REFRESH_MS = 30_000;
 
+  // ── Approvals (agent policy) ──────────────────────────────────────────────
+  // Only rendered when USE_AGENT_POLICY is on. Pending approvals are actions
+  // an agent asked for that wait on a person; decided ones are shown behind a
+  // toggle. Refreshed on the same 30s cycle as the rest of the dashboard and
+  // immediately after any decision made here.
+  policyEnabled = false;
+  pendingApprovals: Approval[] = [];
+  decidedApprovals: Approval[] = [];
+  showDecided = false;
+  approvalsError = '';
+  approvalsLoaded = false;
+  /** Approval ids with an approve/reject call in flight. */
+  deciding = new Set<string>();
+  /** Approval ids whose "Request" block is expanded. */
+  requestOpen = new Set<string>();
+  /** Approval ids with the inline reject-note input open, and its draft. */
+  rejectOpen = new Set<string>();
+  rejectNotes = new Map<string, string>();
+  /** Per-approval outcome banner after a decision made from this page. */
+  decisionOutcome = new Map<string, { tone: 'ok' | 'err' | 'warn'; text: string; detail?: string }>();
+  private approvalsScrollPending = false;
+
   constructor(
     private tapService: TapService,
     private pipelineService: PipelineService,
@@ -115,10 +138,20 @@ export class ActivityComponent implements OnInit, OnDestroy {
     public auth: AuthService,
     private opsContext: OpsChatContextService,
     private opsActionBus: OpsActionBus,
-    private opsState: OpsAssistantStateService
+    private opsState: OpsAssistantStateService,
+    private approvalsService: ApprovalsService,
+    private route: ActivatedRoute
   ) {}
 
   ngOnInit(): void {
+    // Deep-link from Configuration → Agent Policy and the chat tool cards:
+    // /ops/activity#approvals scrolls the Approvals section into view once
+    // it has rendered.
+    this.approvalsScrollPending = this.route.snapshot.fragment === 'approvals';
+    this.approvalsService.policyEnabled().subscribe(on => {
+      this.policyEnabled = on;
+      if (on) this.loadApprovals();
+    });
     this.loadData();
     this.refreshTimer = setInterval(() => this.loadData(true), this.REFRESH_MS);
     // Chat-triggered tap runs flow through the action bus so the row's
@@ -163,6 +196,7 @@ export class ActivityComponent implements OnInit, OnDestroy {
       this.loading = true;
       this.loadError = '';
     }
+    if (this.policyEnabled) this.loadApprovals();
 
     try {
       // Pull tap logs covering both the current window and the prior window so the
@@ -205,6 +239,195 @@ export class ActivityComponent implements OnInit, OnDestroy {
     } finally {
       this.loading = false;
     }
+  }
+
+  // ── Approvals ─────────────────────────────────────────────────────────────
+
+  loadApprovals(): void {
+    this.approvalsService.list('pending', 100).subscribe({
+      next: (page) => {
+        this.policyEnabled = page.enabled !== false;
+        this.pendingApprovals = page.approvals || [];
+        this.approvalsLoaded = true;
+        this.approvalsError = '';
+        // Drop stale per-card state for approvals that left the pending list.
+        const ids = new Set(this.pendingApprovals.map(a => a.id));
+        for (const id of Array.from(this.rejectOpen)) if (!ids.has(id)) this.rejectOpen.delete(id);
+        for (const id of Array.from(this.requestOpen)) if (!ids.has(id)) this.requestOpen.delete(id);
+        if (this.approvalsScrollPending) {
+          this.approvalsScrollPending = false;
+          setTimeout(() => document.getElementById('approvals')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+        }
+      },
+      error: (err) => {
+        this.approvalsLoaded = true;
+        this.approvalsError = err?.error?.error || 'Failed to load approvals';
+      }
+    });
+    if (this.showDecided) this.loadDecided();
+  }
+
+  private loadDecided(): void {
+    // The server lists newest first; ask for enough to fill 20 after
+    // filtering out whatever is still pending.
+    this.approvalsService.list(undefined, 60).subscribe({
+      next: (page) => {
+        this.decidedApprovals = (page.approvals || []).filter(a => a.state !== 'pending').slice(0, 20);
+      },
+      error: () => { /* keep the last list; the pending fetch reports errors */ }
+    });
+  }
+
+  toggleDecided(): void {
+    this.showDecided = !this.showDecided;
+    if (this.showDecided) this.loadDecided();
+  }
+
+  toggleRequest(a: Approval): void {
+    if (this.requestOpen.has(a.id)) this.requestOpen.delete(a.id);
+    else this.requestOpen.add(a.id);
+  }
+
+  openReject(a: Approval): void {
+    if (this.rejectOpen.has(a.id)) {
+      this.rejectOpen.delete(a.id);
+    } else {
+      this.rejectOpen.add(a.id);
+      if (!this.rejectNotes.has(a.id)) this.rejectNotes.set(a.id, '');
+    }
+  }
+
+  rejectNote(a: Approval): string {
+    return this.rejectNotes.get(a.id) || '';
+  }
+
+  setRejectNote(a: Approval, v: string): void {
+    this.rejectNotes.set(a.id, v);
+  }
+
+  isDeciding(a: Approval): boolean {
+    return this.deciding.has(a.id);
+  }
+
+  outcomeFor(a: Approval) {
+    return this.decisionOutcome.get(a.id) || null;
+  }
+
+  approve(a: Approval): void {
+    if (this.deciding.has(a.id)) return;
+    this.deciding.add(a.id);
+    this.decisionOutcome.delete(a.id);
+    this.approvalsService.approve(a.id).subscribe({
+      next: (res) => {
+        this.deciding.delete(a.id);
+        this.decisionOutcome.set(a.id, {
+          tone: 'ok',
+          text: `Approved and executed (HTTP ${res.resultStatus ?? 200}).`
+        });
+        this.loadApprovals();
+        this.loadData(true);
+      },
+      error: (err) => {
+        this.deciding.delete(a.id);
+        const body = err?.error || {};
+        if (err?.status === 502) {
+          this.decisionOutcome.set(a.id, {
+            tone: 'err',
+            text: `Approved, but the action failed (HTTP ${body.resultStatus ?? '?'}).`,
+            detail: body.resultBody || body.error || ''
+          });
+          this.loadApprovals();
+        } else if (err?.status === 409 && body.errorKind === 'approval_stale') {
+          // The resource changed since the agent asked — leave the card
+          // pending so the person can re-read the request before deciding.
+          this.decisionOutcome.set(a.id, {
+            tone: 'warn',
+            text: body.message || `The ${a.resourceType || 'resource'} changed since this was requested (now version ${body.liveVersion}). Review and try again.`
+          });
+        } else if (err?.status === 409) {
+          this.decisionOutcome.set(a.id, { tone: 'warn', text: body.message || body.error || 'Already decided.' });
+          this.loadApprovals();
+        } else if (err?.status === 410) {
+          this.decisionOutcome.set(a.id, { tone: 'warn', text: 'This request has expired.' });
+          this.loadApprovals();
+        } else {
+          this.decisionOutcome.set(a.id, { tone: 'err', text: body.error || body.message || 'Approve failed.' });
+        }
+      }
+    });
+  }
+
+  reject(a: Approval): void {
+    if (this.deciding.has(a.id)) return;
+    this.deciding.add(a.id);
+    this.decisionOutcome.delete(a.id);
+    this.approvalsService.reject(a.id, this.rejectNotes.get(a.id)).subscribe({
+      next: () => {
+        this.deciding.delete(a.id);
+        this.rejectOpen.delete(a.id);
+        this.rejectNotes.delete(a.id);
+        this.decisionOutcome.set(a.id, { tone: 'ok', text: 'Rejected.' });
+        this.loadApprovals();
+      },
+      error: (err) => {
+        this.deciding.delete(a.id);
+        const body = err?.error || {};
+        if (err?.status === 409 || err?.status === 410) {
+          this.decisionOutcome.set(a.id, { tone: 'warn', text: body.message || body.error || 'Already decided.' });
+          this.loadApprovals();
+        } else {
+          this.decisionOutcome.set(a.id, { tone: 'err', text: body.error || body.message || 'Reject failed.' });
+        }
+      }
+    });
+  }
+
+  approvalActor(a: Approval): string {
+    const x = a.actor;
+    switch (x.type) {
+      case 'user': return x.username || x.label;
+      case 'assistant': return `${x.username || x.label} via Assistant`;
+      case 'tap': return `tap ${x.label}`;
+      default: return x.label;
+    }
+  }
+
+  approvalResource(a: Approval): string {
+    if (!a.resource) return '';
+    return a.resourceType ? `${a.resourceType} ${a.resource}` : a.resource;
+  }
+
+  /** "in 3h" / "2m ago" for expiry — the failures pane's formatRelative only
+   *  looks backwards. */
+  formatUntil(iso: string | null | undefined): string {
+    const t = this.parseTime(iso || null);
+    if (t == null) return '—';
+    const diff = t - Date.now();
+    if (diff <= 0) return 'now';
+    if (diff < 60_000) return 'in <1m';
+    if (diff < 3600_000) return `in ${Math.floor(diff / 60_000)}m`;
+    if (diff < 86400_000) return `in ${Math.floor(diff / 3600_000)}h`;
+    return `in ${Math.floor(diff / 86400_000)}d`;
+  }
+
+  requestBody(a: Approval): string {
+    const b = a.request?.body;
+    if (b === undefined || b === null || b === '') return '';
+    try {
+      return typeof b === 'string' ? b : JSON.stringify(b, null, 2);
+    } catch {
+      return String(b);
+    }
+  }
+
+  formatTs(iso: string | undefined): string {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleString();
+  }
+
+  trackByApproval(_i: number, a: Approval): string {
+    return a.id;
   }
 
   /** Push a compact dashboard snapshot to the chat panel's context service.

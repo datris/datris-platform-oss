@@ -309,6 +309,10 @@ services:
       USEAUDITLOG: "${USE_AUDIT_LOG:-false}"
       AUDITLOG_RETENTIONDAYS: "${AUDIT_LOG_RETENTION_DAYS:-90}"
       AUDITLOG_LOGREADS: "${AUDIT_LOG_READS:-false}"
+      # Agent policy: lets an admin mark agent actions auto / approve / deny and
+      # approve queued ones under Activity → Approvals. Off by default; when on
+      # with no policy saved, behavior is unchanged until a rule is set.
+      USEAGENTPOLICY: "${USE_AGENT_POLICY:-false}"
       # Shared secret authenticating the MinIO -> /minio-events webhook. When set,
       # the server requires MinIO to present it as a bearer token (see
       # minio-init.sh auth_token). Empty by default so existing deployments keep

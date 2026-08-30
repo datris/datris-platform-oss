@@ -124,6 +124,16 @@ For a document tap, `create_tap` **requires** the `target_pipeline` to have an `
 | `list_platform_secrets` | List the names of human-owned platform secrets (the Platform tab in Configuration → Secrets). These hold destination credentials and infrastructure connections. Read-only — agents cannot create, modify, or delete them. |
 | `get_platform_secret_fields` | Return the field NAMES (no values) of a platform secret. Use after `list_platform_secrets` to verify a candidate has the required keys for a destination — e.g. an S3 `credentialsSecret` must contain `accessKey`, `secretKey`, `region`. |
 
+### Agent policy and approvals
+
+| Tool | Description |
+|------|-------------|
+| `get_agent_policy` | Read this instance's [agent policy](/agent-policy): for each action whether an agent may do it on its own, must wait for a person to approve it, or is refused. Call before a delete or destination-type migration to know whether it will run or queue |
+| `list_pending_approvals` | The actions this agent queued for approval, with their state |
+| `get_approval` | Poll one queued approval by id until it is executed, rejected or expired |
+
+Every tool that changes platform state also accepts an optional `reason` — one line the agent gives for the change. It is recorded in the [audit log](/audit-log) and shown on the approval card. When the policy requires approval, the mutating tool returns `status: pending_approval` with an `approvalId` instead of performing the action.
+
 ## Monitoring Active Agents
 
 The [Datris UI](http://localhost:4200) includes an **Agent Monitor** tab that shows a live view of every agent currently connected to the MCP server and a streaming log of the tool calls each one is making. Agents are labeled using their MCP `clientInfo.name` — so Claude Desktop appears as `claude-ai`, Claude Code as `claude-code`, Cursor as `cursor`, and so on — with graceful fallbacks to tenant name, API-key name, or session id for clients that don't supply one. See [Monitoring → Agent Monitor](/monitoring#agent-monitor) for details.

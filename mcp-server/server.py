@@ -58,6 +58,10 @@ _session_on_behalf_of: contextvars.ContextVar[str] = contextvars.ContextVar("_se
 # Per-session id used for agent-monitor attribution
 _session_id: contextvars.ContextVar[str] = contextvars.ContextVar("_session_id", default="")
 
+# The optional `reason` argument of the current mutating tool call, forwarded
+# to the platform as X-Datris-Reason (audit metadata + approval cards).
+_call_reason: contextvars.ContextVar[str] = contextvars.ContextVar("_call_reason", default="")
+
 # Agent-monitor: in-process activity buffer + session tracker.
 # Ephemeral; cleared on restart. Safe to read via a plain lock.
 _activity_buffer: deque = deque(maxlen=200)
@@ -392,6 +396,9 @@ NEVER narrate a create / update / delete / run operation as completed unless the
   - When the verification call FINDS the resource (the pipeline / tap / collection / table is present in the list response), it exists — full stop. Do NOT retract a previous-turn claim that it was created, do NOT apologize for confabulating, and do NOT re-create it. Skim the response for the name you're looking for; if it's there, treat it as real and move on to the user's current ask. The EVIDENCE RULE prevents fake claims of success — it does NOT require retracting true claims just because they happened in a previous turn.
 The user trusts your narrative as a proxy for the platform state. Confabulating "done" when only some of it is done corrupts that trust and creates failure modes (a cron set on a tap whose pipeline doesn't exist; a "run now" call against a pipeline that was never created). Be honest about what happened in THIS turn, even if it's less than the user asked for — they can redirect, but only if your report is true.
 
+APPROVAL RULE (agent policy):
+Some actions on this instance may be gated by the platform's agent policy. When a mutating tool returns `status: pending_approval`, the action was NOT performed — it is queued for a person to approve. Tell the user plainly that it is waiting for approval in Datris (Activity → Approvals), quote the `approvalId`, and either poll `get_approval` (with `wait_seconds` between polls) or offer to check back later. Never re-issue the action to "retry" it (you get the same id back), never describe it as done, and never ask the user for an API key or credential to get around the gate. `status: 403` with `errorKind: policy_denied` means the action is refused for agents on this instance — report that and stop. Call `get_agent_policy` before a delete or destination-schema change if you want to know in advance whether it will queue.
+
 DESTINATION OFFERING RULE (structured data):
 The structured destinations available in this deployment are: {{STRUCTURED_OFFER_DESTINATIONS}}. When the user wants to ingest structured/tabular data and has not named a destination, offer exactly this set — name every one of them in your question, with no silent defaults and no destinations outside this list. This list was resolved by the platform and baked into this text at session start — do NOT probe or re-check availability before offering, and do NOT drop an option just because you haven't seen it used yet. (If the user explicitly asks about a destination that is not in the list, you may still explain how it works and what configuring it requires.)
 
@@ -483,6 +490,9 @@ def _identity_headers():
     obo = _session_on_behalf_of.get()
     if obo:
         h["X-Datris-On-Behalf-Of"] = obo
+    reason = _call_reason.get()
+    if reason:
+        h["X-Datris-Reason"] = reason[:500]
     return h
 
 
@@ -1420,7 +1430,41 @@ async def list_tools():
     return [t for t in tools if t.name in allowed]
 
 
+# Tools that change platform state. Each gets an optional `reason` argument
+# (recorded in the audit log and shown on approval cards) and a note on the
+# agent-policy approval flow. Kept as a name list so the schema decoration
+# never drifts from the catalog by accident: a new mutating tool that is not
+# listed here simply lacks the optional argument.
+_MUTATING_TOOLS = {
+    "create_pipeline", "set_catalog", "delete_pipeline", "upload_data", "kill_job",
+    "apply_dest_types", "upload_config", "update_secret", "create_tap_secret",
+    "delete_tap_secret", "create_tap", "run_tap", "delete_tap", "set_tap_state",
+    "test_tap", "update_tap", "restore_tap_version", "restore_pipeline_version",
+}
+
+_APPROVAL_NOTE = (
+    " If this Datris instance's agent policy requires a person to approve this action, the call does NOT perform it: "
+    "it returns status `pending_approval` with an `approvalId`. Tell the user it is waiting for approval in Datris, "
+    "then poll `get_approval` with that id (pause with `wait_seconds` between polls) — do not re-issue the action."
+)
+
+
 def _all_tools():
+    tools = _base_tools()
+    for t in tools:
+        if t.name in _MUTATING_TOOLS:
+            props = t.inputSchema.setdefault("properties", {})
+            if "reason" not in props:
+                props["reason"] = {
+                    "type": "string",
+                    "description": "Optional one-line reason for this change, recorded in the platform's audit log and shown to anyone asked to approve it.",
+                }
+            if "pending_approval" not in (t.description or ""):
+                t.description = (t.description or "") + _APPROVAL_NOTE
+    return tools
+
+
+def _base_tools():
     return [
         # --- Pipeline Management ---
         Tool(
@@ -2719,6 +2763,46 @@ def _all_tools():
                 "required": ["seconds"]
             }
         ),
+        # --- Agent policy / approvals ---
+        Tool(
+            name="get_agent_policy",
+            description="Read this Datris instance's agent policy: for each action (e.g. tap:delete, pipeline:update:dest-types) whether an agent may do it on its own (auto), must wait for a person to approve it (approve), or is refused (deny). Call this before a delete, schema migration, or other consequential change to know whether it will run immediately or queue for approval, and tell the user accordingly. Returns {enabled, policy:{actions, overrides, limits}, actions:[all policy-able action keys], pendingCount}. When enabled is false, every action is auto.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            }
+        ),
+        Tool(
+            name="list_pending_approvals",
+            description="List the actions this agent queued for human approval under the agent policy, newest first. Each entry has id, action, resource, state (pending | approved | rejected | expired | executed | failed), createdAt, expiresAt and — once decided — decidedBy and the result. Use `state` to filter (default: all).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "description": "Filter by state: pending, approved, rejected, expired, executed, failed. Omit for all.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum entries to return (default 100).",
+                    },
+                },
+            }
+        ),
+        Tool(
+            name="get_approval",
+            description="Poll one queued approval by the `approvalId` a mutating tool returned with status pending_approval. Returns its current state: pending (still waiting for a person), executed (approved and performed — `resultStatus` / `resultBody` carry the outcome of the original call), failed (approved but the replay failed), rejected, or expired. Poll with `wait_seconds` between calls, backing off to 30-60s; a decision can take minutes or hours, so after a few polls tell the user you will check back and stop polling unless they ask you to wait.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "approval_id": {
+                        "type": "string",
+                        "description": "The approvalId returned with pending_approval.",
+                    },
+                },
+                "required": ["approval_id"],
+            }
+        ),
     ]
 
 
@@ -2739,7 +2823,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         # worker thread so the event loop stays responsive. Contextvars
         # (_session_api_key, _session_id) are copied automatically — see
         # asyncio.to_thread docs.
-        result_text = await asyncio.to_thread(_dispatch, name, arguments)
+        dispatch_args = dict(arguments or {})
+        reason = dispatch_args.pop("reason", None)
+        reason_token = _call_reason.set(str(reason).strip() if reason else "")
+        try:
+            result_text = await asyncio.to_thread(_dispatch, name, dispatch_args)
+        finally:
+            _call_reason.reset(reason_token)
         return [TextContent(type="text", text=result_text)]
     except Exception as e:
         status = "error"
@@ -3692,6 +3782,24 @@ def _dispatch(name: str, args: dict) -> str:
         seconds = max(1, min(120, requested))
         time.sleep(seconds)
         return json.dumps({"slept": seconds, "requested": requested})
+
+    # --- Agent policy / approvals ---
+    elif name == "get_agent_policy":
+        return _call("get", "/api/v1/policy")
+
+    elif name == "list_pending_approvals":
+        params = {}
+        if args.get("state"):
+            params["state"] = args["state"]
+        if args.get("limit"):
+            params["limit"] = args["limit"]
+        return _call("get", "/api/v1/approvals", params=params)
+
+    elif name == "get_approval":
+        approval_id = str(args.get("approval_id", "")).strip()
+        if not approval_id:
+            return json.dumps({"error": "approval_id is required"})
+        return _call("get", f"/api/v1/approvals/{approval_id}")
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

@@ -28,6 +28,82 @@ components:
       description: Optional API key for authentication (enabled via application.yaml)
 
   schemas:
+    AgentPolicy:
+      type: object
+      properties:
+        version:
+          type: integer
+          readOnly: true
+        actions:
+          type: object
+          description: action key (resource:action[:sub] or resource:*) → auto | approve | deny; unset is auto
+          additionalProperties:
+            type: string
+            enum: [auto, approve, deny]
+        overrides:
+          type: object
+          description: pipeline:<name> or tap:<name> → action map that may only tighten the default
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+              enum: [auto, approve, deny]
+        limits:
+          type: object
+          properties:
+            pendingTtlHours:
+              type: integer
+              default: 24
+            maxPendingPerActor:
+              type: integer
+              default: 50
+        updatedAt:
+          type: string
+          readOnly: true
+        updatedBy:
+          type: string
+          readOnly: true
+    PendingAction:
+      type: object
+      properties:
+        id:
+          type: string
+        action:
+          type: string
+        resourceType:
+          type: string
+        resource:
+          type: string
+        resourceVersion:
+          type: integer
+        actor:
+          type: object
+        reason:
+          type: string
+        agentSession:
+          type: string
+        request:
+          type: object
+          description: The parked request (body already redacted)
+        createdAt:
+          type: string
+        expiresAt:
+          type: string
+        state:
+          type: string
+          enum: [pending, approved, rejected, expired, executed, failed]
+        decidedBy:
+          type: string
+        decidedAt:
+          type: string
+        decisionNote:
+          type: string
+        executedAt:
+          type: string
+        resultStatus:
+          type: integer
+        resultBody:
+          type: string
     QueryResponse:
       type: object
       properties:
@@ -3127,6 +3203,171 @@ paths:
 
   # ── API Keys ───────────────────────────────────────────────
 
+  /api/v1/policy:
+    get:
+      tags: [Agent Policy]
+      summary: Read the agent policy
+      description: >-
+        Per-action auto / approve / deny for agent-initiated changes. Anyone
+        may read it (agents consult it before acting). `enabled` is false
+        when USE_AGENT_POLICY is off, in which case every action is auto.
+      responses:
+        '200':
+          description: The policy, the recommended template and the action vocabulary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  policy:
+                    $ref: '#/components/schemas/AgentPolicy'
+                  recommended:
+                    $ref: '#/components/schemas/AgentPolicy'
+                  actions:
+                    type: array
+                    description: Every action key a policy may name (sorted)
+                    items:
+                      type: string
+                  pendingCount:
+                    type: integer
+    put:
+      tags: [Agent Policy]
+      summary: Replace the agent policy (admin)
+      description: >-
+        Admin-only, and never permitted from an agent-initiated request
+        regardless of key capabilities. Unknown action keys, bad modes or
+        malformed overrides are rejected with 400 naming the problem.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentPolicy'
+      responses:
+        '200':
+          description: The saved policy (version incremented)
+        '400':
+          description: Validation error
+        '403':
+          description: Not an admin, or an agent-initiated request
+        '404':
+          description: USE_AGENT_POLICY is off
+  /api/v1/approvals:
+    get:
+      tags: [Agent Policy]
+      summary: List queued agent actions
+      description: >-
+        Newest first. An agent-initiated caller sees only the actions it
+        queued; a person sees everything.
+      parameters:
+        - in: query
+          name: state
+          schema:
+            type: string
+            enum: [pending, approved, rejected, expired, executed, failed]
+        - in: query
+          name: actor
+          schema:
+            type: string
+          description: Filter by actor label (people only)
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+      responses:
+        '200':
+          description: Approvals
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  approvals:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PendingAction'
+  /api/v1/approvals/{id}:
+    get:
+      tags: [Agent Policy]
+      summary: Read one queued action
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The approval
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingAction'
+        '404':
+          description: Unknown id, or not visible to this caller
+  /api/v1/approvals/{id}/approve:
+    post:
+      tags: [Agent Policy]
+      summary: Approve a queued action (admin / editor)
+      description: >-
+        Performs the original request on the approver's behalf by replaying
+        it through the normal request chain. Never permitted from an
+        agent-initiated request. Refused as stale (409) if the target
+        pipeline or tap changed since the action was queued.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Executed — `resultStatus` / `resultBody` carry the original call's outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingAction'
+        '409':
+          description: Stale (resource version moved) or already decided
+        '410':
+          description: Expired before a decision
+        '502':
+          description: Approved but the replay failed (state `failed`)
+  /api/v1/approvals/{id}/reject:
+    post:
+      tags: [Agent Policy]
+      summary: Reject a queued action (admin / editor)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+                  description: Optional note shown to the agent on its next poll
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingAction'
+        '409':
+          description: No longer pending
   /api/v1/keys:
     get:
       tags: [API Keys]

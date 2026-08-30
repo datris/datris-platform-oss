@@ -1,6 +1,8 @@
 import { Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild, AfterViewChecked } from '@angular/core';
+import { Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { OpsAssistantStateService, ToolCard, AssistantTurn } from './ops-assistant-state.service';
+import { ApprovalsService, PolicyToolOutcome } from '../approvals.service';
 
 interface StarterPrompt {
   label: string;
@@ -37,7 +39,7 @@ export class OpsChatPanelComponent implements OnInit, OnDestroy, AfterViewChecke
   private scrollPending = false;
   private openSub?: Subscription;
 
-  constructor(public state: OpsAssistantStateService) {}
+  constructor(public state: OpsAssistantStateService, private router: Router) {}
 
   ngOnInit(): void {
     const raw = localStorage.getItem(OpsChatPanelComponent.STORAGE_KEY);
@@ -220,6 +222,24 @@ export class OpsChatPanelComponent implements OnInit, OnDestroy, AfterViewChecke
       case 'wait_seconds':           return { icon: '⏳', label: 'Waiting' + (input?.seconds ? ` ${input.seconds}s` : '') };
     }
     return { icon: '▸', label: 'Called ' + name };
+  }
+
+  /** Agent-policy outcome carried in a tool result: the call is queued for a
+   *  person ("pending_approval") or was refused ("policy_denied"). Parsed
+   *  once per result string and memoized — this runs from the template. */
+  private policyOutcomes = new Map<string, PolicyToolOutcome | null>();
+
+  policyOutcome(card: ToolCard): PolicyToolOutcome | null {
+    if (card.status === 'running' || !card.result) return null;
+    const key = card.id + '\u0000' + card.result;
+    if (!this.policyOutcomes.has(key)) {
+      this.policyOutcomes.set(key, ApprovalsService.parseToolOutcome(card.result));
+    }
+    return this.policyOutcomes.get(key) || null;
+  }
+
+  openApprovals(): void {
+    this.router.navigate(['/ops', 'activity'], { fragment: 'approvals' });
   }
 
   toolStatusIcon(card: ToolCard): string {

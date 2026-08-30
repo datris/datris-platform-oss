@@ -716,3 +716,63 @@
   color: #e25c5c;
   font-size: 13px;
 }
+
+/* Agent-policy outcomes on tool cards */
+.policy-note {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid #3a3f4a;
+  font-size: 12.5px;
+  color: #d0d2d8;
+}
+
+.policy-pending { background: rgba(251, 191, 36, 0.06); }
+.policy-denied { background: rgba(255, 115, 115, 0.06); }
+
+.policy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.policy-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.policy-badge-pending {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.policy-badge-denied {
+  background: rgba(255, 115, 115, 0.15);
+  color: #ff7373;
+  border: 1px solid rgba(255, 115, 115, 0.3);
+}
+
+.policy-open {
+  background: transparent;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #fbbf24;
+  cursor: pointer;
+}
+
+.policy-open:hover { background: rgba(251, 191, 36, 0.12); }
+
+.policy-line { margin-top: 4px; }
+.policy-line code { color: #fbbf24; }
+.policy-denied .policy-line { color: #ffb3b3; margin-top: 6px; }
+.policy-id {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: #8a8e96;
+}

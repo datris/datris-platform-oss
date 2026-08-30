@@ -83,6 +83,25 @@
                   <ng-container *ngIf="seg.status !== 'running'">{{ toolStatusIcon(seg) }}</ng-container>
                 </span>
               </button>
+              <!-- Agent-policy outcomes: the call is queued for a person, or
+                   was refused by policy. Rendered from the tool result JSON. -->
+              <ng-container *ngIf="policyOutcome(seg) as po">
+                <div class="ops-policy-note ops-policy-pending" *ngIf="po.kind === 'pending'">
+                  <div class="ops-policy-head">
+                    <span class="ops-policy-badge ops-policy-badge-pending">Waiting for approval</span>
+                    <button class="ops-policy-open" (click)="openApprovals()">Open Approvals</button>
+                  </div>
+                  <div class="ops-policy-line" *ngIf="po.action">
+                    <code>{{ po.action }}</code><ng-container *ngIf="po.resource"> on <strong>{{ (po.resourceType ? po.resourceType + ' ' : '') + po.resource }}</strong></ng-container>
+                  </div>
+                  <div class="ops-policy-line ops-policy-id" *ngIf="po.approvalId">{{ po.approvalId }}</div>
+                </div>
+                <div class="ops-policy-note ops-policy-denied" *ngIf="po.kind === 'denied'">
+                  <span class="ops-policy-badge ops-policy-badge-denied">Refused by agent policy</span>
+                  <div class="ops-policy-line" *ngIf="po.message">{{ po.message }}</div>
+                </div>
+              </ng-container>
+
               <div class="ops-tool-body" *ngIf="seg.expanded">
                 <div class="ops-tool-body-label">Input</div>
                 <pre class="ops-tool-body-pre">{{ formatJson(seg.input) }}</pre>

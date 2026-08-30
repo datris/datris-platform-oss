@@ -20,6 +20,9 @@
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'audit-log'"
             *ngIf="canSeeAuditLog"
             (click)="activeTab = 'audit-log'">Audit Log</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'agent-policy'"
+            *ngIf="canSeeAgentPolicy"
+            (click)="activeTab = 'agent-policy'">Agent Policy</button>
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'environment'"
             (click)="activeTab = 'environment'">Environment</button>
   </div>
@@ -28,6 +31,7 @@
   <app-secrets *ngIf="activeTab === 'secrets' && canSeeSecrets"></app-secrets>
   <app-keys *ngIf="activeTab === 'keys' && canSeeKeys"></app-keys>
   <app-audit-log *ngIf="activeTab === 'audit-log' && canSeeAuditLog"></app-audit-log>
+  <app-agent-policy *ngIf="activeTab === 'agent-policy' && canSeeAgentPolicy"></app-agent-policy>
   <app-data-sources *ngIf="activeTab === 'data-sources'"></app-data-sources>
   <app-code-repo *ngIf="activeTab === 'code-repo'"></app-code-repo>
 

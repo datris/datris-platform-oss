@@ -191,6 +191,25 @@
                   </div>
                 </ng-container>
 
+                <!-- Agent-policy outcomes: the call is queued for a person, or
+                     was refused by policy. Rendered from the tool result JSON. -->
+                <ng-container *ngIf="policyOutcome(seg) as po">
+                  <div class="policy-note policy-pending" *ngIf="po.kind === 'pending'">
+                    <div class="policy-head">
+                      <span class="policy-badge policy-badge-pending">Waiting for approval</span>
+                      <button class="policy-open" (click)="openApprovals()">Open Approvals</button>
+                    </div>
+                    <div class="policy-line" *ngIf="po.action">
+                      <code>{{ po.action }}</code><ng-container *ngIf="po.resource"> on <strong>{{ (po.resourceType ? po.resourceType + ' ' : '') + po.resource }}</strong></ng-container>
+                    </div>
+                    <div class="policy-line policy-id" *ngIf="po.approvalId">{{ po.approvalId }}</div>
+                  </div>
+                  <div class="policy-note policy-denied" *ngIf="po.kind === 'denied'">
+                    <span class="policy-badge policy-badge-denied">Refused by agent policy</span>
+                    <div class="policy-line" *ngIf="po.message">{{ po.message }}</div>
+                  </div>
+                </ng-container>
+
                 <!-- Generic tool body (input + result JSON). Suppressed for
                      active secret-request cards since the form replaces it. -->
                 <div class="tool-body" *ngIf="seg.expanded && !seg.secretRequest">

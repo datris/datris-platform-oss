@@ -48,6 +48,11 @@ auditLog:
   retentionDays: 90       # Mongo TTL on entries; 0 = never expire
   logReads: false         # also record query/search/metadata/GET routes (high volume)
   emitLogLine: true       # mirror each entry to logger ai.datris.audit (JSON under the production profile)
+# Agent policy: per-action auto / approve / deny for agent-initiated requests,
+# with a human approval queue (Configuration → Agent Policy, Activity →
+# Approvals). Off by default; with it on and no policy saved, nothing changes
+# until an admin sets an action to approve or deny. Env var: USE_AGENT_POLICY.
+useAgentPolicy: "false"
 
 # CORS allowed origins (comma-separated). Use "*" for any origin (dev only).
 # Production: lock down to specific origins, e.g. "https://app.datris.ai,https://admin.datris.ai"

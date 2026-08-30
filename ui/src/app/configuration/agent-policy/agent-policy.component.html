@@ -1,0 +1,156 @@
+<div class="policy-pane">
+  <div class="header">
+    <div>
+      <h3>Agent Policy</h3>
+      <p class="hint">Decide what agents may do on their own, what waits for a person, and what is refused. Humans are never gated.</p>
+    </div>
+    <div class="header-actions" *ngIf="enabled">
+      <button class="btn-secondary" (click)="reload()" [disabled]="loading || saving" title="Discard unsaved edits and reload">Reload</button>
+      <button class="btn-primary" (click)="save()" [disabled]="saving || loading" title="Save the policy">
+        {{ saving ? 'Saving…' : 'Save' }}
+      </button>
+    </div>
+  </div>
+
+  <p class="error" *ngIf="error">{{ error }}</p>
+  <p class="success" *ngIf="success">{{ success }}</p>
+
+  <!-- Disabled state -->
+  <div class="disabled-card" *ngIf="status && !enabled">
+    <p class="note-title">Agent policy is off on this server.</p>
+    <p>Agents currently act with the full permissions of the key they hold. To gate agent actions, set <code>USE_AGENT_POLICY=true</code> in your <code>.env</code> and recreate the container:</p>
+    <pre>docker compose up -d --force-recreate datris</pre>
+    <p>Once on, every agent write goes through this policy: run on its own, wait for a person to approve, or be refused. Humans and reads are never affected.</p>
+  </div>
+
+  <ng-container *ngIf="enabled">
+    <!-- Meta strip -->
+    <div class="meta-strip">
+      <span class="meta-item">Version <strong>{{ version }}</strong></span>
+      <span class="meta-item" *ngIf="updatedBy">Updated by <strong>{{ updatedBy }}</strong></span>
+      <span class="meta-item" *ngIf="updatedAt">on {{ formatTs(updatedAt) }}</span>
+      <span class="meta-spacer"></span>
+      <button class="pending-link" (click)="openApprovals()" [title]="'Open the Approvals section of the Activity page'">
+        <span class="pending-count" [class.pending-count-zero]="pendingCount === 0">{{ pendingCount }}</span>
+        pending approval{{ pendingCount === 1 ? '' : 's' }} →
+      </button>
+    </div>
+
+    <!-- Action matrix -->
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h4>Actions</h4>
+          <p class="hint">Anything not set is <strong>Auto</strong>. Sub-actions follow their parent unless set here.</p>
+        </div>
+        <button class="btn-secondary" (click)="useRecommended()" [disabled]="!status?.recommended" title="Load the recommended settings into the matrix — nothing is saved until you click Save">Use recommended</button>
+      </div>
+
+      <div class="legend">
+        <span class="legend-item"><span class="mode-dot mode-auto"></span>Auto — runs immediately</span>
+        <span class="legend-item"><span class="mode-dot mode-approve"></span>Approve — waits for a person</span>
+        <span class="legend-item"><span class="mode-dot mode-deny"></span>Deny — refused</span>
+      </div>
+
+      <div class="matrix">
+        <ng-container *ngFor="let g of groups; trackBy: trackByResource">
+          <div class="matrix-group">{{ g.resource }}</div>
+          <div class="matrix-row" *ngFor="let r of g.rows; trackBy: trackByKey" [class.matrix-row-sub]="r.sub">
+            <div class="matrix-key">
+              <code>{{ r.key }}</code>
+              <span class="inherit-hint" *ngIf="r.sub">
+                inherits {{ r.parentKey }} unless set<ng-container *ngIf="inherits(r)"> · currently {{ inheritedMode(r) }}</ng-container>
+              </span>
+            </div>
+            <div class="segmented" role="radiogroup" [attr.aria-label]="'Mode for ' + r.key">
+              <button *ngFor="let m of modes"
+                      type="button"
+                      class="seg-btn"
+                      [class.seg-active]="modeOf(r.key) === m"
+                      [class.seg-auto]="modeOf(r.key) === m && m === 'auto'"
+                      [class.seg-approve]="modeOf(r.key) === m && m === 'approve'"
+                      [class.seg-deny]="modeOf(r.key) === m && m === 'deny'"
+                      [class.seg-inherited]="r.sub && inherits(r) && m === 'auto'"
+                      role="radio"
+                      [attr.aria-checked]="modeOf(r.key) === m"
+                      (click)="setMode(r.key, m)">
+                {{ m === 'auto' ? 'Auto' : m === 'approve' ? 'Approve' : 'Deny' }}
+              </button>
+            </div>
+          </div>
+        </ng-container>
+        <div class="empty" *ngIf="groups.length === 0 && !loading">No gateable actions reported by the server.</div>
+        <div class="empty" *ngIf="loading">Loading…</div>
+      </div>
+    </section>
+
+    <!-- Overrides -->
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h4>Per-resource overrides</h4>
+          <p class="hint">Tighten the rule for a single pipeline or tap. An override can only make an action stricter for that resource.</p>
+        </div>
+        <button class="btn-secondary" (click)="addOverride()">Add override</button>
+      </div>
+
+      <div class="empty" *ngIf="overrides.length === 0">No overrides.</div>
+
+      <div class="override" *ngFor="let o of overrides; let i = index; trackBy: trackByIndex">
+        <div class="override-head">
+          <input type="text" class="override-resource" [(ngModel)]="o.resource" name="override-resource-{{ i }}"
+                 placeholder="pipeline:<name> or tap:<name>" spellcheck="false" />
+          <button class="icon-btn" (click)="removeOverride(i)" title="Remove override" aria-label="Remove override">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+        <div class="override-entry" *ngFor="let e of o.entries; let j = index; trackBy: trackByIndex">
+          <select [(ngModel)]="e.action" name="override-action-{{ i }}-{{ j }}" title="Action">
+            <option value="">— action —</option>
+            <option *ngFor="let k of actionKeys" [value]="k">{{ k }}</option>
+          </select>
+          <select [(ngModel)]="e.mode" name="override-mode-{{ i }}-{{ j }}" title="Mode">
+            <option value="approve">Approve</option>
+            <option value="deny">Deny</option>
+            <option value="auto">Auto</option>
+          </select>
+          <button class="icon-btn" (click)="removeOverrideEntry(o, j)" title="Remove action" aria-label="Remove action" [disabled]="o.entries.length === 1">
+            <mat-icon>remove</mat-icon>
+          </button>
+        </div>
+        <button class="link-btn" (click)="addOverrideEntry(o)">+ add action</button>
+      </div>
+    </section>
+
+    <!-- Limits -->
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h4>Limits</h4>
+          <p class="hint">Keep the approval queue bounded.</p>
+        </div>
+      </div>
+      <div class="limits">
+        <label class="limit">
+          <span>Pending approval TTL (hours)</span>
+          <input type="number" min="1" [(ngModel)]="pendingTtlHours" name="pendingTtlHours" />
+          <span class="limit-hint">Undecided requests expire after this long.</span>
+        </label>
+        <label class="limit">
+          <span>Max pending per agent</span>
+          <input type="number" min="1" [(ngModel)]="maxPendingPerActor" name="maxPendingPerActor" />
+          <span class="limit-hint">Further gated calls from that agent are refused until some are decided.</span>
+        </label>
+      </div>
+    </section>
+
+    <p class="rules">
+      <span>Agents can never change this policy or decide approvals, whatever key they hold.</span>
+      <span>Reads, queries and searches are never gated.</span>
+    </p>
+
+    <div class="footer-actions">
+      <button class="btn-primary" (click)="save()" [disabled]="saving || loading">{{ saving ? 'Saving…' : 'Save' }}</button>
+    </div>
+  </ng-container>
+</div>

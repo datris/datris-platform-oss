@@ -50,6 +50,106 @@
     </div>
   </section>
 
+  <!-- Approvals: agent actions waiting on a person (agent policy). Only
+       rendered when USE_AGENT_POLICY is on. -->
+  <section class="panel approvals-panel" id="approvals" *ngIf="policyEnabled">
+    <div class="panel-header">
+      <h3 class="panel-title">Approvals</h3>
+      <span class="panel-count" [class.panel-count-ok]="pendingApprovals.length === 0">{{ pendingApprovals.length }}</span>
+      <span class="panel-sub">agent actions waiting on a person</span>
+      <span class="approvals-spacer"></span>
+      <button class="action-btn action-btn-ghost" (click)="toggleDecided()">
+        {{ showDecided ? 'Hide decided' : 'Show decided' }}
+      </button>
+    </div>
+
+    <div class="error-banner approvals-error" *ngIf="approvalsError">{{ approvalsError }}</div>
+
+    <div class="panel-empty" *ngIf="approvalsLoaded && pendingApprovals.length === 0 && !approvalsError">
+      <span class="panel-empty-check">✓</span> Nothing waiting for approval.
+    </div>
+
+    <ul class="approval-list" *ngIf="pendingApprovals.length > 0">
+      <li class="approval-card" *ngFor="let a of pendingApprovals; trackBy: trackByApproval">
+        <div class="approval-head">
+          <span class="approval-actor-type" [class]="'approval-actor-type type-' + a.actor.type">{{ a.actor.type }}</span>
+          <span class="approval-actor">{{ approvalActor(a) }}</span>
+          <span class="approval-arrow">wants to</span>
+          <code class="approval-action">{{ a.action }}</code>
+          <span class="approval-resource" *ngIf="approvalResource(a)">on <strong>{{ approvalResource(a) }}</strong></span>
+        </div>
+        <div class="approval-reason" *ngIf="a.reason">&ldquo;{{ a.reason }}&rdquo;</div>
+        <div class="approval-times">
+          queued {{ formatRelative(a.createdAt) }} · expires {{ formatUntil(a.expiresAt) }}
+        </div>
+
+        <button class="approval-req-toggle" (click)="toggleRequest(a)">
+          {{ requestOpen.has(a.id) ? '▾' : '▸' }} Request
+        </button>
+        <div class="approval-request" *ngIf="requestOpen.has(a.id)">
+          <div class="approval-req-line">
+            <code>{{ a.request.method }} {{ a.request.path }}<ng-container *ngIf="a.request.query">?{{ a.request.query }}</ng-container></code>
+          </div>
+          <pre class="approval-req-body" *ngIf="requestBody(a)">{{ requestBody(a) }}</pre>
+        </div>
+
+        <div class="approval-outcome" *ngIf="outcomeFor(a) as o"
+             [class.approval-outcome-ok]="o.tone === 'ok'"
+             [class.approval-outcome-err]="o.tone === 'err'"
+             [class.approval-outcome-warn]="o.tone === 'warn'">
+          {{ o.text }}
+          <pre class="approval-outcome-detail" *ngIf="o.detail">{{ o.detail }}</pre>
+        </div>
+
+        <div class="approval-actions" *ngIf="auth.canWrite()">
+          <button class="action-btn approval-approve"
+                  [disabled]="isDeciding(a)"
+                  (click)="approve(a)"
+                  title="Approve — the queued request executes now">
+            <span class="action-spinner" *ngIf="isDeciding(a)"></span>
+            {{ isDeciding(a) ? 'Working…' : 'Approve' }}
+          </button>
+          <button class="action-btn action-btn-ghost"
+                  [disabled]="isDeciding(a)"
+                  (click)="openReject(a)">
+            Reject
+          </button>
+          <ng-container *ngIf="rejectOpen.has(a.id)">
+            <input type="text" class="approval-reject-note"
+                   placeholder="Note (optional)"
+                   [ngModel]="rejectNote(a)"
+                   (ngModelChange)="setRejectNote(a, $event)"
+                   name="reject-note-{{ a.id }}" />
+            <button class="action-btn approval-reject-confirm"
+                    [disabled]="isDeciding(a)"
+                    (click)="reject(a)">
+              Confirm reject
+            </button>
+          </ng-container>
+        </div>
+      </li>
+    </ul>
+
+    <div class="approval-decided" *ngIf="showDecided">
+      <div class="panel-empty" *ngIf="decidedApprovals.length === 0">No decided approvals yet.</div>
+      <table class="approval-decided-table" *ngIf="decidedApprovals.length > 0">
+        <thead>
+          <tr><th>State</th><th>Action</th><th>Resource</th><th>Actor</th><th>Decided by</th><th>Decided at</th></tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let a of decidedApprovals; trackBy: trackByApproval">
+            <td><span class="approval-state" [class]="'approval-state state-' + a.state">{{ a.state }}</span></td>
+            <td><code>{{ a.action }}</code></td>
+            <td>{{ approvalResource(a) || '—' }}</td>
+            <td>{{ approvalActor(a) }}</td>
+            <td>{{ a.decidedBy || '—' }}</td>
+            <td>{{ formatTs(a.decidedAt) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- Region 2: timeline charts -->
   <section class="timeline-row">
     <div class="chart-card">
