@@ -32,8 +32,8 @@ object PolicyActor {
             case Some(_) if agentSession => true
             case Some(rk) =>
                 rk.label != AuditActor.UiKeyLabel &&
-                    rk.label != AuditActor.Anonymous &&
-                    !rk.label.startsWith("session:")
+                rk.label != AuditActor.Anonymous &&
+                !rk.label.startsWith("session:")
             case None => agentSession
         }
     }

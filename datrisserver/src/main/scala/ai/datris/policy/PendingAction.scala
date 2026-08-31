@@ -153,7 +153,10 @@ object PendingAction {
 
     private def opt(d: Document, k: String): Option[String] = Option(d.getString(k)).filter(_.nonEmpty)
     private def optInt(d: Document, k: String): Option[Int] = Option(d.getInteger(k)).map(_.intValue())
-    private def optInstant(d: Document, k: String): Option[Instant] = opt(d, k).flatMap(s => try Some(Instant.parse(s)) catch { case _: Exception => None })
+    private def optInstant(d: Document, k: String): Option[Instant] = opt(d, k).flatMap(s =>
+        try Some(Instant.parse(s))
+        catch { case _: Exception => None }
+    )
 
     def fromDocument(d: Document): PendingAction = {
         val actorDoc = Option(d.get("actor", classOf[Document])).getOrElse(new Document())

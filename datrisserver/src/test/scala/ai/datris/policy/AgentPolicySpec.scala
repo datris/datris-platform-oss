@@ -70,7 +70,9 @@ class AgentPolicySpec extends AnyFunSuite {
     }
 
     test("toJson round-trips through fromJson") {
-        val p = policy("""{"version":3,"actions":{"tap:delete":"approve","secret:write":"deny"},"overrides":{"pipeline:orders":{"pipeline:update":"approve"}},"limits":{"pendingTtlHours":12,"maxPendingPerActor":7}}""")
+        val p = policy(
+            """{"version":3,"actions":{"tap:delete":"approve","secret:write":"deny"},"overrides":{"pipeline:orders":{"pipeline:update":"approve"}},"limits":{"pendingTtlHours":12,"maxPendingPerActor":7}}"""
+        )
         val back = policy(p.toJson.toString)
         assert(back == p)
     }

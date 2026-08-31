@@ -63,7 +63,7 @@ object PolicyRoutes {
         val resource = parts(0)
         val action = if (parts.length > 1) parts(1) else ""
         !ReadActions.contains(action) && !ReadResources.contains(resource) &&
-            resource != "policy" && resource != "approval"
+        resource != "policy" && resource != "approval"
     }
 
     /** Sorted list for the UI / GET /policy, grouped by resource. */
