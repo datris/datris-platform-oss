@@ -35,6 +35,11 @@ import scala.collection.JavaConverters._
   * key resolution works the same as for external clients (Claude Desktop / Cursor).
   */
 object MCPClient {
+
+    /** Incident id attached to every MCP call made on this thread — set by
+      * IncidentRunner around its tool executions, cleared in its finally. */
+    val incidentContext: ThreadLocal[String] = new ThreadLocal[String]()
+
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     private val mcpBaseUrl: String = Option(System.getenv("MCP_SERVER_URL"))
@@ -183,6 +188,9 @@ object MCPClient {
         // REST hop and TenantInterceptor attributes the resulting actions to
         // the user (only for the trusted `ui` key — see AuditActor).
         UserContext.get().foreach(u => httpPost.addHeader(AuditActor.HeaderOnBehalfOf, u.username))
+        // Recovery-agent calls carry the incident id so the audit log is the
+        // incident's ledger; the MCP server relays it on the REST hop.
+        Option(MCPClient.incidentContext.get()).filter(_.nonEmpty).foreach(id => httpPost.addHeader(AuditActor.HeaderIncident, id))
         httpPost.setEntity(new StringEntity(body, StandardCharsets.UTF_8))
 
         val response = httpClient.execute(httpPost)

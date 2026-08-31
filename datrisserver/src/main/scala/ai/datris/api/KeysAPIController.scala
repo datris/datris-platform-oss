@@ -471,7 +471,10 @@ object KeysAPIController {
         ("policy", Seq("read", "update"), Seq.empty),
         // Approvals: agents read/poll what they queued (owner=self); deciding
         // is a person's job — the interceptor refuses agents even with the cap.
-        ("approval", Seq("read", "decide"), Seq("owner"))
+        ("approval", Seq("read", "decide"), Seq("owner")),
+        // Recovery-agent incidents: read for dashboards/agents; abandon is a
+        // person's call (role-gated; the controller refuses agents).
+        ("incident", Seq("read", "abandon"), Seq.empty)
     )
 
     /** Capability templates the Keys-UI wizard offers as starting points.

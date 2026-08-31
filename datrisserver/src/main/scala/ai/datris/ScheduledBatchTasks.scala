@@ -49,6 +49,18 @@ class ScheduledBatchTasks {
         }
     }
 
+    @Scheduled(fixedRateString = "${schedule.incidentSweep:300000}")
+    private def incidentSweep(): Unit = {
+        try {
+            if (isAppInitialized) {
+                ai.datris.incident.IncidentSweep.run()
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("incidentSweep error: " + Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @Scheduled(fixedRateString = "${schedule.checkFileNotifierQueue}")
     private def checkFileNotifierQueue(): Unit = {
         try {

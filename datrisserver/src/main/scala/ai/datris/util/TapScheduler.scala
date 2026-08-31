@@ -156,5 +156,15 @@ object TapScheduler {
         val enriched = runLog.copy(aiSummary = fix.summary, aiDiagnosis = fix.diagnosis, aiSuggestion = fix.suggestion)
         NoSQLDbUtil.putItemJSON(env.tapLogTableName, "key", key, "value", gson.toJson(enriched), "created_at", System.currentTimeMillis(): java.lang.Long)
         logger.info("TapScheduler: fix suggestion recorded for tap: " + tap.name + " — " + fix.summary)
+
+        // Recovery agent: the ladder is exhausted and the failure is final —
+        // this is the platform's cue to open an incident (no-op unless
+        // RECOVERY_AGENT_ENABLED and the recovery mode allows it).
+        val trigger = new com.google.gson.JsonObject()
+        trigger.addProperty("runTime", tap.lastRunTime)
+        Option(tap.lastRunError).foreach(e => trigger.addProperty("error", e.take(500)))
+        trigger.addProperty("aiSummary", fix.summary)
+        trigger.addProperty("retryCount", tap.retryCount)
+        ai.datris.incident.IncidentRunner.open(ai.datris.incident.Incident.KindTapFailure, "tap", tap.name, trigger)
     }
 }

@@ -150,6 +150,112 @@
     </div>
   </section>
 
+  <!-- Incidents: problems the recovery agent detected and is working (or has
+       closed). Sibling of Approvals — only rendered when RECOVERY_AGENT is on. -->
+  <section class="panel incidents-panel" id="incidents" *ngIf="recoveryEnabled">
+    <div class="panel-header">
+      <h3 class="panel-title">Incidents</h3>
+      <span class="panel-count" [class.panel-count-ok]="openIncidents.length === 0">{{ openIncidents.length }}</span>
+      <span class="panel-sub">problems the recovery agent is working</span>
+      <span class="approvals-spacer"></span>
+      <button class="action-btn action-btn-ghost" (click)="toggleClosedIncidents()">
+        {{ showClosedIncidents ? 'Hide closed' : 'Show closed' }}
+      </button>
+    </div>
+
+    <div class="error-banner approvals-error" *ngIf="incidentsError">{{ incidentsError }}</div>
+
+    <div class="panel-empty" *ngIf="incidentsLoaded && openIncidents.length === 0 && !incidentsError">
+      <span class="panel-empty-check">✓</span> No open incidents.
+    </div>
+
+    <ul class="incident-list" *ngIf="openIncidents.length > 0">
+      <li class="incident-card" *ngFor="let i of openIncidents; trackBy: trackByIncident">
+        <div class="incident-head">
+          <span class="incident-state" [class]="'incident-state ' + incidentStateClass(i.state)">{{ incidentStateLabel(i.state) }}</span>
+          <span class="incident-kind">{{ incidentKindLabel(i) }}</span>
+          <span class="failing-kind" [class.kind-tap]="i.resourceType === 'tap'" [class.kind-pipeline]="i.resourceType === 'pipeline'">
+            {{ i.resourceType }}
+          </span>
+          <span class="incident-resource">{{ i.resource }}</span>
+          <span class="incident-classification" *ngIf="i.classification">{{ i.classification }}</span>
+        </div>
+        <div class="incident-times">
+          opened {{ formatRelative(i.openedAt) }}
+          <ng-container *ngIf="latestStep(i) as last">
+            · latest: <span class="incident-latest">{{ last.summary }}</span>
+          </ng-container>
+        </div>
+
+        <button class="approval-req-toggle" (click)="toggleTimeline(i)">
+          {{ timelineOpen.has(i.id) ? '▾' : '▸' }} Timeline ({{ i.steps.length || 0 }} steps)
+        </button>
+        <ol class="incident-steps" *ngIf="timelineOpen.has(i.id)">
+          <li class="incident-step" *ngFor="let s of i.steps; let si = index">
+            <div class="incident-step-line">
+              <span class="incident-phase" [class]="'incident-phase phase-' + s.phase">{{ s.phase }}</span>
+              <span class="incident-step-time">{{ formatRelative(s.ts) }}</span>
+              <span class="incident-step-summary">{{ s.summary }}</span>
+              <a class="incident-approval-link" *ngIf="s.approvalId" href="#approvals"
+                 (click)="scrollToApprovals($event)"
+                 title="Jump to the Approvals section — this step queued an action for a person">
+                approval {{ s.approvalId }}
+              </a>
+              <button class="incident-detail-toggle" *ngIf="s.detail" (click)="toggleStepDetail(i, si)">
+                {{ stepDetailOpen.has(stepKey(i, si)) ? 'hide detail' : 'detail' }}
+              </button>
+            </div>
+            <pre class="incident-step-detail" *ngIf="s.detail && stepDetailOpen.has(stepKey(i, si))">{{ s.detail }}</pre>
+          </li>
+        </ol>
+
+        <div class="approval-outcome approval-outcome-warn" *ngIf="incidentErrorFor(i) as e">{{ e }}</div>
+
+        <div class="approval-actions" *ngIf="auth.canWrite()">
+          <button class="action-btn action-btn-ghost"
+                  *ngIf="!abandonConfirm.has(i.id)"
+                  [disabled]="isAbandoning(i)"
+                  (click)="openAbandonConfirm(i)"
+                  title="Stop the agent working this incident and close it">
+            Abandon
+          </button>
+          <ng-container *ngIf="abandonConfirm.has(i.id)">
+            <span class="incident-confirm-text">Close this incident without further agent action?</span>
+            <button class="action-btn approval-reject-confirm"
+                    [disabled]="isAbandoning(i)"
+                    (click)="abandon(i)">
+              <span class="action-spinner" *ngIf="isAbandoning(i)"></span>
+              {{ isAbandoning(i) ? 'Working…' : 'Confirm abandon' }}
+            </button>
+            <button class="action-btn action-btn-ghost"
+                    [disabled]="isAbandoning(i)"
+                    (click)="openAbandonConfirm(i)">
+              Cancel
+            </button>
+          </ng-container>
+        </div>
+      </li>
+    </ul>
+
+    <div class="approval-decided" *ngIf="showClosedIncidents">
+      <div class="panel-empty" *ngIf="closedIncidents.length === 0">No closed incidents yet.</div>
+      <table class="approval-decided-table" *ngIf="closedIncidents.length > 0">
+        <thead>
+          <tr><th>State</th><th>Kind</th><th>Resource</th><th>Outcome</th><th>Closed at</th></tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let i of closedIncidents; trackBy: trackByIncident">
+            <td><span class="incident-state" [class]="'incident-state ' + incidentStateClass(i.state)">{{ incidentStateLabel(i.state) }}</span></td>
+            <td>{{ incidentKindLabel(i) }}</td>
+            <td>{{ i.resourceType }} {{ i.resource }}</td>
+            <td class="incident-outcome-cell">{{ i.outcome || '—' }}</td>
+            <td>{{ formatTs(i.closedAt) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- Region 2: timeline charts -->
   <section class="timeline-row">
     <div class="chart-card">

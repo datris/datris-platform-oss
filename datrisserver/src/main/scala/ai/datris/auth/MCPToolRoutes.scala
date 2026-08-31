@@ -137,7 +137,11 @@ object MCPToolRoutes {
         // Agent policy / approvals
         "get_agent_policy" -> Mapped("GET", "/api/v1/policy"),
         "list_pending_approvals" -> Mapped("GET", "/api/v1/approvals"),
-        "get_approval" -> Mapped("GET", "/api/v1/approvals/example")
+        "get_approval" -> Mapped("GET", "/api/v1/approvals/example"),
+
+        // Recovery-agent incidents (read-only; the platform opens them)
+        "list_incidents" -> Mapped("GET", "/api/v1/incidents"),
+        "get_incident" -> Mapped("GET", "/api/v1/incidents/example")
     )
 
     val allToolNames: Seq[String] = tools.map(_._1)

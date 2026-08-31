@@ -849,3 +849,179 @@
 .approval-state.state-failed { background: rgba(248, 113, 113, 0.14); color: #f87171; }
 .approval-state.state-rejected { background: rgba(248, 113, 113, 0.14); color: #f87171; }
 .approval-state.state-expired { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
+
+/* ─── Incidents (recovery agent) ─────────────────────────────────── */
+.incidents-panel .panel-header { border-bottom: none; padding-bottom: 8px; }
+
+.incident-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.incident-card {
+  background: rgba(0, 180, 255, 0.03);
+  border: 1px solid var(--border-color, rgba(99, 179, 237, 0.2));
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.incident-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary, #f0f4ff);
+}
+
+/* State chip — same geometry as .approval-state, tone by lifecycle bucket:
+   worked states amber, in-motion states blue, resolved green, failed red,
+   abandoned grey. */
+.incident-state {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.incident-state.istate-working { background: rgba(251, 191, 36, 0.14); color: #fbbf24; }
+.incident-state.istate-active  { background: rgba(0, 180, 255, 0.14); color: var(--accent-cyan, #00b4ff); }
+.incident-state.istate-ok      { background: rgba(74, 222, 128, 0.14); color: #4ade80; }
+.incident-state.istate-err     { background: rgba(248, 113, 113, 0.14); color: #f87171; }
+.incident-state.istate-muted   { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
+
+.incident-kind {
+  font-size: 12px;
+  color: var(--text-secondary, #94a3b8);
+}
+
+.incident-resource {
+  font-weight: 600;
+  color: var(--text-primary, #f0f4ff);
+}
+
+.incident-classification {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(192, 132, 252, 0.10);
+  border: 1px solid rgba(192, 132, 252, 0.25);
+  color: #c084fc;
+}
+
+.incident-times {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+}
+
+.incident-latest {
+  color: var(--text-secondary, #94a3b8);
+}
+
+/* Timeline — one line per agent step, phase chip on the left. */
+.incident-steps {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 6px 0 0 10px;
+  border-left: 1px solid var(--border-color, rgba(99, 179, 237, 0.15));
+}
+
+.incident-step {
+  padding: 3px 0;
+}
+
+.incident-step-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.incident-phase {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(99, 179, 237, 0.12);
+  color: var(--text-secondary, #94a3b8);
+  min-width: 64px;
+  text-align: center;
+}
+
+.incident-phase.phase-open     { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+.incident-phase.phase-diagnose { color: var(--accent-cyan, #00b4ff); background: rgba(0, 180, 255, 0.10); }
+.incident-phase.phase-propose  { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
+.incident-phase.phase-gate     { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+.incident-phase.phase-execute  { color: var(--accent-cyan, #00b4ff); background: rgba(0, 180, 255, 0.10); }
+.incident-phase.phase-verify   { color: var(--accent-cyan, #00b4ff); background: rgba(0, 180, 255, 0.10); }
+.incident-phase.phase-close    { color: #4ade80; background: rgba(74, 222, 128, 0.12); }
+
+.incident-step-time {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+
+.incident-step-summary {
+  color: var(--text-primary, #f0f4ff);
+  word-break: break-word;
+}
+
+.incident-approval-link {
+  font-size: 11px;
+  color: #fbbf24;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(251, 191, 36, 0.5);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.incident-approval-link:hover { color: #fde68a; }
+
+.incident-detail-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--text-secondary, #94a3b8);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.incident-detail-toggle:hover { color: var(--text-primary, #f0f4ff); }
+
+.incident-step-detail {
+  margin: 4px 0 2px;
+  padding: 8px 10px;
+  background: var(--bg-primary, #0a0e1a);
+  border: 1px solid var(--border-color, rgba(99, 179, 237, 0.15));
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary, #94a3b8);
+}
+
+.incident-confirm-text {
+  font-size: 12px;
+  color: #fbbf24;
+}
+
+.incident-outcome-cell {
+  max-width: 380px;
+  word-break: break-word;
+}

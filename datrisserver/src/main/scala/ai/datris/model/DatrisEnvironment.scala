@@ -89,6 +89,7 @@ object DatrisEnvironment {
             auditLogTableName = env + "-audit-log",
             agentPolicyTableName = env + "-agent-policy",
             pendingActionTableName = env + "-pending-action",
+            incidentTableName = env + "-incident",
             postgresDatabase = env
         )
     }
@@ -247,7 +248,13 @@ case class DatrisEnvironment(
     // default; with it on and no policy saved, everything is still `auto`.
     useAgentPolicy: Boolean = false,
     agentPolicyTableName: String = null,
-    pendingActionTableName: String = null
+    pendingActionTableName: String = null,
+    // Recovery agent: platform-opened incidents with an autonomous
+    // diagnose→propose→gate→execute→verify loop (see ai.datris.incident).
+    // Off by default; requires useAgentPolicy for its approval flow.
+    recoveryAgentEnabled: Boolean = false,
+    incidentTableName: String = null,
+    incidentWebhookUrl: String = null
 ) {
 
     /** Append-only definition-version collections. Derived from the live table

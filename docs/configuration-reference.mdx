@@ -87,6 +87,8 @@ Two independent flags control access. Set them together — see [the supported m
 | `AUDIT_LOG_RETENTION_DAYS` | `90` | Days to keep audit entries in the config store; `0` keeps them forever. Maps to `auditLog.retentionDays` |
 | `AUDIT_LOG_READS` | `false` | Also record reads — queries, searches, listings, metadata. Off by default because they dwarf the write trail. Maps to `auditLog.logReads` |
 | `USE_AGENT_POLICY` | `false` | Per-action auto / approve / deny for agent-initiated changes, with a human approval queue under Activity → Approvals. With it on and no rules set, nothing changes. Restart to change. See [Agent Policy](/agent-policy) |
+| `RECOVERY_AGENT_ENABLED` | `false` | The platform opens, diagnoses and — within the agent policy's recovery mode — repairs incidents for failed, stale or anomalous data flows. Needs `USE_AGENT_POLICY=true`. See [Incidents](/incidents) |
+| `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional URL receiving a JSON POST on incident open / awaiting-approval / resolved / failed |
 
 One further audit setting lives only in `application.yaml`: `auditLog.emitLogLine` (default `true`; mirror each entry to the `ai.datris.audit` logger for SIEM pickup).
 
@@ -351,6 +353,7 @@ The following buckets are created automatically by the `minio-init` container:
 | `{environment}-audit-log` | Audit entries (when `USE_AUDIT_LOG=true`); TTL-expired per `AUDIT_LOG_RETENTION_DAYS` |
 | `{environment}-agent-policy` | The [agent policy](/agent-policy) document (when `USE_AGENT_POLICY=true`) |
 | `{environment}-pending-action` | Agent actions queued for approval; TTL-expired at their own expiry |
+| `{environment}-incident` | Recovery-agent incidents (when `RECOVERY_AGENT_ENABLED=true`) — the operational history behind Activity → Incidents |
 
 ## Container Environment Variables
 
@@ -369,3 +372,5 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `AUDIT_LOG_RETENTION_DAYS` | `90` | Days to keep audit entries; `0` = forever. |
 | `AUDIT_LOG_READS` | `false` | Also record reads (queries, searches, listings). |
 | `USE_AGENT_POLICY` | `false` | Enable the [Agent Policy](/agent-policy) — auto / approve / deny per agent action, with a human approval queue. |
+| `RECOVERY_AGENT_ENABLED` | `false` | Enable the [recovery agent](/incidents) — platform-opened incidents with a bounded repair loop. |
+| `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional JSON webhook for incident lifecycle events. |

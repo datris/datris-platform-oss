@@ -11,6 +11,7 @@ import { OpsChatContextService } from '../ops-chat/ops-chat-context.service';
 import { OpsActionBus } from '../ops-chat/ops-action-bus.service';
 import { OpsAssistantStateService } from '../ops-chat/ops-assistant-state.service';
 import { Approval, ApprovalsService } from '../approvals.service';
+import { ActivitySignals, Incident, IncidentsService } from '../incidents.service';
 
 type Window = '24h' | '7d' | '30d';
 
@@ -130,6 +131,33 @@ export class ActivityComponent implements OnInit, OnDestroy {
   decisionOutcome = new Map<string, { tone: 'ok' | 'err' | 'warn'; text: string; detail?: string }>();
   private approvalsScrollPending = false;
 
+  // ── Incidents (recovery agent) ────────────────────────────────────────────
+  // Only rendered when RECOVERY_AGENT is on. Open incidents are problems the
+  // agent detected and is working (or waiting on a person for); closed ones
+  // are shown behind a toggle. Refreshed on the same 30s cycle as the rest of
+  // the dashboard and immediately after an abandon made here.
+  recoveryEnabled = false;
+  openIncidents: Incident[] = [];
+  closedIncidents: Incident[] = [];
+  showClosedIncidents = false;
+  incidentsError = '';
+  incidentsLoaded = false;
+  /** Incident ids whose timeline is expanded. */
+  timelineOpen = new Set<string>();
+  /** "incidentId:stepIndex" keys whose step detail is expanded. */
+  stepDetailOpen = new Set<string>();
+  /** Incident ids with the inline abandon confirmation showing. */
+  abandonConfirm = new Set<string>();
+  /** Incident ids with an abandon call in flight. */
+  abandoning = new Set<string>();
+  /** Per-incident error banner after a failed abandon from this page. */
+  incidentActionError = new Map<string, string>();
+
+  // Latest server-side signals response (null until the first successful
+  // fetch, or when the endpoint errors — client-computed values are the
+  // fallback so the dashboard never breaks).
+  private serverSignals: ActivitySignals | null = null;
+
   constructor(
     private tapService: TapService,
     private pipelineService: PipelineService,
@@ -140,6 +168,7 @@ export class ActivityComponent implements OnInit, OnDestroy {
     private opsActionBus: OpsActionBus,
     private opsState: OpsAssistantStateService,
     private approvalsService: ApprovalsService,
+    private incidentsService: IncidentsService,
     private route: ActivatedRoute
   ) {}
 
@@ -151,6 +180,10 @@ export class ActivityComponent implements OnInit, OnDestroy {
     this.approvalsService.policyEnabled().subscribe(on => {
       this.policyEnabled = on;
       if (on) this.loadApprovals();
+    });
+    this.incidentsService.recoveryEnabled().subscribe(on => {
+      this.recoveryEnabled = on;
+      if (on) this.loadIncidents();
     });
     this.loadData();
     this.refreshTimer = setInterval(() => this.loadData(true), this.REFRESH_MS);
@@ -197,6 +230,7 @@ export class ActivityComponent implements OnInit, OnDestroy {
       this.loadError = '';
     }
     if (this.policyEnabled) this.loadApprovals();
+    if (this.recoveryEnabled) this.loadIncidents();
 
     try {
       // Pull tap logs covering both the current window and the prior window so the
@@ -204,12 +238,17 @@ export class ActivityComponent implements OnInit, OnDestroy {
       // the server — single round trip regardless of tap count.
       const sinceMs = Date.now() - 2 * this.windowMs();
 
-      const { taps, pipelines, jobsFirstPage, tapLogs } = await firstValueFrom(forkJoin({
+      const { taps, pipelines, jobsFirstPage, tapLogs, signals } = await firstValueFrom(forkJoin({
         taps: this.tapService.getTaps().pipe(catchError(() => of([] as any[]))),
         pipelines: this.pipelineService.getPipelines().pipe(catchError(() => of([] as any[]))),
         jobsFirstPage: this.pipelineStatusService.getPipelineStatus(1).pipe(catchError(() => of([] as PipelineStatus[]))),
-        tapLogs: this.tapService.getAllTapLogsSince(sinceMs).pipe(catchError(() => of([] as any[])))
+        tapLogs: this.tapService.getAllTapLogsSince(sinceMs).pipe(catchError(() => of([] as any[]))),
+        // Server-side signals (same detection the recovery agent runs). null on
+        // error — the client-computed values below are the fallback so the
+        // dashboard never breaks when the endpoint is unavailable.
+        signals: this.incidentsService.signals(this.window).pipe(catchError(() => of(null as ActivitySignals | null)))
       }));
+      this.serverSignals = signals;
 
       // Page through pipeline status until we cover the prior window too (for the
       // "vs prior" delta), capped to avoid runaway requests on chatty tenants.
@@ -227,7 +266,20 @@ export class ActivityComponent implements OnInit, OnDestroy {
       this.computeTiles(jobs, tapFailures);
       this.computeFailing(taps || [], pipelines || [], jobs, tapFailures);
       this.computeSuccessful(pipelines || [], jobs);
-      this.computeStale(taps || []);
+      // Stale-taps panel prefers the server's detection (it's what the
+      // recovery agent acts on, so panel and agent agree); the client-side
+      // heuristic remains the fallback when the endpoint errored.
+      if (signals?.staleTaps) {
+        this.stale = signals.staleTaps.map(s => ({
+          name: s.name,
+          catalog: s.catalog || null,
+          cadenceLabel: s.cadenceLabel,
+          cadenceMs: s.cadenceMs,
+          lastRunIso: s.lastRunIso || null
+        }));
+      } else {
+        this.computeStale(taps || []);
+      }
       this.computeCharts(jobs, tapFailures);
       this.computePipelineVolumes(pipelines || [], jobs);
       // Fresh data landed — chat-triggered optimistic spinners can clear,
@@ -430,13 +482,211 @@ export class ActivityComponent implements OnInit, OnDestroy {
     return a.id;
   }
 
+  // ── Incidents (recovery agent) ────────────────────────────────────────────
+
+  loadIncidents(): void {
+    // state=open covers every active state (open … verifying).
+    this.incidentsService.list('open', 100).subscribe({
+      next: (page) => {
+        this.recoveryEnabled = page.enabled !== false;
+        this.openIncidents = page.incidents || [];
+        this.incidentsLoaded = true;
+        this.incidentsError = '';
+        // Drop stale per-card state for incidents that left the open list.
+        const ids = new Set(this.openIncidents.map(i => i.id));
+        for (const id of Array.from(this.timelineOpen)) if (!ids.has(id)) this.timelineOpen.delete(id);
+        for (const id of Array.from(this.abandonConfirm)) if (!ids.has(id)) this.abandonConfirm.delete(id);
+        for (const key of Array.from(this.stepDetailOpen)) {
+          if (!ids.has(key.slice(0, key.lastIndexOf(':')))) this.stepDetailOpen.delete(key);
+        }
+      },
+      error: (err) => {
+        this.incidentsLoaded = true;
+        this.incidentsError = err?.error?.error || 'Failed to load incidents';
+      }
+    });
+    if (this.showClosedIncidents) this.loadClosedIncidents();
+  }
+
+  private loadClosedIncidents(): void {
+    // The server lists newest first; ask for enough to fill 15 after
+    // filtering out whatever is still active.
+    this.incidentsService.list(undefined, 60).subscribe({
+      next: (page) => {
+        this.closedIncidents = (page.incidents || [])
+          .filter(i => this.isClosedIncident(i))
+          .slice(0, 15);
+      },
+      error: () => { /* keep the last list; the open fetch reports errors */ }
+    });
+  }
+
+  toggleClosedIncidents(): void {
+    this.showClosedIncidents = !this.showClosedIncidents;
+    if (this.showClosedIncidents) this.loadClosedIncidents();
+  }
+
+  isClosedIncident(i: Incident): boolean {
+    return i.state === 'resolved' || i.state === 'failed' || i.state === 'abandoned';
+  }
+
+  incidentKindLabel(i: Incident): string {
+    switch (i.kind) {
+      case 'tap_failure': return 'tap failure';
+      case 'pipeline_failure': return 'pipeline failure';
+      case 'stale': return 'stale';
+      case 'volume': return 'volume';
+      default: return i.kind;
+    }
+  }
+
+  /** Tone bucket for the state chip: worked states amber, in-motion states
+   *  blue, resolved green, failed red, abandoned grey. */
+  incidentStateClass(state: string): string {
+    switch (state) {
+      case 'executing':
+      case 'verifying': return 'istate-active';
+      case 'resolved': return 'istate-ok';
+      case 'failed': return 'istate-err';
+      case 'abandoned': return 'istate-muted';
+      default: return 'istate-working';   // open / diagnosing / proposed / awaiting_approval
+    }
+  }
+
+  /** Human label for the chip — underscores read poorly in a 10px chip. */
+  incidentStateLabel(state: string): string {
+    return state.replace(/_/g, ' ');
+  }
+
+  latestStep(i: Incident): { summary: string; ts: string | null } | null {
+    if (!i.steps || i.steps.length === 0) return null;
+    const s = i.steps[i.steps.length - 1];
+    return { summary: s.summary, ts: s.ts || null };
+  }
+
+  toggleTimeline(i: Incident): void {
+    if (this.timelineOpen.has(i.id)) this.timelineOpen.delete(i.id);
+    else this.timelineOpen.add(i.id);
+  }
+
+  stepKey(i: Incident, idx: number): string {
+    return i.id + ':' + idx;
+  }
+
+  toggleStepDetail(i: Incident, idx: number): void {
+    const key = this.stepKey(i, idx);
+    if (this.stepDetailOpen.has(key)) this.stepDetailOpen.delete(key);
+    else this.stepDetailOpen.add(key);
+  }
+
+  /** "approval <id>" link on a gate step — jumps to the Approvals section,
+   *  which shows the queued action the incident is waiting on. */
+  scrollToApprovals(event: Event): void {
+    event.preventDefault();
+    event.stopPropagation();
+    document.getElementById('approvals')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  openAbandonConfirm(i: Incident): void {
+    if (this.abandonConfirm.has(i.id)) this.abandonConfirm.delete(i.id);
+    else this.abandonConfirm.add(i.id);
+  }
+
+  isAbandoning(i: Incident): boolean {
+    return this.abandoning.has(i.id);
+  }
+
+  incidentErrorFor(i: Incident): string | undefined {
+    return this.incidentActionError.get(i.id);
+  }
+
+  abandon(i: Incident): void {
+    if (this.abandoning.has(i.id)) return;
+    this.abandoning.add(i.id);
+    this.incidentActionError.delete(i.id);
+    this.incidentsService.abandon(i.id).subscribe({
+      next: () => {
+        this.abandoning.delete(i.id);
+        this.abandonConfirm.delete(i.id);
+        this.loadIncidents();
+      },
+      error: (err) => {
+        this.abandoning.delete(i.id);
+        this.abandonConfirm.delete(i.id);
+        const body = err?.error || {};
+        if (err?.status === 409) {
+          // Already closed (the agent finished, or someone else abandoned it)
+          // — the refresh below moves the card out of the open list.
+          this.incidentActionError.set(i.id, body.message || body.error || 'Already closed.');
+        } else {
+          this.incidentActionError.set(i.id, body.error || body.message || 'Abandon failed.');
+        }
+        this.loadIncidents();
+      }
+    });
+  }
+
+  trackByIncident(_i: number, inc: Incident): string {
+    return inc.id;
+  }
+
   /** Push a compact dashboard snapshot to the chat panel's context service.
    *  Top-N caps keep the system prompt bounded — the chat doesn't need
-   *  every row, just enough to ground its answers in the current state. */
+   *  every row, just enough to ground its answers in the current state.
+   *
+   *  Stale taps and volume anomalies come from the server's signals endpoint
+   *  when it responded (same detection the recovery agent runs, so the chat
+   *  and the agent agree on what's stale/anomalous); the client-computed
+   *  values are the fallback when it errored. failingItems stays
+   *  client-computed — it feeds the Failures panel's row actions too. */
   private publishOpsContext(): void {
     const TOP_FAILING = 20;
     const TOP_STALE = 10;
     const TOP_VOLUMES = 15;
+    const signals = this.serverSignals;
+
+    const staleTaps = signals?.staleTaps
+      ? signals.staleTaps.slice(0, TOP_STALE).map(s => ({
+          name: s.name,
+          catalog: s.catalog || null,
+          cadenceLabel: s.cadenceLabel,
+          lastRunIso: s.lastRunIso || null
+        }))
+      : this.stale.slice(0, TOP_STALE).map(s => ({
+          name: s.name,
+          catalog: s.catalog,
+          cadenceLabel: s.cadenceLabel,
+          lastRunIso: s.lastRunIso
+        }));
+
+    // Server path: the signals endpoint already filters to anomalies, so the
+    // chat sees only the volumes worth reasoning about. Client fallback:
+    // sort by largest |deltaPct| first so anomalies — over- and under-volume
+    // — come before the long tail of pipelines running at their usual rate.
+    const pipelineVolumes = signals?.anomalies
+      ? signals.anomalies.slice(0, TOP_VOLUMES).map(v => ({
+          name: v.name,
+          catalog: v.catalog || null,
+          current: v.current,
+          prior: v.prior,
+          deltaPct: v.deltaPct == null ? null : v.deltaPct
+        }))
+      : this.pipelineVolumes
+          .slice()
+          .sort((a, b) => {
+            const da = a.deltaPct == null ? -1 : Math.abs(a.deltaPct);
+            const db = b.deltaPct == null ? -1 : Math.abs(b.deltaPct);
+            return db - da;
+          })
+          .slice(0, TOP_VOLUMES)
+          .map(v => ({
+            name: v.name,
+            catalog: v.catalog,
+            current: v.current,
+            prior: v.prior,
+            deltaPct: v.deltaPct
+          }));
+
     this.opsContext.publish({
       window: this.window,
       failingItems: this.failing.slice(0, TOP_FAILING).map(f => ({
@@ -450,30 +700,8 @@ export class ActivityComponent implements OnInit, OnDestroy {
         relatedTapName: f.relatedTapName,
         pipelineToken: f.pipelineToken
       })),
-      staleTaps: this.stale.slice(0, TOP_STALE).map(s => ({
-        name: s.name,
-        catalog: s.catalog,
-        cadenceLabel: s.cadenceLabel,
-        lastRunIso: s.lastRunIso
-      })),
-      // Volumes sorted by largest |deltaPct| first so the chat sees
-      // anomalies — over- and under-volume — before the long tail of
-      // pipelines running at their usual rate.
-      pipelineVolumes: this.pipelineVolumes
-        .slice()
-        .sort((a, b) => {
-          const da = a.deltaPct == null ? -1 : Math.abs(a.deltaPct);
-          const db = b.deltaPct == null ? -1 : Math.abs(b.deltaPct);
-          return db - da;
-        })
-        .slice(0, TOP_VOLUMES)
-        .map(v => ({
-          name: v.name,
-          catalog: v.catalog,
-          current: v.current,
-          prior: v.prior,
-          deltaPct: v.deltaPct
-        }))
+      staleTaps,
+      pipelineVolumes
     });
   }
 

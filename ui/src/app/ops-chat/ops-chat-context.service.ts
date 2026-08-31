@@ -7,7 +7,14 @@ import { Injectable } from '@angular/core';
 export interface OpsChatContext {
   window: '24h' | '7d' | '30d';
   failingItems: OpsChatFailing[];
+  /** Sourced from the server's GET /api/v1/activity/signals staleTaps (the
+   *  same detection the recovery agent runs) when the endpoint responds;
+   *  Activity's client-side heuristic is the fallback so the dashboard —
+   *  and this snapshot — never break when it errors. */
   staleTaps: OpsChatStale[];
+  /** Sourced from the signals endpoint's `anomalies` (server-filtered to
+   *  volumes worth reasoning about) when it responds; falls back to the
+   *  client-computed per-pipeline volumes sorted by |deltaPct|. */
   pipelineVolumes: OpsChatVolume[];
 }
 

@@ -111,6 +111,7 @@
               "api-keys",
               "audit-log",
               "agent-policy",
+              "incidents",
               "monitoring",
               "notifications"
             ]

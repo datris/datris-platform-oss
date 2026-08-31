@@ -62,6 +62,10 @@ _session_id: contextvars.ContextVar[str] = contextvars.ContextVar("_session_id",
 # to the platform as X-Datris-Reason (audit metadata + approval cards).
 _call_reason: contextvars.ContextVar[str] = contextvars.ContextVar("_call_reason", default="")
 
+# Incident id forwarded by the platform's recovery agent (its MCP calls carry
+# X-Datris-Incident) so the REST hop lands in the audit log under the incident.
+_session_incident: contextvars.ContextVar[str] = contextvars.ContextVar("_session_incident", default="")
+
 # Agent-monitor: in-process activity buffer + session tracker.
 # Ephemeral; cleared on restart. Safe to read via a plain lock.
 _activity_buffer: deque = deque(maxlen=200)
@@ -493,6 +497,9 @@ def _identity_headers():
     reason = _call_reason.get()
     if reason:
         h["X-Datris-Reason"] = reason[:500]
+    incident = _session_incident.get()
+    if incident:
+        h["X-Datris-Incident"] = incident[:64]
     return h
 
 
@@ -2803,6 +2810,38 @@ def _base_tools():
                 "required": ["approval_id"],
             }
         ),
+        # --- Recovery-agent incidents (read-only; the platform opens them) ---
+        Tool(
+            name="list_incidents",
+            description="List the platform's recovery-agent incidents, newest first. An incident is opened by the platform itself when a scheduled tap finally fails, a pipeline job errors, a tap goes stale, or a pipeline's volume swings; the recovery agent diagnoses it and — within the agent policy's recovery mode — repairs and verifies it. Each entry carries kind, resource, state (open | diagnosing | proposed | awaiting_approval | executing | verifying | resolved | failed | abandoned), classification, and a step-by-step narrative. Use state=open for what is being worked right now. Returns {enabled:false, incidents:[]} when the recovery agent is off.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "description": "Filter: open (any active state) or a specific state name. Omit for all.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum incidents to return (default 50).",
+                    },
+                },
+            }
+        ),
+        Tool(
+            name="get_incident",
+            description="Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it is waiting on, and outcome. When the operator asks about a failure the platform is already working, explain THIS record instead of re-diagnosing from scratch.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "incident_id": {
+                        "type": "string",
+                        "description": "The incident id (inc_…).",
+                    },
+                },
+                "required": ["incident_id"],
+            }
+        ),
     ]
 
 
@@ -3801,6 +3840,20 @@ def _dispatch(name: str, args: dict) -> str:
             return json.dumps({"error": "approval_id is required"})
         return _call("get", f"/api/v1/approvals/{approval_id}")
 
+    elif name == "list_incidents":
+        params = {}
+        if args.get("state"):
+            params["state"] = args["state"]
+        if args.get("limit"):
+            params["limit"] = args["limit"]
+        return _call("get", "/api/v1/incidents", params=params)
+
+    elif name == "get_incident":
+        incident_id = str(args.get("incident_id", "")).strip()
+        if not incident_id:
+            return json.dumps({"error": "incident_id is required"})
+        return _call("get", f"/api/v1/incidents/{incident_id}")
+
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -3911,6 +3964,7 @@ async def run_sse(port: int):
                     return
                 _session_api_key.set(api_key)
                 _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
+                _session_incident.set(_extract_header(scope, b"x-datris-incident"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
@@ -3946,6 +4000,7 @@ async def run_sse(port: int):
                     return
                 _session_api_key.set(api_key)
                 _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
+                _session_incident.set(_extract_header(scope, b"x-datris-incident"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)
@@ -4001,6 +4056,7 @@ async def run_streamable_http(port: int):
                     return
                 _session_api_key.set(api_key)
                 _session_on_behalf_of.set(_extract_header(scope, b"x-datris-on-behalf-of"))
+                _session_incident.set(_extract_header(scope, b"x-datris-incident"))
                 sess_id = uuid.uuid4().hex
                 _session_id.set(sess_id)
                 _activity_session_open(sess_id, api_key)

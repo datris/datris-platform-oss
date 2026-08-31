@@ -76,6 +76,13 @@ class AuditInterceptor extends HandlerInterceptor {
                     if (!o.has("reason")) o.addProperty("reason", r.take(500))
                     o
                 }.orElse(withSession)
+                // Incident id from the recovery agent's calls — the audit log is
+                // the incident's ledger, joined on this field.
+                val withIncident = Option(request.getHeader(AuditActor.HeaderIncident)).map(_.trim).filter(_.nonEmpty).map { iid =>
+                    val o = withReason.getOrElse(new JsonObject())
+                    if (!o.has("incidentId")) o.addProperty("incidentId", iid.take(64))
+                    o
+                }.orElse(withReason)
 
                 AuditLog.submit(AuditEntry(
                     ts = Instant.now(),
@@ -89,7 +96,7 @@ class AuditInterceptor extends HandlerInterceptor {
                     durationMs = durationMs,
                     errorMessage = errorMessage,
                     request = Some(AuditLog.requestInfo(request)),
-                    metadata = withReason
+                    metadata = withIncident
                 ))
             }
         } catch {

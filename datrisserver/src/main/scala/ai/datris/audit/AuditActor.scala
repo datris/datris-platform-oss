@@ -25,6 +25,10 @@ object AuditActor {
       * Agent Monitor's activity buffer while that buffer still holds it. */
     val HeaderAgentSession = "X-Datris-Agent-Session"
 
+    /** Incident id the recovery agent attaches to every call it makes while
+      * working an incident — joins audit entries to the incident record. */
+    val HeaderIncident = "X-Datris-Incident"
+
     /** Free-text intent an agent may attach to a mutating call (the MCP
       * tools' optional `reason` argument). Stored in audit metadata and on
       * pending approvals; never interpreted. */

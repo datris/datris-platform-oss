@@ -33,6 +33,7 @@ schedule:
   findJobsToStart: "5000"
   checkDatabaseSourceQueries: "30000"
   checkTapSchedules: "30000"
+  incidentSweep: "300000"  # recovery-agent sweep: resume approvals, stale/volume signals
 tapScriptTimeoutSeconds: "300"
 dateFormat: "yyyy-MM-dd HH:mm:ss z"
 dateTimezone: "America/New_York"
@@ -48,6 +49,15 @@ auditLog:
   retentionDays: 90       # Mongo TTL on entries; 0 = never expire
   logReads: false         # also record query/search/metadata/GET routes (high volume)
   emitLogLine: true       # mirror each entry to logger ai.datris.audit (JSON under the production profile)
+# Recovery agent: the platform opens incidents for final tap failures, failed
+# pipeline jobs, stale scheduled taps and volume anomalies, diagnoses them with
+# the Ops assistant's judgment, and — within the agent policy's recovery mode
+# and limits — repairs and verifies them. Requires useAgentPolicy for its
+# approval flow. Env vars: RECOVERY_AGENT_ENABLED, INCIDENT_WEBHOOK_URL.
+recoveryAgent:
+  enabled: "false"
+  webhookUrl: ""          # optional JSON POST on open / awaiting_approval / resolved / failed
+
 # Agent policy: per-action auto / approve / deny for agent-initiated requests,
 # with a human approval queue (Configuration → Agent Policy, Activity →
 # Approvals). Off by default; with it on and no policy saved, nothing changes
