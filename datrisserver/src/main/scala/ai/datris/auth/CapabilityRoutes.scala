@@ -155,8 +155,24 @@ object CapabilityRoutes {
         // Audit log — admin surface. Full-access keys hold it implicitly; a
         // scoped key needs `audit:read` explicitly (see the Keys catalog).
         Route("GET", "/api/v1/audit-log", "audit", "read"),
-        Route("GET", "/api/v1/audit-log/**", "audit", "read")
+        Route("GET", "/api/v1/audit-log/**", "audit", "read"),
+
+        // Agent policy — readable by anyone (agents consult it before acting);
+        // writable only by an admin, and never by an agent (PolicyInterceptor
+        // hard rule, independent of capability).
+        Route("GET", "/api/v1/policy", "policy", "read"),
+        Route("PUT", "/api/v1/policy", "policy", "update"),
+
+        // Approvals — agents list/poll their own; people decide.
+        Route("GET", "/api/v1/approvals", "approval", "read"),
+        Route("GET", "/api/v1/approvals/**", "approval", "read"),
+        Route("POST", "/api/v1/approvals/*/approve", "approval", "decide"),
+        Route("POST", "/api/v1/approvals/*/reject", "approval", "decide")
     )
+
+    /** Every `resource:action` pair the table grants — the vocabulary the
+      * agent policy is allowed to use. */
+    lazy val allActionKeys: Set[String] = routes.map(r => r.resource + ":" + r.action).toSet
 
     def lookup(method: String, path: String): RouteCheck = {
         if (skipPatterns.exists(p => matcher.`match`(p, path))) return RouteCheck.Skip

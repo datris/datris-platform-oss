@@ -132,7 +132,12 @@ object MCPToolRoutes {
         "restore_pipeline_version" -> Mapped("POST", "/api/v1/pipeline/version/restore"),
 
         // Agent workflow helper — no REST call at all
-        "wait_seconds" -> Local
+        "wait_seconds" -> Local,
+
+        // Agent policy / approvals
+        "get_agent_policy" -> Mapped("GET", "/api/v1/policy"),
+        "list_pending_approvals" -> Mapped("GET", "/api/v1/approvals"),
+        "get_approval" -> Mapped("GET", "/api/v1/approvals/example")
     )
 
     val allToolNames: Seq[String] = tools.map(_._1)

@@ -36,6 +36,7 @@ import { ChangePasswordModalComponent } from './change-password-modal/change-pas
 import { UsersComponent } from './configuration/users/users.component';
 import { KeysComponent } from './configuration/keys/keys.component';
 import { AuditLogComponent } from './configuration/audit-log/audit-log.component';
+import { AgentPolicyComponent } from './configuration/agent-policy/agent-policy.component';
 import { VersionHistoryComponent } from './version-history/version-history.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
@@ -81,6 +82,7 @@ import { NgxEchartsModule } from 'ngx-echarts';
     UsersComponent,
     KeysComponent,
     AuditLogComponent,
+    AgentPolicyComponent,
     VersionHistoryComponent
   ],
   imports: [

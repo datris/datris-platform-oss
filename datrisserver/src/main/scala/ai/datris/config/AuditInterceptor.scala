@@ -69,6 +69,13 @@ class AuditInterceptor extends HandlerInterceptor {
                     o.addProperty("agentSession", sid.take(64))
                     o
                 }.orElse(metadata)
+                // An agent's stated intent for a mutating call (optional `reason`
+                // argument on the MCP tools). Recorded verbatim, never acted on.
+                val withReason = Option(request.getHeader(AuditActor.HeaderReason)).map(_.trim).filter(_.nonEmpty).map { r =>
+                    val o = withSession.getOrElse(new JsonObject())
+                    if (!o.has("reason")) o.addProperty("reason", r.take(500))
+                    o
+                }.orElse(withSession)
 
                 AuditLog.submit(AuditEntry(
                     ts = Instant.now(),
@@ -82,7 +89,7 @@ class AuditInterceptor extends HandlerInterceptor {
                     durationMs = durationMs,
                     errorMessage = errorMessage,
                     request = Some(AuditLog.requestInfo(request)),
-                    metadata = withSession
+                    metadata = withReason
                 ))
             }
         } catch {

@@ -1,8 +1,9 @@
 import { Component, OnInit, OnDestroy, ViewChild, ElementRef, AfterViewInit, AfterViewChecked, NgZone } from '@angular/core';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { AssistantStateService, AssistantTurn, ToolCard, TextSegment } from './assistant-state.service';
 import { SecretsService } from '../secrets.service';
 import { TapService } from '../tap.service';
+import { ApprovalsService, PolicyToolOutcome } from '../approvals.service';
 
 interface StarterPrompt {
   label: string;
@@ -48,6 +49,7 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
     private secretsService: SecretsService,
     private tapService: TapService,
     private route: ActivatedRoute,
+    private router: Router,
     private zone: NgZone
   ) { }
 
@@ -364,6 +366,24 @@ export class AssistantComponent implements OnInit, OnDestroy, AfterViewInit, Aft
       return { icon: '🗑',  label: 'Deleting ' + (arg('name') || name.substring('delete_'.length)) };
     }
     return { icon: '▸', label: 'Called ' + name };
+  }
+
+  /** Agent-policy outcome carried in a tool result: the call is queued for a
+   *  person ("pending_approval") or was refused ("policy_denied"). Parsed
+   *  once per result string and memoized — this runs from the template. */
+  private policyOutcomes = new Map<string, PolicyToolOutcome | null>();
+
+  policyOutcome(card: ToolCard): PolicyToolOutcome | null {
+    if (card.status === 'running' || !card.result) return null;
+    const key = card.id + '\u0000' + card.result;
+    if (!this.policyOutcomes.has(key)) {
+      this.policyOutcomes.set(key, ApprovalsService.parseToolOutcome(card.result));
+    }
+    return this.policyOutcomes.get(key) || null;
+  }
+
+  openApprovals(): void {
+    this.router.navigate(['/ops', 'activity'], { fragment: 'approvals' });
   }
 
   toolStatusIcon(card: ToolCard): string {

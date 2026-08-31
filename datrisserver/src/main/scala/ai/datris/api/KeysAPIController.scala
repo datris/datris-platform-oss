@@ -465,7 +465,13 @@ object KeysAPIController {
         ("metadata", Seq("read"), Seq.empty),
         ("config", Seq("read", "write"), Seq.empty),
         ("mcp", Seq("tool"), Seq.empty),
-        ("audit", Seq("read"), Seq.empty)
+        ("audit", Seq("read"), Seq.empty),
+        // Agent policy: any key may read it; `policy:update` exists for the UI's
+        // own key — PolicyInterceptor refuses it from agents regardless.
+        ("policy", Seq("read", "update"), Seq.empty),
+        // Approvals: agents read/poll what they queued (owner=self); deciding
+        // is a person's job — the interceptor refuses agents even with the cap.
+        ("approval", Seq("read", "decide"), Seq("owner"))
     )
 
     /** Capability templates the Keys-UI wizard offers as starting points.

@@ -87,6 +87,8 @@ object DatrisEnvironment {
             userTableName = env + "-user",
             userSessionTableName = env + "-user-session",
             auditLogTableName = env + "-audit-log",
+            agentPolicyTableName = env + "-agent-policy",
+            pendingActionTableName = env + "-pending-action",
             postgresDatabase = env
         )
     }
@@ -239,7 +241,13 @@ case class DatrisEnvironment(
     auditLogTableName: String = null,
     auditLogRetentionDays: Int = 90, // 0 = never expire
     auditLogLogReads: Boolean = false, // query/search/metadata/GET routes
-    auditLogEmitLogLine: Boolean = true
+    auditLogEmitLogLine: Boolean = true,
+    // Agent policy: auto / approve / deny per action for agent-initiated
+    // requests, with a human approval queue (see ai.datris.policy). Off by
+    // default; with it on and no policy saved, everything is still `auto`.
+    useAgentPolicy: Boolean = false,
+    agentPolicyTableName: String = null,
+    pendingActionTableName: String = null
 ) {
 
     /** Append-only definition-version collections. Derived from the live table

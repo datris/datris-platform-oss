@@ -110,6 +110,7 @@
               "user-auth",
               "api-keys",
               "audit-log",
+              "agent-policy",
               "monitoring",
               "notifications"
             ]

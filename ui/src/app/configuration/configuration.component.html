@@ -20,58 +20,18 @@
     <button class="sub-tab" [class.sub-tab-active]="activeTab === 'audit-log'"
             *ngIf="canSeeAuditLog"
             (click)="activeTab = 'audit-log'">Audit Log</button>
-    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'environment'"
-            (click)="activeTab = 'environment'">Environment</button>
+    <button class="sub-tab" [class.sub-tab-active]="activeTab === 'agent-policy'"
+            *ngIf="canSeeAgentPolicy"
+            (click)="activeTab = 'agent-policy'">Agent Policy</button>
   </div>
 
   <app-users *ngIf="activeTab === 'users' && useUserAuth"></app-users>
   <app-secrets *ngIf="activeTab === 'secrets' && canSeeSecrets"></app-secrets>
   <app-keys *ngIf="activeTab === 'keys' && canSeeKeys"></app-keys>
   <app-audit-log *ngIf="activeTab === 'audit-log' && canSeeAuditLog"></app-audit-log>
+  <app-agent-policy *ngIf="activeTab === 'agent-policy' && canSeeAgentPolicy"></app-agent-policy>
   <app-data-sources *ngIf="activeTab === 'data-sources'"></app-data-sources>
   <app-code-repo *ngIf="activeTab === 'code-repo'"></app-code-repo>
-
-  <div class="config-card" *ngIf="!loading && activeTab === 'environment'">
-    <div class="info-grid">
-      <div class="info-row">
-        <span class="info-label">Environment</span>
-        <span class="info-value accent">{{ environment }}</span>
-      </div>
-      <div class="info-row">
-        <span class="info-label">Version</span>
-        <span class="info-value">{{ version }}</span>
-      </div>
-    </div>
-
-    <div class="note-banner" *ngIf="!useTapRunner">
-      <p class="note-title">Taps are running in-process.</p>
-      <p>This server has <code>USE_TAP_RUNNER</code> off, so tap <code>fetch()</code> shares the server network and can reach internal DB, object storage, and Vault. Docker Compose defaults to isolated taps. Keep <code>USE_TAP_RUNNER=false</code> only for sbt/IDE without the sidecar.</p>
-    </div>
-
-    <div class="status-block" *ngIf="multiTenant">
-      <div class="status-block-row">
-        <span class="status-label">AI Provider</span>
-        <span class="status-value" *ngIf="usingDefaultAiPrimary">Datris-managed (default)</span>
-        <span class="status-value accent" *ngIf="!usingDefaultAiPrimary">Your own {{ aiPrimaryProvider === 'anthropic' ? 'Anthropic' : (aiPrimaryProvider === 'ollama' ? 'Ollama' : (aiPrimaryProvider === 'grok' ? 'Grok (xAI)' : 'OpenAI')) }} key</span>
-      </div>
-      <div class="status-block-row">
-        <span class="status-label">CodeGen Provider</span>
-        <span class="status-value" *ngIf="usingDefaultCodegen">Datris-managed (default)</span>
-        <span class="status-value accent" *ngIf="!usingDefaultCodegen">Your own {{ codegenProvider === 'anthropic' ? 'Anthropic' : (codegenProvider === 'ollama' ? 'Ollama' : (codegenProvider === 'grok' ? 'Grok (xAI)' : 'OpenAI')) }} CodeGen key</span>
-      </div>
-      <div class="status-block-row">
-        <span class="status-label">Embedding Provider</span>
-        <span class="status-value" *ngIf="usingDefaultEmbedding">Datris-managed (default)</span>
-        <span class="status-value accent" *ngIf="!usingDefaultEmbedding">Your own {{ embeddingProvider === 'openai' ? 'OpenAI' : (embeddingProvider === 'tei' ? 'bundled' : (embeddingProvider === 'ollama' || embeddingProvider === 'ollama-local' ? 'Ollama' : embeddingProvider)) }} embedding</span>
-      </div>
-    </div>
-
-    <div class="note-banner" *ngIf="isTrial">
-      <p class="note-title">Trial instance — you're running with your own AI keys.</p>
-      <p>Rotate, swap providers, or change models in the AI Providers tab. Embeddings use the bundled <code>bge-m3</code> model and don't need an API key.</p>
-      <p><strong>Want more?</strong> A dedicated Datris instance adds persistent storage, no shared rate limits, a custom domain, every destination (Postgres, MySQL, MongoDB, Qdrant, Weaviate, Milvus, Chroma, pgvector, S3, MinIO), and a production SLA. Visit your <a href="https://datris.ai/dashboard" target="_blank" rel="noopener">datris.ai dashboard</a> to upgrade.</p>
-    </div>
-  </div>
 
   <div class="config-card" *ngIf="!loading && activeTab === 'ai-providers'">
     <div class="config-layout">

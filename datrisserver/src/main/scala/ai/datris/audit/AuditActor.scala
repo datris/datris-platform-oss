@@ -25,6 +25,17 @@ object AuditActor {
       * Agent Monitor's activity buffer while that buffer still holds it. */
     val HeaderAgentSession = "X-Datris-Agent-Session"
 
+    /** Free-text intent an agent may attach to a mutating call (the MCP
+      * tools' optional `reason` argument). Stored in audit metadata and on
+      * pending approvals; never interpreted. */
+    val HeaderReason = "X-Datris-Reason"
+
+    /** Request attribute (the approval id) PolicyInterceptor sets on the
+      * replay of an approved agent action. The replay carries the ui key on
+      * behalf of the approver; with this attribute present the approver is
+      * recorded as a plain user — it is their decision being executed. */
+    val ApprovalReplayAttr = "ai.datris.policy.approvalReplay"
+
     /** Sent by TapScriptRunner on outbound HTTP-tap endpoint calls. NOT used
       * for inbound actor resolution — a tap's identity on the platform
       * callback comes from its per-run token (label `tap:<name>`), which
@@ -103,6 +114,8 @@ object AuditActor {
     def resolve(request: HttpServletRequest): AuditActorInfo = {
         val onBehalfOf = Option(request.getAttribute(OnBehalfOfAttr)).collect { case u: User => u }
         val carrier = Option(request.getAttribute(CarrierKeyLabelAttr)).collect { case s: String => s }
-        from(ResolvedKeyAccess.fromRequest(request), UserContext.get(), onBehalfOf, carrier)
+        val replay = request.getAttribute(ApprovalReplayAttr) != null
+        val sessionUser = UserContext.get().orElse(if (replay) onBehalfOf else None)
+        from(ResolvedKeyAccess.fromRequest(request), sessionUser, if (replay) None else onBehalfOf, carrier)
     }
 }

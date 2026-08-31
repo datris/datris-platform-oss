@@ -149,3 +149,7 @@ When user-auth is on, logged-in browser sessions are first-class identities too:
 - [User Authentication](/user-auth) — login + roles for the UI
 - [Configuration Reference](/configuration-reference) — full env var list
 - [MCP Server](/mcp-server) — how external agents connect
+
+## Capabilities vs. the agent policy
+
+A capability says what a key *may* do. The [agent policy](/agent-policy) says what an agent may do *unattended*: for each action, whether it runs on its own, waits for a person to approve it, or is refused. The policy runs after the capability check and can only pause or refuse what the key already holds — it never grants anything. Two capabilities support it: `policy:read` (read the policy; any key) and `approval:read` (list and poll the approvals the key queued; use `approval:read:owner=self`). Deciding approvals is a person's job — an agent-initiated request is refused even with `approval:decide`.

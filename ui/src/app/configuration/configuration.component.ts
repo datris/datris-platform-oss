@@ -4,7 +4,7 @@ import { ActivatedRoute } from '@angular/router';
 import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
 
-type ConfigTab = 'environment' | 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources' | 'code-repo' | 'audit-log';
+type ConfigTab = 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources' | 'code-repo' | 'audit-log' | 'agent-policy';
 
 @Component({
     selector: 'app-configuration',
@@ -164,12 +164,19 @@ export class ConfigurationComponent implements OnInit {
     return !this.isTrial && (!this.useUserAuth || this.isAdmin());
   }
 
+  /** Admin-only like Audit Log. Shown even when USE_AGENT_POLICY is off so
+   *  the tab can explain how to turn it on. */
+  get canSeeAgentPolicy(): boolean {
+    return !this.isTrial && (!this.useUserAuth || this.isAdmin());
+  }
+
   ngOnInit(): void {
     // Honor ?tab=<name> for deep-links (e.g. the redirect from /secrets).
     this.route.queryParamMap.subscribe(p => {
       const t = p.get('tab');
-      if (t === 'environment' || t === 'ai-providers' ||
-          t === 'users' || t === 'secrets' || t === 'keys' || t === 'data-sources' || t === 'audit-log') {
+      if (t === 'ai-providers' ||
+          t === 'users' || t === 'secrets' || t === 'keys' || t === 'data-sources' || t === 'audit-log' ||
+          t === 'agent-policy') {
         this.activeTab = t;
       }
     });
@@ -197,6 +204,9 @@ export class ConfigurationComponent implements OnInit {
           this.activeTab = 'ai-providers';
         }
         if (this.activeTab === 'audit-log' && !this.canSeeAuditLog) {
+          this.activeTab = 'ai-providers';
+        }
+        if (this.activeTab === 'agent-policy' && !this.canSeeAgentPolicy) {
           this.activeTab = 'ai-providers';
         }
         // Load the model catalog before reading secrets so maybeAddExtraModel compares
