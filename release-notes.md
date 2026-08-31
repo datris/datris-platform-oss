@@ -1,17 +1,26 @@
 # Release Notes
 
+## v1.24.0 — August 31, 2026
+
+**Agent Policy: decide what agents may do on their own, what waits for your approval, and what is refused.**
+
+- A new opt-in Agent Policy lets an administrator set, per action — run a tap, delete a pipeline, migrate destination column types, write a secret, and every other change an agent can make — whether agents do it unattended, queue it for a person to approve, or are refused. People using the UI are never gated; they are the approvers. Nothing changes until you set a rule, and the policy applies to every agent: the built-in Assistant and any connected MCP client alike.
+- Queued actions appear under Activity → Approvals with who asked, the reason they gave, exactly what would run, and one-click Approve / Reject. Approving performs the original request on your behalf and records the whole chain — request, decision, and result — in the audit log. Approvals go stale if the pipeline or tap changed in the meantime, expire on their own if nobody decides, and can never be approved by an agent, whatever permissions its key holds.
+- Agents are told the truth: a gated action comes back "waiting for approval" (never silently done), a refused one says so plainly, and the chat shows matching status cards. Agents can read the policy up front, list what they have queued, and poll for your decision; every change-making agent tool now also accepts a short reason that shows up on the approval card and in the audit log.
+- Configuration → Agent Policy manages it all, with a recommended starting point that pauses deletes, job kills, and destination-type migrations and refuses secret and connection changes. Per-pipeline and per-tap overrides can tighten the rules further for sensitive data.
+- The Configuration → Environment tab has been removed; its information lives in the server log and the version endpoint.
+
+**Upgrading**
+
+`docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. To turn on the agent policy, add `USE_AGENT_POLICY=true` to your `.env`, recreate the `datris` container, and set your rules under Configuration → Agent Policy.
+
+---
+
 ## v1.23.0 — August 28, 2026
 
 **Audit log: who did what, by login or API key.**
 
-- A new opt-in Audit Log records every create, change, run, delete, login, and denied request — humans by their login, agents by their API key, scheduled runs as system. Admins read it under Configuration → Audit Log with filters by time, category, actor, and outcome, a detail view per entry, and CSV export. Entries are also written to the server log so an existing log aggregator picks them up.
-- Actions the Assistant takes for you are attributed to you — in the audit log and in pipeline and tap version history — instead of to the platform's internal key. Every issued API key now carries a stable id, so a key that is revoked and later re-issued under the same name is never confused with its predecessor.
-- Reads are left out by default to keep the trail focused on changes; turn them on to see every query and search an agent runs. Reading a secret is always recorded.
-- Tap scripts that read platform data now work when API keys are required. Each run gets a short-lived, read-only credential that is attached automatically — scripts need no changes and no platform credential in their secret — and the audit log names the tap that made each call.
-
-**Upgrading**
-
-`docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. To turn on the audit log, add `USE_AUDIT_LOG=true` to your `.env` and recreate the `datris` container; `AUDIT_LOG_RETENTION_DAYS` (default 90) and `AUDIT_LOG_READS` (default false) tune it.
+See the [full v1.23.0 notes](release-notes/v1.23.0.md) for details.
 
 ---
 

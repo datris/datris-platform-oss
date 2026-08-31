@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.24.0" description="August 31, 2026">
+  **Agent Policy: decide what agents may do on their own, what waits for your approval, and what is refused.**
+
+  - A new opt-in Agent Policy lets an administrator set, per action — run a tap, delete a pipeline, migrate destination column types, write a secret, and every other change an agent can make — whether agents do it unattended, queue it for a person to approve, or are refused. People using the UI are never gated; they are the approvers. Nothing changes until you set a rule, and the policy applies to every agent: the built-in Assistant and any connected MCP client alike.
+  - Queued actions appear under Activity → Approvals with who asked, the reason they gave, exactly what would run, and one-click Approve / Reject. Approving performs the original request on your behalf and records the whole chain — request, decision, and result — in the audit log. Approvals go stale if the pipeline or tap changed in the meantime, expire on their own, and can never be approved by an agent.
+  - Agents are told the truth: a gated action comes back "waiting for approval" (never silently done), a refused one says so plainly, and the chat shows matching status cards. Agents can read the policy up front, list what they have queued, and poll for your decision; every change-making agent tool now accepts a short reason that shows up on the approval card and in the audit log.
+  - Configuration → Agent Policy manages it all, with a recommended starting point and per-pipeline / per-tap overrides that can only tighten. The Configuration → Environment tab has been removed.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required; set `USE_AGENT_POLICY=true` to turn the agent policy on.
+</Update>
+
 <Update label="v1.23.0" description="August 28, 2026">
   **Audit log: who did what, by login or API key.**
 
