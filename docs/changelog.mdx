@@ -3,6 +3,17 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.25.0" description="September 1, 2026">
+  **The recovery agent: Datris notices broken data flows, diagnoses them, and — within limits you set — repairs and verifies them.**
+
+  - The opt-in recovery agent opens an **incident** when a scheduled tap keeps failing after its automatic retries, a pipeline load errors, a tap goes quiet past its cadence, or a pipeline's volume swings against its baseline — then diagnoses it with the same judgment as the Ops chat and closes it with a step-by-step story.
+  - The [Agent Policy](/agent-policy) gains a **recovery mode**: `off`, `propose` (every repair waits for one-click approval), or `autopilot` (repairs follow your per-action policy) — with per-tap / per-pipeline overrides.
+  - Repairs are narrow and verified: re-run, script fix (as a new version), test — never deletes, secrets, or schema changes. Every fix must prove itself with a clean real run, or the platform reverts it and says so. Budgets are enforced by the platform, not a prompt.
+  - A new **Incidents** panel on the Activity page shows state, classification, and timelines with approval links; the Ops chat explains open incidents instead of re-diagnosing; two new agent tools read them; the audit log carries the full per-incident ledger; an optional webhook reports milestones.
+  - The MCP page's tool catalog now lists every available tool, including the destination-typing pair missing since v1.22.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required; set `USE_AGENT_POLICY=true` + `RECOVERY_AGENT_ENABLED=true` and pick a recovery mode to opt in.
+</Update>
+
 <Update label="v1.24.1" description="August 31, 2026">
   **Security update for the UI and MCP server images.**
 
