@@ -167,7 +167,17 @@ object CapabilityRoutes {
         Route("GET", "/api/v1/approvals", "approval", "read"),
         Route("GET", "/api/v1/approvals/**", "approval", "read"),
         Route("POST", "/api/v1/approvals/*/approve", "approval", "decide"),
-        Route("POST", "/api/v1/approvals/*/reject", "approval", "decide")
+        Route("POST", "/api/v1/approvals/*/reject", "approval", "decide"),
+
+        // Recovery-agent incidents — read for everyone the key allows;
+        // abandoning one is a person's call (role-gated on top).
+        Route("GET", "/api/v1/incidents", "incident", "read"),
+        Route("GET", "/api/v1/incidents/**", "incident", "read"),
+        Route("POST", "/api/v1/incidents/*/abandon", "incident", "abandon"),
+
+        // Server-side Activity signals (failures / stale / volume) — derived
+        // operational metadata.
+        Route("GET", "/api/v1/activity/signals", "metadata", "read")
     )
 
     /** Every `resource:action` pair the table grants — the vocabulary the

@@ -59,7 +59,20 @@ class PolicyInterceptor extends HandlerInterceptor {
         val resourceType = PolicyRoutes.resourceType(actionKey)
         val resourceName = PolicyGate.resourceName(request)
         val policy = PolicyIO.current
-        policy.decide(actionKey, Some(resourceType), resourceName) match {
+        val matrixMode = policy.decide(actionKey, Some(resourceType), resourceName)
+        // Recovery-agent calls (tagged with an incident id) additionally obey
+        // the recovery mode: `propose` parks EVERY mutation for approval
+        // regardless of the action matrix; `off` refuses them outright — the
+        // runner should not be acting at all. `autopilot` follows the matrix.
+        val incidentTagged = Option(request.getHeader(AuditActor.HeaderIncident)).exists(_.trim.nonEmpty)
+        val effectiveMode =
+            if (!incidentTagged) matrixMode
+            else policy.effectiveRecoveryMode(resourceType, resourceName.getOrElse("")) match {
+                case ai.datris.policy.RecoverySettings.Off => PolicyMode.Deny
+                case ai.datris.policy.RecoverySettings.Propose => PolicyMode.stricter(matrixMode, PolicyMode.Approve)
+                case _ => matrixMode
+            }
+        effectiveMode match {
             case PolicyMode.Auto => true
             case PolicyMode.Deny => deny(request, response, actionKey, "denied by agent policy", hardRule = false)
             case PolicyMode.Approve => queue(request, response, policy, actionKey, resourceType, resourceName)
@@ -144,6 +157,7 @@ class PolicyInterceptor extends HandlerInterceptor {
                     actor = actor,
                     reason = reasonOf(request),
                     agentSession = Option(request.getHeader(AuditActor.HeaderAgentSession)).map(_.trim).filter(_.nonEmpty).map(_.take(64)),
+                    incidentId = Option(request.getHeader(AuditActor.HeaderIncident)).map(_.trim).filter(_.nonEmpty).map(_.take(64)),
                     method = request.getMethod,
                     path = request.getRequestURI,
                     query = query,
@@ -235,6 +249,7 @@ class PolicyInterceptor extends HandlerInterceptor {
         m.addProperty("policyAction", actionKey)
         approvalId.foreach(m.addProperty("approvalId", _))
         reasonOf(request).foreach(m.addProperty("reason", _))
+        Option(request.getHeader(AuditActor.HeaderIncident)).map(_.trim).filter(_.nonEmpty).foreach(i => m.addProperty("incidentId", i.take(64)))
         m
     }
 }

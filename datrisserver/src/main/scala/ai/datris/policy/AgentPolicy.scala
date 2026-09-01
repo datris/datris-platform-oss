@@ -26,6 +26,26 @@ object PolicyMode {
 
 case class PolicyLimits(pendingTtlHours: Int = 24, maxPendingPerActor: Int = 50)
 
+/** The recovery agent's dial: off (suggestions only, exactly as before),
+  * propose (open incidents, diagnose, queue every action for approval),
+  * autopilot (actions follow the action matrix). Limits are enforced by the
+  * runner's code, never by its prompt. */
+case class RecoverySettings(
+    mode: String = RecoverySettings.Off,
+    maxAiCallsPerIncident: Int = 12,
+    maxActionsPerIncident: Int = 3,
+    maxRuntimeMinutes: Int = 15,
+    maxOpenIncidents: Int = 10,
+    cooldownHours: Int = 6
+)
+
+object RecoverySettings {
+    val Off = "off"
+    val Propose = "propose"
+    val Autopilot = "autopilot"
+    val Modes: Set[String] = Set(Off, Propose, Autopilot)
+}
+
 /** The agent policy: for every `resource:action[:sub]` key the capability
   * layer already classifies, whether an agent-initiated request runs
   * (`auto`), is parked for a human (`approve`), or is refused (`deny`).
@@ -42,9 +62,18 @@ case class AgentPolicy(
     actions: Map[String, PolicyMode] = Map.empty,
     overrides: Map[String, Map[String, PolicyMode]] = Map.empty,
     limits: PolicyLimits = PolicyLimits(),
+    recovery: RecoverySettings = RecoverySettings(),
+    /** Per-resource recovery mode, keyed `pipeline:<name>` / `tap:<name>` —
+      * the per-resource autopilot toggle. Unlike action overrides this may
+      * move in either direction: one tap on autopilot while the environment
+      * proposes, or one on propose while the environment is on autopilot. */
+    recoveryOverrides: Map[String, String] = Map.empty,
     updatedAt: Option[String] = None,
     updatedBy: Option[String] = None
 ) {
+
+    def effectiveRecoveryMode(resourceType: String, resourceName: String): String =
+        recoveryOverrides.getOrElse(resourceType + ":" + resourceName, recovery.mode)
 
     def isEmpty: Boolean = actions.isEmpty && overrides.isEmpty
 
@@ -67,9 +96,11 @@ case class AgentPolicy(
         actions.toSeq.sortBy(_._1).foreach { case (k, v) => a.addProperty(k, v.name) }
         o.add("actions", a)
         val ov = new JsonObject()
-        overrides.toSeq.sortBy(_._1).foreach { case (res, m) =>
+        val overrideKeys = (overrides.keySet ++ recoveryOverrides.keySet).toSeq.sorted
+        overrideKeys.foreach { res =>
             val inner = new JsonObject()
-            m.toSeq.sortBy(_._1).foreach { case (k, v) => inner.addProperty(k, v.name) }
+            overrides.getOrElse(res, Map.empty).toSeq.sortBy(_._1).foreach { case (k, v) => inner.addProperty(k, v.name) }
+            recoveryOverrides.get(res).foreach(inner.addProperty("recovery", _))
             ov.add(res, inner)
         }
         o.add("overrides", ov)
@@ -77,6 +108,14 @@ case class AgentPolicy(
         l.addProperty("pendingTtlHours", limits.pendingTtlHours)
         l.addProperty("maxPendingPerActor", limits.maxPendingPerActor)
         o.add("limits", l)
+        val r = new JsonObject()
+        r.addProperty("mode", recovery.mode)
+        r.addProperty("maxAiCallsPerIncident", recovery.maxAiCallsPerIncident)
+        r.addProperty("maxActionsPerIncident", recovery.maxActionsPerIncident)
+        r.addProperty("maxRuntimeMinutes", recovery.maxRuntimeMinutes)
+        r.addProperty("maxOpenIncidents", recovery.maxOpenIncidents)
+        r.addProperty("cooldownHours", recovery.cooldownHours)
+        o.add("recovery", r)
         updatedAt.foreach(o.addProperty("updatedAt", _))
         updatedBy.foreach(o.addProperty("updatedBy", _))
         o
@@ -147,6 +186,8 @@ object AgentPolicy {
             else if (!root.get("actions").isJsonObject) { errors += "actions must be an object"; Map.empty[String, PolicyMode] }
             else parseActions(root.getAsJsonObject("actions"), "actions")
 
+        val recoveryOverridesB = scala.collection.mutable.Map.empty[String, String]
+
         val overrides =
             if (!root.has("overrides") || root.get("overrides").isJsonNull) Map.empty[String, Map[String, PolicyMode]]
             else if (!root.get("overrides").isJsonObject) { errors += "overrides must be an object"; Map.empty[String, Map[String, PolicyMode]] }
@@ -158,7 +199,20 @@ object AgentPolicy {
                 } else if (!e.getValue.isJsonObject) {
                     errors += "overrides: value for '" + key + "' must be an object"
                     None
-                } else Some(key -> parseActions(e.getValue.getAsJsonObject, "overrides." + key))
+                } else {
+                    // "recovery" is not an action key: it sets the recovery
+                    // agent's mode for this one resource. Split it out before
+                    // the action-key validation sees it.
+                    val obj = e.getValue.getAsJsonObject.deepCopy()
+                    if (obj.has("recovery")) {
+                        val v = obj.get("recovery")
+                        if (!v.isJsonPrimitive || !RecoverySettings.Modes.contains(v.getAsString.trim.toLowerCase))
+                            errors += "overrides." + key + ": recovery must be off, propose or autopilot"
+                        else recoveryOverridesB += (key -> v.getAsString.trim.toLowerCase)
+                        obj.remove("recovery")
+                    }
+                    Some(key -> parseActions(obj, "overrides." + key))
+                }
             }.toMap
 
         var limits = PolicyLimits()
@@ -180,6 +234,36 @@ object AgentPolicy {
             )
         }
 
+        var recovery = RecoverySettings()
+        if (root.has("recovery") && root.get("recovery").isJsonObject) {
+            val r = root.getAsJsonObject("recovery")
+            def rInt(name: String, default: Int, min: Int, max: Int): Int =
+                if (!r.has(name) || r.get(name).isJsonNull) default
+                else
+                    try {
+                        val v = r.get(name).getAsInt
+                        if (v < min || v > max) { errors += "recovery." + name + " must be between " + min + " and " + max; default }
+                        else v
+                    } catch {
+                        case _: Exception => errors += "recovery." + name + " must be an integer"; default
+                    }
+            val mode =
+                if (!r.has("mode") || r.get("mode").isJsonNull) RecoverySettings.Off
+                else {
+                    val m = r.get("mode").getAsString.trim.toLowerCase
+                    if (!RecoverySettings.Modes.contains(m)) { errors += "recovery.mode must be off, propose or autopilot"; RecoverySettings.Off }
+                    else m
+                }
+            recovery = RecoverySettings(
+                mode = mode,
+                maxAiCallsPerIncident = rInt("maxAiCallsPerIncident", 12, 1, 100),
+                maxActionsPerIncident = rInt("maxActionsPerIncident", 3, 1, 20),
+                maxRuntimeMinutes = rInt("maxRuntimeMinutes", 15, 1, 240),
+                maxOpenIncidents = rInt("maxOpenIncidents", 10, 1, 100),
+                cooldownHours = rInt("cooldownHours", 6, 1, 24 * 14)
+            )
+        }
+
         val version =
             if (root.has("version") && root.get("version").isJsonPrimitive)
                 try root.get("version").getAsInt
@@ -188,6 +272,13 @@ object AgentPolicy {
 
         val errs = errors.result()
         if (errs.nonEmpty) Left(errs.mkString("; "))
-        else Right(AgentPolicy(version = version, actions = actions, overrides = overrides, limits = limits))
+        else Right(AgentPolicy(
+            version = version,
+            actions = actions,
+            overrides = overrides,
+            limits = limits,
+            recovery = recovery,
+            recoveryOverrides = recoveryOverridesB.toMap
+        ))
     }
 }

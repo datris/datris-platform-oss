@@ -32,6 +32,7 @@ case class PendingAction(
     actor: AuditActorInfo,
     reason: Option[String],
     agentSession: Option[String],
+    incidentId: Option[String] = None,
     method: String,
     path: String,
     query: Option[String],
@@ -72,6 +73,7 @@ case class PendingAction(
         o.add("actor", actor.toJson)
         reason.foreach(o.addProperty("reason", _))
         agentSession.foreach(o.addProperty("agentSession", _))
+        incidentId.foreach(o.addProperty("incidentId", _))
         val rq = new JsonObject()
         rq.addProperty("method", method)
         rq.addProperty("path", path)
@@ -101,6 +103,7 @@ case class PendingAction(
         d.put("actor", Document.parse(actor.toJson.toString))
         reason.foreach(d.put("reason", _))
         agentSession.foreach(d.put("agentSession", _))
+        incidentId.foreach(d.put("incidentId", _))
         d.put("method", method)
         d.put("path", path)
         query.foreach(d.put("query", _))
@@ -178,6 +181,7 @@ object PendingAction {
             actor = actor,
             reason = opt(d, "reason"),
             agentSession = opt(d, "agentSession"),
+            incidentId = opt(d, "incidentId"),
             method = d.getString("method"),
             path = d.getString("path"),
             query = opt(d, "query"),

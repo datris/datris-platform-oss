@@ -52,6 +52,13 @@ class StartupRunner extends ApplicationRunner {
     @Value("${server.port:8080}")
     var serverPort: Int = _
 
+    // Recovery agent — autonomous incident loop. Off by default.
+    @Value("${recoveryAgent.enabled:false}")
+    var recoveryAgentEnabled: Boolean = _
+
+    @Value("${recoveryAgent.webhookUrl:}")
+    var incidentWebhookUrl: String = _
+
     @Value("${secrets.apiKeysSecretName:}")
     var apiKeysSecretName: String = _
 
@@ -185,6 +192,16 @@ class StartupRunner extends ApplicationRunner {
             ai.datris.util.TapScriptRunner.warnInProcess("startup")
         initDatrisEnvironment()
         ai.datris.policy.PolicyReplay.port = serverPort
+        if (recoveryAgentEnabled) {
+            if (!useAgentPolicy)
+                logger.warn(
+                    "RECOVERY_AGENT_ENABLED is true but USE_AGENT_POLICY is false — the recovery agent needs the approval queue and will stay dormant until the agent policy is enabled"
+                )
+            else {
+                ai.datris.incident.RecoveryKey.ensure()
+                logger.info("Recovery agent enabled: collection=" + environment + "-incident; mode comes from the agent policy's recovery.mode (off until set)")
+            }
+        }
         if (useAgentPolicy)
             logger.info(
                 "Agent policy enabled: collections=" + environment + "-agent-policy, " + environment + "-pending-action; approvals replay to port " + serverPort
@@ -344,6 +361,9 @@ class StartupRunner extends ApplicationRunner {
             useAgentPolicy = useAgentPolicy,
             agentPolicyTableName = environment + "-agent-policy",
             pendingActionTableName = environment + "-pending-action",
+            recoveryAgentEnabled = recoveryAgentEnabled,
+            incidentTableName = environment + "-incident",
+            incidentWebhookUrl = incidentWebhookUrl,
             auditLogLogReads = auditLogLogReads,
             auditLogEmitLogLine = auditLogEmitLogLine
         )

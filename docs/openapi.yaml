@@ -28,6 +28,56 @@ components:
       description: Optional API key for authentication (enabled via application.yaml)
 
   schemas:
+    Incident:
+      type: object
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [tap_failure, pipeline_failure, stale, volume]
+        resourceType:
+          type: string
+        resource:
+          type: string
+        openedAt:
+          type: string
+        state:
+          type: string
+          enum: [open, diagnosing, proposed, awaiting_approval, executing, verifying, resolved, failed, abandoned]
+        trigger:
+          type: object
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              ts:
+                type: string
+              phase:
+                type: string
+              summary:
+                type: string
+              detail:
+                type: string
+              approvalId:
+                type: string
+        classification:
+          type: string
+        proposal:
+          type: object
+        aiCalls:
+          type: integer
+        actionsTaken:
+          type: integer
+        awaitingApprovalIds:
+          type: array
+          items:
+            type: string
+        closedAt:
+          type: string
+        outcome:
+          type: string
     AgentPolicy:
       type: object
       properties:
@@ -3368,6 +3418,93 @@ paths:
                 $ref: '#/components/schemas/PendingAction'
         '409':
           description: No longer pending
+  /api/v1/incidents:
+    get:
+      tags: [Recovery Agent]
+      summary: List recovery-agent incidents
+      description: >-
+        Incidents the platform opened for failed, stale or anomalous data
+        flows, newest first. Read-only — only the platform opens incidents.
+        `enabled` is false while RECOVERY_AGENT_ENABLED is off.
+      parameters:
+        - in: query
+          name: state
+          schema:
+            type: string
+          description: "`open` (any active state) or a specific state name"
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        '200':
+          description: Incidents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  incidents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Incident'
+  /api/v1/incidents/{id}:
+    get:
+      tags: [Recovery Agent]
+      summary: Read one incident
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Incident'
+        '404':
+          description: Unknown id, or the recovery agent is off
+  /api/v1/incidents/{id}/abandon:
+    post:
+      tags: [Recovery Agent]
+      summary: Abandon an open incident (admin / editor)
+      description: A person closing an incident by hand. Never permitted from an agent-initiated request.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The abandoned incident
+        '409':
+          description: Already closed
+  /api/v1/activity/signals:
+    get:
+      tags: [Recovery Agent]
+      summary: Server-side Activity signals
+      description: >-
+        One definition of operational signals — failures (with the recovered
+        flag), stale scheduled taps, and pipeline volume anomalies — shared
+        by the dashboard, the Ops chat context and the recovery agent.
+      parameters:
+        - in: query
+          name: window
+          schema:
+            type: string
+            enum: [24h, 7d, 30d]
+            default: 24h
+      responses:
+        '200':
+          description: Signals for the window
   /api/v1/keys:
     get:
       tags: [API Keys]

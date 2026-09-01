@@ -16,6 +16,8 @@ import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
+import scala.collection.JavaConverters._
+
 /** The agent policy document: what agents may do on their own, what waits
   * for a person, what is refused. Anyone may read it (agents use it to know
   * what will queue before they act); only an admin — never an agent — may
@@ -62,7 +64,23 @@ class PolicyAPIController {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](errorJson("agents may not change the agent policy"))
             AgentPolicy.fromJson(body) match {
                 case Left(err) => ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](errorJson(err))
-                case Right(p) =>
+                case Right(parsed) =>
+                    // A client that doesn't know about the recovery settings
+                    // (or the recovery overrides) must not silently reset them
+                    // by omission: merge the stored values in unless the body
+                    // spoke about them explicitly.
+                    val bodyObj = com.google.gson.JsonParser.parseString(body).getAsJsonObject
+                    val bodySetRecovery = bodyObj.has("recovery")
+                    val bodySetRecoveryOverrides =
+                        bodyObj.has("overrides") && bodyObj.get("overrides").isJsonObject &&
+                            bodyObj.getAsJsonObject("overrides").entrySet().asScala.exists(e =>
+                                e.getValue.isJsonObject && e.getValue.getAsJsonObject.has("recovery")
+                            )
+                    val current = PolicyIO.current
+                    val p = parsed.copy(
+                        recovery = if (bodySetRecovery) parsed.recovery else current.recovery,
+                        recoveryOverrides = if (bodySetRecovery || bodySetRecoveryOverrides) parsed.recoveryOverrides else current.recoveryOverrides
+                    )
                     val saved = PolicyIO.write(p, AuditActor.resolve(request).label)
                     logger.info("Agent policy updated to version " + saved.version + " by " + saved.updatedBy.getOrElse("?"))
                     val out = new JsonObject()

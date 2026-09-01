@@ -193,6 +193,18 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     logger.info("AI Fix Suggestion: " + fix.summary)
                     statusUtil.suggestion(fix)
                 }
+                // Recovery agent: a pipeline job ended in error — open an
+                // incident (no-op unless enabled; one per resource; cooldowns
+                // and the recovered-rule apply inside).
+                try {
+                    val trigger = new com.google.gson.JsonObject()
+                    trigger.addProperty("pipelineToken", jobContext.pipelineToken)
+                    trigger.addProperty("error", errorMessage.take(500))
+                    if (fix != null) trigger.addProperty("aiSummary", fix.summary)
+                    ai.datris.incident.IncidentRunner.open(ai.datris.incident.Incident.KindPipelineFailure, "pipeline", jobContext.config.name, trigger)
+                } catch {
+                    case ie: Exception => logger.debug("incident open skipped: " + ie.getMessage)
+                }
                 throw new DatrisException("Pipeline error: " + errorMessage)
         }
     }

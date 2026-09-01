@@ -1,0 +1,79 @@
+---
+title: "Incidents & Recovery Agent"
+description: "The platform opens an incident when a data flow breaks, diagnoses it, and — within limits you set — repairs and verifies it."
+---
+
+With the recovery agent on, Datris stops waiting for you to notice a broken data flow. When a scheduled tap finally fails (after the platform's own retries), a pipeline job errors, a tap goes stale, or a pipeline's volume swings hard, the platform opens an **incident**, diagnoses it with the same judgment as the Ops chat, proposes a fix, passes every action through the [agent policy](/agent-policy), executes what it may, **verifies the fix with a real run — reverting it if verification fails** — and records the whole story.
+
+The loop is: observe → diagnose → propose → gate → execute → verify → record. The AI proposes; deterministic platform code decides. Limits, verification and the revert are code the model cannot talk its way past.
+
+## Enabling it
+
+Requires the [agent policy](/agent-policy) (`USE_AGENT_POLICY=true`) for its approval flow.
+
+1. Add to your `.env`:
+
+   ```bash
+   RECOVERY_AGENT_ENABLED=true
+   # optional: JSON POST on incident open / awaiting-approval / resolved / failed
+   INCIDENT_WEBHOOK_URL=
+   ```
+
+2. Recreate the Datris container:
+
+   ```bash
+   docker compose up -d --force-recreate datris
+   ```
+
+3. Set the **recovery mode** in Configuration → Agent Policy. It ships as `off`, so nothing changes until you choose:
+
+| Mode | Behavior |
+|------|----------|
+| `off` | Today's behavior: failures get an AI suggestion in Run History, nothing more |
+| `propose` | Incidents open and are diagnosed; **every** proposed action queues under Activity → Approvals — nothing executes without a person |
+| `autopilot` | Actions follow your per-action policy matrix (`auto` runs, `approve` queues, `deny` refuses) |
+
+A per-tap or per-pipeline override can put one resource on a different mode — one critical tap on `propose` while everything else runs `autopilot`, or the reverse.
+
+## What opens an incident
+
+| Signal | When |
+|--------|------|
+| Tap failure | A scheduled run fails **after** the retry ladder is exhausted |
+| Pipeline failure | A pipeline job ends in error |
+| Stale tap | A scheduled tap hasn't run within 2× its cadence |
+| Volume anomaly | A pipeline's records this day are ±60 % vs its 7-day baseline (with at least 3 prior runs) |
+
+Guards, all enforced in code: one open incident per resource; a resource whose latest run is healthy never gets one; a cooldown (default 6 h) after a failed or abandoned attempt; a cap on simultaneous open incidents. Volume incidents are **diagnosis-only** — the value is the triage, not an action.
+
+## What the agent may do
+
+During diagnosis it holds **read-only tools** — it cannot change anything while investigating. Its proposal may only contain: re-run the tap, fix the tap script (then test it), or "this needs a human" with an explanation. Deletes, schema migrations and secret changes are structurally impossible for it. Script fixes land as a new version, so history is never lost.
+
+**Verification is mandatory**: after acting, the tap must complete a real run healthily, and when it feeds a pipeline the load must finish without error. If verification fails, the platform reverts the script to the pre-incident version, closes the incident as failed, and starts the cooldown.
+
+Every call it makes runs as its own `recovery-agent` API key and is tagged with the incident id, so the [audit log](/audit-log) is the incident's complete ledger — and revoking that key stops the agent entirely, independent of any flag.
+
+## Limits
+
+Set under the agent policy's `recovery` section; enforced by the runner, not the prompt:
+
+| Limit | Default |
+|-------|---------|
+| AI calls per incident | 12 |
+| Actions per incident | 3 |
+| Runtime per incident | 15 minutes |
+| Simultaneous open incidents | 10 |
+| Cooldown after a failure | 6 hours |
+
+## Watching it
+
+- **Activity → Incidents**: every incident with its state, classification, step-by-step narrative, and any approvals it waits on; a person can abandon one at any time.
+- **Ops chat**: incidents the platform is working appear in the assistant's context — ask "what happened to the prices tap?" and it explains the incident record instead of re-diagnosing.
+- **Agents**: `list_incidents` / `get_incident` MCP tools (read-only — only the platform opens incidents).
+- **Metrics**: `datris_incidents_total{kind,outcome}` and `datris_incident_duration_seconds` on the Prometheus endpoint.
+
+## Related
+
+- [Agent Policy](/agent-policy) — the gate every recovery action passes through
+- [Audit Log](/audit-log) — the incident's ledger, joined on the incident id

@@ -61,7 +61,9 @@ export class McpComponent implements OnInit {
   playgroundResult = '';
   paramOptions: Record<string, string[]> = {};  // options for select params
 
-  // Full tool catalog
+  // Full tool catalog.
+  // KEEP IN SYNC with mcp-server/server.py's _base_tools() and the server's
+  // auth/MCPToolRoutes.scala — one entry here per MCP tool (70 as of v1.25).
   toolCatalog: McpTool[] = [
     // --- System ---
     {
@@ -390,6 +392,25 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'get_dest_types',
+      description: 'Propose real destination column types for a pipeline whose columns landed as text. Types are inferred from the data already loaded, with sample values per column and the offending value named when a column must stay text. Postgres, Snowflake, and Databricks destinations only.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'apply_dest_types',
+      description: 'Apply destination column types to an all-string pipeline. REQUIRES explicit user approval first. Landed data is migrated before the config changes; any value that will not cast fails the whole apply with the column named and nothing changed. `fields` must list EVERY destination column with its intended type.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'pipeline', type: 'string', description: 'Pipeline name', required: true, inputType: 'text' },
+        { name: 'fields', type: 'array', description: 'Every destination column as {"name": ..., "type": ...}. Types: string, boolean, int, bigint, float, double, date, timestamp.', required: true, inputType: 'textarea' }
+      ],
+      playgroundEnabled: false
+    },
+    {
       name: 'profile_data',
       description: 'Send data and use AI to generate a comprehensive data profile: summary statistics per column, data quality issues detected, and suggested validation rules. Use the suggested aiRule when building a pipeline\'s dataQuality section.',
       category: 'Pipeline Management',
@@ -705,6 +726,53 @@ export class McpComponent implements OnInit {
       parameters: [
         { name: 'name', type: 'string', description: 'Secret name: anthropic, openai, azure, grok, ollama, or embedding', required: true, inputType: 'text' },
         { name: 'fields', type: 'object', description: 'JSON with endpoint, model, apiKey fields', required: true, inputType: 'textarea' }
+      ],
+      playgroundEnabled: true
+    },
+    // --- Agent Policy ---
+    {
+      name: 'get_agent_policy',
+      description: "Read this instance's agent policy: for each action whether an agent may do it on its own (auto), must wait for a person to approve it (approve), or is refused (deny) — plus the recovery agent's mode and limits. Call before a delete or destination-type migration to know whether it will run or queue. When the policy is disabled, every action is auto.",
+      category: 'Agent Policy',
+      parameters: [],
+      playgroundEnabled: true
+    },
+    {
+      name: 'list_pending_approvals',
+      description: 'List the actions this agent queued for human approval, newest first — id, action, resource, state (pending | approved | rejected | expired | executed | failed), and the decision once made.',
+      category: 'Agent Policy',
+      parameters: [
+        { name: 'state', type: 'string', description: 'Filter by state (pending, approved, rejected, expired, executed, failed). Omit for all.', required: false, inputType: 'text' },
+        { name: 'limit', type: 'integer', description: 'Maximum entries to return (default 100)', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_approval',
+      description: "Poll one queued approval by the approvalId a mutating tool returned with status pending_approval. Returns pending, executed (with the original call's result), failed, rejected, or expired.",
+      category: 'Agent Policy',
+      parameters: [
+        { name: 'approval_id', type: 'string', description: 'The approvalId returned with pending_approval', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    // --- Incidents ---
+    {
+      name: 'list_incidents',
+      description: "List the platform's recovery-agent incidents, newest first — opened by the platform itself for failed, stale, or anomalous data flows, with kind, resource, state, classification, and a step-by-step narrative. Read-only: only the platform opens incidents.",
+      category: 'Incidents',
+      parameters: [
+        { name: 'state', type: 'string', description: 'Filter: open (any active state) or a specific state name. Omit for all.', required: false, inputType: 'text' },
+        { name: 'limit', type: 'integer', description: 'Maximum incidents to return (default 50)', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_incident',
+      description: 'Read one recovery-agent incident by id — its trigger, classification, proposal, step-by-step narrative, approvals it waits on, and outcome.',
+      category: 'Incidents',
+      parameters: [
+        { name: 'incident_id', type: 'string', description: 'The incident id (inc_…)', required: true, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

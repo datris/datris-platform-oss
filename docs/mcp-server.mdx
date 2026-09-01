@@ -134,6 +134,13 @@ For a document tap, `create_tap` **requires** the `target_pipeline` to have an `
 
 Every tool that changes platform state also accepts an optional `reason` — one line the agent gives for the change. It is recorded in the [audit log](/audit-log) and shown on the approval card. When the policy requires approval, the mutating tool returns `status: pending_approval` with an `approvalId` instead of performing the action.
 
+### Incidents (recovery agent)
+
+| Tool | Description |
+|------|-------------|
+| `list_incidents` | The platform's [recovery-agent incidents](/incidents), newest first — kind, resource, state, classification and narrative. Read-only: only the platform opens incidents |
+| `get_incident` | One incident by id, with its full step-by-step story and any approvals it waits on. When the operator asks about a failure the platform is already working, explain this record instead of re-diagnosing |
+
 ## Monitoring Active Agents
 
 The [Datris UI](http://localhost:4200) includes an **Agent Monitor** tab that shows a live view of every agent currently connected to the MCP server and a streaming log of the tool calls each one is making. Agents are labeled using their MCP `clientInfo.name` — so Claude Desktop appears as `claude-ai`, Claude Code as `claude-code`, Cursor as `cursor`, and so on — with graceful fallbacks to tenant name, API-key name, or session id for clients that don't supply one. See [Monitoring → Agent Monitor](/monitoring#agent-monitor) for details.
