@@ -22,7 +22,7 @@ class StreamNotifier {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
     private val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
 
-    def process(byteArray: Array[Byte], filename: String, pipeline: String, publisherToken: String): JobContext = {
+    def process(byteArray: Array[Byte], filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo = null): JobContext = {
         logger.info("StreamNotifier processing pipeline: " + pipeline + ", filename: " + filename)
         statusUtil.setFilename("stream: " + pipeline)
 
@@ -35,7 +35,17 @@ class StreamNotifier {
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
-            val metadata = PipelineMetadata(pipeline, filename, null, Option(publisherToken).getOrElse(pipelineToken), bulkUpload = false)
+            val metadata = PipelineMetadata(
+                pipeline,
+                filename,
+                null,
+                Option(publisherToken).getOrElse(pipelineToken),
+                bulkUpload = false,
+                tapName = if (tapFeed != null) tapFeed.tapName else null,
+                tapRunTime = if (tapFeed != null) tapFeed.runTime else null,
+                tapScriptSha = if (tapFeed != null) tapFeed.scriptCommitSha else null,
+                tapSource = if (tapFeed != null) tapFeed.source else null
+            )
             val gson = new Gson
             // Must persist metadata before any statusUtil calls so getPipelineName can resolve the pipeline token
             NoSQLDbUtil.setItemNameValue(

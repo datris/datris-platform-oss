@@ -86,6 +86,8 @@ You don't need to write JSON by hand — once you have the Datris Data Platform 
 | `transformation` | object | No | Data transformation settings |
 | `destination` | object | Yes | One or more output destinations |
 | `catalog` | string | No | Free-form label that groups related pipelines and taps in the [Data Catalog](/data-catalog). Empty or null = Uncataloged. |
+| `tags` | string[] | No | Free-form discovery labels — `find_data` and the catalog search rank over them. See [Provenance, Lineage & Discovery](/provenance). |
+| `provenance` | object | No | `{ "stamp": true }` appends `_datris_*` provenance fields to every row this pipeline lands. Off by default. See [Provenance, Lineage & Discovery](/provenance). |
 
 ### Source
 

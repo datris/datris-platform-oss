@@ -128,9 +128,19 @@ class PipelineAPIController {
 
             // Definition-edit write → mints a new immutable version snapshot.
             val existing = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, tagged.name)
+            // Tags/provenance preservation: clients rebuild the body from
+            // scratch, so a body that omits these entirely must not wipe them
+            // on an unrelated edit. An explicit empty list / stamp=false in the
+            // body still clears/disables.
+            val preserved = if (existing != null)
+                tagged.copy(
+                    tags = if (tagged.tags == null) existing.tags else tagged.tags,
+                    provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance
+                )
+            else tagged
             val note = if (changeNote != null && changeNote.nonEmpty) changeNote
             else if (existing != null) "updated" else "created"
-            PipelineConfigIO.writeVersioned(tagged, note, VersionActor.resolve(request))
+            PipelineConfigIO.writeVersioned(preserved, note, VersionActor.resolve(request))
 
             // If the source is a database, initialize the pipeline pull table
             if (modifiedConfig.source.databaseAttributes != null)

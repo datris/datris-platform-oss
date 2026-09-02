@@ -817,3 +817,9 @@ tbody tr:last-child td {
   outline: none;
   box-sizing: border-box;
 }
+
+.del-opt:disabled {
+  opacity: 0.6;
+  cursor: default;
+  pointer-events: none;
+}

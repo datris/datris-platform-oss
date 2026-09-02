@@ -101,6 +101,11 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     jobContextPreprocessed
             }
 
+            // Provenance stamp (opt-in per pipeline): constant per-run fields
+            // appended once, after transformation, so every destination loader
+            // below sees the same data. No-op when provenance.stamp is off.
+            val jobContextStamped = ProvenanceStamper.stamp(jobContextTransform)
+
             // Run all destinations in parallel on the dedicated thread pool
             implicit val ec: ExecutionContext = JobRunner.destinationEC
 
@@ -134,43 +139,43 @@ class JobRunner(jobContext: JobContext) extends Runnable {
 
             val destinationFutures = List(
                 if (config.destination.objectStore != null)
-                    Some(runLoader("SparkObjectStoreLoader")(new SparkObjectStoreLoader(jobContextTransform).process()))
+                    Some(runLoader("SparkObjectStoreLoader")(new SparkObjectStoreLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.database != null && config.destination.database.usePostgres)
-                    Some(runLoader("PostgresLoader")(new PostgresLoader(jobContextTransform).process()))
+                    Some(runLoader("PostgresLoader")(new PostgresLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.database != null && config.destination.database.useMongoDB)
-                    Some(runLoader("MongoDBLoader")(new MongoDBLoader(jobContextTransform).process()))
+                    Some(runLoader("MongoDBLoader")(new MongoDBLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.database != null && config.destination.database.useSnowflake)
-                    Some(runLoader("SnowflakeLoader")(new SnowflakeLoader(jobContextTransform).process()))
+                    Some(runLoader("SnowflakeLoader")(new SnowflakeLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.database != null && config.destination.database.useDatabricks)
-                    Some(runLoader("DatabricksLoader")(new DatabricksLoader(jobContextTransform).process()))
+                    Some(runLoader("DatabricksLoader")(new DatabricksLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.restEndpoint != null)
-                    Some(runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextTransform, config.destination.restEndpoint).process()))
+                    Some(runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextStamped, config.destination.restEndpoint).process()))
                 else None,
                 if (config.destination.kafka != null)
-                    Some(runLoader("KafkaLoader")(new KafkaLoader(jobContextTransform).process()))
+                    Some(runLoader("KafkaLoader")(new KafkaLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.activeMQ != null)
-                    Some(runLoader("ActiveMQLoader")(new ActiveMQLoader(jobContextTransform).process()))
+                    Some(runLoader("ActiveMQLoader")(new ActiveMQLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.qdrant != null)
-                    Some(runLoader("QdrantLoader")(new QdrantLoader(jobContextTransform).process()))
+                    Some(runLoader("QdrantLoader")(new QdrantLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.weaviate != null)
-                    Some(runLoader("WeaviateLoader")(new WeaviateLoader(jobContextTransform).process()))
+                    Some(runLoader("WeaviateLoader")(new WeaviateLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.pgvector != null)
-                    Some(runLoader("PGVectorLoader")(new PGVectorLoader(jobContextTransform).process()))
+                    Some(runLoader("PGVectorLoader")(new PGVectorLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.milvus != null)
-                    Some(runLoader("MilvusLoader")(new MilvusLoader(jobContextTransform).process()))
+                    Some(runLoader("MilvusLoader")(new MilvusLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.chroma != null)
-                    Some(runLoader("ChromaLoader")(new ChromaLoader(jobContextTransform).process()))
+                    Some(runLoader("ChromaLoader")(new ChromaLoader(jobContextStamped).process()))
                 else None
             ).flatten
 

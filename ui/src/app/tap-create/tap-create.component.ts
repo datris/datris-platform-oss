@@ -26,6 +26,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   tapType: 'structured' | 'document' = 'structured';
   secretName = '';
   catalog = '';
+  tagsInput = '';
   availableCatalogs: string[] = [];
   showNewCatalog = false;
   newCatalogName = '';
@@ -250,6 +251,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.scriptMissing = tap.scriptMissing === true;
           this.secretName = tap.secretName || '';
           this.catalog = tap.catalog || '';
+          this.tagsInput = (tap.tags || []).join(', ');
           this.targetPipeline = tap.targetPipeline || '';
           this.tapType = (tap.tapType === 'document') ? 'document' : 'structured';
           this.scriptStorage = tap.scriptStorage || '';
@@ -1170,6 +1172,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     return this.testRecords.slice(0, 100);
   }
 
+  parseTags(): string[] {
+    return this.tagsInput.split(',').map(t => t.trim()).filter(t => t.length > 0);
+  }
+
   save(): void {
     this.saving = true;
     this.error = '';
@@ -1189,7 +1195,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             lastTestRunDataType: this.testDataType || null,
             lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
             lastTestRunRecordCount: this.testRecordCount || 0,
-            catalog: this.catalog || null
+            catalog: this.catalog || null,
+            tags: this.parseTags()
           }
         : {
             name: this.tapName.trim(),
@@ -1207,7 +1214,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             lastTestRunDataType: this.testDataType || null,
             lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
             lastTestRunRecordCount: this.testRecordCount || 0,
-            catalog: this.catalog || null
+            catalog: this.catalog || null,
+            tags: this.parseTags()
           };
 
       this.tapService.createOrUpdateTap(config).subscribe({

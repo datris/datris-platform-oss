@@ -46,6 +46,11 @@ object DestTypeInference {
 
     private val NeverRetyped = Set("_json", "_xml")
 
+    /** Provenance columns (ProvenanceStamper) stay `string`: they are stamped
+      * in-memory per run, so retyping them would desync from the stored config. */
+    private def isProvenanceColumn(name: String): Boolean =
+        name != null && name.toLowerCase.startsWith(ProvenanceStamper.Prefix)
+
     /** Evidence caps for the typing dialog: how many distinct values are shown
       * per column, and how long any shown value can be. */
     private[util] val maxSamples = 5
@@ -174,7 +179,7 @@ object DestTypeInference {
         val fields = names.map { name =>
             val values = lowerRecords.flatMap(_.get(name.toLowerCase)).map(v => if (v == null) null else v.toString)
             val (inferredType, samples, reason) = inferColumnWithEvidence(values)
-            if (NeverRetyped.contains(name.toLowerCase))
+            if (NeverRetyped.contains(name.toLowerCase) || isProvenanceColumn(name))
                 InferredDestField(name, "string", samples, null)
             else
                 InferredDestField(name, inferredType, samples, reason)

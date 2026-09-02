@@ -390,7 +390,10 @@ class TapAPIController {
                 tapConfigWithScript.copy(
                     createdAt = existing.createdAt,
                     updatedAt = now,
-                    createdByKeyLabel = existing.createdByKeyLabel
+                    createdByKeyLabel = existing.createdByKeyLabel,
+                    // Tags preservation: a body that omits tags entirely must not
+                    // wipe them on an unrelated edit; an explicit empty list clears.
+                    tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags
                 )
             else
                 tapConfigWithScript.copy(

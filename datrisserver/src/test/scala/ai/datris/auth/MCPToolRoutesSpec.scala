@@ -33,8 +33,15 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 70)
+        assert(MCPToolRoutes.allToolNames.size == 72)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
+    }
+
+    test("discovery + provenance routes are capability-mapped as metadata reads") {
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/provenance") == RouteCheck.Require("metadata", "read"))
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/lineage") == RouteCheck.Require("metadata", "read"))
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/lineage/pipeline/example") == RouteCheck.Require("metadata", "read"))
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/find") == RouteCheck.Require("metadata", "read"))
     }
 
     test("drift guard: every Mapped row resolves in CapabilityRoutes") {

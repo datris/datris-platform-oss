@@ -66,9 +66,9 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     this.loadTaps();
     this.refreshInterval = setInterval(() => {
       // Pause auto-refresh during any row-level interaction a re-render would
-      // destroy: an inline name edit, an open move-to-catalog menu, or an
-      // in-flight column-resize drag.
-      if (this.editingName || this.moveMenuOpen || isColumnDragActive()) return;
+      // destroy: an inline name edit, an open move-to-catalog menu, a pending
+      // or in-flight delete, or an in-flight column-resize drag.
+      if (this.editingName || this.moveMenuOpen || this.deleteTarget || isColumnDragActive()) return;
       this.loadPipelines();
       this.loadTaps();
     }, 5000);
@@ -246,6 +246,10 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   }
 
   deleteTarget = '';
+  // Name + mode of the delete in flight — dropping a table / deleting config
+  // and data can take seconds, so the confirm widget shows progress and locks.
+  deleting = '';
+  deletingMode: 'all' | 'data' | '' = '';
 
   promptDelete(event: Event, name: string): void {
     event.stopPropagation();
@@ -254,6 +258,7 @@ export class PipelinesComponent implements OnInit, OnDestroy {
 
   cancelDelete(event: Event): void {
     event.stopPropagation();
+    if (this.deleting) { return; }
     this.deleteTarget = '';
   }
 
@@ -272,16 +277,20 @@ export class PipelinesComponent implements OnInit, OnDestroy {
 
   confirmDelete(event: Event, deleteConfig: boolean): void {
     event.stopPropagation();
+    if (this.deleting) { return; }
     const name = this.deleteTarget;
+    this.deleting = name;
+    this.deletingMode = deleteConfig ? 'all' : 'data';
+    const done = () => { this.deleting = ''; this.deletingMode = ''; this.deleteTarget = ''; };
     if (deleteConfig) {
       this.pipelineService.deletePipeline(name).subscribe({
-        next: () => { this.deleteTarget = ''; this.loadPipelines(); },
-        error: (err) => { alert('Failed to delete: ' + (err.error || err.message)); this.deleteTarget = ''; }
+        next: () => { done(); this.loadPipelines(); },
+        error: (err) => { alert('Failed to delete: ' + (err.error || err.message)); done(); }
       });
     } else {
       this.pipelineService.deletePipelineData(name).subscribe({
-        next: () => { this.deleteTarget = ''; },
-        error: (err) => { alert('Failed to delete data: ' + (err.error || err.message)); this.deleteTarget = ''; }
+        next: () => done(),
+        error: (err) => { alert('Failed to delete data: ' + (err.error || err.message)); done(); }
       });
     }
   }

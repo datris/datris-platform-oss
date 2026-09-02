@@ -41,6 +41,10 @@ export class TapsComponent implements OnInit, OnDestroy {
   private refreshInterval: any;
 
   deleteTarget = '';
+  // Name of the tap whose delete is in flight — server-side cleanup (script
+  // store, ledger, staged objects) can take seconds, so the confirm widget
+  // shows progress and locks instead of sitting idle.
+  deleting = '';
   deleteCatalogTarget = '';
   runCatalogTarget = '';
   runningTap = '';
@@ -536,15 +540,18 @@ export class TapsComponent implements OnInit, OnDestroy {
 
   cancelDelete(event: Event): void {
     event.stopPropagation();
+    if (this.deleting) { return; }
     this.deleteTarget = '';
   }
 
   confirmDelete(event: Event): void {
     event.stopPropagation();
+    if (this.deleting) { return; }
     const name = this.deleteTarget;
+    this.deleting = name;
     this.tapService.deleteTap(name).subscribe({
-      next: () => { this.deleteTarget = ''; this.loadTaps(); },
-      error: (err) => { alert('Failed to delete: ' + (err.error || err.message)); this.deleteTarget = ''; }
+      next: () => { this.deleting = ''; this.deleteTarget = ''; this.loadTaps(); },
+      error: (err) => { alert('Failed to delete: ' + (err.error || err.message)); this.deleting = ''; this.deleteTarget = ''; }
     });
   }
 

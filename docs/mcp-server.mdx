@@ -85,7 +85,7 @@ Explore the structure of PostgreSQL, MongoDB, and vector databases managed by th
 
 | Tool | Description |
 |------|-------------|
-| `ai_answer` | Answer a question using AI based on provided context (RAG) |
+| `ai_answer` | Answer a question using AI based on provided context (RAG). Accepts an optional `sources` array of provenance handles, echoed back on the response so the answer and its provenance travel together |
 
 ### Taps
 
@@ -140,6 +140,13 @@ Every tool that changes platform state also accepts an optional `reason` — one
 |------|-------------|
 | `list_incidents` | The platform's [recovery-agent incidents](/incidents), newest first — kind, resource, state, classification and narrative. Read-only: only the platform opens incidents |
 | `get_incident` | One incident by id, with its full step-by-step story and any approvals it waits on. When the operator asks about a failure the platform is already working, explain this record instead of re-diagnosing |
+
+### Discovery and provenance
+
+| Tool | Description |
+|------|-------------|
+| `find_data` | Find datasets by meaning: ranks the pipelines the key can read against a natural-language query and returns location, [freshness](/provenance), provenance handles, lineage and a pre-filled `howToQuery` hint naming the existing query/search tool. Discovery only — the query call stays the agent's own |
+| `get_provenance` | Resolve a stamped `_datris_run_id` back to its origin: pipeline run, tap run, script commit, config version and declared source. See [Provenance](/provenance) |
 
 ## Monitoring Active Agents
 

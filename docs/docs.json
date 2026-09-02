@@ -37,7 +37,8 @@
           {
             "group": "Catalog",
             "pages": [
-              "data-catalog"
+              "data-catalog",
+              "provenance"
             ]
           },
           {

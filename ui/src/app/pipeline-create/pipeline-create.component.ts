@@ -29,6 +29,8 @@ export class PipelineCreateComponent implements OnInit {
   // Step 1 — Basics + Source
   pipelineName = '';
   catalog = '';
+  tagsInput = '';
+  provenanceStamp = false;
   availableCatalogs: string[] = [];
   showNewCatalog = false;
   newCatalogName = '';
@@ -225,6 +227,8 @@ export class PipelineCreateComponent implements OnInit {
   loadFromConfig(config: any): void {
     this.pipelineName = config.name || '';
     this.catalog = config.catalog || '';
+    this.tagsInput = (config.tags || []).join(', ');
+    this.provenanceStamp = !!config.provenance?.stamp;
     this.sampleFileDetected = true; // skip sample file prompt
 
     // Detect source type
@@ -1167,6 +1171,11 @@ export class PipelineCreateComponent implements OnInit {
 
     // Set catalog on the pipeline config
     config.catalog = this.catalog || null;
+
+    // Tags + provenance. Emit explicit values (the wizard hydrates both in
+    // edit mode, so an empty tags list here is a deliberate clear).
+    config.tags = this.tagsInput.split(',').map(t => t.trim()).filter(t => t.length > 0);
+    config.provenance = { stamp: this.provenanceStamp };
 
     this.pipelineService.createPipeline(config).subscribe({
       next: () => {

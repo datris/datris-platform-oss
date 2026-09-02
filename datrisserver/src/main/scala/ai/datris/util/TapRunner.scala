@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, TapConfig, TapDocumentLedger, TapRunLog}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, TapConfig, TapDocumentLedger, TapFeedInfo, TapRunLog}
 import ai.datris.controller.{JobRunner, StreamNotifier}
 import com.google.gson.{Gson, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
@@ -182,7 +182,7 @@ object TapRunner {
                     tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
                 ) {
                     feedStarted = true
-                    feedPipeline(tapConfig, result, publisherToken)
+                    feedPipeline(tapConfig, result, publisherToken, TapFeedInfo(tapConfig.name, now, tapConfig.scriptCommitSha, declaredSource(tapConfig)))
                 } else (result.recordCount, new java.util.ArrayList[String]())
 
             if (push) {
@@ -290,9 +290,23 @@ object TapRunner {
         }
     }
 
-    private def feedPipeline(tapConfig: TapConfig, result: TapScriptResult, publisherToken: String): (Int, java.util.List[String]) = {
+    /** The tap's declared source identity for provenance: the endpoint host for
+      * HTTP taps, `tap:<name>` for script taps. Never credentials. */
+    private[util] def declaredSource(tapConfig: TapConfig): String = {
+        if (tapConfig.isHttp && tapConfig.endpointUrl != null) {
+            try {
+                val host = java.net.URI.create(tapConfig.endpointUrl).getHost
+                if (host != null) host else "tap:" + tapConfig.name
+            } catch {
+                case _: Exception => "tap:" + tapConfig.name
+            }
+        } else
+            "tap:" + tapConfig.name
+    }
+
+    private def feedPipeline(tapConfig: TapConfig, result: TapScriptResult, publisherToken: String, tapFeed: TapFeedInfo): (Int, java.util.List[String]) = {
         if (result.dataType == "document") {
-            return feedDocumentPipeline(tapConfig, result, publisherToken)
+            return feedDocumentPipeline(tapConfig, result, publisherToken, tapFeed)
         }
 
         logger.info("TapRunner: feeding " + result.recordCount + " records to pipeline: " + tapConfig.targetPipeline)
@@ -320,7 +334,7 @@ object TapRunner {
             (result.records.getBytes("UTF-8"), "tap-" + tapConfig.name + ".json")
         }
 
-        val jobContext = new StreamNotifier().process(bytes, filename, tapConfig.targetPipeline, publisherToken)
+        val jobContext = new StreamNotifier().process(bytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)
         GlobalJobContext.addJobContext(jobContext)
         logger.info("TapRunner: submitted job for pipeline: " + tapConfig.targetPipeline + ", token: " + jobContext.pipelineToken)
         val tokens = new java.util.ArrayList[String]()
@@ -345,7 +359,12 @@ object TapRunner {
      * Returns the number of documents actually submitted to the pipeline (skipped docs
      * and failed docs are not counted).
      */
-    private def feedDocumentPipeline(tapConfig: TapConfig, result: TapScriptResult, publisherToken: String): (Int, java.util.List[String]) = {
+    private def feedDocumentPipeline(
+        tapConfig: TapConfig,
+        result: TapScriptResult,
+        publisherToken: String,
+        tapFeed: TapFeedInfo
+    ): (Int, java.util.List[String]) = {
         import scala.collection.JavaConverters._
         logger.info("TapRunner: document tap '" + tapConfig.name + "' returned " + result.recordCount + " documents")
         val tokens = new java.util.ArrayList[String]()
@@ -440,7 +459,7 @@ object TapRunner {
                         )
 
                         try {
-                            val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, publisherToken)
+                            val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)
                             GlobalJobContext.addJobContext(jobContext)
                             tokens.add(jobContext.pipelineToken)
                             TapDocumentLedgerIO.write(

@@ -46,6 +46,33 @@
     <button class="banner-btn" *ngIf="auth.canWrite()" (click)="showDestTypes = true">Set types…</button>
   </div>
 
+  <!-- Lineage & freshness (v1.26): config-derived neighborhood + last landing. -->
+  <div class="lineage-panel" *ngIf="lineage">
+    <div class="lineage-row" *ngIf="lineage.freshness as f">
+      <span class="lineage-label">Freshness</span>
+      <span class="fresh-chip" [class.fresh]="f.state === 'fresh'" [class.stale]="f.state === 'stale'">{{ f.state }}</span>
+      <span class="lineage-detail" *ngIf="f.lastLandedAt">last landed {{ f.lastLandedAt }}<ng-container *ngIf="f.recordCount != null"> · {{ f.recordCount }} records</ng-container></span>
+      <span class="lineage-detail" *ngIf="f.cursorUpdatedAt"> · cursor {{ f.cursorUpdatedAt }}</span>
+    </div>
+    <div class="lineage-row" *ngIf="upstreamNodes().length > 0">
+      <span class="lineage-label">Upstream</span>
+      <ng-container *ngFor="let n of upstreamNodes()">
+        <a *ngIf="n.type === 'tap'" class="lineage-chip tap" [routerLink]="['/taps', n.name, 'edit']">
+          <span class="material-icons">water_drop</span>{{ n.name }}
+        </a>
+        <span *ngIf="n.type === 'source'" class="lineage-chip source">
+          <span class="material-icons">public</span>{{ n.name }}
+        </span>
+      </ng-container>
+    </div>
+    <div class="lineage-row" *ngIf="downstreamNodes().length > 0">
+      <span class="lineage-label">Lands in</span>
+      <span class="lineage-chip dataset" *ngFor="let n of downstreamNodes()">
+        <span class="material-icons">storage</span>{{ n.name }}
+      </span>
+    </div>
+  </div>
+
   <div class="config-container" *ngIf="configJson">
     <pre class="config-json" [innerText]="configJson"></pre>
   </div>

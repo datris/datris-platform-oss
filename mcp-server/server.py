@@ -2119,6 +2119,11 @@ def _base_tools():
                 "properties": {
                     "query": {"type": "string", "description": "The question to answer"},
                     "context": {"type": "string", "description": "Context text to base the answer on (e.g., retrieved document chunks)"},
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "Optional provenance handles for the context (e.g. find_data results or _datris_* fields from search hits). Echoed back unchanged on the response so the answer and its provenance travel together.",
+                    },
                 },
                 "required": ["query", "context"]
             }
@@ -2842,6 +2847,49 @@ def _base_tools():
                 "required": ["incident_id"],
             }
         ),
+        # --- Discovery + provenance (read-only) ---
+        Tool(
+            name="find_data",
+            description=(
+                "Find datasets by meaning: ranks the pipelines your key can read against a natural-language "
+                "query over their names, descriptions, tags, catalogs, destination field names, and source hosts. "
+                "Each hit returns where the data lives, how fresh it is, provenance handles (latest run id, config "
+                "version, script sha), lineage, and a `howToQuery` hint naming the existing query/search tool with "
+                "pre-filled arguments. Discovery only — nothing is executed for you: make the query call yourself, "
+                "then pass its provenance handles to ai_answer as `sources` so the answer carries them."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural-language description of the data you need."},
+                    "limit": {"type": "integer", "description": "Maximum results to return (default: 5, max: 25)."},
+                    "ai": {
+                        "type": "boolean",
+                        "description": "Rerank the top candidates with the platform's primary AI model (default: false — ranking is deterministic).",
+                    },
+                },
+                "required": ["query"],
+            }
+        ),
+        Tool(
+            name="get_provenance",
+            description=(
+                "Resolve a stamped `_datris_run_id` value back to its origin: the pipeline run, the tap run that fed "
+                "it, the script commit, the pipeline config version, and the declared source. Use it when rows or "
+                "search results carry `_datris_*` provenance fields (pipelines with provenance stamping enabled). "
+                "Returns one document walking the whole chain."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "run_id": {"type": "string", "description": "The `_datris_run_id` value from the data (the pipeline run token)."},
+                    "pipeline": {"type": "string", "description": "Pipeline name, if known (speeds resolution)."},
+                    "tap_run": {"type": "string", "description": "The `_datris_tap_run` value from the data, if present."},
+                    "config_version": {"type": "integer", "description": "The `_datris_config_version` value from the data, if present."},
+                },
+                "required": ["run_id"],
+            }
+        ),
     ]
 
 
@@ -2925,6 +2973,7 @@ def _dispatch(name: str, args: dict) -> str:
                         "destination": dest_kind,
                         "target": target,
                         "catalog": p.get("catalog"),
+                        "tags": p.get("tags"),
                         "version": p.get("version"),
                     })
                 return json.dumps({"count": len(summary), "names": [s["name"] for s in summary], "pipelines": summary}, indent=2)
@@ -3338,6 +3387,8 @@ def _dispatch(name: str, args: dict) -> str:
     # --- AI ---
     elif name == "ai_answer":
         payload = {"query": args["query"], "context": args["context"]}
+        if args.get("sources"):
+            payload["sources"] = args["sources"]
         return _call("post", "/api/v1/ai/answer", json=payload)
 
     # --- Config ---
@@ -3853,6 +3904,30 @@ def _dispatch(name: str, args: dict) -> str:
         if not incident_id:
             return json.dumps({"error": "incident_id is required"})
         return _call("get", f"/api/v1/incidents/{incident_id}")
+
+    elif name == "find_data":
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return json.dumps({"error": "query is required"})
+        params = {"query": query}
+        if args.get("limit"):
+            params["limit"] = args["limit"]
+        if args.get("ai"):
+            params["ai"] = "true"
+        return _call("get", "/api/v1/catalog/find", params=params)
+
+    elif name == "get_provenance":
+        run_id = str(args.get("run_id", "")).strip()
+        if not run_id:
+            return json.dumps({"error": "run_id is required"})
+        params = {"runId": run_id}
+        if args.get("pipeline"):
+            params["pipeline"] = args["pipeline"]
+        if args.get("tap_run"):
+            params["tapRun"] = args["tap_run"]
+        if args.get("config_version"):
+            params["configVersion"] = args["config_version"]
+        return _call("get", "/api/v1/provenance", params=params)
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
