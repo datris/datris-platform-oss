@@ -70,6 +70,14 @@ class CatalogFindSpec extends AnyFunSuite {
         assert(CatalogFind.howToQuery("p", ref("activemq", "queue" -> "q")) == null)
     }
 
+    test("a tag shared by pipeline and tap shows once in a hit") {
+        val p = pipeline("orders", tagList = tags("provenance-test", "orders"))
+        val t = tap("orders-export", "orders", "d").copy(tags = tags("provenance-test"))
+        assert(CatalogFind.mergedTags(p, Some(t)) == List("provenance-test", "orders"))
+        assert(CatalogFind.mergedTags(p, None) == List("provenance-test", "orders"))
+        assert(CatalogFind.mergedTags(pipeline("bare"), None) == Nil)
+    }
+
     test("weaviate hint uses class_name, matching the search tool's schema") {
         val w = CatalogFind.howToQuery("p", LineageService.DatasetRef("weaviate", List("collection" -> "Documents")))
         assert(w.get("tool").getAsString == "search_weaviate")

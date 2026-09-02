@@ -62,6 +62,12 @@ object CatalogFind {
         }.sum
     }
 
+    /** Pipeline tags then tap tags, deduplicated — a label shared by both
+      * shows once in the hit. */
+    private[datris] def mergedTags(p: PipelineConfig, tap: Option[TapConfig]): List[String] =
+        (Option(p.tags).map(_.asScala.toList).getOrElse(Nil) ++
+            tap.flatMap(t => Option(t.tags)).map(_.asScala.toList).getOrElse(Nil)).distinct
+
     private def destFieldTokens(p: PipelineConfig): List[String] = {
         if (p.destination == null || p.destination.schemaProperties == null || p.destination.schemaProperties.fields == null) Nil
         else p.destination.schemaProperties.fields.asScala.toList.flatMap(f => tokenize(f.name))
@@ -140,8 +146,7 @@ object CatalogFind {
         o.addProperty("name", p.name)
         c.tap.flatMap(t => Option(t.description)).foreach(o.addProperty("description", _))
         val tags = new JsonArray()
-        if (p.tags != null) p.tags.asScala.foreach(tags.add)
-        c.tap.foreach(t => if (t.tags != null) t.tags.asScala.foreach(tags.add))
+        mergedTags(p, c.tap).foreach(tags.add)
         o.add("tags", tags)
         if (p.catalog != null) o.addProperty("catalog", p.catalog)
         o.addProperty("score", math.round(c.score * 100.0) / 100.0)
