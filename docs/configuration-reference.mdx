@@ -255,7 +255,7 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | — | Entra ID service principal for keyless Azure OpenAI auth (no API key stored anywhere). Single-tenant only; the Configuration tab's Azure credentials section is the equivalent UI path. On Azure compute, leave all auth unset to use the server's managed identity. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | — | AWS credentials for the Bedrock path (`AI_PROVIDER=bedrock`). Optional — leave unset to use the server's IAM role / default credential chain. Never selects Bedrock by itself. |
 | `AWS_REGION` | — | AWS region for the Bedrock path (e.g. `us-east-1`). |
-| `BEDROCK_MODEL` | `anthropic.claude-fable-5` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |
+| `BEDROCK_MODEL` | `anthropic.claude-fable-5-1` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |
 | `XAI_API_KEY` | — | Grok (xAI) API key from console.x.ai, for the Grok path (`AI_PROVIDER=grok`, or auto-picked when it's the sole key). |
 | `GROK_MODEL` | `grok-4.6` | Grok model seeded into `oss/ai-primary` on the Grok path. |
 | `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5`; the Grok path defaults to `grok-4.6`). |

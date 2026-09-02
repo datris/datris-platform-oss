@@ -139,7 +139,7 @@ else
     seed_if_absent secret/oss/ai-primary \
       provider="bedrock" \
       endpoint="" \
-      model="${BEDROCK_MODEL:-anthropic.claude-fable-5}" \
+      model="${BEDROCK_MODEL:-anthropic.claude-fable-5-1}" \
       apiKey=""
     seed_if_absent secret/oss/codegen \
       provider="bedrock" \

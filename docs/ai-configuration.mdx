@@ -158,12 +158,12 @@ AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=...
 # Optional model override (default shown):
-# BEDROCK_MODEL=anthropic.claude-fable-5
+# BEDROCK_MODEL=anthropic.claude-fable-5-1
 ```
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
-| `oss/ai-primary` | bedrock | *(blank — derived from region)* | `BEDROCK_MODEL` or `anthropic.claude-fable-5` |
+| `oss/ai-primary` | bedrock | *(blank — derived from region)* | `BEDROCK_MODEL` or `anthropic.claude-fable-5-1` |
 | `oss/codegen` | bedrock | *(blank — derived from region)* | `CODEGEN_MODEL` or `anthropic.claude-opus-5` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
@@ -171,11 +171,11 @@ Notes:
 
 - **Model ids** are Bedrock's `anthropic.`-prefixed forms (e.g. `anthropic.claude-opus-5`). Models that aren't on-demand invokable in your region are addressed by their **cross-region inference profile** id (e.g. `us.anthropic.claude-...`). The Configuration UI discovers the invokable list live from your account when its IAM policy allows it.
 - **Enable model access first.** Models must be enabled for your account in the AWS Bedrock console — a model can appear in listings and still fail with `AccessDeniedException` on the first call until access is granted.
-- **Claude Fable 5 needs a one-time data-retention opt-in.** Fable 5 (and Mythos 5) require Bedrock's `provider_data_share` retention mode — prompts/completions are shared with Anthropic and retained up to 30 days for trust and safety (not used for training; other Claude models are unaffected by the setting). Without it, calls fail with "data retention mode 'default' is not available for this model". Opt in once per account: `PUT /data-retention` with `{"mode": "provider_data_share"}` on the Bedrock control plane (IAM action `bedrock:PutAccountDataRetention`) — see AWS's Bedrock "Data retention" documentation. There is no console UI for this setting at the time of writing.
+- **Claude Fable 5 / 5.1 need a one-time data-retention opt-in.** Fable 5 and 5.1 (and Mythos 5 / 5.1) require Bedrock's `provider_data_share` retention mode — prompts/completions are shared with Anthropic and retained up to 30 days for trust and safety (not used for training; other Claude models are unaffected by the setting). Without it, calls fail with "data retention mode 'default' is not available for this model". Opt in once per account: `PUT /data-retention` with `{"mode": "provider_data_share"}` on the Bedrock control plane (IAM action `bedrock:PutAccountDataRetention`) — see AWS's Bedrock "Data retention" documentation. There is no console UI for this setting at the time of writing.
 - **Minimal IAM policy:** `bedrock:InvokeModel` on the models you use, plus `bedrock:ListFoundationModels` and `bedrock:ListInferenceProfiles` for the UI's live model dropdown (optional — without them the UI shows a standard list).
 - **Endpoint stays blank** in the slot secrets; the invoke URL is derived from the region and model. Set an explicit endpoint only for VPC endpoints or GovCloud.
 - **Embeddings and web search are not available on Bedrock** — embeddings default to the bundled bge-m3 service (or pair with OpenAI/Azure), and web search stays on Anthropic/OpenAI.
-- Extended thinking works the same as on the direct Anthropic provider, including Claude Fable 5's always-on thinking.
+- Extended thinking works the same as on the direct Anthropic provider, including the always-on thinking of Claude Fable 5 and 5.1.
 
 ### Grok (xAI) path
 
