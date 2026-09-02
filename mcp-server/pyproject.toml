@@ -26,7 +26,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "mcp[cli]",
+    # Same pin as requirements.txt: mcp 2.x removed the Server.list_resources/
+    # list_tools decorator API this server is written against.
+    "mcp[cli]>=1.28,<2",
     "requests",
     "click",
     "httpx",
