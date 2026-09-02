@@ -3,6 +3,18 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.26.0" description="September 2, 2026">
+  **Provenance on your data: any row can say which run, which configuration, which script, and which source produced it — and agents can find datasets by meaning.**
+
+  - Opt-in **provenance stamping** per pipeline: every row, document, message, and vector chunk landed carries the run that produced it, when it landed, the definition version, the tap run that fed it, the exact script commit, and the declared source. Existing rows are never rewritten — provenance starts with the first stamped run; SQL destinations gain the columns automatically.
+  - Every stamp resolves back to its origin — the run, the feeding tap run, the script commit, the definition version with its change note, and the source — via the platform or the new **get_provenance** agent tool. Vector search results carry provenance per chunk so RAG answers can cite the run and source behind each passage.
+  - A **lineage view** shows source → tap → pipeline → landed dataset → catalog, derived from configuration alone. Pipeline detail pages show what feeds them, where they land, and how fresh they are, using the same staleness judgment as the Activity dashboard.
+  - **Tags** on taps and pipelines: free-form labels shown in the catalog and ranked by discovery.
+  - **find_data**: agents discover datasets by meaning — the best-matching pipelines their key can read, each with location, freshness, provenance handles, and a ready-to-run query hint. Discovery only: the query stays the agent's own call, under its own permissions. AI answers can carry the provenance handles along.
+  - Deleting a tap or pipeline from the catalog now shows progress while the platform finishes cleaning up.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required; provenance stamping is off by default — enable it per pipeline in the pipeline editor's Destination step.
+</Update>
+
 <Update label="v1.25.0" description="September 1, 2026">
   **The recovery agent: Datris notices broken data flows, diagnoses them, and — within limits you set — repairs and verifies them.**
 
