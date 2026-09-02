@@ -150,10 +150,10 @@
             </ng-container>
             <span class="delete-confirm embed-delete-confirm"
                   *ngIf="auth.canWrite() && deleteTarget === tap.name" (click)="$event.stopPropagation()">
-              <button class="del-opt del-yes" (click)="confirmDelete($event)" title="Confirm delete">
-                <span class="material-icons">delete_forever</span> Delete
+              <button class="del-opt del-yes" (click)="confirmDelete($event)" [disabled]="deleting === tap.name" title="Confirm delete">
+                <span class="material-icons">{{ deleting === tap.name ? 'hourglass_empty' : 'delete_forever' }}</span> {{ deleting === tap.name ? 'Deleting...' : 'Delete' }}
               </button>
-              <button class="del-opt del-cancel" (click)="cancelDelete($event)" title="Cancel">
+              <button class="del-opt del-cancel" (click)="cancelDelete($event)" [disabled]="deleting === tap.name" title="Cancel">
                 <span class="material-icons">close</span>
               </button>
             </span>
@@ -258,10 +258,10 @@
               <span class="material-icons">delete</span>
             </button>
             <div class="delete-confirm" *ngIf="auth.canWrite() && deleteTarget === tap.name" (click)="$event.stopPropagation()">
-              <button class="del-opt del-yes" (click)="confirmDelete($event)">
-                <span class="material-icons">delete_forever</span> Delete
+              <button class="del-opt del-yes" (click)="confirmDelete($event)" [disabled]="deleting === tap.name">
+                <span class="material-icons">{{ deleting === tap.name ? 'hourglass_empty' : 'delete_forever' }}</span> {{ deleting === tap.name ? 'Deleting...' : 'Delete' }}
               </button>
-              <button class="del-opt del-cancel" (click)="cancelDelete($event)">
+              <button class="del-opt del-cancel" (click)="cancelDelete($event)" [disabled]="deleting === tap.name">
                 <span class="material-icons">close</span>
               </button>
             </div>

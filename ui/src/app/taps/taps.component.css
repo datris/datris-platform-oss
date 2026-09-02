@@ -1136,3 +1136,9 @@ tbody tr:last-child td {
   font-style: italic;
   color: var(--text-muted);
 }
+
+.del-opt:disabled {
+  opacity: 0.6;
+  cursor: default;
+  pointer-events: none;
+}

@@ -122,13 +122,13 @@
             </ng-container>
             <span class="delete-menu embed-delete-confirm"
                   *ngIf="auth.canWrite() && deleteTarget === ds.name" (click)="$event.stopPropagation()">
-              <button class="del-opt del-all" (click)="confirmDelete($event, true)" title="Delete config and data">
-                <span class="material-icons">delete_forever</span> Config &amp; Data
+              <button class="del-opt del-all" (click)="confirmDelete($event, true)" [disabled]="deleting === ds.name" title="Delete config and data">
+                <span class="material-icons">{{ deleting === ds.name && deletingMode === 'all' ? 'hourglass_empty' : 'delete_forever' }}</span> {{ deleting === ds.name && deletingMode === 'all' ? 'Deleting...' : 'Config &amp; Data' }}
               </button>
-              <button class="del-opt del-data" (click)="confirmDelete($event, false)" title="Delete data only">
-                <span class="material-icons">cleaning_services</span> Data Only
+              <button class="del-opt del-data" (click)="confirmDelete($event, false)" [disabled]="deleting === ds.name" title="Delete data only">
+                <span class="material-icons">{{ deleting === ds.name && deletingMode === 'data' ? 'hourglass_empty' : 'cleaning_services' }}</span> {{ deleting === ds.name && deletingMode === 'data' ? 'Deleting...' : 'Data Only' }}
               </button>
-              <button class="del-opt del-cancel" (click)="cancelDelete($event)" title="Cancel">
+              <button class="del-opt del-cancel" (click)="cancelDelete($event)" [disabled]="deleting === ds.name" title="Cancel">
                 <span class="material-icons">close</span>
               </button>
             </span>
@@ -179,13 +179,13 @@
             <button class="action-btn edit-btn" (click)="editPipeline($event, ds.name)" title="Edit pipeline" *ngIf="auth.canWrite()"><span class="material-icons">edit</span></button>
             <button class="action-btn delete-btn" (click)="promptDelete($event, ds.name)" title="Delete pipeline" *ngIf="auth.canWrite() && deleteTarget !== ds.name"><span class="material-icons">delete</span></button>
             <div class="delete-menu" *ngIf="auth.canWrite() && deleteTarget === ds.name" (click)="$event.stopPropagation()">
-              <button class="del-opt del-all" (click)="confirmDelete($event, true)" title="Delete config and data">
-                <span class="material-icons">delete_forever</span> Config & Data
+              <button class="del-opt del-all" (click)="confirmDelete($event, true)" [disabled]="deleting === ds.name" title="Delete config and data">
+                <span class="material-icons">{{ deleting === ds.name && deletingMode === 'all' ? 'hourglass_empty' : 'delete_forever' }}</span> {{ deleting === ds.name && deletingMode === 'all' ? 'Deleting...' : 'Config & Data' }}
               </button>
-              <button class="del-opt del-data" (click)="confirmDelete($event, false)" title="Delete data only">
-                <span class="material-icons">cleaning_services</span> Data Only
+              <button class="del-opt del-data" (click)="confirmDelete($event, false)" [disabled]="deleting === ds.name" title="Delete data only">
+                <span class="material-icons">{{ deleting === ds.name && deletingMode === 'data' ? 'hourglass_empty' : 'cleaning_services' }}</span> {{ deleting === ds.name && deletingMode === 'data' ? 'Deleting...' : 'Data Only' }}
               </button>
-              <button class="del-opt del-cancel" (click)="cancelDelete($event)" title="Cancel">
+              <button class="del-opt del-cancel" (click)="cancelDelete($event)" [disabled]="deleting === ds.name" title="Cancel">
                 <span class="material-icons">close</span>
               </button>
             </div>
