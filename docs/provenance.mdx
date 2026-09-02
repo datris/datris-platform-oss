@@ -1,0 +1,88 @@
+---
+title: "Provenance, Lineage & Discovery"
+description: "Trace any landed row back to the run, config version, script commit and source that produced it — and let agents find datasets by meaning."
+---
+
+Every answer an agent gives from Datris data should be traceable. Three features make that real:
+
+- **Provenance stamping** (opt-in per pipeline) writes run identity onto every row, document, message and vector chunk a pipeline lands.
+- **Lineage** shows the chain *Source → Tap → Pipeline → Dataset → Catalog*, derived deterministically from your configuration — no AI, no inference.
+- **`find_data`** lets an agent discover a dataset by meaning, learn where it lives, how fresh it is, and exactly how to query it — without Datris executing anything on its behalf.
+
+## Provenance stamping
+
+Turn it on per pipeline: **Catalog → pipeline → Edit → Destination step → "Stamp provenance on landed data"**, or set it in the config:
+
+```json
+{
+  "name": "orders",
+  "provenance": { "stamp": true }
+}
+```
+
+From the next run on, every row the pipeline lands carries six extra fields:
+
+| Field | Meaning |
+|-------|---------|
+| `_datris_run_id` | The pipeline run that landed this row |
+| `_datris_ingested_at` | When it landed (UTC, ISO-8601) |
+| `_datris_config_version` | The pipeline definition version at run time |
+| `_datris_tap_run` | The tap run that fed it (`tapName\|runTime`; empty for direct uploads) |
+| `_datris_script_sha` | The tap script's commit, for repository-backed taps |
+| `_datris_source` | The tap's declared source — an endpoint host or tap id, never credentials |
+
+How the fields land depends on the destination:
+
+- **PostgreSQL, Snowflake, Databricks** — columns, auto-added as text to existing tables on the first stamped run (the same additive schema evolution new CSV columns already get).
+- **MongoDB and JSON data** — keys on each document. XML data is not stamped.
+- **Object store (CSV/Parquet)** — columns in the written files, from the first stamped run on.
+- **Kafka / ActiveMQ** — fields in each message; consumers that ignore unknown fields are unaffected.
+- **Vector stores** — payload metadata on every chunk, so search results cite the run and source per chunk.
+
+Rows are **never rewritten retroactively**: provenance starts at the first run after the toggle is turned on, and older rows read as null/absent. Stamped columns are always stored as text and are never proposed for retyping by the destination-typing flow.
+
+A subset of fields can be selected with `"provenance": { "stamp": true, "fields": ["_datris_run_id", "_datris_ingested_at"] }`.
+
+## Resolving a stamp
+
+`GET /api/v1/provenance?runId=<_datris_run_id>` (or the `get_provenance` MCP tool) walks the chain and returns one document: the run's job status and record count, the tap run that fed it (with logs metadata and script commit), the pipeline config version snapshot, and the declared source. Pass the row's `_datris_tap_run` and `_datris_config_version` values when you have them for an exact, lookup-only resolution.
+
+## Lineage & freshness
+
+`GET /api/v1/lineage` returns the whole graph; `GET /api/v1/lineage/{type}/{name}` returns one node's neighborhood — everything upstream and downstream of a source, tap, pipeline, dataset, or catalog. The graph is built from configuration alone, on request.
+
+Freshness per pipeline combines the last successful landing, its record count, the incremental sync cursor (when the feeding tap keeps one), and the same stale classification the Ops Activity dashboard uses — the catalog and the dashboard never disagree.
+
+In the UI, a pipeline's detail page shows its upstream tap and source, the datasets it lands in, and the freshness line.
+
+## Tags
+
+Taps and pipelines take free-form `tags` (edit them in the wizards, or via the API). They render in the catalog tables and feed discovery ranking. That is the whole "business concept" layer: explicit, reviewable, boring.
+
+## `find_data` — discovery without execution
+
+The `find_data` MCP tool (or `GET /api/v1/catalog/find?query=…`) ranks the pipelines the calling key can read against a natural-language query — over names, descriptions, tags, catalogs, destination field names and source hosts. Each hit returns:
+
+```json
+{
+  "name": "orders",
+  "description": "Daily order export",
+  "tags": ["sales"],
+  "catalog": "commerce",
+  "freshness": { "state": "fresh", "lastLandedAt": "…", "recordCount": 14223 },
+  "location": { "kind": "postgres", "database": "datris", "schema": "public", "table": "orders" },
+  "howToQuery": { "tool": "query_postgres", "args": { "sql": "SELECT * FROM \"public\".\"orders\" LIMIT 100" } },
+  "provenance": { "latestRunId": "…", "configVersion": 12, "scriptSha": "a1b2c3d" },
+  "lineage": { "upstream": ["tap:orders-export"], "downstream": ["dataset:postgres:datris.public.orders"] }
+}
+```
+
+`howToQuery` names an **existing** tool with pre-filled arguments; the agent still makes that call itself, under its own capabilities. That is deliberate:
+
+1. Capabilities are enforced at the query call — a viewer key can find but not read.
+2. Provenance attaches to the dataset actually queried, not a synthesized result.
+3. The agent's loop stays visible — a wrong hint is a tool error the agent sees and corrects, not a silently wrong answer.
+
+Ranking is deterministic by default; pass `ai=true` for an optional rerank of the top candidates by the primary AI model.
+
+To carry provenance through to an answer, pass the handles to `ai_answer` as `sources` — they are echoed back on the response, alongside the answer text, and never fed to the model.

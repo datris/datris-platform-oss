@@ -18,7 +18,18 @@ case class PipelineConfig(
     createdByKeyLabel: String = null,
     // Monotonic definition version; immutable snapshots
     // 1..N live in <env>-pipeline-version. Absent field → 1.
-    version: Int = 1
+    version: Int = 1,
+    // Free-form discovery labels ranked by /catalog/find. java.util.List
+    // because Gson round-trips this document and its EntityVersion snapshots.
+    tags: java.util.List[String] = null,
+    // Opt-in provenance stamping (absent/null ⇒ off). See ProvenanceStamper.
+    provenance: ProvenanceConfig = null
+)
+
+case class ProvenanceConfig @JsonCreator() (
+    @JsonProperty("stamp") stamp: Boolean = false,
+    // Subset of ProvenanceStamper.AllFields to stamp; null/empty ⇒ all.
+    @JsonProperty("fields") fields: java.util.List[String] = null
 )
 
 case class Source(

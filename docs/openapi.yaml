@@ -224,12 +224,25 @@ components:
         context:
           type: string
           description: Context text to base the answer on (e.g., retrieved document chunks)
+        sources:
+          type: array
+          items:
+            type: object
+          description: >-
+            Optional provenance handles for the context (e.g. find_data results
+            or _datris_* fields from search hits). Echoed back unchanged on the
+            response; never fed to the model.
 
     AiAnswerResponse:
       type: object
       properties:
         answer:
           type: string
+        sources:
+          type: array
+          items:
+            type: object
+          description: The request's sources array, echoed unchanged
 
     ConfigUploadResponse:
       type: object
@@ -4157,3 +4170,190 @@ paths:
                     type: string
         '500':
           description: Error (including missing key)
+
+  # ── Provenance / Lineage / Discovery (v1.26) ──────────────────────────────
+  /api/v1/provenance:
+    get:
+      tags: [Provenance]
+      summary: Resolve a stamped run id to its origin
+      description: >-
+        Walks a `_datris_run_id` back through the chain run → job status → tap
+        run → script commit → pipeline config version → declared source and
+        returns one document. Pass the row's `_datris_tap_run` and
+        `_datris_config_version` values when available for exact resolution.
+      parameters:
+        - in: query
+          name: runId
+          required: true
+          schema:
+            type: string
+          description: The `_datris_run_id` value (the pipeline run token)
+        - in: query
+          name: pipeline
+          schema:
+            type: string
+          description: Pipeline name, if known
+        - in: query
+          name: tapRun
+          schema:
+            type: string
+          description: The `_datris_tap_run` value, if present
+        - in: query
+          name: configVersion
+          schema:
+            type: integer
+          description: The `_datris_config_version` value, if present
+      responses:
+        '200':
+          description: The resolved provenance chain
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runId:
+                    type: string
+                  pipeline:
+                    type: string
+                  job:
+                    type: object
+                  tapRun:
+                    type: object
+                  tap:
+                    type: object
+                  configVersion:
+                    type: object
+                  source:
+                    type: string
+        '400':
+          description: runId missing
+  /api/v1/lineage:
+    get:
+      tags: [Provenance]
+      summary: The whole lineage graph
+      description: >-
+        The graph Source → Tap → Pipeline → Dataset → Catalog, derived from
+        configuration alone (cached ~1 minute). Node ids are `type:name`.
+      responses:
+        '200':
+          description: Nodes and edges
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        type:
+                          type: string
+                          enum: [source, tap, pipeline, dataset, catalog]
+                        name:
+                          type: string
+                        catalog:
+                          type: string
+                  edges:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        from:
+                          type: string
+                        to:
+                          type: string
+  /api/v1/lineage/{type}/{name}:
+    get:
+      tags: [Provenance]
+      summary: One node's lineage neighborhood
+      description: >-
+        The node, everything transitively upstream and downstream, the edges
+        between them, and freshness for the pipeline the node is (or feeds).
+      parameters:
+        - in: path
+          name: type
+          required: true
+          schema:
+            type: string
+            enum: [source, tap, pipeline, dataset, catalog]
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The neighborhood
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  node:
+                    type: object
+                  upstream:
+                    type: array
+                    items:
+                      type: object
+                  downstream:
+                    type: array
+                    items:
+                      type: object
+                  edges:
+                    type: array
+                    items:
+                      type: object
+                  freshness:
+                    type: object
+        '404':
+          description: No such node
+  /api/v1/catalog/find:
+    get:
+      tags: [Provenance]
+      summary: Find datasets by meaning (discovery, not execution)
+      description: >-
+        Ranks the pipelines the calling key may read against a natural-language
+        query (name, description, tags, catalog, destination field names,
+        source host). Each hit carries location, freshness, provenance handles,
+        lineage and a pre-filled `howToQuery` hint naming an existing
+        query/search tool — the caller still makes that call itself, under its
+        own capabilities.
+      parameters:
+        - in: query
+          name: query
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 5
+            maximum: 25
+        - in: query
+          name: ai
+          schema:
+            type: boolean
+            default: false
+          description: Rerank the top candidates with the primary AI model
+      responses:
+        '200':
+          description: Ranked hits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+                  totalMatches:
+                    type: integer
+        '400':
+          description: query missing

@@ -177,7 +177,16 @@ object CapabilityRoutes {
 
         // Server-side Activity signals (failures / stale / volume) — derived
         // operational metadata.
-        Route("GET", "/api/v1/activity/signals", "metadata", "read")
+        Route("GET", "/api/v1/activity/signals", "metadata", "read"),
+
+        // Provenance / lineage / discovery (v1.26) — read-only derived
+        // metadata. `/catalog/find` additionally filters hits per item with
+        // the caller's pipeline/tap read scopes; `howToQuery` execution is
+        // still gated at the query call itself.
+        Route("GET", "/api/v1/provenance", "metadata", "read"),
+        Route("GET", "/api/v1/lineage", "metadata", "read"),
+        Route("GET", "/api/v1/lineage/**", "metadata", "read"),
+        Route("GET", "/api/v1/catalog/find", "metadata", "read")
     )
 
     /** Every `resource:action` pair the table grants — the vocabulary the

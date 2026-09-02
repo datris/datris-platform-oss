@@ -334,6 +334,32 @@ export class McpService {
           map((data: any) => ({ secret: params['name'], fields: Object.keys(data || {}).filter(k => k !== '_type') }))
         );
 
+      // Incidents (playground cases were missing when the v1.25 catalog
+      // entries shipped with playgroundEnabled: true)
+      case 'list_incidents': {
+        let ip = new HttpParams();
+        if (params['state']) ip = ip.set('state', params['state']);
+        if (params['limit']) ip = ip.set('limit', params['limit']);
+        return this.http.get<any>('/api/v1/incidents', { params: ip });
+      }
+      case 'get_incident':
+        return this.http.get<any>('/api/v1/incidents/' + encodeURIComponent(params['incident_id']));
+
+      // Discovery & Provenance
+      case 'find_data': {
+        let fp = new HttpParams().set('query', params['query']);
+        if (params['limit']) fp = fp.set('limit', params['limit']);
+        if (params['ai']) fp = fp.set('ai', 'true');
+        return this.http.get<any>('/api/v1/catalog/find', { params: fp });
+      }
+      case 'get_provenance': {
+        let pp = new HttpParams().set('runId', params['run_id']);
+        if (params['pipeline']) pp = pp.set('pipeline', params['pipeline']);
+        if (params['tap_run']) pp = pp.set('tapRun', params['tap_run']);
+        if (params['config_version']) pp = pp.set('configVersion', params['config_version']);
+        return this.http.get<any>('/api/v1/provenance', { params: pp });
+      }
+
       default:
         throw new Error('Unknown tool: ' + toolName);
     }

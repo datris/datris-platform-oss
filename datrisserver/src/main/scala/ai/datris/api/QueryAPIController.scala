@@ -328,6 +328,11 @@ class QueryAPIController {
             val gson = new Gson
             val response = new java.util.LinkedHashMap[String, Any]()
             response.put("answer", answer)
+            // Provenance handles the caller passed through (e.g. find_data
+            // results, _datris_* fields from search hits). Echoed verbatim so
+            // the answer text and its provenance travel together; never fed to
+            // the model.
+            Option(body.get("sources")).foreach(response.put("sources", _))
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>

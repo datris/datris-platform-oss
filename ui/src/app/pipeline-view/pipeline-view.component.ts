@@ -3,6 +3,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
 import { isAllTextDestination } from '../shared/dest-types';
+import { LineageService, LineageNeighborhood } from '../lineage.service';
 
 @Component({
     selector: 'app-pipeline-view',
@@ -19,14 +20,34 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
   confirmDelete = false;
   deleteLoading = false;
   showDestTypes = false;
+  lineage: LineageNeighborhood | null = null;
   private refreshInterval: any = null;
 
-  constructor(private route: ActivatedRoute, private router: Router, private pipelineService: PipelineService, public auth: AuthService) { }
+  constructor(private route: ActivatedRoute, private router: Router, private pipelineService: PipelineService,
+              private lineageService: LineageService, public auth: AuthService) { }
 
   ngOnInit(): void {
     this.name = this.route.snapshot.paramMap.get('name') || '';
     this.loadPipeline();
+    this.loadLineage();
     this.refreshInterval = setInterval(() => this.loadPipeline(), 3000);
+  }
+
+  /** Loaded once — the server caches the graph ~1 minute anyway. Fail-soft:
+   *  no lineage panel when the endpoint is unavailable. */
+  private loadLineage(): void {
+    this.lineageService.neighborhood('pipeline', this.name).subscribe({
+      next: (n) => this.lineage = n,
+      error: () => this.lineage = null
+    });
+  }
+
+  upstreamNodes(): any[] {
+    return (this.lineage?.upstream || []).filter(n => n.type === 'tap' || n.type === 'source');
+  }
+
+  downstreamNodes(): any[] {
+    return (this.lineage?.downstream || []).filter(n => n.type === 'dataset');
   }
 
   ngOnDestroy(): void {

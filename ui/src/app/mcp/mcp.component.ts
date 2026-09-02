@@ -63,7 +63,7 @@ export class McpComponent implements OnInit {
 
   // Full tool catalog.
   // KEEP IN SYNC with mcp-server/server.py's _base_tools() and the server's
-  // auth/MCPToolRoutes.scala — one entry here per MCP tool (70 as of v1.25).
+  // auth/MCPToolRoutes.scala — one entry here per MCP tool (72 as of v1.26).
   toolCatalog: McpTool[] = [
     // --- System ---
     {
@@ -773,6 +773,29 @@ export class McpComponent implements OnInit {
       category: 'Incidents',
       parameters: [
         { name: 'incident_id', type: 'string', description: 'The incident id (inc_…)', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'find_data',
+      description: 'Find datasets by meaning: ranks the pipelines your key can read against a natural-language query and returns location, freshness, provenance handles, lineage, and a pre-filled howToQuery hint. Discovery only — the query call stays yours to make.',
+      category: 'Discovery & Provenance',
+      parameters: [
+        { name: 'query', type: 'string', description: 'Natural-language description of the data you need', required: true, inputType: 'text' },
+        { name: 'limit', type: 'integer', description: 'Maximum results (default 5, max 25)', required: false, inputType: 'number' },
+        { name: 'ai', type: 'boolean', description: 'Rerank top candidates with the primary AI model (default false)', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_provenance',
+      description: 'Resolve a stamped _datris_run_id back to its origin: the pipeline run, the tap run that fed it, the script commit, the config version, and the declared source.',
+      category: 'Discovery & Provenance',
+      parameters: [
+        { name: 'run_id', type: 'string', description: 'The _datris_run_id value from the data', required: true, inputType: 'text' },
+        { name: 'pipeline', type: 'string', description: 'Pipeline name, if known', required: false, inputType: 'text' },
+        { name: 'tap_run', type: 'string', description: 'The _datris_tap_run value, if present', required: false, inputType: 'text' },
+        { name: 'config_version', type: 'integer', description: 'The _datris_config_version value, if present', required: false, inputType: 'number' }
       ],
       playgroundEnabled: true
     },

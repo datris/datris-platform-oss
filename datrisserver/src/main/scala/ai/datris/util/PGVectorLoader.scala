@@ -236,6 +236,17 @@ class PGVectorLoader(jobContext: JobContext) {
 
             statusUtil.info("processing", "Ensuring table: " + schemaName + "." + tableName + " with vector dimension: " + dimension)
             stmt.execute(createSql)
+
+            // Additive evolution for metadata columns: a table created before a
+            // metadata key existed (user-added key, or provenance stamping turned
+            // on) must gain the column or the INSERT column list fails.
+            if (pgvectorConfig.metadata != null) {
+                pgvectorConfig.metadata.asScala.keys.foreach { key =>
+                    stmt.execute(
+                        "ALTER TABLE \"" + schemaName + "\".\"" + tableName + "\" ADD COLUMN IF NOT EXISTS \"" + key + "\" TEXT"
+                    )
+                }
+            }
             conn.commit()
         } finally {
             stmt.close()

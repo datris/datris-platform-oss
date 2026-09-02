@@ -155,6 +155,12 @@
         </div>
       </div>
 
+      <div class="form-group">
+        <label class="form-label">Tags (optional)</label>
+        <input class="form-input" [(ngModel)]="tagsInput" placeholder="comma-separated, e.g. sales, daily">
+        <p class="form-hint">Discovery labels — find_data and the catalog search rank over them.</p>
+      </div>
+
       <div class="form-group" *ngIf="!bringYourOwnCode && !isHttpTap">
         <label class="form-label">
           <span class="material-icons brainstorm-icon">auto_awesome</span>

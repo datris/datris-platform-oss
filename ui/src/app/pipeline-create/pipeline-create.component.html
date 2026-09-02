@@ -59,6 +59,12 @@
         </div>
       </div>
 
+      <div class="form-row">
+        <label class="form-label">Tags (optional)</label>
+        <input class="form-input" [(ngModel)]="tagsInput" placeholder="comma-separated, e.g. sales, daily">
+        <p class="form-hint">Discovery labels — find_data and the catalog search rank over them.</p>
+      </div>
+
       <!-- Source toggle -->
       <div class="source-toggle" *ngIf="!isEditMode">
         <button class="toggle-btn" [class.active]="pipelineSource === 'file'" (click)="pipelineSource = 'file'; onPipelineSourceChange()">
@@ -784,6 +790,14 @@
           </div>
         </div>
       </ng-container>
+
+      <div class="form-row">
+        <label class="checkbox-row">
+          <input type="checkbox" [(ngModel)]="provenanceStamp">
+          <span>Stamp provenance on landed data</span>
+        </label>
+        <p class="form-hint">Appends _datris_run_id, _datris_ingested_at, _datris_config_version, _datris_tap_run, _datris_script_sha and _datris_source to every row this pipeline lands, so any record can be traced back to the run, config version, script commit and source that produced it. Existing rows are never rewritten — provenance starts with the first run after this is turned on.</p>
+      </div>
     </div>
 
     <!-- Error -->

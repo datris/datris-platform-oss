@@ -58,7 +58,7 @@
           <th>Details</th>
           <th>Connection</th>
           <th>Type</th>
-          <th></th>
+          <th>Tags</th>
           <th></th>
           <th></th>
         </tr>
@@ -94,7 +94,10 @@
             <span class="embed-type-badge" *ngIf="getSourceType(ds)">{{ getSourceType(ds).toUpperCase() }}</span>
             <span class="embed-muted" *ngIf="!getSourceType(ds)">—</span>
           </td>
-          <td></td>
+          <td class="embed-tags-cell">
+            <span class="embed-tag" *ngFor="let t of (ds.tags || [])" [title]="t">{{ t }}</span>
+            <span class="embed-muted" *ngIf="!ds.tags || ds.tags.length === 0">—</span>
+          </td>
           <td></td>
           <td class="embed-actions-cell">
             <!-- Normal action row. Hidden while the delete confirm is up so the

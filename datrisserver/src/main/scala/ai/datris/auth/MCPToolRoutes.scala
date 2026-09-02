@@ -141,7 +141,11 @@ object MCPToolRoutes {
 
         // Recovery-agent incidents (read-only; the platform opens them)
         "list_incidents" -> Mapped("GET", "/api/v1/incidents"),
-        "get_incident" -> Mapped("GET", "/api/v1/incidents/example")
+        "get_incident" -> Mapped("GET", "/api/v1/incidents/example"),
+
+        // Discovery + provenance (read-only)
+        "find_data" -> Mapped("GET", "/api/v1/catalog/find"),
+        "get_provenance" -> Mapped("GET", "/api/v1/provenance")
     )
 
     val allToolNames: Seq[String] = tools.map(_._1)

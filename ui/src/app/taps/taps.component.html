@@ -70,7 +70,7 @@
           <th>Name</th>
           <th>Details</th>
           <th>Connection</th>
-          <th></th>
+          <th>Tags</th>
           <th>Schedule</th>
           <th>Last Run</th>
           <th></th>
@@ -102,7 +102,10 @@
             <span *ngIf="tap.targetPipeline" class="embed-connection" [title]="tap.targetPipeline">→ {{ tap.targetPipeline }}</span>
             <span *ngIf="!tap.targetPipeline" class="embed-muted">—</span>
           </td>
-          <td></td>
+          <td class="embed-tags-cell">
+            <span class="embed-tag" *ngFor="let t of (tap.tags || [])" [title]="t">{{ t }}</span>
+            <span class="embed-muted" *ngIf="!tap.tags || tap.tags.length === 0">—</span>
+          </td>
           <td>
             <span class="embed-cron" *ngIf="tap.cronExpression" [title]="tap.cronExpression">{{ tap.cronExpression }}</span>
             <span class="embed-muted" *ngIf="!tap.cronExpression">—</span>

@@ -315,3 +315,20 @@ tr:hover .embed-name-edit-btn { opacity: 1; }
 .catalog-list .catalog-card:has(.embed-move-menu) {
   overflow: visible;
 }
+
+/* Tags chips in the catalog embed tables (v1.26) */
+.embed-tags-cell { white-space: normal; }
+.embed-tag {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 7px;
+  margin: 1px 2px 1px 0;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}

@@ -63,7 +63,10 @@ case class TapConfig(
     // unused). Flat string for the same Gson round-trip reason as scriptStorage.
     scriptKind: String = null,
     // Endpoint POSTed to on each run when scriptKind == "http".
-    endpointUrl: String = null
+    endpointUrl: String = null,
+    // Free-form discovery labels ranked by /catalog/find. java.util.List
+    // because Gson round-trips this document and its EntityVersion snapshots.
+    tags: java.util.List[String] = null
 ) {
 
     /** True when this tap is a user-hosted HTTP endpoint rather than a

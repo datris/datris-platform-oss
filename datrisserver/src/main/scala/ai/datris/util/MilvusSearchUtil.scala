@@ -61,16 +61,25 @@ object MilvusSearchUtil extends VectorSearchUtility {
             val floatVec: io.milvus.v2.service.vector.request.data.BaseVector = new FloatVec(floatList)
             val vectorData: java.util.List[io.milvus.v2.service.vector.request.data.BaseVector] =
                 java.util.Collections.singletonList(floatVec)
-            val outputFields = java.util.Arrays.asList("text", "chunk_index", "source_pipeline", "filename")
+            val baseFields = List("text", "chunk_index", "source_pipeline", "filename")
 
-            val searchReq = SearchReq.builder()
-                .collectionName(collection)
-                .data(vectorData)
-                .topK(topK)
-                .outputFields(outputFields)
-                .build()
+            def doSearch(fields: List[String]) = {
+                val searchReq = SearchReq.builder()
+                    .collectionName(collection)
+                    .data(vectorData)
+                    .topK(topK)
+                    .outputFields(fields.asJava)
+                    .build()
+                client.search(searchReq)
+            }
 
-            val searchResp = client.search(searchReq)
+            // Echo provenance payload fields (ProvenanceStamper) when present.
+            // Collections created by the loader have dynamic fields enabled so
+            // unknown names are legal; older/foreign collections may reject
+            // them — fall back to the base field list.
+            val searchResp =
+                try doSearch(baseFields ++ ProvenanceStamper.AllFields)
+                catch { case _: Exception => doSearch(baseFields) }
             val results = new java.util.ArrayList[java.util.Map[String, Any]]()
 
             searchResp.getSearchResults.asScala.foreach { resultList =>
