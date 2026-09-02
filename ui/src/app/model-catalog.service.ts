@@ -26,7 +26,8 @@ const FETCH_TIMEOUT_MS = 5000;
 const FALLBACK: ModelCatalog = {
   aiPrimary: {
     anthropic: [
-      { value: 'claude-fable-5', label: 'Claude Fable 5 (recommended)', recommended: true },
+      { value: 'claude-fable-5-1', label: 'Claude Fable 5.1 (recommended)', recommended: true },
+      { value: 'claude-fable-5', label: 'Claude Fable 5' },
       { value: 'claude-opus-5', label: 'Claude Opus 5' },
       { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
@@ -46,7 +47,8 @@ const FALLBACK: ModelCatalog = {
     // when AWS credentials are saved, the UI swaps this for live discovery
     // (only models the account/region can actually invoke).
     bedrock: [
-      { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5 (recommended)', recommended: true },
+      { value: 'anthropic.claude-fable-5-1', label: 'Claude Fable 5.1 (recommended)', recommended: true },
+      { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5' },
       { value: 'anthropic.claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic.claude-opus-4-8', label: 'Claude Opus 4.8' },
@@ -64,6 +66,7 @@ const FALLBACK: ModelCatalog = {
       { value: 'claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
       { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { value: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'claude-fable-5', label: 'Claude Fable 5' },
       { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
       { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
@@ -81,6 +84,7 @@ const FALLBACK: ModelCatalog = {
     ],
     bedrock: [
       { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'anthropic.claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic.claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'anthropic.claude-sonnet-5', label: 'Claude Sonnet 5' },
