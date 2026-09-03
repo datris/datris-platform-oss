@@ -22,7 +22,7 @@ object CodeGenTransformationEvaluator {
           |- Read and parse the input file appropriately based on the format described
           |- Apply the transformation described to every record
           |- Write the transformed data to the output file in the SAME format as the input
-          |- For CSV: write data rows only (NO header row in output), using the same delimiter
+          |- For CSV: write a header row as the FIRST line naming the output columns in order, then the data rows, using the same delimiter
           |- For JSON/XML: write the complete transformed document
           |- Use ONLY Python standard library (no pip packages)
           |- The script must be completely self-contained
@@ -36,9 +36,9 @@ object CodeGenTransformationEvaluator {
      * @param header      CSV column names
      * @param rows        CSV data rows
      * @param delimiter   CSV delimiter
-     * @return Transformed rows (no header)
+     * @return Transformed header (when the script emitted one, else the input header) and rows
      */
-    def transformCsv(instruction: String, header: List[String], rows: List[String], delimiter: String, pipelineName: String = null): List[String] = {
+    def transformCsv(instruction: String, header: List[String], rows: List[String], delimiter: String, pipelineName: String = null): CsvTransformResult = {
         val sampleRows = rows.take(MAX_SAMPLE_ROWS)
         val headerLine = header.mkString(delimiter)
 
@@ -51,13 +51,56 @@ object CodeGenTransformationEvaluator {
                |Transformation: "$instruction"
                |
                |The input CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.
-               |Write ONLY data rows to the output file (no header). Use the same delimiter.""".stripMargin
+               |Write a header row FIRST (the output column names, in order), then the data rows. Use the same delimiter.""".stripMargin
 
         val csvContent = (headerLine +: rows).mkString("\n")
         val result = transform(userPrompt, csvContent, "csv", instruction, pipelineName)
+        val lines = result.split("\n").toList.filter(_.nonEmpty)
+        splitHeader(lines, header, rows.size, delimiter)
+    }
 
-        // Split into rows, filter empties
-        result.split("\n").toList.filter(_.nonEmpty)
+    /** Output of a CSV transformation: the header the script emitted (or the
+      * input header when it emitted none) and the data rows. */
+    case class CsvTransformResult(header: List[String], rows: List[String], headerFromScript: Boolean)
+
+    /** Decide whether the first output line is a header. It is when it equals
+      * the input header, or when its tokens all look like column names
+      * (non-empty, distinct, none numeric) and either the line count is one
+      * more than the input (rows preserved + header prepended) or the line
+      * never recurs as a data row. Otherwise the input header is kept — a
+      * script that ignored the instruction and wrote data only must never
+      * lose its first row. */
+    private[datris] def splitHeader(lines: List[String], inputHeader: List[String], inputRowCount: Int, delimiter: String): CsvTransformResult = {
+        if (lines.isEmpty) return CsvTransformResult(inputHeader, Nil, headerFromScript = false)
+        val first = splitLine(lines.head, delimiter).map(_.trim)
+        val numeric = "^[-+]?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?$".r
+        val looksLikeHeader =
+            first.nonEmpty && first.forall(t => t.nonEmpty && numeric.findFirstIn(t).isEmpty) && first.distinct.size == first.size
+        val countSaysHeader = lines.size == inputRowCount + 1
+        val sameAsInput = first.map(_.toLowerCase) == inputHeader.map(_.toLowerCase)
+        if (sameAsInput || (looksLikeHeader && (countSaysHeader || !lines.tail.contains(lines.head))))
+            CsvTransformResult(first, lines.tail, headerFromScript = true)
+        else
+            CsvTransformResult(inputHeader, lines, headerFromScript = false)
+    }
+
+    /** Minimal RFC4180-style split for one line (quotes, doubled quotes). */
+    private[datris] def splitLine(line: String, delimiter: String): List[String] = {
+        val d = if (delimiter == null || delimiter.isEmpty) ',' else delimiter.charAt(0)
+        val out = List.newBuilder[String]; val cur = new StringBuilder; var inQ = false; var i = 0
+        while (i < line.length) {
+            val c = line.charAt(i)
+            if (inQ) {
+                if (c == '"' && i + 1 < line.length && line.charAt(i + 1) == '"') { cur.append('"'); i += 1 }
+                else if (c == '"') inQ = false
+                else cur.append(c)
+            } else if (c == '"') inQ = true
+            else if (c == d) { out += cur.toString; cur.clear() }
+            else cur.append(c)
+            i += 1
+        }
+        out += cur.toString
+        out.result()
     }
 
     /**
