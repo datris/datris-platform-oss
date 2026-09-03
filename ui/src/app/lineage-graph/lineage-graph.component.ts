@@ -21,8 +21,13 @@ const COLOR: Record<LineageNodeType, string> = {
   dataset: '#00e5a0',
   catalog: '#fbbf24'
 };
-const LAYER_GAP = 300;
+// Layout units. echarts fits the whole bounding box into the canvas, so only
+// the ratio matters: ~8.5:1 keeps a ~240px layer gap next to a ~28px row gap
+// once the canvas height below is sized to the tallest layer.
+const LAYER_GAP = 460;
 const ROW_GAP = 54;
+const ROW_PX = 28;
+const MIN_CHART_PX = 560;
 
 interface Positioned { node: LineageNode; x: number; y: number; }
 
@@ -37,6 +42,8 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
   error = '';
   graph: LineageGraph | null = null;
   chartOptions: EChartsOption | null = null;
+  /** Canvas height in px, sized so rows never overlap after echarts fits the graph. */
+  chartHeight = MIN_CHART_PX;
 
   // Filters
   catalogs: string[] = [];
@@ -196,6 +203,8 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
     const nodes = this.visibleNodes();
     this.visibleCount = nodes.length;
     const placed = this.layout(nodes, g.edges);
+    const rows = Math.max(1, ...Object.values(placed.reduce((m, p) => { m[p.x] = (m[p.x] || 0) + 1; return m; }, {} as Record<number, number>)));
+    this.chartHeight = Math.max(MIN_CHART_PX, rows * ROW_PX + 120);
     const ids = new Set(nodes.map(n => n.id));
     const selected = this.selectedId;
     const related = new Set<string>();
@@ -216,7 +225,7 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
         x: p.x,
         y: p.y,
         symbol: n.type === 'source' ? 'circle' : n.type === 'catalog' ? 'diamond' : 'roundRect',
-        symbolSize: n.type === 'source' ? 14 : n.type === 'catalog' ? 20 : [16, 16],
+        symbolSize: n.type === 'source' ? 12 : n.type === 'catalog' ? 18 : [14, 14],
         itemStyle: {
           color: n.historical ? 'transparent' : color,
           borderColor: color,
@@ -229,7 +238,7 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
           position: 'right',
           formatter: this.shortLabel(n),
           color: dim(n.id) ? '#64748b' : '#e2e8f0',
-          fontSize: 12,
+          fontSize: 11,
           fontWeight: n.id === selected ? 'bold' : 'normal'
         }
       };
@@ -284,7 +293,7 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
 
   private shortLabel(n: LineageNode): string {
     const name = n.type === 'dataset' ? n.name.replace(/^[a-z]+:/, '') : n.name;
-    return name.length > 34 ? name.slice(0, 32) + '…' : name;
+    return name.length > 30 ? name.slice(0, 28) + '…' : name;
   }
 
   private escape(s: string): string {

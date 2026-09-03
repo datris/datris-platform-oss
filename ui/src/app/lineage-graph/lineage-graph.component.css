@@ -25,11 +25,11 @@
 .graph-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: stretch; }
 @media (max-width: 1000px) { .graph-layout { grid-template-columns: 1fr; } }
 
-.graph-canvas { position: relative; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; min-height: 560px; overflow: hidden; }
-.chart { width: 100%; height: 100%; min-height: 560px; }
+.graph-canvas { position: relative; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; min-height: 560px; overflow: hidden; align-self: start; }
+.chart { width: 100%; min-height: 560px; }
 .canvas-hint { position: absolute; right: 10px; bottom: 8px; font-size: 11px; color: var(--text-muted); pointer-events: none; }
 
-.side-panel { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; overflow-y: auto; max-height: 80vh; }
+.side-panel { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; overflow-y: auto; max-height: 85vh; position: sticky; top: 16px; align-self: start; }
 .side-panel.placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-muted); text-align: center; font-size: 13px; gap: 8px; }
 .side-panel.placeholder .material-icons { font-size: 36px; opacity: 0.5; }
 .panel-header { display: flex; align-items: center; justify-content: space-between; }

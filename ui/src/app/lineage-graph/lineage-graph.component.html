@@ -42,7 +42,7 @@
 
   <div class="graph-layout" *ngIf="graph && graph.nodes.length > 0">
     <div class="graph-canvas">
-      <div class="chart" echarts [options]="chartOptions || {}" (chartClick)="onChartClick($event)" *ngIf="chartOptions"></div>
+      <div class="chart" echarts [options]="chartOptions || {}" (chartClick)="onChartClick($event)" [style.height.px]="chartHeight" *ngIf="chartOptions"></div>
       <div class="canvas-hint">Scroll to zoom · drag to pan</div>
     </div>
 
