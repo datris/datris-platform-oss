@@ -2347,6 +2347,10 @@ def _base_tools():
                         "type": "string",
                         "description": "For kind 'http' only: absolute http(s) URL Datris POSTs {tap, params, state, testLimit} to on each run. The endpoint responds with the tap envelope {type, data, state?, logs?}. If the tap's secret has an `endpoint_token` field, it is sent as an Authorization: Bearer header — no other secret fields are ever forwarded."
                     },
+                    "source": {
+                        "type": "string",
+                        "description": "Where the data really comes from, as a short provider name or host, for lineage and provenance. Optional: when omitted it is derived from the endpoint host or the host the script references most. Never put credentials here."
+                    },
                 },
                 "required": ["name"]
             }
@@ -2610,6 +2614,10 @@ def _base_tools():
                         "description": "For HTTP taps only: new endpoint URL Datris POSTs the run context to. Rejected on Python taps."
                     },
                 },
+                    "source": {
+                        "type": "string",
+                        "description": "Declared source identity for lineage/provenance (provider name or host). Pass an empty string to clear it and fall back to derivation."
+                    },
                 "required": ["name"]
             }
         ),
@@ -3557,6 +3565,8 @@ def _dispatch(name: str, args: dict) -> str:
                 tap_config["cronExpression"] = cron_expression
             if secret_name:
                 tap_config["secretName"] = secret_name
+            if args.get("source"):
+                tap_config["source"] = str(args["source"]).strip()
             save_result = _call("post", "/api/v1/tap", json=tap_config)
             try:
                 saved = json.loads(save_result)
@@ -3671,6 +3681,8 @@ def _dispatch(name: str, args: dict) -> str:
             tap_config["cronExpression"] = cron_expression
         if secret_name:
             tap_config["secretName"] = secret_name
+        if args.get("source"):
+            tap_config["source"] = str(args["source"]).strip()
 
         save_result = _call("post", "/api/v1/tap", json=tap_config)
         try:
@@ -3833,6 +3845,8 @@ def _dispatch(name: str, args: dict) -> str:
             tap_config["enabled"] = args["enabled"]
         if "cron_expression" in args:
             tap_config["cronExpression"] = args["cron_expression"]
+        if "source" in args:
+            tap_config["source"] = str(args["source"]).strip()
         if "target_pipeline" in args:
             tap_config["targetPipeline"] = args["target_pipeline"]
         if "description" in args:

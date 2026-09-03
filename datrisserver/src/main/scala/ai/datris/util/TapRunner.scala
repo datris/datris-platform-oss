@@ -290,19 +290,10 @@ object TapRunner {
         }
     }
 
-    /** The tap's declared source identity for provenance: the endpoint host for
-      * HTTP taps, `tap:<name>` for script taps. Never credentials. */
-    private[util] def declaredSource(tapConfig: TapConfig): String = {
-        if (tapConfig.isHttp && tapConfig.endpointUrl != null) {
-            try {
-                val host = java.net.URI.create(tapConfig.endpointUrl).getHost
-                if (host != null) host else "tap:" + tapConfig.name
-            } catch {
-                case _: Exception => "tap:" + tapConfig.name
-            }
-        } else
-            "tap:" + tapConfig.name
-    }
+    /** The tap's source identity for provenance: declared `source`, else the
+      * endpoint host (HTTP taps), else the host its script references most,
+      * else `tap:<name>`. See [[TapSourceResolver]]. Never credentials. */
+    private[util] def declaredSource(tapConfig: TapConfig): String = TapSourceResolver.resolve(tapConfig)
 
     private def feedPipeline(tapConfig: TapConfig, result: TapScriptResult, publisherToken: String, tapFeed: TapFeedInfo): (Int, java.util.List[String]) = {
         if (result.dataType == "document") {

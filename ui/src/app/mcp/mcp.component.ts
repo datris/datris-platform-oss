@@ -139,6 +139,8 @@ export class McpComponent implements OnInit {
         { name: 'secret_name', type: 'string', description: 'Vault secret name for credentials', required: false, inputType: 'text' },
         { name: 'tap_type', type: 'string', description: 'structured (default) or document (for PDFs/Word/HTML into vector-store pipelines)', required: false, inputType: 'text' },
         { name: 'packages', type: 'array', description: 'Optional list of pip packages the tap script imports beyond the base set. Auto-detected from the script when omitted.', required: false, inputType: 'text' }
+      ,
+        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' }
       ],
       playgroundEnabled: false
     },
@@ -197,6 +199,8 @@ export class McpComponent implements OnInit {
         { name: 'cron_expression', type: 'string', description: 'New CRON schedule (Quartz syntax: seconds minutes hours dom month dow). Examples: "0 0 * * * ?" hourly, "0 30 5 ? * MON-FRI" weekdays 5:30am.', required: false, inputType: 'text' },
         { name: 'target_pipeline', type: 'string', description: 'New target pipeline', required: false, inputType: 'text' },
         { name: 'description', type: 'string', description: 'New description', required: false, inputType: 'text' }
+      ,
+        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

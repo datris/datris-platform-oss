@@ -302,6 +302,9 @@ components:
         endpointUrl:
           type: string
           description: For `scriptKind` `http` only — absolute http(s) URL Datris POSTs the run context to on each run
+        source:
+          type: string
+          description: Declared source identity for lineage and provenance — a provider name or host (never credentials). Optional; when absent the platform derives it from the endpoint host (HTTP taps) or the host the script references most. On update, omitting the field keeps the stored value and an empty string clears it.
         targetPipeline:
           type: string
           description: Pipeline this tap feeds into (may be empty for unattached taps)

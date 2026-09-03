@@ -27,6 +27,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   secretName = '';
   catalog = '';
   tagsInput = '';
+  sourceInput = '';
   availableCatalogs: string[] = [];
   showNewCatalog = false;
   newCatalogName = '';
@@ -252,6 +253,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.secretName = tap.secretName || '';
           this.catalog = tap.catalog || '';
           this.tagsInput = (tap.tags || []).join(', ');
+          this.sourceInput = tap.source || '';
           this.targetPipeline = tap.targetPipeline || '';
           this.tapType = (tap.tapType === 'document') ? 'document' : 'structured';
           this.scriptStorage = tap.scriptStorage || '';
@@ -1196,7 +1198,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
             lastTestRunRecordCount: this.testRecordCount || 0,
             catalog: this.catalog || null,
-            tags: this.parseTags()
+            tags: this.parseTags(),
+            source: this.sourceInput.trim() || ''
           }
         : {
             name: this.tapName.trim(),
@@ -1215,7 +1218,8 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             lastTestRunColumns: this.testColumns.length > 0 ? this.testColumns : null,
             lastTestRunRecordCount: this.testRecordCount || 0,
             catalog: this.catalog || null,
-            tags: this.parseTags()
+            tags: this.parseTags(),
+            source: this.sourceInput.trim() || ''
           };
 
       this.tapService.createOrUpdateTap(config).subscribe({

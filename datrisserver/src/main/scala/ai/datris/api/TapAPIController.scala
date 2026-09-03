@@ -393,7 +393,9 @@ class TapAPIController {
                     createdByKeyLabel = existing.createdByKeyLabel,
                     // Tags preservation: a body that omits tags entirely must not
                     // wipe them on an unrelated edit; an explicit empty list clears.
-                    tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags
+                    tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags,
+                    // Same rule for the declared source: omitted ⇒ keep; "" ⇒ clear.
+                    source = if (tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source
                 )
             else
                 tapConfigWithScript.copy(

@@ -29,7 +29,7 @@ From the next run on, every row the pipeline lands carries six extra fields:
 | `_datris_config_version` | The pipeline definition version at run time |
 | `_datris_tap_run` | The tap run that fed it (`tapName\|runTime`; empty for direct uploads) |
 | `_datris_script_sha` | The tap script's commit, for repository-backed taps |
-| `_datris_source` | The tap's declared source — an endpoint host or tap id, never credentials |
+| `_datris_source` | Where the data really comes from — the tap's declared `source`, else its endpoint host, else the host its script calls most; never credentials |
 
 How the fields land depends on the destination:
 
@@ -71,6 +71,17 @@ Runs are recorded from the first run after upgrading; earlier runs still resolve
 ### Traversal for agents
 
 The `get_lineage` MCP tool (or the neighborhood endpoint's `direction`, `depth` and `runs` parameters) lets an agent ask "what is downstream of this tap?" before changing or deleting it, or "what did this pipeline actually write lately?" before trusting a dataset. Direction is `up`, `down` or `both`; depth bounds the hops; runs appends the recent recorded runs.
+
+## Sources
+
+Lineage and provenance name the *real* origin of data, not the tap. Each tap resolves to one source identity, deterministically:
+
+1. The tap's declared **`source`** (set it in the tap wizard, or pass `source` to `create_tap` / `update_tap`) — e.g. `SEC EDGAR`.
+2. For HTTP taps, the endpoint host.
+3. For script taps, the host the script references most, normalized so `www.sec.gov` and `data.sec.gov` both read `sec.gov`.
+4. `tap:<name>` when nothing better is known.
+
+Several taps pulling from the same provider share one source node, so the graph shows the provider feeding many taps rather than one placeholder per tap. A script edit that switches provider moves the tap under its new source on the next graph build; rows already landed keep the `_datris_source` they were stamped with.
 
 ## Tags
 
