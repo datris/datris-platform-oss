@@ -320,12 +320,20 @@ object LineageService {
 
     /** Neighborhood of one node: the node, everything transitively upstream,
       * and everything transitively downstream. 404-style null when unknown. */
-    def neighborhood(nodeType: String, name: String): JsonObject = neighborhood(nodeType, name, "both", 0, 0)
+    def neighborhood(nodeType: String, name: String): JsonObject = neighborhood(nodeType, name, "both", 0, 0, columns = false)
+
+    def neighborhood(nodeType: String, name: String, direction: String, depth: Int, runs: Int): JsonObject =
+        neighborhood(nodeType, name, direction, depth, runs, columns = false)
 
     /** Neighborhood with traversal controls. `direction` is up, down or both;
       * `depth` bounds the hop count (0 = unbounded); `runs` > 0 appends that
       * many recent recorded runs for the node (capped at 50). */
-    def neighborhood(nodeType: String, name: String, direction: String, depth: Int, runs: Int): JsonObject = {
+    /** `columns` true ⇒ embed column lineage (plan L3): for a pipeline node its
+      * current definition; for a dataset node its feeding pipeline's current
+      * definition, or — when the dataset is historical — the definition version
+      * of the last recorded run that wrote it. Deterministic tier only; the
+      * inferred tier is fetched on demand via /lineage/columns. */
+    def neighborhood(nodeType: String, name: String, direction: String, depth: Int, runs: Int, columns: Boolean): JsonObject = {
         val entry = loadCached()
         val g = entry.graph
         val id = nodeType + ":" + name
@@ -373,6 +381,26 @@ object LineageService {
             val arr = new JsonArray()
             recentRuns(nodeType, name, runs).foreach(r => arr.add(runToJson(r)))
             o.add("runs", arr)
+        }
+
+        if (columns && (nodeType == "pipeline" || nodeType == "dataset")) {
+            try {
+                val target: Option[(String, Option[Int])] =
+                    if (nodeType == "pipeline") Some((name, None))
+                    else {
+                        // The pipeline that lands into this dataset (first upstream pipeline).
+                        upstream.find(_.startsWith("pipeline:")).map(_.stripPrefix("pipeline:")).map { p =>
+                            val version =
+                                if (node.historical) recentRuns("dataset", name, 1).headOption.map(_.configVersion).filter(_ > 0)
+                                else None
+                            (p, version)
+                        }
+                    }
+                target.flatMap { case (p, v) => Option(ColumnLineageService.forPipeline(p, v, runInference = false)) }
+                    .foreach(r => o.add("columns", r.toJson))
+            } catch {
+                case e: Exception => logger.debug("column lineage embed skipped for " + id + ": " + e.getMessage)
+            }
         }
         o
     }

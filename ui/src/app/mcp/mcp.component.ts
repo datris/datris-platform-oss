@@ -812,7 +812,8 @@ export class McpComponent implements OnInit {
         { name: 'name', type: 'string', description: 'The node name (the part after type: in a lineage id)', required: true, inputType: 'text' },
         { name: 'direction', type: 'string', description: 'up | down | both (default both)', required: false, inputType: 'text' },
         { name: 'depth', type: 'integer', description: 'Maximum hops (default unbounded)', required: false, inputType: 'number' },
-        { name: 'runs', type: 'integer', description: 'Recent recorded runs to include (default 0, max 50)', required: false, inputType: 'number' }
+        { name: 'runs', type: 'integer', description: 'Recent recorded runs to include (default 0, max 50)', required: false, inputType: 'number' },
+        { name: 'columns', type: 'boolean', description: 'Include column-level lineage for pipeline/dataset nodes (default false)', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

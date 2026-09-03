@@ -281,13 +281,13 @@ class Transformation(jobContext: JobContext) {
         if (rows.nonEmpty && jobContext.data.header != null) {
             val delimiter = config.source.fileAttributes.csvAttributes.delimiter
             statusUtil.info("processing", "CodeGen transformation on " + rows.size + " rows")
-            val transformedRows = CodeGenTransformationEvaluator.transformCsv(instruction, jobContext.data.header, rows, delimiter)
+            val transformedRows = CodeGenTransformationEvaluator.transformCsv(instruction, jobContext.data.header, rows, delimiter, config.name)
             val newData = jobContext.data.copy(rows = transformedRows)
             jobContext.copy(data = newData)
         } else if (rawData != null) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen transformation on " + (if (isJson) "JSON" else "XML") + " data")
-            val transformedRaw = CodeGenTransformationEvaluator.transformRaw(instruction, rawData, isJson)
+            val transformedRaw = CodeGenTransformationEvaluator.transformRaw(instruction, rawData, isJson, config.name)
             val newData = jobContext.data.copy(rawData = transformedRaw)
             jobContext.copy(data = newData)
         } else {

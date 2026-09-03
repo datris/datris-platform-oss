@@ -2926,6 +2926,10 @@ def _base_tools():
                     },
                     "depth": {"type": "integer", "description": "Maximum hops from the node (default: unbounded)."},
                     "runs": {"type": "integer", "description": "Include this many most-recent recorded runs for the node (default: 0, max: 50)."},
+                    "columns": {
+                        "type": "boolean",
+                        "description": "For pipeline and dataset nodes, include column-level lineage: which destination columns pass through from which source fields (exact), which the platform adds (system), and any cached AI-inferred mappings for the transformation. Default: false.",
+                    },
                 },
                 "required": ["node_type", "name"],
             }
@@ -3989,6 +3993,8 @@ def _dispatch(name: str, args: dict) -> str:
             params["depth"] = args["depth"]
         if args.get("runs"):
             params["runs"] = args["runs"]
+        if args.get("columns"):
+            params["columns"] = "true"
         from urllib.parse import quote
         return _call("get", f"/api/v1/lineage/{node_type}/{quote(node_name, safe='')}", params=params or None)
 

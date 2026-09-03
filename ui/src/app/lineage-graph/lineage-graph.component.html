@@ -98,6 +98,46 @@
             </button>
           </section>
 
+          <section class="panel-section" *ngIf="columns() as c">
+            <h3 class="section-toggle" (click)="columnsOpen = !columnsOpen">
+              <span class="material-icons">{{ columnsOpen ? 'expand_more' : 'chevron_right' }}</span>
+              Columns
+              <span class="muted small">v{{ c.version }}<ng-container *ngIf="c.versionSource === 'snapshot'"> · as run</ng-container> · {{ c.edges.length }} mapped<ng-container *ngIf="c.unresolved.length > 0"> · {{ c.unresolved.length }} unresolved</ng-container></span>
+            </h3>
+            <ng-container *ngIf="columnsOpen">
+              <div class="muted small" *ngIf="c.destinationSchema === 'none' && c.edges.length === 0">
+                No field schema on this pipeline — column lineage needs source or destination fields.
+              </div>
+              <div class="muted small" *ngIf="c.transformation.kind === 'ai' && c.transformation.instruction" [title]="c.transformation.instruction">
+                Transformation: “{{ c.transformation.instruction.length > 90 ? c.transformation.instruction.slice(0, 88) + '…' : c.transformation.instruction }}”
+              </div>
+              <div class="muted small" *ngIf="c.transformation.kind === 'rowFunctions' || c.transformation.kind === 'preprocessor'">
+                This pipeline uses a {{ c.transformation.kind === 'preprocessor' ? 'preprocessor endpoint' : 'row function' }}; only exact pass-through columns can be mapped.
+              </div>
+              <table class="columns-table" *ngIf="c.edges.length > 0">
+                <thead><tr><th>From</th><th></th><th>To</th><th></th></tr></thead>
+                <tbody>
+                  <tr *ngFor="let e of columnRows(c)" [title]="e.evidence || ''">
+                    <td class="col-from"><ng-container *ngIf="e.from.length > 0; else platform">{{ e.from.join(', ') }}</ng-container><ng-template #platform><span class="muted">platform</span></ng-template></td>
+                    <td class="col-arrow">→</td>
+                    <td class="col-to"><ng-container *ngIf="e.to; else dropped">{{ e.to }}</ng-container><ng-template #dropped><span class="muted">dropped</span></ng-template></td>
+                    <td><span class="conf-chip" [class]="'conf-chip ' + e.confidence">{{ e.op === 'passthrough' ? 'exact' : e.op }}<ng-container *ngIf="e.confidence === 'inferred'"> · inferred</ng-container></span></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="unresolved" *ngIf="c.unresolved.length > 0">
+                <span class="muted small">Unresolved: </span><span class="meta-chip" *ngFor="let u of c.unresolved">{{ u }}</span>
+              </div>
+              <div class="infer-row" *ngIf="c.inferred.available">
+                <button class="secondary-btn small-btn" (click)="inferColumns()" [disabled]="inferring" *ngIf="!c.inferred.computed && auth.canWrite()">
+                  {{ inferring ? 'Inferring…' : 'Infer from transformation (AI)' }}
+                </button>
+                <span class="muted small" *ngIf="c.inferred.computed">Inferred {{ formatWhen(c.inferred.computedAt) }}<ng-container *ngIf="c.inferred.model"> · {{ c.inferred.model }}</ng-container><ng-container *ngIf="c.inferred.note"> · {{ c.inferred.note }}</ng-container></span>
+                <span class="muted small error-text" *ngIf="c.inferred.error">{{ c.inferred.error }}</span>
+              </div>
+            </ng-container>
+          </section>
+
           <section class="panel-section" *ngIf="node.type !== 'catalog'">
             <h3>Recent runs</h3>
             <div class="muted small" *ngIf="!nb.runs || nb.runs.length === 0">

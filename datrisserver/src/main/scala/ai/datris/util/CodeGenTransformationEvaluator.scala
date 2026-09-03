@@ -38,7 +38,7 @@ object CodeGenTransformationEvaluator {
      * @param delimiter   CSV delimiter
      * @return Transformed rows (no header)
      */
-    def transformCsv(instruction: String, header: List[String], rows: List[String], delimiter: String): List[String] = {
+    def transformCsv(instruction: String, header: List[String], rows: List[String], delimiter: String, pipelineName: String = null): List[String] = {
         val sampleRows = rows.take(MAX_SAMPLE_ROWS)
         val headerLine = header.mkString(delimiter)
 
@@ -54,7 +54,7 @@ object CodeGenTransformationEvaluator {
                |Write ONLY data rows to the output file (no header). Use the same delimiter.""".stripMargin
 
         val csvContent = (headerLine +: rows).mkString("\n")
-        val result = transform(userPrompt, csvContent, "csv")
+        val result = transform(userPrompt, csvContent, "csv", instruction, pipelineName)
 
         // Split into rows, filter empties
         result.split("\n").toList.filter(_.nonEmpty)
@@ -68,7 +68,7 @@ object CodeGenTransformationEvaluator {
      * @param isJson      True for JSON, false for XML
      * @return Transformed raw content
      */
-    def transformRaw(instruction: String, rawData: String, isJson: Boolean): String = {
+    def transformRaw(instruction: String, rawData: String, isJson: Boolean, pipelineName: String = null): String = {
         val format = if (isJson) "JSON" else "XML"
         val sample = rawData.take(2000)
 
@@ -87,10 +87,10 @@ object CodeGenTransformationEvaluator {
                |
                |$parseInstruction""".stripMargin
 
-        transform(userPrompt, rawData, format.toLowerCase)
+        transform(userPrompt, rawData, format.toLowerCase, instruction, pipelineName)
     }
 
-    private def transform(userPrompt: String, fileContent: String, fileExtension: String): String = {
+    private def transform(userPrompt: String, fileContent: String, fileExtension: String, instruction: String = null, pipelineName: String = null): String = {
         logger.info("CodeGen Transformation: generating Python transformation script")
 
         // Step 1: Generate the Python script via LLM (uses codegen config when set)
@@ -100,6 +100,9 @@ object CodeGenTransformationEvaluator {
         val cleanScript = cleanGeneratedScript(scriptContent)
 
         logger.info("CodeGen Transformation: generated script (" + cleanScript.length + " chars)")
+        // Keep the last generated script per pipeline as evidence for
+        // column-lineage inference (never fails the transformation).
+        CodeGenScriptIO.write(pipelineName, "transformation", instruction, cleanScript)
         logger.info("CodeGen Transformation: script content:\n" + cleanScript)
 
         // Step 2: Write data and script to temp files

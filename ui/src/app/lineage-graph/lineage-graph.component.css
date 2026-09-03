@@ -72,3 +72,19 @@
 .status-chip.error, .out-chip.error { color: var(--accent-red); border-color: var(--accent-red); }
 .status-chip.cancelled { color: #fbbf24; border-color: #fbbf24; }
 .out-chip.unknown { border-style: dashed; }
+
+.section-toggle { cursor: pointer; display: flex; align-items: center; gap: 4px; user-select: none; }
+.section-toggle .material-icons { font-size: 16px; }
+.section-toggle .small { text-transform: none; letter-spacing: 0; margin-left: 4px; }
+.columns-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.columns-table th { text-align: left; color: var(--text-muted); font-weight: 500; padding: 2px 4px 4px 0; border-bottom: 1px solid var(--border-color); }
+.columns-table td { padding: 4px 4px 4px 0; border-bottom: 1px solid var(--border-color); vertical-align: top; word-break: break-all; }
+.col-arrow { color: var(--text-muted); width: 16px; }
+.conf-chip { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border-color); color: var(--text-secondary); white-space: nowrap; }
+.conf-chip.exact { color: var(--accent-green); border-color: var(--accent-green); }
+.conf-chip.inferred { color: #a78bfa; border-color: #a78bfa; border-style: dashed; }
+.conf-chip.system { color: var(--text-muted); }
+.unresolved { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.infer-row { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.small-btn { font-size: 12px; padding: 4px 10px; }
+.error-text { color: var(--accent-red); }

@@ -3,7 +3,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import type { EChartsOption } from 'echarts';
 import {
-  LineageEdge, LineageGraph, LineageNeighborhood, LineageNode, LineageNodeType, LineageService
+  ColumnEdge, ColumnLineage, LineageEdge, LineageGraph, LineageNeighborhood, LineageNode, LineageNodeType, LineageService
 } from '../lineage.service';
 import { AuthService } from '../auth.service';
 
@@ -57,6 +57,8 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
   selectedId = '';
   neighborhood: LineageNeighborhood | null = null;
   neighborhoodLoading = false;
+  columnsOpen = false;
+  inferring = false;
 
   readonly legend: { type: LineageNodeType; color: string; label: string }[] = [
     { type: 'source', color: COLOR.source, label: 'Source' },
@@ -312,7 +314,8 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
     this.selectedId = id;
     this.neighborhood = null;
     this.neighborhoodLoading = true;
-    this.lineageService.neighborhood(node.type, node.name, { runs: 10 }).subscribe({
+    this.inferring = false;
+    this.lineageService.neighborhood(node.type, node.name, { runs: 10, columns: true }).subscribe({
       next: n => { this.neighborhood = n; this.neighborhoodLoading = false; this.render(); },
       error: () => { this.neighborhoodLoading = false; this.render(); }
     });
@@ -348,6 +351,31 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
 
   downstreamOf(nb: LineageNeighborhood): LineageNode[] {
     return nb.downstream.filter(n => n.id !== nb.node.id);
+  }
+
+  // ---------------------------------------------------------------- columns
+
+  columns(): ColumnLineage | null {
+    return this.neighborhood?.columns || null;
+  }
+
+  /** Edges worth a row: everything but drops of fields nobody asked about. */
+  columnRows(c: ColumnLineage): ColumnEdge[] {
+    return c.edges.filter(e => e.op !== 'drop').concat(c.edges.filter(e => e.op === 'drop'));
+  }
+
+  /** Runs the opt-in AI tier for the pipeline behind the panel, then refreshes the embed. */
+  inferColumns(): void {
+    const c = this.columns();
+    if (!c || this.inferring) return;
+    this.inferring = true;
+    this.lineageService.columns(c.pipeline, { version: c.versionSource === 'snapshot' ? c.version : undefined, infer: true }).subscribe({
+      next: r => { if (this.neighborhood) this.neighborhood.columns = r; this.inferring = false; },
+      error: e => {
+        if (this.neighborhood?.columns) this.neighborhood.columns.inferred.error = e?.error?.error || 'inference failed';
+        this.inferring = false;
+      }
+    });
   }
 
   runDetailLink(run: { runId: string; pipeline?: string }): any[] {

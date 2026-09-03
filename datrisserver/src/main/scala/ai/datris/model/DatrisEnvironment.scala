@@ -275,6 +275,11 @@ case class DatrisEnvironment(
       * (see RunLineageIO). Unbounded retention — it is the lineage audit trail. */
     def runLineageTableName: String = environment + "-run-lineage"
 
+    /** AI-inferred column mappings per `pipeline|version` (ColumnLineageService)
+      * and the last CodeGen transformation script per pipeline (CodeGenScriptIO). */
+    def columnLineageTableName: String = environment + "-column-lineage"
+    def codegenScriptTableName: String = environment + "-codegen-scripts"
+
     /** True for trial-droplet tenants. Trials have AI configuration locked at the
       * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention
       * is enforced by the website's provision-trial.ts which always assigns

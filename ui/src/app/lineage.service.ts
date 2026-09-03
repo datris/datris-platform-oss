@@ -51,6 +51,29 @@ export interface LineageNeighborhoodOptions {
   direction?: 'up' | 'down' | 'both';
   depth?: number;
   runs?: number;
+  columns?: boolean;
+}
+
+/** Column-level lineage (L3): one edge per destination column. */
+export interface ColumnEdge {
+  from: string[];
+  to: string;
+  op: 'passthrough' | 'rename' | 'derive' | 'drop' | 'system' | string;
+  confidence: 'exact' | 'inferred' | 'system' | string;
+  evidence?: string;
+}
+
+export interface ColumnLineage {
+  pipeline: string;
+  version: number;
+  versionSource: 'current' | 'snapshot';
+  sourceFields: string[];
+  destinationFields: string[];
+  destinationSchema: 'declared' | 'inherited' | 'none';
+  transformation: { kind: 'ai' | 'rowFunctions' | 'preprocessor' | 'none'; instruction?: string };
+  edges: ColumnEdge[];
+  unresolved: string[];
+  inferred: { available: boolean; computed?: boolean; computedAt?: string; model?: string; note?: string; error?: string };
 }
 
 export interface LineageGraph {
@@ -73,6 +96,7 @@ export interface LineageNeighborhood {
   edges: LineageEdge[];
   freshness?: LineageFreshness;
   runs?: LineageRun[];
+  columns?: ColumnLineage;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -88,9 +112,18 @@ export class LineageService {
     if (opts?.direction) params = params.set('direction', opts.direction);
     if (opts?.depth) params = params.set('depth', String(opts.depth));
     if (opts?.runs) params = params.set('runs', String(opts.runs));
+    if (opts?.columns) params = params.set('columns', 'true');
     return this.http.get<LineageNeighborhood>(
       '/api/v1/lineage/' + encodeURIComponent(type) + '/' + encodeURIComponent(name),
       { params }
     );
+  }
+
+  /** Column lineage for one pipeline definition; `infer` runs the opt-in AI tier. */
+  columns(pipeline: string, opts?: { version?: number; infer?: boolean }): Observable<ColumnLineage> {
+    let params = new HttpParams();
+    if (opts?.version) params = params.set('version', String(opts.version));
+    if (opts?.infer) params = params.set('infer', 'true');
+    return this.http.get<ColumnLineage>('/api/v1/lineage/columns/' + encodeURIComponent(pipeline), { params });
   }
 }

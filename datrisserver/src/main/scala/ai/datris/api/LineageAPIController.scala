@@ -42,7 +42,8 @@ class LineageAPIController {
         @PathVariable name: String,
         @RequestParam(name = "direction", required = false) direction: String,
         @RequestParam(name = "depth", required = false) depth: java.lang.Integer,
-        @RequestParam(name = "runs", required = false) runs: java.lang.Integer
+        @RequestParam(name = "runs", required = false) runs: java.lang.Integer,
+        @RequestParam(name = "columns", required = false) columns: java.lang.Boolean
     ): ResponseEntity[String] = {
         try {
             val t = Option(nodeType).map(_.trim.toLowerCase).getOrElse("")
@@ -56,7 +57,8 @@ class LineageAPIController {
             val result = LineageService.neighborhood(
                 t, name, d,
                 if (depth == null) 0 else math.max(0, depth.intValue()),
-                if (runs == null) 0 else math.max(0, runs.intValue())
+                if (runs == null) 0 else math.max(0, runs.intValue()),
+                columns != null && columns.booleanValue()
             )
             if (result == null)
                 ResponseEntity.status(HttpStatus.NOT_FOUND)
@@ -66,6 +68,35 @@ class LineageAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error building lineage neighborhood: " + Throwables.getStackTraceAsString(e))
+                error500(e)
+        }
+    }
+
+    /** Column-level lineage for one pipeline definition (plan L3). `version`
+      * selects a definition snapshot (default: current); `infer=true` runs the
+      * opt-in AI extraction for pipelines with an AI transformation (cached per
+      * version afterwards). Deterministic edges are always returned. Declared
+      * before the `{nodeType}/{name}` route by Spring's specificity rules. */
+    @GetMapping(path = Array("/columns/{pipeline}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def columns(
+        @PathVariable pipeline: String,
+        @RequestParam(name = "version", required = false) version: java.lang.Integer,
+        @RequestParam(name = "infer", required = false) infer: java.lang.Boolean
+    ): ResponseEntity[String] = {
+        try {
+            val result = ai.datris.util.ColumnLineageService.forPipeline(
+                pipeline,
+                Option(version).map(_.intValue()).filter(_ > 0),
+                infer != null && infer.booleanValue()
+            )
+            if (result == null)
+                ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body[String]("{\"error\":\"no such pipeline" + (if (version != null) " version" else "") + ": " + Option(pipeline).getOrElse("").replace("\"", "'") + "\"}")
+            else
+                new ResponseEntity[String](gson.toJson(result.toJson), HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error building column lineage: " + Throwables.getStackTraceAsString(e))
                 error500(e)
         }
     }

@@ -68,9 +68,18 @@ Two things follow from that record:
 
 Runs are recorded from the first run after upgrading; earlier runs still resolve through provenance as before, but have no recorded outputs.
 
+### Column-level lineage
+
+For any pipeline, `GET /api/v1/lineage/columns/{pipeline}` (or the **Columns** section of a pipeline or dataset node in the graph) shows which destination columns come from which source fields. Two tiers, clearly labeled:
+
+- **Exact** — derived from the pipeline's field schemas alone, no AI: name-identical fields pass through; with no transformation, source-only fields are marked dropped. Provenance stamp columns show as **system**.
+- **Inferred** (opt-in) — for pipelines with an AI transformation, click **Infer from transformation** (or pass `infer=true`) and the code-generation model reads the instruction, the field lists and the script generated on the last run, returning only mappings it can point to evidence for: renames, derived columns, drops. Anything it cannot evidence stays **unresolved** rather than guessed. Results are cached per definition version and never recomputed unless the definition changes; inference runs on request, never during a run.
+
+A dataset node shows the mapping of the pipeline that lands into it. A historical dataset shows the mapping as of the definition version of the last run that wrote it. Column edges are not drawn on the canvas — they live in the panel.
+
 ### Traversal for agents
 
-The `get_lineage` MCP tool (or the neighborhood endpoint's `direction`, `depth` and `runs` parameters) lets an agent ask "what is downstream of this tap?" before changing or deleting it, or "what did this pipeline actually write lately?" before trusting a dataset. Direction is `up`, `down` or `both`; depth bounds the hops; runs appends the recent recorded runs.
+The `get_lineage` MCP tool (or the neighborhood endpoint's `direction`, `depth`, `runs` and `columns` parameters) lets an agent ask "what is downstream of this tap?" before changing or deleting it, or "what did this pipeline actually write lately?" before trusting a dataset. Direction is `up`, `down` or `both`; depth bounds the hops; runs appends the recent recorded runs; columns embeds the column-level lineage for a pipeline or dataset node.
 
 ## Sources
 
