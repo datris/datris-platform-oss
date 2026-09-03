@@ -10,6 +10,7 @@ import { ConfigurationComponent } from './configuration/configuration.component'
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
 import { DataCatalogComponent } from './data-catalog/data-catalog.component';
+import { LineageGraphComponent } from './lineage-graph/lineage-graph.component';
 import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
 import { AssistantComponent } from './assistant/assistant.component';
 import { McpShellComponent } from './mcp-shell/mcp-shell.component';
@@ -59,6 +60,7 @@ const routes: Routes = [
 
   // Catalog — list + nested create flows
   { path: 'catalog', component: DataCatalogComponent, canActivate: [authGuard] },
+  { path: 'catalog/lineage', component: LineageGraphComponent, canActivate: [authGuard] },
   { path: 'catalog/taps/create', component: TapCreateComponent, canActivate: [authGuard] },
   { path: 'catalog/pipelines/create', component: PipelineCreateComponent, canActivate: [authGuard] },
 

@@ -799,6 +799,19 @@ export class McpComponent implements OnInit {
       ],
       playgroundEnabled: true
     },
+    {
+      name: 'get_lineage',
+      description: 'Traverse the lineage graph from one node: what feeds it and what depends on it, the edges between them, freshness, and optionally the most recent recorded runs with what each read and wrote per destination. Datasets landed under an earlier configuration are marked historical.',
+      category: 'Discovery & Provenance',
+      parameters: [
+        { name: 'node_type', type: 'string', description: 'source | tap | pipeline | dataset | catalog', required: true, inputType: 'text' },
+        { name: 'name', type: 'string', description: 'The node name (the part after type: in a lineage id)', required: true, inputType: 'text' },
+        { name: 'direction', type: 'string', description: 'up | down | both (default both)', required: false, inputType: 'text' },
+        { name: 'depth', type: 'integer', description: 'Maximum hops (default unbounded)', required: false, inputType: 'number' },
+        { name: 'runs', type: 'integer', description: 'Recent recorded runs to include (default 0, max 50)', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
   ];
 
   constructor(private mcpService: McpService) { }

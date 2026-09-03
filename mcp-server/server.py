@@ -2890,6 +2890,38 @@ def _base_tools():
                 "required": ["run_id"],
             }
         ),
+        Tool(
+            name="get_lineage",
+            description=(
+                "Traverse the lineage graph from one node: everything upstream (what feeds it) and/or downstream "
+                "(what depends on it) of a source, tap, pipeline, dataset, or catalog, with the edges between them, "
+                "freshness for the pipeline involved, and optionally the most recent recorded runs (what each run "
+                "read and wrote, per destination). Datasets a pipeline used to land into under an earlier "
+                "configuration are marked `historical`. Use it for impact analysis before changing or deleting "
+                "something — 'what is downstream of this tap?' — or to see which datasets a pipeline actually wrote. "
+                "Node names: a tap or pipeline name; a dataset's `kind:coordinates` id as returned by find_data or "
+                "list_pipelines lineage; a source host; a catalog name."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "node_type": {
+                        "type": "string",
+                        "enum": ["source", "tap", "pipeline", "dataset", "catalog"],
+                        "description": "The kind of node to start from.",
+                    },
+                    "name": {"type": "string", "description": "The node's name (the part after `type:` in a lineage id)."},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "both"],
+                        "description": "Which way to traverse (default: both).",
+                    },
+                    "depth": {"type": "integer", "description": "Maximum hops from the node (default: unbounded)."},
+                    "runs": {"type": "integer", "description": "Include this many most-recent recorded runs for the node (default: 0, max: 50)."},
+                },
+                "required": ["node_type", "name"],
+            }
+        ),
     ]
 
 
@@ -3928,6 +3960,23 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("config_version"):
             params["configVersion"] = args["config_version"]
         return _call("get", "/api/v1/provenance", params=params)
+
+    elif name == "get_lineage":
+        node_type = str(args.get("node_type", "")).strip().lower()
+        node_name = str(args.get("name", "")).strip()
+        if node_type not in ("source", "tap", "pipeline", "dataset", "catalog"):
+            return json.dumps({"error": "node_type must be one of source, tap, pipeline, dataset, catalog"})
+        if not node_name:
+            return json.dumps({"error": "name is required"})
+        params = {}
+        if args.get("direction"):
+            params["direction"] = str(args["direction"]).strip().lower()
+        if args.get("depth"):
+            params["depth"] = args["depth"]
+        if args.get("runs"):
+            params["runs"] = args["runs"]
+        from urllib.parse import quote
+        return _call("get", f"/api/v1/lineage/{node_type}/{quote(node_name, safe='')}", params=params or None)
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

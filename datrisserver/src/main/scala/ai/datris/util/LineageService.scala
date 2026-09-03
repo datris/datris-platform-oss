@@ -31,25 +31,50 @@ object LineageService {
     private val MaxRows = 5000
     private val cacheTtlMs = 60000L
 
-    case class Node(id: String, nodeType: String, name: String, catalog: Option[String] = None) {
+    /** How far back run-lineage docs are scanned for datasets a pipeline
+      * landed into under an earlier destination config ("historical"). */
+    private val ObservedWindowMs = 90L * 86400000L
+    private val ObservedMaxRows = 5000
+    private val MaxRecentRuns = 50
+
+    /** `historical` marks a dataset (or the edge into it) that no current
+      * config lands into but a recorded run did — the destination changed
+      * since. `tags` come straight from the tap/pipeline definition. */
+    case class Node(
+        id: String,
+        nodeType: String,
+        name: String,
+        catalog: Option[String] = None,
+        tags: List[String] = Nil,
+        historical: Boolean = false
+    ) {
         def toJson: JsonObject = {
             val o = new JsonObject()
             o.addProperty("id", id)
             o.addProperty("type", nodeType)
             o.addProperty("name", name)
             catalog.foreach(o.addProperty("catalog", _))
+            if (tags.nonEmpty) { val t = new JsonArray(); tags.foreach(t.add); o.add("tags", t) }
+            if (historical) o.addProperty("historical", true)
             o
         }
     }
 
-    case class Edge(from: String, to: String) {
+    case class Edge(from: String, to: String, historical: Boolean = false) {
         def toJson: JsonObject = {
             val o = new JsonObject()
             o.addProperty("from", from)
             o.addProperty("to", to)
+            if (historical) o.addProperty("historical", true)
             o
         }
     }
+
+    /** A dataset a recorded run wrote: (pipeline name, dataset node id). */
+    case class ObservedDataset(pipeline: String, datasetId: String)
+
+    private def tagsOf(l: java.util.List[String]): List[String] =
+        if (l == null) Nil else l.asScala.toList.filter(t => t != null && t.trim.nonEmpty).map(_.trim)
 
     case class Graph(nodes: List[Node], edges: List[Edge]) {
         def toJson: JsonObject = {
@@ -104,7 +129,15 @@ object LineageService {
     }
 
     /** Pure graph construction from configs — the unit-testable core. */
-    private[datris] def build(taps: List[TapConfig], pipelines: List[PipelineConfig]): Graph = {
+    private[datris] def build(taps: List[TapConfig], pipelines: List[PipelineConfig]): Graph = build(taps, pipelines, Nil)
+
+    /** Graph from configs plus datasets observed in recorded runs. An observed
+      * dataset the current config still lands into is a no-op; one it no
+      * longer lands into becomes a `historical` node with a `historical` edge
+      * from its pipeline (and into the pipeline's catalog, so it stays
+      * browsable by catalog). Observed datasets of deleted pipelines are
+      * dropped — there is no node to hang them from. */
+    private[datris] def build(taps: List[TapConfig], pipelines: List[PipelineConfig], observed: List[ObservedDataset]): Graph = {
         val nodes = scala.collection.mutable.LinkedHashMap[String, Node]()
         val edges = List.newBuilder[Edge]
 
@@ -112,7 +145,7 @@ object LineageService {
 
         taps.filter(_ != null).foreach { t =>
             val tapId = "tap:" + t.name
-            addNode(Node(tapId, "tap", t.name, Option(t.catalog)))
+            addNode(Node(tapId, "tap", t.name, Option(t.catalog), tagsOf(t.tags)))
             val source = TapRunner.declaredSource(t)
             addNode(Node("source:" + source, "source", source))
             edges += Edge("source:" + source, tapId)
@@ -122,13 +155,29 @@ object LineageService {
 
         pipelines.filter(_ != null).foreach { p =>
             val pipelineId = "pipeline:" + p.name
-            addNode(Node(pipelineId, "pipeline", p.name, Option(p.catalog)))
+            addNode(Node(pipelineId, "pipeline", p.name, Option(p.catalog), tagsOf(p.tags)))
             datasets(p).foreach { ds =>
                 addNode(Node(ds.id, "dataset", ds.name, Option(p.catalog)))
                 edges += Edge(pipelineId, ds.id)
                 if (p.catalog != null && p.catalog.nonEmpty) {
                     addNode(Node("catalog:" + p.catalog, "catalog", p.catalog))
                     edges += Edge(ds.id, "catalog:" + p.catalog)
+                }
+            }
+        }
+
+        val byName = pipelines.filter(_ != null).map(p => p.name -> p).toMap
+        observed.filter(o => o != null && o.datasetId != null && o.datasetId.startsWith("dataset:")).distinct.foreach { o =>
+            byName.get(o.pipeline).foreach { p =>
+                val pipelineId = "pipeline:" + p.name
+                if (!nodes.contains(o.datasetId))
+                    addNode(Node(o.datasetId, "dataset", o.datasetId.stripPrefix("dataset:"), Option(p.catalog), historical = true))
+                if (nodes(o.datasetId).historical) {
+                    edges += Edge(pipelineId, o.datasetId, historical = true)
+                    if (p.catalog != null && p.catalog.nonEmpty) {
+                        addNode(Node("catalog:" + p.catalog, "catalog", p.catalog))
+                        edges += Edge(o.datasetId, "catalog:" + p.catalog, historical = true)
+                    }
                 }
             }
         }
@@ -155,9 +204,69 @@ object LineageService {
         val pipelines =
             try PipelineConfigIO.readAll(env.pipelineTableName)
             catch { case _: Exception => Nil }
-        val entry = CacheEntry(now, build(taps, pipelines), taps, pipelines)
+        val observed =
+            try RunLineageIO.since(now - ObservedWindowMs, ObservedMaxRows).flatMap { r =>
+                    Option(r.outputs).map(_.asScala.toList).getOrElse(Nil)
+                        .filter(o => o.datasetId != null)
+                        .map(o => ObservedDataset(r.pipeline, o.datasetId))
+                }.distinct
+            catch { case _: Exception => Nil }
+        val entry = CacheEntry(now, build(taps, pipelines, observed), taps, pipelines)
         cache.put(env.environment, entry)
         entry
+    }
+
+    /** Drop the cached graph so the next read rebuilds (tests / after writes). */
+    private[datris] def invalidate(): Unit = cache.clear()
+
+    /** Compact JSON for one recorded run, for neighborhood `runs` lists. */
+    private[datris] def runToJson(r: RunLineage): JsonObject = {
+        val o = new JsonObject()
+        o.addProperty("runId", r.runId)
+        if (r.pipeline != null) o.addProperty("pipeline", r.pipeline)
+        o.addProperty("configVersion", r.configVersion)
+        if (r.status != null) o.addProperty("status", r.status)
+        if (r.startedAt != null) o.addProperty("startedAt", r.startedAt)
+        if (r.completedAt != null) o.addProperty("completedAt", r.completedAt)
+        o.addProperty("durationMs", r.durationMs)
+        o.addProperty("recordCount", r.recordCount)
+        if (r.input != null) {
+            val in = new JsonObject()
+            in.addProperty("kind", r.input.kind)
+            if (r.input.tapName != null) in.addProperty("tapName", r.input.tapName)
+            if (r.input.tapRunTime != null) in.addProperty("tapRunTime", r.input.tapRunTime)
+            if (r.input.scriptSha != null) in.addProperty("scriptSha", r.input.scriptSha)
+            if (r.input.source != null) in.addProperty("source", r.input.source)
+            if (r.input.filename != null) in.addProperty("filename", r.input.filename)
+            o.add("input", in)
+        }
+        val outs = new JsonArray()
+        Option(r.outputs).map(_.asScala.toList).getOrElse(Nil).foreach { x =>
+            val oo = new JsonObject()
+            oo.addProperty("kind", x.kind)
+            if (x.coords != null) oo.addProperty("coords", x.coords)
+            if (x.datasetId != null) oo.addProperty("datasetId", x.datasetId)
+            oo.addProperty("status", x.status)
+            oo.addProperty("recordCount", x.recordCount)
+            if (x.error != null) oo.addProperty("error", x.error)
+            outs.add(oo)
+        }
+        o.add("outputs", outs)
+        o
+    }
+
+    /** Recent recorded runs touching one node, newest first. Catalog nodes
+      * have no runs of their own. */
+    def recentRuns(nodeType: String, name: String, max: Int): List[RunLineage] = {
+        val n = math.max(0, math.min(max, MaxRecentRuns))
+        if (n == 0) return Nil
+        nodeType match {
+            case "pipeline" => RunLineageIO.recentBy("pipeline", name, n)
+            case "tap" => RunLineageIO.recentBy("tap", name, n)
+            case "source" => RunLineageIO.recentBy("source", name, n)
+            case "dataset" => RunLineageIO.recentBy("datasets", "dataset:" + name, n)
+            case _ => Nil
+        }
     }
 
     /** The whole graph (cached ~1 minute). */
@@ -211,7 +320,12 @@ object LineageService {
 
     /** Neighborhood of one node: the node, everything transitively upstream,
       * and everything transitively downstream. 404-style null when unknown. */
-    def neighborhood(nodeType: String, name: String): JsonObject = {
+    def neighborhood(nodeType: String, name: String): JsonObject = neighborhood(nodeType, name, "both", 0, 0)
+
+    /** Neighborhood with traversal controls. `direction` is up, down or both;
+      * `depth` bounds the hop count (0 = unbounded); `runs` > 0 appends that
+      * many recent recorded runs for the node (capped at 50). */
+    def neighborhood(nodeType: String, name: String, direction: String, depth: Int, runs: Int): JsonObject = {
         val entry = loadCached()
         val g = entry.graph
         val id = nodeType + ":" + name
@@ -220,20 +334,24 @@ object LineageService {
 
         val forward = g.edges.groupBy(_.from).mapValues(_.map(_.to))
         val backward = g.edges.groupBy(_.to).mapValues(_.map(_.from))
+        val dir = Option(direction).map(_.trim.toLowerCase).filter(d => d == "up" || d == "down").getOrElse("both")
+        val maxHops = if (depth <= 0) Int.MaxValue else depth
 
         def walk(start: String, next: String => List[String]): List[String] = {
             val seen = scala.collection.mutable.LinkedHashSet[String]()
             var frontier = next(start)
-            while (frontier.nonEmpty) {
+            var hops = 1
+            while (frontier.nonEmpty && hops <= maxHops) {
                 val fresh = frontier.filterNot(seen.contains)
                 fresh.foreach(seen.add)
                 frontier = fresh.flatMap(next)
+                hops += 1
             }
             seen.toList
         }
 
-        val upstream = walk(id, i => backward.getOrElse(i, Nil))
-        val downstream = walk(id, i => forward.getOrElse(i, Nil))
+        val upstream = if (dir == "down") Nil else walk(id, i => backward.getOrElse(i, Nil))
+        val downstream = if (dir == "up") Nil else walk(id, i => forward.getOrElse(i, Nil))
         val byId = g.nodes.map(n => n.id -> n).toMap
 
         val o = new JsonObject()
@@ -250,6 +368,12 @@ object LineageService {
             if (nodeType == "pipeline") Some(name)
             else (upstream ++ downstream).find(_.startsWith("pipeline:")).map(_.stripPrefix("pipeline:"))
         pipelineName.foreach(p => o.add("freshness", freshness(p, entry.taps)))
+
+        if (runs > 0) {
+            val arr = new JsonArray()
+            recentRuns(nodeType, name, runs).foreach(r => arr.add(runToJson(r)))
+            o.add("runs", arr)
+        }
         o
     }
 }

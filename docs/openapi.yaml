@@ -4233,7 +4233,9 @@ paths:
       summary: The whole lineage graph
       description: >-
         The graph Source → Tap → Pipeline → Dataset → Catalog, derived from
-        configuration alone (cached ~1 minute). Node ids are `type:name`.
+        configuration plus recorded runs (cached ~1 minute). Node ids are
+        `type:name`. Datasets a pipeline landed into under an earlier
+        configuration appear with `historical: true` (and a dashed edge).
       responses:
         '200':
           description: Nodes and edges
@@ -4256,6 +4258,12 @@ paths:
                           type: string
                         catalog:
                           type: string
+                        tags:
+                          type: array
+                          items:
+                            type: string
+                        historical:
+                          type: boolean
                   edges:
                     type: array
                     items:
@@ -4265,13 +4273,17 @@ paths:
                           type: string
                         to:
                           type: string
+                        historical:
+                          type: boolean
   /api/v1/lineage/{type}/{name}:
     get:
       tags: [Provenance]
       summary: One node's lineage neighborhood
       description: >-
-        The node, everything transitively upstream and downstream, the edges
-        between them, and freshness for the pipeline the node is (or feeds).
+        The node, everything transitively upstream and/or downstream, the edges
+        between them, freshness for the pipeline the node is (or feeds), and
+        optionally the most recent recorded runs touching the node — what each
+        read and wrote, per destination.
       parameters:
         - in: path
           name: type
@@ -4284,6 +4296,25 @@ paths:
           required: true
           schema:
             type: string
+        - in: query
+          name: direction
+          required: false
+          description: Traverse upstream only, downstream only, or both (default).
+          schema:
+            type: string
+            enum: [up, down, both]
+        - in: query
+          name: depth
+          required: false
+          description: Maximum hops from the node; 0 or absent means unbounded.
+          schema:
+            type: integer
+        - in: query
+          name: runs
+          required: false
+          description: Append this many most-recent recorded runs (max 50).
+          schema:
+            type: integer
       responses:
         '200':
           description: The neighborhood
@@ -4308,6 +4339,63 @@ paths:
                       type: object
                   freshness:
                     type: object
+                  runs:
+                    type: array
+                    description: Present when `runs` > 0; newest first.
+                    items:
+                      type: object
+                      properties:
+                        runId:
+                          type: string
+                        pipeline:
+                          type: string
+                        configVersion:
+                          type: integer
+                        status:
+                          type: string
+                          enum: [SUCCESS, ERROR, CANCELLED]
+                        startedAt:
+                          type: string
+                        completedAt:
+                          type: string
+                        durationMs:
+                          type: integer
+                        recordCount:
+                          type: integer
+                        input:
+                          type: object
+                          properties:
+                            kind:
+                              type: string
+                              enum: [tap, upload]
+                            tapName:
+                              type: string
+                            tapRunTime:
+                              type: string
+                            scriptSha:
+                              type: string
+                            source:
+                              type: string
+                            filename:
+                              type: string
+                        outputs:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              kind:
+                                type: string
+                              coords:
+                                type: string
+                              datasetId:
+                                type: string
+                              status:
+                                type: string
+                                enum: [SUCCESS, ERROR, UNKNOWN]
+                              recordCount:
+                                type: integer
+                              error:
+                                type: string
         '404':
           description: No such node
   /api/v1/catalog/find:

@@ -56,6 +56,16 @@ object ProvenanceResolver {
             job.addProperty("recordCount", s.recordCount)
             if (s.dataType != null) job.addProperty("dataType", s.dataType)
         }
+        // 2b. Recorded run lineage (v1.27+): what the run actually wrote, per
+        //     destination, and the config version it ran under. Absent for
+        //     runs that predate the collection.
+        val runLineage = RunLineageIO.read(runId).orNull
+        if (runLineage != null) {
+            val rl = LineageService.runToJson(runLineage)
+            out.add("outputs", rl.get("outputs"))
+            if (rl.has("input")) out.add("input", rl.get("input"))
+            if (!job.has("status") && runLineage.status != null) job.addProperty("status", runLineage.status)
+        }
         if (job.size() > 0) out.add("job", job)
 
         // 3. Tap run log: direct key when known (metadata or the stamped
@@ -70,6 +80,8 @@ object ProvenanceResolver {
             if (tapRunKey != null && tapRunKey.nonEmpty) tapRunKey
             else if (metadata != null && metadata.tapName != null && metadata.tapRunTime != null)
                 metadata.tapName + "|" + metadata.tapRunTime
+            else if (runLineage != null && runLineage.input != null && runLineage.input.tapName != null && runLineage.input.tapRunTime != null)
+                runLineage.input.tapName + "|" + runLineage.input.tapRunTime
             else null
 
         val tapRunLog: TapRunLog = {
@@ -126,17 +138,20 @@ object ProvenanceResolver {
             out.addProperty("source", metadata.tapSource)
 
         // 5. Pipeline config version snapshot. The version at run time comes from
-        //    the stamped `_datris_config_version` (configVersion param); without
-        //    it the current version is reported.
+        //    the stamped `_datris_config_version` (configVersion param), else the
+        //    recorded run-lineage doc; without either the current version is
+        //    reported.
         if (pipelineName != null) {
             val current = PipelineConfigIO.read(env.pipelineTableName, pipelineName)
+            val recorded: Option[Int] = Option(runLineage).filter(_.configVersion > 0).map(_.configVersion)
             val version: Int =
                 if (configVersion != null) configVersion.intValue()
+                else if (recorded.isDefined) recorded.get
                 else if (current != null && current.version > 0) current.version
                 else 1
             val cfg = new JsonObject()
             cfg.addProperty("version", version)
-            cfg.addProperty("versionSource", if (configVersion != null) "stamped" else "current")
+            cfg.addProperty("versionSource", if (configVersion != null) "stamped" else if (recorded.isDefined) "recorded" else "current")
             EntityVersionIO.get(env.pipelineVersionTableName, pipelineName, version).foreach { snapshot =>
                 if (snapshot.createdAt != null) cfg.addProperty("createdAt", snapshot.createdAt)
                 if (snapshot.createdBy != null) cfg.addProperty("createdBy", snapshot.createdBy)

@@ -47,13 +47,30 @@ A subset of fields can be selected with `"provenance": { "stamp": true, "fields"
 
 `GET /api/v1/provenance?runId=<_datris_run_id>` (or the `get_provenance` MCP tool) walks the chain and returns one document: the run's job status and record count, the tap run that fed it (with logs metadata and script commit), the pipeline config version snapshot, and the declared source. Pass the row's `_datris_tap_run` and `_datris_config_version` values when you have them for an exact, lookup-only resolution.
 
+For runs recorded since run lineage was introduced, the same document also carries `input` (what the run read) and `outputs` (each destination the run wrote, with its own status), and the config version resolves from the recorded run when the row's stamp is not available.
+
 ## Lineage & freshness
 
-`GET /api/v1/lineage` returns the whole graph; `GET /api/v1/lineage/{type}/{name}` returns one node's neighborhood — everything upstream and downstream of a source, tap, pipeline, dataset, or catalog. The graph is built from configuration alone, on request.
+`GET /api/v1/lineage` returns the whole graph; `GET /api/v1/lineage/{type}/{name}` returns one node's neighborhood — everything upstream and downstream of a source, tap, pipeline, dataset, or catalog. The graph is built from configuration, on request, plus what recorded runs actually wrote (below).
 
 Freshness per pipeline combines the last successful landing, its record count, the incremental sync cursor (when the feeding tap keeps one), and the same stale classification the Ops Activity dashboard uses — the catalog and the dashboard never disagree.
 
-In the UI, a pipeline's detail page shows its upstream tap and source, the datasets it lands in, and the freshness line.
+In the UI, a pipeline's detail page shows its upstream tap and source, the datasets it lands in, and the freshness line. **Catalog → Lineage** opens the interactive graph: the whole chain laid out left to right, filterable by catalog, tag or name. Click any node for what feeds it, what depends on it, its freshness, and its recent runs, with links to the tap or pipeline.
+
+### Run-level lineage
+
+Every pipeline run is recorded as it completes: what it read (the tap run or uploaded file), which destinations it wrote — each with its own success or failure — how many records, and the definition version it ran under. Recording is automatic for every pipeline, independent of provenance stamping, and never fails or delays a run.
+
+Two things follow from that record:
+
+- **History, not just current config.** If a pipeline used to land into one table and now lands into another, the old dataset stays in the graph marked `historical` (dashed in the UI) with the runs that wrote it, instead of silently disappearing when the config changed.
+- **Recent runs per node.** Ask for `?runs=10` on any neighborhood, or use the **Recent runs** section of the graph's side panel, to see what actually happened — including a multi-destination run where one destination failed and the others landed.
+
+Runs are recorded from the first run after upgrading; earlier runs still resolve through provenance as before, but have no recorded outputs.
+
+### Traversal for agents
+
+The `get_lineage` MCP tool (or the neighborhood endpoint's `direction`, `depth` and `runs` parameters) lets an agent ask "what is downstream of this tap?" before changing or deleting it, or "what did this pipeline actually write lately?" before trusting a dataset. Direction is `up`, `down` or `both`; depth bounds the hops; runs appends the recent recorded runs.
 
 ## Tags
 

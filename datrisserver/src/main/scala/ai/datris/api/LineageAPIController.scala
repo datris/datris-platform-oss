@@ -34,14 +34,30 @@ class LineageAPIController {
         }
     }
 
+    /** `direction` up|down|both (default both); `depth` hop bound (0 =
+      * unbounded); `runs` appends that many recent recorded runs (max 50). */
     @GetMapping(path = Array("/{nodeType}/{name}"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
-    def neighborhood(@PathVariable nodeType: String, @PathVariable name: String): ResponseEntity[String] = {
+    def neighborhood(
+        @PathVariable nodeType: String,
+        @PathVariable name: String,
+        @RequestParam(name = "direction", required = false) direction: String,
+        @RequestParam(name = "depth", required = false) depth: java.lang.Integer,
+        @RequestParam(name = "runs", required = false) runs: java.lang.Integer
+    ): ResponseEntity[String] = {
         try {
             val t = Option(nodeType).map(_.trim.toLowerCase).getOrElse("")
             if (!nodeTypes.contains(t))
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body[String]("{\"error\":\"type must be one of source, tap, pipeline, dataset, catalog\"}")
-            val result = LineageService.neighborhood(t, name)
+            val d = Option(direction).map(_.trim.toLowerCase).getOrElse("both")
+            if (!Set("up", "down", "both").contains(d))
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body[String]("{\"error\":\"direction must be one of up, down, both\"}")
+            val result = LineageService.neighborhood(
+                t, name, d,
+                if (depth == null) 0 else math.max(0, depth.intValue()),
+                if (runs == null) 0 else math.max(0, runs.intValue())
+            )
             if (result == null)
                 ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body[String]("{\"error\":\"no such node: " + t + ":" + Option(name).getOrElse("").replace("\"", "'") + "\"}")

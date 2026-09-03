@@ -71,6 +71,55 @@ class LineageServiceSpec extends AnyFunSuite {
         assert(g.nodes.map(_.id).contains("source:feeds.example.com"))
     }
 
+    test("an observed dataset the config no longer lands into becomes a historical node + edge") {
+        val observed = List(
+            LineageService.ObservedDataset("orders", "dataset:postgres:datris.public.orders_v1"),
+            LineageService.ObservedDataset("orders", "dataset:postgres:datris.public.orders") // still current → no-op
+        )
+        val g = LineageService.build(Nil, List(pipeline("orders", "commerce", pgDest)), observed)
+        val hist = g.nodes.find(_.id == "dataset:postgres:datris.public.orders_v1").get
+        assert(hist.historical)
+        assert(hist.nodeType == "dataset")
+        assert(hist.catalog.contains("commerce"))
+        val current = g.nodes.find(_.id == "dataset:postgres:datris.public.orders").get
+        assert(!current.historical)
+        assert(g.edges.exists(e => e.from == "pipeline:orders" && e.to == hist.id && e.historical))
+        assert(g.edges.exists(e => e.from == hist.id && e.to == "catalog:commerce" && e.historical))
+        assert(g.edges.exists(e => e.from == "pipeline:orders" && e.to == current.id && !e.historical))
+    }
+
+    test("observed datasets of a deleted pipeline are dropped, not dangling") {
+        val g = LineageService.build(Nil, Nil, List(LineageService.ObservedDataset("gone", "dataset:postgres:x.y.z")))
+        assert(g.nodes.isEmpty && g.edges.isEmpty)
+    }
+
+    test("tap and pipeline tags ride on their nodes") {
+        val t = TapConfig(name = "t", description = "d", targetPipeline = "p", tags = List("sales", " ", null).asJava)
+        val p = PipelineConfig(name = "p", destination = pgDest, tags = List("gold").asJava)
+        val g = LineageService.build(List(t), List(p))
+        assert(g.nodes.find(_.id == "tap:t").get.tags == List("sales"))
+        assert(g.nodes.find(_.id == "pipeline:p").get.tags == List("gold"))
+        val json = g.nodes.find(_.id == "pipeline:p").get.toJson
+        assert(json.getAsJsonArray("tags").size() == 1)
+        assert(!g.nodes.find(_.id == "source:tap:t").get.toJson.has("tags"))
+    }
+
+    test("runToJson carries per-destination outputs and the input identity") {
+        val rl = RunLineage(
+            runId = "r1", pipeline = "p", configVersion = 3,
+            input = RunLineageInput("tap", tapName = "t", tapRunTime = "2026-09-03T00:00:00Z", source = "feeds.example.com"),
+            outputs = List(RunLineageOutput("postgres", "datris.public.t", "dataset:postgres:datris.public.t", "SUCCESS", 10)).asJava,
+            recordCount = 10, status = "SUCCESS", completedAt = "2026-09-03T00:01:00Z"
+        )
+        val j = LineageService.runToJson(rl)
+        assert(j.get("runId").getAsString == "r1")
+        assert(j.get("configVersion").getAsInt == 3)
+        assert(j.getAsJsonObject("input").get("tapName").getAsString == "t")
+        val out = j.getAsJsonArray("outputs").get(0).getAsJsonObject
+        assert(out.get("datasetId").getAsString == "dataset:postgres:datris.public.t")
+        assert(out.get("status").getAsString == "SUCCESS")
+    }
+
     test("pipelines without a catalog produce no catalog node") {
         val g = LineageService.build(Nil, List(pipeline("p", catalog = null, dest = pgDest)))
         assert(!g.nodes.exists(_.nodeType == "catalog"))

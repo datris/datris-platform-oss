@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 72)
+        assert(MCPToolRoutes.allToolNames.size == 73)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 

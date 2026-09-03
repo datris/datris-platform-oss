@@ -244,6 +244,17 @@
   flex-direction: column;
   gap: 8px;
 }
+.lineage-open-graph {
+  float: right;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.lineage-open-graph:hover { color: var(--accent-cyan); }
+.lineage-open-graph .material-icons { font-size: 15px; }
 .lineage-row {
   display: flex;
   align-items: center;

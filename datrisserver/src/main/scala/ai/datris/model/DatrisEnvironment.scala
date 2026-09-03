@@ -271,6 +271,10 @@ case class DatrisEnvironment(
       * repo-backed taps must never snapshot runtime state. */
     def tapStateTableName: String = tapTableName + "-state"
 
+    /** One doc per pipeline run: what it read, what it wrote, how it ended
+      * (see RunLineageIO). Unbounded retention — it is the lineage audit trail. */
+    def runLineageTableName: String = environment + "-run-lineage"
+
     /** True for trial-droplet tenants. Trials have AI configuration locked at the
       * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention
       * is enforced by the website's provision-trial.ts which always assigns

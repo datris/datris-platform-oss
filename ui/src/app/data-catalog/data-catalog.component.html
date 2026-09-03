@@ -3,6 +3,9 @@
   <div class="page-header">
     <h1 class="page-title">Catalog</h1>
     <div class="header-actions">
+      <a class="lineage-btn" routerLink="/catalog/lineage" title="Interactive lineage graph: Source → Tap → Pipeline → Dataset → Catalog">
+        <span class="material-icons">account_tree</span> Lineage
+      </a>
       <button class="create-btn" (click)="showCreateModal = true" *ngIf="!showCreateModal && auth.canWrite()">+ Create Catalog</button>
     </div>
   </div>

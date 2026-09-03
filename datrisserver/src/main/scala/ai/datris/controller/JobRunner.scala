@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonElement, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, Data}
-import ai.datris.model.JobContext
+import ai.datris.model.{CANCELLED, JobContext, RunLineage, RunLineageInput, RunLineageOutput}
 import ai.datris.util._
 import org.slf4j.{Logger, LoggerFactory}
 
@@ -70,6 +70,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
         val tenantEnv = jobContext.tenantEnvironment
 
         statusUtil.overrideProcessName(this.getClass.getSimpleName)
+        val startedAtMs = System.currentTimeMillis()
 
         // Stamp the per-job record count and data type onto the status summary so
         // ops dashboards can sum items across pipeline jobs (and not have to
@@ -77,6 +78,10 @@ class JobRunner(jobContext: JobContext) extends Runnable {
         val (recordCount, dataType) = JobRunner.deriveCountAndType(jobContext.data)
         statusUtil.setRecordCount(recordCount)
         statusUtil.setDataType(dataType)
+
+        // Loader futures by lineage kind, captured so the error path can still
+        // report which destinations finished before the failure.
+        var loaderFutures: List[(String, Future[Unit])] = Nil
 
         try {
             statusUtil.info("begin", "Process started")
@@ -137,52 +142,57 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                 }
             }
 
-            val destinationFutures = List(
+            // Each entry is tagged with its lineage dataset kind (the same
+            // kinds LineageService.datasets derives) so the run-lineage doc
+            // written below can report per-destination outcomes.
+            val destinationFutures: List[(String, Future[Unit])] = List(
                 if (config.destination.objectStore != null)
-                    Some(runLoader("SparkObjectStoreLoader")(new SparkObjectStoreLoader(jobContextStamped).process()))
+                    Some("objectstore" -> runLoader("SparkObjectStoreLoader")(new SparkObjectStoreLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.database != null && config.destination.database.usePostgres)
-                    Some(runLoader("PostgresLoader")(new PostgresLoader(jobContextStamped).process()))
+                    Some("postgres" -> runLoader("PostgresLoader")(new PostgresLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.database != null && config.destination.database.useMongoDB)
-                    Some(runLoader("MongoDBLoader")(new MongoDBLoader(jobContextStamped).process()))
+                    Some("mongodb" -> runLoader("MongoDBLoader")(new MongoDBLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.database != null && config.destination.database.useSnowflake)
-                    Some(runLoader("SnowflakeLoader")(new SnowflakeLoader(jobContextStamped).process()))
+                    Some("snowflake" -> runLoader("SnowflakeLoader")(new SnowflakeLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.database != null && config.destination.database.useDatabricks)
-                    Some(runLoader("DatabricksLoader")(new DatabricksLoader(jobContextStamped).process()))
+                    Some("databricks" -> runLoader("DatabricksLoader")(new DatabricksLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.restEndpoint != null)
-                    Some(runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextStamped, config.destination.restEndpoint).process()))
+                    Some("rest" -> runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextStamped, config.destination.restEndpoint).process()))
                 else None,
                 if (config.destination.kafka != null)
-                    Some(runLoader("KafkaLoader")(new KafkaLoader(jobContextStamped).process()))
+                    Some("kafka" -> runLoader("KafkaLoader")(new KafkaLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.activeMQ != null)
-                    Some(runLoader("ActiveMQLoader")(new ActiveMQLoader(jobContextStamped).process()))
+                    Some("activemq" -> runLoader("ActiveMQLoader")(new ActiveMQLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.qdrant != null)
-                    Some(runLoader("QdrantLoader")(new QdrantLoader(jobContextStamped).process()))
+                    Some("qdrant" -> runLoader("QdrantLoader")(new QdrantLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.weaviate != null)
-                    Some(runLoader("WeaviateLoader")(new WeaviateLoader(jobContextStamped).process()))
+                    Some("weaviate" -> runLoader("WeaviateLoader")(new WeaviateLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.pgvector != null)
-                    Some(runLoader("PGVectorLoader")(new PGVectorLoader(jobContextStamped).process()))
+                    Some("pgvector" -> runLoader("PGVectorLoader")(new PGVectorLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.milvus != null)
-                    Some(runLoader("MilvusLoader")(new MilvusLoader(jobContextStamped).process()))
+                    Some("milvus" -> runLoader("MilvusLoader")(new MilvusLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.chroma != null)
-                    Some(runLoader("ChromaLoader")(new ChromaLoader(jobContextStamped).process()))
+                    Some("chroma" -> runLoader("ChromaLoader")(new ChromaLoader(jobContextStamped).process()))
                 else None
             ).flatten
+            loaderFutures = destinationFutures
 
-            Await.result(Future.sequence(destinationFutures), Duration(JobRunner.destinationTimeoutMinutes, "minutes"))
+            Await.result(Future.sequence(destinationFutures.map(_._2)), Duration(JobRunner.destinationTimeoutMinutes, "minutes"))
 
             statusUtil.overrideProcessName(this.getClass.getSimpleName)
             statusUtil.info("end", "Process completed")
+            recordRunLineage(startedAtMs, recordCount, dataType, loaderFutures, "SUCCESS", null)
         } catch {
             // Catch Throwable (not Exception) for defense in depth. The runLoader
             // wrapper above already translates fatal errors into RuntimeException
@@ -193,6 +203,11 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             case e: Throwable =>
                 val errorMessage = Throwables.getStackTraceAsString(e)
                 statusUtil.error("end", "Process completed, error: " + errorMessage)
+                recordRunLineage(
+                    startedAtMs, recordCount, dataType, loaderFutures,
+                    if (jobContext.state == CANCELLED || e.isInstanceOf[InterruptedException]) "CANCELLED" else "ERROR",
+                    Option(e.getMessage).getOrElse(e.getClass.getName)
+                )
                 val fix = FixSuggestionUtil.suggest("pipeline", new Gson().toJson(jobContext.config), errorMessage)
                 if (fix != null) {
                     logger.info("AI Fix Suggestion: " + fix.summary)
@@ -211,6 +226,68 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     case ie: Exception => logger.debug("incident open skipped: " + ie.getMessage)
                 }
                 throw new DatrisException("Pipeline error: " + errorMessage)
+        }
+    }
+
+    /** Write the run-lineage doc (what this run read and wrote). Per-destination
+      * status comes from each loader future's completed value; a loader still
+      * running when the job failed reports UNKNOWN rather than a guess. Must
+      * never fail or delay the job — same guarantee as the provenance stamper. */
+    private def recordRunLineage(
+        startedAtMs: Long,
+        recordCount: Int,
+        dataType: String,
+        loaders: List[(String, Future[Unit])],
+        status: String,
+        error: String
+    ): Unit = {
+        try {
+            val config = jobContext.config
+            val md = jobContext.metadata
+            val datasets = LineageService.datasets(config).map(d => d.kind -> d).toMap
+            val outputs = new java.util.ArrayList[RunLineageOutput]()
+            loaders.foreach { case (kind, f) =>
+                val ds = datasets.get(kind)
+                val (st, err) = f.value match {
+                    case Some(scala.util.Success(_)) => ("SUCCESS", null)
+                    case Some(scala.util.Failure(t)) => ("ERROR", Option(t.getMessage).getOrElse(t.getClass.getName).take(500))
+                    case None => ("UNKNOWN", null)
+                }
+                val coords =
+                    if (ds.isDefined) ds.get.name.stripPrefix(kind + ":")
+                    else if (kind == "rest" && config.destination.restEndpoint != null) config.destination.restEndpoint.endpoint
+                    else null
+                outputs.add(RunLineageOutput(
+                    kind = kind,
+                    coords = coords,
+                    datasetId = ds.map(_.id).orNull,
+                    status = st,
+                    recordCount = if (st == "SUCCESS") recordCount else 0,
+                    error = err
+                ))
+            }
+            val input =
+                if (md != null && md.tapName != null)
+                    RunLineageInput("tap", md.tapName, md.tapRunTime, md.tapScriptSha, md.tapSource, md.dataFileName)
+                else
+                    RunLineageInput("upload", filename = if (md != null) md.dataFileName else null)
+            val now = System.currentTimeMillis()
+            RunLineageIO.write(RunLineage(
+                runId = jobContext.pipelineToken,
+                pipeline = config.name,
+                configVersion = if (config.version > 0) config.version else 1,
+                input = input,
+                outputs = outputs,
+                recordCount = recordCount,
+                dataType = dataType,
+                startedAt = java.time.Instant.ofEpochMilli(startedAtMs).toString,
+                completedAt = java.time.Instant.ofEpochMilli(now).toString,
+                durationMs = now - startedAtMs,
+                status = status
+            ))
+        } catch {
+            case e: Exception =>
+                logger.warn("run-lineage write skipped for " + jobContext.pipelineToken + ": " + e.getMessage)
         }
     }
 }
