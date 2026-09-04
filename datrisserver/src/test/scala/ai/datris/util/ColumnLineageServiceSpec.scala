@@ -14,7 +14,13 @@ class ColumnLineageServiceSpec extends AnyFunSuite {
 
     private def fields(names: String*): SchemaProperties = SchemaProperties(null, names.map(n => SchemaField(n, "string")).asJava)
 
-    private def cfg(src: Seq[String], dst: Seq[String] = null, tx: ai.datris.model.Transformation = null, stamp: Boolean = false, stampFields: Seq[String] = null): PipelineConfig =
+    private def cfg(
+        src: Seq[String],
+        dst: Seq[String] = null,
+        tx: ai.datris.model.Transformation = null,
+        stamp: Boolean = false,
+        stampFields: Seq[String] = null
+    ): PipelineConfig =
         PipelineConfig(
             name = "p",
             source = Source(schemaProperties = if (src == null) null else fields(src: _*)),
@@ -29,7 +35,10 @@ class ColumnLineageServiceSpec extends AnyFunSuite {
     test("no transformation, no declared destination: every source field passes through (inherited)") {
         val (edges, unresolved, label) = ColumnLineageService.deterministic(cfg(Seq("id", "name")))
         assert(label == "inherited")
-        assert(edges.map(e => (e.from.asScala.toList, e.to, e.op, e.confidence)) == List((List("id"), "id", "passthrough", "exact"), (List("name"), "name", "passthrough", "exact")))
+        assert(edges.map(e => (e.from.asScala.toList, e.to, e.op, e.confidence)) == List(
+            (List("id"), "id", "passthrough", "exact"),
+            (List("name"), "name", "passthrough", "exact")
+        ))
         assert(unresolved.isEmpty)
     }
 
@@ -89,8 +98,14 @@ class ColumnLineageServiceSpec extends AnyFunSuite {
 
     test("transformationInfo classifies ai, rowFunctions, preprocessor, none") {
         assert(ColumnLineageService.transformationInfo(cfg(Seq("a"))).get("kind").getAsString == "none")
-        assert(ColumnLineageService.transformationInfo(cfg(Seq("a"), null, ai.datris.model.Transformation(aiTransformation = AITransformation("x")))).get("kind").getAsString == "ai")
-        assert(ColumnLineageService.transformationInfo(cfg(Seq("a"), null, ai.datris.model.Transformation(rowFunctions = List(RowFunction("javascript", null)).asJava))).get("kind").getAsString == "rowFunctions")
+        assert(ColumnLineageService.transformationInfo(cfg(Seq("a"), null, ai.datris.model.Transformation(aiTransformation = AITransformation("x")))).get(
+            "kind"
+        ).getAsString == "ai")
+        assert(ColumnLineageService.transformationInfo(cfg(
+            Seq("a"),
+            null,
+            ai.datris.model.Transformation(rowFunctions = List(RowFunction("javascript", null)).asJava)
+        )).get("kind").getAsString == "rowFunctions")
         assert(ColumnLineageService.transformationInfo(cfg(Seq("a")).copy(preprocessor = RestEndpoint("http://x"))).get("kind").getAsString == "preprocessor")
     }
 }

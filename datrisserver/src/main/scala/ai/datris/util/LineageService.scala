@@ -257,7 +257,14 @@ object LineageService {
             byName.get(o.pipeline).foreach { p =>
                 val pipelineId = "pipeline:" + p.name
                 if (!nodes.contains(o.datasetId))
-                    addNode(Node(o.datasetId, "dataset", o.datasetId.stripPrefix("dataset:"), Option(p.catalog), historical = true, authority = Some(AuthorityDerived)))
+                    addNode(Node(
+                        o.datasetId,
+                        "dataset",
+                        o.datasetId.stripPrefix("dataset:"),
+                        Option(p.catalog),
+                        historical = true,
+                        authority = Some(AuthorityDerived)
+                    ))
                 if (nodes(o.datasetId).historical) {
                     edges += edge(pipelineId, o.datasetId, historical = true)
                     if (p.catalog != null && p.catalog.nonEmpty) {
@@ -302,7 +309,8 @@ object LineageService {
             try NoSQLDbUtil.getItemsSinceAsJSON(env.tapLogTableName, "created_at", now - ObservedWindowMs, ObservedMaxRows).flatMap { json =>
                     try {
                         val el = com.google.gson.JsonParser.parseString(json)
-                        if (el.isJsonObject && el.getAsJsonObject.has("value")) Option(gson.fromJson(el.getAsJsonObject.get("value"), classOf[TapRunLog])) else None
+                        if (el.isJsonObject && el.getAsJsonObject.has("value")) Option(gson.fromJson(el.getAsJsonObject.get("value"), classOf[TapRunLog]))
+                        else None
                     } catch { case _: Exception => None }
                 }
             catch { case _: Exception => Nil }

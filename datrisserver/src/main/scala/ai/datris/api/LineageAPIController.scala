@@ -55,7 +55,9 @@ class LineageAPIController {
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body[String]("{\"error\":\"direction must be one of up, down, both\"}")
             val result = LineageService.neighborhood(
-                t, name, d,
+                t,
+                name,
+                d,
                 if (depth == null) 0 else math.max(0, depth.intValue()),
                 if (runs == null) 0 else math.max(0, runs.intValue()),
                 columns != null && columns.booleanValue()
@@ -91,7 +93,10 @@ class LineageAPIController {
             )
             if (result == null)
                 ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body[String]("{\"error\":\"no such pipeline" + (if (version != null) " version" else "") + ": " + Option(pipeline).getOrElse("").replace("\"", "'") + "\"}")
+                    .body[String]("{\"error\":\"no such pipeline" + (if (version != null) " version" else "") + ": " + Option(pipeline).getOrElse("").replace(
+                        "\"",
+                        "'"
+                    ) + "\"}")
             else
                 new ResponseEntity[String](gson.toJson(result.toJson), HttpStatus.OK)
         } catch {

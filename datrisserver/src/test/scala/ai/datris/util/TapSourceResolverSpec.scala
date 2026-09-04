@@ -11,7 +11,14 @@ import org.scalatest.funsuite.AnyFunSuite
 class TapSourceResolverSpec extends AnyFunSuite {
 
     test("declared source wins over everything") {
-        val t = TapConfig(name = "t", description = "d", targetPipeline = "p", source = " SEC EDGAR ", scriptKind = "http", endpointUrl = "https://feeds.example.org/x")
+        val t = TapConfig(
+            name = "t",
+            description = "d",
+            targetPipeline = "p",
+            source = " SEC EDGAR ",
+            scriptKind = "http",
+            endpointUrl = "https://feeds.example.org/x"
+        )
         assert(TapSourceResolver.resolve(t) == "SEC EDGAR")
     }
 

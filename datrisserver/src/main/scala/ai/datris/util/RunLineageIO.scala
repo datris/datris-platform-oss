@@ -63,8 +63,8 @@ object RunLineageIO {
       * `field` is one of the flat lookup fields: pipeline, tap, source, datasets. */
     def recentBy(field: String, value: String, max: Int): List[RunLineage] =
         try parseRows(NoSQLDbUtil.queryJSONItemsByKey(table, field, value))
-            .sortBy(r => Option(r.completedAt).getOrElse(""))(Ordering[String].reverse)
-            .take(max)
+                .sortBy(r => Option(r.completedAt).getOrElse(""))(Ordering[String].reverse)
+                .take(max)
         catch {
             case e: Exception =>
                 logger.debug("run-lineage query failed (" + field + "=" + value + "): " + e.getMessage)

@@ -166,7 +166,9 @@ object ColumnLineageService {
         val cleaned = text.trim.stripPrefix("```json").stripPrefix("```").stripSuffix("```").trim
         val start = cleaned.indexOf('['); val end = cleaned.lastIndexOf(']')
         if (start < 0 || end <= start) return Nil
-        val el = try JsonParser.parseString(cleaned.substring(start, end + 1)) catch { case _: Exception => return Nil }
+        val el =
+            try JsonParser.parseString(cleaned.substring(start, end + 1))
+            catch { case _: Exception => return Nil }
         if (!el.isJsonArray) return Nil
         val srcSet = src.toSet; val dstSet = dst.toSet
         val ops = Set("rename", "derive", "passthrough", "drop")
@@ -197,7 +199,11 @@ object ColumnLineageService {
         val text = AIUtil.extractText(AIUtil.callAIWithSystem(SystemPrompt, user.toString, cfg), cfg)
         val edges = parseInferred(text, src, dst)
         InferredColumnLineage(
-            c.name, version, edges.asJava, cfg.model, java.time.Instant.now().toString,
+            c.name,
+            version,
+            edges.asJava,
+            cfg.model,
+            java.time.Instant.now().toString,
             if (edges.isEmpty) "No mappings evidenced by the instruction" + (if (script.isDefined) " or script" else "") else null
         )
     }
@@ -249,7 +255,13 @@ object ColumnLineageService {
 
         val resolvedByInference = inferredEdges.map(_.to).toSet
         Result(
-            pipeline, v, versionSource, src, dst, schemaLabel, tx,
+            pipeline,
+            v,
+            versionSource,
+            src,
+            dst,
+            schemaLabel,
+            tx,
             exact ++ inferredEdges,
             unresolved.filterNot(resolvedByInference.contains),
             inferredMeta

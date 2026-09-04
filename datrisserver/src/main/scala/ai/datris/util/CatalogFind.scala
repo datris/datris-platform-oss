@@ -126,11 +126,17 @@ object CatalogFind {
             .map(p => Candidate(p, tapForPipeline.get(p.name), score(queryTokens, p, tapForPipeline.get(p.name))))
             .filter(c => queryTokens.isEmpty || c.score > 0)
             // Ties: pipelines whose primary dataset is the system of record first.
-            .sortBy(c => (-c.score, LineageService.datasets(c.pipeline).headOption.flatMap(d => LineageService.authorityOfDataset(d.id)) match {
-                case Some(LineageService.AuthorityAuthoritative) => 0
-                case Some(LineageService.AuthorityUndeclared) => 1
-                case _ => 2
-            }, c.pipeline.name))
+            .sortBy(c =>
+                (
+                    -c.score,
+                    LineageService.datasets(c.pipeline).headOption.flatMap(d => LineageService.authorityOfDataset(d.id)) match {
+                        case Some(LineageService.AuthorityAuthoritative) => 0
+                        case Some(LineageService.AuthorityUndeclared) => 1
+                        case _ => 2
+                    },
+                    c.pipeline.name
+                )
+            )
 
         val ordered =
             if (ai && scored.size > 1) rerank(query, scored.take(RerankCandidates)) ++ scored.drop(RerankCandidates)
@@ -161,11 +167,13 @@ object CatalogFind {
 
         // Locations: the authoritative dataset first (L5b), each with its
         // authority label and the evidence of what the pipeline wrote there (L5a).
-        val dsets = LineageService.datasets(p).sortBy(ds => LineageService.authorityOfDataset(ds.id) match {
-            case Some(LineageService.AuthorityAuthoritative) => 0
-            case Some(LineageService.AuthorityUndeclared) => 1
-            case _ => 2
-        })
+        val dsets = LineageService.datasets(p).sortBy(ds =>
+            LineageService.authorityOfDataset(ds.id) match {
+                case Some(LineageService.AuthorityAuthoritative) => 0
+                case Some(LineageService.AuthorityUndeclared) => 1
+                case _ => 2
+            }
+        )
         def locationJson(ds: LineageService.DatasetRef): JsonObject = {
             val l = ds.toJson
             LineageService.authorityOfDataset(ds.id).foreach(l.addProperty("authority", _))

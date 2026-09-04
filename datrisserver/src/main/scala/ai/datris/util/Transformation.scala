@@ -291,10 +291,13 @@ class Transformation(jobContext: JobContext) {
             if (newHeader.map(_.toLowerCase) != oldHeader.map(_.toLowerCase)) {
                 val added = newHeader.filterNot(h => oldHeader.exists(_.equalsIgnoreCase(h)))
                 val removed = oldHeader.filterNot(h => newHeader.exists(_.equalsIgnoreCase(h)))
-                statusUtil.info("processing", "CodeGen transformation changed columns" +
-                    (if (added.nonEmpty) " — added: " + added.mkString(", ") else "") +
-                    (if (removed.nonEmpty) " — removed: " + removed.mkString(", ") else "") +
-                    (if (added.isEmpty && removed.isEmpty) " — reordered" else ""))
+                statusUtil.info(
+                    "processing",
+                    "CodeGen transformation changed columns" +
+                        (if (added.nonEmpty) " — added: " + added.mkString(", ") else "") +
+                        (if (removed.nonEmpty) " — removed: " + removed.mkString(", ") else "") +
+                        (if (added.isEmpty && removed.isEmpty) " — reordered" else "")
+                )
             } else if (!result.headerFromScript)
                 statusUtil.info("processing", "CodeGen transformation output carried no header; keeping the source columns")
             val newData = jobContext.data.copy(

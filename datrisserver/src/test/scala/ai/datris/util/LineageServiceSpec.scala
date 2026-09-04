@@ -106,10 +106,14 @@ class LineageServiceSpec extends AnyFunSuite {
 
     test("runToJson carries per-destination outputs and the input identity") {
         val rl = RunLineage(
-            runId = "r1", pipeline = "p", configVersion = 3,
+            runId = "r1",
+            pipeline = "p",
+            configVersion = 3,
             input = RunLineageInput("tap", tapName = "t", tapRunTime = "2026-09-03T00:00:00Z", source = "feeds.example.com"),
             outputs = List(RunLineageOutput("postgres", "datris.public.t", "dataset:postgres:datris.public.t", "SUCCESS", 10)).asJava,
-            recordCount = 10, status = "SUCCESS", completedAt = "2026-09-03T00:01:00Z"
+            recordCount = 10,
+            status = "SUCCESS",
+            completedAt = "2026-09-03T00:01:00Z"
         )
         val j = LineageService.runToJson(rl)
         assert(j.get("runId").getAsString == "r1")
@@ -149,8 +153,14 @@ class LineageServiceSpec extends AnyFunSuite {
     }
 
     test("historical datasets are derived and edges carry evidence when present") {
-        val ev = Map(("pipeline:orders", "dataset:postgres:datris.public.orders") -> LineageService.EdgeEvidence(8, 12400L, "2026-08-31T00:00:00Z", "SUCCESS", 1))
-        val g = LineageService.build(Nil, List(pipeline("orders", "commerce", pgDest)), List(LineageService.ObservedDataset("orders", "dataset:postgres:datris.public.old")), ev)
+        val ev =
+            Map(("pipeline:orders", "dataset:postgres:datris.public.orders") -> LineageService.EdgeEvidence(8, 12400L, "2026-08-31T00:00:00Z", "SUCCESS", 1))
+        val g = LineageService.build(
+            Nil,
+            List(pipeline("orders", "commerce", pgDest)),
+            List(LineageService.ObservedDataset("orders", "dataset:postgres:datris.public.old")),
+            ev
+        )
         assert(g.nodes.find(_.id == "dataset:postgres:datris.public.old").get.authority.contains("derived"))
         val e = g.edges.find(x => x.from == "pipeline:orders" && x.to == "dataset:postgres:datris.public.orders").get
         assert(e.evidence.exists(_.records == 12400L))
@@ -161,12 +171,24 @@ class LineageServiceSpec extends AnyFunSuite {
 
     test("edgeEvidence aggregates runs per hop and tap logs per source, skipping test runs") {
         val runs = List(
-            RunLineage(runId = "r1", pipeline = "orders", recordCount = 100, status = "SUCCESS", completedAt = "2026-09-01T00:00:00Z",
+            RunLineage(
+                runId = "r1",
+                pipeline = "orders",
+                recordCount = 100,
+                status = "SUCCESS",
+                completedAt = "2026-09-01T00:00:00Z",
                 input = RunLineageInput("tap", tapName = "t"),
-                outputs = List(RunLineageOutput("postgres", datasetId = "dataset:postgres:x", status = "SUCCESS", recordCount = 100)).asJava),
-            RunLineage(runId = "r2", pipeline = "orders", recordCount = 50, status = "ERROR", completedAt = "2026-09-02T00:00:00Z",
+                outputs = List(RunLineageOutput("postgres", datasetId = "dataset:postgres:x", status = "SUCCESS", recordCount = 100)).asJava
+            ),
+            RunLineage(
+                runId = "r2",
+                pipeline = "orders",
+                recordCount = 50,
+                status = "ERROR",
+                completedAt = "2026-09-02T00:00:00Z",
                 input = RunLineageInput("tap", tapName = "t"),
-                outputs = List(RunLineageOutput("postgres", datasetId = "dataset:postgres:x", status = "ERROR", recordCount = 0)).asJava)
+                outputs = List(RunLineageOutput("postgres", datasetId = "dataset:postgres:x", status = "ERROR", recordCount = 0)).asJava
+            )
         )
         val t = TapConfig(name = "t", description = "d", targetPipeline = "orders")
         val logs = List(

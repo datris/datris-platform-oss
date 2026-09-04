@@ -24,8 +24,10 @@ object TapSourceResolver {
     private val logger = LoggerFactory.getLogger(getClass)
 
     private val HostPattern = """https?://([A-Za-z0-9.-]+\.[A-Za-z]{2,})(?=[/:"'\s?)]|$)""".r
+
     /** Leading labels that name an API surface, not the provider. */
     private val GenericLabels = Set("www", "api", "apis", "data", "feeds", "feed", "app", "rest", "ws", "cdn")
+
     /** Hosts that are infrastructure or placeholders, never a data source. */
     private val Ignored = Set("localhost", "host.docker.internal", "example.com", "datris.ai", "github.com", "pypi.org", "schema.org", "w3.org")
 

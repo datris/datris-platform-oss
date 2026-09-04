@@ -204,7 +204,10 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                 val errorMessage = Throwables.getStackTraceAsString(e)
                 statusUtil.error("end", "Process completed, error: " + errorMessage)
                 recordRunLineage(
-                    startedAtMs, recordCount, dataType, loaderFutures,
+                    startedAtMs,
+                    recordCount,
+                    dataType,
+                    loaderFutures,
                     if (jobContext.state == CANCELLED || e.isInstanceOf[InterruptedException]) "CANCELLED" else "ERROR",
                     Option(e.getMessage).getOrElse(e.getClass.getName)
                 )
