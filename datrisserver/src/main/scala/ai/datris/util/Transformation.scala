@@ -281,18 +281,51 @@ class Transformation(jobContext: JobContext) {
         if (rows.nonEmpty && jobContext.data.header != null) {
             val delimiter = config.source.fileAttributes.csvAttributes.delimiter
             statusUtil.info("processing", "CodeGen transformation on " + rows.size + " rows")
-            val transformedRows = CodeGenTransformationEvaluator.transformCsv(instruction, jobContext.data.header, rows, delimiter)
-            val newData = jobContext.data.copy(rows = transformedRows)
+            val result = CodeGenTransformationEvaluator.transformCsv(instruction, jobContext.data.header, rows, delimiter, config.name)
+            // The transformation may add, drop or reorder columns. Carry the
+            // emitted header forward so downstream loaders project by name
+            // against the new shape instead of positionally against the old
+            // one (which silently landed values in the wrong columns).
+            val newHeader = result.header
+            val oldHeader = jobContext.data.header
+            if (newHeader.map(_.toLowerCase) != oldHeader.map(_.toLowerCase)) {
+                val added = newHeader.filterNot(h => oldHeader.exists(_.equalsIgnoreCase(h)))
+                val removed = oldHeader.filterNot(h => newHeader.exists(_.equalsIgnoreCase(h)))
+                statusUtil.info(
+                    "processing",
+                    "CodeGen transformation changed columns" +
+                        (if (added.nonEmpty) " — added: " + added.mkString(", ") else "") +
+                        (if (removed.nonEmpty) " — removed: " + removed.mkString(", ") else "") +
+                        (if (added.isEmpty && removed.isEmpty) " — reordered" else "")
+                )
+            } else if (!result.headerFromScript)
+                statusUtil.info("processing", "CodeGen transformation output carried no header; keeping the source columns")
+            val newData = jobContext.data.copy(
+                header = newHeader,
+                headerWithSchema = rebuildHeaderSchema(newHeader, jobContext.data.headerWithSchema),
+                rows = result.rows
+            )
             jobContext.copy(data = newData)
         } else if (rawData != null) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen transformation on " + (if (isJson) "JSON" else "XML") + " data")
-            val transformedRaw = CodeGenTransformationEvaluator.transformRaw(instruction, rawData, isJson)
+            val transformedRaw = CodeGenTransformationEvaluator.transformRaw(instruction, rawData, isJson, config.name)
             val newData = jobContext.data.copy(rawData = transformedRaw)
             jobContext.copy(data = newData)
         } else {
             jobContext
         }
+    }
+
+    /** Schema for the transformed header: known columns keep their type, new
+      * columns take the declared destination type when there is one, else string. */
+    private def rebuildHeaderSchema(header: List[String], existing: List[ai.datris.model.SchemaField]): List[ai.datris.model.SchemaField] = {
+        val known = Option(existing).getOrElse(Nil).map(f => f.name.toLowerCase -> f).toMap
+        val declared =
+            if (config.destination != null && config.destination.schemaProperties != null && config.destination.schemaProperties.fields != null)
+                config.destination.schemaProperties.fields.asScala.map(f => f.name.toLowerCase -> f).toMap
+            else Map.empty[String, ai.datris.model.SchemaField]
+        header.map(h => known.get(h.toLowerCase).orElse(declared.get(h.toLowerCase)).getOrElse(ai.datris.model.SchemaField(h, "string")))
     }
 
     private def valueToString(value: Any): String = {

@@ -88,6 +88,8 @@ You don't need to write JSON by hand — once you have the Datris Data Platform 
 | `catalog` | string | No | Free-form label that groups related pipelines and taps in the [Data Catalog](/data-catalog). Empty or null = Uncataloged. |
 | `tags` | string[] | No | Free-form discovery labels — `find_data` and the catalog search rank over them. See [Provenance, Lineage & Discovery](/provenance). |
 | `provenance` | object | No | `{ "stamp": true }` appends `_datris_*` provenance fields to every row this pipeline lands. Off by default. See [Provenance, Lineage & Discovery](/provenance). |
+| `authoritative` | boolean | No | Source of authority. Unset or `true`: this pipeline's dataset may be the system of record (a single destination is, by default). `false`: everything it lands is a derived copy — a rollup, a replica, an index built from another dataset. See [Provenance, Lineage & Discovery](/provenance#source-of-authority). |
+| `destination.authoritative` | string | No | For pipelines with several destinations only: which destination kind (`postgres`, `mongodb`, `snowflake`, …) is the golden copy. Without it, all of them show as *undeclared* in lineage until you decide. |
 
 ### Source
 

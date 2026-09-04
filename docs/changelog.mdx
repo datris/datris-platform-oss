@@ -3,6 +3,23 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.27.0" description="September 3, 2026">
+  **Lineage now reflects what actually ran, not just what is configured — with an interactive graph and an agent tool to traverse it.**
+
+  - **Run-level lineage.** Every pipeline run is recorded as it completes: what it read, which destinations it wrote — each with its own success or failure — how many records, and the definition version it ran under. Automatic for every pipeline, independent of provenance stamping, and never fails or delays a run.
+  - **History in the graph.** A dataset a pipeline used to land into under an earlier configuration stays in the lineage graph marked historical, with the runs that wrote it.
+  - **Lineage graph.** Catalog → Lineage opens an interactive Source → Tap → Pipeline → Dataset → Catalog view, filterable by catalog, tag or name. Click any node for what feeds it, what depends on it, freshness and recent runs, with links to the tap or pipeline.
+  - **Recent runs per node**, plus upstream-only / downstream-only / bounded-depth traversal on the lineage neighborhood endpoint.
+  - **New MCP tool: `get_lineage`** for impact analysis before changing or deleting something, and for seeing what a pipeline actually wrote lately.
+  - **Real sources in lineage.** A tap's source node names where the data actually comes from: the tap's new optional `source` field, else the endpoint host, else the host its script calls most. Taps sharing a provider share one source node.
+  - **Evidence on every lineage hop**: runs, records, failures and last run per edge (last 90 days); claims without runs draw faint; numbers on the panel chips and in `find_data`.
+  - **Source of authority**: datasets labeled system of record / derived / undeclared, declared never inferred; single destinations authoritative by default; `authoritative: false` for derived copies, `destination.authoritative` for multi-destination pipelines; find_data prefers the authoritative copy; "Canonical only" graph filter.
+  - **Column-level lineage** in the graph's side panel and via a new endpoint: exact schema-derived mappings always, system columns for provenance stamps, and an opt-in AI-inferred tier for pipelines with a transformation that returns only evidenced mappings, cached per definition version.
+  - **Fix:** AI transformations that add, remove or reorder CSV columns now land correctly; the pipeline picks up the transformed column list instead of projecting by the old one.
+  - **Provenance resolution** for recorded runs now includes per-destination outputs and resolves the definition version from the record when the row's stamp is unavailable.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. Runs are recorded from the first run after upgrading. CLI users on pip or Homebrew: upgrade to 1.27.0.
+</Update>
+
 <Update label="v1.26.1" description="September 2, 2026">
   **Claude Fable 5.1 is now the recommended chat model, plus security and dependency updates.**
 

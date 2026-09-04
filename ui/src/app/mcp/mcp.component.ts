@@ -139,6 +139,8 @@ export class McpComponent implements OnInit {
         { name: 'secret_name', type: 'string', description: 'Vault secret name for credentials', required: false, inputType: 'text' },
         { name: 'tap_type', type: 'string', description: 'structured (default) or document (for PDFs/Word/HTML into vector-store pipelines)', required: false, inputType: 'text' },
         { name: 'packages', type: 'array', description: 'Optional list of pip packages the tap script imports beyond the base set. Auto-detected from the script when omitted.', required: false, inputType: 'text' }
+      ,
+        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' }
       ],
       playgroundEnabled: false
     },
@@ -197,6 +199,8 @@ export class McpComponent implements OnInit {
         { name: 'cron_expression', type: 'string', description: 'New CRON schedule (Quartz syntax: seconds minutes hours dom month dow). Examples: "0 0 * * * ?" hourly, "0 30 5 ? * MON-FRI" weekdays 5:30am.', required: false, inputType: 'text' },
         { name: 'target_pipeline', type: 'string', description: 'New target pipeline', required: false, inputType: 'text' },
         { name: 'description', type: 'string', description: 'New description', required: false, inputType: 'text' }
+      ,
+        { name: 'source', type: 'string', description: 'Where the data really comes from (provider name or host), for lineage and provenance. Optional; derived from the endpoint host or the script when omitted', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -335,7 +339,8 @@ export class McpComponent implements OnInit {
         { name: 'credentialsSecret', type: 'string', description: 'PLATFORM secret holding destination credentials. For objectstore + provider=s3: accessKey, secretKey, region (optional sessionToken); required unless Datris runs on an EC2 instance role. For snowflake: account, user, privateKey (or password); always required. For databricks: host, plus clientId/clientSecret or token; always required. Discover via list_platform_secrets.', required: false, inputType: 'text' },
         { name: 'codegen_rule', type: 'string', description: 'Optional plain-English data quality validation rule. Datris generates a Python validation script from it and runs it against ingested data. Only add when the user explicitly asks for validation.', required: false, inputType: 'textarea' },
         { name: 'codegen_transform', type: 'string', description: 'Optional plain-English transformation instruction. Datris generates a Python script and runs it against ingested data. Only add when the user explicitly asks for a transformation.', required: false, inputType: 'textarea' },
-        { name: 'catalog', type: 'string', description: 'Optional catalog label to group this pipeline with related ones. Omit by default.', required: false, inputType: 'text' }
+        { name: 'catalog', type: 'string', description: 'Optional catalog label to group this pipeline with related ones. Omit by default.', required: false, inputType: 'text' },
+        { name: 'authoritative', type: 'boolean', description: 'Omit by default. false marks the pipeline as landing a derived copy, not the system of record', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
@@ -796,6 +801,20 @@ export class McpComponent implements OnInit {
         { name: 'pipeline', type: 'string', description: 'Pipeline name, if known', required: false, inputType: 'text' },
         { name: 'tap_run', type: 'string', description: 'The _datris_tap_run value, if present', required: false, inputType: 'text' },
         { name: 'config_version', type: 'integer', description: 'The _datris_config_version value, if present', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'get_lineage',
+      description: 'Traverse the lineage graph from one node: what feeds it and what depends on it, the edges between them, freshness, and optionally the most recent recorded runs with what each read and wrote per destination. Datasets landed under an earlier configuration are marked historical.',
+      category: 'Discovery & Provenance',
+      parameters: [
+        { name: 'node_type', type: 'string', description: 'source | tap | pipeline | dataset | catalog', required: true, inputType: 'text' },
+        { name: 'name', type: 'string', description: 'The node name (the part after type: in a lineage id)', required: true, inputType: 'text' },
+        { name: 'direction', type: 'string', description: 'up | down | both (default both)', required: false, inputType: 'text' },
+        { name: 'depth', type: 'integer', description: 'Maximum hops (default unbounded)', required: false, inputType: 'number' },
+        { name: 'runs', type: 'integer', description: 'Recent recorded runs to include (default 0, max 50)', required: false, inputType: 'number' },
+        { name: 'columns', type: 'boolean', description: 'Include column-level lineage for pipeline/dataset nodes (default false)', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

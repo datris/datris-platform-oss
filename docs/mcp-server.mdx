@@ -147,6 +147,7 @@ Every tool that changes platform state also accepts an optional `reason` — one
 |------|-------------|
 | `find_data` | Find datasets by meaning: ranks the pipelines the key can read against a natural-language query and returns location, [freshness](/provenance), provenance handles, lineage and a pre-filled `howToQuery` hint naming the existing query/search tool. Discovery only — the query call stays the agent's own |
 | `get_provenance` | Resolve a stamped `_datris_run_id` back to its origin: pipeline run, tap run, script commit, config version and declared source. See [Provenance](/provenance) |
+| `get_lineage` | Traverse the lineage graph from one node — upstream, downstream or both, to a bounded depth — with freshness, optionally the most recent recorded runs (what each read and wrote, per destination), and optionally column-level lineage for a pipeline or dataset. Use it for impact analysis before changing or deleting something. See [Lineage](/provenance#lineage--freshness) |
 
 ## Monitoring Active Agents
 

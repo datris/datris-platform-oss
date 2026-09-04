@@ -302,6 +302,9 @@ components:
         endpointUrl:
           type: string
           description: For `scriptKind` `http` only — absolute http(s) URL Datris POSTs the run context to on each run
+        source:
+          type: string
+          description: Declared source identity for lineage and provenance — a provider name or host (never credentials). Optional; when absent the platform derives it from the endpoint host (HTTP taps) or the host the script references most. On update, omitting the field keeps the stored value and an empty string clears it.
         targetPipeline:
           type: string
           description: Pipeline this tap feeds into (may be empty for unattached taps)
@@ -4233,7 +4236,9 @@ paths:
       summary: The whole lineage graph
       description: >-
         The graph Source → Tap → Pipeline → Dataset → Catalog, derived from
-        configuration alone (cached ~1 minute). Node ids are `type:name`.
+        configuration plus recorded runs (cached ~1 minute). Node ids are
+        `type:name`. Datasets a pipeline landed into under an earlier
+        configuration appear with `historical: true` (and a dashed edge).
       responses:
         '200':
           description: Nodes and edges
@@ -4256,6 +4261,16 @@ paths:
                           type: string
                         catalog:
                           type: string
+                        tags:
+                          type: array
+                          items:
+                            type: string
+                        historical:
+                          type: boolean
+                        authority:
+                          type: string
+                          enum: [authoritative, derived, undeclared]
+                          description: Dataset nodes only — which copy may be cited. Declared on the pipeline, never inferred.
                   edges:
                     type: array
                     items:
@@ -4265,13 +4280,33 @@ paths:
                           type: string
                         to:
                           type: string
+                        historical:
+                          type: boolean
+                        evidence:
+                          type: object
+                          description: What traversed this edge in the last `windowDays`; absent when no recorded run backs the edge (a configuration claim).
+                          properties:
+                            runs:
+                              type: integer
+                            records:
+                              type: integer
+                            lastRunAt:
+                              type: string
+                            lastStatus:
+                              type: string
+                            failedRuns:
+                              type: integer
+                            windowDays:
+                              type: integer
   /api/v1/lineage/{type}/{name}:
     get:
       tags: [Provenance]
       summary: One node's lineage neighborhood
       description: >-
-        The node, everything transitively upstream and downstream, the edges
-        between them, and freshness for the pipeline the node is (or feeds).
+        The node, everything transitively upstream and/or downstream, the edges
+        between them, freshness for the pipeline the node is (or feeds), and
+        optionally the most recent recorded runs touching the node — what each
+        read and wrote, per destination.
       parameters:
         - in: path
           name: type
@@ -4284,6 +4319,31 @@ paths:
           required: true
           schema:
             type: string
+        - in: query
+          name: direction
+          required: false
+          description: Traverse upstream only, downstream only, or both (default).
+          schema:
+            type: string
+            enum: [up, down, both]
+        - in: query
+          name: depth
+          required: false
+          description: Maximum hops from the node; 0 or absent means unbounded.
+          schema:
+            type: integer
+        - in: query
+          name: runs
+          required: false
+          description: Append this many most-recent recorded runs (max 50).
+          schema:
+            type: integer
+        - in: query
+          name: columns
+          required: false
+          description: For pipeline and dataset nodes, embed column-level lineage (deterministic tier plus any cached inferred mappings). A historical dataset uses the definition version of the last run that wrote it.
+          schema:
+            type: boolean
       responses:
         '200':
           description: The neighborhood
@@ -4308,8 +4368,171 @@ paths:
                       type: object
                   freshness:
                     type: object
+                  runs:
+                    type: array
+                    description: Present when `runs` > 0; newest first.
+                    items:
+                      type: object
+                      properties:
+                        runId:
+                          type: string
+                        pipeline:
+                          type: string
+                        configVersion:
+                          type: integer
+                        status:
+                          type: string
+                          enum: [SUCCESS, ERROR, CANCELLED]
+                        startedAt:
+                          type: string
+                        completedAt:
+                          type: string
+                        durationMs:
+                          type: integer
+                        recordCount:
+                          type: integer
+                        input:
+                          type: object
+                          properties:
+                            kind:
+                              type: string
+                              enum: [tap, upload]
+                            tapName:
+                              type: string
+                            tapRunTime:
+                              type: string
+                            scriptSha:
+                              type: string
+                            source:
+                              type: string
+                            filename:
+                              type: string
+                        outputs:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              kind:
+                                type: string
+                              coords:
+                                type: string
+                              datasetId:
+                                type: string
+                              status:
+                                type: string
+                                enum: [SUCCESS, ERROR, UNKNOWN]
+                              recordCount:
+                                type: integer
+                              error:
+                                type: string
         '404':
           description: No such node
+  /api/v1/lineage/columns/{pipeline}:
+    get:
+      tags: [Provenance]
+      summary: Column-level lineage for one pipeline definition
+      description: >-
+        Which destination columns come from which source fields. The
+        deterministic tier (schema comparison: `passthrough` / `drop` edges
+        with confidence `exact`, stamped provenance columns as `system`) is
+        always returned. For pipelines with an AI transformation, `infer=true`
+        runs the opt-in extraction — the codegen model reads the instruction,
+        the field lists and the last generated script, and returns only
+        mappings it can evidence (`rename` / `derive` / `drop`, confidence
+        `inferred`). Inferred results are cached per definition version and
+        never recomputed unless the definition changes.
+      parameters:
+        - in: path
+          name: pipeline
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: version
+          required: false
+          description: A definition version snapshot; default is the current definition.
+          schema:
+            type: integer
+        - in: query
+          name: infer
+          required: false
+          description: Run (and cache) the AI-inferred tier when applicable. Off by default.
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Column lineage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  version:
+                    type: integer
+                  versionSource:
+                    type: string
+                    enum: [current, snapshot]
+                  sourceFields:
+                    type: array
+                    items:
+                      type: string
+                  destinationFields:
+                    type: array
+                    items:
+                      type: string
+                  destinationSchema:
+                    type: string
+                    enum: [declared, inherited, none]
+                  transformation:
+                    type: object
+                    properties:
+                      kind:
+                        type: string
+                        enum: [ai, rowFunctions, preprocessor, none]
+                      instruction:
+                        type: string
+                  edges:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        from:
+                          type: array
+                          items:
+                            type: string
+                        to:
+                          type: string
+                        op:
+                          type: string
+                          enum: [passthrough, rename, derive, drop, system]
+                        confidence:
+                          type: string
+                          enum: [exact, inferred, system]
+                        evidence:
+                          type: string
+                  unresolved:
+                    type: array
+                    items:
+                      type: string
+                  inferred:
+                    type: object
+                    properties:
+                      available:
+                        type: boolean
+                      computed:
+                        type: boolean
+                      computedAt:
+                        type: string
+                      model:
+                        type: string
+                      note:
+                        type: string
+                      error:
+                        type: string
+        '404':
+          description: No such pipeline or version
   /api/v1/catalog/find:
     get:
       tags: [Provenance]

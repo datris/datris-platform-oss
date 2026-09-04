@@ -161,6 +161,12 @@
         <p class="form-hint">Discovery labels — find_data and the catalog search rank over them.</p>
       </div>
 
+      <div class="form-group">
+        <label class="form-label">Source (optional)</label>
+        <input class="form-input" [(ngModel)]="sourceInput" placeholder="e.g. SEC EDGAR, financialmodelingprep.com">
+        <p class="form-hint">Where the data really comes from, for lineage and provenance. Left blank, it is derived from the endpoint host or the host the script calls most.</p>
+      </div>
+
       <div class="form-group" *ngIf="!bringYourOwnCode && !isHttpTap">
         <label class="form-label">
           <span class="material-icons brainstorm-icon">auto_awesome</span>

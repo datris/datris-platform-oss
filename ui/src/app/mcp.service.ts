@@ -359,6 +359,17 @@ export class McpService {
         if (params['config_version']) pp = pp.set('configVersion', params['config_version']);
         return this.http.get<any>('/api/v1/provenance', { params: pp });
       }
+      case 'get_lineage': {
+        let lp = new HttpParams();
+        if (params['direction']) lp = lp.set('direction', params['direction']);
+        if (params['depth']) lp = lp.set('depth', params['depth']);
+        if (params['runs']) lp = lp.set('runs', params['runs']);
+        if (params['columns']) lp = lp.set('columns', 'true');
+        return this.http.get<any>(
+          '/api/v1/lineage/' + encodeURIComponent(params['node_type']) + '/' + encodeURIComponent(params['name']),
+          { params: lp }
+        );
+      }
 
       default:
         throw new Error('Unknown tool: ' + toolName);

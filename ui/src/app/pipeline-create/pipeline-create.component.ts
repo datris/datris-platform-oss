@@ -31,6 +31,7 @@ export class PipelineCreateComponent implements OnInit {
   catalog = '';
   tagsInput = '';
   provenanceStamp = false;
+  derivedCopy = false;
   availableCatalogs: string[] = [];
   showNewCatalog = false;
   newCatalogName = '';
@@ -229,6 +230,7 @@ export class PipelineCreateComponent implements OnInit {
     this.catalog = config.catalog || '';
     this.tagsInput = (config.tags || []).join(', ');
     this.provenanceStamp = !!config.provenance?.stamp;
+    this.derivedCopy = config.authoritative === false;
     this.sampleFileDetected = true; // skip sample file prompt
 
     // Detect source type
@@ -1176,6 +1178,9 @@ export class PipelineCreateComponent implements OnInit {
     // edit mode, so an empty tags list here is a deliberate clear).
     config.tags = this.tagsInput.split(',').map(t => t.trim()).filter(t => t.length > 0);
     config.provenance = { stamp: this.provenanceStamp };
+    // Source of authority: unset means "may be the system of record" (the
+    // default); only an explicit derived-copy choice is written as false.
+    config.authoritative = this.derivedCopy ? false : null;
 
     this.pipelineService.createPipeline(config).subscribe({
       next: () => {

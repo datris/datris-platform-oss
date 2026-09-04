@@ -1,18 +1,21 @@
 # Release Notes
 
-## v1.26.1 — September 2, 2026
+## v1.27.0 — September 3, 2026
 
-**Claude Fable 5.1 is now the recommended chat model, plus security and dependency updates.**
+**Lineage now reflects what actually ran, not just what is configured — with an interactive graph and an agent tool to traverse it.**
 
-- **Claude Fable 5.1 support.** Anthropic's newest model, released September 1, is now selectable in the model picker for both the Assistant and code generation, on the direct Anthropic provider and on Amazon Bedrock. It is the recommended chat model on both; code generation keeps Claude Opus 5 as its recommendation. Fresh Bedrock installs default to Fable 5.1. Existing installs keep whatever models they have configured — pick Fable 5.1 in Configuration when you're ready. On Bedrock, Fable 5.1 needs the same one-time data-retention opt-in as Fable 5.
-- **Security update.** The UI's build tooling picks up fixes for several recently disclosed high-severity advisories in a third-party component. No functional changes.
-- **UI framework update** to the latest Angular patch release.
-- **CLI and MCP server via pip.** The published package now pins the MCP SDK to the supported major version, so a fresh `pip install datris-mcp-server` no longer pulls an incompatible SDK that fails at startup.
+- **Run-level lineage.** Every pipeline run is now recorded as it completes: what it read (the tap run or uploaded file), which destinations it wrote — each with its own success or failure — how many records, and the definition version it ran under. Recording is automatic for every pipeline, independent of provenance stamping, and never fails or delays a run.
+- **History in the graph.** A dataset a pipeline used to land into under an earlier configuration no longer vanishes when the configuration changes: it stays in the lineage graph marked historical, with the runs that wrote it.
+- **Lineage graph.** Catalog → Lineage opens an interactive view of the whole chain, Source → Tap → Pipeline → Dataset → Catalog, filterable by catalog, tag or name. Click any node for what feeds it, what depends on it, its freshness and its recent runs, with links straight to the tap or pipeline. A pipeline's detail page links into the graph with that pipeline in focus.
+- **Recent runs per node.** The lineage neighborhood endpoint can now return the most recent recorded runs for a tap, pipeline, dataset or source, and can be limited to upstream only, downstream only, or a bounded number of hops.
+- **New MCP tool: `get_lineage`.** Agents can ask "what is downstream of this tap?" before changing or deleting something, or see what a pipeline actually wrote lately, including a multi-destination run where one destination failed. Visible to any key that can read metadata.
+- **Real sources in lineage.** A tap's source node now names where the data actually comes from — the declared `source` on the tap (new optional field in the wizard and the `create_tap` / `update_tap` tools), else the endpoint host, else the host its script calls most (so `www.sec.gov` and `data.sec.gov` both read `sec.gov`). Taps pulling from one provider share a single source node. Previously script taps showed a placeholder named after the tap. The same identity is stamped as `_datris_source` from the next run on.
+- **Evidence on every lineage hop.** Each edge in the graph now shows what actually traversed it in the last 90 days — runs, records landed, failures, and the last run's time and status. Edges grow with volume; an edge with no recorded run behind it draws faint and dotted, so a configuration claim never looks like a fact. The same numbers appear on the side panel's upstream and downstream chips and per location in `find_data`.
+- **Source of authority.** Every dataset in lineage is now labeled system of record, derived copy, or undeclared, so agents know which copy to cite. A pipeline's single destination is authoritative by default — nothing changes for existing setups. Mark a rollup, replica or index as a derived copy in the pipeline wizard or with `authoritative: false`; pipelines with several destinations pick the golden copy with `destination.authoritative` and show as undeclared until they do. `find_data` lists the authoritative location first, provenance resolution reports the authority of each dataset a run wrote, and the graph gains a "Canonical only" filter. Declared, never guessed: a second pipeline claiming the same dataset is rejected on save.
+- **Column-level lineage.** Every pipeline can now show which destination columns come from which source fields, in the graph's side panel for both pipeline and dataset nodes and via a new endpoint. Exact mappings come from the field schemas alone; provenance stamp columns show as system-added. For pipelines with an AI transformation, an opt-in **Infer from transformation** step asks the code-generation model to extract renames, derived columns and drops from the instruction and the last generated script, returning only what it can evidence and leaving the rest unresolved. Inferred results are cached per definition version and never computed during a run.
+- **Fix: AI transformations that change columns now land correctly.** A CodeGen transformation that added, removed or reordered CSV columns used to leave the pipeline's column list unchanged, so destinations were filled positionally by the old layout — a new column's values could end up in a neighbouring numeric column and fail the load. The transformed output now carries its own header, the pipeline picks it up, and the run log names the columns added or removed.
+- **Provenance resolution** for recorded runs now includes what the run read and wrote per destination, and resolves the definition version from the record when the row's stamp is unavailable.
 
 **Upgrading**
 
-`docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. CLI users on pip or Homebrew: upgrade to 1.26.1.
-
----
-
-Older releases: see the [release-notes/](release-notes/) directory or the [changelog on the docs site](https://docs.datris.ai/changelog).
+`docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. Runs are recorded from the first pipeline run after upgrading; earlier runs still resolve through provenance as before, without recorded outputs. CLI users on pip or Homebrew: upgrade to 1.27.0.

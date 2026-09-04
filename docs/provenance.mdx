@@ -29,7 +29,7 @@ From the next run on, every row the pipeline lands carries six extra fields:
 | `_datris_config_version` | The pipeline definition version at run time |
 | `_datris_tap_run` | The tap run that fed it (`tapName\|runTime`; empty for direct uploads) |
 | `_datris_script_sha` | The tap script's commit, for repository-backed taps |
-| `_datris_source` | The tap's declared source — an endpoint host or tap id, never credentials |
+| `_datris_source` | Where the data really comes from — the tap's declared `source`, else its endpoint host, else the host its script calls most; never credentials |
 
 How the fields land depends on the destination:
 
@@ -47,13 +47,64 @@ A subset of fields can be selected with `"provenance": { "stamp": true, "fields"
 
 `GET /api/v1/provenance?runId=<_datris_run_id>` (or the `get_provenance` MCP tool) walks the chain and returns one document: the run's job status and record count, the tap run that fed it (with logs metadata and script commit), the pipeline config version snapshot, and the declared source. Pass the row's `_datris_tap_run` and `_datris_config_version` values when you have them for an exact, lookup-only resolution.
 
+For runs recorded since run lineage was introduced, the same document also carries `input` (what the run read) and `outputs` (each destination the run wrote, with its own status), and the config version resolves from the recorded run when the row's stamp is not available.
+
 ## Lineage & freshness
 
-`GET /api/v1/lineage` returns the whole graph; `GET /api/v1/lineage/{type}/{name}` returns one node's neighborhood — everything upstream and downstream of a source, tap, pipeline, dataset, or catalog. The graph is built from configuration alone, on request.
+`GET /api/v1/lineage` returns the whole graph; `GET /api/v1/lineage/{type}/{name}` returns one node's neighborhood — everything upstream and downstream of a source, tap, pipeline, dataset, or catalog. The graph is built from configuration, on request, plus what recorded runs actually wrote (below).
 
 Freshness per pipeline combines the last successful landing, its record count, the incremental sync cursor (when the feeding tap keeps one), and the same stale classification the Ops Activity dashboard uses — the catalog and the dashboard never disagree.
 
-In the UI, a pipeline's detail page shows its upstream tap and source, the datasets it lands in, and the freshness line.
+In the UI, a pipeline's detail page shows its upstream tap and source, the datasets it lands in, and the freshness line. **Catalog → Lineage** opens the interactive graph: the whole chain laid out left to right, filterable by catalog, tag or name. Click any node for what feeds it, what depends on it, its freshness, and its recent runs, with links to the tap or pipeline.
+
+### Run-level lineage
+
+Every pipeline run is recorded as it completes: what it read (the tap run or uploaded file), which destinations it wrote — each with its own success or failure — how many records, and the definition version it ran under. Recording is automatic for every pipeline, independent of provenance stamping, and never fails or delays a run.
+
+Two things follow from that record:
+
+- **History, not just current config.** If a pipeline used to land into one table and now lands into another, the old dataset stays in the graph marked `historical` (dashed in the UI) with the runs that wrote it, instead of silently disappearing when the config changed.
+- **Recent runs per node.** Ask for `?runs=10` on any neighborhood, or use the **Recent runs** section of the graph's side panel, to see what actually happened — including a multi-destination run where one destination failed and the others landed.
+
+Runs are recorded from the first run after upgrading; earlier runs still resolve through provenance as before, but have no recorded outputs.
+
+### Evidence on every hop
+
+Each edge in the graph carries what actually traversed it in the last 90 days: runs, records landed, failed runs, and the time and status of the last run — aggregated from the recorded runs (pipeline hops) and the tap run log (source → tap). An edge with no recorded run behind it is a configuration claim, not evidence, and draws dotted and faint; edge width grows with records landed. The side panel shows the same numbers on each upstream and downstream chip ("8 runs · 12.4k rows · 8/31"), and `find_data` returns `evidence` per location. Bytes are not tracked.
+
+### Source of authority
+
+Provenance answers where a row came from; authority answers which copy you may cite. Every dataset node carries one of three labels, **declared, never inferred**:
+
+- **system of record** (`authoritative`) — the copy to cite. A pipeline with a single destination is authoritative by default, so existing configurations need no change.
+- **derived** — a copy: a rollup, a replica, an index built from another dataset, or a historical dataset nothing lands into anymore. Set `"authoritative": false` on the pipeline (wizard: *This pipeline lands a derived copy*; `create_pipeline`: `authoritative: false`).
+- **undeclared** — more than one candidate and no decision: a pipeline with several destinations and no `destination.authoritative`, or two pipelines that both claim the same dataset. The graph shows an amber ring; saving a second authoritative writer for the same dataset is rejected.
+
+`find_data` lists the authoritative location first and labels the rest; `get_provenance` reports the authority of each dataset a run wrote; the graph's **Canonical only** filter shows just the systems of record and their chains.
+
+### Column-level lineage
+
+For any pipeline, `GET /api/v1/lineage/columns/{pipeline}` (or the **Columns** section of a pipeline or dataset node in the graph) shows which destination columns come from which source fields. Two tiers, clearly labeled:
+
+- **Exact** — derived from the pipeline's field schemas alone, no AI: name-identical fields pass through; with no transformation, source-only fields are marked dropped. Provenance stamp columns show as **system**.
+- **Inferred** (opt-in) — for pipelines with an AI transformation, click **Infer from transformation** (or pass `infer=true`) and the code-generation model reads the instruction, the field lists and the script generated on the last run, returning only mappings it can point to evidence for: renames, derived columns, drops. Anything it cannot evidence stays **unresolved** rather than guessed. Results are cached per definition version and never recomputed unless the definition changes; inference runs on request, never during a run.
+
+A dataset node shows the mapping of the pipeline that lands into it. A historical dataset shows the mapping as of the definition version of the last run that wrote it. Column edges are not drawn on the canvas — they live in the panel.
+
+### Traversal for agents
+
+The `get_lineage` MCP tool (or the neighborhood endpoint's `direction`, `depth`, `runs` and `columns` parameters) lets an agent ask "what is downstream of this tap?" before changing or deleting it, or "what did this pipeline actually write lately?" before trusting a dataset. Direction is `up`, `down` or `both`; depth bounds the hops; runs appends the recent recorded runs; columns embeds the column-level lineage for a pipeline or dataset node.
+
+## Sources
+
+Lineage and provenance name the *real* origin of data, not the tap. Each tap resolves to one source identity, deterministically:
+
+1. The tap's declared **`source`** (set it in the tap wizard, or pass `source` to `create_tap` / `update_tap`) — e.g. `SEC EDGAR`.
+2. For HTTP taps, the endpoint host.
+3. For script taps, the host the script references most, normalized so `www.sec.gov` and `data.sec.gov` both read `sec.gov`.
+4. `tap:<name>` when nothing better is known.
+
+Several taps pulling from the same provider share one source node, so the graph shows the provider feeding many taps rather than one placeholder per tap. A script edit that switches provider moves the tap under its new source on the next graph build; rows already landed keep the `_datris_source` they were stamped with.
 
 ## Tags
 

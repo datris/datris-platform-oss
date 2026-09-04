@@ -96,6 +96,8 @@ The generated script can use these pre-installed packages:
 - *"Get the latest news headlines from the BBC RSS feed"*
 - *"Query the consumer_discretionary_earnings table on Datris to get tickers, then fetch historical earnings from Alpha Vantage"*
 
+Two optional fields on the tap describe it for discovery and lineage: **Tags** (free-form labels that `find_data` and the catalog search rank over) and **Source** — where the data really comes from, such as `SEC EDGAR` or `financialmodelingprep.com`. Leave Source blank and the platform derives it from the endpoint host (HTTP taps) or the host the script calls most; see [Provenance](/provenance#sources).
+
 ### Step 2: Edit & Test
 
 Review and edit the generated script. You can:

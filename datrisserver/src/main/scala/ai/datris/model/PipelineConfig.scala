@@ -23,7 +23,13 @@ case class PipelineConfig(
     // because Gson round-trips this document and its EntityVersion snapshots.
     tags: java.util.List[String] = null,
     // Opt-in provenance stamping (absent/null ⇒ off). See ProvenanceStamper.
-    provenance: ProvenanceConfig = null
+    provenance: ProvenanceConfig = null,
+    // Source of authority (lineage L5b). null/true ⇒ the pipeline's datasets may
+    // be the system of record (a single destination is authoritative by
+    // default; several need Destination.authoritative to pick one). false ⇒
+    // every dataset this pipeline lands is a derived copy (a rollup, a replica,
+    // a vector index built from a table). Boxed so "unset" survives Gson.
+    authoritative: java.lang.Boolean = null
 )
 
 case class ProvenanceConfig @JsonCreator() (
@@ -50,7 +56,13 @@ case class Destination(
     weaviate: WeaviateConfig = null,
     pgvector: PGVectorConfig = null,
     milvus: MilvusConfig = null,
-    chroma: ChromaConfig = null
+    chroma: ChromaConfig = null,
+    // Which destination kind is the golden copy when a pipeline lands into more
+    // than one (postgres | mongodb | snowflake | databricks | objectstore | kafka
+    // | activemq | qdrant | weaviate | pgvector | milvus | chroma). Ignored for a
+    // single destination (implicitly authoritative); absent with several ⇒ all
+    // "undeclared" in lineage until a human decides. Never inferred.
+    authoritative: String = null
 )
 
 case class QdrantConfig(

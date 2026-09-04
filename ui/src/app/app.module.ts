@@ -24,6 +24,7 @@ import { TapsComponent } from './taps/taps.component';
 import { TapCreateComponent } from './tap-create/tap-create.component';
 import { TapRunComponent } from './tap-run/tap-run.component';
 import { DataCatalogComponent } from './data-catalog/data-catalog.component';
+import { LineageGraphComponent } from './lineage-graph/lineage-graph.component';
 import { AgentMonitorComponent } from './agent-monitor/agent-monitor.component';
 import { AssistantComponent } from './assistant/assistant.component';
 import { McpShellComponent } from './mcp-shell/mcp-shell.component';
@@ -70,6 +71,7 @@ import { NgxEchartsModule } from 'ngx-echarts';
     TapCreateComponent,
     TapRunComponent,
     DataCatalogComponent,
+    LineageGraphComponent,
     AgentMonitorComponent,
     AssistantComponent,
     McpShellComponent,

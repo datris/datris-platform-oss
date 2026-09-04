@@ -1,0 +1,190 @@
+<div class="lineage-shell">
+  <div class="page-header">
+    <div class="header-left">
+      <a class="back-link" routerLink="/catalog"><span class="material-icons">arrow_back</span> Catalog</a>
+      <h1 class="page-title">Lineage</h1>
+    </div>
+    <div class="legend">
+      <span class="legend-item" *ngFor="let l of legend">
+        <span class="swatch" [style.background]="l.color"></span>{{ l.label }}
+      </span>
+      <span class="legend-item"><span class="swatch dashed"></span>historical</span>
+      <span class="legend-item"><span class="swatch hollow"></span>derived copy</span>
+      <span class="legend-item"><span class="swatch undeclared"></span>undeclared</span>
+      <span class="legend-item"><span class="swatch dotted"></span>no runs</span>
+    </div>
+  </div>
+
+  <p class="page-description">
+    Source → Tap → Pipeline → Dataset → Catalog, derived from your configuration. Dashed nodes and edges are datasets a
+    pipeline landed into under an earlier configuration. Click a node for its neighborhood, freshness and recent runs.
+  </p>
+
+  <div class="filters">
+    <select class="form-input" [(ngModel)]="catalogFilter" (ngModelChange)="render()" title="Filter by catalog">
+      <option value="">All catalogs</option>
+      <option *ngFor="let c of catalogs" [value]="c">{{ c }}</option>
+    </select>
+    <select class="form-input" [(ngModel)]="tagFilter" (ngModelChange)="render()" title="Filter by tag" *ngIf="tags.length > 0">
+      <option value="">All tags</option>
+      <option *ngFor="let t of tags" [value]="t">{{ t }}</option>
+    </select>
+    <input class="form-input name-filter" [(ngModel)]="nameFilter" (ngModelChange)="render()" placeholder="Filter by name…">
+    <label class="check-filter" title="Only datasets that are the system of record, with their chains">
+      <input type="checkbox" [(ngModel)]="canonicalOnly" (ngModelChange)="render()"> Canonical only
+    </label>
+    <button class="secondary-btn" (click)="clearFilters()" *ngIf="hasFilters()">Clear</button>
+    <span class="filter-count" *ngIf="graph">{{ visibleCount }} of {{ graph.nodes.length }} nodes</span>
+  </div>
+
+  <div class="error-banner" *ngIf="error">
+    <span class="material-icons">error</span><span>{{ error }}</span>
+  </div>
+
+  <div class="empty-state" *ngIf="!loading && graph && graph.nodes.length === 0">
+    <span class="material-icons empty-icon">account_tree</span>
+    <p>No lineage yet. Create a tap or pipeline and the graph appears here.</p>
+  </div>
+
+  <div class="graph-layout" *ngIf="graph && graph.nodes.length > 0">
+    <div class="graph-canvas">
+      <div class="chart" echarts [options]="chartOptions || {}" (chartClick)="onChartClick($event)" [style.height.px]="chartHeight" *ngIf="chartOptions"></div>
+      <div class="canvas-hint">Scroll to zoom · drag to pan</div>
+    </div>
+
+    <aside class="side-panel" *ngIf="selectedId; else noSelection">
+      <ng-container *ngIf="selectedNode() as node">
+        <div class="panel-header">
+          <span class="type-pill" [style.border-color]="typeColor(node.type)" [style.color]="typeColor(node.type)">{{ node.type }}</span>
+          <button class="icon-btn" (click)="clearSelection()" title="Close"><span class="material-icons">close</span></button>
+        </div>
+        <h2 class="panel-title" [title]="node.name">{{ displayName(node) }}</h2>
+        <div class="panel-meta">
+          <span class="meta-chip" *ngIf="node.type === 'dataset' && datasetKind(node)">{{ datasetKind(node) }}</span>
+          <span class="meta-chip historical" *ngIf="node.historical" title="No current configuration lands here; a recorded run did">historical</span>
+          <span class="meta-chip authority" *ngIf="node.authority" [class]="'meta-chip authority ' + node.authority"
+                [title]="node.authority === 'authoritative' ? 'System of record — the copy to cite' : node.authority === 'derived' ? 'A derived copy (rollup, replica, index, or historical) — cite the authoritative dataset instead' : 'More than one candidate and no declaration — set authoritative on the pipeline'">
+            <span class="material-icons">{{ node.authority === 'authoritative' ? 'verified' : node.authority === 'derived' ? 'content_copy' : 'help_outline' }}</span>{{ node.authority === 'authoritative' ? 'system of record' : node.authority }}
+          </span>
+          <span class="meta-chip" *ngIf="node.catalog"><span class="material-icons">folder</span>{{ node.catalog }}</span>
+          <span class="meta-chip tag" *ngFor="let t of node.tags || []">{{ t }}</span>
+        </div>
+
+        <div class="panel-actions">
+          <ng-container *ngIf="node.type === 'pipeline'">
+            <a class="action-link" [routerLink]="['/pipelines', node.name]">Open pipeline</a>
+            <a class="action-link" [routerLink]="['/pipelines', node.name, 'edit']" *ngIf="auth.canWrite()">Edit</a>
+          </ng-container>
+          <ng-container *ngIf="node.type === 'tap'">
+            <a class="action-link" [routerLink]="['/taps', node.name, 'run']">Runs</a>
+            <a class="action-link" [routerLink]="['/taps', node.name, 'edit']" *ngIf="auth.canWrite()">Edit</a>
+          </ng-container>
+          <a class="action-link" *ngIf="node.type === 'catalog'" routerLink="/catalog">Open catalog</a>
+        </div>
+
+        <div class="panel-loading" *ngIf="neighborhoodLoading">Loading neighborhood…</div>
+
+        <ng-container *ngIf="neighborhood as nb">
+          <section class="panel-section" *ngIf="nb.freshness as f">
+            <h3>Freshness</h3>
+            <div class="fresh-row">
+              <span class="fresh-chip" [class.fresh]="f.state === 'fresh'" [class.stale]="f.state === 'stale'">{{ f.state }}</span>
+              <span class="muted" *ngIf="f.lastLandedAt">last landed {{ formatWhen(f.lastLandedAt) }}<ng-container *ngIf="f.recordCount != null"> · {{ f.recordCount }} records</ng-container></span>
+            </div>
+            <div class="muted small" *ngIf="f.cursorUpdatedAt">cursor updated {{ f.cursorUpdatedAt }}</div>
+          </section>
+
+          <section class="panel-section" *ngIf="upstreamOf(nb).length > 0">
+            <h3>Upstream</h3>
+            <button class="node-chip" *ngFor="let n of upstreamOf(nb); trackBy: trackById" (click)="select(n.id)" [title]="n.id">
+              <span class="dot" [style.background]="typeColor(n.type)"></span>{{ displayName(n) }}
+              <span class="chip-evidence" *ngIf="edgeEvidence(nb, n) as ev">{{ evidenceText(ev) }}</span>
+            </button>
+          </section>
+
+          <section class="panel-section" *ngIf="downstreamOf(nb).length > 0">
+            <h3>Downstream</h3>
+            <button class="node-chip" *ngFor="let n of downstreamOf(nb); trackBy: trackById" (click)="select(n.id)" [title]="n.id" [class.historical]="n.historical" [class.derived]="n.authority === 'derived' && !n.historical">
+              <span class="dot" [style.background]="typeColor(n.type)"></span>{{ displayName(n) }}
+              <span class="material-icons chip-icon" *ngIf="n.authority === 'authoritative'" title="system of record">verified</span>
+              <span class="chip-evidence" *ngIf="edgeEvidence(nb, n) as ev">{{ evidenceText(ev) }}</span>
+            </button>
+          </section>
+
+          <section class="panel-section" *ngIf="columns() as c">
+            <h3 class="section-toggle" (click)="columnsOpen = !columnsOpen">
+              <span class="material-icons">{{ columnsOpen ? 'expand_more' : 'chevron_right' }}</span>
+              Columns
+              <span class="muted small">v{{ c.version }}<ng-container *ngIf="c.versionSource === 'snapshot'"> · as run</ng-container> · {{ c.edges.length }} mapped<ng-container *ngIf="c.unresolved.length > 0"> · {{ c.unresolved.length }} unresolved</ng-container></span>
+            </h3>
+            <ng-container *ngIf="columnsOpen">
+              <div class="muted small" *ngIf="c.destinationSchema === 'none' && c.edges.length === 0">
+                No field schema on this pipeline — column lineage needs source or destination fields.
+              </div>
+              <div class="muted small" *ngIf="c.transformation.kind === 'ai' && c.transformation.instruction" [title]="c.transformation.instruction">
+                Transformation: “{{ c.transformation.instruction.length > 90 ? c.transformation.instruction.slice(0, 88) + '…' : c.transformation.instruction }}”
+              </div>
+              <div class="muted small" *ngIf="c.transformation.kind === 'rowFunctions' || c.transformation.kind === 'preprocessor'">
+                This pipeline uses a {{ c.transformation.kind === 'preprocessor' ? 'preprocessor endpoint' : 'row function' }}; only exact pass-through columns can be mapped.
+              </div>
+              <table class="columns-table" *ngIf="c.edges.length > 0">
+                <thead><tr><th>From</th><th></th><th>To</th><th></th></tr></thead>
+                <tbody>
+                  <tr *ngFor="let e of columnRows(c)" [title]="e.evidence || ''">
+                    <td class="col-from"><ng-container *ngIf="e.from.length > 0; else platform">{{ e.from.join(', ') }}</ng-container><ng-template #platform><span class="muted">platform</span></ng-template></td>
+                    <td class="col-arrow">→</td>
+                    <td class="col-to"><ng-container *ngIf="e.to; else dropped">{{ e.to }}</ng-container><ng-template #dropped><span class="muted">dropped</span></ng-template></td>
+                    <td><span class="conf-chip" [class]="'conf-chip ' + e.confidence">{{ e.op === 'passthrough' ? 'exact' : e.op }}<ng-container *ngIf="e.confidence === 'inferred'"> · inferred</ng-container></span></td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="unresolved" *ngIf="c.unresolved.length > 0">
+                <span class="muted small">Unresolved: </span><span class="meta-chip" *ngFor="let u of c.unresolved">{{ u }}</span>
+              </div>
+              <div class="infer-row" *ngIf="c.inferred.available">
+                <button class="secondary-btn small-btn" (click)="inferColumns()" [disabled]="inferring" *ngIf="!c.inferred.computed && auth.canWrite()">
+                  {{ inferring ? 'Inferring…' : 'Infer from transformation (AI)' }}
+                </button>
+                <span class="muted small" *ngIf="c.inferred.computed">Inferred {{ formatWhen(c.inferred.computedAt) }}<ng-container *ngIf="c.inferred.model"> · {{ c.inferred.model }}</ng-container><ng-container *ngIf="c.inferred.note"> · {{ c.inferred.note }}</ng-container></span>
+                <span class="muted small error-text" *ngIf="c.inferred.error">{{ c.inferred.error }}</span>
+              </div>
+            </ng-container>
+          </section>
+
+          <section class="panel-section" *ngIf="node.type !== 'catalog'">
+            <h3>Recent runs</h3>
+            <div class="muted small" *ngIf="!nb.runs || nb.runs.length === 0">
+              No recorded runs yet. Runs are recorded from the first pipeline run after upgrading.
+            </div>
+            <table class="runs-table" *ngIf="nb.runs && nb.runs.length > 0">
+              <thead>
+                <tr><th>When</th><th>Status</th><th>Records</th><th>Wrote</th></tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let r of nb.runs">
+                  <td>
+                    <a [routerLink]="runDetailLink(r)" [title]="r.runId">{{ formatWhen(r.completedAt || r.startedAt) }}</a>
+                    <div class="muted small">v{{ r.configVersion }}<ng-container *ngIf="r.input?.tapName"> · {{ r.input?.tapName }}</ng-container><ng-container *ngIf="formatDuration(r.durationMs)"> · {{ formatDuration(r.durationMs) }}</ng-container></div>
+                  </td>
+                  <td><span class="status-chip" [class]="'status-chip ' + (r.status || '').toLowerCase()">{{ r.status }}</span></td>
+                  <td>{{ r.recordCount }}</td>
+                  <td>
+                    <span class="out-chip" *ngFor="let o of r.outputs" [class]="'out-chip ' + (o.status || '').toLowerCase()" [title]="(o.coords || o.kind) + ' — ' + o.status + (o.error ? ': ' + o.error : '')">{{ o.kind }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        </ng-container>
+      </ng-container>
+    </aside>
+    <ng-template #noSelection>
+      <aside class="side-panel placeholder">
+        <span class="material-icons">touch_app</span>
+        <p>Select a node to see what feeds it, what depends on it, and its recent runs.</p>
+      </aside>
+    </ng-template>
+  </div>
+
+  <div class="loading" *ngIf="loading">Loading lineage…</div>
+</div>

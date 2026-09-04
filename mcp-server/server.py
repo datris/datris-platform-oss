@@ -1611,6 +1611,10 @@ def _base_tools():
                     "catalog": {
                         "type": "string",
                         "description": "OMIT BY DEFAULT. Catalogs are a user-chosen organizational convention — do NOT set a catalog unless the user has explicitly asked to group this pipeline under a named catalog. Assigning one for them puts the pipeline into a taxonomy they didn't ask for. When unset, the platform shows the pipeline as Uncataloged, which is the correct default."
+                    },
+                    "authoritative": {
+                        "type": "boolean",
+                        "description": "OMIT BY DEFAULT. Pass false only when the user says this pipeline lands a derived copy (a rollup, a replica, an index built from another dataset) rather than the system of record. A pipeline's single destination is the authoritative copy by default; lineage and find_data mark derived copies so agents cite the right one."
                     }
                 },
                 "required": ["pipeline"]
@@ -2347,6 +2351,10 @@ def _base_tools():
                         "type": "string",
                         "description": "For kind 'http' only: absolute http(s) URL Datris POSTs {tap, params, state, testLimit} to on each run. The endpoint responds with the tap envelope {type, data, state?, logs?}. If the tap's secret has an `endpoint_token` field, it is sent as an Authorization: Bearer header — no other secret fields are ever forwarded."
                     },
+                    "source": {
+                        "type": "string",
+                        "description": "Where the data really comes from, as a short provider name or host, for lineage and provenance. Optional: when omitted it is derived from the endpoint host or the host the script references most. Never put credentials here."
+                    },
                 },
                 "required": ["name"]
             }
@@ -2610,6 +2618,10 @@ def _base_tools():
                         "description": "For HTTP taps only: new endpoint URL Datris POSTs the run context to. Rejected on Python taps."
                     },
                 },
+                    "source": {
+                        "type": "string",
+                        "description": "Declared source identity for lineage/provenance (provider name or host). Pass an empty string to clear it and fall back to derivation."
+                    },
                 "required": ["name"]
             }
         ),
@@ -2890,6 +2902,42 @@ def _base_tools():
                 "required": ["run_id"],
             }
         ),
+        Tool(
+            name="get_lineage",
+            description=(
+                "Traverse the lineage graph from one node: everything upstream (what feeds it) and/or downstream "
+                "(what depends on it) of a source, tap, pipeline, dataset, or catalog, with the edges between them, "
+                "freshness for the pipeline involved, and optionally the most recent recorded runs (what each run "
+                "read and wrote, per destination). Datasets a pipeline used to land into under an earlier "
+                "configuration are marked `historical`. Use it for impact analysis before changing or deleting "
+                "something — 'what is downstream of this tap?' — or to see which datasets a pipeline actually wrote. "
+                "Node names: a tap or pipeline name; a dataset's `kind:coordinates` id as returned by find_data or "
+                "list_pipelines lineage; a source host; a catalog name."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "node_type": {
+                        "type": "string",
+                        "enum": ["source", "tap", "pipeline", "dataset", "catalog"],
+                        "description": "The kind of node to start from.",
+                    },
+                    "name": {"type": "string", "description": "The node's name (the part after `type:` in a lineage id)."},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "both"],
+                        "description": "Which way to traverse (default: both).",
+                    },
+                    "depth": {"type": "integer", "description": "Maximum hops from the node (default: unbounded)."},
+                    "runs": {"type": "integer", "description": "Include this many most-recent recorded runs for the node (default: 0, max: 50)."},
+                    "columns": {
+                        "type": "boolean",
+                        "description": "For pipeline and dataset nodes, include column-level lineage: which destination columns pass through from which source fields (exact), which the platform adds (system), and any cached AI-inferred mappings for the transformation. Default: false.",
+                    },
+                },
+                "required": ["node_type", "name"],
+            }
+        ),
     ]
 
 
@@ -3158,6 +3206,9 @@ def _dispatch(name: str, args: dict) -> str:
         # Step 2d: Add optional catalog grouping label
         if args.get("catalog"):
             config["catalog"] = args["catalog"]
+        # Step 2e: Source-of-authority declaration (only when explicitly given)
+        if "authoritative" in args and args["authoritative"] is not None:
+            config["authoritative"] = bool(args["authoritative"])
 
         # Step 3: Register the pipeline
         create_result = _call("post", "/api/v1/pipeline", json=config)
@@ -3525,6 +3576,8 @@ def _dispatch(name: str, args: dict) -> str:
                 tap_config["cronExpression"] = cron_expression
             if secret_name:
                 tap_config["secretName"] = secret_name
+            if args.get("source"):
+                tap_config["source"] = str(args["source"]).strip()
             save_result = _call("post", "/api/v1/tap", json=tap_config)
             try:
                 saved = json.loads(save_result)
@@ -3639,6 +3692,8 @@ def _dispatch(name: str, args: dict) -> str:
             tap_config["cronExpression"] = cron_expression
         if secret_name:
             tap_config["secretName"] = secret_name
+        if args.get("source"):
+            tap_config["source"] = str(args["source"]).strip()
 
         save_result = _call("post", "/api/v1/tap", json=tap_config)
         try:
@@ -3801,6 +3856,8 @@ def _dispatch(name: str, args: dict) -> str:
             tap_config["enabled"] = args["enabled"]
         if "cron_expression" in args:
             tap_config["cronExpression"] = args["cron_expression"]
+        if "source" in args:
+            tap_config["source"] = str(args["source"]).strip()
         if "target_pipeline" in args:
             tap_config["targetPipeline"] = args["target_pipeline"]
         if "description" in args:
@@ -3928,6 +3985,25 @@ def _dispatch(name: str, args: dict) -> str:
         if args.get("config_version"):
             params["configVersion"] = args["config_version"]
         return _call("get", "/api/v1/provenance", params=params)
+
+    elif name == "get_lineage":
+        node_type = str(args.get("node_type", "")).strip().lower()
+        node_name = str(args.get("name", "")).strip()
+        if node_type not in ("source", "tap", "pipeline", "dataset", "catalog"):
+            return json.dumps({"error": "node_type must be one of source, tap, pipeline, dataset, catalog"})
+        if not node_name:
+            return json.dumps({"error": "name is required"})
+        params = {}
+        if args.get("direction"):
+            params["direction"] = str(args["direction"]).strip().lower()
+        if args.get("depth"):
+            params["depth"] = args["depth"]
+        if args.get("runs"):
+            params["runs"] = args["runs"]
+        if args.get("columns"):
+            params["columns"] = "true"
+        from urllib.parse import quote
+        return _call("get", f"/api/v1/lineage/{node_type}/{quote(node_name, safe='')}", params=params or None)
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

@@ -48,6 +48,9 @@
 
   <!-- Lineage & freshness (v1.26): config-derived neighborhood + last landing. -->
   <div class="lineage-panel" *ngIf="lineage">
+    <a class="lineage-open-graph" [routerLink]="['/catalog/lineage']" [queryParams]="{ focus: 'pipeline:' + name }" title="Open in the lineage graph">
+      <span class="material-icons">account_tree</span> Open graph
+    </a>
     <div class="lineage-row" *ngIf="lineage.freshness as f">
       <span class="lineage-label">Freshness</span>
       <span class="fresh-chip" [class.fresh]="f.state === 'fresh'" [class.stale]="f.state === 'stale'">{{ f.state }}</span>

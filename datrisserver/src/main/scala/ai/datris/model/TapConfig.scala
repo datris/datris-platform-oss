@@ -66,7 +66,12 @@ case class TapConfig(
     endpointUrl: String = null,
     // Free-form discovery labels ranked by /catalog/find. java.util.List
     // because Gson round-trips this document and its EntityVersion snapshots.
-    tags: java.util.List[String] = null
+    tags: java.util.List[String] = null,
+    // Declared source identity for provenance/lineage — where the data really
+    // comes from (e.g. "SEC EDGAR", "financialmodelingprep.com"). Optional:
+    // when absent, TapSourceResolver derives it from the endpoint host (HTTP
+    // taps) or the host the script references most. Never credentials.
+    source: String = null
 ) {
 
     /** True when this tap is a user-hosted HTTP endpoint rather than a
