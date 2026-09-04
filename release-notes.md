@@ -1,6 +1,6 @@
 # Release Notes
 
-## v1.27.0 — September 3, 2026
+## v1.28.0 — September 4, 2026
 
 **Lineage now reflects what actually ran, not just what is configured — with an interactive graph and an agent tool to traverse it.**
 
@@ -18,4 +18,4 @@
 
 **Upgrading**
 
-`docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. Runs are recorded from the first pipeline run after upgrading; earlier runs still resolve through provenance as before, without recorded outputs. CLI users on pip or Homebrew: upgrade to 1.27.0.
+`docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. Runs are recorded from the first pipeline run after upgrading; earlier runs still resolve through provenance as before, without recorded outputs. CLI users on pip or Homebrew: upgrade to 1.28.0.

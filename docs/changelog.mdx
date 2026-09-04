@@ -3,7 +3,7 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
-<Update label="v1.27.0" description="September 3, 2026">
+<Update label="v1.28.0" description="September 4, 2026">
   **Lineage now reflects what actually ran, not just what is configured — with an interactive graph and an agent tool to traverse it.**
 
   - **Run-level lineage.** Every pipeline run is recorded as it completes: what it read, which destinations it wrote — each with its own success or failure — how many records, and the definition version it ran under. Automatic for every pipeline, independent of provenance stamping, and never fails or delays a run.
@@ -17,7 +17,7 @@ description: "Release history for Datris"
   - **Column-level lineage** in the graph's side panel and via a new endpoint: exact schema-derived mappings always, system columns for provenance stamps, and an opt-in AI-inferred tier for pipelines with a transformation that returns only evidenced mappings, cached per definition version.
   - **Fix:** AI transformations that add, remove or reorder CSV columns now land correctly; the pipeline picks up the transformed column list instead of projecting by the old one.
   - **Provenance resolution** for recorded runs now includes per-destination outputs and resolves the definition version from the record when the row's stamp is unavailable.
-  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. Runs are recorded from the first run after upgrading. CLI users on pip or Homebrew: upgrade to 1.27.0.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. Runs are recorded from the first run after upgrading. CLI users on pip or Homebrew: upgrade to 1.28.0.
 </Update>
 
 <Update label="v1.26.1" description="September 2, 2026">

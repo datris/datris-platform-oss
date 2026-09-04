@@ -56,7 +56,7 @@ object ProvenanceResolver {
             job.addProperty("recordCount", s.recordCount)
             if (s.dataType != null) job.addProperty("dataType", s.dataType)
         }
-        // 2b. Recorded run lineage (v1.27+): what the run actually wrote, per
+        // 2b. Recorded run lineage (v1.28+): what the run actually wrote, per
         //     destination, and the config version it ran under. Absent for
         //     runs that predate the collection.
         val runLineage = RunLineageIO.read(runId).orNull
