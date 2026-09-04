@@ -125,7 +125,12 @@ object CatalogFind {
             .filter(_ != null)
             .map(p => Candidate(p, tapForPipeline.get(p.name), score(queryTokens, p, tapForPipeline.get(p.name))))
             .filter(c => queryTokens.isEmpty || c.score > 0)
-            .sortBy(c => (-c.score, c.pipeline.name))
+            // Ties: pipelines whose primary dataset is the system of record first.
+            .sortBy(c => (-c.score, LineageService.datasets(c.pipeline).headOption.flatMap(d => LineageService.authorityOfDataset(d.id)) match {
+                case Some(LineageService.AuthorityAuthoritative) => 0
+                case Some(LineageService.AuthorityUndeclared) => 1
+                case _ => 2
+            }, c.pipeline.name))
 
         val ordered =
             if (ai && scored.size > 1) rerank(query, scored.take(RerankCandidates)) ++ scored.drop(RerankCandidates)
@@ -154,9 +159,27 @@ object CatalogFind {
         val freshness = LineageService.freshness(p.name, taps)
         o.add("freshness", freshness)
 
-        val dsets = LineageService.datasets(p)
+        // Locations: the authoritative dataset first (L5b), each with its
+        // authority label and the evidence of what the pipeline wrote there (L5a).
+        val dsets = LineageService.datasets(p).sortBy(ds => LineageService.authorityOfDataset(ds.id) match {
+            case Some(LineageService.AuthorityAuthoritative) => 0
+            case Some(LineageService.AuthorityUndeclared) => 1
+            case _ => 2
+        })
+        def locationJson(ds: LineageService.DatasetRef): JsonObject = {
+            val l = ds.toJson
+            LineageService.authorityOfDataset(ds.id).foreach(l.addProperty("authority", _))
+            LineageService.evidenceFor("pipeline:" + p.name, ds.id).foreach { ev =>
+                val e = new JsonObject()
+                e.addProperty("runs", ev.runs)
+                e.addProperty("records", ev.records)
+                if (ev.lastRunAt != null) e.addProperty("lastRunAt", ev.lastRunAt)
+                l.add("evidence", e)
+            }
+            l
+        }
         dsets.headOption.foreach { primary =>
-            o.add("location", primary.toJson)
+            o.add("location", locationJson(primary))
             val htq = howToQuery(p.name, primary)
             if (htq != null) o.add("howToQuery", htq)
         }
@@ -164,7 +187,7 @@ object CatalogFind {
             val extra = new JsonArray()
             dsets.tail.foreach { ds =>
                 val e = new JsonObject()
-                e.add("location", ds.toJson)
+                e.add("location", locationJson(ds))
                 val htq = howToQuery(p.name, ds)
                 if (htq != null) e.add("howToQuery", htq)
                 extra.add(e)

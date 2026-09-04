@@ -120,6 +120,68 @@ class LineageServiceSpec extends AnyFunSuite {
         assert(out.get("status").getAsString == "SUCCESS")
     }
 
+    test("authority: a single destination is authoritative by default; false makes it derived") {
+        val single = pipeline("orders", "commerce", pgDest)
+        val g = LineageService.build(Nil, List(single))
+        assert(g.nodes.find(_.id == "dataset:postgres:datris.public.orders").get.authority.contains("authoritative"))
+        val derived = LineageService.build(Nil, List(single.copy(authoritative = java.lang.Boolean.FALSE)))
+        assert(derived.nodes.find(_.id == "dataset:postgres:datris.public.orders").get.authority.contains("derived"))
+    }
+
+    test("authority: several destinations are undeclared until Destination.authoritative names one") {
+        val multi = Destination(database = Database(dbName = "datris", schema = "public", table = "t", usePostgres = true, useMongoDB = true))
+        val g = LineageService.build(Nil, List(pipeline("p", dest = multi)))
+        assert(g.nodes.filter(_.nodeType == "dataset").forall(_.authority.contains("undeclared")))
+        val declared = LineageService.build(Nil, List(pipeline("p", dest = multi.copy(authoritative = "postgres"))))
+        assert(declared.nodes.find(_.id == "dataset:postgres:datris.public.t").get.authority.contains("authoritative"))
+        assert(declared.nodes.find(_.id == "dataset:mongodb:datris.t").get.authority.contains("derived"))
+    }
+
+    test("authority: a dataset landed by two pipelines is undeclared unless exactly one claims it") {
+        val a = pipeline("a", dest = pgDest); val b = pipeline("b", dest = pgDest)
+        val both = LineageService.build(Nil, List(a, b))
+        assert(both.nodes.find(_.id == "dataset:postgres:datris.public.orders").get.authority.contains("undeclared"))
+        val oneClaims = LineageService.build(Nil, List(a, b.copy(authoritative = java.lang.Boolean.FALSE)))
+        assert(oneClaims.nodes.find(_.id == "dataset:postgres:datris.public.orders").get.authority.contains("authoritative"))
+        assert(LineageService.authorityConflict(a, List(b)).exists(_.contains("already the authoritative writer")))
+        assert(LineageService.authorityConflict(a, List(b.copy(authoritative = java.lang.Boolean.FALSE))).isEmpty)
+        assert(LineageService.authorityConflict(pipeline("p", dest = pgDest.copy(authoritative = "snowflake")), Nil).exists(_.contains("no such destination")))
+    }
+
+    test("historical datasets are derived and edges carry evidence when present") {
+        val ev = Map(("pipeline:orders", "dataset:postgres:datris.public.orders") -> LineageService.EdgeEvidence(8, 12400L, "2026-08-31T00:00:00Z", "SUCCESS", 1))
+        val g = LineageService.build(Nil, List(pipeline("orders", "commerce", pgDest)), List(LineageService.ObservedDataset("orders", "dataset:postgres:datris.public.old")), ev)
+        assert(g.nodes.find(_.id == "dataset:postgres:datris.public.old").get.authority.contains("derived"))
+        val e = g.edges.find(x => x.from == "pipeline:orders" && x.to == "dataset:postgres:datris.public.orders").get
+        assert(e.evidence.exists(_.records == 12400L))
+        val j = e.toJson.getAsJsonObject("evidence")
+        assert(j.get("runs").getAsInt == 8 && j.get("failedRuns").getAsInt == 1 && j.get("windowDays").getAsInt == 90)
+        assert(!g.edges.find(_.to == "catalog:commerce").get.toJson.has("evidence"))
+    }
+
+    test("edgeEvidence aggregates runs per hop and tap logs per source, skipping test runs") {
+        val runs = List(
+            RunLineage(runId = "r1", pipeline = "orders", recordCount = 100, status = "SUCCESS", completedAt = "2026-09-01T00:00:00Z",
+                input = RunLineageInput("tap", tapName = "t"),
+                outputs = List(RunLineageOutput("postgres", datasetId = "dataset:postgres:x", status = "SUCCESS", recordCount = 100)).asJava),
+            RunLineage(runId = "r2", pipeline = "orders", recordCount = 50, status = "ERROR", completedAt = "2026-09-02T00:00:00Z",
+                input = RunLineageInput("tap", tapName = "t"),
+                outputs = List(RunLineageOutput("postgres", datasetId = "dataset:postgres:x", status = "ERROR", recordCount = 0)).asJava)
+        )
+        val t = TapConfig(name = "t", description = "d", targetPipeline = "orders")
+        val logs = List(
+            TapRunLog("t", "2026-09-01T00:00:00Z", "success", 100, mode = "run"),
+            TapRunLog("t", "2026-09-02T00:00:00Z", "success", 7, mode = "test")
+        )
+        val ev = LineageService.edgeEvidence(runs, logs, List(t))
+        val pd = ev(("pipeline:orders", "dataset:postgres:x"))
+        assert(pd.runs == 2 && pd.records == 100L && pd.failedRuns == 1 && pd.lastStatus == "ERROR" && pd.lastRunAt == "2026-09-02T00:00:00Z")
+        val tp = ev(("tap:t", "pipeline:orders"))
+        assert(tp.runs == 2 && tp.records == 100L)
+        val st = ev(("source:tap:t", "tap:t"))
+        assert(st.runs == 1 && st.records == 100L)
+    }
+
     test("pipelines without a catalog produce no catalog node") {
         val g = LineageService.build(Nil, List(pipeline("p", catalog = null, dest = pgDest)))
         assert(!g.nodes.exists(_.nodeType == "catalog"))

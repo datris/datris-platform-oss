@@ -32,10 +32,36 @@ object LineageService {
     private val cacheTtlMs = 60000L
 
     /** How far back run-lineage docs are scanned for datasets a pipeline
-      * landed into under an earlier destination config ("historical"). */
-    private val ObservedWindowMs = 90L * 86400000L
+      * landed into under an earlier destination config ("historical") and for
+      * edge evidence counts. */
+    private val EvidenceWindowDays = 90
+    private val ObservedWindowMs = EvidenceWindowDays.toLong * 86400000L
     private val ObservedMaxRows = 5000
     private val MaxRecentRuns = 50
+
+    /** What actually traversed an edge inside the evidence window (plan L5a):
+      * aggregated from recorded runs (pipeline edges) or the tap run log
+      * (source → tap). An edge without evidence is a configuration claim. */
+    case class EdgeEvidence(runs: Int, records: Long, lastRunAt: String, lastStatus: String, failedRuns: Int) {
+        def toJson: JsonObject = {
+            val o = new JsonObject()
+            o.addProperty("runs", runs)
+            o.addProperty("records", records)
+            if (lastRunAt != null) o.addProperty("lastRunAt", lastRunAt)
+            if (lastStatus != null) o.addProperty("lastStatus", lastStatus)
+            o.addProperty("failedRuns", failedRuns)
+            o.addProperty("windowDays", EvidenceWindowDays)
+            o
+        }
+    }
+
+    /** Authority of a dataset node (plan L5b): `authoritative` (the system of
+      * record), `derived` (a copy — rollup, replica, index, or historical), or
+      * `undeclared` (more than one candidate and no declaration). Declared,
+      * never inferred. */
+    val AuthorityAuthoritative = "authoritative"
+    val AuthorityDerived = "derived"
+    val AuthorityUndeclared = "undeclared"
 
     /** `historical` marks a dataset (or the edge into it) that no current
       * config lands into but a recorded run did — the destination changed
@@ -46,7 +72,8 @@ object LineageService {
         name: String,
         catalog: Option[String] = None,
         tags: List[String] = Nil,
-        historical: Boolean = false
+        historical: Boolean = false,
+        authority: Option[String] = None
     ) {
         def toJson: JsonObject = {
             val o = new JsonObject()
@@ -56,16 +83,18 @@ object LineageService {
             catalog.foreach(o.addProperty("catalog", _))
             if (tags.nonEmpty) { val t = new JsonArray(); tags.foreach(t.add); o.add("tags", t) }
             if (historical) o.addProperty("historical", true)
+            authority.foreach(o.addProperty("authority", _))
             o
         }
     }
 
-    case class Edge(from: String, to: String, historical: Boolean = false) {
+    case class Edge(from: String, to: String, historical: Boolean = false, evidence: Option[EdgeEvidence] = None) {
         def toJson: JsonObject = {
             val o = new JsonObject()
             o.addProperty("from", from)
             o.addProperty("to", to)
             if (historical) o.addProperty("historical", true)
+            evidence.foreach(e => o.add("evidence", e.toJson))
             o
         }
     }
@@ -129,7 +158,53 @@ object LineageService {
     }
 
     /** Pure graph construction from configs — the unit-testable core. */
-    private[datris] def build(taps: List[TapConfig], pipelines: List[PipelineConfig]): Graph = build(taps, pipelines, Nil)
+    private[datris] def build(taps: List[TapConfig], pipelines: List[PipelineConfig]): Graph = build(taps, pipelines, Nil, Map.empty)
+
+    private[datris] def build(taps: List[TapConfig], pipelines: List[PipelineConfig], observed: List[ObservedDataset]): Graph =
+        build(taps, pipelines, observed, Map.empty)
+
+    /** Authority of a dataset from every pipeline's own claim on it (L5b
+      * rules 1–4): exactly one authoritative claim ⇒ authoritative; any
+      * undeclared claim or two authoritative claims ⇒ undeclared; otherwise
+      * (every writer says derived) ⇒ derived. */
+    private[datris] def resolveAuthority(claims: List[String]): String = {
+        val auth = claims.count(_ == AuthorityAuthoritative)
+        if (claims.contains(AuthorityUndeclared) || auth > 1) AuthorityUndeclared
+        else if (auth == 1) AuthorityAuthoritative
+        else AuthorityDerived
+    }
+
+    /** What this pipeline alone says about one of its datasets. */
+    private[datris] def ownClaim(p: PipelineConfig, ds: DatasetRef): String = {
+        if (p.authoritative != null && !p.authoritative.booleanValue()) return AuthorityDerived
+        val all = datasets(p)
+        if (all.size <= 1) return AuthorityAuthoritative
+        val declared = Option(p.destination).flatMap(d => Option(d.authoritative)).map(_.trim.toLowerCase).filter(_.nonEmpty)
+        declared match {
+            case Some(kind) => if (kind == ds.kind) AuthorityAuthoritative else AuthorityDerived
+            case None => AuthorityUndeclared
+        }
+    }
+
+    /** Save-time check for a pipeline definition: a declared authoritative kind
+      * must be one of its destinations, and no other pipeline may already be
+      * the authoritative writer of the same dataset. Returns the problem. */
+    def authorityConflict(p: PipelineConfig, others: List[PipelineConfig]): Option[String] = {
+        val own = datasets(p)
+        val declared = Option(p.destination).flatMap(d => Option(d.authoritative)).map(_.trim.toLowerCase).filter(_.nonEmpty)
+        declared.filterNot(k => own.exists(_.kind == k)).foreach { k =>
+            return Some("destination.authoritative names '" + k + "' but the pipeline has no such destination (" + own.map(_.kind).mkString(", ") + ")")
+        }
+        own.filter(ds => ownClaim(p, ds) == AuthorityAuthoritative).foreach { ds =>
+            others.filter(o => o != null && o.name != p.name).foreach { o =>
+                datasets(o).find(_.id == ds.id).filter(od => ownClaim(o, od) == AuthorityAuthoritative).foreach { _ =>
+                    return Some("pipeline '" + o.name + "' is already the authoritative writer of " + ds.name +
+                        "; set authoritative=false on one of them (or destination.authoritative on the other)")
+                }
+            }
+        }
+        None
+    }
 
     /** Graph from configs plus datasets observed in recorded runs. An observed
       * dataset the current config still lands into is a no-op; one it no
@@ -137,31 +212,42 @@ object LineageService {
       * from its pipeline (and into the pipeline's catalog, so it stays
       * browsable by catalog). Observed datasets of deleted pipelines are
       * dropped — there is no node to hang them from. */
-    private[datris] def build(taps: List[TapConfig], pipelines: List[PipelineConfig], observed: List[ObservedDataset]): Graph = {
+    private[datris] def build(
+        taps: List[TapConfig],
+        pipelines: List[PipelineConfig],
+        observed: List[ObservedDataset],
+        evidence: Map[(String, String), EdgeEvidence]
+    ): Graph = {
         val nodes = scala.collection.mutable.LinkedHashMap[String, Node]()
         val edges = List.newBuilder[Edge]
 
         def addNode(n: Node): Unit = if (!nodes.contains(n.id)) nodes.put(n.id, n)
+        def edge(from: String, to: String, historical: Boolean = false): Edge = Edge(from, to, historical, evidence.get((from, to)))
 
         taps.filter(_ != null).foreach { t =>
             val tapId = "tap:" + t.name
             addNode(Node(tapId, "tap", t.name, Option(t.catalog), tagsOf(t.tags)))
             val source = TapRunner.declaredSource(t)
             addNode(Node("source:" + source, "source", source))
-            edges += Edge("source:" + source, tapId)
+            edges += edge("source:" + source, tapId)
             if (t.targetPipeline != null && t.targetPipeline.nonEmpty)
-                edges += Edge(tapId, "pipeline:" + t.targetPipeline)
+                edges += edge(tapId, "pipeline:" + t.targetPipeline)
         }
 
-        pipelines.filter(_ != null).foreach { p =>
+        // Every pipeline's own claim on each dataset it lands into (rule 4).
+        val live = pipelines.filter(_ != null)
+        val authority: Map[String, String] =
+            live.flatMap(p => datasets(p).map(ds => ds.id -> ownClaim(p, ds))).groupBy(_._1).mapValues(cs => resolveAuthority(cs.map(_._2)))
+
+        live.foreach { p =>
             val pipelineId = "pipeline:" + p.name
             addNode(Node(pipelineId, "pipeline", p.name, Option(p.catalog), tagsOf(p.tags)))
             datasets(p).foreach { ds =>
-                addNode(Node(ds.id, "dataset", ds.name, Option(p.catalog)))
-                edges += Edge(pipelineId, ds.id)
+                addNode(Node(ds.id, "dataset", ds.name, Option(p.catalog), authority = authority.get(ds.id)))
+                edges += edge(pipelineId, ds.id)
                 if (p.catalog != null && p.catalog.nonEmpty) {
                     addNode(Node("catalog:" + p.catalog, "catalog", p.catalog))
-                    edges += Edge(ds.id, "catalog:" + p.catalog)
+                    edges += edge(ds.id, "catalog:" + p.catalog)
                 }
             }
         }
@@ -171,12 +257,12 @@ object LineageService {
             byName.get(o.pipeline).foreach { p =>
                 val pipelineId = "pipeline:" + p.name
                 if (!nodes.contains(o.datasetId))
-                    addNode(Node(o.datasetId, "dataset", o.datasetId.stripPrefix("dataset:"), Option(p.catalog), historical = true))
+                    addNode(Node(o.datasetId, "dataset", o.datasetId.stripPrefix("dataset:"), Option(p.catalog), historical = true, authority = Some(AuthorityDerived)))
                 if (nodes(o.datasetId).historical) {
-                    edges += Edge(pipelineId, o.datasetId, historical = true)
+                    edges += edge(pipelineId, o.datasetId, historical = true)
                     if (p.catalog != null && p.catalog.nonEmpty) {
                         addNode(Node("catalog:" + p.catalog, "catalog", p.catalog))
-                        edges += Edge(o.datasetId, "catalog:" + p.catalog, historical = true)
+                        edges += edge(o.datasetId, "catalog:" + p.catalog, historical = true)
                     }
                 }
             }
@@ -204,17 +290,68 @@ object LineageService {
         val pipelines =
             try PipelineConfigIO.readAll(env.pipelineTableName)
             catch { case _: Exception => Nil }
-        val observed =
-            try RunLineageIO.since(now - ObservedWindowMs, ObservedMaxRows).flatMap { r =>
-                    Option(r.outputs).map(_.asScala.toList).getOrElse(Nil)
-                        .filter(o => o.datasetId != null)
-                        .map(o => ObservedDataset(r.pipeline, o.datasetId))
-                }.distinct
+        val runs =
+            try RunLineageIO.since(now - ObservedWindowMs, ObservedMaxRows)
             catch { case _: Exception => Nil }
-        val entry = CacheEntry(now, build(taps, pipelines, observed), taps, pipelines)
+        val observed = runs.flatMap { r =>
+            Option(r.outputs).map(_.asScala.toList).getOrElse(Nil)
+                .filter(o => o.datasetId != null)
+                .map(o => ObservedDataset(r.pipeline, o.datasetId))
+        }.distinct
+        val tapLogs =
+            try NoSQLDbUtil.getItemsSinceAsJSON(env.tapLogTableName, "created_at", now - ObservedWindowMs, ObservedMaxRows).flatMap { json =>
+                    try {
+                        val el = com.google.gson.JsonParser.parseString(json)
+                        if (el.isJsonObject && el.getAsJsonObject.has("value")) Option(gson.fromJson(el.getAsJsonObject.get("value"), classOf[TapRunLog])) else None
+                    } catch { case _: Exception => None }
+                }
+            catch { case _: Exception => Nil }
+        val entry = CacheEntry(now, build(taps, pipelines, observed, edgeEvidence(runs, tapLogs, taps)), taps, pipelines)
         cache.put(env.environment, entry)
         entry
     }
+
+    /** Aggregate recorded runs and tap-run logs into per-edge evidence. Pure.
+      *  - `pipeline → dataset`: one count per run output (SUCCESS records summed)
+      *  - `tap → pipeline`: runs whose input names the tap
+      *  - `source → tap`: non-test tap runs, resolved through the tap's source */
+    private[datris] def edgeEvidence(runs: List[RunLineage], tapLogs: List[TapRunLog], taps: List[TapConfig]): Map[(String, String), EdgeEvidence] = {
+        case class Acc(var runs: Int = 0, var records: Long = 0L, var lastAt: String = null, var lastStatus: String = null, var failed: Int = 0) {
+            def add(at: String, status: String, count: Long): Unit = {
+                runs += 1
+                val ok = status != null && (status.equalsIgnoreCase("SUCCESS") || status.equalsIgnoreCase("WARNING"))
+                if (ok) records += count else failed += 1
+                if (at != null && (lastAt == null || at.compareTo(lastAt) > 0)) { lastAt = at; lastStatus = status }
+            }
+            def result: EdgeEvidence = EdgeEvidence(runs, records, lastAt, lastStatus, failed)
+        }
+        val acc = scala.collection.mutable.LinkedHashMap[(String, String), Acc]()
+        def at(k: (String, String)): Acc = acc.getOrElseUpdate(k, Acc())
+
+        runs.filter(r => r != null && r.pipeline != null).foreach { r =>
+            val pipelineId = "pipeline:" + r.pipeline
+            Option(r.outputs).map(_.asScala.toList).getOrElse(Nil).filter(_.datasetId != null).foreach { o =>
+                at((pipelineId, o.datasetId)).add(r.completedAt, o.status, o.recordCount.toLong)
+            }
+            if (r.input != null && r.input.tapName != null)
+                at(("tap:" + r.input.tapName, pipelineId)).add(r.completedAt, r.status, r.recordCount.toLong)
+        }
+        val sourceOf = taps.filter(_ != null).map(t => t.name -> ("source:" + TapRunner.declaredSource(t))).toMap
+        tapLogs.filter(l => l != null && l.tapName != null && l.mode != "test").foreach { l =>
+            sourceOf.get(l.tapName).foreach { src =>
+                at((src, "tap:" + l.tapName)).add(l.runTime, l.status, l.recordCount.toLong)
+            }
+        }
+        acc.map { case (k, a) => k -> a.result }.toMap
+    }
+
+    /** Evidence for one edge of the cached graph, if any. */
+    def evidenceFor(from: String, to: String): Option[EdgeEvidence] =
+        loadCached().graph.edges.find(e => e.from == from && e.to == to).flatMap(_.evidence)
+
+    /** Authority label of one dataset node of the cached graph, if known. */
+    def authorityOfDataset(datasetId: String): Option[String] =
+        loadCached().graph.nodes.find(_.id == datasetId).flatMap(_.authority)
 
     /** Drop the cached graph so the next read rebuilds (tests / after writes). */
     private[datris] def invalidate(): Unit = cache.clear()

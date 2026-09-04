@@ -797,6 +797,11 @@
           <span>Stamp provenance on landed data</span>
         </label>
         <p class="form-hint">Appends _datris_run_id, _datris_ingested_at, _datris_config_version, _datris_tap_run, _datris_script_sha and _datris_source to every row this pipeline lands, so any record can be traced back to the run, config version, script commit and source that produced it. Existing rows are never rewritten — provenance starts with the first run after this is turned on.</p>
+        <label class="checkbox-label" style="margin-top: 10px">
+          <input type="checkbox" [(ngModel)]="derivedCopy">
+          <span>This pipeline lands a derived copy, not the system of record</span>
+        </label>
+        <p class="form-hint">Tick this for a rollup, a replica, or an index built from another dataset. Lineage and find_data then mark what it lands as a derived copy so agents cite the authoritative dataset instead. Left unticked, a pipeline's single destination is the system of record.</p>
       </div>
     </div>
 

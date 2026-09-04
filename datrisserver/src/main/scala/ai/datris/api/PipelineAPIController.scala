@@ -135,9 +135,24 @@ class PipelineAPIController {
             val preserved = if (existing != null)
                 tagged.copy(
                     tags = if (tagged.tags == null) existing.tags else tagged.tags,
-                    provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance
+                    provenance = if (tagged.provenance == null) existing.provenance else tagged.provenance,
+                    // Authority declarations follow the same rule: omitted ⇒ keep.
+                    authoritative = if (tagged.authoritative == null) existing.authoritative else tagged.authoritative,
+                    destination =
+                        if (tagged.destination != null && tagged.destination.authoritative == null && existing.destination != null)
+                            tagged.destination.copy(authoritative = existing.destination.authoritative)
+                        else tagged.destination
                 )
             else tagged
+            // Source-of-authority rules are validated against every other
+            // pipeline: a declared kind must exist, and one dataset has at most
+            // one authoritative writer.
+            val others =
+                try PipelineConfigIO.readAll(DatrisEnvironment.current.pipelineTableName)
+                catch { case _: Exception => Nil }
+            LineageService.authorityConflict(preserved, others).foreach { problem =>
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\":\"" + problem.replace("\"", "'") + "\"}")
+            }
             val note = if (changeNote != null && changeNote.nonEmpty) changeNote
             else if (existing != null) "updated" else "created"
             PipelineConfigIO.writeVersioned(preserved, note, VersionActor.resolve(request))

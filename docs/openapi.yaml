@@ -4267,6 +4267,10 @@ paths:
                             type: string
                         historical:
                           type: boolean
+                        authority:
+                          type: string
+                          enum: [authoritative, derived, undeclared]
+                          description: Dataset nodes only — which copy may be cited. Declared on the pipeline, never inferred.
                   edges:
                     type: array
                     items:
@@ -4278,6 +4282,22 @@ paths:
                           type: string
                         historical:
                           type: boolean
+                        evidence:
+                          type: object
+                          description: What traversed this edge in the last `windowDays`; absent when no recorded run backs the edge (a configuration claim).
+                          properties:
+                            runs:
+                              type: integer
+                            records:
+                              type: integer
+                            lastRunAt:
+                              type: string
+                            lastStatus:
+                              type: string
+                            failedRuns:
+                              type: integer
+                            windowDays:
+                              type: integer
   /api/v1/lineage/{type}/{name}:
     get:
       tags: [Provenance]

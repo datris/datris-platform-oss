@@ -3,7 +3,7 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import type { EChartsOption } from 'echarts';
 import {
-  ColumnEdge, ColumnLineage, LineageEdge, LineageGraph, LineageNeighborhood, LineageNode, LineageNodeType, LineageService
+  ColumnEdge, ColumnLineage, EdgeEvidence, LineageEdge, LineageGraph, LineageNeighborhood, LineageNode, LineageNodeType, LineageService
 } from '../lineage.service';
 import { AuthService } from '../auth.service';
 
@@ -51,6 +51,7 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
   catalogFilter = '';
   tagFilter = '';
   nameFilter = '';
+  canonicalOnly = false;
   visibleCount = 0;
 
   // Selection
@@ -116,11 +117,12 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
     this.catalogFilter = '';
     this.tagFilter = '';
     this.nameFilter = '';
+    this.canonicalOnly = false;
     this.render();
   }
 
   hasFilters(): boolean {
-    return !!(this.catalogFilter || this.tagFilter || this.nameFilter.trim());
+    return !!(this.catalogFilter || this.tagFilter || this.nameFilter.trim() || this.canonicalOnly);
   }
 
   /** Nodes to draw: the ones matching every active filter, plus everything
@@ -134,7 +136,8 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
     const seeds = g.nodes.filter(n =>
       (!this.catalogFilter || n.catalog === this.catalogFilter || n.id === 'catalog:' + this.catalogFilter) &&
       (!this.tagFilter || (n.tags || []).includes(this.tagFilter)) &&
-      (!name || n.name.toLowerCase().includes(name))
+      (!name || n.name.toLowerCase().includes(name)) &&
+      (!this.canonicalOnly || (n.type === 'dataset' && n.authority === 'authoritative'))
     );
     const fwd = new Map<string, string[]>();
     const back = new Map<string, string[]>();
@@ -220,6 +223,10 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
     const data = placed.map(p => {
       const n = p.node;
       const color = COLOR[n.type] || COLOR.pipeline;
+      // Datasets: the system of record is filled; derived copies are hollow;
+      // undeclared ones get an amber ring asking for a decision.
+      const derived = n.type === 'dataset' && n.authority === 'derived' && !n.historical;
+      const undeclared = n.type === 'dataset' && n.authority === 'undeclared';
       return {
         id: n.id,
         name: n.id,
@@ -229,9 +236,9 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
         symbol: n.type === 'source' ? 'circle' : n.type === 'catalog' ? 'diamond' : 'roundRect',
         symbolSize: n.type === 'source' ? 12 : n.type === 'catalog' ? 18 : [14, 14],
         itemStyle: {
-          color: n.historical ? 'transparent' : color,
-          borderColor: color,
-          borderWidth: n.historical ? 1.5 : (n.id === selected ? 3 : 0),
+          color: n.historical || derived ? 'transparent' : color,
+          borderColor: undeclared ? '#fbbf24' : color,
+          borderWidth: n.historical ? 1.5 : derived ? 1.5 : undeclared ? 2.5 : (n.id === selected ? 3 : 0),
           borderType: n.historical ? 'dashed' : 'solid',
           opacity: dim(n.id) ? 0.25 : 1
         },
@@ -246,17 +253,27 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
       };
     });
 
-    const links = g.edges.filter(e => ids.has(e.from) && ids.has(e.to)).map(e => ({
-      source: e.from,
-      target: e.to,
-      lineStyle: {
-        type: e.historical ? 'dashed' : 'solid',
-        color: e.historical ? '#f59e0b' : 'rgba(148, 163, 184, 0.55)',
-        width: related.has(e.from) && related.has(e.to) ? 2 : 1.2,
-        curveness: 0.15,
-        opacity: related.size > 0 && !(related.has(e.from) && related.has(e.to)) ? 0.2 : 1
-      }
-    }));
+    // Edge weight follows evidence: width grows with records landed (log
+    // scale); an edge with no recorded run behind it is a configuration
+    // claim and draws thin and faint. Catalog edges carry no traversal.
+    const links = g.edges.filter(e => ids.has(e.from) && ids.has(e.to)).map(e => {
+      const ev = e.evidence;
+      const claimOnly = !ev && !e.to.startsWith('catalog:');
+      const base = ev ? 1.2 + Math.min(3, Math.log10(1 + ev.records) * 0.8) : 1;
+      const highlighted = related.has(e.from) && related.has(e.to);
+      return {
+        source: e.from,
+        target: e.to,
+        evidence: ev,
+        lineStyle: {
+          type: e.historical ? 'dashed' : claimOnly ? 'dotted' : 'solid',
+          color: e.historical ? '#f59e0b' : ev && ev.lastStatus && !/^(success|warning)$/i.test(ev.lastStatus) ? 'rgba(248, 113, 113, 0.7)' : claimOnly ? 'rgba(148, 163, 184, 0.3)' : 'rgba(148, 163, 184, 0.6)',
+          width: highlighted ? base + 0.8 : base,
+          curveness: 0.15,
+          opacity: related.size > 0 && !highlighted ? 0.2 : 1
+        }
+      };
+    });
 
     this.chartOptions = {
       backgroundColor: 'transparent',
@@ -266,10 +283,17 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
         borderColor: 'rgba(99, 179, 237, 0.25)',
         textStyle: { color: '#f0f4ff', fontSize: 12 },
         formatter: (p: any) => {
-          if (p.dataType === 'edge') return p.data.lineStyle?.type === 'dashed' ? 'historical' : '';
+          if (p.dataType === 'edge') {
+            const ev: EdgeEvidence | undefined = p.data.evidence;
+            const head = p.data.lineStyle?.type === 'dashed' ? 'historical' : '';
+            if (!ev) return head || (String(p.data.target).startsWith('catalog:') ? '' : 'no recorded runs — configuration only');
+            return [head, `${ev.runs} run${ev.runs === 1 ? '' : 's'} · ${this.formatCount(ev.records)} records`,
+              ev.failedRuns ? `${ev.failedRuns} failed` : '', ev.lastRunAt ? `last ${this.formatWhen(ev.lastRunAt)} (${(ev.lastStatus || '').toLowerCase()})` : '',
+              `last ${ev.windowDays} days`].filter(Boolean).join('<br/>');
+          }
           const n = nodes.find(x => x.id === p.data.id);
           if (!n) return '';
-          const bits = [`<b>${this.escape(n.name)}</b>`, n.type + (n.historical ? ' · historical' : '')];
+          const bits = [`<b>${this.escape(n.name)}</b>`, n.type + (n.historical ? ' · historical' : '') + (n.authority ? ' · ' + n.authority : '')];
           if (n.catalog) bits.push('catalog: ' + this.escape(n.catalog));
           if (n.tags?.length) bits.push('tags: ' + n.tags.map(t => this.escape(t)).join(', '));
           return bits.join('<br/>');
@@ -296,6 +320,26 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
   private shortLabel(n: LineageNode): string {
     const name = n.type === 'dataset' ? n.name.replace(/^[a-z]+:/, '') : n.name;
     return name.length > 30 ? name.slice(0, 28) + '…' : name;
+  }
+
+  formatCount(n: number): string {
+    if (n == null) return '';
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
+
+  /** Evidence on the direct edge between the selected node and a neighbor, either direction. */
+  edgeEvidence(nb: LineageNeighborhood, other: LineageNode): EdgeEvidence | null {
+    const e = nb.edges.find(x => (x.from === nb.node.id && x.to === other.id) || (x.from === other.id && x.to === nb.node.id));
+    return e?.evidence || null;
+  }
+
+  evidenceText(ev: EdgeEvidence | null): string {
+    if (!ev) return '';
+    const bits = [`${ev.runs} run${ev.runs === 1 ? '' : 's'}`, `${this.formatCount(ev.records)} rows`];
+    if (ev.lastRunAt) bits.push(this.formatWhen(ev.lastRunAt).split(',')[0]);
+    return bits.join(' · ');
   }
 
   private escape(s: string): string {

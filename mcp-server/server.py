@@ -1611,6 +1611,10 @@ def _base_tools():
                     "catalog": {
                         "type": "string",
                         "description": "OMIT BY DEFAULT. Catalogs are a user-chosen organizational convention — do NOT set a catalog unless the user has explicitly asked to group this pipeline under a named catalog. Assigning one for them puts the pipeline into a taxonomy they didn't ask for. When unset, the platform shows the pipeline as Uncataloged, which is the correct default."
+                    },
+                    "authoritative": {
+                        "type": "boolean",
+                        "description": "OMIT BY DEFAULT. Pass false only when the user says this pipeline lands a derived copy (a rollup, a replica, an index built from another dataset) rather than the system of record. A pipeline's single destination is the authoritative copy by default; lineage and find_data mark derived copies so agents cite the right one."
                     }
                 },
                 "required": ["pipeline"]
@@ -3202,6 +3206,9 @@ def _dispatch(name: str, args: dict) -> str:
         # Step 2d: Add optional catalog grouping label
         if args.get("catalog"):
             config["catalog"] = args["catalog"]
+        # Step 2e: Source-of-authority declaration (only when explicitly given)
+        if "authoritative" in args and args["authoritative"] is not None:
+            config["authoritative"] = bool(args["authoritative"])
 
         # Step 3: Register the pipeline
         create_result = _call("post", "/api/v1/pipeline", json=config)

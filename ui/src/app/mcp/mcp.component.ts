@@ -339,7 +339,8 @@ export class McpComponent implements OnInit {
         { name: 'credentialsSecret', type: 'string', description: 'PLATFORM secret holding destination credentials. For objectstore + provider=s3: accessKey, secretKey, region (optional sessionToken); required unless Datris runs on an EC2 instance role. For snowflake: account, user, privateKey (or password); always required. For databricks: host, plus clientId/clientSecret or token; always required. Discover via list_platform_secrets.', required: false, inputType: 'text' },
         { name: 'codegen_rule', type: 'string', description: 'Optional plain-English data quality validation rule. Datris generates a Python validation script from it and runs it against ingested data. Only add when the user explicitly asks for validation.', required: false, inputType: 'textarea' },
         { name: 'codegen_transform', type: 'string', description: 'Optional plain-English transformation instruction. Datris generates a Python script and runs it against ingested data. Only add when the user explicitly asks for a transformation.', required: false, inputType: 'textarea' },
-        { name: 'catalog', type: 'string', description: 'Optional catalog label to group this pipeline with related ones. Omit by default.', required: false, inputType: 'text' }
+        { name: 'catalog', type: 'string', description: 'Optional catalog label to group this pipeline with related ones. Omit by default.', required: false, inputType: 'text' },
+        { name: 'authoritative', type: 'boolean', description: 'Omit by default. false marks the pipeline as landing a derived copy, not the system of record', required: false, inputType: 'text' }
       ],
       playgroundEnabled: true
     },

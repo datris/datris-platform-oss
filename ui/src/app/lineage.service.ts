@@ -8,6 +8,8 @@ import { Observable } from 'rxjs';
 
 export type LineageNodeType = 'source' | 'tap' | 'pipeline' | 'dataset' | 'catalog';
 
+export type LineageAuthority = 'authoritative' | 'derived' | 'undeclared';
+
 export interface LineageNode {
   id: string;
   type: LineageNodeType;
@@ -16,12 +18,26 @@ export interface LineageNode {
   tags?: string[];
   /** A dataset no current config lands into, but a recorded run did. */
   historical?: boolean;
+  /** Dataset nodes only: which copy may be cited (L5b). */
+  authority?: LineageAuthority;
+}
+
+/** What traversed an edge inside the evidence window (L5a). Absent = a
+ *  configuration claim with no recorded run behind it. */
+export interface EdgeEvidence {
+  runs: number;
+  records: number;
+  lastRunAt?: string;
+  lastStatus?: string;
+  failedRuns: number;
+  windowDays: number;
 }
 
 export interface LineageEdge {
   from: string;
   to: string;
   historical?: boolean;
+  evidence?: EdgeEvidence;
 }
 
 /** One recorded pipeline run (v1.27): what it read and wrote. */

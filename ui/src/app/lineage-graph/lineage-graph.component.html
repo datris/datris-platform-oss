@@ -9,6 +9,9 @@
         <span class="swatch" [style.background]="l.color"></span>{{ l.label }}
       </span>
       <span class="legend-item"><span class="swatch dashed"></span>historical</span>
+      <span class="legend-item"><span class="swatch hollow"></span>derived copy</span>
+      <span class="legend-item"><span class="swatch undeclared"></span>undeclared</span>
+      <span class="legend-item"><span class="swatch dotted"></span>no runs</span>
     </div>
   </div>
 
@@ -27,6 +30,9 @@
       <option *ngFor="let t of tags" [value]="t">{{ t }}</option>
     </select>
     <input class="form-input name-filter" [(ngModel)]="nameFilter" (ngModelChange)="render()" placeholder="Filter by name…">
+    <label class="check-filter" title="Only datasets that are the system of record, with their chains">
+      <input type="checkbox" [(ngModel)]="canonicalOnly" (ngModelChange)="render()"> Canonical only
+    </label>
     <button class="secondary-btn" (click)="clearFilters()" *ngIf="hasFilters()">Clear</button>
     <span class="filter-count" *ngIf="graph">{{ visibleCount }} of {{ graph.nodes.length }} nodes</span>
   </div>
@@ -56,6 +62,10 @@
         <div class="panel-meta">
           <span class="meta-chip" *ngIf="node.type === 'dataset' && datasetKind(node)">{{ datasetKind(node) }}</span>
           <span class="meta-chip historical" *ngIf="node.historical" title="No current configuration lands here; a recorded run did">historical</span>
+          <span class="meta-chip authority" *ngIf="node.authority" [class]="'meta-chip authority ' + node.authority"
+                [title]="node.authority === 'authoritative' ? 'System of record — the copy to cite' : node.authority === 'derived' ? 'A derived copy (rollup, replica, index, or historical) — cite the authoritative dataset instead' : 'More than one candidate and no declaration — set authoritative on the pipeline'">
+            <span class="material-icons">{{ node.authority === 'authoritative' ? 'verified' : node.authority === 'derived' ? 'content_copy' : 'help_outline' }}</span>{{ node.authority === 'authoritative' ? 'system of record' : node.authority }}
+          </span>
           <span class="meta-chip" *ngIf="node.catalog"><span class="material-icons">folder</span>{{ node.catalog }}</span>
           <span class="meta-chip tag" *ngFor="let t of node.tags || []">{{ t }}</span>
         </div>
@@ -88,13 +98,16 @@
             <h3>Upstream</h3>
             <button class="node-chip" *ngFor="let n of upstreamOf(nb); trackBy: trackById" (click)="select(n.id)" [title]="n.id">
               <span class="dot" [style.background]="typeColor(n.type)"></span>{{ displayName(n) }}
+              <span class="chip-evidence" *ngIf="edgeEvidence(nb, n) as ev">{{ evidenceText(ev) }}</span>
             </button>
           </section>
 
           <section class="panel-section" *ngIf="downstreamOf(nb).length > 0">
             <h3>Downstream</h3>
-            <button class="node-chip" *ngFor="let n of downstreamOf(nb); trackBy: trackById" (click)="select(n.id)" [title]="n.id" [class.historical]="n.historical">
+            <button class="node-chip" *ngFor="let n of downstreamOf(nb); trackBy: trackById" (click)="select(n.id)" [title]="n.id" [class.historical]="n.historical" [class.derived]="n.authority === 'derived' && !n.historical">
               <span class="dot" [style.background]="typeColor(n.type)"></span>{{ displayName(n) }}
+              <span class="material-icons chip-icon" *ngIf="n.authority === 'authoritative'" title="system of record">verified</span>
+              <span class="chip-evidence" *ngIf="edgeEvidence(nb, n) as ev">{{ evidenceText(ev) }}</span>
             </button>
           </section>
 

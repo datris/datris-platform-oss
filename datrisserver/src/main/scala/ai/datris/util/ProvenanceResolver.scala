@@ -62,6 +62,12 @@ object ProvenanceResolver {
         val runLineage = RunLineageIO.read(runId).orNull
         if (runLineage != null) {
             val rl = LineageService.runToJson(runLineage)
+            // Which copy may be cited: authority label per landed dataset (L5b).
+            rl.getAsJsonArray("outputs").asScala.foreach { el =>
+                val oo = el.getAsJsonObject
+                if (oo.has("datasetId"))
+                    LineageService.authorityOfDataset(oo.get("datasetId").getAsString).foreach(oo.addProperty("authority", _))
+            }
             out.add("outputs", rl.get("outputs"))
             if (rl.has("input")) out.add("input", rl.get("input"))
             if (!job.has("status") && runLineage.status != null) job.addProperty("status", runLineage.status)

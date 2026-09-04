@@ -88,3 +88,14 @@
 .infer-row { margin-top: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .small-btn { font-size: 12px; padding: 4px 10px; }
 .error-text { color: var(--accent-red); }
+
+.swatch.hollow { border: 1.5px solid #00e5a0; background: transparent; }
+.swatch.undeclared { border: 2px solid #fbbf24; background: transparent; }
+.swatch.dotted { border-top: 2px dotted rgba(148, 163, 184, 0.6); background: transparent; height: 0; width: 14px; border-radius: 0; }
+.check-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+.meta-chip.authority.authoritative { color: var(--accent-green); border-color: var(--accent-green); }
+.meta-chip.authority.derived { color: var(--text-muted); border-style: dashed; }
+.meta-chip.authority.undeclared { color: #fbbf24; border-color: #fbbf24; }
+.node-chip.derived { border-style: dashed; color: var(--text-secondary); }
+.node-chip .chip-icon { font-size: 13px; color: var(--accent-green); }
+.chip-evidence { font-size: 10px; color: var(--text-muted); margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--border-color); }

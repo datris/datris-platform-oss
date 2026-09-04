@@ -68,6 +68,20 @@ Two things follow from that record:
 
 Runs are recorded from the first run after upgrading; earlier runs still resolve through provenance as before, but have no recorded outputs.
 
+### Evidence on every hop
+
+Each edge in the graph carries what actually traversed it in the last 90 days: runs, records landed, failed runs, and the time and status of the last run — aggregated from the recorded runs (pipeline hops) and the tap run log (source → tap). An edge with no recorded run behind it is a configuration claim, not evidence, and draws dotted and faint; edge width grows with records landed. The side panel shows the same numbers on each upstream and downstream chip ("8 runs · 12.4k rows · 8/31"), and `find_data` returns `evidence` per location. Bytes are not tracked.
+
+### Source of authority
+
+Provenance answers where a row came from; authority answers which copy you may cite. Every dataset node carries one of three labels, **declared, never inferred**:
+
+- **system of record** (`authoritative`) — the copy to cite. A pipeline with a single destination is authoritative by default, so existing configurations need no change.
+- **derived** — a copy: a rollup, a replica, an index built from another dataset, or a historical dataset nothing lands into anymore. Set `"authoritative": false` on the pipeline (wizard: *This pipeline lands a derived copy*; `create_pipeline`: `authoritative: false`).
+- **undeclared** — more than one candidate and no decision: a pipeline with several destinations and no `destination.authoritative`, or two pipelines that both claim the same dataset. The graph shows an amber ring; saving a second authoritative writer for the same dataset is rejected.
+
+`find_data` lists the authoritative location first and labels the rest; `get_provenance` reports the authority of each dataset a run wrote; the graph's **Canonical only** filter shows just the systems of record and their chains.
+
 ### Column-level lineage
 
 For any pipeline, `GET /api/v1/lineage/columns/{pipeline}` (or the **Columns** section of a pipeline or dataset node in the graph) shows which destination columns come from which source fields. Two tiers, clearly labeled:
