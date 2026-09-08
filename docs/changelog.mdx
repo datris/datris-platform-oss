@@ -3,6 +3,16 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.28.1" description="September 8, 2026">
+  **Security and documentation maintenance release.**
+
+  - **Security update.** The embedded web server that serves the API is updated to close three recently disclosed critical advisories affecting authentication and authorization handling. The UI and tap-runner images pick up the latest OS package security fixes. No functional changes.
+  - **Hardening switches now take effect.** `DATRIS_ENV`, `DATRIS_ALLOW_PLAINTEXT_DB`, `DATRIS_ALLOW_PRIVATE_EGRESS` and `TAP_MAX_OUTPUT_MB` were described in `.env.example` but not passed through to the server by the bundled Compose files. They are now honored and documented in the Configuration Reference.
+  - **Documentation accuracy pass.** Every page on docs.datris.ai was checked against the current release and corrected, including the MCP tool list, CLI flags, Assistant defaults, tap runtime behaviour, ingestion and destination options, the API reference and OpenAPI spec, and the examples.
+  - **Examples.** Two examples that depended on files no longer in the repository were removed.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. CLI users on pip or Homebrew: upgrade to 1.28.1.
+</Update>
+
 <Update label="v1.28.0" description="September 4, 2026">
   **Lineage now reflects what actually ran, not just what is configured — with an interactive graph and an agent tool to traverse it.**
 
