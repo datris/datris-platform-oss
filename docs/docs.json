@@ -128,10 +128,8 @@
             "pages": [
               "examples",
               "examples/chat-vector-store",
-              "examples/kafka-csv-loader",
               "examples/market-macro-agent",
               "examples/preprocessor",
-              "examples/test-mcp-server",
               "examples/topic-subscriber"
             ]
           }
