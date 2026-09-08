@@ -20,7 +20,7 @@ Content-Type: multipart/form-data
 | `publishertoken` | form-data | No | Publisher identifier for tracking |
 
 **Behavior:**
-- **Compressed files** (`.zip`, `.gz`, `.tar`, `.jar`): Staged to MinIO raw bucket for asynchronous processing
+- **Compressed files** (`.zip`, `.gz`, `.tar`, `.jar`): Extracted in-process. For a CSV pipeline with several files in the archive, the files are concatenated (headers on files 2+ skipped) and submitted as one batch job; otherwise each extracted file is submitted as its own job
 - **Uncompressed files**: Processed immediately in-memory
 - **Schema evolution**: If a CSV file contains new columns not in the pipeline schema, they are automatically added (as `string` type) and the destination table is altered. See [Schema Evolution](/schemas#schema-evolution).
 
@@ -37,7 +37,7 @@ curl -X POST http://localhost:8080/api/v1/pipeline/upload \
 pt-abc12345-6789-...
 ```
 
-For compressed files, the response is `200 OK` with no body. The file is processed asynchronously when the pipeline detects it in the raw bucket.
+For compressed files, the response is `200 OK` with the single pipeline token of the batch job (CSV batch mode, or a single-file archive), or the plain-text summary `N file(s) submitted` when each extracted file was submitted as its own job.
 
 ---
 

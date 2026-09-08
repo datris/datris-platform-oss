@@ -88,7 +88,7 @@ The generated script can use these pre-installed packages:
 - `requests`, `beautifulsoup4`, `pandas`, `lxml`, `feedparser`
 - `boto3` (AWS S3), `google-cloud-storage` (GCS), `azure-storage-blob` (Azure Blob)
 - `openpyxl` (Excel), `pyyaml` (YAML), `python-dateutil`, `pytz`
-- Additional packages can be specified and are installed at runtime via pip. Datris caches installed packages in Docker volumes so subsequent runs reuse them instantly.
+- Additional packages can be specified and are installed at runtime via pip into a throwaway per-run environment. In in-process mode the pip download cache lives in a Docker volume so reinstalls skip the download; in the isolated runner (compose default) packages are fetched fresh on every run.
 
 **Example instructions:**
 - *"Fetch current weather data for New York from the Open-Meteo API"*
@@ -173,7 +173,7 @@ Tap scripts can query data already stored in the Datris platform. The following 
 |---|---|
 | `DATRIS_POSTGRES_DATABASE` | PostgreSQL database name (configured via `postgres.database` in `application.yaml`, or the tenant name in multi-tenant mode) |
 | `DATRIS_MONGODB_DATABASE` | MongoDB database name (configured via `mongodb.database` in `application.yaml`, or the tenant name in multi-tenant mode) |
-| `DATRIS_PLATFORM_HOST` | Hostname of the Datris platform (`localhost` inside the Docker container) |
+| `DATRIS_PLATFORM_HOST` | Hostname of the Datris platform (`localhost` when the tap runs in-process; `datris` — the server's service name — when it runs in the isolated runner container) |
 | `DATRIS_PLATFORM_PORT` | Port of the Datris platform (`8080` by default) |
 | `DATRIS_PLATFORM_TOKEN` | A per-run credential for the platform API, minted when the run starts and revoked when it ends. You normally never touch it — see below |
 
@@ -244,8 +244,8 @@ Tap secrets are tagged with `_type=tap` and only appear in the tap dropdown — 
 ## Running Taps
 
 <Note>
-Tap code runs in-process by default, and can optionally run in an isolated runner container
-that's separated from the platform's credentials and internal services. See
+On docker compose, tap code runs in an isolated runner container by default (`USE_TAP_RUNNER=true`),
+separated from the platform's credentials and internal services; `sbt` / IDE runs stay in-process. See
 [Tap Execution & Isolation](/tap-execution-isolation).
 </Note>
 
@@ -403,6 +403,10 @@ AI agents can manage taps via MCP:
 | `get_tap_ledger` | Document taps only: read the ledger of discovered documents (URI, filename, status, hashes, first/last seen timestamps). Pass `clear_uri` to force one file to be re-processed on the next run, or `clear_all=true` to force a full re-scan. |
 | `get_tap_state` | Read a tap's incremental-sync state (the bookmark committed by its last successful run). |
 | `set_tap_state` | Overwrite a tap's state (e.g. rewind a cursor to re-fetch a window), or pass `reset=true` to clear it so the next run does a full first-run fetch. |
+| `list_tap_versions` | List the change history of a tap's definition, newest first (`version`, `createdAt`, `createdBy`, `changeNote`). An empty result means the tap has not been edited since versioning was enabled; the current version number is the `version` field on the tap itself. |
+| `get_tap_version` | View one historical snapshot of a tap: the full config and pinned script as they were at that version. Read-only. |
+| `diff_tap_versions` | Compare two versions of a tap: a field-by-field config diff plus a line-level script diff. `version` is the selected snapshot, `against` the baseline. |
+| `restore_tap_version` | Roll a tap back (or forward) to a prior version. Append-only: the chosen snapshot is written as a new latest version, so history is never overwritten. |
 | `delete_tap` | Delete a tap and its stored script |
 
 End-to-end agent flow when a tap needs credentials:

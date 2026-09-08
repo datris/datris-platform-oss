@@ -19,14 +19,18 @@ curl http://localhost:8080/api/v1/version
 **Response:** `200 OK`
 ```json
 {
-  "version": "1.6.3",
+  "version": "1.28.0",
   "environment": "oss",
   "multiTenant": "false",
   "hosted": "false",
   "useUserAuth": "false",
   "useApiKeys": "false",
+  "useAuditLog": "false",
+  "useAgentPolicy": "false",
+  "recoveryAgentEnabled": "false",
   "postgresDatabase": "datris",
-  "mongodbDatabase": "datris"
+  "mongodbDatabase": "datris",
+  "useTapRunner": "false"
 }
 ```
 
@@ -38,5 +42,9 @@ curl http://localhost:8080/api/v1/version
 | `hosted` | Whether this is a managed/hosted deployment |
 | `useUserAuth` | Whether user authentication is enabled |
 | `useApiKeys` | Whether API key authentication is enabled |
+| `useAuditLog` | Whether the audit log is enabled |
+| `useAgentPolicy` | Whether agent policy enforcement is enabled |
+| `recoveryAgentEnabled` | Whether the recovery agent is enabled |
+| `useTapRunner` | Whether tap scripts run in the separate tap-runner service |
 | `postgresDatabase` | Canonical Postgres database name. User-facing; UI reads this as authoritative and doesn't let users edit it. |
 | `mongodbDatabase` | Canonical MongoDB database name (user-facing). In multi-tenant mode this is the tenant environment name; in single-tenant it comes from `mongodb.database` in application.yaml. Distinct from the internal platform database (`mongodb.internalDatabase`, default `oss`) which holds pipeline/tap configs and run state and is never surfaced in the UI. |

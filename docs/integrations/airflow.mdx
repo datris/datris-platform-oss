@@ -39,7 +39,7 @@ Add a connection of type **Datris** in the Airflow UI (or via env var / CLI):
 
 - **Local / single-tenant with `useApiKeys=false` (default):** leave the password
   blank — the header is ignored.
-- **Single-tenant with `useApiKeys=true`, or a hosted/multi-tenant install:**
+- **Single-tenant with `useApiKeys=true`, or a multi-tenant install:**
   set the password to an API key that holds the `tap:run` capability for the
   taps you trigger.
 
@@ -78,8 +78,8 @@ The operator:
 ### Date-windowed backfills
 
 Pass per-run params via `tap_params` (named to avoid Airflow's reserved
-`params` attribute). Each value is exposed to the tap script as an environment
-variable, so the script can read a run-specific window. Values are
+`params` attribute). Each value is exposed to the tap script as a
+`DATRIS_TAP_PARAM_<key>` environment variable, so the script can read a run-specific window. Values are
 Jinja-templated by Airflow:
 
 ```python
@@ -92,7 +92,7 @@ DatrisRunTapOperator(
 )
 ```
 
-Inside the tap script, read them as env vars (e.g. `os.environ["since"]`).
+Inside the tap script, read them as env vars (e.g. `os.environ["DATRIS_TAP_PARAM_since"]`).
 
 ## One scheduler at a time
 
@@ -125,7 +125,7 @@ task would mask it.
 | `401`/`403` from `/tap/run` | Missing or wrong API key, or the key lacks `tap:run` for that tap. Check the connection password and key capabilities. |
 | Task succeeds but no data loaded | The tap returned zero records, or has no target pipeline. Check the tap's Run History in Datris. |
 | Operator fails: "tap is Datris-scheduled" | The tap has a cron, so Datris already schedules it. Remove the tap's cron to let Airflow drive it (or remove the DAG). |
-| `params` not visible in the script | Read them as environment variables, not function arguments. Nested values arrive JSON-encoded. |
+| `params` not visible in the script | Read them as `DATRIS_TAP_PARAM_<key>` environment variables, not function arguments. Nested values arrive JSON-encoded. |
 
 ## What's not covered yet
 

@@ -195,7 +195,7 @@ The Vault secret keys:
 
 | Key | Description |
 |-----|-------------|
-| `provider` | `anthropic`, `openai`, or `ollama` |
+| `provider` | `anthropic`, `openai`, `azure`, `bedrock`, `grok`, or `ollama` |
 | `endpoint` | The AI provider API URL |
 | `model` | The model name to use |
 | `apiKey` | The API key for authentication (omit for local Ollama) |
@@ -211,6 +211,9 @@ The pipeline reads the secret at startup. If `ai.enabled: true` and the codegen 
 |----------|-----------------|-------------|
 | Anthropic Claude | `anthropic` | `x-api-key` + `anthropic-version: 2023-06-01` |
 | OpenAI | `openai` | `Authorization: Bearer` |
+| Azure OpenAI | `azure` | API key or Entra ID (keyless) |
+| Amazon Bedrock | `bedrock` | AWS credentials |
+| Grok (xAI) | `grok` | `Authorization: Bearer` |
 | Ollama (local) | `ollama` | none |
 
 Any other value for `provider` will cause startup to fail with an unsupported provider error.

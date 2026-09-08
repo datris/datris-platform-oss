@@ -104,7 +104,7 @@ Produce a test message and verify ingestion:
 ```bash
 # Produce a JSON record to the topic
 echo '{"id":1001,"email":"jane@example.com","order_date":"2025-06-15","total":249.99}' | \
-  docker exec -i kafka kafka-console-producer.sh --bootstrap-server kafka:9092 --topic oss.orders
+  docker exec -i kafka kafka-console-producer --bootstrap-server kafka:9092 --topic oss.orders
 
 # Check pipeline status
 curl -s "http://localhost:8080/api/v1/pipeline/status?pipelinename=orders" | jq .

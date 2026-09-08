@@ -5,7 +5,7 @@ info:
     REST API for the Datris AI Data Platform. Ingest, validate, transform, store, and retrieve data.
 
     For AI agent integration, use the [MCP Server](https://docs.datris.ai/mcp-server) instead.
-  version: 1.11.3
+  version: 1.28.0
   contact:
     name: Datris
     url: https://datris.ai
@@ -196,6 +196,26 @@ components:
         multiTenant:
           type: string
           description: Whether the server is running in multi-tenant mode (true/false)
+        hosted:
+          type: string
+        useUserAuth:
+          type: string
+        useApiKeys:
+          type: string
+        useAuditLog:
+          type: string
+        useAgentPolicy:
+          type: string
+        recoveryAgentEnabled:
+          type: string
+        postgresDatabase:
+          type: string
+          description: Canonical Postgres database name
+        mongodbDatabase:
+          type: string
+          description: Canonical MongoDB database name
+        useTapRunner:
+          type: string
 
     KillJobResponse:
       type: object
@@ -923,7 +943,7 @@ paths:
                   description: Optional publisher identifier
       responses:
         '200':
-          description: Pipeline token (for uncompressed files) or empty (for compressed files)
+          description: Pipeline token (uncompressed files, single-file archives, and CSV batch archives) or the text "N file(s) submitted" when each extracted archive entry was submitted as its own job
           content:
             text/plain:
               schema:
@@ -1138,6 +1158,9 @@ paths:
                 collection:
                   type: string
                   description: MongoDB collection name
+                database:
+                  type: string
+                  description: MongoDB database name (defaults to the configured database)
                 filter:
                   type: object
                   default: {}
@@ -1810,6 +1833,13 @@ paths:
       tags: [Secrets]
       summary: List all secrets
       description: Lists all secret names under the current environment path in Vault.
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by the secret's _type tag (e.g. tap). "platform" returns every secret not tagged _type=tap.
       responses:
         '200':
           description: Array of secret names
@@ -1827,18 +1857,13 @@ paths:
     get:
       tags: [Secrets]
       summary: Get secret details
-      description: Returns the key-value fields of a secret. Sensitive fields (password, apiKey, secretKey, token) are masked unless reveal=true.
+      description: Returns the key-value fields of a secret. Sensitive fields (names containing password, secret, token, key, credential, signature, bearer, or private) are always masked.
       parameters:
         - name: name
           in: path
           required: true
           schema:
             type: string
-        - name: reveal
-          in: query
-          schema:
-            type: string
-            default: "false"
       responses:
         '200':
           description: Secret details with fields
@@ -2533,6 +2558,13 @@ paths:
       description: |
         Executes the tap script without sending data to a pipeline. Returns results, logs, and an
         AI-generated diagnosis if errors or zero records are detected.
+      parameters:
+        - name: testLimit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: When > 0, injects DATRIS_TAP_TEST_LIMIT=<N> into the script process so well-behaved scripts cap their reads.
       requestBody:
         required: true
         content:

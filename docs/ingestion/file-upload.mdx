@@ -40,7 +40,7 @@ d4f8e1a2-7b3c-4e9f-a5d6-1c2b3e4f5a6b
 
 Use this token to track the job's processing status, view errors, or cancel the job.
 
-When a compressed archive contains multiple inner files that are submitted as separate jobs, the response is instead the literal string:
+When a compressed archive is processed on the per-file path (non-CSV pipelines, or a single-file archive), the response is instead the literal string:
 
 ```
 3 file(s) submitted
@@ -53,14 +53,14 @@ When the uploaded file has a compressed extension, the archive is extracted **in
 | Extension | Handling |
 |---|---|
 | `.zip` | Extracted in memory |
-| `.gz` | Decompressed in memory |
+| `.gz` | Decompressed in memory (gunzip only — a `.tar.gz` is not untarred; the inner `.tar` is submitted as a single file) |
 | `.tar` | Extracted in memory |
 | `.jar` | Extracted in memory |
 
 Compressed archives may contain multiple data files. Handling depends on the pipeline type:
 
 - **CSV pipelines** — when an archive contains multiple inner files, they are concatenated into a single job. The header is kept from the first file and stripped from the 2nd and later files. The response is the single pipeline token.
-- **Non-CSV pipelines, or single-file archives** — each inner file is submitted as its own job. With more than one file, the response is the `"N file(s) submitted"` string.
+- **Non-CSV pipelines, or single-file archives** — each inner file is submitted as its own job. The response is always the `"N file(s) submitted"` string on this path, even for a single file (`1 file(s) submitted`) — the pipeline token is not returned.
 
 ## Uncompressed Files
 

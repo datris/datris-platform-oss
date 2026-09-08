@@ -32,6 +32,7 @@ python app.py -s chroma            # short flag
 # Shared
 EMBEDDING_PROVIDER=openai
 EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_ENDPOINT=http://localhost:11434   # only used by the ollama embedding provider
 OPENAI_API_KEY=your-key
 LLM_PROVIDER=anthropic
 LLM_MODEL=claude-sonnet-4-6
@@ -48,6 +49,7 @@ WEAVIATE_HOST=localhost
 WEAVIATE_PORT=8079
 WEAVIATE_GRPC_PORT=50051
 WEAVIATE_SCHEME=http
+WEAVIATE_API_KEY=            # leave empty for anonymous access
 WEAVIATE_CLASS=FinancialDocuments
 
 # Milvus

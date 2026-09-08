@@ -21,9 +21,9 @@ ACTIVEMQ_HOST=localhost
 ACTIVEMQ_PORT=61613
 ACTIVEMQ_USER=admin
 ACTIVEMQ_PASSWORD=admin
-TOPIC_NAME=oss-pipeline-notification
-SUBSCRIPTION_STYLE=virtual_topic    # virtual_topic or durable_topic
-CLIENT_ID=my-subscriber
+ACTIVEMQ_TOPIC=oss-pipeline-notification
+USE_VIRTUAL_TOPIC=true    # true = Virtual Topic queue, false = durable topic subscription
+ACTIVEMQ_CLIENT_ID=my-subscriber
 ```
 
 ## Setup

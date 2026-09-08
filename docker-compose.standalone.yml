@@ -330,6 +330,15 @@ services:
       # on a new scope policy and you want a trial run before flipping on.
       # Legacy `*:*` keys are unaffected either way.
       CAPABILITY_ENFORCEMENT: "${CAPABILITY_ENFORCEMENT:-enforce}"
+      # Hardening switches (see docs → Configuration Reference). DATRIS_ENV=production
+      # requires TLS on external Postgres destinations; DATRIS_ALLOW_PLAINTEXT_DB
+      # is the opt-out. DATRIS_ALLOW_PRIVATE_EGRESS lets HTTP taps / REST
+      # endpoints reach private or loopback addresses (off by default).
+      DATRIS_ENV: "${DATRIS_ENV:-}"
+      DATRIS_ALLOW_PLAINTEXT_DB: "${DATRIS_ALLOW_PLAINTEXT_DB:-false}"
+      DATRIS_ALLOW_PRIVATE_EGRESS: "${DATRIS_ALLOW_PRIVATE_EGRESS:-false}"
+      # Cap on a single tap script's output (MB); the server fails fast above it.
+      TAPMAXOUTPUTMB: "${TAP_MAX_OUTPUT_MB:-100}"
       # Operator-override fallback model when Anthropic Opus is sustained-
       # overloaded; read by AgentLoop.sonnetFallbackFor() at runtime.
       ANTHROPIC_OVERLOAD_FALLBACK_MODEL: "${ANTHROPIC_OVERLOAD_FALLBACK_MODEL:-}"

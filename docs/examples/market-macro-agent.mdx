@@ -5,7 +5,7 @@ description: "Market macro agent example"
 
 **Location:** `examples/market-macro-agent/`
 
-A real-time financial data pipeline agent powered by Datris. MacroAgent connects to the Datris MCP server, discovers available tools, fetches live market data from public APIs, creates pipelines, ingests data, and answers market questions grounded in actual numbers. Everything runs in the browser with a live activity feed.
+A real-time financial data pipeline agent powered by Datris. MacroAgent acts as a pipeline orchestrator: it connects to the Datris MCP server, provisions four platform-owned taps (FRED, equities, crypto, SEC filings), triggers them to refresh data, and answers market questions grounded in actual numbers. The Datris platform does the fetching; the agent decides when and what to refresh. Everything runs in the browser with a live activity feed.
 
 100% Python — FastAPI backend, vanilla JS frontend, no Node.js required.
 
@@ -24,20 +24,33 @@ Browser (vanilla JS)
                  │     ↕ tool_use / end_turn
                  │
                  ├── agent/executor.py
-                 │     ├── MCP tools → Datris MCP Server (port 3000)
-                 │     └── ingest_data → data_fetcher.py (cached server-side)
+                 │     └── MCP tools → Datris MCP Server (port 3000)
+                 │           (run_tap, get_pipeline_status, query_postgres,
+                 │            list_taps, get_tap_logs, …)
                  │
-                 └── agent/scheduler.py (background refresh)
+                 └── agent/scheduler.py → run_tap every N minutes
+
+              ┌──────────────────────────────────────┐
+              │ Datris Platform                      │
+              │  Tap runner (Docker sandbox)         │
+              │    fred_tap → FRED API               │
+              │    equities_tap → yfinance           │
+              │    crypto_tap → CoinGecko            │
+              │    sec_tap → SEC EDGAR               │
+              │           ▼                          │
+              │   Pipelines (Postgres destinations)  │
+              └──────────────────────────────────────┘
 ```
 
 ## How It Works
 
-1. **On startup** — Connects to Datris MCP server via SSE, discovers tools via `tools/list`, reads the Pipeline Configuration Reference resource
-2. **User asks a question** — MacroAgent determines which data sources are needed
-3. **Data acquisition** — Agent fetches live data from public APIs, caches it server-side, and uses MCP tools (`create_pipeline` → `upload_data`) to ingest
-4. **Pipeline management** — MacroAgent monitors jobs via `get_job_status`, queries results via `query_postgres` — all through MCP tools discovered dynamically
-5. **Intelligent acquisition** — If the user asks about data the agent doesn't have, it asks for confirmation before fetching and ingesting new data
-6. **Background refresh** — Active pipelines are automatically refreshed on a configurable timer
+1. **On startup** — Connects to the Datris MCP server via SSE, discovers tools via `tools/list`, loads the server's instructions and resources, pushes `FRED_API_KEY` from `.env` into Datris as a tap secret (`create_tap_secret`), and provisions four taps (`fred_tap`, `equities_tap`, `crypto_tap`, `sec_tap`), each wired to its own pipeline. Idempotent: re-running against an existing install is a no-op. Taps are created with scheduling disabled so the agent's own loop drives refreshes.
+2. **User asks a question** — MacroAgent determines which data family is relevant
+3. **Refresh** — The agent calls `run_tap`. The platform runs the tap's Python `fetch()` in a Docker sandbox and submits records into the pipeline
+4. **Wait for ingestion** — Ingestion is asynchronous; the agent polls `get_pipeline_status` with the run's `publisherToken` until every row's state is `end` or `error`
+5. **Query** — The agent queries the landed data via `query_postgres` and answers grounded in actual numbers
+6. **Background refresh** — Every `REFRESH_INTERVAL_MINUTES` the scheduler calls `run_tap` for every pipeline that has been exercised at least once
+7. **Tap health** — Ask about failures and the agent calls `get_tap_logs` to report the last runs and any errors
 
 ## Data Sources
 
@@ -46,7 +59,7 @@ Browser (vanilla JS)
 | FRED | Macro series — yields, VIX, CPI, unemployment, credit spreads | [Free API key](https://fred.stlouisfed.org/docs/api/api_key.html) |
 | yfinance | Equity / ETF OHLCV (SPY, QQQ, GLD, TLT, XLE, IWM) | None |
 | CoinGecko | Crypto prices, market cap, volume (BTC, ETH, SOL) | None (30 req/min) |
-| SEC EDGAR | 10-K / 10-Q filings for RAG | None (10 req/sec) |
+| SEC EDGAR | 10-K / 10-Q filings | None (10 req/sec) |
 
 ## Quick Start
 
@@ -67,10 +80,10 @@ Open **http://localhost:8001**
 
 ## Demo Queries
 
-- `"What's the current macro picture?"` — creates pipelines, fetches live FRED + equity data
-- `"Refresh all pipelines"` — re-fetches all active data sources
+- `"What's the current macro picture?"` — runs the FRED + equities taps, then queries
+- `"Refresh all taps"` — triggers `run_tap` across all four data families
 - `"Is crypto confirming the risk-on trade in equities?"` — cross-pipeline analysis
-- `"Which pipeline is most stale?"` — exercises `list_pipelines` and timestamp comparison
+- `"Show me the last few tap runs"` — exercises `get_tap_logs` live
 
 ## Environment Variables
 

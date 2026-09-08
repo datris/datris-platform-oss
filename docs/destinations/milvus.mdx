@@ -39,7 +39,7 @@ Ingest unstructured documents into [Milvus](https://milvus.io), a high-performan
 | `collectionName` | string | (required) | Milvus collection name. Auto-created if it doesn't exist. |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored as dynamic fields on every chunk. |
-| `embeddingSecretName` | string | _server default_ | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically — set this only to point a single pipeline at a different embedding model. |
+| `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
 | `milvusSecretName` | string | (required) | Vault secret name for Milvus connection. |
 
 ## Supported File Types
@@ -150,7 +150,7 @@ The collection is auto-created on first upsert with a cosine distance index on t
 
 ## Running Milvus
 
-Milvus runs outside the pipeline's Docker Compose (like Qdrant and Weaviate). Unlike simpler vector databases, Milvus requires etcd and MinIO as internal dependencies, so a simple `docker run` won't work.
+Milvus runs outside the pipeline's Docker Compose (unlike Qdrant, Weaviate, and Chroma, which ship as opt-in Compose profiles). Unlike simpler vector databases, Milvus requires etcd and MinIO as internal dependencies, so a simple `docker run` won't work.
 
 **Option 1 — Milvus standalone script (recommended):**
 

@@ -60,6 +60,7 @@ Do **not** use `docker compose restart` to apply an `.env` change. `restart` reu
 | `schedule.findJobsToStart` | `5000` | Interval to check for queued jobs (ms) |
 | `schedule.checkDatabaseSourceQueries` | `30000` | Interval to check for database pulls (ms) |
 | `schedule.checkTapSchedules` | `30000` | Interval to check for taps with CRON schedules due to run (ms) |
+| `schedule.incidentSweep` | `300000` | Recovery-agent sweep interval (ms): resumes approved actions and raises stale/volume signals |
 
 ### Pipeline
 
@@ -71,6 +72,10 @@ Do **not** use `docker compose restart` to apply an `.env` change. `restart` reu
 | `sendPipelineNotifications` | `true` | Enable pipeline event notifications |
 | `ttlFileNotifierQueueMessages` | `60` | Days to retain processed message IDs for deduplication |
 | `tapScriptTimeoutSeconds` | `300` | Maximum tap script execution time in seconds |
+| `versionCap` | `50` | Definition versions retained per tap / pipeline before older snapshots (and their pinned scripts) are pruned |
+| `cron.retry.enabled` | `true` | Automatically retry failed scheduled (CRON) tap runs that fed nothing downstream |
+| `cron.retry.cap` | `3` | Maximum automatic retries per failed scheduled tap run |
+| `cron.retry.backoffMinutes` | `5,15` | Comma-separated backoff ladder (minutes) between automatic retries; the last value repeats |
 | `tapMaxOutputMB` | `100` | Hard cap on a tap script's stdout output, in megabytes. Runs that exceed the cap fail fast with an actionable error (the agent is told to chunk the source range smaller via `run_tap` `params`) before the JSON is parsed — preventing the whole batch from buffering in JVM heap and OOM-killing the server. Override per deployment with the `TAP_MAX_OUTPUT_MB` env var. |
 
 ### Authentication
@@ -81,8 +86,11 @@ Two independent flags control access. Set them together — see [the supported m
 |---------|---------|-------------|
 | `USE_USER_AUTH` | `false` | Require login for the UI; gate Configuration and Users tabs to `admin`. See [User Authentication](/user-auth) |
 | `USE_API_KEYS` | `false` | Require `x-api-key` on every REST and MCP request. Maps to `useApiKeys` above |
-| `MULTI_TENANT` | `false` | Per-tenant database isolation; routes requests by API-key value. Hosted/managed deployments only |
+| `MULTI_TENANT` | `false` | Advanced: per-tenant database isolation. Requires `USE_API_KEYS=true`; each request is routed to the tenant environment its API key belongs to |
 | `CAPABILITY_ENFORCEMENT` | `enforce` | Default: scoped keys missing the required capability get HTTP 403. Override to `log-only` to emit `would-deny` log lines without rejecting — useful only when iterating on a new scope policy and you want a trial run before flipping enforcement on. Legacy `*:*` keys are unaffected either way |
+| `DATRIS_ALLOW_PRIVATE_EGRESS` | `false` | HTTP taps and REST endpoint destinations refuse loopback, link-local, private, and cloud-metadata addresses. Set `true` only if your endpoints legitimately live on an internal network. See [Tap Execution & Isolation](/tap-execution-isolation#always-on-protections). |
+| `DATRIS_ENV` | _(unset)_ | Set to `production` to require TLS (`sslmode=require` or stricter) on pipeline loads to external Postgres hosts. The bundled and local Postgres services are exempt. |
+| `DATRIS_ALLOW_PLAINTEXT_DB` | `false` | Opt-out for the `DATRIS_ENV=production` TLS check: the load proceeds and a warning is logged. |
 | `USE_AUDIT_LOG` | `false` | Record who created, changed, ran, or deleted what — readable by admins under Configuration → Audit Log and mirrored to the server log. Restart to change. See [Audit Log](/audit-log) |
 | `AUDIT_LOG_RETENTION_DAYS` | `90` | Days to keep audit entries in the config store; `0` keeps them forever. Maps to `auditLog.retentionDays` |
 | `AUDIT_LOG_READS` | `false` | Also record reads — queries, searches, listings, metadata. Off by default because they dwarf the write trail. Maps to `auditLog.logReads` |
@@ -214,14 +222,14 @@ PostgreSQL connection details (`username`, `password`, `jdbcUrl`) are stored in 
 | Property | Default | Description |
 |----------|---------|-------------|
 | `kafkaConsumer.enabled` | `false` | Enable Kafka topic consumption |
-| `kafkaConsumer.bootstrapServers` | | Kafka broker address |
-| `kafkaConsumer.groupId` | | Consumer group ID |
+| `kafkaConsumer.bootstrapServers` | `localhost:9092` (`kafka:9092` in Docker) | Kafka broker address |
+| `kafkaConsumer.groupId` | `oss-group` | Consumer group ID |
 | `kafkaConsumer.topicPollingInterval` | `500` | Topic polling interval (ms) |
-| `kafkaConsumer.topicPrefix` | | Prefix for topic names |
+| `kafkaConsumer.topicPrefix` | `oss` | Prefix for topic names |
 
 ### AI (Required)
 
-AI configuration is split into three independent slots, each pointing at its own self-describing Vault secret. The resolver reads whatever it finds in the secret — `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version` — so the YAML side never needs a `provider` field.
+AI configuration is split into four independent slots (three seeded at first boot, plus optional web search), each pointing at its own self-describing Vault secret. The resolver reads whatever it finds in the secret — `provider`, `endpoint`, `model`, `apiKey`, and (optionally) `version` — so the YAML side never needs a `provider` field.
 
 | Property | Default | Description |
 |----------|---------|-------------|
@@ -229,6 +237,8 @@ AI configuration is split into three independent slots, each pointing at its own
 | `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the strongest available model — Anthropic gets `claude-opus-5`, OpenAI gets `gpt-5.5`. |
 | `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest available model — Anthropic gets `claude-opus-5`, OpenAI gets `gpt-5.5`. |
 | `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled TEI sidecar serving `BAAI/bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
+| `ai.webSearch.secretName` | `oss/web-search` | Vault secret for the optional live web-search provider used during tap script generation and diagnosis. Not seeded at first boot — configure it from the Configuration tab. |
+| `ai.extendedThinking` | `true` | Enable extended thinking on the Assistant tab's agent loop (Anthropic models only); the model's reasoning is shown above the visible response. Set to `false` to disable platform-wide. |
 
 Each Vault secret is self-describing and looks like:
 
@@ -328,7 +338,7 @@ See [AI Configuration](/ai-configuration) for full setup details.
 | `oversize` | `split` | What to do with chunks over the cap: `split` (lossless — fan one input into N sub-chunks, token-boundary with `openai`, char-boundary with heuristic), `truncate` (lossy — drop the tail), or `fail` (raise an error naming the chunk index). |
 | `retryIndividualOnFailure` | `false` | When the embedding API rejects a batch with a 4xx, retry each chunk one-at-a-time so a single poison chunk doesn't lose the whole batch. Costs N HTTP calls in the failure path. |
 
-The guard always runs. When `maxChunkTokens` is set on the destination's `chunking` config (see [Pipeline configuration](/configuration)), the chunker stops merging segments before they cross the token cap, leaving the guard as a true safety net rather than the primary defender.
+The guard always runs. When `maxChunkTokens` is set on the destination's `chunking` config (see [Pipeline configuration](/pipeline-configuration#chunking-config)), the chunker stops merging segments before they cross the token cap, leaving the guard as a true safety net rather than the primary defender.
 
 ## MinIO Buckets
 
@@ -350,6 +360,19 @@ The following buckets are created automatically by the `minio-init` container:
 | `{environment}-archived-metadata` | File ingestion metadata |
 | `{environment}-file-notifier-message` | Processed message deduplication |
 | `{environment}-data-pull` | Database pull scheduling state |
+| `{environment}-pipeline-version` | Append-only pipeline definition versions (pruned per `versionCap`) |
+| `{environment}-tap` | Tap configurations |
+| `{environment}-tap-version` | Append-only tap definition versions (pruned per `versionCap`) |
+| `{environment}-tap-state` | Per-tap incremental-sync state (bookmarks / cursors) |
+| `{environment}-tap-log` | Tap run history |
+| `{environment}-tap-ledger` | Document-tap ledger of processed documents |
+| `{environment}-tap-prompt` | Tap prompt fragments |
+| `{environment}-code-repo` | Git repository connections for repo-backed tap scripts |
+| `{environment}-codegen-scripts` | Last CodeGen transformation script per pipeline |
+| `{environment}-run-lineage` | One document per pipeline run (what it read, wrote, and how it ended) |
+| `{environment}-column-lineage` | AI-inferred column mappings per pipeline version |
+| `{environment}-user` | User accounts (when `USE_USER_AUTH=true`) |
+| `{environment}-user-session` | Login sessions (when `USE_USER_AUTH=true`) |
 | `{environment}-audit-log` | Audit entries (when `USE_AUDIT_LOG=true`); TTL-expired per `AUDIT_LOG_RETENTION_DAYS` |
 | `{environment}-agent-policy` | The [agent policy](/agent-policy) document (when `USE_AGENT_POLICY=true`) |
 | `{environment}-pending-action` | Agent actions queued for approval; TTL-expired at their own expiry |
@@ -365,7 +388,7 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `TAP_MAX_OUTPUT_MB` | `100` | Override the `tapMaxOutputMB` cap. Applies to all tap scripts; affects when the platform fails fast on oversized output. Raise on hosts with larger heaps when single-shot backfills genuinely need more buffer; lower on memory-constrained deployments to fail earlier. |
 | `USE_USER_AUTH` | `false` | Enable username/password login + admin gating. See [User Authentication](/user-auth). |
 | `USE_API_KEYS` | `false` | Enable per-tenant API-key gating on the REST/MCP API. See [API Keys](/api-keys). |
-| `MULTI_TENANT` | `false` | Switch to per-tenant database isolation (intended for hosted/managed deployments). |
+| `MULTI_TENANT` | `false` | Advanced: switch to per-tenant database isolation, with each request routed by its API key. Requires `USE_API_KEYS=true`. |
 | `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` | `claude-sonnet-4-6` | Model used for the current request when Anthropic returns a sustained `overloaded_error` on an Opus call (after the automatic retries). Only consulted when the configured model is an Anthropic Opus variant — other providers ignore it. Bump when a newer Sonnet ships to keep the fallback current. |
 | `CAPABILITY_ENFORCEMENT` | `enforce` | `enforce` returns HTTP 403 on policy violations by scoped keys. Set to `log-only` to emit would-deny log lines without rejecting — useful when iterating on a new scope policy. |
 | `USE_AUDIT_LOG` | `false` | Enable the [Audit Log](/audit-log) — who did what, by login or API key. |

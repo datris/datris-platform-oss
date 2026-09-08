@@ -13,7 +13,7 @@ Datris sits beside your warehouse and lake; it doesn't replace them. It runs on-
 
 Your agents already acquire, validate, and load data. Without a control plane, they do it badly: credentials scattered across configs and prompts, the chat log as the only record, generated scripts that lose state when regenerated. Datris puts that work behind one governed surface:
 
-- **One MCP door** — 63 capabilities behind a single [MCP server](/mcp-server) (stdio and SSE). Claude, Cursor, OpenClaw, and any MCP-compatible agent learn one interface instead of 63 integrations
+- **One MCP door** — 73 capabilities behind a single [MCP server](/mcp-server) (stdio and SSE). Claude, Cursor, OpenClaw, and any MCP-compatible agent learn one interface instead of 73 integrations
 - **Vault-brokered credentials** — the agent references a secret by name; it never holds a key. Agent-written code runs in an [isolated container](/tap-execution-isolation) with no keys inside
 - **Every run recorded** — job state, row counts, and provenance for every run; every generated script [versioned in git](/tap-github-storage)
 - **Durable state** — pipelines and [sync bookmarks](/taps) live in the platform, not in the agent's context, so a regenerated script picks up where the old one left off
@@ -62,7 +62,7 @@ Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any
 
 - **5 vector databases** - Qdrant, Weaviate, Milvus, Chroma, pgvector (PostgreSQL)
 - **Chunking strategies** - Fixed-size, sentence, paragraph, recursive
-- **Embedding providers** - OpenAI (the recommended default when you have an OpenAI key), bundled TEI (`bge-m3` — runs locally, no API key), or Ollama (local models)
+- **Embedding providers** - OpenAI (the recommended default when you have an OpenAI key), Azure OpenAI (an embedding deployment on your Azure resource), bundled TEI (`bge-m3` — runs locally, no API key), or Ollama (local models)
 - **Document extraction** - PDF, Word, PowerPoint, Excel, HTML, email, EPUB, plain text
 
 ## Key Features
@@ -105,7 +105,7 @@ Transformation (AI transformations)
   |
   v
 Destinations (executed in parallel)
-  ├── Object Store (MinIO or AWS S3 - Parquet, ORC, CSV)
+  ├── Object Store (MinIO or AWS S3 - Parquet, ORC)
   ├── PostgreSQL (COPY bulk insert)
   ├── MongoDB (document upsert)
   ├── Snowflake (PUT + COPY INTO / MERGE into the user's account)
@@ -158,7 +158,7 @@ Query Source
 | JSON | Single object or NDJSON (one per line) | MongoDB, Kafka, REST |
 | XML | Single document or one per line | Database, Kafka, REST |
 | Excel (XLS) | Worksheet selection, auto-CSV conversion | Same as CSV |
-| Unstructured | PDF, Word, PowerPoint, Excel, HTML, email, EPUB, text | Object store, Qdrant, Weaviate, pgvector |
+| Unstructured | PDF, Word, PowerPoint, Excel, HTML, email, EPUB, text | Object store, Qdrant, Weaviate, Milvus, Chroma, pgvector |
 | Archives | .zip, .tar, .gz, .jar | Extracted and processed individually |
 
 ## Quick Links

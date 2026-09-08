@@ -233,13 +233,21 @@ Each status entry (`PipelineStatus`) contains:
 | Process | Description |
 |---------|-------------|
 | `FileNotifier` | File intake from MinIO bucket |
-| `StreamNotifier` | Direct upload intake |
+| `StreamNotifier` | Direct upload intake (also tap-fed and Kafka-fed jobs) |
+| `FileUploadAPIController` | Upload request handling before the job is created |
 | `DataQuality` | Data quality validation |
 | `Transformation` | Data transformation |
 | `JobRunner` | Destination orchestration |
 | `PostgresLoader` | PostgreSQL loading |
+| `SnowflakeLoader` | Snowflake loading |
+| `DatabricksLoader` | Databricks loading |
 | `MongoDBLoader` | MongoDB loading |
 | `SparkObjectStoreLoader` | Object store writing |
 | `KafkaLoader` | Kafka producing |
 | `ActiveMQLoader` | ActiveMQ queue writing |
-| `RestEndpointRunner` | REST endpoint posting |
+| `RestEndpointRunner` | REST endpoint posting (preprocessor and REST destination) |
+| `PGVectorLoader` | pgvector loading |
+| `QdrantLoader` | Qdrant loading |
+| `WeaviateLoader` | Weaviate loading |
+| `MilvusLoader` | Milvus loading |
+| `ChromaLoader` | Chroma loading |

@@ -13,6 +13,10 @@ The pipeline can pull data directly from relational databases on a schedule. Con
 | MySQL | `com.mysql.cj.jdbc.Driver` |
 | MSSQL | `com.microsoft.sqlserver.jdbc.SQLServerDriver` |
 
+<Note>
+The PostgreSQL and MySQL drivers ship with the server. The Microsoft SQL Server JDBC driver is not bundled — to use an MSSQL source, add the `mssql-jdbc` jar to the server classpath (for example by adding it to `build.sbt` and rebuilding the image).
+</Note>
+
 ## Configuration
 
 Database sources are configured in the `databaseAttributes` section of a pipeline configuration. Connection credentials (JDBC URL, username, password) are stored in Vault — not in the pipeline config itself.
@@ -61,11 +65,11 @@ Database sources are configured in the `databaseAttributes` section of a pipelin
 | `mysqlSecretsName` | Conditional | Vault secret name for MySQL credentials |
 | `mssqlSecretsName` | Conditional | Vault secret name for MSSQL credentials |
 | `cronExpression` | Yes | Quartz-format cron expression controlling the pull schedule |
-| `database` | No | Database name (if not in the JDBC URL) |
+| `database` | No | Database name; when set, the generated query references the table as `database.schema.table` |
 | `schema` | No | Schema within the database |
 | `table` | Yes* | Table to pull data from (*unless `sqlOverride` is set) |
 | `timestampFieldName` | Yes* | Column used for incremental pulls. Effectively required — the generated query always appends this column and orders by it. |
-| `includeFields` | No | Array of column names to select; when omitted, all columns are selected |
+| `includeFields` | No | Array of column names to select; when omitted, the column list is taken from the pipeline's `source.schemaProperties.fields` (not `SELECT *`) |
 | `sqlOverride` | No | Custom SQL query that replaces the generated SELECT statement |
 | `outputDelimiter` | No | Delimiter for CSV output (default `,`) |
 
@@ -86,7 +90,7 @@ The Vault secret must contain `username`, `password`, and `jdbcUrl` keys:
 Store the credentials in Vault using the CLI:
 
 ```bash
-vault kv put oss/postgres \
+vault kv put secret/oss/postgres \
   username="pipeline_reader" \
   password="s3cureP@ss" \
   jdbcUrl="jdbc:postgresql://db.internal.example.com:5432/production"

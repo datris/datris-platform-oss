@@ -72,6 +72,7 @@ Writes, runs, deletes, logins, key and user management, and every denied request
 | `security` | any denied request — insufficient role, missing capability, expired session, and a non-`ui` key attempting to act on behalf of a user |
 | `system` | server start and stop |
 | `audit` | CSV export of the audit log itself |
+| `mcp` | Clearing the Agent Monitor activity log |
 
 Each entry also carries the outcome (`success`, `failure`, `denied`), the HTTP status, how long the request took, the caller's IP address (first hop of `X-Forwarded-For` when the UI sits behind a proxy) and user agent, and the name of the resource touched.
 

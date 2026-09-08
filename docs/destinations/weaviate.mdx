@@ -39,7 +39,7 @@ Ingest unstructured documents (PDFs, Word docs, text files, HTML) into [Weaviate
 | `className` | string | (required) | Weaviate class name. **Must be PascalCase** (e.g., `FinancialDocuments`). Auto-created if it doesn't exist. |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored on every chunk as Weaviate properties. Used for filtered search. |
-| `embeddingSecretName` | string | _server default_ | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically — set this only to point a single pipeline at a different embedding model. |
+| `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
 | `weaviateSecretName` | string | (required) | Vault secret name for Weaviate connection. |
 
 ## Supported File Types

@@ -18,14 +18,14 @@ Place a file in the MinIO raw bucket following this naming pattern:
 | Segment | Description |
 |---------|-------------|
 | `pipeline` | Name of the registered pipeline configuration |
-| `publishertoken` | Optional identifier for the data publisher — must be a unique value, UUID recommended |
+| `publishertoken` | Identifier for the data publisher — must be a valid UUID. If the second segment is not a UUID, it is ignored and a random UUID is generated |
 | `anything` | Any additional text (timestamp, version, etc.) |
 | `pipeline` (literal) | Fixed literal sentinel string |
 | `ext` | File extension: `csv`, `json`, `xml` |
 
 **Example:**
 ```
-stock_price.publisher-001.2026-03-15.1.pipeline.csv
+stock_price.28c39a6f-de32-4625-9bee-6af9ee547798.2026-03-15.1.pipeline.csv
 ```
 
 ### Metadata File + Data File
@@ -65,8 +65,10 @@ Upload multiple files to a directory, then trigger processing with a metadata fi
 Compressed archives (`.zip`, `.gz`, `.tar`, `.jar`) are automatically decompressed. The pipeline name and publisher token are parsed from the archive filename:
 
 ```
-stock_price.publisher-001.2026-03-15.pipeline.zip
+stock_price.28c39a6f-de32-4625-9bee-6af9ee547798.2026-03-15.pipeline.zip
 ```
+
+Note that the bundled MinIO setup (`docker/minio-init.sh`) only registers bucket events for the `.metadata.json`, `.pipeline.csv`, `.pipeline.json`, and `.pipeline.xml` suffixes. To have archives picked up automatically, add a matching `mc event add ... --suffix .pipeline.zip` rule (see below).
 
 ## How It Works
 
@@ -97,15 +99,19 @@ The pipeline tracks processed message IDs in MongoDB to prevent duplicate proces
 
 ## MinIO Webhook Setup
 
-Configure MinIO to send bucket notifications. The Docker setup uses the MinioWebhookController endpoint:
+Configure MinIO to send bucket notifications. The Docker setup (`docker/minio-init.sh`) points a webhook target at the `/minio-events` endpoint and registers per-suffix events on the raw bucket:
 
 ```bash
-# Using mc to configure notifications
-mc admin config set myminio notify_webhook:pipeline \
-  endpoint="http://datris:8080/minio-events"
+# Using mc to configure notifications (auth_token must match MINIO_WEBHOOK_TOKEN on the datris service)
+mc admin config set myminio notify_webhook:1 \
+  endpoint="http://datris:8080/minio-events" \
+  auth_token="${MINIO_WEBHOOK_TOKEN}"
 
 mc admin service restart myminio
-mc event add myminio/oss-raw arn:minio:sqs::pipeline:webhook --event put
+mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .metadata.json --event put
+mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.csv --event put
+mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.json --event put
+mc event add myminio/oss-raw arn:minio:sqs::1:webhook --suffix .pipeline.xml --event put
 ```
 
 Alternatively, ActiveMQ-based notifications can be configured (see MinIO documentation for AMQP notification targets).

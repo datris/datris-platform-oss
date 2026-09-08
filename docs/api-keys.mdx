@@ -5,7 +5,7 @@ description: "Enable API-key authentication for the UI, CLI, MCP clients, and an
 
 By default, the Datris OSS install accepts unauthenticated requests on the REST and MCP APIs — fine for laptop development, wrong for any shared or hosted setup. Turn on API-key authentication and every caller (the UI, the CLI, agent MCP clients) must present a key that the platform recognizes.
 
-This page covers single-tenant deployments. Multi-tenant setups use the same flag and a different mapping mechanism — see [user-auth](/user-auth) and the Configuration → Tenants screen.
+This page covers single-tenant deployments. Multi-tenant setups (`MULTI_TENANT=true`) use the same flag and a different mapping mechanism — see [Multi-tenant](#multi-tenant) below.
 
 ## What it does
 
@@ -142,7 +142,7 @@ When user-auth is on, logged-in browser sessions are first-class identities too:
 
 ## Multi-tenant
 
-`MULTI_TENANT=true` switches the model: a single `api-key-mappings` secret maps `keyValue → tenantEnv`, and every tenant carries its own per-environment data. The UI key flow above is single-tenant only; see the Configuration → Tenants documentation for the multi-tenant equivalent.
+`MULTI_TENANT=true` switches the model: a single `api-key-mappings` secret maps `keyValue → tenantEnv`, and every tenant carries its own per-environment data. The UI key flow above is single-tenant only; in multi-tenant mode the mappings are managed directly in the `api-key-mappings` Vault secret.
 
 ## See also
 

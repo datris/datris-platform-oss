@@ -123,17 +123,17 @@ description: "Release history for Datris"
 <Update label="v1.20.0" description="August 24, 2026">
   **Opt-in Postgres TLS enforcement.**
 
-  - Set `DATRIS_ENV=production` and the platform refuses to start when its Postgres connection points at an external host without TLS (`sslmode=require` or stricter). Opt out with `DATRIS_ALLOW_PLAINTEXT_DB=true`. The bundled in-network Postgres is exempt; existing deployments are unaffected unless the flag is set. Plaintext connections to external databases now log a startup warning either way.
+  - Deployments marked as production now refuse to start when the platform's Postgres connection points at an external host without TLS (`sslmode=require` or stricter), with an explicit opt-out for deployments that intentionally use plaintext. The bundled in-network Postgres is exempt; existing deployments are unaffected unless production mode is enabled. Plaintext connections to external databases now log a startup warning either way.
 
   **Observability: Prometheus metrics and structured logs.**
 
-  - New `/actuator/prometheus` endpoint for Prometheus scraping, reachable only from inside the deployment's network (the bundled edge proxy blocks it publicly).
+  - Prometheus metrics are now exposed for scraping, reachable only from inside the deployment's network (the bundled edge proxy blocks them publicly). See [Audit Log](/audit-log) for the metrics endpoint.
   - Production deployments emit one JSON log line per event for SIEM / log-aggregator ingestion; development logs stay human-readable.
 
   **Tap isolation on by default for docker compose.**
 
-  - `docker-compose.yml` / `docker-compose.standalone.yml` / `deploy/docker-compose.prod.yml` now default `USE_TAP_RUNNER=true`. `scripts/install.sh` and `docker/vault-init.sh` mint `TAP_RUNNER_TOKEN` on first boot (including upgrades whose token was missing or `changeme`). The server fails fast if isolation is on and the token is still empty/`changeme` — a minted token is accepted.
-  - `sbt` / IDE (no sidecar) stays in-process and logs a warning. Isolated taps still cannot open direct connections to internal DB / object store / Vault — they return records; this is existing behavior, called out because compose now isolates by default.
+  - All bundled Docker Compose configurations now default to `USE_TAP_RUNNER=true`. The runner token is minted automatically on first boot (including upgrades where it was missing or still the placeholder value). The server fails fast if isolation is on and no valid token exists — a minted token is accepted.
+  - Running the server outside Compose (no runner sidecar) stays in-process and logs a warning. Isolated taps still cannot open direct connections to internal DB / object store / Vault — they return records; this is existing behavior, called out because compose now isolates by default.
   - Set `USE_TAP_RUNNER=false` to keep in-process on compose. No host allowlist in this change.
 </Update>
 
@@ -176,7 +176,7 @@ description: "Release history for Datris"
 
   - A broad security pass across authentication, authorization, credential handling, and input validation, plus updated bundled dependencies for published advisories. A standard upgrade needs no configuration changes.
   - **Initial admin login** (when user login is enabled): the first admin password is now generated and printed once to the server logs — `docker compose logs datris`, sign in, and change it.
-  - **Taps calling internal addresses** are blocked by default; set `DATRIS_ALLOW_PRIVATE_EGRESS=true` if an endpoint legitimately runs on an internal network.
+  - **Taps calling internal addresses** are blocked by default, with an opt-out for endpoints that legitimately run on an internal network (see the [Tap Execution & Isolation](/tap-execution-isolation) guide).
   - **Bundled Vault** uses a unique per-install token; for manual `vault` commands read it with `docker compose exec -T datris cat /vault-token/token`.
   - **Fix:** the default Docker Compose config pulls the published images again (a recent change had it building from source).
   - Standard upgrade: `docker compose pull && docker compose up -d`.
@@ -507,7 +507,7 @@ description: "Release history for Datris"
   - **New Ops chat side panel.** A collapsible chat lives on the right side of Ops → Activity. The assistant has the current failures, stale taps, and volume anomalies in mind — ask "why did `X` fail?" and it pulls the root cause; ask it to re-run a tap and it runs and reports the outcome. The panel stays mounted as you switch between Activity and Ingestion, so the conversation survives the tab change.
   - **"Ask" buttons on failure and volume rows.** Click "Ask" next to a row to seed the chat with a row-specific question so you don't have to retype the tap or pipeline name.
   - **Successes are expandable like Failures.** Click any row in the Successes pane to see the same event trail (begin → processing → end) you get from the Failures pane. Only one row across either pane is open at a time so the layout stays compact.
-  - **Claude Opus 4.8 is the new recommended CodeGen model.** New installs seed Opus 4.8 as the codegen default. Existing tenants can pick it from the model dropdown in Configuration. The older Opus versions remain selectable for anyone who wants to pin a specific version.
+  - **Claude Opus 4.8 is the new recommended CodeGen model.** New installs seed Opus 4.8 as the codegen default. Existing installs can pick it from the model dropdown in Configuration. The older Opus versions remain selectable for anyone who wants to pin a specific version.
 
   **Upgrading:** `docker compose pull && docker compose up -d --force-recreate datris ui mcp-server`. No data migration needed. The CLI: `brew upgrade datris`.
 </Update>
@@ -608,8 +608,8 @@ description: "Release history for Datris"
 
   - **Assistant: keep typing without clicking.** After you send a question, the cursor stays in the composer — so as soon as the agent finishes (or even while it's still working), you can type your next prompt without reaching for the mouse.
   - **AI Configuration: provider switches no longer wipe your overrides.** Switching the primary AI, codegen, or embedding provider used to clear the saved provider/model/endpoint on the next page load, so you had to re-pick them every time. Your selections now persist correctly through a provider switch (you still re-enter the API key when changing providers — that's intentional).
-  - **Connect Your Agent: paste-and-go for local.** The MCP tab's generated config no longer asks for an API key for the default local setup — paste the snippet into your agent and it just works. A key is still required when you point the snippet at a hosted, trial, or dedicated instance.
-  - **Trial signup and dedicated upgrade move fully to the website.** The corresponding agent tools have been removed — users finish those flows in a browser anyway. The Getting Started tab has also been refreshed to point at the Assistant for the common onboarding path.
+  - **Connect Your Agent: paste-and-go for local.** The MCP tab's generated config no longer asks for an API key for the default local setup — paste the snippet into your agent and it just works. A key is still required when you point the snippet at a remote instance.
+  - **Hosted trial provisioning tools removed from the agent toolset** (hosted platform since retired). The Getting Started tab has also been refreshed to point at the Assistant for the common onboarding path.
 
   **Upgrading:** `docker compose pull && docker compose up -d`. No data migration needed. The CLI: `brew upgrade datris`.
 </Update>
@@ -626,7 +626,7 @@ description: "Release history for Datris"
   - **MCP transport upgraded — both protocols at once.** The bundled MCP server now serves the streamable-HTTP transport alongside the existing SSE transport on the same port, so the in-product Assistant and external agents connect to one running process. No configuration change needed.
   - **Discovery tab is hidden in this release.** The Assistant supersedes the Discovery tab for the common path.
 
-  **Upgrading:** `docker compose pull && docker compose up -d`. No data migration needed. The CLI: `brew upgrade datris`. The Assistant uses your existing codegen AI configuration — on Anthropic tenants you'll see full chain-of-thought reasoning streamed inline; on OpenAI you'll see reasoning summaries instead.
+  **Upgrading:** `docker compose pull && docker compose up -d`. No data migration needed. The CLI: `brew upgrade datris`. The Assistant uses your existing codegen AI configuration — with Anthropic you'll see full chain-of-thought reasoning streamed inline; on OpenAI you'll see reasoning summaries instead.
 </Update>
 
 <Update label="v1.6.21" description="May 11, 2026">
@@ -634,7 +634,7 @@ description: "Release history for Datris"
 
   - **AI tap workflows can consult the live web.** When enabled in Configuration → AI Providers, tap brainstorm, dataset discovery, tap diagnosis, and tap auto-fix look up current API documentation, free-tier limits, current package names, and recent deprecation notices before recommending sources or generating fixes. Pick your web-search provider independently of AI Primary — the platform uses each provider's native search tool and routes accordingly. First-pass tap script generation stays fast and uses the model's training data only. See [AI Configuration](/ai-configuration) for setup.
   - **AI Configuration changes survive Docker restarts.** Saving from the Configuration UI now mirrors the relevant keys back to your `.env` file so changes aren't lost when the local Vault container restarts. Provider switches also clear any stale credential preserved from the prior provider, so a wrong-provider key can't silently 401 the next call.
-  - **Cleaner MCP authentication.** The bundled MCP server is now a transparent forwarder — each connecting agent provides its own API key per session and the MCP server passes it through to the Datris REST API on every tool call. The Configuration → Connect Your Agent panel generates the new configuration snippet automatically; paste your key from the Configuration UI into your agent's MCP config. Existing trial and managed-service users see no change in behavior.
+  - **Cleaner MCP authentication.** The bundled MCP server is now a transparent forwarder — each connecting agent provides its own API key per session and the MCP server passes it through to the Datris REST API on every tool call. The Configuration → Connect Your Agent panel generates the new configuration snippet automatically; paste your key from the Configuration UI into your agent's MCP config. Existing remote-instance setups see no change in behavior.
   - **Tap brainstorm asks about sources first.** When you describe data without naming where to fetch it from, the AI now lists 3-5 candidate sources (with free vs paid and key-required info) before drilling into parameters — instead of asking for filtering details up front.
   - **Tap script generation is more resilient.** The platform now validates that a generated script actually defines a `fetch()` function before storing it, and the JSON extractor handles model responses that contain narrative braces without falling back to the raw-text path.
 
@@ -663,7 +663,7 @@ description: "Release history for Datris"
 <Update label="v1.6.18" description="May 5, 2026">
   **User authentication, roles, and an admin-only Configuration tab.**
 
-  - **Optional username/password login.** Datris can now require a login before any tab is reachable. Three roles ship out of the box — **admin** (full access), **editor** (read + edit pipelines, taps, secrets), and **viewer** (read-only). Off by default, so existing single-tenant installs are unaffected. See the new [User Authentication](/user-auth) doc to enable it.
+  - **Optional username/password login.** Datris can now require a login before any tab is reachable. Three roles ship out of the box — **admin** (full access), **editor** (read + edit pipelines, taps, secrets), and **viewer** (read-only). Off by default, so existing installs are unaffected. See the new [User Authentication](/user-auth) doc to enable it.
   - **Configuration is admin-only.** When auth is on, only admins see the Configuration tab (Secrets, AI Providers, Taps, Users, Environment). Editors and viewers continue to use everything else.
   - **New Users sub-tab.** Admins can add, remove, and reassign roles. A built-in 16-character password generator with a reveal toggle makes handing out credentials painless. The last admin can't be deleted.
   - **Self-service password change.** Users can change their own password from the top-right user menu.
@@ -749,7 +749,7 @@ description: "Release history for Datris"
   - **Scheduled taps no longer need a manual kickoff.** Taps saved with a cron schedule now fire on their next scheduled time automatically. Previously, a newly saved scheduled tap would wait indefinitely until you ran it once by hand.
   - **Self-diagnosing tap scripts.** If a tap's generated script goes missing from object storage, the Edit Tap page now shows an amber banner explaining the state and pointing you to Regenerate, instead of a cryptic mid-run "key does not exist" error. Test Tap surfaces the same state with actionable wording.
   - **Agents can manage their own tap secrets.** Via MCP, agents can now create and delete the secrets their taps need (API keys, tokens). Scope is strictly tap-owned — agents cannot create, overwrite, or delete human-owned Platform secrets (DB creds, AI keys, vector-store creds).
-  - **Secrets page split into Platform and Taps sub-tabs.** Platform lists the built-in Datris secret slots; Taps lists agent-authored tap secrets. Creating a secret from the Taps sub-tab auto-tags it so it stays agent-editable, and Tap secrets are fully manageable on trial tenants.
+  - **Secrets page split into Platform and Taps sub-tabs.** Platform lists the built-in Datris secret slots; Taps lists agent-authored tap secrets. Creating a secret from the Taps sub-tab auto-tags it so it stays agent-editable.
   - **Honest Test Tap banner.** The run-result banner on Test Tap now reflects what actually happened on the server — "sent to pipeline" only when the run was truly persisted, otherwise "not persisted" with the reason — rather than whatever the pre-request checkbox said.
   - **BYO-code taps can declare pip dependencies.** If you paste your own fetch script into Create Tap, you can now list the Python packages it needs. Previously only AI-generated taps could declare dependencies.
   - **Example agent refactored onto taps.** The bundled market-macro-agent example now drives ingestion through taps instead of ad-hoc fetch scripts, demonstrating the full agent-native tap flow (provisioning, secrets, publisher-token watching).
@@ -758,7 +758,7 @@ description: "Release history for Datris"
 <Update label="v1.6.10" description="April 21, 2026">
   **Tap prompt fragments, post-run script review, BYO code, and Configuration page reorg.**
 
-  - **Tap prompt fragments (new).** A new Configuration → Taps sub-tab lets you save reusable, per-tenant context snippets — things like API conventions, required headers, rate limits, and preferred libraries for a given source. When the key or any of its aliases appears in a Create Tap description, brainstorm, auto-fix, optimize, or Discovery chat, the fragment's content is automatically added to the system prompt. Includes an AI Suggest button, a Load Examples catalog (AWS, Polygon, Stripe, SEC EDGAR), JSON import/export, and an "Extra context applied" chip row in the tap wizard showing which fragments hit.
+  - **Tap prompt fragments (new).** A new Configuration → Taps sub-tab lets you save reusable context snippets — things like API conventions, required headers, rate limits, and preferred libraries for a given source. When the key or any of its aliases appears in a Create Tap description, brainstorm, auto-fix, optimize, or Discovery chat, the fragment's content is automatically added to the system prompt. Includes an AI Suggest button, a Load Examples catalog (AWS, Polygon, Stripe, SEC EDGAR), JSON import/export, and an "Extra context applied" chip row in the tap wizard showing which fragments hit.
   - **Post-run script review.** After a tap's first successful test, the AI now scans the captured stderr/stdout for signals that the *script* should change — rate-limit or burst warnings, deprecation hints, pagination cues, schema drift, auth warnings — and regenerates the script if needed. On a rewrite the wizard auto-retests; the performance optimizer runs only when the logs are clean. The optimizer's prompt was also tightened so rate-limit markers push it toward throttling instead of more concurrency.
   - **I Have My Own Code (new).** A third Tap Type on the Create Tap wizard lets you paste a fetch() script directly instead of having AI generate one. Step 1 switches to a code textarea with a Use My Code button; after upload the button flips to Re-upload My Code and Step 2 gates on the text matching what's on disk, so edits force a fresh upload before running the test.
   - **Configuration page reorganized into three sub-tabs** — Environment, AI Providers, and Taps — with a prominent "Highly recommended: Anthropic with the latest coding model" tip on the CodeGen Provider section.
@@ -801,13 +801,13 @@ description: "Release history for Datris"
 <Update label="v1.6.5" description="April 17, 2026">
   - New AI models from OpenAI and Anthropic now appear in the Configuration dropdowns automatically, without a Datris upgrade.
   - **Claude Opus 4.7** is the recommended Anthropic model for CodeGen (tap script generation, AI data quality rules, AI transformations, JSON Schema / XSD generation, and natural-language → SQL).
-  - New trial signups are seeded with the latest recommended models by default.
+  - Fresh instances are seeded with the latest recommended models by default.
 </Update>
 
 <Update label="v1.6.4" description="April 16, 2026">
   **Two-pass AI tap optimization and Data Catalog UX.**
 
-  - **AI optimize pass.** After a tap script passes its initial test, the platform sends it back to the LLM for a performance rewrite and re-tests. Auto-reverts on regression (>=20% slower) or failure. New `POST /api/v1/tap/optimize` endpoint; `/tap/test` now returns `durationMs`.
+  - **AI optimize pass.** After a tap script passes its initial test, the platform sends it back to the LLM for a performance rewrite and re-tests. Auto-reverts on regression (>=20% slower) or failure. Also available through the API; tap test results now report run duration.
   - **Discovery wizard.** Auto-optimize per tap with before/after timing banner, per-row stop button, on-demand AI fix panel for failed items, chat auto-scroll, and re-shown Discover Datasets button after new messages.
   - **Create Tap.** Configurable test sample size (defaults to 20 records).
   - **Data Catalog.** Kebab menu on Uncataloged items with Edit, Delete, and Move to Catalog (with name-clash detection).
@@ -816,10 +816,10 @@ description: "Release history for Datris"
 <Update label="v1.6.3" description="April 15, 2026">
   **Database lockdown, tap script hardening, Create Tap UX.**
 
-  - **Server-controlled database name.** UI no longer edits the Postgres or MongoDB database name — `/api/v1/version` returns `postgresDatabase` and `mongodbDatabase` and the UI submits them unchanged.
+  - **Server-controlled database name.** The UI no longer edits the Postgres or MongoDB database name — the server reports the configured names and the UI submits them unchanged.
   - **MongoDB internal vs user split.** `mongodb.database` (user-facing, default `datris`) holds pipeline data; `mongodb.internalDatabase` (default `oss`) holds platform state. Existing installs keep `oss` for platform state; new user pipelines land in `datris`.
-  - **Unlimited reads for tap scripts.** `limit: -1` on `/api/v1/query/mongodb` and `/api/v1/query/postgres` returns every matching row. Preview defaults (20 Mongo / 100 Postgres) are unchanged for UI/MCP callers.
-  - **Tap test sampling.** New "Limit test sample to 20 records" checkbox in Create Tap step 2 injects `DATRIS_TAP_TEST_LIMIT=20` into the script. Cron and manual runs read everything.
+  - **Unlimited reads for tap scripts.** Tap scripts can now request every matching row from the MongoDB and Postgres query APIs instead of a capped preview. Preview defaults (20 Mongo / 100 Postgres) are unchanged for UI/MCP callers.
+  - **Tap test sampling.** New "Limit test sample to 20 records" checkbox in Create Tap step 2 caps how much a test run reads. Cron and manual runs read everything.
   - **Codegen + diagnosis hardening.** Generated scripts treat platform response shapes as contractual (no shape-probing, no candidate-key iteration). Diagnosis quotes the actual traceback and respects in-script guards.
   - **Create Tap UX.** Ask button, auto-apply diagnosis (capped at 2 attempts), Stop Test, copy-to-clipboard, scrollable-JSON test results, destination collision check on Generate Pipeline, full destination shown on step 5.
   - **Data Catalog.** One-click delete of the Uncataloged group; per-item trash icon on taps and pipelines inside every catalog.
@@ -829,23 +829,23 @@ description: "Release history for Datris"
   **Input sanitization hardening and minor UI polish.**
 
   - Pipeline creation sanitizes destination identifiers before writing the config — Postgres `dbName`/`schema`/`table`, MongoDB `dbName`/`table`, Kafka `topic`, ActiveMQ `queueName`, vector `collectionName`/`tableName`/`schemaName`, and the DQ schema name.
-  - Four duplicated `sanitizeName` helpers consolidated into `ui/src/app/shared/sanitize.ts` (`sanitizeLabel` and `sanitizeIdentifier`).
+  - Name sanitization is now applied consistently across the UI, so labels and identifiers are cleaned the same way everywhere.
 </Update>
 
 <Update label="v1.6.1" description="April 14, 2026">
-  **Discovery wizard, Data Catalog, and trial BYO AI keys.**
+  **Discovery wizard, Data Catalog, and bring-your-own AI keys.**
 
-  - **Discovery wizard.** Six-step AI-guided onboarding that turns "yfinance daily prices for the S&P 500" into running taps and pipelines. New endpoints `POST /api/v1/discover` and `POST /api/v1/discover/build`, plus `discover_source` MCP tool.
+  - **Discovery wizard.** Six-step AI-guided onboarding that turns "yfinance daily prices for the S&P 500" into running taps and pipelines. Available from the UI, the API, and the new `discover_source` MCP tool.
   - **Data Catalog.** Group related taps and pipelines into named catalogs. New Data Catalog tab with expandable contents and an Uncataloged group.
   - **Per-pipeline DQ + transformation editor.** Inline editor inside the pipeline view.
-  - **Trial BYO keys.** Trial tenants supply their own Anthropic or OpenAI key at signup; keys land in the tenant's Vault path and override the shared Datris-managed key on the next AI call.
+  - **Bring-your-own AI keys.** Hosted trial signups could supply their own Anthropic or OpenAI key, which took effect on the next AI call (hosted platform since retired).
 </Update>
 
 <Update label="v1.6.0" description="April 11, 2026">
-  **Dedicated instance support and hosted platform improvements.**
+  **Hosted platform release.**
 
-  - **Hosted-aware Configuration UI.** Hides Ollama for AI Primary/CodeGen on hosted, locks embedding to bundled Ollama `bge-m3` when the provider is Anthropic, and hides the advanced toggle.
-  - Improved multi-user session handling on shared instances.
+  - Hosted dedicated-instance provisioning and hosted-aware Configuration UI (since retired).
+  - Improved multi-user session handling.
 </Update>
 
 <Update label="v1.5.9" description="April 11, 2026">
@@ -864,10 +864,9 @@ description: "Release history for Datris"
 </Update>
 
 <Update label="v1.5.7" description="April 9, 2026">
-  **Trial-instance hardening and Configuration tab polish.**
+  **Hosted trial hardening.**
 
-  - Trial codegen now defaults to `claude-haiku-4-5-20251001` instead of Opus 4.6, dramatically lowering per-trial cost. Self-hosted customers continue to recommend Opus for codegen on their own keys.
-  - Trial banner copy and link styling refinements on the Configuration tab.
+  - Hosted trial cost tuning and Configuration tab polish (since retired). Self-hosted installs continue to recommend Opus for codegen on their own keys.
 </Update>
 
 <Update label="v1.5.6" description="April 8, 2026">
@@ -875,17 +874,17 @@ description: "Release history for Datris"
 
   - `ai.aiSecretName` and `ai.provider` are replaced by three top-level slots — `ai.aiPrimary.secretName`, `ai.codegen.secretName`, `ai.embedding.secretName`.
   - Each Vault secret is self-describing (`provider`, `endpoint`, `model`, `apiKey`, optionally `version`). No path derivation from YAML.
-  - v1.5.x deployments must update `application.yaml` and re-seed Vault on upgrade.
+  - v1.5.x deployments must update their server configuration and re-seed Vault on upgrade.
 </Update>
 
 <Update label="v1.5.5" description="April 8, 2026">
-  **Onboarding, tap scheduling UX, and trial BYO key path.**
+  **Onboarding and tap scheduling UX.**
 
   - **Getting Started tab** as the new first-run landing page; Docs ↗ top-nav link.
   - Inline cron editor on the Taps page: preset buttons, AI prompt field ("Every weekday at 4pm"), Quartz field validation, human-readable description.
   - Truncate-before-run toggle in the tap wizard (sets `truncateBeforeWrite: true` on the generated destination).
-  - Configuration tab for trial users with BYO Anthropic/OpenAI key banner and "Datris-managed (default)" vs "Your own {provider} key" status.
-  - **Fix:** `TapScheduler` honors the configured `dateTimezone` from `application.yaml`.
+  - Hosted trial bring-your-own AI key banner on the Configuration tab (since retired).
+  - **Fix:** scheduled taps now honor the configured date timezone.
 </Update>
 
 <Update label="v1.5.4" description="April 7, 2026">
@@ -893,7 +892,7 @@ description: "Release history for Datris"
 
   - 4-step tap creation wizard (Describe → Edit & Test → Schedule → Review) with brainstorm chat and proactive env-var suggestions.
   - AI script generation with JSON-parse retry and raw-script fallback; AI diagnosis with explicit (a)/(b)/(c) options; "Apply Diagnosis" rewrites the script in place.
-  - Tap secrets stored in Vault tagged `_type=tap`; run history via `TapRunLog` and `GET /tap/logs`.
+  - Tap secrets stored in Vault and tagged as tap-owned; per-run history is retained and viewable.
   - CRON scheduling (Quartz format), AI-generated from natural language.
   - JSON-to-CSV pipeline feed (union of keys) with column-name normalization via spell-out table (`%` → `percent`, `#` → `num`, `&` → `and`, …).
   - Pipelines page shows the feeding tap; pipeline wizard has "Create from Tap".
@@ -903,36 +902,33 @@ description: "Release history for Datris"
   **Schema Evolution.**
 
   - Additive evolution: new CSV columns are auto-added as `string`, `schemaVersion` increments, and `ALTER TABLE` runs on Postgres.
-  - Dropped columns are excluded from the `COPY` command so Postgres defaults them to `NULL` (previously failed on typed columns).
+  - Dropped columns are left out of the Postgres load so they default to `NULL` (previously failed on typed columns).
   - Missing key fields raise a clear error.
-  - Shared `DataUtil.evolveSchema()` now used by both `StreamNotifier` and `FileNotifier`.
-  - Query endpoints use `serializeNulls()` so `NULL` columns appear in results.
+  - Schema evolution now behaves identically for streamed and file-based ingestion.
+  - Query results now include `NULL` columns.
 </Update>
 
 <Update label="v1.5.2" description="April 3, 2026">
-  **Remote MCP endpoint and managed service support.**
+  **Remote MCP endpoint.**
 
-  - Per-session API key forwarding on the MCP server (header or `api_key` query param); `REQUIRE_API_KEY=true` rejects unauthenticated SSE/streamable-HTTP connections.
-  - New MCP tools for managed service: `signup_trial`, `upgrade_to_dedicated`, `check_upgrade_status`.
-  - Remote SSE registry entry for `https://mcp.trial.datris.ai/sse`.
-  - Website APIs accept `x-api-key` alternative to cookie JWT; `/api/provision/agent-trial` combines signup + provisioning with rate limiting.
+  - Per-session API key forwarding on the MCP server, with an option to reject unauthenticated remote connections.
+  - Hosted trial signup and dedicated-upgrade agent tools and remote registry entry (since retired).
 </Update>
 
 <Update label="v1.5.1" description="April 3, 2026">
-  - Pipeline creation wizard hides PostgreSQL and MongoDB database name fields on trial instances — auto-populated from the environment or defaults to `datris`.
+  - Hosted trial instances: pipeline wizard auto-populated database names (since retired).
 </Update>
 
 <Update label="v1.5.0" description="April 2, 2026">
-  **Multi-tenant hosting on a shared instance.**
+  **Shared-instance hosting.**
 
-  - Per-tenant PostgreSQL databases (auto-created on first use) and per-tenant MongoDB databases scoped via the connection string environment name.
-  - Tenant-scoped metadata and query endpoints; new `TenantInterceptor` sets `DatrisEnvironment.current` per request based on API key.
+  - Hosted multi-tenant isolation on a shared instance (since retired).
   - Vector DB secret isolation across Qdrant, Weaviate, Milvus, Chroma, pgvector.
   - Batch upload for compressed files (`.zip`, `.gz`, `.tar`, `.jar`) processes contents inline — no MinIO webhook dependency.
 </Update>
 
 <Update label="v1.4.4" description="March 30, 2026">
-  - Default AI provider changed to Anthropic (Claude Sonnet 4.6). Customers can still switch to OpenAI or Ollama via `application.yaml`.
+  - Default AI provider changed to Anthropic (Claude Sonnet 4.6). Customers can still switch to OpenAI or Ollama in configuration.
   - Generated Python scripts for DQ and transformation are logged in full to the server logs for debugging.
 </Update>
 
@@ -960,7 +956,7 @@ description: "Release history for Datris"
   - `aiRule` replaces the prior AI DQ approach: the LLM generates a self-contained Python validation script from a plain-English instruction, which runs locally. Cost drops from $25–40/file to ~$0.003/rule.
   - `aiTransformation` uses the same CodeGen approach.
   - Works for CSV, JSON, and XML.
-  - **Removed:** `columnRules` (regex), JavaScript row rules, REST endpoint row rules, `AIDataQualityUtil`. JavaScript row functions and REST transformations removed from UI and CLI.
+  - **Removed:** `columnRules` (regex), JavaScript row rules, REST endpoint row rules, and the legacy AI data-quality path. JavaScript row functions and REST transformations removed from UI and CLI.
 </Update>
 
 <Update label="v1.3.0" description="March 26, 2026">

@@ -31,7 +31,7 @@ Off by default — existing installs are unchanged until you opt in.
    docker compose up -d --force-recreate datris
    ```
 
-3. Open **Configuration → Agent Policy** (admins only when user authentication is on). Set the actions you care about, or click **Use recommended** for a starting point that pauses deletes, job kills and destination-type migrations and refuses secret and connection changes.
+3. Open **Configuration → Agent Policy** (admins only when user authentication is on). Set the actions you care about, or click **Use recommended** for a starting point that pauses deletes, job kills and destination-type migrations and refuses secret, code-repository and platform-configuration writes (`secret:write`, `code-repo:write`, `config:write`).
 
 The policy applies within a few seconds of saving; no restart.
 

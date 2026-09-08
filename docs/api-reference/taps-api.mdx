@@ -180,9 +180,12 @@ Uses AI to generate a Python `fetch()` script from a plain-English description. 
 {
   "script": "import requests\n\ndef fetch():\n    ...",
   "packages": ["yfinance"],
-  "scriptPath": "tap-scripts/stock-prices-tap_a1b2c3d4.py"
+  "scriptPath": "tap-scripts/stock-prices-tap_a1b2c3d4.py",
+  "injectedPrompts": ["rate-limits"]
 }
 ```
+
+`injectedPrompts` lists the names of the [tap prompt fragments](#tap-prompt-fragments) that were injected into the generation prompt (empty when none matched).
 
 ## Fix Script (AI Diagnosis)
 
@@ -371,9 +374,16 @@ Executes a saved tap. Optionally sends data to the configured pipeline.
 ```json
 {
   "name": "stock-prices-tap",
-  "mode": "run"
+  "mode": "run",
+  "params": {"since": "2026-05-01"}
 }
 ```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | (required) | Tap name |
+| `mode` | string | `"test"` | `"run"` feeds records into `targetPipeline`; `"test"` executes the script and returns sample results without persisting |
+| `params` | object | `{}` | Optional per-run parameters exposed to the script as environment variables (nested values JSON-encoded) |
 
 **Response:**
 ```json
@@ -388,10 +398,13 @@ Executes a saved tap. Optionally sends data to the configured pipeline.
   "pipelineTokens": ["a1b2c3d4-..."],
   "recordCount": 503,
   "dataType": "csv",
+  "columns": ["ticker", "date", "open", "high", "low", "close", "volume"],
   "logs": "...",
   "error": null
 }
 ```
+
+`columns` lists the column names the script produced (normalized for `dataType: "csv"`, see [Test Tap](#test-tap)); it is `null` when the run produced no records.
 
 **`mode=run` does not return the records themselves** — the data is in transit to `targetPipeline`, and the agent / caller should verify completion via `get_pipeline_status`, not read from the response body. `recordCount` summarizes how many records were submitted. To preview what a script produces, call the same endpoint with `mode=test`, which returns up to 20 sample rows in a `records` array (with `recordsTruncated: true` set when the script produced more than that).
 
@@ -454,10 +467,23 @@ Returns the last 50 run log entries for a tap, sorted by most recent first.
     "logs": "Retrieved 503 tickers...",
     "error": null,
     "mode": "test",
-    "durationMs": 45000
+    "durationMs": 45000,
+    "publisherToken": null,
+    "aiSummary": null,
+    "aiDiagnosis": null,
+    "aiSuggestion": null,
+    "scriptCommitSha": null,
+    "pipelineRollup": null
   }
 ]
 ```
+
+| Field | Description |
+|---|---|
+| `publisherToken` | Set on `mode=run` entries that fed a pipeline; groups the ingestion jobs the run submitted |
+| `aiSummary`, `aiDiagnosis`, `aiSuggestion` | AI fix suggestion filled in after a scheduled run exhausts its automatic retries; `aiSummary` is the one-line headline, the other two carry the full explanation |
+| `scriptCommitSha` | Repo-backed taps only — the commit the run's script was read at; `null` for MinIO-stored scripts |
+| `pipelineRollup` | Downstream pipeline job rollup (same shape as `rollup` in the [Status API](/api-reference/status-api)) for runs that have a `publisherToken`; `null` otherwise |
 
 ## Document Ledger
 

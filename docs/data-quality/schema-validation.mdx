@@ -12,7 +12,7 @@ Schema validation checks incoming JSON or XML files against a formal schema defi
 
 ## Configuration
 
-Set the `validationSchema` field in the `dataQuality` block to the filename of the schema. The pipeline resolves the file from the MinIO config bucket at `{environment}-config/validation-schema/{filename}`.
+Set the `validationSchema` field in the `dataQuality` block to the filename of the schema. The pipeline resolves the file from the MinIO config bucket at `{environment}-config/validation-schema/{filename}`. A full `s3://bucket/key` URL is also accepted and used as-is.
 
 ```json
 {
@@ -59,7 +59,7 @@ A JSON Schema file stored in MinIO at `{environment}-config/validation-schema/pr
 ## Behavior
 
 1. The pipeline loads the schema file from the configured path in the environment's config bucket.
-2. Each record in the source file is validated against the schema.
+2. The whole file is validated as a single document against the schema. A JSON file containing an array of records therefore needs a schema with `"type": "array"` and `items` describing each record; the example above validates a file that holds a single object.
 3. If any record fails validation, the file is rejected and processing stops.
 4. Validation errors are logged with details about which fields failed and why.
 

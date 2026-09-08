@@ -13,7 +13,7 @@ Agents ask Datris for data. Datris finds it, acquires it, validates it, lands it
 
 Your agents already acquire, validate, and load data. Without a control plane, they do it badly. Datris puts that work behind one governed surface:
 
-- **One MCP door** — 63 capabilities behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 63 integrations
+- **One MCP door** — 73 capabilities behind a single MCP server. Claude, Cursor, and any MCP-compatible agent learn one interface instead of 73 integrations
 - **Vault-brokered credentials** — the agent references a secret by name and never holds a key; agent-written code runs in an isolated container with no keys inside
 - **Every run recorded** — job state, row counts, and provenance for every run; every generated script versioned in git
 - **Durable state** — pipelines and sync bookmarks live in the platform, not the chat, so regenerating a script never loses its place
@@ -115,7 +115,7 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 
 | Feature | Description |
 |---------|-------------|
-| **MCP Server** | 63 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps |
+| **MCP Server** | 73 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps |
 | **AI Data Quality** | Plain English validation rules — AI generates and runs a validation script |
 | **AI Transformation** | Plain English transformations — AI generates and runs a transformation script |
 | **AI Schema Generation** | Upload a file, get a complete pipeline config |

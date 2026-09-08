@@ -120,8 +120,8 @@ seems to be "hanging" mid-run, it's waiting between polls on purpose.
 
 | Provider | Streaming text | Tool cards | Reasoning block |
 |----------|---------------|------------|-----------------|
-| Anthropic Claude 4.x | ✅ | ✅ | Full chain-of-thought (extended thinking) |
-| OpenAI GPT-5 | ✅ | ✅ | Reasoning summary |
+| Anthropic Claude (Opus 5, Fable 5.1) | ✅ | ✅ | Full chain-of-thought (extended thinking) |
+| OpenAI GPT-5.x | ✅ | ✅ | Reasoning summary |
 | Azure OpenAI | ✅ | ✅ | None (reasoning happens server-side but isn't surfaced) |
 | Claude via Amazon Bedrock | ✅ | ✅ | Full thinking blocks (same as direct Anthropic; responses arrive at the end of each turn rather than streaming) |
 | Grok (xAI) | ✅ | ✅ | None (reasoning happens server-side but isn't surfaced) |
@@ -129,17 +129,18 @@ seems to be "hanging" mid-run, it's waiting between polls on purpose.
 
 Set `ai.extendedThinking: "false"` in `application.yaml` to disable the
 reasoning block platform-wide. Default is on. Extended thinking adds roughly
-$0.05/turn and 2–8s of latency on Opus 4.x — cheap insurance for transparency
+$0.05/turn and 2–8s of latency on Opus — cheap insurance for transparency
 on an agent that's writing production-bound config.
 
 ## Configuration
 
-The Assistant uses your tenant's **codegen** AI config (the same one that
-powers tap script generation, AI data quality, and AI transformations). On
-Anthropic tenants the default is Opus 4.x; on OpenAI tenants it's GPT-5.
+The Assistant uses your tenant's **AI primary** config (the chat slot). Tap
+script generation, AI data quality, and AI transformations use the separate
+**codegen** slot. On a fresh install the Anthropic default is Claude Opus 5
+(`claude-opus-5`) for both slots; the OpenAI default is `gpt-5.5`.
 
 There is no per-tenant Assistant configuration to manage beyond what you
-already have for codegen. See [AI Configuration](/ai-configuration) for the
+already have for AI primary. See [AI Configuration](/ai-configuration) for the
 underlying AI primary / codegen / web search / embedding settings.
 
 ### Authentication
@@ -172,9 +173,10 @@ the full capability model.
 - **50 iterations per turn.** The agent loop is hard-capped to bound cost. If
   the agent runs out of iterations, it stops and asks you to send a follow-up
   message to continue.
-- **No conversation history.** v1 is session-only — refreshing the tab clears
-  the conversation. Persistence is on the roadmap.
-- **16K output tokens per LLM call.** Sufficient for thinking + reasoning +
+- **No server-side conversation history.** The transcript lives in the
+  browser tab's session storage — it survives a refresh but is gone once the
+  tab is closed. Durable persistence is on the roadmap.
+- **32K output tokens per LLM call.** Sufficient for thinking + reasoning +
   tool selection on every public model we support.
 
 ## How it relates to other tabs
@@ -183,8 +185,9 @@ the full capability model.
   you want to understand what each tool does.
 - **Agent Monitor (pop-out)** — read-only activity monitor of *external* MCP
   clients (Claude Desktop, Cursor, scripts) calling your server. Opens in its
-  own browser window via the pop-out icon on the MCP tab so you can keep an
-  eye on Connections and the Activity Log while you work elsewhere. The
+  own browser window via the pop-out icon (open-in-new) in the Agent Monitor
+  header under **MCP → Activity**, so you can keep an eye on Connections and
+  the Activity Log while you work elsewhere. The
   Assistant is the in-product counterpart — same tools, different surface.
 - **Catalog tab** — anything the Assistant creates (taps and pipelines) lands
   here, grouped by catalog. The "→ Open tap" / "→ Open pipeline" links at the

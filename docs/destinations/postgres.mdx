@@ -96,7 +96,7 @@ Connection credentials are configured globally in `application.yaml` via `secret
 | Field                 | Required | Default  | Description                                      |
 |-----------------------|----------|----------|--------------------------------------------------|
 | `dbName`              | yes      |          | Target database name                             |
-| `schema`              | no       | `public` | Target schema                                    |
+| `schema`              | yes      |          | Target schema. The literal placeholder `SCHEMA_NAME` is replaced with `public` when the pipeline is saved (likewise `DATABASE_NAME` in `dbName` becomes the configured Postgres database); any other value is used as-is |
 | `table`               | yes      |          | Target table name                                |
 | `usePostgres`         | yes      | `false`  | Must be `true` to enable PostgreSQL destination  |
 | `manageTableManually` | no       | `false`  | If `true`, skip auto-creation of the table       |

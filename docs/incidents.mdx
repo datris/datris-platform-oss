@@ -15,7 +15,7 @@ Requires the [agent policy](/agent-policy) (`USE_AGENT_POLICY=true`) for its app
 
    ```bash
    RECOVERY_AGENT_ENABLED=true
-   # optional: JSON POST on incident open / awaiting-approval / resolved / failed
+   # optional: JSON POST on incident open / awaiting_approval / resolved / failed / abandoned
    INCIDENT_WEBHOOK_URL=
    ```
 
@@ -42,7 +42,7 @@ A per-tap or per-pipeline override can put one resource on a different mode — 
 | Tap failure | A scheduled run fails **after** the retry ladder is exhausted |
 | Pipeline failure | A pipeline job ends in error |
 | Stale tap | A scheduled tap hasn't run within 2× its cadence |
-| Volume anomaly | A pipeline's records this day are ±60 % vs its 7-day baseline (with at least 3 prior runs) |
+| Volume anomaly | A pipeline's records in the current 24-hour window are ±60 % vs the previous 24-hour window (with at least 3 runs in that prior window) |
 
 Guards, all enforced in code: one open incident per resource; a resource whose latest run is healthy never gets one; a cooldown (default 6 h) after a failed or abandoned attempt; a cap on simultaneous open incidents. Volume incidents are **diagnosis-only** — the value is the triage, not an action.
 
