@@ -71,7 +71,6 @@ minio/
 vault/
 
 # helpers
-examples/kafka-csv-loader/myenv/
 
 examples/preprocessor/my-env/
 
