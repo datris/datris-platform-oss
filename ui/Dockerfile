@@ -9,6 +9,12 @@ RUN npm run build
 
 # Stage 2: Serve (non-root nginx, listens on 8080)
 FROM nginxinc/nginx-unprivileged:alpine@sha256:d9083fe47768377ef55dedafd67d4da7c2f2bc2bece7554954f29359deb0dce9
+# The Alpine packages in the pinned base lag behind alpine-security fixes
+# (libuuid/util-linux, libexpat, curl CVEs flagged by the weekly Trivy image
+# scan). Upgrade as root, then drop back to the unprivileged nginx user.
+USER root
+RUN apk upgrade --no-cache
+USER nginx
 COPY --from=build /app/dist/pipeline-ui/browser /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 # The base image already runs as the unprivileged nginx user (UID 101); the

@@ -46,16 +46,17 @@ lazy val datrisserver = project
             "org.apache.hadoop" % "hadoop-client-api" % "3.3.4",
             "org.apache.hadoop" % "hadoop-client-runtime" % "3.3.4",
             // Embedded Tomcat (Spring Boot's servlet container — the process
-            // serving the API). Boot 3.5.16 manages this same version; the
-            // override stays as an explicit floor so a Boot downgrade can't
-            // silently reintroduce the 4 critical CVEs fixed here: partial-PUT
-            // RCE, HTTP/2 header validation, digest-auth bypass, and
-            // security-constraint bypass.
+            // serving the API). Pinned ahead of what Boot 3.5.16 manages so the
+            // override acts as an explicit floor: a Boot downgrade can't
+            // silently reintroduce the critical CVEs fixed here (partial-PUT
+            // RCE, HTTP/2 header validation, digest-auth bypass and replay,
+            // security-constraint / FORM-auth authorization bypasses —
+            // GHSA-9xv2-5v5q-p794, GHSA-gcx9-497g-6cp6, GHSA-h3x4-894j-xpx5).
             // All three tomcat-embed-* artifacts MUST move together — a version
             // mismatch between them makes the embedded server fail to start.
-            "org.apache.tomcat.embed" % "tomcat-embed-core" % "10.1.55",
-            "org.apache.tomcat.embed" % "tomcat-embed-el" % "10.1.55",
-            "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.55",
+            "org.apache.tomcat.embed" % "tomcat-embed-core" % "10.1.59",
+            "org.apache.tomcat.embed" % "tomcat-embed-el" % "10.1.59",
+            "org.apache.tomcat.embed" % "tomcat-embed-websocket" % "10.1.59",
             // CVE patch bumps over what Spark 3.5.x pulls transitively. Avro
             // 1.11.4 is a patch release over Spark's 1.11.2 (CVE-2024-47561,
             // code execution reading untrusted Avro). ZooKeeper 3.8.6 replaces
