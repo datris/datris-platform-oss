@@ -165,7 +165,7 @@ docker compose up -d
 
 **Warning:** `docker compose down -v` is destructive. The `-v` flag removes every Docker volume the project owns (both named volumes and the anonymous volumes the data services create automatically). You will lose:
 
-- **All your pipelines, runs, taps, and metadata** (Postgres `datris` database)
+- **All your pipelines, runs, taps, and metadata** (MongoDB internal `oss` database) and **all data landed in Postgres** (`datris` database)
 - **All Vault secrets** — API keys, database credentials, AI configuration (will be re-seeded from your `.env` on next start, but only the defaults — any UI-edited overrides are gone)
 - **All MinIO object storage** — raw uploads, configs, temp files, processed outputs
 - **MongoDB destination data**
@@ -177,7 +177,7 @@ Only run `down -v` if you are certain none of the above matters, e.g. on a brand
 
 After `docker compose up -d`, `vault-init.sh` re-seeds the AI configuration secrets from your `.env`, MinIO buckets are recreated, Postgres starts empty, and the bundled embedding service re-downloads `bge-m3` (a few minutes one-time).
 
-> **Note for production deployments:** the `deploy/docker-compose.prod.yml` file used by managed/dedicated installs uses bind mounts to host directories under `/data/*` instead of Docker volumes, so `docker compose -f docker-compose.prod.yml down -v` does **not** wipe the data — the host directories survive. To reset a prod install, you'd need to also delete the relevant `/data/*` directories on the host, which is a much riskier operation and not recommended outside of disaster recovery.
+> **Note for production deployments:** the `deploy/docker-compose.prod.yml` file used by dedicated production installs uses bind mounts to host directories under `/data/*` instead of Docker volumes, so `docker compose -f docker-compose.prod.yml down -v` does **not** wipe the data — the host directories survive. To reset a prod install, you'd need to also delete the relevant `/data/*` directories on the host, which is a much riskier operation and not recommended outside of disaster recovery.
 
 ## Volumes
 
@@ -241,7 +241,7 @@ Datris supports six AI providers. Set your keys in `.env`:
 | **Azure OpenAI** | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` + `AZURE_OPENAI_MODEL` | Same as OpenAI, served from your Azure resource (models addressed by deployment name) |
 | **Amazon Bedrock** | `AI_PROVIDER=bedrock` + `AWS_REGION` (AWS keys optional — IAM role works) | Claude served through your AWS account with IAM auth and AWS billing |
 | **Grok (xAI)** | `XAI_API_KEY` | Chat and CodeGen on Grok via xAI's OpenAI-compatible API (no embeddings) |
-| **Ollama** (local) | `OLLAMA_MODEL` | Same as above — no API key needed, runs locally |
+| **Ollama** (local) | `OLLAMA_MODEL` (requires uncommenting the `ollama` service in `docker-compose.yml`) | Same as above — no API key needed, runs locally |
 
 At least one AI provider key is required for AI features. The embedding provider for RAG is configured via Vault secrets — see [AI Configuration](/ai-configuration) for details.
 
@@ -343,6 +343,6 @@ In `docker-compose.yml`, uncomment the `build:` lines and comment out the `image
 
 ```yaml
 datris:
-  # image: datris/datris-server:latest
+  # image: datrisai/datris-server:latest
   build: .  # Build from source
 ```

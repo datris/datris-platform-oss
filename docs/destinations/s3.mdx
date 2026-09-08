@@ -41,7 +41,7 @@ If any of `accessKey`, `secretKey`, or `region` is missing, the write fails at r
     "objectStore": {
       "provider": "s3",
       "destinationBucketOverride": "acme-analytics-prod",
-      "credentialsSecret": "aws/acme-analytics",
+      "credentialsSecret": "acme-analytics-s3",
       "prefixKey": "events/orders",
       "partitionBy": ["dt"],
       "fileFormat": "parquet",
@@ -57,7 +57,7 @@ If any of `accessKey`, `secretKey`, or `region` is missing, the write fails at r
 |-----------------------------|----------|----------------|--------------------------------------------------------------------------|
 | `provider`                  | yes      | `minio`        | Set to `s3` to select the AWS S3 path                                    |
 | `destinationBucketOverride` | yes      |                | Bucket to write to. No default for S3                                    |
-| `credentialsSecret`         | yes*     |                | Vault secret holding `accessKey`/`secretKey`/`region`                    |
+| `credentialsSecret`         | yes*     |                | Name of the Platform secret holding `accessKey`/`secretKey`/`region`. Pass the bare name as shown on Configuration → Secrets → Platform; the `{environment}/` Vault prefix is added automatically |
 | `endpoint`                  | no       | AWS regional   | Override the S3 endpoint URL. Must use `https://`                        |
 | `prefixKey`                 | yes      |                | Key prefix under the bucket                                              |
 | `fileFormat`                | no       | `parquet`      | `parquet` or `orc`                                                       |

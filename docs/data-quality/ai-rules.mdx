@@ -54,10 +54,11 @@ For all formats, the instruction is the same plain-English description. The LLM 
 
 ## Behavior
 
-- The AI rule generates the Python script once per rule evaluation- The generated script runs in the container via `python3` with a 5-minute timeout
+- The AI rule generates the Python script once per rule evaluation
+- The generated script runs in the container via `python3` with a 5-minute timeout
 - Scripts are constrained to Python standard library only (no external packages)
 - Rules with `onFailureIsError: true` are counted as errors; `onFailureIsError: false` are warnings
-- Processing aborts immediately if the error count exceeds **100**
+- All rows are evaluated; the abort message lists the first **100** errors and a count of any remaining
 - After all rows are evaluated, if **any errors** exist, processing is aborted
 - Warnings are summarized at the end of validation
 

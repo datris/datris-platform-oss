@@ -10,7 +10,7 @@ By default, the Datris OSS install runs single-tenant with no login screen — a
 When `USE_USER_AUTH=true`:
 
 - The UI shows a **login screen** before any tab is reachable.
-- Sensitive **Configuration** sub-tabs (Secrets, API-Keys, [Audit Log](/audit-log)) are gated to **admin** users. The AI Providers and Environment sub-tabs remain visible to all roles. The Users and API-Keys sub-tabs appear based on the active flags (see the [matrix](/api-keys#supported-configurations) for full visibility rules).
+- Sensitive **Configuration** sub-tabs (Secrets, API-Keys, [Audit Log](/audit-log), [Agent Policy](/agent-policy)) are gated to **admin** users. The AI Providers, Data Sources, and Code Repository sub-tabs remain visible to all roles. The Users and API-Keys sub-tabs appear based on the active flags (see the [matrix](/api-keys#supported-configurations) for full visibility rules).
 - A new **Users** sub-tab appears under Configuration for adding, removing, and changing roles (admin-only by virtue of being inside Configuration).
 - Sessions are server-side, with a TTL index cleaning them up automatically.
 
@@ -53,7 +53,7 @@ The default `admin` row is seeded on **every startup** (idempotent — only when
 | **editor** | ✓ | ✓ |   |
 | **viewer** | ✓ |   |   |
 
-All roles see the **Configuration** tab in the top nav, but the sub-tabs differ: admins see Secrets and API-Keys; editors and viewers see only AI Providers, Users, and Environment. Everything outside Configuration (Pipelines, Taps, Search, etc.) is accessible to all roles per the read/write rules above.
+All roles see the **Configuration** tab in the top nav, but the sub-tabs differ: admins see Secrets, API-Keys, Audit Log, and Agent Policy; editors and viewers see only AI Providers, Data Sources, Code Repository, and Users. Everything outside Configuration (Pipelines, Taps, Search, etc.) is accessible to all roles per the read/write rules above.
 
 ## Adding users
 

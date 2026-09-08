@@ -22,17 +22,13 @@ export MCP_SERVER_URL=http://localhost:3000/sse    # default
 
 ### Authentication
 
-When the Datris platform has [`USE_API_KEYS=true`](/api-keys), every CLI command must present an API key. Set it as an environment variable:
+The CLI does not set an `x-api-key` header itself. When `USE_API_KEYS=false` (the OSS default) no key is needed. When [`USE_API_KEYS=true`](/api-keys), pass the key on the MCP URL's query string, which the MCP server accepts as an alternative to the header:
 
 ```bash
-export DATRIS_API_KEY=<your key>
+export MCP_SERVER_URL="http://localhost:3000/sse?api_key=<your key>"
 ```
 
-The CLI sends it as `x-api-key` on every MCP request, which the MCP server forwards to the REST API.
-
-Issue a key dedicated to the CLI from the UI: **Configuration → API-Keys → Issue new key** with a label like `cli` and the capability scope you want (e.g. `read-only` template for an analyst CLI, `ops` for a deploy runner). The value is shown once at issue time — set it as `DATRIS_API_KEY` in your shell. Each label is a distinct caller identity in the request logs and can be revoked independently. See [API Keys](/api-keys) for the full pattern.
-
-When `USE_API_KEYS=false` (the OSS default), the CLI works without any key — the env var is ignored.
+Issue a key dedicated to the CLI from the UI: **Configuration → API-Keys → Issue new key**. See [API Keys](/api-keys) for the full pattern.
 
 ## JSON Output
 
@@ -148,7 +144,7 @@ datris query "SELECT symbol, close FROM public.trades WHERE close > 100" --limit
 
 | Option | Description |
 |--------|-------------|
-| `--limit` | Max rows returned (default: 100, max: 1000) |
+| `--limit` | Max rows returned (default: 100; pass `-1` for no limit) |
 | `--json` | Return raw JSON |
 
 ---
@@ -163,9 +159,9 @@ datris search "What is the return policy?" --store pgvector --collection support
 
 | Option | Description |
 |--------|-------------|
-| `--store` | Vector store: `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector` (default: `pgvector`) |
-| `--collection` | Collection/table name (required) |
-| `--top-k` | Number of results (default: 5) |
+| `--store`, `-s` | Vector store: `qdrant`, `weaviate`, `milvus`, `chroma`, `pgvector` (default: `pgvector`) |
+| `--collection`, `-c` | Collection/table name (required) |
+| `--top-k`, `-k` | Number of results (default: 5) |
 | `--json` | Return raw JSON |
 
 ---
@@ -295,7 +291,7 @@ datris taps
 Create a tap. The `instruction` argument (a plain-English description) is optional — provide it to have AI generate the fetch script, or omit it and supply your own script with `--script` (or create a config-only tap with neither).
 
 ```bash
-datris tap create ["<instruction>"] --pipeline <name> [--name <tap-name>] [--script <file>] [--cron "<expression>"] [--type structured|document]
+datris tap create ["<instruction>"] --pipeline <name> [--name <tap-name>] [--script <file>] [--cron "<expression>"] [--type structured|document] [--kind python|http --endpoint-url <url>]
 ```
 
 | Argument | Description |
@@ -310,6 +306,8 @@ datris tap create ["<instruction>"] --pipeline <name> [--name <tap-name>] [--scr
 | `--secret` | Vault secret name for credentials injected as env vars |
 | `--script` | Path to a Python script file with a `fetch()` function (skips AI generation) |
 | `--type` | `structured` (default) returns rows of records; `document` returns `{uri, filename, content}` dicts destined for a vector-store pipeline. See [Document Taps](/taps#document-taps) |
+| `--kind` | Tap implementation kind: `python` (default) runs a script on the platform; `http` calls a user-hosted endpoint speaking the tap HTTP contract (no instruction or `--script`) |
+| `--endpoint-url` | For `--kind http`: absolute http(s) URL Datris POSTs the run context to on each run (required with `--kind http`) |
 | `--json` | Return raw JSON |
 
 **Examples:**
@@ -397,7 +395,7 @@ datris tap logs <name>
 Update a tap's configuration without regenerating its script. Specify at least one option.
 
 ```bash
-datris tap update <name> [--enabled | --disabled] [--cron "<expression>"] [--pipeline <name>] [--description "<text>"]
+datris tap update <name> [--enabled | --disabled] [--cron "<expression>"] [--pipeline <name>] [--description "<text>"] [--endpoint-url <url>]
 ```
 
 | Option | Description |
@@ -406,6 +404,7 @@ datris tap update <name> [--enabled | --disabled] [--cron "<expression>"] [--pip
 | `--cron` | CRON expression for scheduling (Quartz format) |
 | `--pipeline`, `-p` | Target pipeline name |
 | `--description`, `-d` | New description |
+| `--endpoint-url` | New endpoint URL (HTTP taps only) |
 | `--json` | Return raw JSON |
 
 ---

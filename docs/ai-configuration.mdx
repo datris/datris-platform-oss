@@ -32,7 +32,7 @@ ai:
 
 | Slot | Purpose | Used by |
 |------|---------|---------|
-| `aiPrimary` | General AI tasks | Schema generation, error explanation, brainstorm chat, profiling, header validation, CRON generation, AI Q&A |
+| `aiPrimary` | General AI tasks | Error explanation, brainstorm chat, profiling, header validation, CRON generation, AI Q&A |
 | `codegen` | Code-generation tasks | Tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL |
 | `embedding` | Vector embeddings | Vector destinations (Qdrant, Weaviate, Milvus, Chroma, pgvector), semantic search |
 | `webSearch` | Live web lookup (optional) | Tap script generation and tap diagnosis when the model needs current API documentation |
@@ -47,9 +47,9 @@ Each Vault secret carries its full configuration inline:
 | `apiKey` | No (not used by ollama or bedrock) | Inline provider API key. The [shared API key store](#shared-api-key-store) is checked first and takes precedence when set. Bedrock authenticates with AWS credentials instead — see the [Bedrock path](#amazon-bedrock-path) |
 | `version` | Optional | API version (Anthropic uses `2023-06-01`) |
 
-The resolver reads each secret at the configured path and uses whatever it finds inside — there is no path derivation from a YAML `provider` field. This means the three slots can independently use different providers (e.g. Anthropic for `aiPrimary`, Ollama for `codegen`, OpenAI for `embedding`).
+The resolver reads each secret at the configured path and uses whatever it finds inside — there is no path derivation from a YAML `provider` field. This means the four slots can independently use different providers (e.g. Anthropic for `aiPrimary`, Ollama for `codegen`, OpenAI for `embedding`).
 
-**All three slots support Ollama** — you can run the entire platform on local models with no API keys. The Configuration UI offers Ollama as a provider choice for every section, with a free-text model input since Ollama supports hundreds of community models.
+**All three seeded slots (`aiPrimary`, `codegen`, `embedding`) support Ollama** — you can run the entire platform on local models with no API keys. The Configuration UI offers Ollama as a provider choice for every section, with a free-text model input since Ollama supports hundreds of community models.
 
 ### Shared API Key Store
 
@@ -72,7 +72,7 @@ Azure compute, workload identity, or `az login`.
 
 ## Quick Start with `.env`
 
-On first boot, `docker/vault-init.sh` seeds all three Vault secrets automatically based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the `AZURE_OPENAI_*` trio, `XAI_API_KEY` (see the [Grok path](#grok-xai-path)), or `AI_PROVIDER=bedrock` (see the [Bedrock path](#amazon-bedrock-path)):
+On first boot, `docker/vault-init.sh` seeds the `ai-primary`, `codegen`, and `embedding` Vault secrets automatically (the optional `web-search` slot is not seeded — configure it from the Configuration tab) based on which API key you put in `.env` (see [How Configuration Persists](#how-configuration-persists) — after the first boot, the Configuration tab is the source of truth). Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the `AZURE_OPENAI_*` trio, `XAI_API_KEY` (see the [Grok path](#grok-xai-path)), or `AI_PROVIDER=bedrock` (see the [Bedrock path](#amazon-bedrock-path)):
 
 ```bash
 # .env
@@ -225,7 +225,7 @@ You can run all three slots on a local Ollama instance — no cloud API keys nee
 
 If you only need local **chat** but want to keep the bundled embedding service (TEI), leave `oss/embedding` pointed at `http://tei:80/v1/embeddings` with `model="BAAI/bge-m3"` and only switch the AI Primary and CodeGen slots to Ollama.
 
-The Configuration UI makes this easy — select **Ollama (if optional service enabled)** as the provider, type your model name, and the endpoint defaults to `ollama:11434`. No API key is required.
+The Configuration UI makes this easy — select **Ollama (if optional service enabled)** as the provider and type your model name. For the AI Primary and CodeGen slots the endpoint defaults to `http://host.docker.internal:11434/v1/chat/completions` (edit it to `http://ollama:11434/v1/chat/completions` for the bundled service); for the Embedding slot it defaults to `http://ollama:11434/v1/embeddings`. No API key is required.
 
 ### Optional model overrides
 
@@ -236,6 +236,7 @@ ANTHROPIC_MODEL=claude-opus-5
 OPENAI_MODEL=gpt-5.5
 GROK_MODEL=grok-4.6
 CODEGEN_MODEL=claude-opus-5   # or gpt-5.5 if using OpenAI, grok-4.6 for Grok
+ANTHROPIC_OVERLOAD_FALLBACK_MODEL=claude-sonnet-4-6   # used for the current request when an Anthropic Opus call stays overloaded after retries
 ```
 
 ### Mix-and-match: Anthropic chat + OpenAI embeddings
@@ -398,19 +399,19 @@ In multi-tenant deployments (`multiTenant: "true"` in `application.yaml`) each t
 | Embedding | `{env}/embedding` | `oss/embedding` |
 | Web Search | `{env}/web-search` | `oss/web-search` |
 
-(`{env}` is the tenant's environment name, e.g. `trial-acme`.)
+(`{env}` is the tenant's environment name, e.g. `acme`.)
 
 A per-tenant secret takes effect on the next AI call — no restart needed. The override is independent for each slot: a tenant can override just AI Primary, just CodeGen, just Embedding, or any combination.
 
 ### Setting your key from the UI
 
-Trial users (and any multi-tenant tenant) can manage all three slots from the platform UI. The Configuration page is organized into sub-tabs:
+Any tenant can manage all three slots from the platform UI. The Configuration page is organized into sub-tabs:
 
 - **AI Providers** — AI Primary, CodeGen, and Embedding provider + model selectors, plus a shared API Keys panel on the right (backed by the `{env}/ai-keys` secret — see [Shared API Key Store](#shared-api-key-store)). This is where you enter your provider API keys and pick models.
 - **Secrets** — operator-facing platform credentials (Vault-backed). Admin-only when user-auth is on.
 - **Users** — user accounts and roles. Visible when `USE_USER_AUTH=true`.
 - **API-Keys** — issue and revoke scoped credentials for the CLI, MCP agents, and other programmatic clients. Visible when `USE_API_KEYS=true`. See [API Keys](/api-keys).
-- **Environment** — tenant name, version, trial/hosted flags, and a status block showing which AI slots are using Datris-managed defaults vs your own keys.
+- **Data Sources**, **Code Repository**, **Audit Log**, **Agent Policy** — additional operator sub-tabs (see their respective pages).
 
 Some sub-tabs are role- and flag-gated — see the [API Keys matrix](/api-keys#supported-configurations) for the full visibility rules.
 
@@ -421,7 +422,7 @@ To set your AI keys:
 3. For Anthropic/OpenAI/Azure/Grok, enter your API key in the right-hand panel and pick a model from the dropdown. For Azure, also enter your resource endpoint and type your deployment name as the model. For Amazon Bedrock, enter your AWS credentials and region in the right-hand panel (or leave the keys blank to use the server's IAM role) — the model dropdown then lists what your account can actually invoke. For Ollama, type the model name directly — no API key needed.
 4. Click **Save Configuration**. Changes take effect immediately — no restart required.
 
-To revert to defaults, click **Reset to Datris-managed**. This deletes all three per-tenant secrets and falls the tenant back to the global defaults.
+To fall a tenant back to the global `oss/*` defaults, delete its per-tenant secrets in Vault (see below).
 
 ### Setting tenant secrets directly in Vault
 
@@ -430,7 +431,7 @@ For operators provisioning tenants programmatically:
 ```bash
 docker compose exec -e VAULT_ADDR=http://vault:8200 \
   -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault \
-  vault kv put secret/trial-acme/ai-primary \
+  vault kv put secret/acme/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
   model="claude-opus-5" \
@@ -442,4 +443,4 @@ Same shape for `{env}/codegen` and `{env}/embedding`.
 
 ## Misconfiguration
 
-The platform fails fast at startup if any required slot is missing or malformed. There is no silent fallback. The `aiPrimary` slot is always required when `ai.enabled: true`; `codegen` and `embedding` are required if you use features that depend on them (which is most features for codegen, and only vector destinations for embedding).
+The platform fails fast at startup if the `aiPrimary` slot is missing or malformed — it is always required when `ai.enabled: true`. The `codegen` slot is optional: when its secret is absent, code-generation tasks fall back to `aiPrimary`. The `embedding` slot is read per request and is only required by features that depend on it (vector destinations and semantic search).

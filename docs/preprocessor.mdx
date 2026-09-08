@@ -50,7 +50,9 @@ Add a `preprocessor` section to the pipeline configuration:
 | `endpoint` | string | Required | URL of the preprocessing service |
 | `async` | boolean | `false` | Synchronous or asynchronous mode |
 | `bearerToken` | string | `null` | Optional `Authorization: Bearer` token |
+| `apiKey` | string | `null` | Optional API key sent to the endpoint as an `x-api-key` header |
 | `timeoutMs` | int | `300000` | Request timeout in milliseconds |
+| `timeoutSeconds` | int | `0` | Legacy timeout in seconds; used only when `timeoutMs` is `0` or omitted. Prefer `timeoutMs` |
 
 ## Synchronous Mode
 
@@ -60,7 +62,7 @@ In synchronous mode (`async: false`), the pipeline POSTs the data to the endpoin
 
 ```json
 {
-  "pipelineToken": "pt-abc12345-...",
+  "pipelineToken": "5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e",
   "pipelineName": "stock_price",
   "data": {
     "size": 1024,
@@ -68,13 +70,12 @@ In synchronous mode (`async: false`), the pipeline POSTs the data to the endpoin
     "rows": [
       "AAPL,150.25,2026-03-15",
       "GOOG,2800.00,2026-03-15"
-    ],
-    "rawData": null
+    ]
   }
 }
 ```
 
-For JSON/XML sources, `rows` is null and `rawData` contains the raw content.
+For JSON/XML sources, `header` and `rows` are omitted and `rawData` contains the raw content (null fields are left out of the payload rather than sent as `null`).
 
 ### Expected Response
 
@@ -88,11 +89,12 @@ Return the (optionally modified) data in the same format:
     "rows": [
       "AAPL,150.25,2026-03-15",
       "GOOG,2800.00,2026-03-15"
-    ],
-    "rawData": null
+    ]
   }
 }
 ```
+
+Any of `header`, `rows`, or `rawData` you leave out of the response keeps its original value.
 
 You can modify, add, or remove rows. The pipeline continues with whatever data is returned. If you return an `error` field, processing is aborted:
 
@@ -126,13 +128,12 @@ Callback payload:
 
 ```json
 {
-  "pipelineToken": "pt-abc12345-...",
+  "pipelineToken": "5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e",
   "pipelineName": "stock_price",
   "data": {
     "size": 1024,
     "header": ["symbol", "price", "date"],
-    "rows": ["AAPL,150.25,2026-03-15"],
-    "rawData": null
+    "rows": ["AAPL,150.25,2026-03-15"]
   }
 }
 ```
@@ -143,7 +144,7 @@ If the callback is not received within `timeoutMs` milliseconds, the pipeline ab
 
 ## Example: Preprocessor Service
 
-A complete working example is provided in [`examples/preprocessor/app.py`](../examples/preprocessor/app.py). This Python Flask application implements both synchronous and asynchronous preprocessing:
+A complete working example is provided in [`examples/preprocessor/app.py`](https://github.com/datris/datris-platform-oss/blob/main/examples/preprocessor/app.py). This Python Flask application implements both synchronous and asynchronous preprocessing:
 
 ```python
 # Synchronous - process and return immediately

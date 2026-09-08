@@ -35,6 +35,8 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 | `set_catalog` | Set or clear the catalog grouping label on an existing pipeline or tap. Pass exactly one of `pipeline` or `tap`. |
 | `kill_job` | Kill a running job by pipeline token |
 | `profile_data` | AI-profile data (base64-encoded) with summary stats and suggested DQ rules |
+| `get_dest_types` | Propose real column types for a pipeline whose destination columns are all stored as text: samples up to 1000 landed rows, infers types deterministically and returns per-column evidence. Postgres, Snowflake and Databricks destinations only; nothing is changed by this call |
+| `apply_dest_types` | Apply destination column types to an all-string pipeline (requires explicit user approval). `fields` must list every destination column with its intended type (`string`, `boolean`, `int`, `bigint`, `float`, `double`, `date`, `timestamp`); landed data is migrated first and any value that will not cast fails the whole apply with nothing changed |
 | `get_version` | Get pipeline server version |
 | `check_service_health` | Check which backend services are up, down, or not configured (slow — use for diagnostics only) |
 
@@ -184,7 +186,8 @@ Client-side setup for Claude Desktop and Claude Code — including recommended a
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATRIS_API_URL` | `http://localhost:8080` | Datris REST API server URL |
-| `REQUIRE_API_KEY` | `false` | Reject SSE/HTTP sessions that connect without `x-api-key` |
+| `REQUIRE_API_KEY` | `false` | Reject SSE/HTTP sessions that connect without `x-api-key` (and stdio sessions started without `DATRIS_API_KEY`) |
+| `DATRIS_API_KEY` | — | stdio transport only: the API key forwarded as `x-api-key` on every tool call (stdio has no request headers) |
 
 All database connections, vector search, and embedding are handled by the pipeline server. The MCP server only needs the pipeline URL.
 

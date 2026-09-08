@@ -74,6 +74,7 @@ POST /api/v1/query/mongodb
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `collection` | string | Yes | | MongoDB collection name |
+| `database` | string | No | configured MongoDB database | MongoDB database name to query |
 | `filter` | object | No | `{}` | MongoDB query filter |
 | `projection` | object | No | all fields | Fields to include/exclude |
 | `limit` | integer | No | 20 | Maximum documents to return. Pass `-1` for unlimited (tap scripts use this to read every document). Omit for the preview default of 20; any positive value is honored with no cap. |

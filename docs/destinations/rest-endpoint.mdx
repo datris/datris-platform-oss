@@ -61,7 +61,7 @@ Set `async` to control whether the pipeline waits for a response:
 | `async` | Behavior                                                                              |
 |---------|---------------------------------------------------------------------------------------|
 | `false` | The pipeline waits for the endpoint to return a response before proceeding (default). |
-| `true`  | The pipeline sends the request and continues without waiting for a response.          |
+| `true`  | The pipeline sends the request, then waits for the endpoint to call back `POST /api/v1/restendpoint/callback` with the same `pipelineToken` and the result payload. If no callback arrives within `timeoutMs`, the job fails. |
 
 ## Authentication
 
@@ -69,7 +69,7 @@ Set `bearerToken` to include an `Authorization: Bearer {token}` header on every 
 
 ## Timeout
 
-The `timeoutMs` field controls the maximum time in milliseconds the pipeline will wait for a response when `async` is `false`. The default is `300000` ms (5 minutes).
+The `timeoutMs` field controls the maximum time in milliseconds the pipeline will wait — for the HTTP response when `async` is `false`, or for the callback when `async` is `true`. The default is `300000` ms (5 minutes).
 
 ## Configuration Example
 
@@ -93,10 +93,10 @@ The `timeoutMs` field controls the maximum time in milliseconds the pipeline wil
 | Field            | Required | Default | Description                                           |
 |------------------|----------|---------|-------------------------------------------------------|
 | `endpoint`       | yes      |         | Target endpoint URL                                   |
-| `async`          | no       | `false` | If `true`, send the request and continue without waiting for a response |
+| `async`          | no       | `false` | If `true`, send the request and wait for a callback to `/api/v1/restendpoint/callback` instead of the HTTP response |
 | `bearerToken`    | no       |         | Bearer token added as `Authorization: Bearer` header  |
-| `apiKey`         | no       |         | API key for endpoint authentication                   |
-| `timeoutMs`      | no       | `300000`| Response timeout in milliseconds (sync mode only)     |
+| `apiKey`         | no       |         | API key sent as an `x-api-key` header                 |
+| `timeoutMs`      | no       | `300000`| Response (sync) or callback (async) timeout in milliseconds |
 
 ## Completion Notification
 

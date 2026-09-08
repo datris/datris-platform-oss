@@ -78,6 +78,11 @@ These apply in **both** modes, regardless of the runner setting:
 - **Extra packages install in isolation.** Packages a tap declares are installed into a
   throwaway virtual environment, never into the system Python. The pre-installed common
   packages remain available; the per-tap environment is discarded after the run.
+- **Private-network egress is blocked.** HTTP taps and REST endpoint destinations refuse to
+  connect to loopback, link-local, private, or cloud-metadata addresses, so a tap cannot be
+  pointed at internal services. If your endpoints legitimately live on an internal network,
+  set `DATRIS_ALLOW_PRIVATE_EGRESS=true` in `.env` (see the
+  [Configuration Reference](/configuration-reference#container-environment-variables)).
 
 ## Configuration
 

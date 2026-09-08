@@ -24,9 +24,9 @@ Catalogs aren't a separate table or external system. Each tap and pipeline carri
 
 When you create a catalog explicitly via the UI, Datris persists the name by writing a placeholder tap named `__catalog__<name>` (description "Catalog placeholder", `enabled=false`). This makes empty catalogs survive across UI reloads. The placeholder is hidden from the Taps list and ignored by the runtime.
 
-## The Data Catalog page
+## The Catalog tab
 
-The **Data Catalog** tab in the UI shows one card per catalog plus an **Uncataloged** card.
+The **Catalog** tab in the UI shows one card per catalog plus an **Uncataloged** card.
 
 - Each card shows the catalog name and counts of taps + pipelines.
 - Click a card to expand it. Inside you'll see:

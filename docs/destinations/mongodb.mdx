@@ -15,8 +15,10 @@ The JSON input mode is controlled by `everyRowContainsObject` in the source `fil
 
 | Value   | Description                                                                          |
 |---------|--------------------------------------------------------------------------------------|
-| `true`  | Each line of the file is a separate JSON document (newline-delimited JSON). Default. |
+| `true`  | Each line of the file is a separate JSON document (newline-delimited JSON).          |
 | `false` | The file contains a single JSON array; each element becomes a separate document.     |
+
+The effective default depends on whether the `jsonAttributes` block is present: when `fileAttributes.jsonAttributes` is absent altogether, the loader assumes `true` (newline-delimited); when the block is present but `everyRowContainsObject` is omitted, it defaults to `false` (single JSON array). Set it explicitly to avoid surprises.
 
 ## Upsert with Compound Keys
 

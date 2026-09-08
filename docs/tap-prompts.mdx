@@ -27,7 +27,7 @@ If a key appears in any of those texts, the fragment's `content` is appended to 
 
 ## Managing fragments
 
-Fragments are managed via the `/api/v1/tap-prompts` REST endpoints (GET / POST / DELETE / `suggest`). There is no dedicated UI surface today — tap creation and editing live in the **Catalog** tab, and prompt fragments continue to apply transparently to tap creation, brainstorm, auto-fix, and optimize whenever a matching keyword appears.
+Fragments are managed via the `/api/v1/tap-prompts` REST endpoints (GET / POST / DELETE / `suggest`). The only UI surface is **Configuration → Data Sources**, which edits the reserved `data-sources` fragment; other fragments are managed through the API. Tap creation and editing live in the **Catalog** tab, and prompt fragments continue to apply transparently to tap creation, brainstorm, auto-fix, and optimize whenever a matching keyword appears.
 
 To add a fragment from the CLI or a script:
 
@@ -59,7 +59,7 @@ Keep them dense and actionable:
 - Lead with the **preferred library** and the exact **env var names** the generator should use. Example: `Use the stripe Python SDK (pip install stripe). Set stripe.api_key = os.environ.get("STRIPE_API_KEY")`.
 - State **rate limits** explicitly so the generator can add throttling up front. Example: `Polygon.io free tier is 5 requests per second. Throttle with time.sleep(0.25) or a ThreadPoolExecutor with max_workers=3.`
 - Note **required headers** or auth quirks. Example: `SEC EDGAR requires a User-Agent header identifying the requester (e.g. "CompanyName contact@email"). Rate limit: 10 requests per second.`
-- Never include secrets or long examples. A fragment over ~2000 characters triggers a soft warning — multiple matching fragments can crowd the LLM context.
+- Never include secrets or long examples — multiple matching fragments can crowd the LLM context.
 
 ## Injection preview in the tap wizard
 

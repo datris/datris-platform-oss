@@ -39,7 +39,7 @@ Ingest unstructured documents (PDFs, text files, HTML) into [Qdrant](https://qdr
 | `collectionName` | string | (required) | Qdrant collection name. Auto-created if it doesn't exist. |
 | `chunking` | object | recursive, 500/50 | Chunking strategy configuration (see below). |
 | `metadata` | map | `{}` | Static key-value metadata stored on every chunk as Qdrant payload. Used for filtered search. |
-| `embeddingSecretName` | string | _server default_ | Optional override of the embedding Vault secret. Defaults to the server-level `ai.embedding.secretName` (`oss/embedding`), which is seeded automatically — set this only to point a single pipeline at a different embedding model. |
+| `embeddingSecretName` | string | _server default_ | Embedding Vault secret name. Only consulted when the server-level `ai.embedding.secretName` is unset; with the default configuration (`oss/embedding`, seeded automatically) the server-level secret is always used and this field is ignored. |
 | `qdrantSecretName` | string | (required) | Vault secret name for Qdrant connection. |
 
 ## Supported File Types
@@ -92,7 +92,7 @@ vault kv put secret/oss/embedding \
 
 | Field | Description |
 |-------|-------------|
-| `provider` | `openai` or `ollama`. (Anthropic has no embeddings API.) |
+| `provider` | `openai`, `azure`, `tei`, or `ollama`. (Anthropic has no embeddings API.) |
 | `endpoint` | Embedding API URL. Must speak the OpenAI embeddings contract. |
 | `model` | Embedding model name. |
 | `apiKey` | API key. Omit for local Ollama. |

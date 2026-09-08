@@ -14,9 +14,9 @@ Datris is fully open source. The complete platform — server, MCP server, CLI, 
 | `datrisserver/` | Scala/Spring Boot pipeline server — ingestion, data quality, transformation, destinations |
 | `mcp-server/` | Python MCP server and CLI (`server.py`, `cli.py`) |
 | `ui/` | Angular web dashboard — pipeline management, ingestion monitoring, search, secrets |
-| `docker/` | Docker Compose configuration, Vault init scripts, Dockerfiles |
+| `docker/` | Vault and MinIO init scripts, Vault config, and the Compose-time server `application.yaml` override |
 | `docs/` | Mintlify documentation (what you're reading now) |
-| `examples/` | Example applications — RAG chat, Kafka loader, preprocessor, topic subscriber, MCP test |
+| `examples/` | Example applications — RAG chat, Kafka loader, preprocessor, topic subscriber, MCP test, Airflow DAGs, market/macro agent |
 | `test-data/` | Test data files and scripts |
 
 ## Key Files
@@ -44,7 +44,7 @@ cd datris-platform-oss
 sbt clean assembly
 ```
 
-Produces a fat JAR in `datrisserver/target/scala-2.13/`.
+Produces a fat JAR in `datrisserver/target/scala-2.12/`.
 
 ### Docker Images
 

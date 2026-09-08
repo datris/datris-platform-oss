@@ -25,7 +25,7 @@ GET /api/v1/metadata/postgres/schemas
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `database` | query | `datris` | Database name |
+| `database` | query | configured Postgres database | Database name. Defaults to the configured Postgres database (`postgres.database`, which is `datris` on a default install) |
 
 Returns a JSON array of schema names. System schemas (`information_schema`, `pg_catalog`, `pg_toast`) are excluded.
 
@@ -39,7 +39,7 @@ GET /api/v1/metadata/postgres/tables
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `database` | query | `datris` | Database name |
+| `database` | query | configured Postgres database | Database name. Defaults to the configured Postgres database (`postgres.database`, which is `datris` on a default install) |
 | `schema` | query | `public` | Schema name |
 | `vectorOnly` | query | `false` | If `true`, return only pgvector tables (tables with an `embedding` column) |
 
@@ -55,7 +55,7 @@ GET /api/v1/metadata/postgres/columns
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `database` | query | `datris` | Database name |
+| `database` | query | configured Postgres database | Database name. Defaults to the configured Postgres database (`postgres.database`, which is `datris` on a default install) |
 | `schema` | query | `public` | Schema name |
 | `table` | query | (required) | Table name |
 
