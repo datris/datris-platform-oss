@@ -19,8 +19,11 @@ class JobRunnerFailureSpec extends AnyFunSuite {
     /** Captures events instead of writing to Mongo. (processName, state, code, description) */
     private class CapturingStatusUtil extends StatusUtil {
         val events = ListBuffer[(String, String, String, String)]()
-        override def info(state: String, description: String): Unit = events += (("JobRunner", state, "info", description))
-        override def error(state: String, description: String): Unit = events += (("JobRunner", state, "error", description))
+        // Mirrors the real StatusUtil: a shared, last-writer-wins process name.
+        var current = "SomeLoader"
+        override def overrideProcessName(processName: String): Unit = current = processName
+        override def info(state: String, description: String): Unit = events += ((current, state, "info", description))
+        override def error(state: String, description: String): Unit = events += ((current, state, "error", description))
         override def errorAs(processName: String, state: String, description: String): Unit =
             events += ((processName, state, "error", description))
     }
@@ -45,7 +48,7 @@ class JobRunnerFailureSpec extends AnyFunSuite {
         assert(message == "PostgresLoader failed: relation \"orders\" does not exist")
         assert(su.events.size == 1)
         val (process, state, code, description) = su.events.head
-        assert(process == "JobRunner")
+        assert(process == "JobRunner", "terminal event is JobRunner's even though a loader last set the shared process name")
         assert(state == "end")
         assert(code == "info", "a JobRunner error event would shadow the loader's own error in the rollup")
         assert(description.startsWith("Process completed, error: PostgresLoader failed: relation \"orders\" does not exist"))
@@ -60,7 +63,9 @@ class JobRunnerFailureSpec extends AnyFunSuite {
 
         assert(su.events.size == 1)
         val (process, state, code, description) = su.events.head
-        assert(process == "JobRunner" && state == "end" && code == "error")
+        // Job-thread failures keep the pre-existing attribution (the stage that
+        // last set the process name, e.g. DataQuality) — unchanged behaviour.
+        assert(process == "SomeLoader" && state == "end" && code == "error")
         assert(description.contains("IllegalStateException: schema mismatch"))
         assert(message.contains("IllegalStateException: schema mismatch"))
     }

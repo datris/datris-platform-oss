@@ -58,6 +58,9 @@ object JobRunner {
         loaderFailure match {
             case Some((loaderName, t)) =>
                 val message = loaderName + " failed: " + loaderErrorMessage(t)
+                // The shared processName still names whichever loader last
+                // overrode it; the terminal event is JobRunner's, so say so.
+                statusUtil.overrideProcessName("JobRunner")
                 statusUtil.info("end", "Process completed, error: " + message + "\n" + stack)
                 message
             case None =>
