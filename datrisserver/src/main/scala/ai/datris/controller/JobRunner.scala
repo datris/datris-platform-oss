@@ -13,6 +13,7 @@ import ai.datris.util._
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.concurrent.{Executors, ThreadFactory}
+import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.{Duration, DurationInt}
 
@@ -30,6 +31,40 @@ object JobRunner {
     }
 
     private val destinationTimeoutMinutes: Int = 10
+
+    /** The destination-facing text for a loader failure: the exception's own
+      * message, falling back to its class name. Never a stack trace — this is
+      * what lands in `rollup.jobs[].lastError.description`, the field agents
+      * already read to decide what to retry. The stack stays on the event stream. */
+    private[controller] def loaderErrorMessage(t: Throwable): String =
+        Option(t.getMessage).map(_.trim).filter(_.nonEmpty).getOrElse(t.getClass.getName)
+
+    /** Terminal status events for a failed job. Returns the short, destination-
+      * facing message the incident trigger should carry.
+      *
+      * When a loader already recorded its own error event (`loaderFailure`),
+      * JobRunner must NOT write a second one: the rollup classifier takes the
+      * first error event it finds, and a "JobRunner failed with <stack>" event
+      * would hide which destination died. JobRunner instead closes the stream
+      * with an info-level end event carrying the full stack trace for the detail
+      * view. Failures raised on the job thread itself (validator, preprocessor,
+      * DQ, transformation) keep today's JobRunner error event. */
+    private[controller] def reportFailure(
+        statusUtil: StatusUtil,
+        loaderFailure: Option[(String, Throwable)],
+        e: Throwable
+    ): String = {
+        val stack = Throwables.getStackTraceAsString(e)
+        loaderFailure match {
+            case Some((loaderName, t)) =>
+                val message = loaderName + " failed: " + loaderErrorMessage(t)
+                statusUtil.info("end", "Process completed, error: " + message + "\n" + stack)
+                message
+            case None =>
+                statusUtil.error("end", "Process completed, error: " + stack)
+                stack
+        }
+    }
 
     /** Derive a per-job record count and data type from the job's Data shape.
      *  CSV/delimited → row count, "record". Unstructured (rawBytes) → 1, "document".
@@ -83,6 +118,12 @@ class JobRunner(jobContext: JobContext) extends Runnable {
         // report which destinations finished before the failure.
         var loaderFutures: List[(String, Future[Unit])] = Nil
 
+        // First destination loader to fail, captured on the pool thread so the
+        // outer catch (job thread) can name it. Future completion establishes
+        // the happens-before; the AtomicReference keeps the first-wins rule
+        // honest when two destinations fail in the same run.
+        val loaderFailure = new AtomicReference[(String, Throwable)](null)
+
         try {
             statusUtil.info("begin", "Process started")
 
@@ -134,10 +175,18 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             //     instantly. JobRunner is the right boundary for that translation:
             //     the JVM is still healthy enough to log + fail this job; we don't
             //     need to take down the whole server for one bad pipeline.
+            //  3. Record the failure under the LOADER's name before rethrowing, so
+            //     `rollup.jobs[].lastError` names the destination that died and
+            //     carries its own message rather than JobRunner + a stack trace.
+            //     Every failing loader writes its own event; the outer catch
+            //     below then stays quiet (see JobRunner.reportFailure).
             def runLoader(loaderName: String)(body: => Unit): Future[Unit] = Future {
                 try { withTenant(body) }
                 catch {
                     case t: Throwable =>
+                        loaderFailure.compareAndSet(null, (loaderName, t))
+                        try withTenant(statusUtil.errorAs(loaderName, "end", loaderName + " failed: " + JobRunner.loaderErrorMessage(t)))
+                        catch { case se: Exception => logger.warn("could not record " + loaderName + " failure event: " + se.getMessage) }
                         throw new RuntimeException(loaderName + " failed: " + t.getClass.getName + ": " + t.getMessage, t)
                 }
             }
@@ -201,8 +250,12 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             // VirtualMachineError (OOM, StackOverflow) gets logged + reported here
             // but the JVM may still be unhealthy — that's a separate concern.
             case e: Throwable =>
-                val errorMessage = Throwables.getStackTraceAsString(e)
-                statusUtil.error("end", "Process completed, error: " + errorMessage)
+                // Full stack for the AI fix suggestion; the short destination-
+                // facing message (when a loader failed) for the incident trigger
+                // and the thrown exception, so every downstream reader starts
+                // from the same identity the rollup shows.
+                val stackTrace = Throwables.getStackTraceAsString(e)
+                val errorMessage = JobRunner.reportFailure(statusUtil, Option(loaderFailure.get), e)
                 recordRunLineage(
                     startedAtMs,
                     recordCount,
@@ -211,7 +264,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     if (jobContext.state == CANCELLED || e.isInstanceOf[InterruptedException]) "CANCELLED" else "ERROR",
                     Option(e.getMessage).getOrElse(e.getClass.getName)
                 )
-                val fix = FixSuggestionUtil.suggest("pipeline", new Gson().toJson(jobContext.config), errorMessage)
+                val fix = FixSuggestionUtil.suggest("pipeline", new Gson().toJson(jobContext.config), stackTrace)
                 if (fix != null) {
                     logger.info("AI Fix Suggestion: " + fix.summary)
                     statusUtil.suggestion(fix)

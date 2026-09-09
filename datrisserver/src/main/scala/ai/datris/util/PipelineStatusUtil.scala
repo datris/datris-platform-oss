@@ -114,7 +114,7 @@ object PipelineStatusUtil {
     // (the MCP `get_pipeline_status` tool, primarily) that want a single boolean to
     // poll on instead of having to replay the begin/info/end/error rules themselves.
 
-    private def classifyJob(events: List[PipelineStatus]): PipelineJobRollup = {
+    private[util] def classifyJob(events: List[PipelineStatus]): PipelineJobRollup = {
         val sorted = events.sortBy(_.epoch)
         val first = sorted.head
         val last = sorted.last

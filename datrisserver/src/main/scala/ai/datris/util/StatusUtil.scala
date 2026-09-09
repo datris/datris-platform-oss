@@ -80,6 +80,16 @@ class StatusUtil {
         send(state, "error", description)
     }
 
+    /** Write an error event attributed to an explicit process name instead of
+      * the shared `processName` field. Destination loaders run in parallel on a
+      * thread pool and each calls `overrideProcessName`, so by the time one of
+      * them fails the shared field may name a *different* loader. JobRunner uses
+      * this so the rollup's `lastError.processName` is the loader that died. */
+    def errorAs(processName: String, state: String, description: String): Unit = {
+        hadError = true
+        send(state, "error", description, processNameOverride = Option(processName))
+    }
+
     /** Record an AI fix suggestion for a failed job. Writes a normal info event
       * whose description carries the readable text (so existing detail views
       * show it unchanged) plus the structured fields, and stamps the one-line
@@ -95,7 +105,7 @@ class StatusUtil {
         send("end", "info", description, fix)
     }
 
-    private def send(state: String, code: String, description: String, fix: FixSuggestion = null): Unit = {
+    private def send(state: String, code: String, description: String, fix: FixSuggestion = null, processNameOverride: Option[String] = None): Unit = {
         state match {
             case "begin" | "processing" | "end" =>
             case _ => throw new InvalidParameterException("Invalid state. State must be one of the following: begin, processing, end")
@@ -106,7 +116,15 @@ class StatusUtil {
         }
 
         val status =
-            Status(processName.getOrElse(""), publisherToken.getOrElse(""), pipelineToken.getOrElse(""), filename.getOrElse(""), state, code, description)
+            Status(
+                processNameOverride.orElse(processName).getOrElse(""),
+                publisherToken.getOrElse(""),
+                pipelineToken.getOrElse(""),
+                filename.getOrElse(""),
+                state,
+                code,
+                description
+            )
 
         writeToNoSQLDb(status, fix)
 

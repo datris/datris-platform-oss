@@ -237,7 +237,7 @@ Each status entry (`PipelineStatus`) contains:
 | `FileUploadAPIController` | Upload request handling before the job is created |
 | `DataQuality` | Data quality validation |
 | `Transformation` | Data transformation |
-| `JobRunner` | Destination orchestration |
+| `JobRunner` | Destination orchestration. When a destination loader fails, the job's `lastError` is attributed to that loader (below), not to `JobRunner`; the `JobRunner` end event carries the full stack trace |
 | `PostgresLoader` | PostgreSQL loading |
 | `SnowflakeLoader` | Snowflake loading |
 | `DatabricksLoader` | Databricks loading |
