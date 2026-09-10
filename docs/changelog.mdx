@@ -3,6 +3,18 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.29.0" description="September 10, 2026">
+  **Datris can now diagnose its own deployment.**
+
+  - **Doctor.** A built-in operational self-check finds the problems that used to be discovered only after an outage: a Vault token about to expire or silently capped, an AI provider secret that is missing or incomplete so the server would not come back after an upgrade, an embedding model that was never pulled, a disk about to fill, and a mixed-version stack. Every finding comes with the command that fixes it; nothing is changed automatically.
+  - **Four places to run it.** The cheap checks run at every server start as `DOCTOR` log lines (a healthy install logs no warnings). The full set runs on demand from Configuration → Doctor, from the new `run_doctor` MCP tool, and from the new `datris doctor` CLI command.
+  - **Host checks from the CLI.** On the machine running Docker, `datris doctor` also catches data on an anonymous volume, data left behind on a dangling volume, a container still running with an old `.env`, containers from a previous Compose file, a stale from-source build, and an unreachable MCP server. `datris doctor --pre-upgrade` works with the server stopped and is step 0 of the upgrade guide.
+  - **Optional AI probe.** On request, the doctor sends a minimal request through each configured AI model to confirm the key and model id still work. Never run automatically.
+  - **Version stamps.** The server reports the exact build it is running and the UI image carries its version, so drift between components is visible.
+  - **Fresh-install AI defaults refreshed.** New installs seed Claude Fable 5.1 (Anthropic assistant), GPT-5.6 Sol (OpenAI) and Claude Sonnet 5 (overload fallback); code generation stays on Claude Opus 5. Existing installs are unchanged.
+  - Upgrade: `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. CLI users on pip or Homebrew: upgrade to 1.29.0.
+</Update>
+
 <Update label="v1.28.2" description="September 10, 2026">
   **Failed loads now say which destination failed, and why.**
 
