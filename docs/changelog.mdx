@@ -3,6 +3,15 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.28.2" description="September 10, 2026">
+  **Failed loads now say which destination failed, and why.**
+
+  - **Destination failures are named in the job status.** When a run fails while writing to a destination, the job's error identifies that destination and carries its own error message instead of a generic orchestration failure with a stack trace. The full stack trace remains in the run's event stream.
+  - **Agents and the CLI act on the real cause.** The Assistant, MCP clients and the recovery agent read the same job status field, so they see the failing destination directly. The `datris` CLI prints the failing destination with the error on a failed upload.
+  - **Multi-destination runs** still report as a single job; when one destination fails and another succeeds, the error names the one that failed.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. CLI users on pip or Homebrew: upgrade to 1.28.2.
+</Update>
+
 <Update label="v1.28.1" description="September 8, 2026">
   **Security and documentation maintenance release.**
 
