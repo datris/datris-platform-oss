@@ -65,6 +65,7 @@ object MCPToolRoutes {
         // Infrastructure
         "get_version" -> Local,
         "check_service_health" -> Local,
+        "run_doctor" -> Mapped("GET", "/api/v1/doctor"),
 
         // Vector search
         "search_qdrant" -> Mapped("POST", "/api/v1/search/qdrant"),

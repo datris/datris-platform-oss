@@ -114,6 +114,7 @@
               "agent-policy",
               "incidents",
               "monitoring",
+              "doctor",
               "notifications"
             ]
           },

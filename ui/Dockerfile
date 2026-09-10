@@ -6,6 +6,12 @@ COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
+# Version stamp read by the Doctor panel and `datris doctor` (version.skew).
+# The release workflow passes the tag; a from-source build without it reports
+# "unknown", which doctor flags as a warning rather than an error. Written
+# here (build stage) because the nginx stage runs unprivileged.
+ARG APP_VERSION=unknown
+RUN printf '{"version":"%s"}\n' "$APP_VERSION" > /app/dist/pipeline-ui/browser/version.json
 
 # Stage 2: Serve (non-root nginx, listens on 8080)
 FROM nginxinc/nginx-unprivileged:alpine@sha256:d9083fe47768377ef55dedafd67d4da7c2f2bc2bece7554954f29359deb0dce9

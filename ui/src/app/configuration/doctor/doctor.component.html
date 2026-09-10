@@ -1,0 +1,61 @@
+<div class="doctor-pane">
+  <div class="header">
+    <div>
+      <h3>Doctor</h3>
+      <p class="hint">Operational self-check: Vault token expiry, AI slot secrets, embedding model loaded, disk usage, version skew. Every finding comes with the command that fixes it; nothing is changed.</p>
+    </div>
+    <div class="header-actions">
+      <label class="toggle" title="Send a minimal request through each configured AI slot to confirm the key and model work. Spends a few tokens.">
+        <input type="checkbox" [(ngModel)]="includeAiProbes" name="includeAiProbes" [disabled]="loading" />
+        Include AI probes
+      </label>
+      <button class="btn-primary" (click)="run()" [disabled]="loading">{{ loading ? 'Running…' : (report ? 'Run again' : 'Run checks') }}</button>
+    </div>
+  </div>
+
+  <p class="error" *ngIf="error">{{ error }}</p>
+
+  <div class="empty" *ngIf="!report && !loading && !error">
+    <p>Nothing has run yet. Checks run only when you ask — the AI probe costs tokens, so it is off by default.</p>
+  </div>
+
+  <ng-container *ngIf="report">
+    <div class="summary" [class.summary-problems]="hasProblems">
+      <span class="count count-ok">{{ report.summary.ok }} ok</span>
+      <span class="count count-warn">{{ report.summary.warn }} warn</span>
+      <span class="count count-error">{{ report.summary.error }} error</span>
+      <span class="count count-skip">{{ report.summary.skip }} skipped</span>
+      <span class="meta">{{ surfaceLine }} · {{ report.ranAt }}</span>
+    </div>
+
+    <table class="checks">
+      <thead>
+        <tr>
+          <th class="col-status"></th>
+          <th class="col-id">Check</th>
+          <th>Detail</th>
+          <th class="col-ms">ms</th>
+        </tr>
+      </thead>
+      <tbody>
+        <ng-container *ngFor="let c of report.checks">
+          <tr [class]="'row-' + c.status">
+            <td class="col-status"><span class="icon" [class]="'icon icon-' + c.status">{{ icon(c.status) }}</span></td>
+            <td class="col-id"><code>{{ c.id }}</code></td>
+            <td class="detail">{{ c.detail }}</td>
+            <td class="col-ms">{{ c.ms }}</td>
+          </tr>
+          <tr class="remediation-row" *ngIf="(c.status === 'warn' || c.status === 'error') && c.remediation">
+            <td></td>
+            <td colspan="3" class="remediation">↳ {{ c.remediation }}</td>
+          </tr>
+        </ng-container>
+      </tbody>
+    </table>
+  </ng-container>
+
+  <p class="footer">
+    Host checks (anonymous Docker volumes, container env drift, orphaned containers, disk on the host) need
+    <code>datris doctor</code> on the machine running Docker. Before an upgrade, run <code>datris doctor --pre-upgrade</code> there.
+  </p>
+</div>

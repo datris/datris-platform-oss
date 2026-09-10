@@ -427,6 +427,31 @@ Get the server version.
 datris version
 ```
 
+---
+
+### `datris doctor`
+
+Operational self-check: the server's own checks (Vault token expiry, AI slot secrets, embedding model loaded, disk, version skew) plus host checks that need Docker (anonymous volumes, container env drift, orphaned containers, stale source build). Every finding prints the command that fixes it; nothing is changed. See [Doctor](/doctor) for the full check list.
+
+```bash
+datris doctor                   # human-readable report
+datris doctor --json            # the same report as JSON
+datris doctor --probes ai       # also confirm each AI model answers (spends a few tokens)
+datris doctor --pre-upgrade     # host checks only — run before every upgrade
+```
+
+| Option | Description |
+|---|---|
+| `--pre-upgrade` | Host checks plus the AI slot secrets via the vault container; works with the server stopped. Prints the upgrade command when clean. |
+| `--probes ai` | Opt in to the AI reachability probe |
+| `--json` | Print the merged report as JSON |
+| `--project-dir DIR` | Directory holding `docker-compose.yml` and `.env` (default: current directory) |
+| `--compose-file FILE` | Compose file to inspect (e.g. `docker-compose.standalone.yml`) |
+
+Unlike the other commands, `doctor` calls the server's REST API directly (`DATRIS_URL`, default `http://localhost:8080`; `DATRIS_API_KEY` when API keys are on) — a dead MCP server is itself a finding, not a reason to fail.
+
+Exit codes: `0` all ok, `1` any warning, `2` any error, `3` server unreachable (host checks still ran).
+
 ## Pipeline Name Auto-Detection
 
 When `--pipeline` is not specified, the CLI derives the pipeline name from the filename:

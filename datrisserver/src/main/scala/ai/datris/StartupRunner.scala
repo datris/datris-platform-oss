@@ -185,6 +185,12 @@ class StartupRunner extends ApplicationRunner {
     @Value("${versionCap:50}")
     var versionCap: Int = _
 
+    // Doctor: log the cheap operational self-checks at boot (Vault token TTL,
+    // AI slot secrets, embedding model, disk). Warn lines only — never blocks
+    // startup. GET /api/v1/doctor and `datris doctor` run the same checks.
+    @Value("${doctor.onStartup:true}")
+    var doctorOnStartup: Boolean = _
+
     @Override
     def run(args: ApplicationArguments): Unit = {
         ai.datris.util.TapScriptRunner.assertIsolationConfig()
@@ -411,6 +417,16 @@ class StartupRunner extends ApplicationRunner {
             else
                 null
         }
+        // Doctor's startup subset runs BEFORE the AI-secret hard failures below
+        // so a missing `oss/codegen` gets a DOCTOR line with its fix ahead of
+        // the stack trace that stops the boot. Wrapped: a doctor bug never
+        // blocks startup.
+        ai.datris.util.DoctorService.configure(ai.datris.util.DoctorService.Slots(aiPrimarySecretName, codegenSecretName, embeddingSecretName))
+        if (doctorOnStartup) {
+            try ai.datris.util.DoctorService.runStartupLive()
+            catch { case e: Exception => logger.warn("DOCTOR startup checks failed (continuing): " + e.getMessage) }
+        }
+
         // AI configuration is required — CodeGen data quality and transformation depend on it.
         // Three independent secrets, each fully self-describing (provider/endpoint/model/apiKey/version
         // all live inside the Vault secret).

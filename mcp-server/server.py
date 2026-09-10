@@ -510,6 +510,27 @@ def _headers():
     return h
 
 
+def _mcp_server_version():
+    """datris-mcp-server version: the installed package (pip / Homebrew), else
+    the pyproject.toml beside this file (the Docker image copies the tree
+    rather than installing it), else 'unknown'."""
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("datris-mcp-server")
+    except Exception:
+        pass
+    try:
+        import re as _re
+        pyproject = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml")
+        with open(pyproject, encoding="utf-8") as f:
+            m = _re.search(r'^version\s*=\s*"([^"]+)"', f.read(), _re.M)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _call(method, path, timeout=300, **kwargs):
     """Make an HTTP request to the pipeline API.
 
@@ -1829,6 +1850,30 @@ def _base_tools():
             inputSchema={
                 "type": "object",
                 "properties": {},
+            }
+        ),
+        Tool(
+            name="run_doctor",
+            description=(
+                "Run the platform's operational self-check and return a report: Vault token expiry, AI slot secrets complete, "
+                "embedding model actually loaded, disk usage, component version skew, and (opt-in) whether each AI model answers. "
+                "Each non-ok check carries a remediation command for the operator; nothing is changed. "
+                "Do NOT call run_doctor as part of the normal workflow — it is slow. Only use it for diagnostics when something fails "
+                "or the user asks about the deployment's health. Host-level checks (Docker volumes, container env drift) need "
+                "`datris doctor` on the machine running Docker and are not included here."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "include_ai_probes": {
+                        "type": "boolean",
+                        "description": "Also send a minimal request through each configured AI slot to confirm the key and model work (spends a few tokens). Default false."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "`full` (default) or `quick` (only the cheap startup-safe subset)."
+                    }
+                },
             }
         ),
         # --- Vector Database Search Tools ---
@@ -3285,7 +3330,23 @@ def _dispatch(name: str, args: dict) -> str:
                      json={"pipeline": args["pipeline"], "fields": args["fields"]})
 
     elif name == "get_version":
-        return _call("get", "/api/v1/version")
+        raw = _call("get", "/api/v1/version")
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                data["mcpServerVersion"] = _mcp_server_version()
+                return json.dumps(data)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return raw
+
+    elif name == "run_doctor":
+        params = {"mcp": _mcp_server_version()}
+        if args.get("include_ai_probes"):
+            params["probes"] = "ai"
+        if args.get("mode") in ("quick", "full"):
+            params["mode"] = args["mode"]
+        return _call("get", "/api/v1/doctor", params=params)
 
     elif name == "check_service_health":
         return _call("get", "/api/v1/health/services")

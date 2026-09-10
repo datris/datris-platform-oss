@@ -1,0 +1,101 @@
+---
+title: "Doctor"
+description: "Operational self-check for a Datris deployment"
+---
+
+`datris doctor` checks a running deployment for the failure modes that are cheap to detect and expensive to miss: a Vault token about to expire, an AI slot secret missing so the server won't boot after an upgrade, an embedding model that was never pulled, a disk about to fill, data sitting on an anonymous Docker volume, a container still running with an old `.env`, a mixed-version stack. Every finding names the command that fixes it. Doctor never changes anything.
+
+## Where it runs
+
+| Surface | What it covers | When |
+|---|---|---|
+| Server log at boot | The cheap subset (Vault token, AI secrets, embedding model, disk) as `DOCTOR` warn lines | Every start; a fresh install logs nothing |
+| **Configuration → Doctor** | Every server-side check, with an optional AI probe | On demand |
+| `run_doctor` MCP tool | Same as the UI; for an agent diagnosing a failure | On demand — not part of the normal workflow |
+| `datris doctor` CLI | Server-side checks **plus** host checks that need Docker | On demand, and `--pre-upgrade` before every upgrade |
+
+The server-side report is also available at `GET /api/v1/doctor` for scripts. It is not a public endpoint — it names environment keys, Vault paths and model ids — so an API key with `config:read` is required when [API keys](/api-keys) are on.
+
+## The checks
+
+| Check | Fires when | Fix it prints |
+|---|---|---|
+| `vault.token_ttl` | The server's Vault token expires within 7 days (error), or a 10-year periodic token was clamped to Vault's default 32-day ceiling (warn) | Raise `max_lease_ttl` in the Vault config, recreate the vault container, restart the server |
+| `vault.ai_slots` | An AI slot secret is missing or lacks provider / endpoint / model / key | The exact `vault kv put` or `vault kv patch` |
+| `jdbc.mssql_driver` | A pipeline uses `type: mssql` but the driver is not bundled | Add the driver and rebuild, or change the source type |
+| `ai.embedding_model` | The bundled embedding service is serving a different model than the embedding slot names, or Ollama hasn't pulled it | `ollama pull …` or align the slot with the served model |
+| `ai.model_reachable` | **Opt-in.** A chat or embedding slot's key is rejected, the model id is unknown, or the endpoint doesn't answer within 10 s | Fix the key / pick a current model in Configuration → AI Providers |
+| `disk.usage` | The disk holding the server or Docker's data root is ≥ 85% full (warn) or ≥ 95% (error) | Prune images and builder cache; inspect the pip-cache and object-store volumes |
+| `version.skew` | Server, UI, MCP server and CLI differ in major.minor, or the UI image carries no version stamp | Pull all images; upgrade the CLI |
+| `env.seen` | Never — reports which hardening variables reached the server | — |
+| `volumes.anonymous` | A stateful service (postgres, mongodb, minio, vault, tei, kafka) stores data on an anonymous volume that `docker compose down` will orphan | Add a named volume and copy the data across |
+| `volumes.dangling` | A dangling anonymous volume holds a recognizable Postgres / MongoDB / MinIO data directory — data left behind by a container recreate | Inspect before pruning; copy into the named volume to recover |
+| `vault.hcl_drift` | `docker/vault.hcl` changed after the vault container started (Vault reads its config only at start) | `docker compose up -d --force-recreate vault` |
+| `env.not_forwarded` | `.env` sets a key that no service in the compose file references, so the value never reaches a container | Add it to the service's `environment:` block |
+| `env.container_drift` | A datris container was created with a different `.env` than the current one (`restart` does not reload env). Error when a credential-looking key differs | `docker compose up -d --force-recreate --no-deps <service>` |
+| `compose.orphans` | Containers from a previous compose file are still present and may hold ports | `docker compose up -d --remove-orphans` |
+| `build.stale_jar` | Building from source, and the running server's git commit or build time is behind the checkout | Rebuild with `--no-cache` |
+| `mcp.reachable` | The MCP server's SSE endpoint doesn't answer within 3 s | Check the `mcp-server` container |
+
+Checks below the line run only from the CLI on the machine running Docker; the UI and MCP surfaces report them as not applicable. Secret values never appear in any output — only key names.
+
+## CLI
+
+```bash
+datris doctor                      # server checks + host checks, human-readable
+datris doctor --json               # the same report as JSON
+datris doctor --probes ai          # also send a minimal request through each AI slot (spends a few tokens)
+datris doctor --pre-upgrade        # host checks only; safe with the server stopped
+```
+
+Run it from the directory that holds `docker-compose.yml` and `.env`, or point it there with `--project-dir` (and `--compose-file` for the standalone file). Unlike the other CLI commands, `doctor` talks to the server directly rather than through the MCP server — a dead MCP server is itself a finding. Set `DATRIS_URL` if the server is not on `http://localhost:8080`, and `DATRIS_API_KEY` when API keys are on.
+
+Exit codes make it scriptable:
+
+| Code | Meaning |
+|---|---|
+| 0 | Everything ok |
+| 1 | At least one warning |
+| 2 | At least one error |
+| 3 | Server unreachable — host checks ran, server checks skipped |
+
+Skipped checks (Docker not on this machine, a service not running) never affect the exit code.
+
+## Before an upgrade
+
+```bash
+datris doctor --pre-upgrade
+```
+
+This runs the host checks plus a read of the three AI slot secrets through the vault container, so a missing secret is caught **before** the new server crash-loops on it, and an anonymous volume is caught before `--remove-orphans` could drop it. When nothing is at error level it prints the upgrade command. See [Upgrading](/installation#upgrading).
+
+## Report format
+
+All surfaces produce the same JSON:
+
+```json
+{
+  "doctorVersion": 1,
+  "ranAt": "2026-09-10T14:00:00Z",
+  "mode": "full",
+  "surface": { "server": "1.29.0", "cli": "1.29.0" },
+  "summary": { "ok": 12, "warn": 1, "error": 0, "skip": 2 },
+  "checks": [
+    {
+      "id": "vault.token_ttl",
+      "status": "warn",
+      "severity": "warn",
+      "detail": "ttl 28d, period 3650d — clamped",
+      "remediation": "…",
+      "surface": "server",
+      "ms": 12
+    }
+  ]
+}
+```
+
+`status` is one of `ok`, `warn`, `error`, `skip`; `surface` is `server`, `host`, or `cli`.
+
+## Turning off the boot-time lines
+
+The startup subset only logs; it never blocks a start. To silence it, set `DOCTOR_ONSTARTUP=false` in the datris service environment. The on-demand surfaces are unaffected.

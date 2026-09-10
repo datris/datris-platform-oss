@@ -22,6 +22,7 @@ import httpx
 from httpx_sse import aconnect_sse
 
 MCP_URL = os.getenv("MCP_SERVER_URL", "http://localhost:3000/sse")
+CLI_VERSION = "1.28.2"
 
 # ── MCP Client (lightweight, sync-wrapped) ────────────────────────────
 
@@ -76,7 +77,7 @@ async def _connect():
     await _post_client.post(_endpoint, json={
         "jsonrpc": "2.0", "id": init_id,
         "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": "1.28.2"}},
+        "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": CLI_VERSION}},
     })
     await asyncio.wait_for(_responses.get(), 10)
     await _post_client.post(_endpoint, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -139,7 +140,7 @@ def b64_file(path):
 # ── CLI Commands ──────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option(version="1.28.2")
+@click.version_option(version=CLI_VERSION)
 def cli():
     """Datris CLI — The Data Control Plane for AI Agents"""
     pass
@@ -819,6 +820,42 @@ def tap_update(name, enabled, cron, pipeline, description, endpoint_url, json_ou
 
 
 @cli.command()
+@click.option("--pre-upgrade", is_flag=True, default=False,
+              help="Host checks only (plus the AI slot secrets via the vault container); safe to run with the server stopped. Prints the upgrade command on success.")
+@click.option("--probes", default="", help="Opt-in probe groups, comma-separated. `ai` sends a minimal request through each AI slot (spends a few tokens).")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Print the merged report as JSON")
+@click.option("--compose-file", default=None, help="Compose file to inspect (default: docker-compose.yml in --project-dir)")
+@click.option("--project-dir", default=".", help="Directory holding docker-compose.yml and .env (default: current directory)")
+def doctor(pre_upgrade, probes, json_output, compose_file, project_dir):
+    """Operational self-check: server-side checks via the REST API plus host checks that need Docker.
+
+    Exit codes: 0 all ok, 1 any warning, 2 any error, 3 server unreachable (server checks skipped).
+    Unlike other commands this talks to the server directly (DATRIS_URL, DATRIS_API_KEY) — a dead
+    MCP server is itself a finding.
+    """
+    import doctor as doc
+    runner = doc.Runner(compose_file=compose_file, project_dir=os.path.abspath(project_dir))
+    datris_url = os.getenv("DATRIS_URL", "http://localhost:8080")
+    api_key = os.getenv("DATRIS_API_KEY", "")
+    server_report, version_info, server_error = None, None, None
+    if not pre_upgrade:
+        server_report, version_info, server_error = doc.fetch_server(datris_url, api_key, CLI_VERSION, probes=probes)
+    host = doc.run_host_checks(runner, MCP_URL, version_info=version_info, pre_upgrade=pre_upgrade)
+    report = doc.merge_report(server_report, host, CLI_VERSION, mode="pre-upgrade" if pre_upgrade else "full",
+                              server_error=server_error, datris_url=datris_url)
+    code = doc.exit_code(report, server_unreachable=(server_error is not None))
+    if json_output:
+        click.echo(json.dumps(report, indent=2))
+    else:
+        click.echo(doc.render_human(report))
+        if pre_upgrade and code in (0, 1):
+            click.echo("")
+            click.echo("  Ready to upgrade:")
+            click.echo("    docker compose pull && docker compose up -d --remove-orphans")
+    sys.exit(code)
+
+
+@cli.command()
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
 def version(json_output):
     """Get server version."""
@@ -827,7 +864,7 @@ def version(json_output):
         click.echo(json.dumps(result, indent=2))
         return
     click.echo(f"  Server: {result.get('text', result) if isinstance(result, dict) else result}")
-    click.echo(f"  CLI: 1.28.2")
+    click.echo(f"  CLI: {CLI_VERSION}")
 
 
 def main():

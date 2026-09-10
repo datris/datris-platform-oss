@@ -38,6 +38,9 @@ class VersionAPIController {
                 else DatrisEnvironment.current.mongoDbConfig.database
             val map = Map(
                 "version" -> BuildInfo.version,
+                // Which jar is running (doctor's build.stale_jar compares these to the checkout).
+                "gitHeadCommit" -> BuildInfo.gitHeadCommit,
+                "builtAtMillis" -> BuildInfo.builtAtMillis.toString,
                 "environment" -> DatrisEnvironment.current.environment,
                 "multiTenant" -> DatrisEnvironment.current.multiTenant.toString,
                 "hosted" -> DatrisEnvironment.current.hosted.toString,
