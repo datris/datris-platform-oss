@@ -277,7 +277,9 @@ def ingest(file, pipeline, dest, table, database, schema, warehouse, credentials
                 jobs = rollup.get("jobs") or []
                 err = (jobs[0].get("lastError") or {}) if jobs else {}
                 msg = err.get("description") or "unknown error"
-                click.echo(f"  ✗ Failed: {msg[:200]}")
+                where = err.get("processName")
+                prefix = f"{where}: " if where and not msg.startswith(where) else ""
+                click.echo(f"  ✗ Failed: {prefix}{msg[:200]}")
                 sys.exit(1)
 
     if not completed:

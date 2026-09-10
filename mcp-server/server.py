@@ -1292,7 +1292,7 @@ Because of this, a tap NEVER needs the platform's own database credentials. Do n
 **`persisted: true`** — load is in flight. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll every few seconds until `rollup.allDone` is true. Then read `rollup.status`:
   - `success` — every job landed cleanly. Report counts.
   - `warning` — some jobs landed, some had non-fatal issues. Read `rollup.jobs[].lastError` for the affected ones.
-  - `error` — at least one job failed. Read `rollup.jobs[].lastError` for `processName` and `description`.
+  - `error` — at least one job failed. Read `rollup.jobs[].lastError` for `processName` and `description`. When a destination write fails, `processName` is that destination's loader (for example `PostgresLoader`, `SnowflakeLoader`) and `description` is the destination's own error message — act on that destination, not on the pipeline as a whole.
 
 Do not query the destination or report completion to the user before polling completes — the data isn't there yet.
 
