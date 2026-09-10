@@ -194,12 +194,12 @@ else
     seed_if_absent secret/oss/ai-primary \
       provider="openai" \
       endpoint="https://api.openai.com/v1/chat/completions" \
-      model="${OPENAI_MODEL:-gpt-5.5}" \
+      model="${OPENAI_MODEL:-gpt-5.6-sol}" \
       apiKey="${OPENAI_API_KEY}"
     seed_if_absent secret/oss/codegen \
       provider="openai" \
       endpoint="https://api.openai.com/v1/chat/completions" \
-      model="${CODEGEN_MODEL:-gpt-5.5}" \
+      model="${CODEGEN_MODEL:-gpt-5.6-sol}" \
       apiKey="${OPENAI_API_KEY}"
   elif [ "$PROVIDER" = "grok" ]; then
     if [ -z "${XAI_API_KEY:-}" ]; then
@@ -229,7 +229,7 @@ else
     seed_if_absent secret/oss/ai-primary \
       provider="anthropic" \
       endpoint="https://api.anthropic.com/v1/messages" \
-      model="${ANTHROPIC_MODEL:-claude-opus-5}" \
+      model="${ANTHROPIC_MODEL:-claude-fable-5-1}" \
       apiKey="${ANTHROPIC_API_KEY}" \
       version="2023-06-01"
     seed_if_absent secret/oss/codegen \

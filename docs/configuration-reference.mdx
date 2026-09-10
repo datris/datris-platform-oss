@@ -234,8 +234,8 @@ AI configuration is split into four independent slots (three seeded at first boo
 | Property | Default | Description |
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
-| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the strongest available model — Anthropic gets `claude-opus-5`, OpenAI gets `gpt-5.5`. |
-| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest available model — Anthropic gets `claude-opus-5`, OpenAI gets `gpt-5.5`. |
+| `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the recommended chat model — Anthropic gets `claude-fable-5-1`, OpenAI gets `gpt-5.6-sol`. |
+| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest code-generation model — Anthropic gets `claude-opus-5`, OpenAI gets `gpt-5.6-sol`. |
 | `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled TEI sidecar serving `BAAI/bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
 | `ai.webSearch.secretName` | `oss/web-search` | Vault secret for the optional live web-search provider used during tap script generation and diagnosis. Not seeded at first boot — configure it from the Configuration tab. |
 | `ai.extendedThinking` | `true` | Enable extended thinking on the Assistant tab's agent loop (Anthropic models only); the model's reasoning is shown above the visible response. Set to `false` to disable platform-wide. |
@@ -246,7 +246,7 @@ Each Vault secret is self-describing and looks like:
 vault kv put secret/oss/ai-primary \
   provider="anthropic" \
   endpoint="https://api.anthropic.com/v1/messages" \
-  model="claude-opus-5" \
+  model="claude-fable-5-1" \
   apiKey="sk-ant-..." \
   version="2023-06-01"
 ```
@@ -258,8 +258,8 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AI_PROVIDER` | auto | Explicit provider pick (`anthropic`, `openai`, `azure`, `bedrock`, or `grok`) for the `ai-primary` and `codegen` slots. When unset, whichever API key is present wins (OpenAI wins ties; azure and grok are auto-picked only when they hold the sole key; bedrock is never auto-picked). |
-| `ANTHROPIC_MODEL` | `claude-opus-5` | Model seeded into `oss/ai-primary` on the Anthropic path. |
-| `OPENAI_MODEL` | `gpt-5.5` | Model seeded into `oss/ai-primary` on the OpenAI path. |
+| `ANTHROPIC_MODEL` | `claude-fable-5-1` | Model seeded into `oss/ai-primary` on the Anthropic path. |
+| `OPENAI_MODEL` | `gpt-5.6-sol` | Model seeded into `oss/ai-primary` on the OpenAI path. |
 | `AZURE_OPENAI_ENDPOINT` | — | Azure resource base URL (`https://YOUR-RESOURCE.openai.azure.com`). Required on the Azure path. |
 | `AZURE_OPENAI_MODEL` | — | Chat deployment name seeded into `oss/ai-primary` on the Azure path. Required on the Azure path. |
 | `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | — | Entra ID service principal for keyless Azure OpenAI auth (no API key stored anywhere). Single-tenant only; the Configuration tab's Azure credentials section is the equivalent UI path. On Azure compute, leave all auth unset to use the server's managed identity. |
@@ -268,7 +268,7 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | `BEDROCK_MODEL` | `anthropic.claude-fable-5-1` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |
 | `XAI_API_KEY` | — | Grok (xAI) API key from console.x.ai, for the Grok path (`AI_PROVIDER=grok`, or auto-picked when it's the sole key). |
 | `GROK_MODEL` | `grok-4.6` | Grok model seeded into `oss/ai-primary` on the Grok path. |
-| `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.5` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5`; the Grok path defaults to `grok-4.6`). |
+| `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.6-sol` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5`; the Grok path defaults to `grok-4.6`). |
 | `EMBEDDING_PROVIDER` | follows provider | `openai`, `azure`, `tei`, or `ollama`. When unset: `openai` when the AI provider is OpenAI, otherwise the bundled TEI sidecar (Azure embeddings are opt-in only). |
 | `EMBEDDING_MODEL` | provider default | `text-embedding-3-small` (openai; also the azure default deployment name), `BAAI/bge-m3` (tei), `bge-m3` (ollama). |
 | `EMBEDDING_ENDPOINT` | provider default | Endpoint override for the `tei`, `ollama`, and `azure` providers — useful when the service runs on a separate host or a non-standard path. |
@@ -389,7 +389,7 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `USE_USER_AUTH` | `false` | Enable username/password login + admin gating. See [User Authentication](/user-auth). |
 | `USE_API_KEYS` | `false` | Enable per-tenant API-key gating on the REST/MCP API. See [API Keys](/api-keys). |
 | `MULTI_TENANT` | `false` | Advanced: switch to per-tenant database isolation, with each request routed by its API key. Requires `USE_API_KEYS=true`. |
-| `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` | `claude-sonnet-4-6` | Model used for the current request when Anthropic returns a sustained `overloaded_error` on an Opus call (after the automatic retries). Only consulted when the configured model is an Anthropic Opus variant — other providers ignore it. Bump when a newer Sonnet ships to keep the fallback current. |
+| `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` | `claude-sonnet-5` | Model used for the current request when Anthropic returns a sustained `overloaded_error` on an Opus call (after the automatic retries). Only consulted when the configured model is an Anthropic Opus variant — other providers ignore it. Bump when a newer Sonnet ships to keep the fallback current. |
 | `CAPABILITY_ENFORCEMENT` | `enforce` | `enforce` returns HTTP 403 on policy violations by scoped keys. Set to `log-only` to emit would-deny log lines without rejecting — useful when iterating on a new scope policy. |
 | `USE_AUDIT_LOG` | `false` | Enable the [Audit Log](/audit-log) — who did what, by login or API key. |
 | `AUDIT_LOG_RETENTION_DAYS` | `90` | Days to keep audit entries; `0` = forever. |

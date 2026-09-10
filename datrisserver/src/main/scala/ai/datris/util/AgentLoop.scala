@@ -456,7 +456,7 @@ object AgentLoop {
       * OpenAI and other providers return None and the caller surfaces the
       * original error.
       *
-      * The Anthropic default (`claude-sonnet-4-6`) is only consulted on this
+      * The Anthropic default (`claude-sonnet-5`) is only consulted on this
       * Anthropic top-tier path, so an OpenAI-only deployment never carries a
       * Claude string in its config surface. Operator-overridable via
       * `ANTHROPIC_OVERLOAD_FALLBACK_MODEL` so the fallback can be bumped
@@ -469,7 +469,7 @@ object AgentLoop {
         val model = if (cfg.model == null) "" else cfg.model.toLowerCase
         val isTopTier = model.contains("opus") || model.contains("fable") || model.contains("mythos")
         if (provider == "anthropic" && isTopTier) {
-            val fallback = sys.env.getOrElse("ANTHROPIC_OVERLOAD_FALLBACK_MODEL", "claude-sonnet-4-6").trim
+            val fallback = sys.env.getOrElse("ANTHROPIC_OVERLOAD_FALLBACK_MODEL", "claude-sonnet-5").trim
             if (fallback.nonEmpty && fallback != cfg.model) Some(fallback) else None
         } else None
     }
