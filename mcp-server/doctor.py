@@ -211,7 +211,7 @@ def check_volumes_anonymous(runner):
     return result("volumes.anonymous", "ok", f"named volumes on {', '.join(seen)}")
 
 
-def check_volumes_dangling(runner, limit=15):
+def check_volumes_dangling(runner, limit=100):
     rc, out, err = runner.run(["docker", "volume", "ls", "-qf", "dangling=true"])
     if rc != 0:
         return result("volumes.dangling", "skip", f"docker volume ls failed: {err.strip()[:120]}")
@@ -219,7 +219,9 @@ def check_volumes_dangling(runner, limit=15):
     if not anon:
         return result("volumes.dangling", "ok", "no dangling anonymous volumes")
     found = []
-    for vol in anon[:limit]:
+    if len(anon) > limit:
+        anon = anon[:limit]
+    for vol in anon:
         rc, listing, _ = runner.run(["docker", "run", "--rm", "-v", f"{vol}:/v:ro", "alpine", "ls", "-A", "/v"], timeout=120)
         if rc != 0:
             continue
@@ -240,7 +242,7 @@ def check_volumes_dangling(runner, limit=15):
             "Inspect before pruning: `docker run --rm -v <volume>:/v:ro alpine ls -la /v`. To recover, copy into the service's named volume: "
             "`docker run --rm -v <old>:/src:ro -v <new>:/dst alpine cp -a /src/. /dst/`.",
         )
-    return result("volumes.dangling", "ok", f"{len(anon)} dangling anonymous volume(s), none holding recognizable data")
+    return result("volumes.dangling", "ok", f"{len(anon)} dangling anonymous volume(s), none holding recognizable data (empty ones are safe to `docker volume prune`)")
 
 
 def check_vault_hcl_drift(runner):
