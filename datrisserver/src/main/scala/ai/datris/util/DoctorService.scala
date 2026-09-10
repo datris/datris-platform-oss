@@ -133,8 +133,6 @@ object DoctorService {
 
     private val Day = 86400L
     private val SevenDays = 7 * Day
-    private val Hours720 = 720L * 3600L
-    private val Hours87600 = 87600L * 3600L
 
     private def humanDuration(seconds: Long): String = {
         if (seconds >= Day) (seconds / Day) + "d"
@@ -160,9 +158,13 @@ object DoctorService {
                         "Vault token expires in " + humanDuration(ttl) + " (period " + humanDuration(period) + ", ttl clamped by max_lease_ttl). " +
                             "Check docker/vault.hcl has max_lease_ttl = \"87600h\", then `docker compose up -d --force-recreate vault` " +
                             "and restart datris to re-mint the token."
+                    // A periodic token renews to its full period, so a healthy one
+                    // sits near the period; one minted under a low max_lease_ttl
+                    // (Vault's 768h default) sits at that ceiling instead. "Under a
+                    // tenth of the period" catches any ceiling, not just 768h.
                     if (ttl <= 0 && period <= 0) ok("token has no expiry")
                     else if (ttl < SevenDays) error(detail + " — expires in " + humanDuration(ttl), remediation)
-                    else if (period >= Hours87600 && ttl < Hours720) warn(detail + " — clamped", remediation)
+                    else if (period > 0 && ttl < period / 10) warn(detail + " — clamped", remediation)
                     else ok(detail)
             }
         }

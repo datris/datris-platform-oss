@@ -60,6 +60,12 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(r.remediation.contains("--force-recreate vault"))
     }
 
+    test("vault.token_ttl: a token freshly clamped to Vault's 768h default ceiling is a warn") {
+        val r = new VaultTokenTtlCheck(new FakeProbes(lookup = Some(Map("ttl" -> "2764800", "period" -> "315360000")))).run()
+        assert(r.status == "warn")
+        assert(r.detail.contains("clamped"))
+    }
+
     test("vault.token_ttl: under seven days is an error") {
         val r = new VaultTokenTtlCheck(new FakeProbes(lookup = Some(Map("ttl" -> "300000", "period" -> "315360000")))).run()
         assert(r.status == "error")
