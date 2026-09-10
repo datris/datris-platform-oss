@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 73)
+        assert(MCPToolRoutes.allToolNames.size == 74)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -42,6 +42,12 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(CapabilityRoutes.lookup("GET", "/api/v1/lineage") == RouteCheck.Require("metadata", "read"))
         assert(CapabilityRoutes.lookup("GET", "/api/v1/lineage/pipeline/example") == RouteCheck.Require("metadata", "read"))
         assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/find") == RouteCheck.Require("metadata", "read"))
+    }
+
+    test("doctor route is capability-mapped as config:read, not public") {
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/doctor") == RouteCheck.Require("config", "read"))
+        assert(MCPToolRoutes.allowedTools(key("config:read")).contains("run_doctor"))
+        assert(!MCPToolRoutes.allowedTools(ragBuilder).contains("run_doctor"))
     }
 
     test("drift guard: every Mapped row resolves in CapabilityRoutes") {

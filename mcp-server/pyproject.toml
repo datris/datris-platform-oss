@@ -49,8 +49,8 @@ datris-mcp-server = "server:main"
 datris = "cli:main"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["server.py", "cli.py"]
+only-include = ["server.py", "cli.py", "doctor.py"]
 sources = ["."]
 
 [tool.hatch.build.targets.sdist]
-only-include = ["server.py", "cli.py", "pyproject.toml", "README.md"]
+only-include = ["server.py", "cli.py", "doctor.py", "pyproject.toml", "README.md"]

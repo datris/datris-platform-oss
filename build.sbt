@@ -154,7 +154,19 @@ lazy val datrisserver = project
             "at.yawk.lz4" % "lz4-java" % "1.11.1",
             "org.apache.ivy" % "ivy" % "2.5.2"
         ),
-        buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion, sbtVersion),
+        // gitHeadCommit + builtAtMillis let /api/v1/version say WHICH jar is
+        // running — `datris doctor` compares them with the checkout to catch a
+        // stale jar served from the Docker build cache (bit us in v1.17.0).
+        buildInfoKeys := Seq[BuildInfoKey](
+            name,
+            version,
+            scalaVersion,
+            sbtVersion,
+            BuildInfoKey.action("gitHeadCommit") {
+                scala.util.Try(scala.sys.process.Process("git rev-parse HEAD").!!.trim).getOrElse("unknown")
+            },
+            BuildInfoKey.action("builtAtMillis") { System.currentTimeMillis() }
+        ),
         buildInfoPackage := "ai.datris.build.sbt",
         libraryDependencies ++= Seq(
             "org.scalatest"     %% "scalatest"    % "3.2.19"   % Test,

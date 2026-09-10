@@ -50,8 +50,13 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
 }
 
 object VaultSecretsUtilBuilder {
+
+    /** Vault base URL the server talks to (also used by the doctor's raw
+      * `lookup-self` probe, which the KV-v2 client can't express). */
+    def vaultAddress: String = sys.env.getOrElse("VAULT_ADDR", "http://127.0.0.1:8200")
+
     def build(): SecretsManagerUtility = {
-        val address = sys.env.getOrElse("VAULT_ADDR", "http://127.0.0.1:8200")
+        val address = vaultAddress
         val token = resolveToken()
 
         val config = new VaultConfig()
@@ -69,7 +74,7 @@ object VaultSecretsUtilBuilder {
       * file never appears in `docker inspect`/process env the way a value does.
       * Falls back to the VAULT_TOKEN env var for setups that still pass it
       * directly (local dev, existing deployments). */
-    private def resolveToken(): String = {
+    private[util] def resolveToken(): String = {
         val fromFile = sys.env.get("VAULT_TOKEN_FILE")
             .map(_.trim)
             .filter(_.nonEmpty)

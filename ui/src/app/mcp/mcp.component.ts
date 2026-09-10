@@ -63,7 +63,7 @@ export class McpComponent implements OnInit {
 
   // Full tool catalog.
   // KEEP IN SYNC with mcp-server/server.py's _base_tools() and the server's
-  // auth/MCPToolRoutes.scala — one entry here per MCP tool (72 as of v1.26).
+  // auth/MCPToolRoutes.scala — one entry here per MCP tool (74 as of v1.29).
   toolCatalog: McpTool[] = [
     // --- System ---
     {
@@ -78,6 +78,16 @@ export class McpComponent implements OnInit {
       description: 'Check which backend services are up, down, or not configured. Returns status of PostgreSQL, MongoDB, MinIO, ActiveMQ, Kafka, and vector databases.',
       category: 'System',
       parameters: [],
+      playgroundEnabled: true
+    },
+    {
+      name: 'run_doctor',
+      description: 'Run the operational self-check: Vault token expiry, AI slot secrets, embedding model loaded, disk usage, version skew, and (opt-in) whether each AI model answers. Diagnostics only — slow; not part of the normal workflow.',
+      category: 'System',
+      parameters: [
+        { name: 'include_ai_probes', type: 'boolean', description: 'Also send a minimal request through each AI slot (spends a few tokens). Default false.', required: false, inputType: 'checkbox' },
+        { name: 'mode', type: 'string', description: '`full` (default) or `quick` (cheap startup-safe subset only).', required: false, inputType: 'text' }
+      ],
       playgroundEnabled: true
     },
     {

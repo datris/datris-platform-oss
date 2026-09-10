@@ -608,4 +608,71 @@ object AIHttp {
         val client = getClient(aiConfig.provider)
         executeWithRetry(client, () => buildHttpPost(aiConfig, jsonBody, aiConfig.endpoint), aiConfig.model)
     }
+
+    // ---------------------------------------------------------------- doctor
+
+    private val probeRequestConfig: RequestConfig = RequestConfig
+        .custom()
+        .setConnectTimeout(10000)
+        .setConnectionRequestTimeout(10000)
+        .setSocketTimeout(10000)
+        .build()
+
+    /** Smallest request the provider will accept: a one-message chat with a
+      * 16-token ceiling. Returns (status, body snippet); throws on connect or
+      * read failure. No retry, no shared client — the doctor's opt-in
+      * reachability probe, never on the request path. */
+    def probeModel(aiConfig: AIConfig, timeoutMs: Int): (Int, String) = {
+        val user = new JsonObject()
+        user.addProperty("role", "user")
+        user.addProperty("content", "ping")
+        val arr = new JsonArray()
+        arr.add(user)
+        val requestObj = new JsonObject()
+        requestObj.addProperty("model", aiConfig.model)
+        val endpoint =
+            if (usesResponsesApi(aiConfig)) {
+                requestObj.add("input", arr)
+                requestObj.addProperty("max_output_tokens", 16)
+                responsesEndpointFor(aiConfig)
+            } else {
+                requestObj.add("messages", arr)
+                addTokenLimit(requestObj, aiConfig.provider, aiConfig.model, 16)
+                aiConfig.endpoint
+            }
+        executeProbe(buildHttpPost(aiConfig, requestObj.toString, endpoint), timeoutMs)
+    }
+
+    /** One-input embedding request for hosted embedding providers (openai,
+      * azure); bundled TEI/Ollama are covered by their own presence probe. */
+    def probeEmbedding(provider: String, endpoint: String, model: String, apiKey: String, timeoutMs: Int): (Int, String) = {
+        val input = new JsonArray()
+        input.add("ping")
+        val requestObj = new JsonObject()
+        requestObj.addProperty("model", model)
+        requestObj.add("input", input)
+        val httpPost = new HttpPost(endpoint)
+        if (provider.toLowerCase == "azure") {
+            val envValues = DatrisEnvironment.current
+            val auth = AzureEntraSupport.resolveAuth(apiKey, envValues.environment, envValues.multiTenant)
+            AzureEntraSupport.authHeaders(auth).foreach { case (name, value) => httpPost.addHeader(name, value) }
+        } else if (apiKey != null && apiKey.nonEmpty)
+            httpPost.addHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+        httpPost.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
+        httpPost.setEntity(new StringEntity(requestObj.toString, StandardCharsets.UTF_8))
+        executeProbe(httpPost, timeoutMs)
+    }
+
+    private def executeProbe(httpPost: HttpPost, timeoutMs: Int): (Int, String) = {
+        val cfg = RequestConfig.copy(probeRequestConfig).setConnectTimeout(timeoutMs).setSocketTimeout(timeoutMs).build()
+        val client = HttpClients.custom().setDefaultRequestConfig(cfg).build()
+        try {
+            val response = client.execute(httpPost)
+            try {
+                val status = response.getStatusLine.getStatusCode
+                val body = Option(response.getEntity).map(e => EntityUtils.toString(e, StandardCharsets.UTF_8)).getOrElse("")
+                (status, body.take(600))
+            } finally response.close()
+        } finally client.close()
+    }
 }

@@ -151,6 +151,9 @@ object CapabilityRoutes {
         // Config
         Route("POST", "/api/v1/config/upload", "config", "write"),
         Route("GET", "/api/v1/ai/model-catalog", "config", "read"),
+        // Doctor — operational self-check. Not public: the report names env
+        // keys, Vault secret paths and model ids, so it rides config:read.
+        Route("GET", "/api/v1/doctor", "config", "read"),
 
         // Audit log — admin surface. Full-access keys hold it implicitly; a
         // scoped key needs `audit:read` explicitly (see the Keys catalog).

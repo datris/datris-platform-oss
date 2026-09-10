@@ -38,6 +38,7 @@ import { UsersComponent } from './configuration/users/users.component';
 import { KeysComponent } from './configuration/keys/keys.component';
 import { AuditLogComponent } from './configuration/audit-log/audit-log.component';
 import { AgentPolicyComponent } from './configuration/agent-policy/agent-policy.component';
+import { DoctorComponent } from './configuration/doctor/doctor.component';
 import { VersionHistoryComponent } from './version-history/version-history.component';
 import { AppRoutingModule } from './app-routing.module';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
@@ -85,6 +86,7 @@ import { NgxEchartsModule } from 'ngx-echarts';
     KeysComponent,
     AuditLogComponent,
     AgentPolicyComponent,
+    DoctorComponent,
     VersionHistoryComponent
   ],
   imports: [

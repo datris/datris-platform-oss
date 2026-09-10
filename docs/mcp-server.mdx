@@ -39,6 +39,7 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 | `apply_dest_types` | Apply destination column types to an all-string pipeline (requires explicit user approval). `fields` must list every destination column with its intended type (`string`, `boolean`, `int`, `bigint`, `float`, `double`, `date`, `timestamp`); landed data is migrated first and any value that will not cast fails the whole apply with nothing changed |
 | `get_version` | Get pipeline server version |
 | `check_service_health` | Check which backend services are up, down, or not configured (slow — use for diagnostics only) |
+| `run_doctor` | Operational self-check: Vault token expiry, AI slot secrets, embedding model, disk, version skew, optional AI probe — each finding with its fix (diagnostics only; see [Doctor](/doctor)) |
 
 ### Vector Database Search
 

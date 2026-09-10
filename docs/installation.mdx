@@ -111,6 +111,18 @@ refreshing the Compose file itself, since a new release can rename, add, or drop
 services. How you do it depends on how you installed. In every case your data is
 preserved — it lives in Docker volumes that survive an upgrade.
 
+**Step 0 — check the deployment first.** From the directory holding your
+`docker-compose.yml` and `.env`, run the pre-upgrade self-check. It catches the
+things an upgrade turns into an outage: data on an anonymous volume that
+`--remove-orphans` would drop, a missing AI slot secret the new server would
+crash-loop on, a disk too full to pull images, a container still running with a
+stale `.env`. Nothing is changed; it prints the fix for each finding and the
+upgrade command when the deployment is clean. See [Doctor](/doctor).
+
+```bash
+datris doctor --pre-upgrade
+```
+
 **Installer (the `curl … | sh` Quick Start):** just re-run the install command.
 It re-downloads the latest compose file and runtime scripts, leaves your `.env`
 and data untouched, pulls the new images, and restarts.
