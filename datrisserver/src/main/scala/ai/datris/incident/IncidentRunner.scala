@@ -49,7 +49,10 @@ object IncidentRunner {
         "diff_tap_versions",
         "get_agent_policy",
         "check_service_health",
-        "get_version"
+        "get_version",
+        // Doctor is read-only and never spends money unless asked for AI
+        // probes, which the diagnosis prompt tells the agent not to do.
+        "run_doctor"
     )
 
     /** Actions the runner will execute from a proposal. Anything else —
@@ -791,6 +794,9 @@ object IncidentRunner {
                 "- structural-schema (destination/type mismatch) or credentials/upstream outage: needsHuman=true with an empty actions list and a clear summary of what a person must do.\n"
             )
             sb.append("- Never propose deletes, secret changes, or schema migrations — they are not executable here.\n")
+            sb.append(
+                "- If the failure looks like the platform rather than the tap (a secret missing, an AI model or embedding service not answering, disk full, a component version mismatch), call run_doctor ONCE with mode \"quick\" and no AI probes; if it reports an error, classify as needs-human and quote its remediation.\n"
+            )
             sb.append(
                 "- The platform (not you) executes the actions, gates each one through the agent policy, verifies with a real run, and reverts your script change if verification fails."
             )

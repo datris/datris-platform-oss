@@ -44,7 +44,9 @@ object RecoveryKey {
         "query:databricks",
         "query:objectstore",
         "policy:read",
-        "approval:read:owner=self"
+        "approval:read:owner=self",
+        // run_doctor (GET /api/v1/doctor) during diagnosis — read-only.
+        "config:read"
     )
 
     private val logger = LoggerFactory.getLogger(getClass)
@@ -53,16 +55,40 @@ object RecoveryKey {
     private def apiKeysSecretName: String = DatrisEnvironment.current.environment + "/api-keys"
     private def metadataSecretName: String = DatrisEnvironment.current.environment + "/api-key-metadata"
 
+    /** Capabilities in `Capabilities` that a stored metadata record lacks.
+      * Empty for a revoked record: revocation is the operator's off switch
+      * and nothing here touches it. Malformed metadata → empty (leave it). */
+    private[incident] def missingCapabilities(metaJson: String): Seq[String] =
+        try {
+            val o = com.google.gson.JsonParser.parseString(metaJson).getAsJsonObject
+            val revoked = o.has("revoked") && !o.get("revoked").isJsonNull && o.get("revoked").getAsBoolean
+            if (revoked) Nil
+            else {
+                val have =
+                    if (o.has("capabilities") && o.get("capabilities").isJsonArray)
+                        o.getAsJsonArray("capabilities").asScala.map(_.getAsString).toSet
+                    else Set.empty[String]
+                Capabilities.filterNot(have.contains)
+            }
+        } catch { case _: Exception => Nil }
+
     /** Issue the key if it does not exist. No-op when API keys are off (the
       * runner then calls anonymously, like every other client). Never
       * rotates or repairs an existing key — an operator who revoked it has
-      * turned the runner off on purpose. */
+      * turned the runner off on purpose. The one thing it does to an existing
+      * live key is widen its capability list when a release adds to
+      * `Capabilities` (doctor Phase 3: `config:read` for run_doctor), audited as a
+      * system grant, so an upgraded install's agent is not silently missing a
+      * tool. */
     def ensure(): Unit = {
         val env = DatrisEnvironment.values
         if (env == null || !env.useApiKeys) return
         try {
             val existing = SecretsUtil.getSecretMap(apiKeysSecretName).map(_.asScala.toMap).getOrElse(Map.empty[String, String])
-            if (existing.contains(Label)) return
+            if (existing.contains(Label)) {
+                grantMissingCapabilities()
+                return
+            }
 
             val value = randomHex(32)
             val keyId = "k_" + randomHex(6)
@@ -95,6 +121,27 @@ object RecoveryKey {
         } catch {
             case e: Exception => logger.error("Could not ensure the recovery-agent key: " + e.getMessage)
         }
+    }
+
+    private def grantMissingCapabilities(): Unit = {
+        val existingMeta = SecretsUtil.getSecretMap(metadataSecretName).map(_.asScala.toMap).getOrElse(Map.empty[String, String])
+        val json = existingMeta.getOrElse(Label, "")
+        val missing = if (json.isEmpty) Nil else missingCapabilities(json)
+        if (missing.isEmpty) return
+        val o = com.google.gson.JsonParser.parseString(json).getAsJsonObject
+        val caps = new JsonArray()
+        val have = if (o.has("capabilities") && o.get("capabilities").isJsonArray) o.getAsJsonArray("capabilities").asScala.map(_.getAsString).toList else Nil
+        (have ++ missing).foreach(caps.add)
+        o.add("capabilities", caps)
+        val metaMap = new java.util.LinkedHashMap[String, Object]()
+        existingMeta.foreach { case (k, v) => metaMap.put(k, v) }
+        metaMap.put(Label, new Gson().toJson(o))
+        SecretsUtil.writeSecret(metadataSecretName, metaMap)
+        APIKeyValidator.invalidateCache()
+        val md = new JsonObject()
+        md.addProperty("granted", missing.mkString(","))
+        ai.datris.audit.AuditLog.system("key", "grant", "key", Label, md)
+        logger.info("Granted the recovery-agent API key new capabilities: " + missing.mkString(", "))
     }
 
     /** The key's secret value, for the runner's MCP calls. None when keys are
