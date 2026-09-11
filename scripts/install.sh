@@ -38,6 +38,7 @@
 #   KAFKA_BOOTSTRAP_SERVERS, SNOWFLAKE_ACCOUNT/USER/PRIVATE_KEY/PASSWORD,
 #   DATABRICKS_HOST/CLIENT_ID/CLIENT_SECRET/TOKEN — external store credentials
 #   DATRIS_NO_START=1   write files but don't run compose
+#   DATRIS_SKIP_DOCTOR=1  skip the pre-upgrade `datris doctor` check on an upgrade
 set -eu
 
 REPO_RAW="https://raw.githubusercontent.com/datris/datris-platform-oss"
@@ -650,6 +651,36 @@ if [ "${DATRIS_NO_START:-}" = "1" ]; then
   ok "Files written to $DIR. Skipping start (DATRIS_NO_START=1)."
   say "Run it with:  cd $DIR && $COMPOSE up -d"
   exit 0
+fi
+
+# --- pre-upgrade self-check --------------------------------------------------
+# On an upgrade (an .env already existed) run `datris doctor --pre-upgrade`
+# before touching anything: it catches data on an anonymous volume that
+# --remove-orphans would drop, a missing AI slot secret the new server would
+# crash-loop on, a disk too full to pull, and a container still on a stale
+# .env. Needs the datris CLI (pip install datris-mcp-server / brew install
+# datris/tap/datris) — without it we say so and continue, as before. An error
+# finding stops the upgrade; DATRIS_SKIP_DOCTOR=1 overrides. Never runs on a
+# fresh install (nothing to check yet).
+if [ "$FRESH_ENV" = "0" ] && [ "${DATRIS_SKIP_DOCTOR:-}" != "1" ]; then
+  if command -v datris >/dev/null 2>&1 && datris doctor --help >/dev/null 2>&1; then
+    say ""
+    say "Running the pre-upgrade self-check (datris doctor --pre-upgrade)..."
+    DOCTOR_RC=0
+    ( cd "$DIR" && datris doctor --pre-upgrade --project-dir "$DIR" ) || DOCTOR_RC=$?
+    case "$DOCTOR_RC" in
+      0) ok "Pre-upgrade check clean." ;;
+      1) warn "Pre-upgrade check has warnings (above) — continuing with the upgrade." ;;
+      *) warn "Pre-upgrade check found an error (above). Fix it and re-run, or bypass with:"
+         warn "  curl -fsSL https://get.datris.ai/install.sh | DATRIS_SKIP_DOCTOR=1 sh"
+         die "upgrade stopped by datris doctor --pre-upgrade (exit $DOCTOR_RC)" ;;
+    esac
+  else
+    say ""
+    say "Skipping the pre-upgrade self-check: the datris CLI is not installed (or is older than 1.29)."
+    say "  pip install -U datris-mcp-server   # or: brew install datris/tap/datris"
+    say "  then: datris doctor --pre-upgrade  (see https://docs.datris.ai/doctor)"
+  fi
 fi
 
 say ""

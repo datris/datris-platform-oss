@@ -167,6 +167,9 @@ class IncidentRunnerSpec extends AnyFunSuite {
             "upload_data"
         )
         assert(IncidentRunner.DiagnosisTools.intersect(mutating).isEmpty)
+        // Phase 3: the doctor is a read-only diagnostic the agent may consult.
+        assert(IncidentRunner.DiagnosisTools.contains("run_doctor"))
+        assert(RecoveryKey.Capabilities.contains("config:read"))
         assert(IncidentRunner.ExecutableTools == Set("run_tap", "test_tap", "update_tap", "create_tap"))
     }
 

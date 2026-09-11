@@ -61,6 +61,7 @@ Do **not** use `docker compose restart` to apply an `.env` change. `restart` reu
 | `schedule.checkDatabaseSourceQueries` | `30000` | Interval to check for database pulls (ms) |
 | `schedule.checkTapSchedules` | `30000` | Interval to check for taps with CRON schedules due to run (ms) |
 | `schedule.incidentSweep` | `300000` | Recovery-agent sweep interval (ms): resumes approved actions and raises stale/volume signals |
+| `schedule.doctorTick` | `60000` | How often (ms) the periodic [doctor](/doctor) checks whether `doctor.intervalMinutes` has elapsed |
 
 ### Pipeline
 
@@ -96,7 +97,9 @@ Two independent flags control access. Set them together — see [the supported m
 | `AUDIT_LOG_READS` | `false` | Also record reads — queries, searches, listings, metadata. Off by default because they dwarf the write trail. Maps to `auditLog.logReads` |
 | `USE_AGENT_POLICY` | `false` | Per-action auto / approve / deny for agent-initiated changes, with a human approval queue under Activity → Approvals. With it on and no rules set, nothing changes. Restart to change. See [Agent Policy](/agent-policy) |
 | `RECOVERY_AGENT_ENABLED` | `false` | The platform opens, diagnoses and — within the agent policy's recovery mode — repairs incidents for failed, stale or anomalous data flows. Needs `USE_AGENT_POLICY=true`. See [Incidents](/incidents) |
-| `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional URL receiving a JSON POST on incident open / awaiting-approval / resolved / failed |
+| `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional URL receiving a JSON POST on incident open / awaiting-approval / resolved / failed, and on doctor checks flipping to error when the periodic run is on |
+| `DOCTOR_ONSTARTUP` | `true` | Log the cheap [doctor](/doctor) checks at boot as `DOCTOR` lines. Maps to `doctor.onStartup` |
+| `DOCTOR_INTERVAL_MINUTES` | `0` | Re-run the server-side doctor checks every N minutes and POST checks that flip to error (or recover) to `INCIDENT_WEBHOOK_URL`. `0` = off. AI probes never run on the timer. Maps to `doctor.intervalMinutes` |
 
 One further audit setting lives only in `application.yaml`: `auditLog.emitLogLine` (default `true`; mirror each entry to the `ai.datris.audit` logger for SIEM pickup).
 
@@ -396,4 +399,6 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `AUDIT_LOG_READS` | `false` | Also record reads (queries, searches, listings). |
 | `USE_AGENT_POLICY` | `false` | Enable the [Agent Policy](/agent-policy) — auto / approve / deny per agent action, with a human approval queue. |
 | `RECOVERY_AGENT_ENABLED` | `false` | Enable the [recovery agent](/incidents) — platform-opened incidents with a bounded repair loop. |
-| `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional JSON webhook for incident lifecycle events. |
+| `INCIDENT_WEBHOOK_URL` | _(empty)_ | Optional JSON webhook for incident lifecycle events and periodic-doctor flips. |
+| `DOCTOR_ONSTARTUP` | `true` | Boot-time [doctor](/doctor) lines. |
+| `DOCTOR_INTERVAL_MINUTES` | `0` | Periodic doctor run; `0` = off. |
