@@ -7,6 +7,12 @@ description: "How to install and set up the Datris Data Platform"
 
 - [Docker](https://docs.docker.com/get-docker/)
 
+<Note>
+**License.** Datris is open source under AGPL-3.0. Running an unmodified copy inside your own organization needs nothing more; a commercial license is available for hosted, embedded, and supported deployments — see [Licensing & Support](/production/licensing-support).
+
+**Telemetry.** The platform sends no usage data, crash reports, or license checks anywhere. The one outbound request it can make is an on-demand model-catalog refresh from the Configuration tab, which falls back to a built-in list when it fails — see [Security Architecture](/production/security-architecture#no-telemetry) for how to verify.
+</Note>
+
 ## Quick Start
 
 All you need is Docker — no git checkout, no build tools. The installer pulls
@@ -106,66 +112,12 @@ below.
 
 ## Upgrading
 
-Upgrading means two things: pulling the latest pre-built images **and**
-refreshing the Compose file itself, since a new release can rename, add, or drop
-services. How you do it depends on how you installed. In every case your data is
-preserved — it lives in Docker volumes that survive an upgrade.
+Upgrading pulls the latest images **and** refreshes the Compose file, and your data
+survives in Docker volumes. The procedure for each install method, the pre-upgrade
+self-check, and what to do about stale secrets live on
+[Upgrades & Supported Versions](/production/upgrades).
 
-**Step 0 — check the deployment first.** From the directory holding your
-`docker-compose.yml` and `.env`, run the pre-upgrade self-check. It catches the
-things an upgrade turns into an outage: data on an anonymous volume that
-`--remove-orphans` would drop, a missing AI slot secret the new server would
-crash-loop on, a disk too full to pull images, a container still running with a
-stale `.env`. Nothing is changed; it prints the fix for each finding and the
-upgrade command when the deployment is clean. See [Doctor](/doctor).
-
-```bash
-datris doctor --pre-upgrade
-```
-
-**Installer (the `curl … | sh` Quick Start):** just re-run the install command.
-It re-downloads the latest compose file and runtime scripts, leaves your `.env`
-and data untouched, pulls the new images, and restarts.
-
-```bash
-curl -fsSL https://get.datris.ai/install.sh | sh
-```
-
-**Single-file (`docker-compose.standalone.yml`):** re-download the file (it
-carries the latest topology and inlined scripts), then pull and restart.
-
-```bash
-curl -O https://get.datris.ai/docker-compose.standalone.yml
-docker compose -f docker-compose.standalone.yml pull
-docker compose -f docker-compose.standalone.yml up -d --remove-orphans
-```
-
-**From source (cloned repo):** pull the latest compose file from git, then pull
-images and restart.
-
-```bash
-cd datris-platform-oss
-git pull origin main
-docker compose pull
-docker compose up -d --remove-orphans
-```
-
-No build tools required for any of these — the images come pre-built from Docker Hub.
-
-<Note>
-**Always pass `--remove-orphans` when upgrading manually.** (The installer does this for you.) Releases occasionally rename, remove, or repurpose service blocks in `docker-compose.yml` (e.g. v1.6.15 replaced the bundled Ollama service with TEI on the same host port `11434`). Without `--remove-orphans`, the previous version's container keeps running and holding the port, causing the new container to fail with `Bind for 0.0.0.0:<port> failed: port is already allocated`. The flag is safe — it only removes containers that are no longer defined in your current compose file. Volumes (and your data) are untouched.
-</Note>
-
-Your data is preserved across upgrades — Postgres pipelines, Vault secrets, MinIO buckets, MongoDB collections, and Kafka state all live in Docker volumes that survive `docker compose pull` and `docker compose up -d`.
-
-### Stale secrets after an upgrade
-
-Datris occasionally deprecates secret paths between versions (for example, v1.5.6 split AI configuration into three new Vault slots and stopped reading the old single-slot path). Because Vault data persists across upgrades, deprecated entries stay in Vault and continue to appear in the Configuration → Secrets list even though the server ignores them. To clean them up:
-
-- **Targeted (preserves your data):** delete the stale entries one at a time from Configuration → Secrets in the UI, or run `docker compose exec -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault vault kv delete secret/oss/<name>` for each deprecated path.
-- **Total reset (destroys all data):** see the next section.
-
-### Reset everything (destroys all data)
+## Reset everything (destroys all data)
 
 If you don't care about anything on this machine and want a completely fresh install — same data layout as a brand-new clone — wipe all volumes:
 

@@ -5,6 +5,10 @@ description: "MCP server for AI agent integration"
 
 The pipeline includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that lets AI agents interact with the platform natively. Any MCP-compatible agent — Claude Desktop, Claude Code, Cursor, or custom agentic frameworks — can discover database metadata, create and manage pipelines, upload files, monitor jobs, profile data, search vector databases, query structured data, answer questions with AI-powered RAG, and upload configuration files — all without custom integration code.
 
+<Note>
+**Governed by default.** The tool catalog an agent sees is filtered to what its API key's capabilities allow, so a `read-only` key never sees `create_tap`. Every call that changes state is checked against the [agent policy](/agent-policy) — run, wait for a person, or refuse — and recorded in the [audit log](/audit-log) under the key's label. See [Authentication](#authentication) below for issuing per-agent keys.
+</Note>
+
 The MCP server is a lightweight Python service that routes all operations through the pipeline's REST API. It runs alongside the pipeline in Docker or locally for development.
 
 ## Resources

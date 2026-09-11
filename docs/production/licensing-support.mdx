@@ -1,0 +1,37 @@
+---
+title: "Licensing & Support"
+description: "What AGPL-3.0 means for your deployment, when a commercial license applies, and where to get help"
+---
+
+## The open-source license
+
+Datris is licensed under the [GNU Affero General Public License v3](https://github.com/datris/datris-platform-oss/blob/main/LICENSE). In plain terms:
+
+- **Running an unmodified Datris inside your own organization** — the common case — needs no commercial license. You are not distributing it and you have not modified it.
+- **If you modify Datris and distribute the modified version**, you must release your modifications under AGPL-3.0.
+- **If you modify Datris and let users interact with the modified version over a network**, you must offer those users the corresponding source. This is the clause that separates the AGPL from the GPL and the one license scanners flag.
+- **Your own code stays yours.** Agents that talk to Datris over MCP or REST, and taps and preprocessor scripts you write and run inside Datris, are not modifications of the platform.
+
+This is a summary, not legal advice; have your counsel read it against your deployment. The longer treatment, including the questions legal teams usually ask, is at [datris.ai/licensing](https://datris.ai/licensing).
+
+## Commercial licenses
+
+The bits do not change under a commercial license; the terms do. Four license types are offered, each scoped to how you use Datris:
+
+| License | What it lets you do |
+|---|---|
+| **Internal Use** | Run Datris inside your organization with support and indemnity, and no copyleft question to answer. |
+| **Hosted / SaaS** | Operate Datris as part of a service you offer to third parties over a network. |
+| **OEM / Redistribution** | Embed Datris inside your product and sublicense it to your customers. |
+| **Enterprise Source License** | A perpetual license to the source: modify it, build on it, keep your changes private. No right to redistribute. |
+
+Every commercial license includes a named technical contact with a response SLA on production incidents, security advisories ahead of public disclosure, an LTS branch with a stated patch window, an SBOM and signed builds, an IP warranty and indemnification, version and migration assistance, and a seat at roadmap discussions. Licenses are annual subscriptions scoped to your deployment; request a proposal at [datris.ai/licensing](https://datris.ai/licensing).
+
+**Continuity.** Every version delivered during your term is licensed perpetually and irrevocably, the license converts to perpetual at no cost if commercial support ever ceases, and the complete source is public under the AGPL today. A Datris deployment never stops running because a vendor did.
+
+## Community support
+
+- **Bugs and feature requests:** [GitHub issues](https://github.com/datris/datris-platform-oss/issues)
+- **Questions and design discussions:** [GitHub discussions](https://github.com/datris/datris-platform-oss/discussions)
+- **Security reports:** privately, per [Vulnerability Disclosure](/production/vulnerability-disclosure)
+- **Advisories and release notes ahead of disclosure:** [register your deployment](https://datris.ai/register) — Datris never calls home, so this is the only way we know you exist.

@@ -67,7 +67,7 @@ Skipped checks (Docker not on this machine, a service not running) never affect 
 datris doctor --pre-upgrade
 ```
 
-This runs the host checks plus a read of the three AI slot secrets through the vault container, so a missing secret is caught **before** the new server crash-loops on it, and an anonymous volume is caught before `--remove-orphans` could drop it. When nothing is at error level it prints the upgrade command. See [Upgrading](/installation#upgrading).
+This runs the host checks plus a read of the three AI slot secrets through the vault container, so a missing secret is caught **before** the new server crash-loops on it, and an anonymous volume is caught before `--remove-orphans` could drop it. When nothing is at error level it prints the upgrade command. See [Upgrading](/production/upgrades).
 
 ## Report format
 

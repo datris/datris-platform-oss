@@ -94,3 +94,104 @@ spring:
     multipart:
       max-file-size: 1GB
 ```
+
+## End-to-end example: CSV to PostgreSQL
+
+Register a pipeline, upload a CSV, and query the result — the whole loop over REST, no agent involved.
+
+### 1. Start the stack
+
+If you haven't installed yet, follow [Installation](/installation) — the
+one-command installer gets the stack running in a `./datris` directory. Already
+installed? Start it from your install directory:
+
+```bash
+docker compose up -d
+```
+
+Wait for the `datris` container to show `Started Application`.
+
+### 2. Register a pipeline
+
+Create a pipeline configuration that defines the source schema and PostgreSQL destination:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "employees",
+    "source": {
+      "schemaProperties": {
+        "fields": [
+          {"name": "id", "type": "int"},
+          {"name": "first_name", "type": "string"},
+          {"name": "last_name", "type": "string"},
+          {"name": "email", "type": "string"},
+          {"name": "salary", "type": "double"}
+        ]
+      },
+      "fileAttributes": {
+        "csvAttributes": {
+          "delimiter": ",",
+          "header": true,
+          "encoding": "UTF-8"
+        }
+      }
+    },
+    "destination": {
+      "database": {
+        "dbName": "datris",
+        "schema": "public",
+        "table": "employees",
+        "usePostgres": true
+      }
+    }
+  }'
+```
+
+### 3. Upload a CSV file
+
+Create a sample CSV file:
+
+```bash
+cat > /tmp/employees.csv << 'EOF'
+id,first_name,last_name,email,salary
+1,John,Doe,john@example.com,75000.00
+2,Jane,Smith,jane@example.com,82000.00
+3,Bob,Johnson,bob@example.com,68000.00
+EOF
+```
+
+Upload it:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/pipeline/upload \
+  -F "file=@/tmp/employees.csv" \
+  -F "pipeline=employees"
+```
+
+The response body is the `pipelineToken` for tracking — a plain UUID:
+
+```
+5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e
+```
+
+### 4. Check status
+
+```bash
+curl "http://localhost:8080/api/v1/pipeline/status?pipelinetoken=5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e"
+```
+
+The status shows processing stages: `begin`, `processing`, `end`.
+
+### 5. Verify the data
+
+Query the data via the REST API:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/query/postgres \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM public.employees"}'
+```
+
+The default database is `datris` — this is where all PostgreSQL pipelines write unless you specify a different `dbName` in the pipeline's destination config.
