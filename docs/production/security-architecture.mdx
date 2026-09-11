@@ -1,0 +1,105 @@
+---
+title: "Security Architecture"
+description: "One page for a security reviewer: trust boundaries, how credentials are brokered, how agent actions are gated and recorded, what runs where, and what Datris deliberately does not do"
+---
+
+This page is written for the person who has to sign off on running Datris. It states the model once and links to the detailed page for each control. Nothing here is aspirational: every control named is in the current release, and the [last section](#what-datris-does-not-do) lists what is not.
+
+## Deployment model
+
+Datris is fully self-hosted. It runs as a set of containers on infrastructure you operate — on-prem, in your cloud account, or on a laptop. There is no managed service, no hosted control plane, no support tunnel, and no subprocessor: no customer data reaches Datris.ai the company.
+
+## Trust boundaries
+
+```
+                      ┌──────────────────────── your perimeter ────────────────────────┐
+  Agent               │  MCP server ──► Datris server ──► Vault (credentials)          │
+  (Claude, Cursor,    │      ▲               │   │                                     │
+   CLI, script)  ─────┼──────┘               │   └─► Config store · object store ·    │
+  holds a scoped      │  x-api-key           │       destinations (your Postgres,       │
+  API key only        │                      │       warehouse, vector store, ...)      │
+                      │                      ▼                                          │
+                      │              tap runner (isolated container)                    │
+                      │              · no platform credentials inside                   │
+                      │              · no route to internal services                    │
+                      │              · reaches its source + the Datris API only         │
+                      └────────────────────────────────────────────────────────────────┘
+```
+
+Every request follows the same path: the key identifies the caller, the capability check decides whether the route is allowed at all, the [agent policy](/agent-policy) decides whether it runs now, waits for a person, or is refused, and only then does the server consult Vault for the credential the run needs. Policy is evaluated before Vault is touched.
+
+## Identity and authorization
+
+- **Humans** log in to the UI with a username and password (BCrypt, cost 12). The first boot creates an `admin` account with no password and forces a set-password flow before it can do anything. Sessions are opaque random tokens in an `HttpOnly`, `SameSite=Strict` cookie with an 8-hour TTL. Three roles — admin, editor, viewer. See [User Authentication](/user-auth).
+- **Programmatic clients** — the CLI, MCP agents, scripts — each hold their own labeled API key, sent as `x-api-key` and validated against Vault. Every key carries an explicit list of capabilities (`resource:action[:scope]`); a call outside that list returns 403, and the MCP tool catalog an agent sees is filtered to match. Templates (`read-only`, `rag-builder`, `reporting`, `ops`) cover the common shapes. Keys are stored hashed, shown once, and revocable individually. See [API Keys](/api-keys).
+- **Tap scripts** never receive a platform key. Each run gets a short-lived, read-only token for the platform API that the tap wrapper attaches automatically.
+
+Both flags are off in a fresh OSS install so that existing deployments are unchanged; the recommended production setting is `USE_USER_AUTH=true` with `USE_API_KEYS=true`.
+
+## Credentials
+
+- **HashiCorp Vault holds every secret** — source and destination credentials, AI provider keys, the platform's own service passwords. The platform never persists a secret to disk outside Vault, and API responses mask sensitive fields.
+- **Agents never hold a key.** An agent references a secret by name (`create_tap_secret`, `list_tap_secrets`, `get_tap_secret_fields` returns key names only). The value is delivered to the tap at run time as environment variables inside the runner and to the destination writer inside the server. It never appears in an agent's config, prompt, or tool result.
+- **Agents can only touch their own secrets.** Secrets created through MCP are tagged as tap secrets; an agent cannot modify or delete a secret a person created in the UI.
+- **Secrets are masked in logs.** Tap stderr is scrubbed before it is logged.
+
+## Agent governance
+
+- **Agent Policy** decides, per action, whether an agent runs it unattended, waits for a person to approve it, or is refused. It is enforced by the platform on every client — the in-platform Assistant, Claude, Cursor, the CLI, any script — and an agent cannot edit the policy or decide an approval, whatever its key holds. An approval executes exactly what was proposed; if the resource changed in between, it is refused as stale. See [Agent Policy](/agent-policy).
+- **Audit log** records every platform write — create, change, run, delete, login, key rotation, denied request — attributed to a login, an API key, or the Assistant acting on a user's behalf. Agents can attach a one-line `reason` to any change and it is stored with the entry. Entries are queryable in the UI and over REST, exportable as CSV, and mirrored line-by-line to the server log (JSON under the `production` profile) so an existing log pipeline or SIEM receives the trail with no extra integration. See [Audit Log](/audit-log).
+- **Provenance** stamps every landed row with the run, config version, tap run, script commit, and declared source; `get_provenance` resolves a stamp back to its origin, and vector-search results carry the same fields per chunk so a RAG answer can cite where its context came from. See [Provenance, Lineage & Discovery](/provenance).
+- **Versioning.** Every pipeline and tap definition change is snapshotted; restores are append-only. Tap scripts can be stored in a git repository you own. See [Tap GitHub Storage](/tap-github-storage).
+- **Recovery agent** actions pass through the same policy gate; under `propose` mode everything it wants to do queues for approval. See [Incidents](/incidents).
+
+## Isolation of agent-written code
+
+Taps are Python that agents (or people) write and Datris runs. On Docker Compose the isolated runner is on by default: tap code executes in a separate `datris-tap-runner` container that holds no platform credentials and sits on a network with no route to the config store, the object store, or Vault. It can reach its data source, install the packages it declares into a throwaway environment, call back into the Datris API with its per-run read-only token, and return records. The server refuses to start with isolation on and a missing or default runner token. See [Tap Execution & Isolation](/tap-execution-isolation).
+
+## Transport and storage
+
+- **TLS** terminates at a reverse proxy you place in front of the server (nginx, Caddy, Traefik). Do not expose port 8080 directly. Container-to-container traffic inside the Compose network is plaintext; the host network is the trust boundary.
+- **External databases.** With `DATRIS_ENV=production` the server refuses to start if a JDBC URL points at an external Postgres host without `sslmode=require` or stricter.
+- **At rest.** Datris does not enforce encryption at rest on Postgres, MongoDB, MinIO, or Kafka; enable it per store for production.
+- **Multi-tenancy**, when enabled, isolates tenants at the database level — separate Postgres databases and separate object-store buckets.
+
+## Air-gapped operation
+
+Every store Datris depends on is bundled or pointable at one you already run. For the AI features, local models through Ollama cover chat and code generation, and the bundled `bge-m3` embedding server covers embeddings, so a deployment can run with no cloud AI provider. The bundled embedding model downloads once on first start; pre-pull the images and the model on a connected machine and move them across.
+
+## No telemetry
+
+The platform sends no usage data, crash reports, or license checks. There is no beacon in the server, the UI, the MCP server, or the installer. Verify it yourself:
+
+```bash
+git clone https://github.com/datris/datris-platform-oss.git && cd datris-platform-oss
+grep -rniE "telemetry|analytics|posthog|sentry|segment\.io" \
+  --include='*.scala' --include='*.ts' --include='*.py' --include='*.sh' . | grep -v test
+```
+
+One outbound request exists and you should know about it: when a person opens the AI configuration screen, the server fetches the current model catalog from `datris.ai/models.json` so the model pickers show what is recommended today. It is triggered by that screen only, cached for five minutes, times out in three seconds, and falls back to a list baked into the UI when the fetch fails — so it is harmless in an air-gapped install and carries no identifying payload beyond the request itself. The documentation site you are reading measures page views; the platform does not.
+
+## Vulnerability handling
+
+Private reporting, response targets, advisories, SBOMs, and dependency scanning are on [Vulnerability Disclosure](/production/vulnerability-disclosure).
+
+## What Datris does not do
+
+Stated so you can plan around it rather than discover it:
+
+- No MFA, password-complexity rules, or account lockout — passwords have a minimum length only.
+- No OIDC / SSO integration yet. It is on the roadmap; open a discussion if you need it.
+- No built-in rate limiting or WAF — put one in front of production deployments.
+- No enforced encryption at rest — enable it per store.
+- CORS allowed origins default to `*` for development — set `cors.allowedOrigins` to your real origins in production.
+- No SOC 2 report. In a self-hosted deployment no customer data reaches Datris.ai, so most trust-services criteria fall on your environment; the controls that do apply to the vendor — secure development and vulnerability handling — are described above.
+
+## Operator checklist for production
+
+1. Run Vault in non-dev mode with sealed root tokens.
+2. Put a TLS-terminating reverse proxy in front of the server; do not expose 8080.
+3. Set `USE_USER_AUTH=true` and `USE_API_KEYS=true`; set the admin password immediately; issue one scoped key per agent.
+4. Turn on `USE_AGENT_POLICY=true` and start from **Use recommended**; turn on `USE_AUDIT_LOG=true` and ship the log line to your aggregator.
+5. Keep the isolated tap runner on (the Compose default).
+6. Set `DATRIS_ENV=production`, `sslmode=require` on external Postgres, and `cors.allowedOrigins`.
+7. Enable encryption at rest on the stores; rotate API keys periodically.
+8. Run the [doctor](/doctor) self-check before every upgrade.

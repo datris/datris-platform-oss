@@ -7,6 +7,8 @@ If you believe you've found a security vulnerability in Datris, please report it
 
 > https://github.com/datris/datris-platform-oss/security/advisories/new
 
+If you cannot use GitHub, email `info@datris.ai` with the same detail.
+
 Please **do not** open a public issue for security reports.
 
 We aim to acknowledge reports within 3 business days and to provide a remediation

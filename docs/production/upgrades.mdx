@@ -1,0 +1,88 @@
+---
+title: "Upgrades & Supported Versions"
+description: "Release cadence, which versions receive fixes, and how to upgrade each kind of install without losing data"
+---
+
+## Release cadence and supported versions
+
+Datris ships small releases often — typically several per month — and every release is tagged, published to Docker Hub as multi-architecture images, and described in the [changelog](/changelog). There is no separate stable and unstable line: `latest` is the current release.
+
+| | |
+|---|---|
+| **Security fixes** | Only the latest minor version receives security updates. Upgrade to the current release to pick them up. |
+| **Migration steps** | When a release needs one — a renamed service, a moved secret, a changed volume — it is in the changelog entry for that release. Read the entries between your version and the target before upgrading. |
+| **Data compatibility** | Data lives in Docker volumes and is preserved across upgrades. Releases that change a Vault secret layout keep reading the old layout until you clean it up (see [Stale secrets](#stale-secrets-after-an-upgrade)). |
+| **Long-term support** | An LTS branch with a stated patch window, and help moving between releases on your schedule, are part of a [commercial license](/production/licensing-support). |
+
+Run the pre-upgrade self-check before every upgrade — it catches the things that turn an upgrade into an outage and prints the fix for each.
+
+## Upgrade procedure
+
+Upgrading means two things: pulling the latest pre-built images **and**
+refreshing the Compose file itself, since a new release can rename, add, or drop
+services. How you do it depends on how you installed. In every case your data is
+preserved — it lives in Docker volumes that survive an upgrade.
+
+**Step 0 — check the deployment first.** From the directory holding your
+`docker-compose.yml` and `.env`, run the pre-upgrade self-check. It catches the
+things an upgrade turns into an outage: data on an anonymous volume that
+`--remove-orphans` would drop, a missing AI slot secret the new server would
+crash-loop on, a disk too full to pull images, a container still running with a
+stale `.env`. Nothing is changed; it prints the fix for each finding and the
+upgrade command when the deployment is clean. See [Doctor](/doctor).
+
+```bash
+datris doctor --pre-upgrade
+```
+
+**Installer (the `curl … | sh` Quick Start):** just re-run the install command.
+It re-downloads the latest compose file and runtime scripts, leaves your `.env`
+and data untouched, pulls the new images, and restarts.
+
+```bash
+curl -fsSL https://get.datris.ai/install.sh | sh
+```
+
+**Single-file (`docker-compose.standalone.yml`):** re-download the file (it
+carries the latest topology and inlined scripts), then pull and restart.
+
+```bash
+curl -O https://get.datris.ai/docker-compose.standalone.yml
+docker compose -f docker-compose.standalone.yml pull
+docker compose -f docker-compose.standalone.yml up -d --remove-orphans
+```
+
+**From source (cloned repo):** pull the latest compose file from git, then pull
+images and restart.
+
+```bash
+cd datris-platform-oss
+git pull origin main
+docker compose pull
+docker compose up -d --remove-orphans
+```
+
+No build tools required for any of these — the images come pre-built from Docker Hub.
+
+<Note>
+**Always pass `--remove-orphans` when upgrading manually.** (The installer does this for you.) Releases occasionally rename, remove, or repurpose service blocks in `docker-compose.yml` (e.g. v1.6.15 replaced the bundled Ollama service with TEI on the same host port `11434`). Without `--remove-orphans`, the previous version's container keeps running and holding the port, causing the new container to fail with `Bind for 0.0.0.0:<port> failed: port is already allocated`. The flag is safe — it only removes containers that are no longer defined in your current compose file. Volumes (and your data) are untouched.
+</Note>
+
+Your data is preserved across upgrades — Postgres pipelines, Vault secrets, MinIO buckets, MongoDB collections, and Kafka state all live in Docker volumes that survive `docker compose pull` and `docker compose up -d`.
+
+### Stale secrets after an upgrade
+
+Datris occasionally deprecates secret paths between versions (for example, v1.5.6 split AI configuration into three new Vault slots and stopped reading the old single-slot path). Because Vault data persists across upgrades, deprecated entries stay in Vault and continue to appear in the Configuration → Secrets list even though the server ignores them. To clean them up:
+
+- **Targeted (preserves your data):** delete the stale entries one at a time from Configuration → Secrets in the UI, or run `docker compose exec -e VAULT_TOKEN="$(docker compose exec -T datris cat /vault-token/token)" vault vault kv delete secret/oss/<name>` for each deprecated path.
+- **Total reset (destroys all data):** see the next section.
+
+## Roll back
+
+Every release is also published under its version tag, so rolling back is pinning the four `image:` lines in your Compose file to the version you were on (for example `datrisai/datris-server:v1.28.2`, and likewise `datris-ui`, `datris-mcp-server`, and `datris-tap-runner`), then `docker compose up -d`. Data written by the newer version stays in place; whether the older version reads it depends on what changed — check the changelog entry for the release you are backing out of before rolling back across one that migrated a store.
+
+## Related
+
+- [Doctor](/doctor) — the operational self-check, including `--pre-upgrade`
+- [Installation](/installation) — volumes, services, and the full-reset path
+- [Changelog](/changelog)

@@ -1,114 +1,127 @@
 ---
 title: "Quick Start"
-description: "Get up and running with Datris in minutes"
+description: "Fifteen minutes from install to a governed pipeline: an agent builds a tap, a person approves the run, and every landed row cites where it came from"
 ---
 
-This guide walks through ingesting a CSV file into PostgreSQL using the pipeline.
+This walkthrough ends where Datris is different: an agent lands data from a public source, but only after a person approves the run, and every row it lands can be traced back to the run, the script, and the source. You will need Docker, one AI provider key (Anthropic, OpenAI, or Grok), and an MCP client — Claude Desktop, Claude Code, or Cursor.
 
 <Tip>
-Onboarding data from an external source instead of a local file? Skip the manual config and use the **Assistant** — describe the source, and Datris generates the [taps](/taps), [pipelines](/pipeline-configuration), and (optionally) schedules them for you.
+Want the plain REST version first — register a pipeline, upload a CSV, query it? That walkthrough is on [File Upload](/ingestion/file-upload#end-to-end-example-csv-to-postgresql).
 </Tip>
 
-## 1. Start the stack
-
-If you haven't installed yet, follow [Installation](/installation) — the
-one-command installer gets the stack running in a `./datris` directory. Already
-installed? Start it from your install directory:
+## 1. Install and start
 
 ```bash
-docker compose up -d
+curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
-Wait for the `datris` container to show `Started Application`.
-
-## 2. Register a pipeline
-
-Create a pipeline configuration that defines the source schema and PostgreSQL destination:
+Press Enter at every prompt for a standard install, paste your AI key when asked. Wait for the `datris` container to log `Started Application`, then confirm:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/pipeline \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "employees",
-    "source": {
-      "schemaProperties": {
-        "fields": [
-          {"name": "id", "type": "int"},
-          {"name": "first_name", "type": "string"},
-          {"name": "last_name", "type": "string"},
-          {"name": "email", "type": "string"},
-          {"name": "salary", "type": "double"}
-        ]
-      },
-      "fileAttributes": {
-        "csvAttributes": {
-          "delimiter": ",",
-          "header": true,
-          "encoding": "UTF-8"
-        }
-      }
-    },
-    "destination": {
-      "database": {
-        "dbName": "datris",
-        "schema": "public",
-        "table": "employees",
-        "usePostgres": true
-      }
+curl http://localhost:8080/api/v1/version
+```
+
+Other install paths (Windows, single-file Compose, git clone) are on [Installation](/installation).
+
+## 2. Turn on the governed defaults
+
+These are off in a fresh install so that existing deployments are unchanged. Add them to `./datris/.env`:
+
+```bash
+USE_USER_AUTH=true
+USE_API_KEYS=true
+USE_AGENT_POLICY=true
+USE_AUDIT_LOG=true
+```
+
+Recreate the server so it picks them up (the MCP server reads the same flag and starts requiring a key automatically):
+
+```bash
+cd datris && docker compose up -d --force-recreate datris
+```
+
+Open [http://localhost:4200](http://localhost:4200). The first login is `admin` with no password; you are asked to set one before anything else works.
+
+## 3. Set one policy rule
+
+**Configuration → Agent Policy → Use recommended.** That starting point pauses deletes, job kills, and destination-type migrations for approval and refuses secret and configuration writes. Add one rule for this walkthrough: set **`tap:run`** to **Approve**. From now on, any agent that tries to run a tap waits for a person.
+
+## 4. Issue a scoped key for your agent
+
+**Configuration → API-Keys → Issue new key.** Label it after the client (`claude-desktop`, `cursor`), pick the **rag-builder** template — it can create pipelines and taps and run the ones it created, and nothing else — and copy the value; it is shown once.
+
+## 5. Connect your agent
+
+Add the Datris MCP server to your client with the key from step 4. Claude Desktop (`claude_desktop_config.json`), Claude Code (`.mcp.json` in your project root), and Cursor all take the same snippet — see [Configuring Claude](/configuring-claude) for the file locations and the no-Docker alternative.
+
+```json
+{
+  "mcpServers": {
+    "datris": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote", "http://localhost:3000/sse",
+        "--transport", "sse-only",
+        "--header", "x-api-key:<paste the key from step 4>"
+      ]
     }
-  }'
+  }
+}
 ```
 
-## 3. Upload a CSV file
+Restart the client. In the Datris UI, the **Agent Monitor** tab now shows the agent connected under its key label, and streams every tool call it makes from here on.
 
-Create a sample CSV file:
+## 6. Ask the agent to build a tap against a public source
 
-```bash
-cat > /tmp/employees.csv << 'EOF'
-id,first_name,last_name,email,salary
-1,John,Doe,john@example.com,75000.00
-2,Jane,Smith,jane@example.com,82000.00
-3,Bob,Johnson,bob@example.com,68000.00
-EOF
-```
+The USGS earthquake feed needs no credentials, so nothing has to be stored before the first run. Ask your agent:
 
-Upload it:
+> "Create a Postgres pipeline called `earthquakes` and a tap called `usgs-earthquakes` that fetches the USGS 'all earthquakes, past day' GeoJSON feed at https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson and produces one row per event with its id, time, place, magnitude, longitude, latitude, and depth. Test the tap so I can see a sample, but don't run it yet."
 
-```bash
-curl -X POST http://localhost:8080/api/v1/pipeline/upload \
-  -F "file=@/tmp/employees.csv" \
-  -F "pipeline=employees"
-```
+Watch the Agent Monitor: `create_pipeline`, `create_tap`, `test_tap`. The agent shows you a handful of sample rows. Nothing has been landed.
 
-The response body is the `pipelineToken` for tracking — a plain UUID:
+## 7. Turn on provenance stamping
 
-```
-5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e
-```
+In the UI: **Catalog → `earthquakes` → Edit → Destination step → "Stamp provenance on landed data"** → save. From the next run on, every row this pipeline lands carries six extra columns naming the run, the time, the config version, the tap run, the script commit, and the source. (Do this before the run rather than after — an approval executes exactly what was proposed, and a pipeline changed underneath a pending approval is refused as stale.)
 
-## 4. Check status
+## 8. Run it — and watch it wait for you
 
-```bash
-curl "http://localhost:8080/api/v1/pipeline/status?pipelinetoken=5b2f4a1d-8c7e-4f0a-9b3d-6e1c2a4f8b9e"
-```
+> "Run the `usgs-earthquakes` tap."
 
-The status shows processing stages: `begin`, `processing`, `end`.
+The agent calls `run_tap` and gets back `pending_approval` with an approval id instead of a result, because of the rule from step 3. It tells you so, and can poll `get_approval` while it waits. Nothing has run.
 
-## 5. Verify the data
+Open **Activity → Approvals**. The card shows exactly what will execute — the method, path, and body of the agent's request, with the reason the agent gave, if any. Click **Approve**. The platform performs the original request on your behalf; the agent's next poll sees it executed and it follows the load to completion with `get_pipeline_status`. Ask it to confirm:
 
-Query the data via the REST API:
+> "Did the run land? How many rows?"
+
+## 9. Ask where a row came from
+
+> "Pick one row from `earthquakes` and tell me where it came from — the run, the tap run, the script commit, and the source."
+
+The agent reads the row's `_datris_run_id` and calls `get_provenance`, which walks the chain and returns the pipeline run with its status and record count, the tap run that fed it, the pipeline definition version in force, and the declared source. You can see the raw stamp yourself:
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/query/postgres \
-  -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT * FROM public.employees"}'
+  -H "x-api-key: <your key>" -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT _datris_run_id, _datris_ingested_at, _datris_tap_run, _datris_source FROM public.earthquakes LIMIT 3"}'
 ```
 
-The default database is `datris` — this is where all PostgreSQL pipelines write unless you specify a different `dbName` in the pipeline's destination config.
+(`_datris_script_sha` is populated when the tap's script is stored in a git repository — see [Tap GitHub Storage](/tap-github-storage).)
 
-## Next Steps
+## 10. Read the record
 
-- [Pipeline Configuration](/pipeline-configuration) - Explore all configuration options
-- [Data Quality](/data-quality/ai-rules) - Add validation rules
-- [Destinations](/destinations/object-store) - Write Parquet files to MinIO
-- [Transformations](/transformation/ai-transformation) - Transform data with AI
+**Configuration → Audit Log.** Two linked entries tell the whole story: the agent's queued `tap:run` request under its key label, and your approval executing it under your login. The pipeline and tap creations from step 6 are there too, attributed to the same key. Everything you just watched happen is now something you can answer questions about next month.
+
+## What you just saw
+
+- An agent with a **scoped key** could build and test, but its run was **gated by policy** — enforced by the platform, not by a prompt.
+- A **person approved** exactly what was proposed, and the platform executed it on their behalf.
+- Every landed row carries **provenance**, and the agent can resolve it back to the run, script, and source.
+- The **audit log** holds the request, the decision, and the result.
+
+## Next steps
+
+- [Agent Policy](/agent-policy) — the full action list, per-resource overrides, and approval limits
+- [Provenance, Lineage & Discovery](/provenance) — lineage graphs, freshness, and `find_data`
+- [Taps](/taps) — schedules, incremental state, secrets for sources that need them
+- [Security Architecture](/production/security-architecture) — the whole model on one page for your reviewer
+- [Pipeline Configuration](/pipeline-configuration) — everything a pipeline can do

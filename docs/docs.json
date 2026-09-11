@@ -29,6 +29,15 @@
             ]
           },
           {
+            "group": "Connect your agent",
+            "pages": [
+              "mcp-server",
+              "configuring-claude",
+              "configuring-openclaw",
+              "cli"
+            ]
+          },
+          {
             "group": "Assistant",
             "pages": [
               "assistant"
@@ -37,8 +46,7 @@
           {
             "group": "Catalog",
             "pages": [
-              "data-catalog",
-              "provenance"
+              "data-catalog"
             ]
           },
           {
@@ -47,8 +55,7 @@
               "taps",
               "tap-http-contract",
               "tap-prompts",
-              "tap-github-storage",
-              "tap-execution-isolation"
+              "tap-github-storage"
             ]
           },
           {
@@ -108,14 +115,30 @@
             "group": "Configuration",
             "pages": [
               "configuration-reference",
-              "user-auth",
-              "api-keys",
-              "audit-log",
-              "agent-policy",
               "incidents",
               "monitoring",
               "doctor",
               "notifications"
+            ]
+          },
+          {
+            "group": "Governance & Security",
+            "pages": [
+              "user-auth",
+              "api-keys",
+              "agent-policy",
+              "audit-log",
+              "tap-execution-isolation",
+              "provenance"
+            ]
+          },
+          {
+            "group": "Production",
+            "pages": [
+              "production/security-architecture",
+              "production/upgrades",
+              "production/vulnerability-disclosure",
+              "production/licensing-support"
             ]
           },
           {
@@ -140,7 +163,7 @@
         "tab": "MCP Reference",
         "groups": [
           {
-            "group": "MCP",
+            "group": "Connect your agent",
             "pages": [
               "mcp-server",
               "configuring-claude",
