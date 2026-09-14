@@ -1,6 +1,12 @@
 # Stage 1: Build
 # Pinned by digest (multi-arch manifest list); Dependabot docker sends digest-bump PRs.
-FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS build
+# --platform=$BUILDPLATFORM: run this stage on the build machine's own
+# architecture. Its output (compiled Angular assets) is architecture-neutral,
+# so there is no reason to run `npm ci` / `ng build` under qemu for the arm64
+# target — that emulated npm ci has crashed with "Illegal instruction" and
+# wedged the release build on more than one occasion. Only the nginx stage
+# below is built per target architecture.
+FROM --platform=$BUILDPLATFORM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
