@@ -3,6 +3,14 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.29.1" description="September 14, 2026">
+  **Installs and upgrades work again.**
+
+  - **MinIO images now come from quay.io.** MinIO removed its images from Docker Hub, so every fresh install and every `docker compose pull` failed with "pull access denied for minio/minio". The Compose files now pull the identical images from quay.io; running deployments were never affected. The installer, the standalone file and a fresh clone pick this up automatically.
+  - **Docs: the production trail.** A new Production section walks a deployment from first install to a governed, audited, agent-operated setup; the Quick Start now ends on an approval and a provenance lookup.
+  - Upgrade: `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. Compose recreates `minio` on the new image name; the data volume re-attaches. No configuration changes required.
+</Update>
+
 <Update label="v1.29.0" description="September 10, 2026">
   **Datris can now diagnose its own deployment.**
 
