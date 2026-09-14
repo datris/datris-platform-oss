@@ -29,7 +29,7 @@ volumes:
 
 services:
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: minio
     # Bound to loopback: reachable from the host (dev tools, console) but not
     # from other machines. Ships with default creds (minioadmin), so a public
@@ -582,7 +582,7 @@ services:
       - datris-net
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: minio-init
     depends_on:
       minio:
