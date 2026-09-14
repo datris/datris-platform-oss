@@ -1,6 +1,6 @@
 # Release Notes
 
-## v1.30.0 — Unreleased
+## v1.30.0 — September 14, 2026
 
 **The doctor now runs itself.**
 
