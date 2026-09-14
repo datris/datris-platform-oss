@@ -112,9 +112,17 @@ if [ "${DATRIS_NO_START:-}" != "1" ]; then
 fi
 
 # --- fetch runtime files --------------------------------------------------
+# Only replace a file whose content changed: docker/vault.hcl is bind-mounted
+# and `datris doctor` flags it when its mtime is newer than the vault
+# container's start, so an identical re-download must not touch the mtime.
 for f in $FILES; do
   mkdir -p "$DIR/$(dirname "$f")"
-  curl -fsSL "$REPO_RAW/$REF/$f" -o "$DIR/$f" || die "could not download $f from $REPO_RAW/$REF/$f"
+  curl -fsSL "$REPO_RAW/$REF/$f" -o "$DIR/$f.tmp" || die "could not download $f from $REPO_RAW/$REF/$f"
+  if [ -f "$DIR/$f" ] && cmp -s "$DIR/$f.tmp" "$DIR/$f"; then
+    rm -f "$DIR/$f.tmp"
+  else
+    mv -f "$DIR/$f.tmp" "$DIR/$f"
+  fi
 done
 chmod +x "$DIR/docker/vault-init.sh" "$DIR/docker/minio-init.sh" "$DIR/docker/vault-bootstrap.sh" 2>/dev/null || true
 ok "Fetched compose file and runtime scripts."
