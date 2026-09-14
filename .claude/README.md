@@ -5,7 +5,7 @@ from plan to reviewed pull request.
 
 ```
 /plan-story <idea>          planner  -> writes a story file
-/lead plans/stories/x.md    lead     -> implementer -> reviewer (loop) -> releaser (optional) -> PR
+/lead plans/stories/x.md    lead     -> tester:specs -> implementer -> reviewer (loop) -> tester:e2e -> releaser (optional) -> PR
 ```
 
 ## Roles (`agents/`)
@@ -15,6 +15,7 @@ from plan to reviewed pull request.
 | `planner` | Turn an idea into a self-contained story with files, acceptance criteria, test commands | read-only + Write |
 | `implementer` | Implement one story on the current branch, run the relevant tests, commit | all |
 | `reviewer` | Independent review of the diff against the story; runs tests; returns PASS/FAIL with findings | read-only + Bash |
+| `tester` | `specs` mode writes a failing test per Acceptance bullet before the build; `e2e` mode rebuilds the Docker stack and runs the manual Verify block plus adversarial cases after review | all (no source edits in e2e) |
 | `releaser` | Prepare a release PR: version bump, release notes, archive. Never tags, never pushes images | Read, Edit, Bash |
 
 Each role is a markdown file with frontmatter (`name`, `description`, `tools`, `model`). The
@@ -34,7 +35,8 @@ Required sections, in order:
 ## Files           expected files to touch, repo-relative
 ## Steps           numbered, concrete, each independently checkable
 ## Acceptance      bullet list; each bullet is a test or an observable behaviour
-## Verify          exact commands (sbt, pytest, npm) the reviewer will run
+## Verify          exact commands (sbt, pytest, npm) the reviewer will run, then an optional
+                   "Manual" block the tester runs against the live Docker stack
 ## Out of scope    what NOT to do
 ```
 
@@ -47,6 +49,8 @@ a GitHub Issue URL instead and it reads the body with `gh issue view`.
 - **System cron / launchd:** `claude -p "/lead <story>" --permission-mode bypassPermissions`
 - **Cloud routine:** `/schedule` with the same prompt; the routine sees the GitHub clone only,
   so stories that need the local Docker stack must run locally.
+
+The e2e tester pass only runs where the Docker stack is up, so it is skipped in cloud routines.
 
 Workers inherit the session's permission mode. Unattended runs need `bypassPermissions` or an
 explicit allowlist, otherwise the first prompt stalls the whole team.
