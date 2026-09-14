@@ -34,6 +34,7 @@ schedule:
   checkDatabaseSourceQueries: "30000"
   checkTapSchedules: "30000"
   incidentSweep: "300000"  # recovery-agent sweep: resume approvals, stale/volume signals
+  doctorTick: "60000"      # how often the periodic doctor checks whether doctor.intervalMinutes has elapsed
 tapScriptTimeoutSeconds: "300"
 dateFormat: "yyyy-MM-dd HH:mm:ss z"
 dateTimezone: "America/New_York"
@@ -68,8 +69,12 @@ useAgentPolicy: "false"
 # model loaded, disk, version skew). onStartup logs the cheap subset at boot as
 # DOCTOR warn lines; the same checks run on demand via GET /api/v1/doctor,
 # the run_doctor MCP tool, and `datris doctor`. Env var: DOCTOR_ONSTARTUP.
+# intervalMinutes > 0 re-runs the full server-side report on that cadence and
+# POSTs any check that flips to error (or recovers) to recoveryAgent.webhookUrl;
+# AI probes never run on the timer. Env var: DOCTOR_INTERVALMINUTES.
 doctor:
   onStartup: "true"
+  intervalMinutes: "0"
 
 # CORS allowed origins (comma-separated). Use "*" for any origin (dev only).
 # Production: lock down to specific origins, e.g. "https://app.datris.ai,https://admin.datris.ai"

@@ -191,6 +191,12 @@ class StartupRunner extends ApplicationRunner {
     @Value("${doctor.onStartup:true}")
     var doctorOnStartup: Boolean = _
 
+    // Doctor: re-run the full server-side report every N minutes and POST
+    // checks that flip to error (or recover) to recoveryAgent.webhookUrl.
+    // 0 = off. Never includes the AI probes.
+    @Value("${doctor.intervalMinutes:0}")
+    var doctorIntervalMinutes: Int = _
+
     @Override
     def run(args: ApplicationArguments): Unit = {
         ai.datris.util.TapScriptRunner.assertIsolationConfig()
@@ -426,6 +432,7 @@ class StartupRunner extends ApplicationRunner {
             try ai.datris.util.DoctorService.runStartupLive()
             catch { case e: Exception => logger.warn("DOCTOR startup checks failed (continuing): " + e.getMessage) }
         }
+        ai.datris.util.DoctorMonitor.configure(doctorIntervalMinutes)
 
         // AI configuration is required — CodeGen data quality and transformation depend on it.
         // Three independent secrets, each fully self-describing (provider/endpoint/model/apiKey/version

@@ -319,6 +319,12 @@ services:
       # (optional) gets a JSON POST on incident lifecycle events.
       RECOVERYAGENT_ENABLED: "${RECOVERY_AGENT_ENABLED:-false}"
       RECOVERYAGENT_WEBHOOKURL: "${INCIDENT_WEBHOOK_URL:-}"
+      # Doctor: DOCTOR_ONSTARTUP logs the cheap self-checks at boot;
+      # DOCTOR_INTERVAL_MINUTES > 0 re-runs the full server-side report on
+      # that cadence and POSTs checks that flip to error (or recover) to
+      # INCIDENT_WEBHOOK_URL. Never spends AI tokens on the timer.
+      DOCTOR_ONSTARTUP: "${DOCTOR_ONSTARTUP:-true}"
+      DOCTOR_INTERVALMINUTES: "${DOCTOR_INTERVAL_MINUTES:-0}"
       # Shared secret authenticating the MinIO -> /minio-events webhook. When set,
       # the server requires MinIO to present it as a bearer token (see
       # minio-init.sh auth_token). Empty by default so existing deployments keep

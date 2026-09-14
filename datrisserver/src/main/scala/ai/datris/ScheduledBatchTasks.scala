@@ -61,6 +61,18 @@ class ScheduledBatchTasks {
         }
     }
 
+    @Scheduled(fixedRateString = "${schedule.doctorTick:60000}")
+    private def doctorTick(): Unit = {
+        try {
+            if (isAppInitialized) {
+                ai.datris.util.DoctorMonitor.runIfDue()
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("doctorTick error: " + Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @Scheduled(fixedRateString = "${schedule.checkFileNotifierQueue}")
     private def checkFileNotifierQueue(): Unit = {
         try {

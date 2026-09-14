@@ -13,6 +13,9 @@ description: "Operational self-check for a Datris deployment"
 | **Configuration → Doctor** | Every server-side check, with an optional AI probe | On demand |
 | `run_doctor` MCP tool | Same as the UI; for an agent diagnosing a failure | On demand — not part of the normal workflow |
 | `datris doctor` CLI | Server-side checks **plus** host checks that need Docker | On demand, and `--pre-upgrade` before every upgrade |
+| Installer (`install.sh`) | Runs `datris doctor --pre-upgrade` for you when the CLI is installed | Every upgrade through the installer, before anything is pulled |
+| Periodic run | The server-side checks on a timer, posting flips to error to the incident webhook | Opt-in: `DOCTOR_INTERVAL_MINUTES` |
+| Recovery agent | Holds `run_doctor` as one of its read-only diagnosis tools | When an incident looks like the platform, not the tap |
 
 The server-side report is also available at `GET /api/v1/doctor` for scripts. It is not a public endpoint — it names environment keys, Vault paths and model ids — so an API key with `config:read` is required when [API keys](/api-keys) are on.
 
@@ -69,6 +72,37 @@ datris doctor --pre-upgrade
 
 This runs the host checks plus a read of the three AI slot secrets through the vault container, so a missing secret is caught **before** the new server crash-loops on it, and an anonymous volume is caught before `--remove-orphans` could drop it. When nothing is at error level it prints the upgrade command. See [Upgrading](/production/upgrades).
 
+**The installer runs it for you.** When you upgrade by re-running `curl -fsSL https://get.datris.ai/install.sh | sh` and the `datris` CLI is on the machine, the installer runs the pre-upgrade check before it pulls anything. A warning is printed and the upgrade continues; an error stops the upgrade with the fix on screen. `DATRIS_SKIP_DOCTOR=1` bypasses it. Without the CLI the installer says so and continues as it always has.
+
+## Periodic run
+
+The boot-time lines catch a problem once, at start. To keep catching them — a Vault token that will expire next month, a disk crossing 85 %, an embedding service that stopped answering — set an interval and the server re-runs the full server-side report on that cadence:
+
+```bash
+DOCTOR_INTERVAL_MINUTES=60
+INCIDENT_WEBHOOK_URL=https://hooks.example.com/datris   # optional
+```
+
+Every run logs non-ok checks as `DOCTOR` lines. When a check **flips to error**, or recovers from one, the server POSTs to the incident webhook (the same one the [recovery agent](/incidents) uses, so one receiver handles both):
+
+```json
+{
+  "event": "doctor_error",
+  "check": "vault.token_ttl",
+  "status": "error",
+  "detail": "expires in 3d (period 3650d)",
+  "remediation": "…",
+  "surface": "server",
+  "ts": "2026-09-11T14:00:00Z"
+}
+```
+
+`event` is `doctor_error` or `doctor_recovered`. Warnings and checks that stay in error are not re-posted; an error already present when the timer starts is posted once. The AI probes never run on the timer. The interval is `0` (off) by default; the timer polls once a minute, so the first run lands within a minute of boot. Each run logs one `DOCTOR periodic run` summary line; a POST that fails logs a `DOCTOR webhook POST failed` warning. Like every outbound call the server makes, the POST is refused when the receiver resolves to a private or loopback address unless `DATRIS_ALLOW_PRIVATE_EGRESS=true` (see [Configuration Reference](/configuration-reference)).
+
+## In the recovery agent
+
+When the [recovery agent](/incidents) diagnoses an incident, `run_doctor` is among its read-only tools. Its instructions tell it to call the quick subset once, without AI probes, only when the failure looks like the platform rather than the tap — a missing secret, a model or embedding service not answering, a full disk, a version mismatch — and, if the doctor reports an error, to hand the incident to a human with the doctor's remediation rather than propose a re-run that will fail the same way. When API keys are on, the agent's `recovery-agent` key is granted `config:read` for this on the first start after upgrading; the grant is audited.
+
 ## Report format
 
 All surfaces produce the same JSON:
@@ -98,4 +132,4 @@ All surfaces produce the same JSON:
 
 ## Turning off the boot-time lines
 
-The startup subset only logs; it never blocks a start. To silence it, set `DOCTOR_ONSTARTUP=false` in the datris service environment. The on-demand surfaces are unaffected.
+The startup subset only logs; it never blocks a start. To silence it, set `DOCTOR_ONSTARTUP=false` in `.env`. The on-demand surfaces and the periodic run are unaffected.

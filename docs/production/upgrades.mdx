@@ -37,7 +37,9 @@ datris doctor --pre-upgrade
 
 **Installer (the `curl … | sh` Quick Start):** just re-run the install command.
 It re-downloads the latest compose file and runtime scripts, leaves your `.env`
-and data untouched, pulls the new images, and restarts.
+and data untouched, pulls the new images, and restarts. When the `datris` CLI is
+on the machine it runs step 0 for you first: a warning continues, an error stops
+the upgrade with the fix on screen (`DATRIS_SKIP_DOCTOR=1` bypasses it).
 
 ```bash
 curl -fsSL https://get.datris.ai/install.sh | sh
