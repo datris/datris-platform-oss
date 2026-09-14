@@ -133,8 +133,10 @@ object DoctorMonitor {
                         if (status == StatusError || status == DoctorService.StatusWarn)
                             logger.warn("DOCTOR " + id + ": " + status + (if (flipped.contains(id)) " (changed)" else ""))
                     }
-                    transitions.foreach(t => logger.warn("DOCTOR " + t.event + " " + t.check.id + ": " + t.check.detail +
-                        (if (t.check.remediation.nonEmpty) " — " + t.check.remediation else "")))
+                    transitions.foreach(t =>
+                        logger.warn("DOCTOR " + t.event + " " + t.check.id + ": " + t.check.detail +
+                            (if (t.check.remediation.nonEmpty) " — " + t.check.remediation else ""))
+                    )
                     statuses = next
                 }
         } catch {
