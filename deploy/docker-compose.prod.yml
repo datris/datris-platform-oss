@@ -46,7 +46,7 @@ services:
         max-file: "3"
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: minio
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -325,7 +325,7 @@ services:
       - datris-net
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: minio-init
     depends_on:
       minio:
