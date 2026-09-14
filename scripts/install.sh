@@ -676,10 +676,11 @@ if [ "$FRESH_ENV" = "0" ] && [ "${DATRIS_SKIP_DOCTOR:-}" != "1" ]; then
          die "upgrade stopped by datris doctor --pre-upgrade (exit $DOCTOR_RC)" ;;
     esac
   else
-    say ""
-    say "Skipping the pre-upgrade self-check: the datris CLI is not installed (or is older than 1.29)."
-    say "  pip install -U datris-mcp-server   # or: brew install datris/tap/datris"
-    say "  then: datris doctor --pre-upgrade  (see https://docs.datris.ai/doctor)"
+    warn ""
+    warn "Skipping the pre-upgrade self-check: the datris CLI is not installed (or is older than 1.29)."
+    warn "Upgrade it so the next upgrade is checked for orphaned data, missing secrets and a full disk first:"
+    warn "  pip install -U datris-mcp-server   # or: brew upgrade datris"
+    warn "  then: datris doctor --pre-upgrade  (see https://docs.datris.ai/doctor)"
   fi
 fi
 
