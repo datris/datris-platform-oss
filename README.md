@@ -29,6 +29,22 @@ You only need Docker. This pulls pre-built images and runtime files, seeds a
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
 
+**Minimal install (laptop-friendly).** The default stack runs about ten
+containers and the bundled embedding server downloads a 2.2 GB model on first
+boot. None of that is required. Three settings in `.env` cut it to eight small
+containers, no download, and roughly 3.5 GB of memory (4 GB of Docker memory
+is enough; the full stack wants 8 GB):
+
+```bash
+TEI_ENABLED=0               # skip the local embedding server and its 2.2 GB download
+EMBEDDING_PROVIDER=openai   # semantic search via OpenAI (needs OPENAI_API_KEY); omit if you have no OpenAI key
+POSTGRES_ENABLED=0          # optional: skip bundled Postgres; MongoDB stays as the destination
+```
+
+The installer sets the first two when you choose OpenAI embeddings. The datris
+server itself runs on a 2 GB heap by default. Details: [Installation → Minimal
+install](https://docs.datris.ai/installation#minimal-install).
+
 > The `install.sh` installer is a POSIX shell script (macOS/Linux). On **Windows**, run it from **WSL2** or **Git Bash**, or use the single-file Compose option below, which works natively in PowerShell.
 
 <details>

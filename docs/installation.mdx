@@ -6,6 +6,10 @@ description: "How to install and set up the Datris Data Platform"
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
+- **Memory:** 4 GB available to Docker for the [minimal install](#minimal-install),
+  about 8 GB for the full stack with the bundled embedding server. On Docker
+  Desktop this is the VM allocation under Settings → Resources, not your
+  host's total RAM.
 
 <Note>
 **License.** Datris is open source under AGPL-3.0. Running an unmodified copy inside your own organization needs nothing more; a commercial license is available for hosted, embedded, and supported deployments — see [Licensing & Support](/production/licensing-support).
@@ -22,6 +26,28 @@ needs into a `./datris` directory, seeds a `.env`, and starts the full stack:
 ```bash
 curl -fsSL https://get.datris.ai/install.sh | sh
 ```
+
+### Minimal install
+
+Trying Datris on a laptop? The default stack runs about ten containers and
+the bundled embedding server (TEI) downloads a 2.2 GB model on first boot.
+None of that is required. Three settings cut it to eight small containers,
+no model download, and roughly 3.5 GB of memory:
+
+```bash
+# .env — or export before `docker compose up`
+TEI_ENABLED=0               # skip the local embedding server and its 2.2 GB download
+EMBEDDING_PROVIDER=openai   # semantic search via OpenAI instead (needs OPENAI_API_KEY);
+                            # drop this line if you don't have an OpenAI key — search is simply off
+POSTGRES_ENABLED=0          # optional: skip the bundled Postgres; MongoDB stays as the destination
+```
+
+The installer applies the first two for you when you pick OpenAI embeddings,
+and the single-file Compose path below defaults to OpenAI embeddings whenever
+an `OPENAI_API_KEY` is set. Everything here is reversible: flip a value back
+to `1`, run `docker compose up -d`, and the service returns with its data
+volume intact. The datris server itself runs on a 2 GB heap by default; see
+[JVM Heap Sizing](#jvm-heap-sizing).
 
 The installer walks you through a short setup — press Enter at every prompt
 for a standard install:
@@ -82,6 +108,13 @@ docker compose -f docker-compose.standalone.yml up -d
 ```
 
 </CodeGroup>
+
+The bundled embedding server (TEI) is optional and starts by default, pulling
+a 2.2 GB model on first boot. To skip it, add `TEI_ENABLED=0` — and, if you
+have an OpenAI key, `OPENAI_API_KEY=sk-...` — to the environment or a `.env`
+next to the file. With an OpenAI key present the standalone file uses OpenAI
+embeddings automatically; without one, semantic search is off until you
+enable an embedding provider in the Configuration tab.
 
 In PowerShell, use `curl.exe` (the bundled `curl` alias maps to
 `Invoke-WebRequest` and takes different flags), and set the key with `$env:`
@@ -249,13 +282,21 @@ See [Configuration Reference](/configuration-reference) for the full list of pro
 
 ## JVM Heap Sizing
 
-The `datris` service runs a Spring Boot JVM. Its heap is governed by the `JAVA_OPTS` environment variable, passed in via `docker-compose.yml`. The default is sized to fit comfortably on an 8 GB host alongside the bundled TEI embedder, Postgres, MongoDB, MinIO, ActiveMQ, Vault, the UI, and the MCP server:
+The `datris` service runs a Spring Boot JVM. Its heap is governed by the `JAVA_OPTS` environment variable, passed in via `docker-compose.yml`. The default is a **2 GB maximum heap**:
 
 ```
 JAVA_OPTS=-Xms512m -Xmx2g   # default
 ```
 
-Override in your `.env` file on larger hosts. Suggested sizings:
+That default is the same for every install size. What changes the memory footprint is which optional services run alongside it, measured on a live stack:
+
+| Install | Running services | Memory (approx.) |
+|---|---|---|
+| [Minimal](#minimal-install) (`TEI_ENABLED=0`, `POSTGRES_ENABLED=0`) | datris, MongoDB, MinIO, ActiveMQ, Vault, UI, MCP server, tap runner | 3.5 GB |
+| Default | minimal + Postgres | 4 GB |
+| Default + bundled TEI embedder | the full stack; TEI alone uses about 3 GB | 7 GB |
+
+So plan on **4 GB of Docker memory** for a minimal or default install without TEI, and **8 GB** when the bundled embedding server runs. Override `JAVA_OPTS` in your `.env` file on larger hosts if you hit `OutOfMemoryError` during heavy ingestion, embedding batches, or large query results. Suggested sizings:
 
 | Host RAM | Suggested `-Xmx` |
 |---|---|

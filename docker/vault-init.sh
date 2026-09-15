@@ -254,14 +254,17 @@ if exists secret/oss/embedding; then
 else
   # Selection precedence:
   #   1. EMBEDDING_PROVIDER (openai|azure|tei|ollama) — explicit override.
-  #   2. Otherwise: AI_PROVIDER=openai → OpenAI embeddings;
-  #                 anything else (anthropic, azure, bedrock, grok) → bundled TEI (bge-m3,
-  #                 1024-dim). Azure embeddings are opt-in only, because they
-  #                 require an embedding deployment that may not exist on the
-  #                 customer's resource.
+  #   2. Otherwise: an OPENAI_API_KEY in .env → OpenAI embeddings (no local
+  #                 container needed, whichever provider handles chat);
+  #                 no OpenAI key → bundled TEI (bge-m3, 1024-dim). Azure
+  #                 embeddings are opt-in only, because they require an
+  #                 embedding deployment that may not exist on the customer's
+  #                 resource.
+  # First-boot seed only (seed_if_absent above): existing installs keep
+  # whatever embedding provider they already have.
   EMBEDDING_PROVIDER_RESOLVED="${EMBEDDING_PROVIDER:-}"
   if [ -z "$EMBEDDING_PROVIDER_RESOLVED" ]; then
-    if [ "${PROVIDER:-}" = "openai" ]; then
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
       EMBEDDING_PROVIDER_RESOLVED="openai"
     else
       EMBEDDING_PROVIDER_RESOLVED="tei"

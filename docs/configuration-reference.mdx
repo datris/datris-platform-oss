@@ -387,7 +387,7 @@ These environment variables are read by `docker-compose.yml` and passed into the
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JAVA_OPTS` | `-Xms512m -Xmx2g` | JVM heap sizing for the datris-server process. The default fits an 8 GB host alongside the other bundled services. Bump on larger hosts (e.g. `-Xms1g -Xmx8g` for 24 GB). See [Installation → JVM Heap Sizing](/installation#jvm-heap-sizing) for the full sizing table and Docker Desktop ceiling notes. |
+| `JAVA_OPTS` | `-Xms512m -Xmx2g` | JVM heap sizing for the datris-server process. The default is a 2 GB max heap: the minimal install (`TEI_ENABLED=0`, `POSTGRES_ENABLED=0`) fits a 4 GB Docker memory allocation, and the full stack with the bundled TEI embedder needs about 8 GB. Bump on larger hosts (e.g. `-Xms1g -Xmx8g` for 24 GB). See [Installation → JVM Heap Sizing](/installation#jvm-heap-sizing) for the full sizing table and Docker Desktop ceiling notes. |
 | `TAP_MAX_OUTPUT_MB` | `100` | Override the `tapMaxOutputMB` cap. Applies to all tap scripts; affects when the platform fails fast on oversized output. Raise on hosts with larger heaps when single-shot backfills genuinely need more buffer; lower on memory-constrained deployments to fail earlier. |
 | `USE_USER_AUTH` | `false` | Enable username/password login + admin gating. See [User Authentication](/user-auth). |
 | `USE_API_KEYS` | `false` | Enable per-tenant API-key gating on the REST/MCP API. See [API Keys](/api-keys). |

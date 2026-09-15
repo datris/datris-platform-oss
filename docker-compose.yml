@@ -353,9 +353,11 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       AWS_REGION: ${AWS_REGION:-}
-      # JVM heap sizing for the datris-server process. Default fits an 8GB
-      # trial droplet alongside TEI, postgres, mongo, etc. Override in .env
-      # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) on larger hosts.
+      # JVM heap sizing for the datris-server process. Default is a 2 GB max
+      # heap. The minimal install (TEI_ENABLED=0, POSTGRES_ENABLED=0) fits a
+      # 4 GB Docker memory allocation; the full stack with the bundled TEI
+      # embedder needs about 8 GB. Raise -Xmx in .env on larger hosts
+      # (e.g. JAVA_OPTS=-Xms1g -Xmx8g) if you hit OutOfMemoryError.
       JAVA_OPTS: "${JAVA_OPTS:--Xms512m -Xmx2g}"
       # Tap execution isolation (Phase 3). Compose/prod default ON: tap fetch()
       # runs in the datris-tap-runner sidecar. Set USE_TAP_RUNNER=false for
