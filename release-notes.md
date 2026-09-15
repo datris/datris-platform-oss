@@ -1,15 +1,15 @@
 # Release Notes
 
-## v1.30.0 — September 14, 2026
+## v1.30.1 — September 15, 2026
 
-**The doctor now runs itself.**
+**A smaller install, and docs written for the way people search.**
 
-- **Upgrades check themselves first.** Re-running the installer on an existing install now runs the pre-upgrade self-check before it pulls anything, when the `datris` CLI is on the machine. A warning is shown and the upgrade continues; an error stops the upgrade with the fix on screen, and can be bypassed deliberately. Without the CLI the installer says so and continues as before.
-- **Continuous checks.** Set an interval and the server re-runs its self-checks on that cadence. When a check flips to an error, or recovers, the incident webhook receives a message naming the check, what it found, and the fix, so a Vault token about to expire or a disk filling up reaches you before a run fails on it. Off by default; AI probes never run on the timer.
-- **The recovery agent can consult the doctor.** When an incident looks like the platform rather than the tap (a missing secret, a model or embedding service not answering, a full disk) the agent runs the quick self-check and hands the incident to a person with the doctor's fix, instead of retrying something that will fail the same way.
+- **Minimal install.** The installation guide now leads with a minimal path that skips the bundled embedding server and the bundled PostgreSQL, and fits in a 4 GB Docker memory allocation. The full stack needs about 8 GB. The numbers were measured on a live stack and replace the old "fits an 8 GB host" guidance. See [Installation](https://docs.datris.ai/installation).
+- **OpenAI embeddings by default when you have a key.** On a fresh install with an OpenAI key present, embeddings now use OpenAI instead of the local embedding server, whichever provider handles chat. That avoids the 2 GB model download and the resident container. Existing installs keep whatever embedding provider they already have; set the embedding provider explicitly to keep embeddings local.
+- **A recipe for agents that write to your database.** New guide: [Give Claude Code a safe way to load data into PostgreSQL](https://docs.datris.ai/recipes/claude-code-postgres). It connects Claude Code over MCP, gates deletes and table rewrites behind human approval, loads a table, and shows the audit and lineage records left behind.
+- **Docs pages named for the task.** Destination, MCP, policy, audit, lineage, and Airflow pages are now titled for what you are trying to do, such as "Load data into Snowflake from an AI agent or pipeline" and "Embed documents into Qdrant for RAG". URLs are unchanged.
+- **More reliable release builds.** The UI image no longer builds its assets under emulation, which had caused intermittent build failures on the arm64 image.
 
 **Upgrading**
 
 Run `datris doctor --pre-upgrade` first, then `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required.
-
-**CLI users: upgrade the CLI too.** The installer's new pre-upgrade check needs a CLI of 1.29 or later on the machine running Docker. An older CLI keeps working, but every future installer run will skip the check and remind you until you upgrade: `pip install -U datris-mcp-server` or `brew upgrade datris`.
