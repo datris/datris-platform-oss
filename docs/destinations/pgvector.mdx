@@ -1,7 +1,10 @@
 ---
-title: "pgvector (PostgreSQL) Vector Database Destination"
-description: "Send data to pgvector"
+title: "Embed documents into pgvector for RAG"
+sidebarTitle: "pgvector"
+description: "Chunk, embed, and upsert PDFs, Word docs, and text into PostgreSQL with the pgvector extension for retrieval-augmented generation."
 ---
+
+Use this destination when you want a RAG index inside PostgreSQL you already run, built by a repeatable pipeline instead of a one-off script.
 
 Ingest unstructured documents into PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension for retrieval-augmented generation (RAG) and semantic search. The pipeline extracts text from the document, chunks it using a configurable strategy, generates vector embeddings, and upserts the chunks with metadata into a PostgreSQL table with a `vector` column.
 

@@ -1,7 +1,10 @@
 ---
-title: "PostgreSQL Destination"
-description: "Send data to PostgreSQL"
+title: "Load data into PostgreSQL from an AI agent or pipeline"
+sidebarTitle: "PostgreSQL"
+description: "Bulk-load CSV, JSON, and API data into PostgreSQL with COPY, schema validation, upserts, and per-run lineage."
 ---
+
+Use this destination when an agent, a tap, or a scheduled pipeline needs to land rows in PostgreSQL and you want the write validated against a schema, recorded in the audit log, and traceable to the run that produced it.
 
 The PostgreSQL destination performs bulk inserts using the PostgreSQL `COPY` command. It streams data directly into the target table, making it significantly faster than row-by-row inserts.
 

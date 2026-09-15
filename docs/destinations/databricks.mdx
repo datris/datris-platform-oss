@@ -1,7 +1,10 @@
 ---
-title: "Databricks Destination"
-description: "Send data to Unity Catalog managed Delta tables with per-pipeline credentials"
+title: "Load data into Databricks Delta tables from an AI agent or pipeline"
+sidebarTitle: "Databricks"
+description: "Load validated data into Unity Catalog managed Delta tables through a SQL warehouse with COPY INTO, MERGE upserts, and per-pipeline credentials."
 ---
+
+Use this destination when you want an agent or a scheduled pipeline to land validated data in Databricks without giving it workspace credentials directly. Each pipeline references its own secret, and every load is atomic, audited, and lineage-tracked.
 
 The Databricks destination loads data into **Unity Catalog managed Delta tables** through a SQL warehouse: the pipeline output is staged into a Unity Catalog volume, then loaded with a single atomic SQL statement — `COPY INTO` for inserts, `MERGE` when `keyFields` is set, or `INSERT OVERWRITE` when `truncateBeforeWrite` is set. Every load is one Delta commit, so a failed run never leaves the table half-written or empty. Tables land governed and immediately queryable in the workspace — notebooks, dashboards, Genie, and lineage all see them natively.
 
