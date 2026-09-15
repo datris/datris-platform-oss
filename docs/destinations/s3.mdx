@@ -1,7 +1,10 @@
 ---
-title: "S3 Destination (AWS)"
-description: "Write pipeline output to AWS S3 with per-bucket credentials"
+title: "Write Parquet or ORC files to AWS S3 from a pipeline"
+sidebarTitle: "S3 (AWS)"
+description: "Write validated pipeline output as Parquet or ORC files to AWS S3 with per-bucket credentials and region."
 ---
+
+Use this destination when your lake lives in S3 and you want validated, lineage-tracked files landed there by an agent or a scheduled pipeline, with credentials scoped per bucket.
 
 The S3 destination writes Parquet or ORC files directly to AWS S3. It uses the same Spark + S3A code path as the [MinIO destination](/destinations/object-store); the only differences are the credentials, the endpoint, and a few S3A settings applied per-bucket so multiple S3 destinations can coexist with the built-in MinIO output.
 

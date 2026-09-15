@@ -1,0 +1,118 @@
+---
+title: "Give Claude Code a safe way to load data into PostgreSQL"
+sidebarTitle: "Claude Code → PostgreSQL"
+description: "Connect Claude Code to Datris over MCP, gate the destructive actions behind human approval, load a table, and see the audit and lineage records it leaves behind."
+---
+
+This recipe is for the moment you want an agent to load data into a database you care about, and you are not willing to hand it the database credentials. Claude Code never sees a PostgreSQL connection string here. It talks to Datris over MCP, Datris holds the credentials, validates the data against a schema, and records who did what.
+
+You will end up with:
+
+- Claude Code connected to Datris with an identifiable API key
+- A policy that lets Claude create and run pipelines on its own but pauses deletes and table rewrites for a person to approve
+- A PostgreSQL table loaded by Claude, with a lineage record and an audit trail you can read
+
+Time: about 15 minutes on a running Datris stack. If you have not installed Datris yet, start with the [Quick Start](/quick-start).
+
+## 1. Turn on the guardrails
+
+Three features are off by default so existing installs are unchanged. Add them to your `.env`:
+
+```bash
+USE_API_KEYS=true
+USE_AGENT_POLICY=true
+USE_AUDIT_LOG=true
+```
+
+Recreate the Datris container so it picks them up:
+
+```bash
+docker compose up -d --force-recreate datris
+```
+
+## 2. Issue a key for Claude Code
+
+Open **Configuration → API-Keys → Issue new key**. Label it `claude-code`. The label is how this agent will appear in the audit log, the Agent Monitor, and version history.
+
+Pick the **rag-builder** template, or build a list that lets the key create and run pipelines and taps and read results. Avoid **full-access** for an agent. Copy the key value when the modal shows it. It is shown once.
+
+What a key may do at all is set here. What it may do unattended is the next step. The two are explained side by side in [API Keys](/api-keys#capabilities-vs-the-agent-policy).
+
+## 3. Set the policy
+
+Open **Configuration → Agent Policy** and click **Use recommended**. That starting point:
+
+| Action | Mode |
+|--------|------|
+| Create and run pipelines and taps | Auto |
+| Delete a pipeline or tap, kill a job, migrate destination column types | Approve |
+| Write secrets, code repositories, or platform configuration | Deny |
+
+Anything not set is Auto. The policy applies within a few seconds of saving. A person clicking in the Datris UI is never gated. They are the approver.
+
+## 4. Connect Claude Code
+
+Add a `.mcp.json` to your project root:
+
+```json
+{
+    "mcpServers": {
+        "datris": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp-remote",
+                "http://localhost:3000/sse",
+                "--transport",
+                "sse-only",
+                "--header",
+                "x-api-key:<the key from step 2>"
+            ]
+        }
+    }
+}
+```
+
+Other clients and transports are covered in [Configuring Claude](/configuring-claude). Restart Claude Code, then confirm the round-trip:
+
+> List my Datris pipelines and tell me what's there.
+
+Watch the **Agent Monitor** tab in the Datris UI. The tool call appears there in real time, attributed to `claude-code`.
+
+## 5. Load a table
+
+Ask for something concrete:
+
+> Generate 50 rows of sample order data (order_id, customer, amount, ordered_at) and load it into PostgreSQL as a pipeline called `orders`.
+
+Claude calls `create_pipeline` with the sample data. Datris detects the schema, creates the table, bulk-loads the rows with `COPY`, and reports the outcome. Claude is told to verify completion through `get_pipeline_status` rather than trusting the response body, so it will poll until the run is done and tell you the row count.
+
+Then have it prove the data is there:
+
+> Query the orders pipeline and show me the five largest orders.
+
+## 6. Try something the policy pauses
+
+> Delete the orders pipeline.
+
+Claude does not get a result. It gets a `pending_approval` response with an approval id, and it will tell you plainly that the action is waiting. Open **Activity → Approvals**. The card shows the exact request that will run, with any secret-looking values masked, and the reason Claude gave if it gave one.
+
+Reject it. On its next poll Claude is told so. If you had approved it, the platform would have executed the original request attributed to you, and the audit log would hold two linked entries: the agent's queued request and your approval executing it.
+
+## 7. Read what was recorded
+
+**Configuration → Audit Log** now shows the whole session newest first: the pipeline create, the run, the query, the parked delete, and your rejection, each with the actor `claude-code` or your login. Filter by actor to see only what the agent did. **Export CSV** if someone else needs the trail, and note that the export is itself recorded.
+
+**Catalog → Lineage** shows the `orders` pipeline and the table it wrote, with freshness and the run that produced it. Turn on **Stamp provenance on landed data** in the pipeline's destination step if you want every row in PostgreSQL to carry the run id, so a row can be traced back to its run, config version, and source at any later date.
+
+## What you have now
+
+Claude Code can build and run pipelines on its own, which is where the time savings are. It cannot delete, rewrite a landed table, or touch secrets without a person clicking approve, and it cannot talk its way past that because the gate is in the platform rather than in a prompt. Every action it took is attributed and queryable.
+
+The same setup works unchanged for Claude Desktop, Cursor, or any script holding an API key, and the same policy gates the in-platform Assistant and the [recovery agent](/incidents).
+
+## Next
+
+- Point the key at a real source with a [tap](/taps), and set a schedule on it. Scheduled runs are the platform's own work and are not gated.
+- Swap PostgreSQL for [Snowflake](/destinations/snowflake) or [Databricks](/destinations/databricks). Both keep credentials per pipeline, so the agent never holds them either.
+- Tighten one resource without touching the rest: a per-resource override can pause runs of a single tap while every other tap runs freely. See [Agent Policy](/agent-policy#per-resource-overrides).

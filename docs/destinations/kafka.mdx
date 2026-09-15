@@ -1,7 +1,10 @@
 ---
-title: "Kafka Destination"
-description: "Send data to Kafka"
+title: "Publish pipeline output to Kafka"
+sidebarTitle: "Kafka"
+description: "Write validated pipeline output to a Kafka topic with keyed partitioning, structured or raw payloads, and SASL/PLAIN auth."
 ---
+
+Use this destination when downstream consumers read from Kafka and you want the messages validated before they are published.
 
 The Kafka destination writes messages to a Kafka topic. It supports keyed messages for partition control, structured and raw payload formats, and SASL/PLAIN authentication.
 

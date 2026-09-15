@@ -148,6 +148,12 @@
             ]
           },
           {
+            "group": "Recipes",
+            "pages": [
+              "recipes/claude-code-postgres"
+            ]
+          },
+          {
             "group": "Examples",
             "pages": [
               "examples",

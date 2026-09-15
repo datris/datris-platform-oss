@@ -1,7 +1,10 @@
 ---
-title: "Qdrant Vector Database Destination"
-description: "Send data to Qdrant vector database"
+title: "Embed documents into Qdrant for RAG"
+sidebarTitle: "Qdrant"
+description: "Chunk, embed, and upsert PDFs, text, and HTML into a Qdrant collection for retrieval-augmented generation."
 ---
+
+Use this destination when you want a Qdrant index built and refreshed by a repeatable pipeline, with chunking and embedding handled for you.
 
 Ingest unstructured documents (PDFs, text files, HTML) into [Qdrant](https://qdrant.tech), a high-performance vector database for RAG and semantic search applications. The pipeline extracts text from the document, chunks it using a configurable strategy, generates vector embeddings, and upserts the chunks with metadata into a Qdrant collection.
 

@@ -1,7 +1,10 @@
 ---
-title: "Weaviate Vector Database Destination"
-description: "Send data to Weaviate vector database"
+title: "Embed documents into Weaviate for RAG"
+sidebarTitle: "Weaviate"
+description: "Chunk, embed, and upsert PDFs, Word docs, text, and HTML into a Weaviate class for retrieval-augmented generation."
 ---
+
+Use this destination when you want a Weaviate index built and refreshed by a repeatable pipeline, with chunking and embedding handled for you.
 
 Ingest unstructured documents (PDFs, Word docs, text files, HTML) into [Weaviate](https://weaviate.io), an open-source vector database for RAG and semantic search applications. The pipeline extracts text from the document, chunks it using a configurable strategy, generates vector embeddings, and upserts the chunks with metadata into a Weaviate class.
 

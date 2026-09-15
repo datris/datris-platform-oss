@@ -1,7 +1,10 @@
 ---
-title: "Milvus Vector Database Destination"
-description: "Send data to Milvus vector database"
+title: "Embed documents into Milvus for RAG"
+sidebarTitle: "Milvus"
+description: "Chunk, embed, and upsert documents into a Milvus collection for retrieval-augmented generation and semantic search."
 ---
+
+Use this destination when you want a Milvus index built and refreshed by a repeatable pipeline, with chunking and embedding handled for you.
 
 Ingest unstructured documents into [Milvus](https://milvus.io), a high-performance open-source vector database built for scalable similarity search. The pipeline extracts text from the document, chunks it using a configurable strategy, generates vector embeddings, and upserts the chunks with metadata into a Milvus collection.
 

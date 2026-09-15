@@ -1,7 +1,10 @@
 ---
-title: "Snowflake Destination"
-description: "Send data to Snowflake with per-pipeline credentials"
+title: "Load data into Snowflake from an AI agent or pipeline"
+sidebarTitle: "Snowflake"
+description: "Bulk-load into Snowflake with PUT and COPY INTO, MERGE upserts, key-pair auth, and per-pipeline credentials."
 ---
+
+Use this destination when you want an agent or a scheduled pipeline to land validated data in Snowflake without handing it warehouse credentials directly. Each pipeline references its own secret, and every load is audited and lineage-tracked.
 
 The Snowflake destination bulk-loads data using Snowflake's native `PUT` → `COPY INTO` path: the pipeline output is staged onto the target table's internal stage and copied in, with gzip compression handled automatically on the wire. When `keyFields` is set, the loader upserts via `MERGE` instead. No Snowflake stages need to be created — the loader uses the table stage (`@%table`) that every Snowflake table has implicitly.
 
