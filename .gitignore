@@ -20,8 +20,11 @@ datrisserver/.vscode/
 # Angular cache
 ui/.angular
 
-# Claude
-.claude/
+# Claude — local settings stay private; role/command files are shared
+.claude/*
+!.claude/agents/
+!.claude/commands/
+!.claude/README.md
 
 # eclipse
 build
