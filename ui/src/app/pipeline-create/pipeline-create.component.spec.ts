@@ -172,4 +172,30 @@ describe('PipelineCreateComponent — Iceberg object-store format', () => {
     expect(os.keyFields).toBeUndefined();
     expect(os.writeMode === undefined || os.writeMode === 'append').withContext('writeMode: ' + os.writeMode).toBeTrue();
   });
+
+  // Review-fix behaviours (round 2): the server rejects merge without keyFields
+  // and keyFields without merge, so the wizard must not submit either shape.
+
+  it('refuses to leave the Destination step for Iceberg merge with no key fields selected', () => {
+    onObjectStoreStep('iceberg');
+    component.osPrefix = 'orders/daily';
+    (component as any).osWriteMode = 'merge';
+    (component as any).osKeyFields = [];
+    component.nextStep();
+    expect(component.step).toBe(8);
+    expect(component.error).toMatch(/key fields are required for merge/i);
+  });
+
+  it('switching a merge pipeline to append drops keyFields from buildConfig', () => {
+    component.loadFromConfig({
+      name: 'orders',
+      source: { fileAttributes: { csvAttributes: { delimiter: ',' } } },
+      destination: { objectStore: { prefixKey: 'orders/daily', fileFormat: 'iceberg', writeMode: 'merge', keyFields: ['id'] } }
+    });
+    (component as any).osWriteMode = 'append';
+    const os = component.buildConfig().destination.objectStore;
+    expect(os.fileFormat).toBe('iceberg');
+    expect(os.writeMode).toBe('append');
+    expect(os.keyFields).toBeUndefined();
+  });
 });

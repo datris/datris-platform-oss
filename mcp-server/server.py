@@ -3235,8 +3235,8 @@ def _dispatch(name: str, args: dict) -> str:
             provider = (args.get("provider") or "minio").lower()
             obj_cfg = {
                 "prefixKey": args["prefix"],
-                "fileFormat": args.get("fileFormat") or "parquet",
-                "writeMode": args.get("writeMode") or "append",
+                "fileFormat": (args.get("fileFormat") or "parquet").strip().lower(),
+                "writeMode": (args.get("writeMode") or "append").strip().lower(),
                 "deleteBeforeWrite": bool(args.get("deleteBeforeWrite", False)),
                 "provider": provider,
             }

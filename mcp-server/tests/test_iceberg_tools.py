@@ -146,6 +146,14 @@ def test_keyfields_dropped_for_default_parquet_append(captured):
     assert "keyFields" not in obj
 
 
+def test_uppercase_merge_still_passes_keyfields_through(captured):
+    # The low-level call_tool path does not enforce the enum; normalise case
+    # so keyFields is not silently dropped for a writeMode the server accepts.
+    obj = _create(captured, fileFormat="Iceberg", writeMode="MERGE", keyFields=["id"])
+    assert obj["fileFormat"] == "iceberg" and obj["writeMode"] == "merge"
+    assert obj["keyFields"] == ["id"]
+
+
 def test_keyfields_dropped_for_iceberg_append(captured):
     obj = _create(captured, fileFormat="iceberg", writeMode="append", keyFields=["id"])
     assert obj["fileFormat"] == "iceberg" and obj["writeMode"] == "append"

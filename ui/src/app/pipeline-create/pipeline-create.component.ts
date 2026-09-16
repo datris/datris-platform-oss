@@ -868,7 +868,9 @@ export class PipelineCreateComponent implements OnInit {
       } else if (this.destType === 'objectstore') {
         if (!this.osPrefix.trim()) { this.error = 'Key is required'; return; }
         if (this.osFormat === 'iceberg' && this.osWriteMode === 'merge' && this.osKeyFields.filter(k => k && k.trim()).length === 0) {
-          this.error = 'Key Fields are required for merge'; return;
+          this.error = (this.destSchemaFields.length > 0 && this.destSchemaFields[0].name)
+            ? 'Key Fields are required for merge'
+            : 'Key Fields are required for merge — set the destination schema first, then select them here'; return;
         }
         if (this.osProvider === 's3') {
           if (!this.osBucket.trim()) { this.error = 'Bucket is required when provider is S3'; return; }
