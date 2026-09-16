@@ -40,11 +40,11 @@ For AWS S3 add `provider`, `destinationBucketOverride` and `credentialsSecret` e
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `prefixKey` | yes | | Key prefix under the bucket. The Iceberg table lives at this prefix: `metadata/` and `data/` are created under it |
-| `fileFormat` | yes | `parquet` | Set to `iceberg`. `parquet` and `orc` keep writing loose files |
+| `fileFormat` | no | `parquet` | Must be `iceberg` for this page. `parquet` and `orc` keep writing loose files |
 | `writeMode` | no | `append` | `append`, `overwrite`, `merge`, `ignore`, or `errorifexists`. `merge` is only valid with `iceberg` |
 | `keyFields` | with `merge` | | Natural-key columns for `merge`; each must be a column in the destination schema. Not accepted with any other write mode |
 | `partitionBy` | no | | Columns to partition the table by (identity partitioning) |
-| `deleteBeforeWrite` | no | `false` | Remove everything under the prefix before writing, which drops the table and recreates it |
+| `deleteBeforeWrite` | no | `false` | Remove everything under the prefix before writing, which drops the table and recreates it. Applies on every run while it stays set, so clear it once the table exists |
 | `destinationBucketOverride` | for S3 | `{environment}-data` | Bucket to write to; required when `provider` is `s3` |
 | `provider` | no | `minio` | `minio` (built-in) or `s3` (AWS S3) |
 | `credentialsSecret` | for S3 | | Name of the Platform secret holding `accessKey`, `secretKey` and `region` for the S3 bucket |
@@ -102,7 +102,7 @@ Datris itself reads the table through the same query surface as the other format
 A prefix that already holds loose Parquet files or ORC files cannot be converted in place. Changing `fileFormat` to or from `iceberg` on an existing pipeline is refused unless `deleteBeforeWrite` is set, and a write that finds non-Iceberg objects at the prefix stops with a message asking you to set `deleteBeforeWrite` or use a new prefix. Either:
 
 - point the pipeline at a **new `prefixKey`**, so the old files stay where they are; or
-- set **`deleteBeforeWrite: true`**, which removes everything under the prefix and creates the table fresh on the next run.
+- set **`deleteBeforeWrite: true`**, which removes everything under the prefix and creates the table fresh on the next run. It applies to every run while it stays set: clear it after the first Iceberg run, or each run will drop the table again (re-registering with it cleared passes validation because the pipeline is already `iceberg` on both sides).
 
 Existing `parquet` and `orc` pipelines are unaffected; `fileFormat` still defaults to `parquet`.
 
