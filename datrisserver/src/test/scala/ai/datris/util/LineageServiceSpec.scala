@@ -253,4 +253,27 @@ class LineageServiceSpec extends AnyFunSuite {
         assert(iceberg.id == parquet.id)
         assert(iceberg.toJson.get("format").getAsString == "iceberg")
     }
+
+    test("graph dataset node JSON carries format for objectstore nodes only") {
+        val g = LineageService.build(
+            Nil,
+            List(
+                pipeline("ice", dest = osDest("iceberg")),
+                pipeline("pq", dest = Destination(objectStore = ObjectStore(prefixKey = "raw", destinationBucketOverride = "lake"))),
+                pipeline("pg", dest = pgDest)
+            )
+        )
+        val nodes = g.toJson.getAsJsonArray("nodes").asScala.map(_.getAsJsonObject).map(o => o.get("id").getAsString -> o).toMap
+
+        val ice = nodes("dataset:objectstore:lake.orders")
+        assert(ice.has("format") && ice.get("format").getAsString == "iceberg", ice.toString)
+        assert(ice.get("name").getAsString == "objectstore:lake.orders", "format must not enter the node name")
+
+        val pq = nodes("dataset:objectstore:lake.raw")
+        assert(pq.has("format") && pq.get("format").getAsString == "parquet", pq.toString)
+
+        val pg = nodes("dataset:postgres:datris.public.orders")
+        assert(!pg.has("format"), s"non-objectstore nodes must not carry format: $pg")
+        assert(!nodes("pipeline:ice").has("format"))
+    }
 }
