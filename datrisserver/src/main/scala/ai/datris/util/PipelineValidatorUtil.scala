@@ -188,7 +188,7 @@ object PipelineValidatorUtil {
             // already atomic so a temporary-location write would imply behaviour
             // that does not exist. These run BEFORE the existing-pipeline lookup.
             val isIceberg = config.destination.objectStore.fileFormat != null && config.destination.objectStore.fileFormat.compareTo("iceberg") == 0
-            val writeMode = if (config.destination.objectStore.writeMode != null) config.destination.objectStore.writeMode.toLowerCase else null
+            val writeMode = if (config.destination.objectStore.writeMode != null) config.destination.objectStore.writeMode.trim.toLowerCase else null
             val objectStoreKeyFields = config.destination.objectStore.keyFields
             if (writeMode != null && writeMode.compareTo("merge") == 0) {
                 if (!isIceberg)
@@ -241,15 +241,7 @@ object PipelineValidatorUtil {
                         throw new DatrisException(
                             "Cannot change an existing object store pipeline from partitioned to not partitioned. Delete all S3 data for this pipeline first and then re-register"
                         )
-                    // Iceberg tables carry metadata that plain parquet/orc layouts do
-                    // not (and vice versa), so a format flip needs a clean prefix.
-                    val existingIsIceberg =
-                        existingConfig.destination.objectStore.fileFormat != null && existingConfig.destination.objectStore.fileFormat.compareTo("iceberg") == 0
-                    if (existingIsIceberg != isIceberg && !config.destination.objectStore.deleteBeforeWrite)
-                        throw new DatrisException(
-                            "Cannot change an existing object store pipeline " + (if (isIceberg) "to" else "from") +
-                                " the 'iceberg' file format. Set 'deleteBeforeWrite' to true (or delete all S3 data for this pipeline first and then re-register)"
-                        )
+                    checkIcebergFormatFlip(existingConfig.destination.objectStore, config.destination.objectStore)
                 }
             }
         }
@@ -376,6 +368,22 @@ object PipelineValidatorUtil {
       * loader SQL rather than bound as parameters, so they must be constrained
       * to a safe charset to prevent injection. Matches the column-name rule:
       * letters, digits, and underscore only. */
+    /** Iceberg tables carry metadata that plain parquet/orc layouts do not (and
+      * vice versa), so flipping an existing pipeline's fileFormat to or from
+      * 'iceberg' needs a clean prefix: reject unless deleteBeforeWrite is set.
+      * parquet<->orc flips are untouched. Package-private so the spec can reach
+      * it without the config-DB lookup that guards its call site.
+      */
+    private[util] def checkIcebergFormatFlip(existing: ObjectStore, updated: ObjectStore): Unit = {
+        val existingIsIceberg = existing.fileFormat != null && existing.fileFormat.compareTo("iceberg") == 0
+        val updatedIsIceberg = updated.fileFormat != null && updated.fileFormat.compareTo("iceberg") == 0
+        if (existingIsIceberg != updatedIsIceberg && !updated.deleteBeforeWrite)
+            throw new DatrisException(
+                "Cannot change an existing object store pipeline " + (if (updatedIsIceberg) "to" else "from") +
+                    " the 'iceberg' file format. Set 'deleteBeforeWrite' to true (or delete all S3 data for this pipeline first and then re-register)"
+            )
+    }
+
     private[util] def validateSqlIdentifier(value: String, label: String): Unit = {
         if (value == null || value.isEmpty)
             throw new DatrisException("'" + label + "' must not be empty")

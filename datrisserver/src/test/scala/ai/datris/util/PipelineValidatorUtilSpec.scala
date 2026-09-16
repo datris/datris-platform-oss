@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisException, PipelineConfig}
+import ai.datris.model.{DatrisException, ObjectStore, PipelineConfig}
 import com.google.gson.Gson
 import org.scalatest.funsuite.AnyFunSuite
 
@@ -140,6 +140,46 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         assert(out.destination.objectStore.keyFields.asScala.toList == List("id", "name"))
         assert(out.destination.objectStore.partitionBy.asScala.toList == List("name"))
         assert(out.destination.objectStore.fileFormat == "iceberg")
+    }
+
+    // --- existing-pipeline format flip -----------------------------------------
+    // The call site sits behind PipelineConfigIO.read, so the rule is exercised
+    // directly through the extracted helper.
+
+    private def flipError(existingFormat: String, updatedFormat: String, deleteBeforeWrite: Boolean = false): Option[String] =
+        try {
+            PipelineValidatorUtil.checkIcebergFormatFlip(
+                ObjectStore(prefixKey = "p", fileFormat = existingFormat),
+                ObjectStore(prefixKey = "p", fileFormat = updatedFormat, deleteBeforeWrite = deleteBeforeWrite)
+            )
+            None
+        } catch { case e: DatrisException => Some(e.getMessage) }
+
+    test("existing default-format pipeline flipped to iceberg is rejected without deleteBeforeWrite") {
+        val err = flipError(null, "iceberg")
+        assert(err.exists(m => m.contains("iceberg") && m.contains("deleteBeforeWrite")), s"got: $err")
+    }
+
+    test("existing iceberg pipeline flipped to default format is rejected without deleteBeforeWrite") {
+        val err = flipError("iceberg", null)
+        assert(err.exists(m => m.contains("iceberg") && m.contains("deleteBeforeWrite")), s"got: $err")
+    }
+
+    test("iceberg format flip in either direction is accepted with deleteBeforeWrite=true") {
+        assert(flipError(null, "iceberg", deleteBeforeWrite = true).isEmpty)
+        assert(flipError("iceberg", null, deleteBeforeWrite = true).isEmpty)
+        assert(flipError("parquet", "iceberg", deleteBeforeWrite = true).isEmpty)
+    }
+
+    test("parquet to orc flip is not subject to the iceberg rule") {
+        assert(flipError("parquet", "orc").isEmpty)
+        assert(flipError("iceberg", "iceberg").isEmpty)
+    }
+
+    test("objectStore writeMode is trimmed before the merge rules apply") {
+        val cfg = objectStoreConfig(""""fileFormat":"iceberg","writeMode":" merge """")
+        val err = validationError(cfg)
+        assert(err.exists(_.contains("keyFields")), s"expected a keyFields error, got: $err")
     }
 
     test("applyDefaults is a no-op when destination or database is absent") {
