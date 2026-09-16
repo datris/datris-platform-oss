@@ -242,4 +242,15 @@ class LineageServiceSpec extends AnyFunSuite {
         val os = refs.find(_.kind == "objectstore").get
         assert(os.coords.toMap.get("format").contains("orc"), s"coords were ${os.coords}")
     }
+
+    test("objectstore DatasetRef name/id are unchanged by the format coord (existing node identities preserved)") {
+        val iceberg = LineageService.datasets(pipeline("p", dest = osDest("iceberg"))).find(_.kind == "objectstore").get
+        val parquet = LineageService.datasets(pipeline("p", dest = osDest(null))).find(_.kind == "objectstore").get
+        // Pre-story identity: kind + non-empty locating coords, no format.
+        assert(parquet.name == "objectstore:lake.orders", parquet.name)
+        assert(parquet.id == "dataset:objectstore:lake.orders", parquet.id)
+        assert(iceberg.name == parquet.name, s"format must not re-key the node: ${iceberg.name} vs ${parquet.name}")
+        assert(iceberg.id == parquet.id)
+        assert(iceberg.toJson.get("format").getAsString == "iceberg")
+    }
 }

@@ -114,9 +114,16 @@ object LineageService {
         }
     }
 
+    /** Coords that describe a dataset without locating it. They appear in the
+      * node JSON but stay out of `DatasetRef.name`, because stored
+      * RunLineageOutput.datasetId keys on `id` = "dataset:" + name and adding
+      * them to the join would re-key every existing node. */
+    val DescriptiveCoords: Set[String] = Set("format")
+
     /** One landed dataset: destination kind + its coordinates. */
     case class DatasetRef(kind: String, coords: List[(String, String)]) {
-        def name: String = kind + ":" + coords.map(_._2).filter(v => v != null && v.nonEmpty).mkString(".")
+        def name: String =
+            kind + ":" + coords.filterNot(c => DescriptiveCoords.contains(c._1)).map(_._2).filter(v => v != null && v.nonEmpty).mkString(".")
         def id: String = "dataset:" + name
         def toJson: JsonObject = {
             val o = new JsonObject()
@@ -141,9 +148,16 @@ object LineageService {
         }
         if (d.objectStore != null) {
             val os = d.objectStore
+            // Effective file format (the loader and reader default to parquet):
+            // labels an Iceberg table as such in the graph.
+            val format = Option(os.fileFormat).map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("parquet")
             out += DatasetRef(
                 "objectstore",
-                List("bucket" -> Option(os.destinationBucketOverride).getOrElse(""), "prefix" -> Option(os.prefixKey).getOrElse(p.name))
+                List(
+                    "bucket" -> Option(os.destinationBucketOverride).getOrElse(""),
+                    "prefix" -> Option(os.prefixKey).getOrElse(p.name),
+                    "format" -> format
+                )
             )
         }
         if (d.kafka != null) out += DatasetRef("kafka", List("topic" -> d.kafka.topic))

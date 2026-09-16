@@ -50,6 +50,19 @@ object IcebergWriter {
         keyFields: Seq[String],
         destSchema: StructType,
         statusUtil: StatusUtil
+    ): WriteResult = write(df, location, writeMode, partitionBy, keyFields, destSchema, statusUtil, pipelineName = null)
+
+    /** As above, naming the owning pipeline for the `datris.pipeline` table
+      *  property. Null falls back to the trailing path segment of `location`. */
+    def write(
+        df: DataFrame,
+        location: String,
+        writeMode: String,
+        partitionBy: Seq[String],
+        keyFields: Seq[String],
+        destSchema: StructType,
+        statusUtil: StatusUtil,
+        pipelineName: String
     ): WriteResult = {
         val spark = df.sparkSession
         ensureCatalogs(spark, location)
@@ -73,14 +86,50 @@ object IcebergWriter {
         if (exists && mode == "errorifexists")
             throw new DatrisException("Iceberg table already exists at " + location + " and writeMode is errorifexists")
 
+        var evolved: Seq[String] = Nil
         val table: Table =
             if (exists) {
                 val t = tables.load(location)
-                evolveSchema(t, destSchema, statusUtil)
+                evolved = evolveSchema(t, destSchema, statusUtil)
                 t
             } else
-                createTable(tables, location, destSchema, partitionBy, statusUtil)
+                createTable(tables, location, destSchema, partitionBy, pipelineName, statusUtil)
 
+        try writeData(df, table, location, mode, exists, keyFields, statusUtil)
+        catch {
+            case e: Exception if evolved.nonEmpty =>
+                // The schema change is its own committed metadata update; the
+                // data write that followed is not. Say so rather than retry:
+                // the next run finds the column already present and just appends.
+                val wrapped = new DatrisException(
+                    "Iceberg schema evolved at " + location + " (added column(s) " + evolved.mkString(", ") +
+                        ") but the data write failed; the schema change is committed and the next run will only write data. Cause: " + e.getMessage
+                )
+                wrapped.initCause(e)
+                throw wrapped
+        }
+
+        table.refresh()
+        val snapshot = table.currentSnapshot()
+        val result = resultOf(snapshot)
+        statusUtil.info(
+            "processing",
+            "Iceberg commit at " + location + ": snapshot " + result.snapshotId +
+                ", added " + result.addedRecords + ", deleted " + result.deletedRecords +
+                ", total " + result.totalRecords + " rows"
+        )
+        result
+    }
+
+    private def writeData(
+        df: DataFrame,
+        table: Table,
+        location: String,
+        mode: String,
+        exists: Boolean,
+        keyFields: Seq[String],
+        statusUtil: StatusUtil
+    ): Unit =
         mode match {
             case "overwrite" if exists =>
                 // One snapshot either way: dynamic partition overwrite replaces only
@@ -99,18 +148,6 @@ object IcebergWriter {
                 statusUtil.info("processing", "Iceberg append to " + location)
                 df.write.format("iceberg").mode("append").save(location)
         }
-
-        table.refresh()
-        val snapshot = table.currentSnapshot()
-        val result = resultOf(snapshot)
-        statusUtil.info(
-            "processing",
-            "Iceberg commit at " + location + ": snapshot " + result.snapshotId +
-                ", added " + result.addedRecords + ", deleted " + result.deletedRecords +
-                ", total " + result.totalRecords + " rows"
-        )
-        result
-    }
 
     private val Modes = Seq("append", "overwrite", "merge", "ignore", "errorifexists")
 
@@ -133,7 +170,7 @@ object IcebergWriter {
       *  this covers sessions built elsewhere (tests). Both are no-ops when the
       *  keys already exist.
       */
-    private def ensureCatalogs(spark: SparkSession, location: String): Unit = {
+    private[util] def ensureCatalogs(spark: SparkSession, location: String): Unit = {
         val prefix = "spark.sql.catalog." + DefaultCatalog
         if (spark.conf.getOption(prefix).isEmpty) {
             spark.conf.set(prefix, classOf[SparkCatalog].getName)
@@ -169,6 +206,7 @@ object IcebergWriter {
         location: String,
         destSchema: StructType,
         partitionBy: Seq[String],
+        pipelineName: String,
         statusUtil: StatusUtil
     ): Table = {
         val schema: Schema = SparkSchemaUtil.convert(destSchema)
@@ -179,7 +217,7 @@ object IcebergWriter {
         val props = Map(
             TableProperties.FORMAT_VERSION -> "2",
             TableProperties.DEFAULT_FILE_FORMAT -> "parquet",
-            PipelineProperty -> pipelineNameFrom(location)
+            PipelineProperty -> Option(pipelineName).map(_.trim).filter(_.nonEmpty).getOrElse(pipelineNameFrom(location))
         ).asJava
         statusUtil.info(
             "processing",
@@ -189,15 +227,16 @@ object IcebergWriter {
         tables.create(schema, spec, props, location)
     }
 
-    /** Placeholder owner name until the loader passes the pipeline name through:
-      *  the trailing path segment of the table location. */
+    /** Owner name when the caller did not pass a pipeline name (the story-1
+      *  signature): the trailing path segment of the table location. */
     private def pipelineNameFrom(location: String): String =
         location.stripSuffix("/").split('/').lastOption.filter(_.nonEmpty).getOrElse(location)
 
     /** Diff the dest schema against the table: add new nullable columns, refuse
       *  type changes, required additions and drops with a message that names
-      *  the column. Nothing is committed when the diff is refused. */
-    private def evolveSchema(table: Table, destSchema: StructType, statusUtil: StatusUtil): Unit = {
+      *  the column. Nothing is committed when the diff is refused. Returns the
+      *  names of the columns it added (empty when the schema already matched). */
+    private def evolveSchema(table: Table, destSchema: StructType, statusUtil: StatusUtil): Seq[String] = {
         val current = table.schema()
         val destNames = destSchema.fields.map(_.name).toSet
 
@@ -236,13 +275,19 @@ object IcebergWriter {
             update.commit()
             statusUtil.info("processing", "Iceberg schema evolved: added column(s) " + added.map(_.name).mkString(", "))
         }
+        added.map(_.name)
     }
 
     private def merge(df: DataFrame, table: Table, location: String, keyFields: Seq[String], statusUtil: StatusUtil): Unit = {
         val spark = df.sparkSession
-        val unknown = keyFields.filter(k => table.schema().findField(k) == null)
+        // keyFields are persisted lowercased by the pipeline normaliser while
+        // the table keeps the dest schema's spelling, so resolve them
+        // case-insensitively and use the table's own column names in the ON.
+        val resolved = keyFields.map(k => k -> Option(table.schema().caseInsensitiveFindField(k)).map(_.name()))
+        val unknown = resolved.collect { case (k, None) => k }
         if (unknown.nonEmpty)
             throw new DatrisException("merge keyFields not in the Iceberg table: " + unknown.mkString(", "))
+        val onColumns = resolved.collect { case (_, Some(name)) => name }
 
         // Spark SQL needs a catalog identifier for the MERGE target, and a
         // path-based table has none: SparkCatalog only path-resolves the
@@ -257,11 +302,11 @@ object IcebergWriter {
         df.createOrReplaceTempView(source)
         try {
             val target = CacheCatalog + "." + quote(key)
-            val on = keyFields.map(k => "t." + quote(k) + " = s." + quote(k)).mkString(" AND ")
+            val on = onColumns.map(k => "t." + quote(k) + " = s." + quote(k)).mkString(" AND ")
             val sql =
                 "MERGE INTO " + target + " t USING " + source + " s ON " + on +
                     " WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
-            statusUtil.info("processing", "Iceberg merge into " + location + " on " + keyFields.mkString(", "))
+            statusUtil.info("processing", "Iceberg merge into " + location + " on " + onColumns.mkString(", "))
             logger.debug("Iceberg merge SQL: " + sql)
             spark.sql(sql)
         } finally {

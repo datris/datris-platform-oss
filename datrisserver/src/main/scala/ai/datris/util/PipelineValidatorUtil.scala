@@ -368,6 +368,15 @@ object PipelineValidatorUtil {
       * loader SQL rather than bound as parameters, so they must be constrained
       * to a safe charset to prevent injection. Matches the column-name rule:
       * letters, digits, and underscore only. */
+    private[util] def validateSqlIdentifier(value: String, label: String): Unit = {
+        if (value == null || value.isEmpty)
+            throw new DatrisException("'" + label + "' must not be empty")
+        if (!value.matches("[A-Za-z0-9_]+"))
+            throw new DatrisException(
+                "'" + label + "' value '" + value + "' is invalid. Valid characters are a-z, A-Z, 0-9 and _"
+            )
+    }
+
     /** Iceberg tables carry metadata that plain parquet/orc layouts do not (and
       * vice versa), so flipping an existing pipeline's fileFormat to or from
       * 'iceberg' needs a clean prefix: reject unless deleteBeforeWrite is set.
@@ -381,15 +390,6 @@ object PipelineValidatorUtil {
             throw new DatrisException(
                 "Cannot change an existing object store pipeline " + (if (updatedIsIceberg) "to" else "from") +
                     " the 'iceberg' file format. Set 'deleteBeforeWrite' to true (or delete all S3 data for this pipeline first and then re-register)"
-            )
-    }
-
-    private[util] def validateSqlIdentifier(value: String, label: String): Unit = {
-        if (value == null || value.isEmpty)
-            throw new DatrisException("'" + label + "' must not be empty")
-        if (!value.matches("[A-Za-z0-9_]+"))
-            throw new DatrisException(
-                "'" + label + "' value '" + value + "' is invalid. Valid characters are a-z, A-Z, 0-9 and _"
             )
     }
 

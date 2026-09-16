@@ -6,7 +6,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
-import org.apache.spark.sql.Row
+import org.apache.iceberg.hadoop.HadoopTables
+import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.concurrent.{Executors, ThreadFactory, TimeUnit}
@@ -40,12 +41,20 @@ object ObjectStoreQueryUtil {
         ExecutionContext.fromExecutorService(Executors.newCachedThreadPool(tf))
     }
 
+    /** `snapshotId` / `snapshotTimestamp` (ISO-8601 instant) identify the
+      *  Iceberg snapshot the rows were read from. Null for parquet/orc, so
+      *  existing consumers keep seeing the four fields they always had. */
     case class QueryResult(
         columns: java.util.List[String],
         rows: java.util.List[java.util.Map[String, Any]],
         path: String,
-        format: String
+        format: String,
+        snapshotId: java.lang.Long = null,
+        snapshotTimestamp: String = null
     )
+
+    private def emptyResult(path: String, format: String): QueryResult =
+        QueryResult(new java.util.ArrayList[String](), new java.util.ArrayList[java.util.Map[String, Any]](), path, format)
 
     /** Return up to `limit` rows from the pipeline's objectStore destination.
       *
@@ -90,20 +99,7 @@ object ObjectStoreQueryUtil {
         // NoSuchMethodError, etc.) leaves Spark's internal Promise uncompleted
         // and the driver thread would block forever — the timeout is our only
         // safety net for that bug class.
-        val readFuture: Future[QueryResult] = Future {
-            try {
-                val df = spark.read.format(format).load(path)
-                val columns = df.columns.toList.asJava
-                val rows = df.limit(cappedLimit).collectAsList().asScala.map(row => rowToMap(row, df.columns)).asJava
-                QueryResult(columns, rows, path, format)
-            } catch {
-                case e: org.apache.hadoop.mapred.InvalidInputException =>
-                    logger.info(s"ObjectStoreQuery: no data at $path yet (${e.getMessage}) — returning empty result")
-                    QueryResult(new java.util.ArrayList[String](), new java.util.ArrayList[java.util.Map[String, Any]](), path, format)
-                case e: org.apache.hadoop.fs.UnsupportedFileSystemException =>
-                    throw new DatrisException("Object store read failed (unsupported scheme on " + path + "): " + e.getMessage)
-            }
-        }(queryEC)
+        val readFuture: Future[QueryResult] = Future(readPath(spark, path, format, cappedLimit))(queryEC)
 
         try Await.result(readFuture, queryTimeoutSec.seconds)
         catch {
@@ -115,6 +111,76 @@ object ObjectStoreQueryUtil {
                     "Object store query timed out after " + queryTimeoutSec + "s. The Spark read did not complete — most often a classpath/version mismatch (e.g. hadoop-aws vs. hadoop-common). Check server logs for NoSuchMethodError, IllegalAccessError, or similar fatal Throwables. The wall-clock limit is tunable via DATRIS_OBJECTSTORE_QUERY_TIMEOUT_SEC."
                 )
         } finally spark.sparkContext.clearJobGroup()
+    }
+
+    /** Read up to `limit` rows at `path` in `format` (parquet | orc | iceberg).
+      *
+      *  A location nothing has been written to yet is the legitimate "pipeline
+      *  exists but no run has succeeded" state and comes back as an empty
+      *  result rather than an exception: Spark 3.5 raises
+      *  `AnalysisException[PATH_NOT_FOUND]` for a missing parquet/orc prefix
+      *  (older Hadoop input formats raised `InvalidInputException`), and a
+      *  path with no Iceberg `metadata/` surfaces as the catalyst
+      *  `NoSuchTableException` (or Iceberg's own, depending on the resolver).
+      *
+      *  Package-private so the spec can drive it with a file:// path; `query`
+      *  owns config lookup, per-bucket S3A config, limit capping and the
+      *  wall-clock timeout. */
+    private[util] def readPath(spark: SparkSession, path: String, format: String, limit: Int): QueryResult = {
+        try {
+            if (format == "iceberg") readIceberg(spark, path, limit)
+            else {
+                val df = spark.read.format(format).load(path)
+                val columns = df.columns.toList.asJava
+                val rows = df.limit(limit).collectAsList().asScala.map(row => rowToMap(row, df.columns)).asJava
+                QueryResult(columns, rows, path, format)
+            }
+        } catch {
+            case e: org.apache.hadoop.mapred.InvalidInputException =>
+                logger.info(s"ObjectStoreQuery: no data at $path yet (${e.getMessage}) — returning empty result")
+                emptyResult(path, format)
+            case e: AnalysisException if e.getErrorClass == "PATH_NOT_FOUND" =>
+                logger.info(s"ObjectStoreQuery: no data at $path yet (${e.getMessage}) — returning empty result")
+                emptyResult(path, format)
+            case e: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
+                logger.info(s"ObjectStoreQuery: no Iceberg table at $path yet (${e.getMessage}) — returning empty result")
+                emptyResult(path, format)
+            case e: org.apache.iceberg.exceptions.NoSuchTableException =>
+                logger.info(s"ObjectStoreQuery: no Iceberg table at $path yet (${e.getMessage}) — returning empty result")
+                emptyResult(path, format)
+            case e: org.apache.hadoop.fs.UnsupportedFileSystemException =>
+                throw new DatrisException("Object store read failed (unsupported scheme on " + path + "): " + e.getMessage)
+        }
+    }
+
+    /** Resolve the table's current snapshot first, then pin the DataFrame
+      *  read to it, so the id we report is exactly the one the rows came
+      *  from even if a run commits in between. `HadoopTables.load` throws
+      *  Iceberg's NoSuchTableException when there is no `metadata/`. */
+    private def readIceberg(spark: SparkSession, path: String, limit: Int): QueryResult = {
+        IcebergWriter.ensureCatalogs(spark, path)
+        val table = new HadoopTables(spark.sessionState.newHadoopConf()).load(path)
+        val snapshot = table.currentSnapshot()
+        if (snapshot == null) {
+            // Table created but nothing ever committed: no rows, no snapshot.
+            return QueryResult(
+                table.schema().columns().asScala.map(_.name()).toList.asJava,
+                new java.util.ArrayList[java.util.Map[String, Any]](),
+                path,
+                "iceberg"
+            )
+        }
+        val df = spark.read.format("iceberg").option("snapshot-id", snapshot.snapshotId()).load(path)
+        val columns = df.columns.toList.asJava
+        val rows = df.limit(limit).collectAsList().asScala.map(row => rowToMap(row, df.columns)).asJava
+        QueryResult(
+            columns,
+            rows,
+            path,
+            "iceberg",
+            java.lang.Long.valueOf(snapshot.snapshotId()),
+            java.time.Instant.ofEpochMilli(snapshot.timestampMillis()).toString
+        )
     }
 
     private def rowToMap(row: Row, columns: Array[String]): java.util.Map[String, Any] = {
