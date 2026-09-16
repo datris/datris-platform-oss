@@ -13,6 +13,7 @@ description: "Release history for Datris"
   - **Snapshot in query results** for Iceberg tables; the wizard, MCP tools, and Assistant know the new format and modes; lineage labels object-store destinations with their format.
   - **Fix:** querying an object-store pipeline that has never run returns an empty result instead of an error (a pipeline whose bucket does not exist also reads as empty).
   - **Overlapping runs** writing the same object-store location now run one after the other, for every object-store format.
+  - **S3 credential changes apply immediately.** Correcting or rotating S3 credentials in a secret now takes effect on the next run without a restart.
   - Upgrade: `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required; existing Parquet and ORC pipelines are unaffected. Switching an existing pipeline to Iceberg in place is refused unless `deleteBeforeWrite` is set; use a new prefix to keep the old files. The server image is about 50 MB larger.
 </Update>
 

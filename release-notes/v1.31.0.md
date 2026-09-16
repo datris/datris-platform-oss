@@ -12,6 +12,7 @@
 - **Lineage shows the format.** Object-store destinations in the lineage graph are labelled with their table or file format.
 - **Fix: querying a pipeline that has never run.** Querying an object-store pipeline before its first run now returns an empty result instead of an error. As a consequence, a pipeline whose bucket does not exist also reads as empty.
 - **Overlapping runs no longer interleave.** Two runs of pipelines that write the same object-store location now run one after the other, for every object-store format.
+- **S3 credential changes apply immediately.** Correcting or rotating S3 credentials in a secret now takes effect on the next run without a restart.
 
 **Upgrading**
 

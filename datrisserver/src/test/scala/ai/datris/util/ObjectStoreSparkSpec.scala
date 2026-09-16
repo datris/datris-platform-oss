@@ -60,12 +60,14 @@ class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach {
     private val simpleProvider = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
     private val temporaryProvider = "org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider"
 
-    private def fingerprint(accessKey: Option[String] = Some(fakeAccessKey),
-                            secretKey: Option[String] = Some(fakeSecretKey),
-                            sessionToken: Option[String] = None,
-                            endpoint: String = "https://s3.us-east-1.amazonaws.com",
-                            region: Option[String] = Some("us-east-1"),
-                            providerClass: String = simpleProvider): String =
+    private def fingerprint(
+        accessKey: Option[String] = Some(fakeAccessKey),
+        secretKey: Option[String] = Some(fakeSecretKey),
+        sessionToken: Option[String] = None,
+        endpoint: String = "https://s3.us-east-1.amazonaws.com",
+        region: Option[String] = Some("us-east-1"),
+        providerClass: String = simpleProvider
+    ): String =
         ObjectStoreSpark.fingerprintOf(accessKey, secretKey, sessionToken, endpoint, region, providerClass)
 
     test("first apply for a bucket records a fingerprint and does not evict") {

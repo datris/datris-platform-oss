@@ -36,6 +36,10 @@ Create a Vault secret (Secrets tab in the Datris UI) with these fields:
 
 If any of `accessKey`, `secretKey`, or `region` is missing, the write fails at resolve time with an explicit "missing required field" error naming the secret.
 
+### Rotating credentials
+
+To rotate or correct the keys, update the secret in the Secrets tab. The next run of any pipeline that uses that secret picks up the new keys; no restart is needed. A query against the same bucket that is already running at the moment the keys change can fail with "Filesystem closed" — re-run it.
+
 ## Configuration
 
 ```json
