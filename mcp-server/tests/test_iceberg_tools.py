@@ -136,6 +136,22 @@ def test_keyfields_passed_through_only_when_given(captured):
     assert "keyFields" not in obj
 
 
+# Review finding: the validator rejects objectStore.keyFields unless the write
+# is an Iceberg merge, so the tool must drop it for every other combination
+# rather than POST a config the server refuses.
+
+def test_keyfields_dropped_for_default_parquet_append(captured):
+    obj = _create(captured, keyFields=["id"])
+    assert obj["fileFormat"] == "parquet" and obj["writeMode"] == "append"
+    assert "keyFields" not in obj
+
+
+def test_keyfields_dropped_for_iceberg_append(captured):
+    obj = _create(captured, fileFormat="iceberg", writeMode="append", keyFields=["id"])
+    assert obj["fileFormat"] == "iceberg" and obj["writeMode"] == "append"
+    assert "keyFields" not in obj
+
+
 # ------------------------------------------------------ Acceptance bullet 4 ---
 # The story's wording sweep over mcp-server, ui/src and datrisserver/src
 # returns nothing.

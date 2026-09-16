@@ -1588,7 +1588,7 @@ def _base_tools():
                     "keyFields": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Applies to postgres, mongodb, snowflake, and databricks destinations, and to objectstore when fileFormat=iceberg and writeMode=merge (required there; ignored for the parquet and orc formats and for other write modes). Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. On Postgres this triggers a staging + INSERT…ON CONFLICT path; on Mongo it uses upsertJSON; on Snowflake it uses MERGE via a temp staging table; on Databricks it uses MERGE directly from the staged file; on an Iceberg table it is a MERGE INTO keyed on those columns. NOTE: on conflict, ALL non-key columns from the incoming row overwrite the existing row, including NULLs (true upsert semantics, not non-null merge). If your source emits partial rows, coalesce upstream. Omit to append on every run (default behavior)."
+                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Applies to postgres, mongodb, snowflake, and databricks destinations, and to objectstore when fileFormat=iceberg and writeMode=merge (required there; for objectstore it is DROPPED unless fileFormat=iceberg and writeMode=merge). Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. On Postgres this triggers a staging + INSERT…ON CONFLICT path; on Mongo it uses upsertJSON; on Snowflake it uses MERGE via a temp staging table; on Databricks it uses MERGE directly from the staged file; on an Iceberg table it is a MERGE INTO keyed on those columns. NOTE: on conflict, ALL non-key columns from the incoming row overwrite the existing row, including NULLs (true upsert semantics, not non-null merge). If your source emits partial rows, coalesce upstream. Omit to append on every run (default behavior)."
                     },
                     "truncate": {
                         "type": "boolean",
@@ -3244,7 +3244,9 @@ def _dispatch(name: str, args: dict) -> str:
                 obj_cfg["destinationBucketOverride"] = args["bucket"]
             if args.get("partitionBy"):
                 obj_cfg["partitionBy"] = args["partitionBy"]
-            if key_fields:
+            # The validator rejects objectStore.keyFields unless the write is an
+            # Iceberg merge, so drop it otherwise instead of failing the save.
+            if key_fields and obj_cfg["fileFormat"] == "iceberg" and obj_cfg["writeMode"] == "merge":
                 obj_cfg["keyFields"] = key_fields
             if provider == "s3":
                 if args.get("endpoint"):

@@ -867,6 +867,9 @@ export class PipelineCreateComponent implements OnInit {
         if (!this.dbxTable.trim()) { this.error = 'Table name is required'; return; }
       } else if (this.destType === 'objectstore') {
         if (!this.osPrefix.trim()) { this.error = 'Key is required'; return; }
+        if (this.osFormat === 'iceberg' && this.osWriteMode === 'merge' && this.osKeyFields.filter(k => k && k.trim()).length === 0) {
+          this.error = 'Key Fields are required for merge'; return;
+        }
         if (this.osProvider === 's3') {
           if (!this.osBucket.trim()) { this.error = 'Bucket is required when provider is S3'; return; }
           if (this.osEndpoint.trim() && this.osEndpoint.trim().toLowerCase().startsWith('http://')) {
@@ -1128,8 +1131,11 @@ export class PipelineCreateComponent implements OnInit {
       if (partitions.length > 0) os.partitionBy = partitions;
       if (this.osFormat === 'iceberg') {
         os.writeMode = this.osWriteMode || 'append';
-        const keys = this.osKeyFields.filter(k => k && k.trim());
-        if (keys.length > 0) os.keyFields = keys;
+        // The server rejects objectStore.keyFields unless writeMode is merge.
+        if (os.writeMode === 'merge') {
+          const keys = this.osKeyFields.filter(k => k && k.trim());
+          if (keys.length > 0) os.keyFields = keys;
+        }
       }
       if (this.osProvider === 's3') {
         os.provider = 's3';
