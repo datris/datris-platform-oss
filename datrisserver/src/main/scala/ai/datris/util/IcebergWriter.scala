@@ -210,8 +210,11 @@ object IcebergWriter {
 
         val typeChanges = destSchema.fields.toSeq.flatMap { f =>
             Option(current.findField(f.name)).flatMap { existing =>
+                // Compare both sides as Iceberg sees them: Iceberg widens some
+                // Spark types on create (ByteType/ShortType -> int), so the raw
+                // dest type would read as a change on every write after the first.
                 val have = SparkSchemaUtil.convert(existing.`type`()).catalogString
-                val want = f.dataType.catalogString
+                val want = SparkSchemaUtil.convert(SparkSchemaUtil.convert(f.dataType)).catalogString
                 if (have == want) None else Some(f.name + " " + have + " -> " + want)
             }
         }

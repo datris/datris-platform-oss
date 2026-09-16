@@ -41,10 +41,12 @@ import scala.collection.mutable.ListBuffer
   *
   *  The writer must use `df.sparkSession` (not `SparkSessionManager.getOrCreate()`),
   *  because that is what the pipeline hands it and it is what lets this spec
-  *  run without a DatrisEnvironment. The session below carries exactly the two
-  *  settings the story adds to SparkSessionManager (extension + `datris` hadoop
-  *  catalog) so the path-identifier MERGE form is exercised the same way it will
-  *  be in production.
+  *  run without a DatrisEnvironment. SparkSessionManager sets five Iceberg
+  *  settings; the session below carries only two of them (the extension and
+  *  the `datris` hadoop catalog). It deliberately omits the `default_iceberg`
+  *  hadoop catalog and the `datris_cache` cached-table catalog, so every test
+  *  here also exercises IcebergWriter.ensureCatalogs, the fallback that
+  *  defines them at runtime for sessions built outside SparkSessionManager.
   *
   *  Hadoop 3.3.4's UserGroupInformation calls Subject.getSubject, which JDK 24+
   *  rejects unconditionally (JEP 486 also refuses -Djava.security.manager=allow
@@ -170,6 +172,25 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         }
     }
 
+    test("partitioned overwrite replaces only the partitions present in the new rows") {
+        val location = newLocation("overwrite-partitioned/t")
+        write(df((1L, "east", 1.0), (2L, "west", 2.0)), location, "append", partitionBy = Seq("region"))
+        val before = snapshots(location).size
+
+        write(df((9L, "east", 9.0)), location, "overwrite", partitionBy = Seq("region"))
+
+        val byRegion = readAll(location).collect().groupBy(_.getString(1)).mapValues(_.map(_.getLong(0)).toSet)
+        assert(byRegion.get("west") == Some(Set(2L)), s"untouched partition must survive, got $byRegion")
+        assert(byRegion.get("east") == Some(Set(9L)), s"overwritten partition must hold only the new rows, got $byRegion")
+
+        val snaps = snapshots(location)
+        assert(snaps.size == before + 1, s"partitioned overwrite must commit exactly one snapshot, got ${snaps.size - before}")
+        snaps.foreach { s =>
+            val total = Option(s.summary().get("total-records")).map(_.toLong).getOrElse(-1L)
+            assert(total > 0, s"snapshot ${s.snapshotId()} (${s.operation()}) exposes an empty table: summary=${s.summary()}")
+        }
+    }
+
     // ---- Acceptance bullet 3: merge (go/no-go gate) ----------------------
 
     test("merge on keyFields -> matched row updated, unmatched row inserted, snapshot count +1") {
@@ -226,6 +247,24 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         val rows = readAll(location).collect().map(r => r.getLong(0) -> r.getAs[String]("note")).toMap
         assert(rows(1L) == null, "pre-existing rows read the new column as null")
         assert(rows(2L) == "hello")
+    }
+
+    test("types Iceberg widens on create (byte/short -> int) are not reported as a type change on later writes") {
+        val location = newLocation("evolve-narrow/t")
+        val narrow = StructType(Seq(
+            StructField("id", LongType, nullable = false),
+            StructField("tiny", ByteType, nullable = true),
+            StructField("small", ShortType, nullable = true)
+        ))
+        def rows(i: Long, b: Byte, sh: Short): DataFrame =
+            spark.createDataFrame(Seq(Row(i, b, sh)).asJava, narrow)
+
+        write(rows(1L, 1.toByte, 10.toShort), location, "append", destSchema = narrow)
+        write(rows(2L, 2.toByte, 20.toShort), location, "append", destSchema = narrow)
+
+        assert(snapshots(location).size == 2)
+        val collected = readAll(location).collect().map(r => r.getLong(0) -> (r.getInt(1), r.getInt(2))).toMap
+        assert(collected == Map(1L -> (1, 10), 2L -> (2, 20)), s"unexpected rows: $collected")
     }
 
     test("type change fails with a readable message") {
