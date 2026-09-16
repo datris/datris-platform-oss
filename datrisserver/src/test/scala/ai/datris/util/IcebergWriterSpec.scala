@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.model.DatrisException
 import org.apache.iceberg.hadoop.HadoopTables
-import org.apache.iceberg.{Snapshot, Table}
+import org.apache.iceberg.{Snapshot, Table, TableUtil}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.scalatest.BeforeAndAfterAll
@@ -46,10 +46,11 @@ import scala.collection.mutable.ListBuffer
   *  catalog) so the path-identifier MERGE form is exercised the same way it will
   *  be in production.
   *
-  *  Hadoop 3.3.4's UserGroupInformation calls Subject.getSubject, which throws
-  *  on JDK 24+ unless the JVM is started with -Djava.security.manager=allow.
-  *  CI and the Docker runtime are JDK 17; on a newer dev JDK run:
-  *    sbt 'set Test / javaOptions += "-Djava.security.manager=allow"' "testOnly ai.datris.util.IcebergWriterSpec"
+  *  Hadoop 3.3.4's UserGroupInformation calls Subject.getSubject, which JDK 24+
+  *  rejects unconditionally (JEP 486 also refuses -Djava.security.manager=allow
+  *  at JVM startup), so a local SparkContext cannot start there. CI and the
+  *  Docker runtime are Temurin 17; on a newer dev JDK point sbt at a 17/21 JDK:
+  *    JAVA_HOME=/path/to/jdk-17 sbt "testOnly ai.datris.util.IcebergWriterSpec"
   */
 class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
 
@@ -133,7 +134,10 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(readAll(location).count() == 3)
 
         val table = loadTable(location)
-        assert(table.properties().get("format-version") == "2")
+        // format-version is a reserved property: Iceberg consumes it at create
+        // time and never persists it in properties() (TableMetadata strips
+        // RESERVED_PROPERTIES), so read it through the public TableUtil API.
+        assert(TableUtil.formatVersion(table) == 2, s"expected format-version 2, got ${TableUtil.formatVersion(table)}")
         assert(table.properties().get("write.format.default") == "parquet")
         assert(table.properties().containsKey("datris.pipeline"), "table property datris.pipeline must be set on create")
 
