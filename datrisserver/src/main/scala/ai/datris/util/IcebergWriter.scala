@@ -65,6 +65,10 @@ object IcebergWriter {
         pipelineName: String
     ): WriteResult = {
         val spark = df.sparkSession
+        // The catalog lookups behind format("iceberg") and MERGE read the
+        // thread-active session's conf; the caller's thread may not be the
+        // one that created the session (see SparkSessionManager.getOrCreate).
+        SparkSession.setActiveSession(spark)
         ensureCatalogs(spark, location)
         val conf = spark.sessionState.newHadoopConf()
         val tables = new HadoopTables(conf)

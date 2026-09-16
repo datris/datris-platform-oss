@@ -129,6 +129,9 @@ object ObjectStoreQueryUtil {
       *  owns config lookup, per-bucket S3A config, limit capping and the
       *  wall-clock timeout. */
     private[util] def readPath(spark: SparkSession, path: String, format: String, limit: Int): QueryResult = {
+        // Runs on the objectstore-query pool, which never created the session;
+        // the Iceberg source resolves its catalog through the thread-active one.
+        SparkSession.setActiveSession(spark)
         try {
             if (format == "iceberg") readIceberg(spark, path, limit)
             else {

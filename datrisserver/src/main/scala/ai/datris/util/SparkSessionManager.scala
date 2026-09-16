@@ -56,6 +56,14 @@ object SparkSessionManager {
 
             session = builder.getOrCreate()
         }
+        // Spark resolves catalog config (spark.sql.catalog.*) through
+        // SQLConf.get, which reads the thread-ACTIVE session only — no
+        // fallback to the default session. getOrCreate() marks the session
+        // active only on the thread that created it (a Tomcat request thread
+        // after a restart, typically), so a JobRunner thread writing Iceberg
+        // saw an empty conf and "Catalog 'default_iceberg' ... not defined".
+        // Activate on every caller's thread; idempotent for the creator.
+        SparkSession.setActiveSession(session)
         session
     }
 }

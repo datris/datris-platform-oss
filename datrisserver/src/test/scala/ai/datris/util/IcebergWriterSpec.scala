@@ -351,6 +351,65 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(readAll(location).count() == 1)
     }
 
+    // ---- v1.31.0 E2E: session created on another thread ---------------------
+    //
+    // In the server the shared SparkSession is created by whichever thread
+    // first asks for it (a Tomcat request thread after a restart, typically);
+    // pipeline runs then execute on a JobRunner thread that never created it.
+    // Spark's CatalogManager resolves `spark.sql.catalog.<name>` through
+    // SQLConf.get, which reads the thread-ACTIVE session only (no fallback to
+    // the default session), so a DataFrame Iceberg write on such a thread
+    // failed with "Catalog 'default_iceberg' plugin class not found". The
+    // session here is created in beforeAll on the ScalaTest thread; a plain
+    // `new Thread` has no active session, which reproduces the server state.
+
+    /** Run `body` on a thread that has never created or activated a session.
+      *  The active session is an InheritableThreadLocal, so a thread spawned
+      *  here would inherit the ScalaTest thread's; server pool threads are
+      *  created before the session exists and inherit nothing — clear it to
+      *  model that. */
+    private def onForeignThread[T](body: => T): T = {
+        var result: Option[T] = None
+        var failure: Option[Throwable] = None
+        val t = new Thread(
+            () => {
+                SparkSession.clearActiveSession()
+                try result = Some(body)
+                catch { case e: Throwable => failure = Some(e) }
+            },
+            "iceberg-spec-foreign"
+        )
+        t.start()
+        t.join(120000)
+        failure.foreach(e => throw e)
+        result.getOrElse(fail("foreign thread did not finish"))
+    }
+
+    test("append and overwrite succeed on a thread that did not create the SparkSession") {
+        val location = newLocation("foreign-thread/t")
+
+        val appended = onForeignThread {
+            assert(SparkSession.getActiveSession.isEmpty, "precondition: foreign thread must start with no active session")
+            write(df((1L, "east", 1.0), (2L, "west", 2.0)), location, "append")
+        }
+        assert(appended.snapshotId == loadTable(location).currentSnapshot().snapshotId())
+        assert(appended.addedRecords == 2)
+        assert(readAll(location).count() == 2)
+
+        val overwritten = onForeignThread {
+            write(df((3L, "north", 3.0)), location, "overwrite")
+        }
+        assert(overwritten.snapshotId != appended.snapshotId)
+        assert(overwritten.totalRecords == 1)
+        assert(readAll(location).collect().map(_.getLong(0)).toList == List(3L))
+
+        // The reader runs on its own thread pool in the server (never the
+        // session creator) — same requirement.
+        val read = onForeignThread { ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100) }
+        assert(read.rows.size() == 1)
+        assert(read.snapshotId != null && read.snapshotId.longValue() == overwritten.snapshotId)
+    }
+
     // ---- Story 3 (iceberg-loader-reader-lineage): reader via ObjectStoreQueryUtil.readPath ----
 
     test("readPath(iceberg) returns the committed rows and the current snapshot id") {
