@@ -81,7 +81,10 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
     // fileFormat rule let "iceberg" through. The in-place parquet→iceberg flip
     // rule lives inside the lookup branch and is covered by the e2e pass.
 
-    private def objectStoreConfig(objectStore: String, schemaFields: String = """[{"name":"id","type":"string"},{"name":"name","type":"string"}]"""): PipelineConfig =
+    private def objectStoreConfig(
+        objectStore: String,
+        schemaFields: String = """[{"name":"id","type":"string"},{"name":"name","type":"string"}]"""
+    ): PipelineConfig =
         parse(
             s"""{"name":"p",
                |"source":{"fileAttributes":{"csvAttributes":{}},"schemaProperties":{"fields":$schemaFields}},

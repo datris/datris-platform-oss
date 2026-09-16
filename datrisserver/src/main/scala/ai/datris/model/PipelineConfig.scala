@@ -224,6 +224,9 @@ case class ObjectStore(
     writeToTemporaryLocation: Boolean = false,
     deleteBeforeWrite: Boolean = false,
     writeMode: String = null,
+    // MERGE ON columns. Only applies to writeMode=merge on fileFormat=iceberg;
+    // same name and meaning as Database.keyFields. Ignored otherwise.
+    keyFields: java.util.List[String] = null,
     // "minio" (default, back-compat) or "s3". Selects the credential
     // path and the per-bucket S3A overrides applied at write time.
     // Region for "s3" lives in the credentialsSecret, not here.
