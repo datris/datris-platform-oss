@@ -22,8 +22,13 @@ import java.util.{ArrayList => JArrayList, HashMap => JHashMap, List => JList, M
   *  {{{
   *  object QueryAPIController {
   *      // Exactly the JSON body POST /api/v1/query/objectstore returns for a
-  *      // successful read: serializeNulls, so parquet and ORC results emit an
-  *      // explicit null for both snapshot fields rather than omitting them.
+  *      // successful read: 8 keys (pipeline, path, format, columns, results,
+  *      // count, snapshotId, snapshotTimestamp), serializeNulls so parquet and
+  *      // ORC results emit an explicit null for both snapshot fields rather
+  *      // than omitting them. snapshotId is emitted as a JSON STRING of decimal
+  *      // digits (Long.toString), never a JSON number: real Iceberg ids exceed
+  *      // 2^53 and a browser cannot round-trip them as numbers. QueryResult
+  *      // keeps the Long internally.
   *      private[api] def objectStoreResponseJson(pipeline: String, result: QueryResult): String
   *  }
   *  }}}
@@ -46,14 +51,17 @@ class QueryAPIControllerObjectStoreResponseSpec extends AnyFunSuite {
 
     private def parse(json: String): JsonObject = JsonParser.parseString(json).getAsJsonObject
 
-    test("iceberg result: snapshotId is a JSON number and snapshotTimestamp an ISO instant") {
+    test("iceberg result: snapshotId is a JSON string of decimal digits and snapshotTimestamp an ISO instant") {
         val result = QueryResult(cols("id", "name"), rows(2), "s3a://bucket/orders", "iceberg",
-            snapshotId = java.lang.Long.valueOf(7141355184937451041L), snapshotTimestamp = "2026-09-16T12:34:56Z")
+            snapshotId = java.lang.Long.valueOf(8533883885102256461L), snapshotTimestamp = "2026-09-16T12:34:56Z")
         val body = parse(QueryAPIController.objectStoreResponseJson("orders", result))
 
         assert(body.has("snapshotId"), body.toString)
-        assert(body.get("snapshotId").isJsonPrimitive && body.get("snapshotId").getAsJsonPrimitive.isNumber, body.get("snapshotId").toString)
-        assert(body.get("snapshotId").getAsLong == 7141355184937451041L)
+        val id = body.get("snapshotId")
+        assert(id.isJsonPrimitive && id.getAsJsonPrimitive.isString, "snapshotId must be a JSON string, got " + id.toString)
+        assert(id.getAsString.matches("^\\d+$"), id.getAsString)
+        assert(id.getAsString == java.lang.Long.valueOf(8533883885102256461L).toString)
+        assert(body.get("snapshotTimestamp").getAsJsonPrimitive.isString)
         assert(body.get("snapshotTimestamp").getAsString == "2026-09-16T12:34:56Z")
     }
 

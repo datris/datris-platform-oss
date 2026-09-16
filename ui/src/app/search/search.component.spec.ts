@@ -72,7 +72,7 @@ describe('SearchComponent — object-store snapshot id', () => {
     searchService.queryObjectstore.and.returnValue(of({
       pipeline: 'orders', path: 's3a://bucket/orders/daily', format: 'iceberg',
       columns: ['id', 'amount'], results: [{ id: 1, amount: 10 }, { id: 2, amount: 20 }], count: 2,
-      snapshotId: 8413355184937451, snapshotTimestamp: '2026-09-16T12:34:56Z'
+      snapshotId: '8533883885102256461', snapshotTimestamp: '2026-09-16T12:34:56Z'
     }));
 
     component.execute();
@@ -80,7 +80,7 @@ describe('SearchComponent — object-store snapshot id', () => {
 
     const text = headerText();
     expect(text).toContain('2 results');
-    expect(text).toContain('8413355184937451');
+    expect(text).toContain('8533883885102256461');
     expect(text).toMatch(/snapshot/i);
   });
 
