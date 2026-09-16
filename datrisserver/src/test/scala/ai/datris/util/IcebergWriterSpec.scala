@@ -39,6 +39,30 @@ import scala.collection.mutable.ListBuffer
   *  }
   *  }}}
   *
+  *  Reader seam (plans/stories/iceberg-loader-reader-lineage.md, steps 6-7).
+  *  `ObjectStoreQueryUtil.query(pipelineName, limit)` needs a live config DB,
+  *  so the Spark-read body of that method (the code inside its `Future`,
+  *  including the empty-location catches) must be lifted into a package-private
+  *  seam that this spec drives directly with a file:// path:
+  *
+  *  {{{
+  *  object ObjectStoreQueryUtil {
+  *      case class QueryResult(
+  *          columns: java.util.List[String],
+  *          rows: java.util.List[java.util.Map[String, Any]],
+  *          path: String,
+  *          format: String,
+  *          snapshotId: java.lang.Long = null,       // iceberg only; null for parquet/orc
+  *          snapshotTimestamp: String = null          // ISO-8601 instant; iceberg only
+  *      )
+  *      // limit is already capped by query(); path is s3a:// in production, file:// here.
+  *      private[util] def readPath(spark: SparkSession, path: String, format: String, limit: Int): QueryResult
+  *  }
+  *  }}}
+  *
+  *  A location with no table (no `metadata/` for iceberg; PATH_NOT_FOUND for
+  *  parquet/orc) returns an empty QueryResult from `readPath`, never throws.
+  *
   *  The writer must use `df.sparkSession` (not `SparkSessionManager.getOrCreate()`),
   *  because that is what the pipeline hands it and it is what lets this spec
   *  run without a DatrisEnvironment. SparkSessionManager sets five Iceberg
@@ -325,5 +349,125 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
             write(df((2L, "west", 2.0)), location, "errorifexists")
         }
         assert(readAll(location).count() == 1)
+    }
+
+    // ---- Story 3 (iceberg-loader-reader-lineage): reader via ObjectStoreQueryUtil.readPath ----
+
+    test("readPath(iceberg) returns the committed rows and the current snapshot id") {
+        val location = newLocation("reader/t")
+        write(df((1L, "east", 1.0), (2L, "west", 2.0)), location, "append")
+        val second = write(df((3L, "north", 3.0)), location, "append")
+
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
+
+        assert(result.format == "iceberg")
+        assert(result.path == location)
+        assert(result.columns.asScala.toList == List("id", "region", "amount"), s"columns were ${result.columns}")
+        assert(result.rows.size() == 3, s"expected 3 rows, got ${result.rows.size()}")
+        val byId = result.rows.asScala.map(r => r.get("id").asInstanceOf[Number].longValue() -> r.get("region")).toMap
+        assert(byId == Map(1L -> "east", 2L -> "west", 3L -> "north"), s"rows were $byId")
+
+        assert(result.snapshotId != null, "iceberg read must report the snapshot it read")
+        assert(result.snapshotId.longValue() == second.snapshotId, s"expected snapshot ${second.snapshotId}, got ${result.snapshotId}")
+        assert(result.snapshotId.longValue() == loadTable(location).currentSnapshot().snapshotId())
+        assert(result.snapshotTimestamp != null && result.snapshotTimestamp.nonEmpty, "iceberg read must report the snapshot timestamp")
+        // Parses as an ISO-8601 instant, consistent with sparkValueToJson's timestamp rendering.
+        java.time.Instant.parse(result.snapshotTimestamp)
+    }
+
+    test("readPath(iceberg) honours the row limit") {
+        val location = newLocation("reader-limit/t")
+        write(df((1L, "east", 1.0), (2L, "west", 2.0), (3L, "north", 3.0)), location, "append")
+
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 2)
+        assert(result.rows.size() == 2, s"limit 2 must return 2 rows, got ${result.rows.size()}")
+        assert(result.snapshotId != null)
+    }
+
+    test("readPath(iceberg) on a location with no metadata/ returns an empty result, not an exception") {
+        val location = newLocation("reader-empty/t")
+        val root = java.nio.file.Paths.get(java.net.URI.create(location))
+        Files.createDirectories(root) // prefix exists, but nothing was ever committed
+        assert(!Files.exists(root.resolve("metadata")))
+
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
+
+        assert(result.rows.isEmpty, s"expected 0 rows, got ${result.rows.size()}")
+        assert(result.columns.isEmpty)
+        assert(result.format == "iceberg")
+        assert(result.path == location)
+        assert(result.snapshotId == null, "no table => no snapshot")
+        assert(result.snapshotTimestamp == null)
+    }
+
+    test("readPath(iceberg) on a prefix that does not exist at all returns an empty result") {
+        val location = newLocation("reader-missing/t")
+        assert(!Files.exists(java.nio.file.Paths.get(java.net.URI.create(location))))
+
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
+        assert(result.rows.isEmpty && result.columns.isEmpty)
+        assert(result.snapshotId == null)
+    }
+
+    // ---- Story 3 handoff: parquet/orc never-run pipeline => 0 rows, not PATH_NOT_FOUND / HTTP 500 ----
+
+    test("readPath(parquet) on a never-written path returns 0 rows instead of raising PATH_NOT_FOUND") {
+        val location = newLocation("reader-parquet-missing/t")
+        assert(!Files.exists(java.nio.file.Paths.get(java.net.URI.create(location))))
+
+        // Today Spark 3.5 raises AnalysisException[PATH_NOT_FOUND] here, which
+        // query_objectstore surfaces as HTTP 500. The seam must swallow it.
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "parquet", 100)
+
+        assert(result.rows.isEmpty, s"expected 0 rows, got ${result.rows.size()}")
+        assert(result.columns.isEmpty)
+        assert(result.format == "parquet")
+        assert(result.path == location)
+    }
+
+    test("readPath(orc) on a never-written path returns 0 rows instead of raising PATH_NOT_FOUND") {
+        val location = newLocation("reader-orc-missing/t")
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "orc", 100)
+        assert(result.rows.isEmpty && result.columns.isEmpty)
+        assert(result.format == "orc")
+    }
+
+    // ---- Story 3: parquet QueryResult still serialises with null snapshot fields ----
+
+    test("readPath(parquet) on real parquet data returns rows with null snapshot fields, and Gson omits/nulls them") {
+        val location = newLocation("reader-parquet/t")
+        df((1L, "east", 1.0), (2L, "west", 2.0)).write.mode("overwrite").format("parquet").save(location)
+
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "parquet", 100)
+
+        assert(result.rows.size() == 2)
+        assert(result.columns.asScala.toList == List("id", "region", "amount"))
+        assert(result.format == "parquet")
+        assert(result.snapshotId == null, "parquet must not carry a snapshot id")
+        assert(result.snapshotTimestamp == null, "parquet must not carry a snapshot timestamp")
+
+        // The REST/MCP layer hands QueryResult to Gson; the additive fields must
+        // not break that. Default Gson drops null members, so existing
+        // consumers see exactly the four fields they saw before.
+        val json = new com.google.gson.Gson().toJson(result)
+        val obj = com.google.gson.JsonParser.parseString(json).getAsJsonObject
+        assert(obj.has("columns") && obj.has("rows") && obj.has("path") && obj.has("format"), json)
+        assert(!obj.has("snapshotId") || obj.get("snapshotId").isJsonNull, s"snapshotId must serialise as null/absent for parquet: $json")
+        assert(!obj.has("snapshotTimestamp") || obj.get("snapshotTimestamp").isJsonNull, s"snapshotTimestamp must serialise as null/absent for parquet: $json")
+
+        // And with serializeNulls (the shape the story calls "null snapshot fields") they are explicit nulls.
+        val withNulls = new com.google.gson.GsonBuilder().serializeNulls().create().toJson(result)
+        val obj2 = com.google.gson.JsonParser.parseString(withNulls).getAsJsonObject
+        assert(obj2.has("snapshotId") && obj2.get("snapshotId").isJsonNull, withNulls)
+        assert(obj2.has("snapshotTimestamp") && obj2.get("snapshotTimestamp").isJsonNull, withNulls)
+    }
+
+    test("readPath(iceberg) result serialises the snapshot id as a JSON number") {
+        val location = newLocation("reader-json/t")
+        val w = write(df((1L, "east", 1.0)), location, "append")
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
+        val obj = com.google.gson.JsonParser.parseString(new com.google.gson.Gson().toJson(result)).getAsJsonObject
+        assert(obj.has("snapshotId") && obj.get("snapshotId").getAsLong == w.snapshotId, obj.toString)
+        assert(obj.has("snapshotTimestamp") && obj.get("snapshotTimestamp").getAsString.nonEmpty, obj.toString)
     }
 }

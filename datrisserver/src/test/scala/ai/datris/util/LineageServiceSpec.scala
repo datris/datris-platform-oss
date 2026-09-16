@@ -208,4 +208,38 @@ class LineageServiceSpec extends AnyFunSuite {
         val g = LineageService.build(Nil, List(pipeline("p", catalog = null, dest = pgDest)))
         assert(!g.nodes.exists(_.nodeType == "catalog"))
     }
+
+    // ---- iceberg-loader-reader-lineage: objectstore DatasetRef carries the effective file format ----
+    //
+    // Only the coord is asserted here. LineageService.scala:119 joins non-empty
+    // coord values into DatasetRef.name, and stored RunLineageOutput.datasetId
+    // (LineageService.scala:256/305/342) keys on that name, so whether the new
+    // coord also participates in the name is the story's open Backward-compat
+    // question — the implementer either keeps it out of the name or accepts a
+    // one-time re-keying. Neither choice is pinned by this spec.
+
+    private def osDest(fileFormat: String): Destination =
+        Destination(objectStore = ObjectStore(prefixKey = "orders", destinationBucketOverride = "lake", fileFormat = fileFormat))
+
+    test("objectstore DatasetRef carries format=iceberg for an Iceberg pipeline") {
+        val refs = LineageService.datasets(pipeline("p", dest = osDest("iceberg")))
+        val os = refs.find(_.kind == "objectstore").getOrElse(fail("expected an objectstore DatasetRef"))
+        assert(os.coords.toMap.get("format").contains("iceberg"), s"coords were ${os.coords}")
+        assert(os.coords.toMap.get("bucket").contains("lake"))
+        assert(os.coords.toMap.get("prefix").contains("orders"))
+        assert(os.toJson.has("format") && os.toJson.get("format").getAsString == "iceberg", "graph node JSON must label the Iceberg table")
+    }
+
+    test("objectstore DatasetRef carries format=parquet when fileFormat is unset") {
+        val refs = LineageService.datasets(pipeline("p", dest = osDest(null)))
+        val os = refs.find(_.kind == "objectstore").getOrElse(fail("expected an objectstore DatasetRef"))
+        assert(os.coords.toMap.get("format").contains("parquet"), s"coords were ${os.coords}")
+        assert(os.toJson.get("format").getAsString == "parquet")
+    }
+
+    test("objectstore DatasetRef format is the effective (lowercased) format for an explicit value") {
+        val refs = LineageService.datasets(pipeline("p", dest = osDest("ORC")))
+        val os = refs.find(_.kind == "objectstore").get
+        assert(os.coords.toMap.get("format").contains("orc"), s"coords were ${os.coords}")
+    }
 }
