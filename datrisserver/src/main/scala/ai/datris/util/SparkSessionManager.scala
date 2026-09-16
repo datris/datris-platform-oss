@@ -25,7 +25,7 @@ object SparkSessionManager {
                 // Apache Iceberg: the extension enables row-level SQL (MERGE INTO,
                 // UPDATE, DELETE) on Iceberg tables; the `datris` hadoop catalog
                 // gives SQL a catalog to address Iceberg tables through. Both are
-                // inert for parquet/orc paths. Phase 1 tables are path-based
+                // inert for parquet and orc paths. Phase 1 tables are path-based
                 // (IcebergWriter), so the warehouse is a placeholder the catalog
                 // requires at init but never resolves against.
                 .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")

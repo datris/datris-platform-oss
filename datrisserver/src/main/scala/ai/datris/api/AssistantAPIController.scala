@@ -291,7 +291,7 @@ class AssistantAPIController {
     private val destinationBlurbs = Map(
         "mongodb" -> "**MongoDB** (flexible schema, tolerates shape drift across runs)",
         "postgres" -> "**PostgreSQL**",
-        "objectstore" -> "**object store** (columnar files — Parquet or ORC)",
+        "objectstore" -> "**object store** (Parquet, ORC, or an Iceberg table)",
         "snowflake" -> "**Snowflake** (loads the user's own Snowflake account)",
         "databricks" -> "**Databricks** (loads a Unity Catalog managed Delta table in the user's own workspace)"
     )

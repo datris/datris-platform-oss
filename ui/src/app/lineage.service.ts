@@ -20,6 +20,8 @@ export interface LineageNode {
   historical?: boolean;
   /** Dataset nodes only: which copy may be cited (L5b). */
   authority?: LineageAuthority;
+  /** Dataset nodes only: storage format of the landed copy (e.g. an Iceberg table). */
+  format?: string;
 }
 
 /** What traversed an edge inside the evidence window (L5a). Absent = a

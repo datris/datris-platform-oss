@@ -374,7 +374,7 @@ When the user makes ANY data-related ask — "I'm looking for X", "can you get m
 
 After those calls return, anchor your reply in what exists: "There's already a `<name>` pipeline doing X — does that cover your need, or do you want to extend it / add Y / pick a different source?" Only enumerate external API options after you've confirmed nothing in the platform already covers the ask. A generic options menu drawn from training data wastes the user's time when the answer is sitting in their own environment.
 
-If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, `query_objectstore` (Parquet/ORC files in MinIO or AWS S3), `query_snowflake` (Snowflake destinations), `query_databricks` (Databricks destinations), or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
+If the user is asking to SEE / LIST / SHOW data ("list the X for all Y", "what's in the X table", "show me the rows / documents") and a relevant pipeline already exists in the list response, go straight to the query tools that match its destination — `query_mongodb`, `query_postgres`, `query_natural`, `query_objectstore` (columnar files or Iceberg tables in MinIO or AWS S3), `query_snowflake` (Snowflake destinations), `query_databricks` (Databricks destinations), or the vector `search_*` tools — and answer with actual data. Do NOT re-run setup tools (`list_pipelines`, `create_pipeline`, `test_tap`, `run_tap`) when the user's ask is "read existing data" — that's read-from-destination, not re-do setup.
 
 How to find a "relevant pipeline" in the list response: the response begins with a `names` array — scan EVERY entry (the match may be at the end of a long list) for any name whose substring matches a keyword from the user's request. Hyphens, underscores, and case are interchangeable for matching. If any name matches, the pipeline EXISTS — do not announce "I don't see any …" or ask the user to clarify scope, provider, schedule, or data shape. Call the destination's query tool. Only when zero names match should you treat the resource as missing. When the user's data is already in the platform, query it and show what's there — do not collect setup parameters for a pipeline that already exists.
 
@@ -421,7 +421,7 @@ NEVER rules:
 
 Required workflow:
   1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
-  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations ({{STRUCTURED_DB_DESTINATIONS}}) and OBJECTSTORE (Parquet/ORC writes to MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets. For databricks, credentialsSecret AND warehouse (SQL warehouse ID) AND database (Unity Catalog name) are required — same secret discovery via list_platform_secrets.
+  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations ({{STRUCTURED_DB_DESTINATIONS}}) and OBJECTSTORE (columnar files or Iceberg tables in MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets. For databricks, credentialsSecret AND warehouse (SQL warehouse ID) AND database (Unity Catalog name) are required — same secret discovery via list_platform_secrets.
      create_pipeline UPSERTS by name: if a pipeline with the same name already exists, the call REPLACES its config in place — the data already in the destination is NOT touched. To change a knob (keyFields, truncate, codegen_rule, etc.) on an existing pipeline, just call create_pipeline again with the same name and the new settings. You do NOT need to delete first.
      Common knobs: keyFields (list of column names that act as a natural key for dedupe/upsert on every run), truncate (wipe the destination before each run), codegen_rule (AI-powered data quality), codegen_transform (AI-powered transformation).
   3. Ingest data (choose one):
@@ -429,7 +429,7 @@ Required workflow:
      Option B — Create a tap: use create_tap to provide an instruction (AI generates the script) or your own Python script that fetches data from an external source and pushes it into the pipeline automatically. See Tap workflow below.
   4. Monitor: call get_job_status with the pipelineToken returned from upload_data and poll until `rollup.allDone` is true. You MUST wait for that before querying.
   5. If `rollup.status` is `error` or `warning`: read `rollup.jobs[].lastError` for the failing process and description. Fix the issue (e.g., delete the pipeline, re-create with corrected parameters, re-upload).
-  6. Query & search: use query_postgres, query_mongodb for structured data; query_objectstore for Parquet/ORC files in MinIO or S3; query_snowflake for Snowflake destinations and query_databricks for Databricks destinations (both also cover metadata via SHOW/DESCRIBE); search_qdrant, search_pgvector, etc. for vector search
+  6. Query & search: use query_postgres, query_mongodb for structured data; query_objectstore for columnar files or Iceberg tables in MinIO or S3; query_snowflake for Snowflake destinations and query_databricks for Databricks destinations (both also cover metadata via SHOW/DESCRIBE); search_qdrant, search_pgvector, etc. for vector search
   7. RAG: pass search results as context to ai_answer with the user's question
 
 Tap workflow (for step 3 Option B):
@@ -860,6 +860,19 @@ Databricks is an EXTERNAL destination: credentials come from a human-owned Platf
 }
 ```
 
+The same destination as an **Iceberg table** with upsert semantics — `writeMode: "merge"` needs `keyFields`; the table lives at the prefix and every run adds a snapshot:
+
+```json
+"destination": {
+  "objectStore": {
+    "prefixKey": "data/output/",
+    "fileFormat": "iceberg",
+    "writeMode": "merge",
+    "keyFields": ["id"]
+  }
+}
+```
+
 **AWS S3** — set `provider: "s3"` and name a credentials secret. The secret must contain `accessKey`, `secretKey`, `region` (required — region lives in the secret next to the credential that authorizes it), and optionally `sessionToken`. Region is NOT a config field; if the secret is missing `region`, the write fails at resolve time with a clear error.
 
 ```json
@@ -877,8 +890,8 @@ Databricks is an EXTERNAL destination: credentials come from a human-owned Platf
 
 The credentials secret is human-owned (not `_type=tap`), so the agent does NOT create it. **Before asking the user**, call `list_platform_secrets` to see what's already configured — destination credentials live on the Platform tab and `list_tap_secrets` will not find them. If a candidate exists, call `get_platform_secret_fields` to verify it has `accessKey`, `secretKey`, and `region`. Only if nothing suitable exists, ask the user to add a secret in the Configuration → Secrets → Platform tab with those fields (and optionally `sessionToken`), then give you the secret name. Region lives with the credentials because it pairs with the key that authorizes it.
 
-File formats: `parquet`, `orc`
-Write modes: `overwrite`, `append`, `ignore`, `errorifexists`
+Storage formats: `parquet`, `orc` (loose columnar files), `iceberg` (a table at the prefix with snapshots and schema evolution)
+Write modes: `overwrite`, `append`, `ignore`, `errorifexists`, and `merge` (iceberg only — requires `keyFields`)
 
 ### kafka
 
@@ -1519,7 +1532,7 @@ def _base_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. THREE destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token), warehouse (the SQL warehouse ID), and database (the Unity Catalog name). OBJECTSTORE (objectstore — writes Parquet/ORC to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
+            description="Create a pipeline. THREE destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token), warehouse (the SQL warehouse ID), and database (the Unity Catalog name). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1542,7 +1555,7 @@ def _base_tools():
                     "destination": {
                         "type": "string",
                         "enum": ["postgres", "mongodb", "snowflake", "databricks", "objectstore", "qdrant", "weaviate", "milvus", "chroma", "pgvector"],
-                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). Use 'objectstore' for Parquet/ORC writes to MinIO (default provider) or AWS S3 (set provider=s3). Use 'snowflake' to load the user's Snowflake account — requires credentialsSecret, warehouse, and database. Use 'databricks' to load a Unity Catalog managed Delta table in the user's Databricks workspace — requires credentialsSecret, warehouse (SQL warehouse ID), and database (Unity Catalog name)."
+                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). Use 'objectstore' for Parquet files, ORC files, or an Iceberg table (fileFormat=iceberg) in MinIO (default provider) or AWS S3 (set provider=s3). Use 'snowflake' to load the user's Snowflake account — requires credentialsSecret, warehouse, and database. Use 'databricks' to load a Unity Catalog managed Delta table in the user's Databricks workspace — requires credentialsSecret, warehouse (SQL warehouse ID), and database (Unity Catalog name)."
                     },
                     "table": {
                         "type": "string",
@@ -1575,7 +1588,7 @@ def _base_tools():
                     "keyFields": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Only applies to postgres, mongodb, snowflake, and databricks destinations. Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. On Postgres this triggers a staging + INSERT…ON CONFLICT path; on Mongo it uses upsertJSON; on Snowflake it uses MERGE via a temp staging table; on Databricks it uses MERGE directly from the staged file. NOTE: on conflict, ALL non-key columns from the incoming row overwrite the existing row, including NULLs (true upsert semantics, not non-null merge). If your source emits partial rows, coalesce upstream. Omit to append on every run (default behavior)."
+                        "description": "Optional natural-key columns used to dedupe / upsert rows on every run. Applies to postgres, mongodb, snowflake, and databricks destinations, and to objectstore when fileFormat=iceberg and writeMode=merge (required there; ignored for the parquet and orc formats and for other write modes). Example: ['user_id', 'event_date'] — rows with the same (user_id, event_date) will replace the existing row instead of appending. On Postgres this triggers a staging + INSERT…ON CONFLICT path; on Mongo it uses upsertJSON; on Snowflake it uses MERGE via a temp staging table; on Databricks it uses MERGE directly from the staged file; on an Iceberg table it is a MERGE INTO keyed on those columns. NOTE: on conflict, ALL non-key columns from the incoming row overwrite the existing row, including NULLs (true upsert semantics, not non-null merge). If your source emits partial rows, coalesce upstream. Omit to append on every run (default behavior)."
                     },
                     "truncate": {
                         "type": "boolean",
@@ -1591,8 +1604,8 @@ def _base_tools():
                     },
                     "fileFormat": {
                         "type": "string",
-                        "enum": ["parquet", "orc"],
-                        "description": "Object-store file format. Only applies to destination=objectstore. Default: parquet."
+                        "enum": ["parquet", "orc", "iceberg"],
+                        "description": "Object-store storage format. Only applies to destination=objectstore. 'parquet' and 'orc' write loose columnar files under the prefix; 'iceberg' writes a table at the prefix (snapshots, schema evolution, and writeMode=merge with keyFields). Default: parquet."
                     },
                     "partitionBy": {
                         "type": "array",
@@ -1601,8 +1614,8 @@ def _base_tools():
                     },
                     "writeMode": {
                         "type": "string",
-                        "enum": ["append", "overwrite", "ignore", "errorifexists"],
-                        "description": "Object-store write mode. Only applies to destination=objectstore. Default: append."
+                        "enum": ["append", "overwrite", "ignore", "errorifexists", "merge"],
+                        "description": "Object-store write mode. Only applies to destination=objectstore. Default: append. 'merge' is only valid with fileFormat=iceberg and requires keyFields — rows whose key matches an existing row replace it, the rest are inserted."
                     },
                     "deleteBeforeWrite": {
                         "type": "boolean",
@@ -1959,13 +1972,15 @@ def _base_tools():
         Tool(
             name="query_objectstore",
             description=(
-                "Read rows from a pipeline's objectStore destination (Parquet or ORC files in MinIO or AWS S3). "
+                "Read rows from a pipeline's objectStore destination (Parquet files, ORC files, or an Iceberg table in MinIO or AWS S3). "
                 "Pass the pipeline name; the server resolves the bucket, prefix, format, and credentials from "
                 "the pipeline config — same code path the writer uses, so MinIO and S3 destinations both work. "
                 "Returns up to `limit` rows as JSON objects keyed by column name, plus the resolved s3a:// path "
-                "and format for transparency. Returns 0 rows (not an error) when the pipeline has no successful "
+                "and format for transparency. For an Iceberg table the response also carries snapshotId (a decimal "
+                "string, not a number) and snapshotTimestamp (ISO-8601) of the snapshot read; both are null for "
+                "other formats. Returns 0 rows (not an error) when the pipeline has no successful "
                 "runs yet. This is the right tool when list_pipelines shows objectStore as the destination — "
-                "query_postgres / query_mongodb / search_* will not work against Parquet/ORC files."
+                "query_postgres / query_mongodb / search_* will not work against objectStore data."
             ),
             inputSchema={
                 "type": "object",
@@ -3032,7 +3047,7 @@ def _dispatch(name: str, args: dict) -> str:
                 # Destination list is injected from resolved availability —
                 # see the "INJECTION, NOT INSTRUCTION" block up top.
                 db_dests = _structured_db_destinations_text(_available_structured_destinations())
-                return json.dumps({"pipelines": [], "message": f"No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations ({db_dests}) and objectstore (Parquet/ORC to MinIO or S3) pass a tiny plain-text sample via content_text (header + 3-5 rows) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
+                return json.dumps({"pipelines": [], "message": f"No pipelines exist. You MUST create a pipeline before you can ingest or query data. Call create_pipeline — for structured destinations ({db_dests}) and objectstore (columnar files or an Iceberg table in MinIO or S3) pass a tiny plain-text sample via content_text (header + 3-5 rows) + filename; for vector destinations (pgvector, qdrant, weaviate, milvus, chroma) pass only pipeline name + destination."})
             if isinstance(pipelines, list):
                 # Summarize each pipeline to (name, destination kind, table/collection,
                 # catalog). Returning the FULL nested config for every pipeline pushes
@@ -3146,7 +3161,7 @@ def _dispatch(name: str, args: dict) -> str:
         else:
             # Structured destinations AND objectstore: send sample to /generate for
             # schema detection. ObjectStore is CSV-only at the validator level and
-            # writes a typed Parquet/ORC schema, so it needs the same schema-detection
+            # writes a typed columnar/Iceberg schema, so it needs the same schema-detection
             # round-trip as postgres/mongodb.
             # content_text lets the model write the sample as plain text; encoding
             # it here saves ~33% of the model's output tokens vs. emitting base64.
@@ -3229,6 +3244,8 @@ def _dispatch(name: str, args: dict) -> str:
                 obj_cfg["destinationBucketOverride"] = args["bucket"]
             if args.get("partitionBy"):
                 obj_cfg["partitionBy"] = args["partitionBy"]
+            if key_fields:
+                obj_cfg["keyFields"] = key_fields
             if provider == "s3":
                 if args.get("endpoint"):
                     obj_cfg["endpoint"] = args["endpoint"]

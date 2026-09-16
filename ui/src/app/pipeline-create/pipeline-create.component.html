@@ -670,8 +670,27 @@
             <select class="form-input" [(ngModel)]="osFormat">
               <option value="parquet">Parquet</option>
               <option value="orc">ORC</option>
+              <option value="iceberg">Iceberg</option>
             </select>
           </div>
+        </div>
+        <div class="form-row" *ngIf="osFormat === 'iceberg'">
+          <label class="form-label">Write mode</label>
+          <select class="form-input" [(ngModel)]="osWriteMode">
+            <option value="append">append</option>
+            <option value="overwrite">overwrite</option>
+            <option value="merge">merge (upsert on key fields)</option>
+          </select>
+          <p class="form-hint">Iceberg writes a table at the key above; every run adds a snapshot. <code>merge</code> replaces rows whose key fields match and inserts the rest.</p>
+        </div>
+        <div class="form-row" *ngIf="osFormat === 'iceberg' && destSchemaFields.length > 0 && destSchemaFields[0].name">
+          <label class="form-label">Key Fields {{ osWriteMode === 'merge' ? '(required for merge)' : '(optional)' }}</label>
+          <p class="form-hint">Select the fields that identify a row for merge. Hold Cmd/Ctrl to select multiple.</p>
+          <!-- Bound by hand (no ngModel): the multi-select value accessor rewrites option
+               values to "0: 'id'", which breaks plain DOM reads of the selected names. -->
+          <select class="form-input" multiple size="10" (change)="onOsKeyFieldsChange($event.target)">
+            <option *ngFor="let f of destSchemaFields" [value]="f.name" [selected]="osKeyFields.includes(f.name)" [disabled]="!f.name">{{ f.name }}</option>
+          </select>
         </div>
         <div class="form-row" *ngIf="destSchemaFields.length > 0 && destSchemaFields[0].name">
           <label class="form-label">Partition By (optional)</label>

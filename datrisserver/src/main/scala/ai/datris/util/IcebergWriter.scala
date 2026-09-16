@@ -184,7 +184,7 @@ object IcebergWriter {
     }
 
     /** Refuse to create a table over a prefix that already holds non-Iceberg
-      *  objects (an existing parquet/orc pipeline output, for example). */
+      *  objects (an existing non-iceberg pipeline output, for example). */
     private def guardPrefix(conf: Configuration, location: String): Unit = {
         val path = new Path(location)
         val fs = path.getFileSystem(conf)

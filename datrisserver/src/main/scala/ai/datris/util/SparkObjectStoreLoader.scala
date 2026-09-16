@@ -22,7 +22,7 @@ object SparkObjectStoreLoader {
     /** Serialise writes to one objectStore destination within this JVM. Runs
       *  of a single pipeline can overlap (ScheduledBatchTasks.startJobs only
       *  gates on destination.database.table), and two concurrent writers would
-      *  race Iceberg's metadata commit or interleave parquet/ORC part files.
+      *  race Iceberg's metadata commit or interleave parquet and ORC part files.
       *  `lockKey` is the write target — the loader passes the output path
       *  (bucket + prefix), so two pipelines pointed at the same prefix also
       *  serialise while unrelated destinations never wait on each other. */
@@ -95,7 +95,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // Runs of one pipeline can overlap, so the whole write (including the
         // delete-before-write) runs under the per-destination lock, keyed on
         // the output path so two pipelines sharing a prefix serialise too.
-        // Iceberg commits would otherwise race on metadata; parquet/ORC part
+        // Iceberg commits would otherwise race on metadata; parquet and ORC part
         // files would interleave.
         val iceberg: Option[IcebergWriter.WriteResult] = SparkObjectStoreLoader.withPipelineWriteLock(outputPath) {
             // Delete existing data if requested. Route through the Hadoop FileSystem

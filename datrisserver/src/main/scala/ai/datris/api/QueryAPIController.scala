@@ -124,16 +124,7 @@ class QueryAPIController {
             }.getOrElse(100)
 
             val result = ObjectStoreQueryUtil.query(pipelineName, limit)
-
-            val gson = new GsonBuilder().serializeNulls().create()
-            val response = new java.util.LinkedHashMap[String, Any]()
-            response.put("pipeline", pipelineName)
-            response.put("path", result.path)
-            response.put("format", result.format)
-            response.put("columns", result.columns)
-            response.put("results", result.rows)
-            response.put("count", result.rows.size())
-            new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
+            new ResponseEntity[String](QueryAPIController.objectStoreResponseJson(pipelineName, result), HttpStatus.OK)
         } catch {
             case e: DatrisException =>
                 logger.warn("query/objectstore: " + e.getMessage)
@@ -339,5 +330,29 @@ class QueryAPIController {
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
         }
+    }
+}
+
+object QueryAPIController {
+
+    /** The JSON body `POST /api/v1/query/objectstore` returns for a successful
+      *  read: pipeline, path, format, columns, results, count, snapshotId,
+      *  snapshotTimestamp. Serialized with `serializeNulls` so parquet and ORC
+      *  results carry an explicit null for both snapshot fields instead of
+      *  omitting them. `snapshotId` is emitted as a JSON string of decimal
+      *  digits, never a JSON number: Iceberg snapshot ids routinely exceed
+      *  2^53 and a browser cannot round-trip them as numbers. */
+    private[api] def objectStoreResponseJson(pipeline: String, result: ObjectStoreQueryUtil.QueryResult): String = {
+        val gson = new GsonBuilder().serializeNulls().create()
+        val response = new java.util.LinkedHashMap[String, Any]()
+        response.put("pipeline", pipeline)
+        response.put("path", result.path)
+        response.put("format", result.format)
+        response.put("columns", result.columns)
+        response.put("results", result.rows)
+        response.put("count", result.rows.size())
+        response.put("snapshotId", Option(result.snapshotId).map(_.toString).orNull)
+        response.put("snapshotTimestamp", result.snapshotTimestamp)
+        gson.toJson(response)
     }
 }

@@ -5,6 +5,10 @@ import { Observable } from 'rxjs';
 export interface QueryResponse {
   results: any[];
   count: number;
+  /** Object-store reads only: the Iceberg snapshot the rows came from, as a
+   *  decimal string (ids exceed 2^53). Null for other formats. */
+  snapshotId?: string | null;
+  snapshotTimestamp?: string | null;
 }
 
 @Injectable({

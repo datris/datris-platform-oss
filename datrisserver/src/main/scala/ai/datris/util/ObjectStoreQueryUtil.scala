@@ -43,7 +43,7 @@ object ObjectStoreQueryUtil {
     }
 
     /** `snapshotId` / `snapshotTimestamp` (ISO-8601 instant) identify the
-      *  Iceberg snapshot the rows were read from. Null for parquet/orc, so
+      *  Iceberg snapshot the rows were read from. Null for parquet and orc, so
       *  existing consumers keep seeing the four fields they always had. */
     case class QueryResult(
         columns: java.util.List[String],
@@ -119,7 +119,7 @@ object ObjectStoreQueryUtil {
       *  A location nothing has been written to yet is the legitimate "pipeline
       *  exists but no run has succeeded" state and comes back as an empty
       *  result rather than an exception: Spark 3.5 raises
-      *  `AnalysisException[PATH_NOT_FOUND]` for a missing parquet/orc prefix
+      *  `AnalysisException[PATH_NOT_FOUND]` for a missing non-iceberg prefix
       *  (older Hadoop input formats raised `InvalidInputException`), and a
       *  path with no Iceberg `metadata/` is detected up front in `readIceberg`
       *  (the catalyst `NoSuchTableException` catch covers the DataFrame read
@@ -158,7 +158,7 @@ object ObjectStoreQueryUtil {
       *
       *  "Empty" means only "no `metadata/` under the prefix". That check is a
       *  plain filesystem `exists`, which propagates auth failures (S3A raises
-      *  AccessDeniedException) the same way the parquet/orc path does.
+      *  AccessDeniedException) the same way the parquet and orc path does.
       *  `HadoopTables.load` is deliberately NOT used as the existence probe:
       *  it swallows IO errors while looking for the version hint and reports
       *  a wrong access key as NoSuchTableException, which would turn an auth

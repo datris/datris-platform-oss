@@ -377,7 +377,7 @@ object PipelineValidatorUtil {
             )
     }
 
-    /** Iceberg tables carry metadata that plain parquet/orc layouts do not (and
+    /** Iceberg tables carry metadata that plain parquet and orc layouts do not (and
       * vice versa), so flipping an existing pipeline's fileFormat to or from
       * 'iceberg' needs a clean prefix: reject unless deleteBeforeWrite is set.
       * parquet<->orc flips are untouched. Package-private so the spec can reach

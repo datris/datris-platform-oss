@@ -16,7 +16,7 @@ import java.util.concurrent.{Callable, CountDownLatch, Executors, TimeUnit}
   *  Plan §12 Q1 was answered YES in story 1: runs of one pipeline can overlap
   *  (ScheduledBatchTasks.startJobs gates only on destination.database.table),
   *  so writes to one objectstore destination must be serialised — Iceberg
-  *  commits would otherwise race on metadata, and parquet/ORC appends would
+  *  commits would otherwise race on metadata, and parquet and ORC appends would
   *  interleave. The lock is keyed on the pipeline name and must not serialise
   *  unrelated pipelines.
   *

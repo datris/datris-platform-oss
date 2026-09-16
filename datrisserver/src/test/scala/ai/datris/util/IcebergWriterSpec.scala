@@ -52,7 +52,7 @@ import scala.collection.mutable.ListBuffer
   *          rows: java.util.List[java.util.Map[String, Any]],
   *          path: String,
   *          format: String,
-  *          snapshotId: java.lang.Long = null,       // iceberg only; null for parquet/orc
+  *          snapshotId: java.lang.Long = null,       // iceberg only; null for parquet and orc
   *          snapshotTimestamp: String = null          // ISO-8601 instant; iceberg only
   *      )
   *      // limit is already capped by query(); path is s3a:// in production, file:// here.
@@ -61,7 +61,7 @@ import scala.collection.mutable.ListBuffer
   *  }}}
   *
   *  A location with no table (no `metadata/` for iceberg; PATH_NOT_FOUND for
-  *  parquet/orc) returns an empty QueryResult from `readPath`, never throws.
+  *  non-iceberg, i.e. a plain parquet or an ORC prefix) returns an empty QueryResult from `readPath`, never throws.
   *
   *  The writer must use `df.sparkSession` (not `SparkSessionManager.getOrCreate()`),
   *  because that is what the pipeline hands it and it is what lets this spec
@@ -424,7 +424,7 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         }
     }
 
-    // ---- Story 3 handoff: parquet/orc never-run pipeline => 0 rows, not PATH_NOT_FOUND / HTTP 500 ----
+    // ---- Story 3 handoff: non-iceberg never-run pipeline => 0 rows, not PATH_NOT_FOUND / HTTP 500 ----
 
     test("readPath(parquet) on a never-written path returns 0 rows instead of raising PATH_NOT_FOUND") {
         val location = newLocation("reader-parquet-missing/t")

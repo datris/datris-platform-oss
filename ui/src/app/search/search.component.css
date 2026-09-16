@@ -222,6 +222,13 @@ option {
   color: var(--text-secondary);
 }
 
+.results-snapshot {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-left: 6px;
+  font-family: ui-monospace, monospace;
+}
+
 /* Table */
 .table-container {
   overflow-x: auto;

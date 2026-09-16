@@ -52,8 +52,14 @@ class QueryAPIControllerObjectStoreResponseSpec extends AnyFunSuite {
     private def parse(json: String): JsonObject = JsonParser.parseString(json).getAsJsonObject
 
     test("iceberg result: snapshotId is a JSON string of decimal digits and snapshotTimestamp an ISO instant") {
-        val result = QueryResult(cols("id", "name"), rows(2), "s3a://bucket/orders", "iceberg",
-            snapshotId = java.lang.Long.valueOf(8533883885102256461L), snapshotTimestamp = "2026-09-16T12:34:56Z")
+        val result = QueryResult(
+            cols("id", "name"),
+            rows(2),
+            "s3a://bucket/orders",
+            "iceberg",
+            snapshotId = java.lang.Long.valueOf(8533883885102256461L),
+            snapshotTimestamp = "2026-09-16T12:34:56Z"
+        )
         val body = parse(QueryAPIController.objectStoreResponseJson("orders", result))
 
         assert(body.has("snapshotId"), body.toString)
@@ -82,8 +88,14 @@ class QueryAPIControllerObjectStoreResponseSpec extends AnyFunSuite {
     }
 
     test("the six existing fields are unchanged around the two new ones") {
-        val result = QueryResult(cols("id", "name"), rows(3), "s3a://bucket/orders", "iceberg",
-            snapshotId = java.lang.Long.valueOf(42L), snapshotTimestamp = "2026-09-16T00:00:00Z")
+        val result = QueryResult(
+            cols("id", "name"),
+            rows(3),
+            "s3a://bucket/orders",
+            "iceberg",
+            snapshotId = java.lang.Long.valueOf(42L),
+            snapshotTimestamp = "2026-09-16T00:00:00Z"
+        )
         val body = parse(QueryAPIController.objectStoreResponseJson("orders", result))
 
         assert(body.get("pipeline").getAsString == "orders")
@@ -92,6 +104,9 @@ class QueryAPIControllerObjectStoreResponseSpec extends AnyFunSuite {
         assert(body.getAsJsonArray("columns").size() == 2)
         assert(body.getAsJsonArray("results").size() == 3)
         assert(body.get("count").getAsInt == 3)
-        assert(body.keySet().size() == 8, "expected exactly pipeline, path, format, columns, results, count, snapshotId, snapshotTimestamp; got " + body.keySet())
+        assert(
+            body.keySet().size() == 8,
+            "expected exactly pipeline, path, format, columns, results, count, snapshotId, snapshotTimestamp; got " + body.keySet()
+        )
     }
 }

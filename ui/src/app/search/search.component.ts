@@ -19,6 +19,9 @@ export class SearchComponent implements OnInit, OnDestroy {
   results: any[] = [];
   columns: string[] = [];
   resultCount = 0;
+  /** Iceberg snapshot id carried by the last object-store query, if any. */
+  snapshotId: string | null = null;
+  snapshotTimestamp: string | null = null;
 
   // AI answer
   aiAnswer = '';
@@ -252,6 +255,8 @@ export class SearchComponent implements OnInit, OnDestroy {
     this.columns = [];
     this.error = '';
     this.resultCount = 0;
+    this.snapshotId = null;
+    this.snapshotTimestamp = null;
     this.vectorSecretName = this.getDefaultVectorSecret();
   }
 
@@ -358,6 +363,8 @@ export class SearchComponent implements OnInit, OnDestroy {
       next: (response: QueryResponse) => {
         this.results = response.results || [];
         this.resultCount = response.count || 0;
+        this.snapshotId = response.snapshotId ? String(response.snapshotId) : null;
+        this.snapshotTimestamp = response.snapshotTimestamp || null;
         if (this.results.length > 0) {
           this.columns = Object.keys(this.results[0]);
         }
