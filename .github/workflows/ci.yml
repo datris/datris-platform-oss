@@ -56,11 +56,13 @@ jobs:
       - name: MCP tool catalog drift check
         run: python3 scripts/check-mcp-tool-catalog.py
 
-      # Host-side `datris doctor` checks (mcp-server/doctor.py) against a
-      # faked docker/git runner — no Docker needed.
-      - name: CLI doctor tests
+      # MCP server tool/config tests (mcp-server/tests import server.py, so
+      # the server's declared deps must be installed) plus the host-side
+      # `datris doctor` checks (mcp-server/doctor.py) against a faked
+      # docker/git runner — no Docker needed.
+      - name: MCP server and CLI doctor tests
         run: |
-          python3 -m pip install --quiet --user pytest requests
+          python3 -m pip install --quiet --user -r mcp-server/requirements.txt pytest
           python3 -m pytest mcp-server/tests -q
 
       - name: Set up Node
