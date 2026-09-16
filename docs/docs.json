@@ -78,6 +78,7 @@
               "destinations/kafka",
               "destinations/object-store",
               "destinations/s3",
+              "destinations/iceberg",
               "destinations/pgvector",
               "destinations/qdrant",
               "destinations/milvus",

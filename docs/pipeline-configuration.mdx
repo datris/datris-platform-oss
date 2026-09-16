@@ -199,17 +199,18 @@ See [AI Transformation](/transformation/ai-transformation) for detailed document
 
 ### Destination > Object Store
 
-The object store destination writes Parquet or ORC files to either the built-in MinIO (default) or to AWS S3. The provider is selected by the `provider` field; everything else is shared across both.
+The object store destination writes Parquet files, ORC files, or an [Apache Iceberg table](/destinations/iceberg) to either the built-in MinIO (default) or to AWS S3. The provider is selected by the `provider` field; everything else is shared across both.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `prefixKey` | string | Required | Path prefix for output files under the bucket |
-| `fileFormat` | string | `parquet` | Output format: `parquet` or `orc` |
+| `fileFormat` | string | `parquet` | Output format: `parquet`, `orc`, or `iceberg` (a table at the prefix with atomic commits, `merge` upserts, and schema evolution) |
 | `partitionBy` | array | null | Column names for partitioning |
 | `destinationBucketOverride` | string | null | Custom bucket (default: `{environment}-data` for MinIO; **required** for S3) |
 | `deleteBeforeWrite` | boolean | false | Delete existing data at path before writing |
 | `writeToTemporaryLocation` | boolean | false | Write to temp location first |
-| `writeMode` | string | `append` | `append`, `overwrite`, `ignore`, or `errorifexists` |
+| `writeMode` | string | `append` | `append`, `overwrite`, `ignore`, `errorifexists`, or `merge` (`iceberg` only; requires `keyFields`) |
+| `keyFields` | array | null | Natural-key columns for `writeMode: merge` on an Iceberg table. Each must be a destination schema column; rejected with any other write mode |
 | `provider` | string | `minio` | `minio` (built-in, default) or `s3` (AWS S3) |
 | `endpoint` | string | null | S3 endpoint URL override. Must use `https://`. Leave unset for the AWS regional default. Ignored for `minio`. |
 | `credentialsSecret` | string | null | For `provider=s3`: name of a Platform-tab Vault secret containing `accessKey`, `secretKey`, `region` (and optionally `sessionToken`). Leave unset only when Datris runs on an AWS instance role. |

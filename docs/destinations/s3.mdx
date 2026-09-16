@@ -1,12 +1,12 @@
 ---
-title: "Write Parquet or ORC files to AWS S3 from a pipeline"
+title: "Write Parquet, ORC, or Apache Iceberg tables to AWS S3 from a pipeline"
 sidebarTitle: "S3 (AWS)"
-description: "Write validated pipeline output as Parquet or ORC files to AWS S3 with per-bucket credentials and region."
+description: "Write validated pipeline output as Parquet files, ORC files, or an Apache Iceberg table to AWS S3 with per-bucket credentials and region."
 ---
 
 Use this destination when your lake lives in S3 and you want validated, lineage-tracked files landed there by an agent or a scheduled pipeline, with credentials scoped per bucket.
 
-The S3 destination writes Parquet or ORC files directly to AWS S3. It uses the same Spark + S3A code path as the [MinIO destination](/destinations/object-store); the only differences are the credentials, the endpoint, and a few S3A settings applied per-bucket so multiple S3 destinations can coexist with the built-in MinIO output.
+The S3 destination writes Parquet files, ORC files, or an [Apache Iceberg table](/destinations/iceberg) directly to AWS S3. It uses the same Spark + S3A code path as the [MinIO destination](/destinations/object-store); the only differences are the credentials, the endpoint, and a few S3A settings applied per-bucket so multiple S3 destinations can coexist with the built-in MinIO output.
 
 ## How it differs from MinIO
 
@@ -63,8 +63,9 @@ If any of `accessKey`, `secretKey`, or `region` is missing, the write fails at r
 | `credentialsSecret`         | yes*     |                | Name of the Platform secret holding `accessKey`/`secretKey`/`region`. Pass the bare name as shown on Configuration → Secrets → Platform; the `{environment}/` Vault prefix is added automatically |
 | `endpoint`                  | no       | AWS regional   | Override the S3 endpoint URL. Must use `https://`                        |
 | `prefixKey`                 | yes      |                | Key prefix under the bucket                                              |
-| `fileFormat`                | no       | `parquet`      | `parquet` or `orc`                                                       |
-| `writeMode`                 | no       | `append`       | `append`, `overwrite`, `ignore`, `errorifexists`                         |
+| `fileFormat`                | no       | `parquet`      | `parquet`, `orc`, or `iceberg`                                           |
+| `writeMode`                 | no       | `append`       | `append`, `overwrite`, `ignore`, `errorifexists`, or `merge` (iceberg only) |
+| `keyFields`                 | with `merge` |            | Natural-key columns for `writeMode: merge` on an Iceberg table           |
 | `partitionBy`               | no       |                | Array of column names to partition by                                    |
 | `deleteBeforeWrite`         | no       | `false`        | Delete existing objects under the prefix before writing                  |
 
@@ -72,7 +73,7 @@ If any of `accessKey`, `secretKey`, or `region` is missing, the write fails at r
 
 ## File formats, write modes, partitioning, type casting
 
-These behave the same as the MinIO destination — see the [Object Store Destination](/destinations/object-store) page for the full reference.
+These behave the same as the MinIO destination — see the [Object Store Destination](/destinations/object-store) page for the full reference, and the [Iceberg](/destinations/iceberg) page for table commits, `merge`, and schema evolution.
 
 ## Multiple S3 destinations
 
