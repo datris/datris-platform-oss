@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.{DatrisEnvironment, DatrisException}
+import org.apache.hadoop.fs.Path
 import org.apache.iceberg.hadoop.HadoopTables
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.slf4j.{Logger, LoggerFactory}
@@ -120,8 +121,9 @@ object ObjectStoreQueryUtil {
       *  result rather than an exception: Spark 3.5 raises
       *  `AnalysisException[PATH_NOT_FOUND]` for a missing parquet/orc prefix
       *  (older Hadoop input formats raised `InvalidInputException`), and a
-      *  path with no Iceberg `metadata/` surfaces as the catalyst
-      *  `NoSuchTableException` (or Iceberg's own, depending on the resolver).
+      *  path with no Iceberg `metadata/` is detected up front in `readIceberg`
+      *  (the catalyst `NoSuchTableException` catch covers the DataFrame read
+      *  resolver's own view of the same state).
       *
       *  Package-private so the spec can drive it with a file:// path; `query`
       *  owns config lookup, per-bucket S3A config, limit capping and the
@@ -145,9 +147,6 @@ object ObjectStoreQueryUtil {
             case e: org.apache.spark.sql.catalyst.analysis.NoSuchTableException =>
                 logger.info(s"ObjectStoreQuery: no Iceberg table at $path yet (${e.getMessage}) — returning empty result")
                 emptyResult(path, format)
-            case e: org.apache.iceberg.exceptions.NoSuchTableException =>
-                logger.info(s"ObjectStoreQuery: no Iceberg table at $path yet (${e.getMessage}) — returning empty result")
-                emptyResult(path, format)
             case e: org.apache.hadoop.fs.UnsupportedFileSystemException =>
                 throw new DatrisException("Object store read failed (unsupported scheme on " + path + "): " + e.getMessage)
         }
@@ -155,11 +154,25 @@ object ObjectStoreQueryUtil {
 
     /** Resolve the table's current snapshot first, then pin the DataFrame
       *  read to it, so the id we report is exactly the one the rows came
-      *  from even if a run commits in between. `HadoopTables.load` throws
-      *  Iceberg's NoSuchTableException when there is no `metadata/`. */
+      *  from even if a run commits in between.
+      *
+      *  "Empty" means only "no `metadata/` under the prefix". That check is a
+      *  plain filesystem `exists`, which propagates auth failures (S3A raises
+      *  AccessDeniedException) the same way the parquet/orc path does.
+      *  `HadoopTables.load` is deliberately NOT used as the existence probe:
+      *  it swallows IO errors while looking for the version hint and reports
+      *  a wrong access key as NoSuchTableException, which would turn an auth
+      *  error into an HTTP 200 with 0 rows. Once `metadata/` is known to
+      *  exist, any load failure (corrupt table, denied reads) propagates. */
     private def readIceberg(spark: SparkSession, path: String, limit: Int): QueryResult = {
         IcebergWriter.ensureCatalogs(spark, path)
-        val table = new HadoopTables(spark.sessionState.newHadoopConf()).load(path)
+        val conf = spark.sessionState.newHadoopConf()
+        val metadataDir = new Path(path, "metadata")
+        if (!metadataDir.getFileSystem(conf).exists(metadataDir)) {
+            logger.info(s"ObjectStoreQuery: no Iceberg metadata/ at $path yet — returning empty result")
+            return emptyResult(path, "iceberg")
+        }
+        val table = new HadoopTables(conf).load(path)
         val snapshot = table.currentSnapshot()
         if (snapshot == null) {
             // Table created but nothing ever committed: no rows, no snapshot.

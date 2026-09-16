@@ -409,6 +409,21 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(result.snapshotId == null)
     }
 
+    test("readPath(iceberg) on a prefix whose metadata/ exists but holds no loadable table throws, not empty") {
+        // Pins the contract "empty only when metadata/ is absent": once
+        // metadata/ exists, load failures (corrupt table, and in production a
+        // denied read that HadoopTables would otherwise swallow) must surface.
+        val location = newLocation("reader-garbage/t")
+        val meta = java.nio.file.Paths.get(java.net.URI.create(location)).resolve("metadata")
+        Files.createDirectories(meta)
+        Files.write(meta.resolve("version-hint.text"), "not-a-number".getBytes)
+        Files.write(meta.resolve("v1.metadata.json"), "{garbage".getBytes)
+
+        intercept[Exception] {
+            ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
+        }
+    }
+
     // ---- Story 3 handoff: parquet/orc never-run pipeline => 0 rows, not PATH_NOT_FOUND / HTTP 500 ----
 
     test("readPath(parquet) on a never-written path returns 0 rows instead of raising PATH_NOT_FOUND") {

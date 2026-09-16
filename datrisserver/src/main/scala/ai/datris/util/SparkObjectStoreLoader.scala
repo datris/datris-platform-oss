@@ -19,14 +19,15 @@ import scala.collection.JavaConverters._
 object SparkObjectStoreLoader {
     private val writeLocks = new ConcurrentHashMap[String, ReentrantLock]()
 
-    /** Serialise writes to one pipeline's objectStore destination within this
-      *  JVM. Runs of a single pipeline can overlap (ScheduledBatchTasks.startJobs
-      *  only gates on destination.database.table), and two concurrent writers
-      *  would race Iceberg's metadata commit or interleave parquet/ORC part
-      *  files. Keyed on the pipeline name, so unrelated pipelines never wait
-      *  on each other. */
-    private[util] def withPipelineWriteLock[T](pipelineName: String)(body: => T): T = {
-        val lock = writeLocks.computeIfAbsent(pipelineName, _ => new ReentrantLock())
+    /** Serialise writes to one objectStore destination within this JVM. Runs
+      *  of a single pipeline can overlap (ScheduledBatchTasks.startJobs only
+      *  gates on destination.database.table), and two concurrent writers would
+      *  race Iceberg's metadata commit or interleave parquet/ORC part files.
+      *  `lockKey` is the write target — the loader passes the output path
+      *  (bucket + prefix), so two pipelines pointed at the same prefix also
+      *  serialise while unrelated destinations never wait on each other. */
+    private[util] def withPipelineWriteLock[T](lockKey: String)(body: => T): T = {
+        val lock = writeLocks.computeIfAbsent(lockKey, _ => new ReentrantLock())
         lock.lock()
         try body
         finally lock.unlock()
@@ -92,10 +93,11 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         val partitions = Option(config.destination.objectStore.partitionBy).map(_.asScala.toList).getOrElse(Nil)
 
         // Runs of one pipeline can overlap, so the whole write (including the
-        // delete-before-write) runs under the per-pipeline lock. Iceberg
-        // commits would otherwise race on metadata; parquet/ORC part files
-        // would interleave.
-        val iceberg: Option[IcebergWriter.WriteResult] = SparkObjectStoreLoader.withPipelineWriteLock(config.name) {
+        // delete-before-write) runs under the per-destination lock, keyed on
+        // the output path so two pipelines sharing a prefix serialise too.
+        // Iceberg commits would otherwise race on metadata; parquet/ORC part
+        // files would interleave.
+        val iceberg: Option[IcebergWriter.WriteResult] = SparkObjectStoreLoader.withPipelineWriteLock(outputPath) {
             // Delete existing data if requested. Route through the Hadoop FileSystem
             // (S3A) rather than the MinIO Java SDK, so it honors the per-bucket config
             // we just applied and works for both MinIO and AWS S3. Using the MinIO SDK
