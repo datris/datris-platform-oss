@@ -713,9 +713,10 @@ export class ConfigurationComponent implements OnInit {
 
   /** Look up the shared API key for a given provider. Returns empty string for local/bundled providers.
    *  Azure in an Entra mode deliberately returns '' even if the key field still
-   *  holds a (masked) value — the slot secret must store an empty apiKey so the
-   *  server's request-time resolution falls through to Entra instead of
-   *  preserving the old key via the masked round-trip. */
+   *  holds a (masked) value — callers then OMIT apiKey from the slot secret's
+   *  PUT (an empty string would be preserved by the server), so the stored key
+   *  is removed and the server's request-time resolution falls through to
+   *  Entra instead of keeping the old key. */
   private keyForProvider(provider: string): string {
     if (provider === 'anthropic') return this.anthropicApiKey;
     if (provider === 'openai') return this.openaiApiKey;
@@ -912,8 +913,12 @@ export class ConfigurationComponent implements OnInit {
         provider: backendProvider(this.aiPrimaryProvider),
         endpoint: useEndpoint(this.aiPrimaryEndpoint, this.endpointFor(this.aiPrimaryProvider, 'chat')),
         model: this.aiPrimaryModel,
-        apiKey: this.keyForProvider(this.aiPrimaryProvider)
       };
+      // Omit apiKey when there is none to send: the server preserves a stored
+      // sensitive value on "", so omission is how a slot key gets removed
+      // (Azure Entra modes, local providers).
+      const aiPrimaryKey = this.keyForProvider(this.aiPrimaryProvider);
+      if (aiPrimaryKey) body.apiKey = aiPrimaryKey;
       if (this.aiPrimaryProvider === 'anthropic') body.version = '2023-06-01';
       tasks.push(this.http.put('/api/v1/secrets/ai-primary', body, { responseType: 'text' }).toPromise());
     }
@@ -923,8 +928,12 @@ export class ConfigurationComponent implements OnInit {
         provider: backendProvider(this.codegenProvider),
         endpoint: useEndpoint(this.codegenEndpoint, this.endpointFor(this.codegenProvider, 'chat')),
         model: this.codegenModel,
-        apiKey: this.keyForProvider(this.codegenProvider)
       };
+      // Omit apiKey when there is none to send: the server preserves a stored
+      // sensitive value on "", so omission is how a slot key gets removed
+      // (Azure Entra modes, local providers).
+      const codegenKey = this.keyForProvider(this.codegenProvider);
+      if (codegenKey) body.apiKey = codegenKey;
       if (this.codegenProvider === 'anthropic') body.version = '2023-06-01';
       tasks.push(this.http.put('/api/v1/secrets/codegen', body, { responseType: 'text' }).toPromise());
     }
@@ -934,8 +943,12 @@ export class ConfigurationComponent implements OnInit {
         provider: backendProvider(this.embeddingProvider),
         endpoint: useEndpoint(this.embeddingEndpoint, this.endpointFor(this.embeddingProvider, 'embedding')),
         model: this.embeddingModel,
-        apiKey: this.keyForProvider(this.embeddingProvider)
       };
+      // Omit apiKey when there is none to send: the server preserves a stored
+      // sensitive value on "", so omission is how a slot key gets removed
+      // (Azure Entra modes, local providers).
+      const embeddingKey = this.keyForProvider(this.embeddingProvider);
+      if (embeddingKey) body.apiKey = embeddingKey;
       tasks.push(this.http.put('/api/v1/secrets/embedding', body, { responseType: 'text' }).toPromise());
     }
 
@@ -945,6 +958,7 @@ export class ConfigurationComponent implements OnInit {
     // (••••••••), we still send it — the server's masked-preservation logic
     // keeps any existing key, and if there's nothing to preserve, runWebSearch
     // falls back to the ANTHROPIC_API_KEY / OPENAI_API_KEY env var at request time.
+    // When there is no key at all, apiKey is omitted so a stored one is removed.
     {
       const wsKey = this.keyForProvider(this.webSearchProvider);
       const body: any = {
@@ -952,9 +966,9 @@ export class ConfigurationComponent implements OnInit {
         provider: this.webSearchProvider,
         endpoint: useEndpoint(this.webSearchEndpoint, this.webSearchEndpointFor(this.webSearchProvider)),
         model: this.webSearchModel || this.webSearchModelFor(this.webSearchProvider),
-        apiKey: wsKey || '',
         maxUses: String(this.webSearchMaxUses || 3)
       };
+      if (wsKey) body.apiKey = wsKey;
       if (this.webSearchProvider === 'anthropic') body.version = '2023-06-01';
       tasks.push(this.http.put('/api/v1/secrets/web-search', body, { responseType: 'text' }).toPromise());
     }
