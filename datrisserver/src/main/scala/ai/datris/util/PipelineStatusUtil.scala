@@ -134,6 +134,12 @@ object PipelineStatusUtil {
         // one-line headline agents/UI can show without replaying the stream.
         val aiSummary = sorted.reverse.find(_.aiSummary != null).map(_.aiSummary).orNull
 
+        // The scratch-destination result (written by ScratchLoader after the
+        // object landed) is copied onto the rollup so the caller reads the
+        // pointer and first page of rows off the status it already polls.
+        // Absent on every non-scratch job — the fields stay null/omitted.
+        val scratch = sorted.reverse.find(_.scratchResult != null).map(_.scratchResult)
+
         val (status, lastErr) =
             if (errorEvent.isDefined)
                 ("error", PipelineJobError(errorEvent.get.processName, errorEvent.get.description, aiSummary))
@@ -161,7 +167,12 @@ object PipelineStatusUtil {
             startedAt = first.dateTime,
             lastEventAt = last.dateTime,
             elapsed = finalElapsed,
-            lastError = lastErr
+            lastError = lastErr,
+            resultUri = scratch.map(_.resultUri).orNull,
+            resultRowCount = scratch.map(r => java.lang.Long.valueOf(r.resultRowCount)).orNull,
+            resultExpiresAt = scratch.map(_.resultExpiresAt).orNull,
+            resultPreview = scratch.map(_.resultPreview).orNull,
+            resultTruncated = scratch.map(r => java.lang.Boolean.valueOf(r.resultTruncated)).orNull
         )
     }
 

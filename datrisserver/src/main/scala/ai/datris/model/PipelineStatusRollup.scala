@@ -22,7 +22,15 @@ case class PipelineJobRollup(
     startedAt: String,
     lastEventAt: String,
     elapsed: String,
-    lastError: PipelineJobError
+    lastError: PipelineJobError,
+    // Scratch-destination result (story: scratch-destination-server). Boxed and
+    // null on every job that carries no scratch result, so Gson omits them and
+    // existing clients see today's payload unchanged.
+    resultUri: String = null,
+    resultRowCount: java.lang.Long = null,
+    resultExpiresAt: String = null,
+    resultPreview: com.google.gson.JsonArray = null,
+    resultTruncated: java.lang.Boolean = null
 )
 
 case class PipelineStatusRollup(

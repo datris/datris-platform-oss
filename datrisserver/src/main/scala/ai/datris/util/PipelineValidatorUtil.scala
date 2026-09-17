@@ -63,6 +63,12 @@ object PipelineValidatorUtil {
             throw new DatrisException("For unstructured files, the 'source.fileAttributes.unstructuredAttributes.fileExtension' cannot be null")
         if (config.destination == null)
             throw new DatrisException("For unstructured files, the 'destination' cannot be null")
+        // Scratch results are JSON-lines records; there is no record shape for a
+        // PDF or an image, so unstructured sources cannot land in scratch.
+        if (config.destination.scratch != null)
+            throw new DatrisException(
+                "For unstructured files, a 'scratch' destination is not supported (structured and semi-structured sources only); use a vector database or object store destination"
+            )
         // Unstructured files can go to objectStore or qdrant
         if (
             config.destination.objectStore == null && config.destination.qdrant == null && config.destination.weaviate == null && config.destination
@@ -83,6 +89,28 @@ object PipelineValidatorUtil {
         // Destination config
         if (config.destination == null)
             throw new DatrisException("The 'destination' section must exist")
+
+        // Destination scratch: a run lands as one JSON-lines object under
+        // `_scratch/<pipeline>/` for the caller to read back off the run status.
+        // Exclusive — the result is a throwaway answer, not a copy of something
+        // also landed elsewhere, and never catalogued or in lineage, so a second
+        // destination beside it would be invisible to those views.
+        if (config.destination.scratch != null) {
+            val others = Seq(
+                config.destination.database,
+                config.destination.objectStore,
+                config.destination.restEndpoint,
+                config.destination.kafka,
+                config.destination.activeMQ,
+                config.destination.qdrant,
+                config.destination.weaviate,
+                config.destination.pgvector,
+                config.destination.milvus,
+                config.destination.chroma
+            )
+            if (others.exists(_ != null))
+                throw new DatrisException("A 'scratch' destination cannot be combined with any other destination")
+        }
 
         // Used to determine if keyFields exist in the schema properties
         val schemaFieldNames = {

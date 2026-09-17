@@ -171,6 +171,15 @@ class StartupRunner extends ApplicationRunner {
     @Value("${tapMaxOutputMB:100}")
     var tapMaxOutputMB: Int = _
 
+    // Scratch destination: how many result rows ride inline on the run status
+    // (resultPreview) and how long a `_scratch/` object is retained before it
+    // may be swept (resultExpiresAt).
+    @Value("${scratchInlineRows:200}")
+    var scratchInlineRows: Int = _
+
+    @Value("${scratchRetentionHours:24}")
+    var scratchRetentionHours: Int = _
+
     @Value("${dateFormat:yyyy-MM-dd HH:mm:ss z}")
     var dateFormat: String = _
 
@@ -356,6 +365,8 @@ class StartupRunner extends ApplicationRunner {
             tapPromptTableName = environment + "-tap-prompt",
             tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
             tapMaxOutputMB = tapMaxOutputMB,
+            scratchInlineRows = scratchInlineRows,
+            scratchRetentionHours = scratchRetentionHours,
             dateFormat = dateFormat,
             dateTimezone = dateTimezone,
             postgresDatabase = postgresDatabase,

@@ -236,6 +236,12 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                 else None,
                 if (config.destination.chroma != null)
                     Some("chroma" -> runLoader("ChromaLoader")(new ChromaLoader(jobContextStamped).process()))
+                else None,
+                // Scratch has no lineage dataset (LineageService.datasets leaves
+                // it out on purpose), so recordRunLineage writes this output with
+                // datasetId = null — a run record, never a catalogued dataset.
+                if (config.destination.scratch != null)
+                    Some("scratch" -> runLoader("ScratchLoader")(new ScratchLoader(jobContextStamped).process()))
                 else None
             ).flatten
             loaderFutures = destinationFutures

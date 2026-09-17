@@ -57,13 +57,23 @@ case class Destination(
     pgvector: PGVectorConfig = null,
     milvus: MilvusConfig = null,
     chroma: ChromaConfig = null,
+    // Scratch result: the run lands as one JSON-lines object under
+    // `_scratch/<pipeline>/` in the built-in object store and hands the caller a
+    // pointer plus the first page of rows on the run status. Presence is the
+    // whole config. Exclusive — cannot be combined with any other destination
+    // (see PipelineValidatorUtil), never catalogued, never a lineage dataset.
+    scratch: ScratchConfig = null,
     // Which destination kind is the golden copy when a pipeline lands into more
     // than one (postgres | mongodb | snowflake | databricks | objectstore | kafka
-    // | activemq | qdrant | weaviate | pgvector | milvus | chroma). Ignored for a
-    // single destination (implicitly authoritative); absent with several ⇒ all
-    // "undeclared" in lineage until a human decides. Never inferred.
+    // | activemq | qdrant | weaviate | pgvector | milvus | chroma | scratch).
+    // Ignored for a single destination (implicitly authoritative); absent with
+    // several ⇒ all "undeclared" in lineage until a human decides. Never
+    // inferred. `scratch` is listed for completeness only: it is always alone.
     authoritative: String = null
 )
+
+/** `destination.scratch: {}` — empty on purpose; presence is the whole config. */
+case class ScratchConfig()
 
 case class QdrantConfig(
     collectionName: String,

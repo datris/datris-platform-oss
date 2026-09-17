@@ -105,7 +105,24 @@ class StatusUtil {
         send("end", "info", description, fix)
     }
 
-    private def send(state: String, code: String, description: String, fix: FixSuggestion = null, processNameOverride: Option[String] = None): Unit = {
+    /** Record a scratch-destination result pointer. Writes a normal info event
+      * whose description is readable in the detail view plus the structured
+      * ScratchResult, which PipelineStatusUtil.classifyJob copies onto the job
+      * rollup. Overridable, like info/warn/error, so loaders can be unit-tested
+      * without a status table. */
+    def scratchResult(result: ScratchResult): Unit = {
+        if (result == null) return
+        send("end", "info", "Scratch result: " + result.resultRowCount + " record(s) at " + result.resultUri, scratchResult = result)
+    }
+
+    private def send(
+        state: String,
+        code: String,
+        description: String,
+        fix: FixSuggestion = null,
+        processNameOverride: Option[String] = None,
+        scratchResult: ScratchResult = null
+    ): Unit = {
         state match {
             case "begin" | "processing" | "end" =>
             case _ => throw new InvalidParameterException("Invalid state. State must be one of the following: begin, processing, end")
@@ -126,7 +143,7 @@ class StatusUtil {
                 description
             )
 
-        writeToNoSQLDb(status, fix)
+        writeToNoSQLDb(status, fix, scratchResult)
 
         // Write to the logger
         val message = pipelineToken.getOrElse("") + ": " + description
@@ -143,7 +160,7 @@ class StatusUtil {
         }
     }
 
-    private def writeToNoSQLDb(status: Status, fix: FixSuggestion = null): Unit = {
+    private def writeToNoSQLDb(status: Status, fix: FixSuggestion = null, scratchResult: ScratchResult = null): Unit = {
         val gson = new Gson
         val nowTimestamp = new Timestamp(new Date().getTime)
         val nowInMillis = new Timestamp(new Date().getTime).getTime
@@ -274,7 +291,8 @@ class StatusUtil {
             nowInMillis,
             aiSummary = if (fix != null) fix.summary else null,
             aiDiagnosis = if (fix != null) fix.diagnosis else null,
-            aiSuggestion = if (fix != null) fix.suggestion else null
+            aiSuggestion = if (fix != null) fix.suggestion else null,
+            scratchResult = scratchResult
         )
 
         // Top-level `publisher_token` is the indexed read path used by

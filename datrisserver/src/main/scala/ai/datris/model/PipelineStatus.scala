@@ -22,7 +22,10 @@ case class PipelineStatus(
     // the full advisory text for the detail view.
     aiSummary: String = null,
     aiDiagnosis: String = null,
-    aiSuggestion: String = null
+    aiSuggestion: String = null,
+    // Scratch-destination result pointer, set only on the event ScratchLoader
+    // writes after landing the object (StatusUtil.scratchResult).
+    scratchResult: ScratchResult = null
 )
 
 case class PipelineStatusTable(
