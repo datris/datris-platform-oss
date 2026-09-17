@@ -26,6 +26,7 @@ The server-side report is also available at `GET /api/v1/doctor` for scripts. It
 | `vault.token_ttl` | The server's Vault token expires within 7 days (error), or a 10-year periodic token was clamped to Vault's default 32-day ceiling (warn) | Raise `max_lease_ttl` in the Vault config, recreate the vault container, restart the server |
 | `vault.ai_slots` | An AI slot secret is missing or lacks provider / endpoint / model / key | The exact `vault kv put` or `vault kv patch` |
 | `jdbc.mssql_driver` | A pipeline uses `type: mssql` but the driver is not bundled | Add the driver and rebuild, or change the source type |
+| `objectstore.bucket_overrides` | A pipeline overrides the built-in MinIO bucket and `DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST` is unset (warn), or a stored override falls outside the list you set and will be refused at run time (error) | Set the allowlist, or add the bucket / change the pipeline's `destinationBucketOverride` |
 | `ai.embedding_model` | The bundled embedding service is serving a different model than the embedding slot names, or Ollama hasn't pulled it | `ollama pull …` or align the slot with the served model |
 | `ai.model_reachable` | **Opt-in.** A chat or embedding slot's key is rejected, the model id is unknown, or the endpoint doesn't answer within 10 s | Fix the key / pick a current model in Configuration → AI Providers |
 | `disk.usage` | The disk holding the server or Docker's data root is ≥ 85% full (warn) or ≥ 95% (error) | Prune images and builder cache; inspect the pip-cache and object-store volumes |

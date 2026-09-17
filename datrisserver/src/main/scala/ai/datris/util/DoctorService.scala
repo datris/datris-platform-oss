@@ -114,6 +114,9 @@ object DoctorService {
         /** (pipelineName, source.databaseAttributes.type) for database-pull pipelines. */
         def pipelineSources(): List[(String, String)]
 
+        /** (pipelineName, provider, destinationBucketOverride) for objectStore pipelines with an override. */
+        def objectStoreBucketOverrides(): List[(String, String, String)]
+
         /** Plain GET → (status, body). Throws on connect/read failure. */
         def httpGet(url: String, timeoutMs: Int): (Int, String)
 
@@ -225,6 +228,41 @@ object DoctorService {
                     "pipeline(s) " + users.mkString(", ") + " use `type: mssql` but the MSSQL JDBC driver is not on the classpath",
                     "Add `com.microsoft.sqlserver % mssql-jdbc` to build.sbt and rebuild (see docs/ingestion/database-pull.mdx), or change the source type."
                 )
+        }
+    }
+
+    /** Pipelines whose `provider=minio` objectStore destination names a bucket
+      * other than the environment default. Without
+      * DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST any such pipeline can reach any
+      * bucket on the shared MinIO with the root credentials; with it set, a
+      * config stored before the list existed may now be refused at run time.
+      * `provider=s3` overrides are the customer's own bucket and are ignored. */
+    class ObjectStoreBucketOverrideCheck(probes: Probes) extends Check {
+        val id = "objectstore.bucket_overrides"
+        val startupSafe = true
+        def run(): CheckResult = {
+            val minio = probes.objectStoreBucketOverrides().collect {
+                case (name, provider, bucket) if bucket != null && (provider == null || provider.equalsIgnoreCase("minio")) => (name, bucket)
+            }
+            if (minio.isEmpty) return skip("no pipeline overrides the built-in MinIO bucket")
+            ObjectStoreSpark.bucketAllowlist match {
+                case None =>
+                    warn(
+                        "pipeline(s) " + minio.map { case (n, b) => n + " (" + b + ")" }.mkString(", ") +
+                            " override the built-in MinIO bucket and no allowlist is set",
+                        "Set " + ObjectStoreSpark.BucketAllowlistVariable + " (comma-separated buckets) in .env to restrict which MinIO buckets pipelines may target."
+                    )
+                case Some(allowed) =>
+                    val outside = minio.filterNot { case (_, b) => ObjectStoreSpark.bucketAllowed(b) }
+                    if (outside.isEmpty) ok(minio.size + " MinIO bucket override(s), all within " + ObjectStoreSpark.BucketAllowlistVariable)
+                    else
+                        error(
+                            "pipeline(s) " + outside.map { case (n, b) => n + " (" + b + ")" }.mkString(", ") +
+                                " target a MinIO bucket outside " + ObjectStoreSpark.BucketAllowlistVariable + " (" + allowed.toSeq.sorted.mkString(", ") +
+                                ") and will be refused at run time",
+                            "Add the bucket to " + ObjectStoreSpark.BucketAllowlistVariable + " or change the pipeline's destinationBucketOverride."
+                        )
+            }
         }
     }
 
@@ -468,6 +506,7 @@ object DoctorService {
             new VaultTokenTtlCheck(probes),
             new VaultAiSlotsCheck(probes, slots),
             new JdbcMssqlDriverCheck(probes),
+            new ObjectStoreBucketOverrideCheck(probes),
             new AiEmbeddingModelCheck(probes, slots, startup),
             new DiskUsageCheck(probes, Seq(System.getProperty("user.dir"), System.getProperty("java.io.tmpdir"))),
             new VersionSkewCheck(serverVersion, clients),
@@ -609,6 +648,17 @@ object DoctorService {
             } catch {
                 case e: Exception =>
                     logger.debug("pipeline scan for doctor failed: " + e.getMessage)
+                    Nil
+            }
+
+        def objectStoreBucketOverrides(): List[(String, String, String)] =
+            try {
+                PipelineConfigIO.readAll(DatrisEnvironment.values.pipelineTableName)
+                    .filter(c => c.destination != null && c.destination.objectStore != null && c.destination.objectStore.destinationBucketOverride != null)
+                    .map(c => (c.name, c.destination.objectStore.provider, c.destination.objectStore.destinationBucketOverride))
+            } catch {
+                case e: Exception =>
+                    logger.debug("objectStore override scan for doctor failed: " + e.getMessage)
                     Nil
             }
 

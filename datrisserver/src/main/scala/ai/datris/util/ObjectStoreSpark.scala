@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, ObjectStore}
+import ai.datris.model.{DatrisEnvironment, DatrisException, ObjectStore}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.FileSystem
 import org.apache.spark.sql.SparkSession
@@ -37,12 +37,54 @@ object ObjectStoreSpark {
       *  observe a change do not double-close the same cached filesystem. */
     private val evictionLock = new Object
 
+    /** Name of the operator variable restricting which built-in MinIO buckets
+      *  a `destinationBucketOverride` may target. */
+    val BucketAllowlistVariable = "DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST"
+
+    /** Comma-separated bucket allowlist for `provider=minio` overrides, read
+      *  from the `datris.objectStoreBucketAllowlist` system property (runtime
+      *  twin, so specs can set it) or DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST.
+      *  Entries are trimmed and empties dropped; unset or blank means the
+      *  feature is off (None) and every bucket is allowed. */
+    private[util] def bucketAllowlist: Option[Set[String]] =
+        sys.props.get("datris.objectStoreBucketAllowlist").orElse(sys.env.get(BucketAllowlistVariable))
+            .map(_.split(",").map(_.trim).filter(_.nonEmpty).toSet)
+            .filter(_.nonEmpty)
+
+    /** The environment default bucket `<env>-data`, or None when the
+      *  environment is not initialised (unit tests, early startup). */
+    private def environmentDefaultBucket: Option[String] =
+        scala.util.Try(DatrisEnvironment.current.environment + "-data").toOption
+
+    /** True when the allowlist is unset, when `bucket` is the environment
+      *  default bucket, or when the allowlist names it. The default bucket is
+      *  always implicitly allowed so an operator who lists only extra buckets
+      *  cannot lock themselves out of their own environment. */
+    def bucketAllowed(bucket: String, defaultBucket: Option[String] = environmentDefaultBucket): Boolean =
+        bucketAllowlist match {
+            case None => true
+            case Some(allowed) => defaultBucket.contains(bucket) || allowed.contains(bucket)
+        }
+
+    /** Rejection message for a `provider=minio` override outside the allowlist —
+      *  shared by the validator (save time) and resolveBucket (run/query/delete). */
+    def bucketNotAllowedMessage(bucket: String): String =
+        "'destination.objectStore.destinationBucketOverride' bucket '" + bucket + "' is not in " + BucketAllowlistVariable +
+            " (allowed: " + bucketAllowlist.map(_.toSeq.sorted.mkString(", ")).getOrElse("") + ")"
+
     /** Resolve the effective bucket for an objectStore destination — explicit
-      *  override if set, otherwise the environment default. */
+      *  override if set, otherwise the environment default. A `provider=minio`
+      *  override is re-checked against the allowlist here so a config saved
+      *  before the variable was set is still refused at run, query and delete
+      *  time; `provider=s3` overrides are the customer's own bucket and exempt. */
     def resolveBucket(objectStore: ObjectStore): String = {
-        if (objectStore.destinationBucketOverride != null)
-            objectStore.destinationBucketOverride
-        else
+        if (objectStore.destinationBucketOverride != null) {
+            val bucket = objectStore.destinationBucketOverride
+            val provider = Option(objectStore.provider).getOrElse("minio").toLowerCase
+            if (provider == "minio" && !bucketAllowed(bucket))
+                throw new DatrisException(bucketNotAllowedMessage(bucket))
+            bucket
+        } else
             DatrisEnvironment.current.environment + "-data"
     }
 
