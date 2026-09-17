@@ -83,7 +83,7 @@ object IcebergWriter {
         if (!exists) guardPrefix(conf, location)
 
         if (exists && mode == "ignore") {
-            val table = tables.load(location)
+            val table = loadChecked(tables, location)
             statusUtil.info("processing", "Iceberg table exists at " + location + "; writeMode ignore, nothing written")
             return resultOf(table.currentSnapshot())
         }
@@ -93,7 +93,7 @@ object IcebergWriter {
         var evolved: Seq[String] = Nil
         val table: Table =
             if (exists) {
-                val t = tables.load(location)
+                val t = loadChecked(tables, location)
                 evolved = evolveSchema(t, destSchema, statusUtil)
                 t
             } else
@@ -114,6 +114,7 @@ object IcebergWriter {
         }
 
         table.refresh()
+        assertTableLocation(table, location)
         val snapshot = table.currentSnapshot()
         val result = resultOf(snapshot)
         statusUtil.info(
@@ -185,6 +186,54 @@ object IcebergWriter {
         val cache = "spark.sql.catalog." + CacheCatalog
         if (spark.conf.getOption(cache).isEmpty)
             spark.conf.set(cache, classOf[SparkCachedTableCatalog].getName)
+    }
+
+    private def loadChecked(tables: HadoopTables, location: String): Table = {
+        val table = tables.load(location)
+        assertTableLocation(table, location)
+        table
+    }
+
+    /** Refuse a table whose metadata points somewhere other than the location
+      *  it was loaded from. A metadata.json planted under one prefix can claim
+      *  a `location` (and manifest lists) under another bucket or prefix, and
+      *  every read or write through the planted prefix would then silently
+      *  touch the other table. `table.location()` must normalise to the same
+      *  scheme, authority and path as `requested`, and the current snapshot's
+      *  manifest list must share its scheme and authority. Sibling of
+      *  `guardPrefix`, not a replacement for it. */
+    private[util] def assertTableLocation(table: Table, requested: String): Unit = {
+        val want = LocationParts(requested)
+        val have = LocationParts(table.location())
+        if (want != have)
+            throw new DatrisException(
+                "Iceberg table at " + requested + " has metadata pointing at a different location (" + table.location() +
+                    "); refusing to read or write it"
+            )
+        val snapshot = table.currentSnapshot()
+        if (snapshot != null && snapshot.manifestListLocation() != null) {
+            val manifests = LocationParts(snapshot.manifestListLocation())
+            if (manifests.scheme != want.scheme || manifests.authority != want.authority)
+                throw new DatrisException(
+                    "Iceberg table at " + requested + " has a snapshot whose manifest list lives elsewhere (" +
+                        snapshot.manifestListLocation() + "); refusing to read or write it"
+                )
+        }
+    }
+
+    /** Scheme + authority + path of a table location, normalised so that
+      *  `file:/x`, `file:///x` and `file:///x/` compare equal and
+      *  `s3a://bucket/prefix` keeps its bucket as the authority. */
+    private final case class LocationParts(scheme: String, authority: String, path: String)
+    private object LocationParts {
+        def apply(location: String): LocationParts = {
+            val uri = new Path(location).toUri
+            LocationParts(
+                Option(uri.getScheme).map(_.toLowerCase).getOrElse(""),
+                Option(uri.getAuthority).map(_.toLowerCase).getOrElse(""),
+                Option(uri.getPath).map(_.stripSuffix("/")).getOrElse("")
+            )
+        }
     }
 
     /** Refuse to create a table over a prefix that already holds non-Iceberg

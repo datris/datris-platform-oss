@@ -22,6 +22,18 @@ s3a://{bucket}/{prefixKey}
 
 The default bucket is `{environment}-data`. You can override this per pipeline with the `destinationBucketOverride` field.
 
+### Restricting bucket overrides
+
+By default the override is unrestricted: any pipeline can name any bucket on the built-in MinIO, which is reached with the platform's own MinIO credentials. On a shared MinIO that lets one pipeline read, overwrite, or `deleteBeforeWrite` another environment's data.
+
+To restrict it, set `DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST` in `.env` to a comma-separated list of the buckets pipelines may target:
+
+```
+DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST=analytics-data,archive-data
+```
+
+With the list set, saving a pipeline whose override is not listed is rejected, and a pipeline saved before the list existed is refused when it runs, is queried, or has its data deleted. The default bucket `{environment}-data` is always allowed even when not listed, so you cannot lock yourself out. Buckets on AWS S3 (`provider: s3`) are your own and are not checked. `datris doctor` reports pipelines that use an override without a list, and any stored override that falls outside the list you set.
+
 ## File Formats
 
 | Format    | Description                          |

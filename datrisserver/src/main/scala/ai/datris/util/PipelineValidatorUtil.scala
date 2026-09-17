@@ -7,10 +7,12 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.model._
 import org.quartz.CronExpression
+import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.JavaConverters._
 
 object PipelineValidatorUtil {
+    private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     /** Substitute well-known placeholder values that AISchemaUtil templates emit
       * (DATABASE_NAME, SCHEMA_NAME) with sensible runtime defaults from DatrisEnvironment.
@@ -226,6 +228,31 @@ object PipelineValidatorUtil {
                 if (config.destination.objectStore.endpoint != null && config.destination.objectStore.endpoint.toLowerCase.startsWith("http://"))
                     throw new DatrisException(
                         "When 'destination.objectStore.provider' is 's3', the 'endpoint' must use https:// (got: " + config.destination.objectStore.endpoint + ")"
+                    )
+                // A user-supplied S3 endpoint aims the server's own S3A client
+                // at whatever host it names, so it goes through the same SSRF
+                // guard as tap HTTP. provider=minio is the operator's global
+                // endpoint, not user-supplied, and is deliberately not checked.
+                if (config.destination.objectStore.endpoint != null && config.destination.objectStore.endpoint.nonEmpty)
+                    SsrfGuard.assertAllowed(config.destination.objectStore.endpoint)
+            }
+
+            // A provider=minio override targets the built-in MinIO with the
+            // global root credentials, so any pipeline could reach another
+            // environment's bucket. When DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST is
+            // set, only listed buckets (plus the environment default) pass; when
+            // it is unset, behaviour is unchanged and we recommend it once per
+            // save. provider=s3 is the customer's own bucket and is exempt.
+            // Runs BEFORE the existing-pipeline lookup.
+            if (provider.compareTo("minio") == 0 && config.destination.objectStore.destinationBucketOverride != null) {
+                val bucket = config.destination.objectStore.destinationBucketOverride
+                if (ObjectStoreSpark.bucketAllowlist.isDefined) {
+                    if (!ObjectStoreSpark.bucketAllowed(bucket))
+                        throw new DatrisException(ObjectStoreSpark.bucketNotAllowedMessage(bucket))
+                } else
+                    logger.warn(
+                        "Pipeline '" + config.name + "' uses destinationBucketOverride '" + bucket + "' on the built-in MinIO with no " +
+                            ObjectStoreSpark.BucketAllowlistVariable + " set; set it to restrict which buckets pipelines may target"
                     )
             }
 

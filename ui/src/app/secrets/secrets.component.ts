@@ -128,14 +128,12 @@ export class SecretsComponent implements OnInit {
     this.editing = true;
     this.saveError = '';
     this.saveSuccess = false;
-    // Copy current fields — sensitive values show as masked, user re-enters them.
-    // Skip the bookkeeping `_type` field; saveSecret preserves it.
+    // Copy current fields verbatim — a masked sensitive value is sent back as
+    // the mask and the server keeps the stored value. Skip the bookkeeping
+    // `_type` field; saveSecret preserves it.
     this.editFields = this.secretFields
       .filter(f => f.key !== '_type')
-      .map(f => ({
-        key: f.key,
-        value: f.value === '••••••••' ? '' : f.value
-      }));
+      .map(f => ({ key: f.key, value: f.value }));
   }
 
   cancelEdit(): void {
@@ -149,6 +147,13 @@ export class SecretsComponent implements OnInit {
   }
 
   removeEditField(index: number): void {
+    this.editFields.splice(index, 1);
+  }
+
+  // Explicit per-field removal: dropping the row omits the key from the PUT
+  // payload, which is how the server removes a field (omission = removal).
+  clearEditField(index: number): void {
+    if (index < 0 || index >= this.editFields.length) return;
     this.editFields.splice(index, 1);
   }
 

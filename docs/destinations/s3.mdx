@@ -38,7 +38,7 @@ If any of `accessKey`, `secretKey`, or `region` is missing, the write fails at r
 
 ### Rotating credentials
 
-To rotate or correct the keys, update the secret in the Secrets tab. The next run of any pipeline that uses that secret picks up the new keys; no restart is needed. A query against the same bucket that is already running at the moment the keys change can fail with "Filesystem closed" — re-run it.
+To rotate or correct the keys, update the secret in the Secrets tab. Fields you leave masked keep their current value, so you can change `region` or add `sessionToken` without re-entering `accessKey` and `secretKey`. The next run of any pipeline that uses that secret picks up the new keys; no restart is needed. A query against the same bucket that is already running at the moment the keys change can fail with "Filesystem closed" — re-run it.
 
 ## Configuration
 

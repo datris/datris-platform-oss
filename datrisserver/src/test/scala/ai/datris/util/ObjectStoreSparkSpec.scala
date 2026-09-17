@@ -5,11 +5,12 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.ObjectStore
-import org.scalatest.BeforeAndAfterEach
+import ai.datris.model.{DatrisException, ObjectStore}
+import org.apache.spark.sql.SparkSession
+import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import org.scalatest.funsuite.AnyFunSuite
 
-class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach {
+class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach with BeforeAndAfterAll {
 
     // The applied-fingerprint map is JVM-global; clear it so cases cannot leak into each other.
     override def beforeEach(): Unit = ObjectStoreSpark.resetAppliedFingerprints()
@@ -124,5 +125,165 @@ class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(!ObjectStoreSpark.credentialsChanged("bucket-a", original))
         ObjectStoreSpark.resetAppliedFingerprints()
         assert(!ObjectStoreSpark.credentialsChanged("bucket-a", rotated))
+    }
+
+    // ---- S3 endpoint SSRF guard in applyPerBucketConfig (story: objectstore-endpoint-ssrf-and-error-bodies, B1) ----
+    // Order pinned: `CredentialResolver.resolve(objectStore)` runs first, then
+    // the guard, then the `fs.s3a.bucket.<bucket>.endpoint` set (story step 2).
+    // For provider=s3 with credentialsSecret=null, resolve returns all-None
+    // without touching Vault or DatrisEnvironment (AWS default-chain fallback),
+    // so these fixtures reach the endpoint block with no secret store. Only the
+    // driver's hadoopConfiguration is needed, hence a real but minimal local
+    // SparkSession built lazily here and stopped in afterAll so
+    // IcebergWriterSpec's `getOrCreate` never inherits it.
+
+    private lazy val localSpark: SparkSession =
+        SparkSession.builder()
+            .master("local[1]")
+            .appName("ObjectStoreSparkSpec")
+            .config("spark.ui.enabled", "false")
+            .getOrCreate()
+    private var sparkStarted = false
+
+    private def sparkForGuard: SparkSession = { sparkStarted = true; localSpark }
+
+    override def afterAll(): Unit = {
+        if (sparkStarted) localSpark.stop()
+    }
+
+    private def withPrivateEgress[A](enabled: Boolean)(body: => A): A = {
+        val key = "datris.allowPrivateEgress"
+        val previous = sys.props.get(key)
+        if (enabled) sys.props(key) = "true" else sys.props -= key
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    private def s3Dest(endpoint: String, bucket: String): ObjectStore =
+        ObjectStore(prefixKey = "p", provider = "s3", destinationBucketOverride = bucket, endpoint = endpoint)
+
+    test("applyPerBucketConfig refuses a provider=s3 loopback endpoint and never sets it on the Hadoop conf") {
+        val bucket = "ssrf-loopback-bucket"
+        val spark = sparkForGuard
+        withPrivateEgress(enabled = false) {
+            val e = intercept[DatrisException] {
+                ObjectStoreSpark.applyPerBucketConfig(spark, bucket, s3Dest("https://127.0.0.1:9000", bucket))
+            }
+            assert(e.getMessage.contains("private, loopback, or link-local"), e.getMessage)
+        }
+        val set = spark.sparkContext.hadoopConfiguration.get(s"fs.s3a.bucket.$bucket.endpoint")
+        assert(set == null, s"the loopback endpoint must not reach the Hadoop conf, got: $set")
+    }
+
+    test("applyPerBucketConfig refuses a provider=s3 link-local (cloud metadata) endpoint") {
+        val bucket = "ssrf-metadata-bucket"
+        val spark = sparkForGuard
+        withPrivateEgress(enabled = false) {
+            intercept[DatrisException] {
+                ObjectStoreSpark.applyPerBucketConfig(spark, bucket, s3Dest("https://169.254.169.254", bucket))
+            }
+        }
+        assert(spark.sparkContext.hadoopConfiguration.get(s"fs.s3a.bucket.$bucket.endpoint") == null)
+    }
+
+    test("applyPerBucketConfig accepts a provider=s3 loopback endpoint when datris.allowPrivateEgress=true") {
+        val bucket = "ssrf-optin-bucket"
+        val spark = sparkForGuard
+        withPrivateEgress(enabled = true) {
+            ObjectStoreSpark.applyPerBucketConfig(spark, bucket, s3Dest("https://127.0.0.1:9000", bucket))
+        }
+        assert(spark.sparkContext.hadoopConfiguration.get(s"fs.s3a.bucket.$bucket.endpoint") == "https://127.0.0.1:9000")
+    }
+
+    // ---- MinIO bucket allowlist (story: objectstore-bucket-allowlist, B2) ----
+    // Seams pinned on ObjectStoreSpark:
+    //   private[util] def bucketAllowlist: Option[Set[String]]
+    //       reads `datris.objectStoreBucketAllowlist` (runtime twin of
+    //       DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST), comma-split, trimmed,
+    //       empties dropped; unset/empty => None (feature off).
+    //   def bucketAllowed(bucket: String, defaultBucket: Option[String] = <defensive env lookup>): Boolean
+    //       true when the list is unset, when bucket == defaultBucket, or when
+    //       the list contains it. The default argument resolves
+    //       `DatrisEnvironment.current.environment + "-data"` via Try so the
+    //       single-arg form is null-safe here, where the env is not initialised.
+    // resolveBucket re-checks a provider=minio override against the list;
+    // provider=s3 overrides are exempt. Fixtures always set the override so
+    // resolveBucket never touches DatrisEnvironment.current.
+
+    private def withBucketAllowlist[A](value: Option[String])(body: => A): A = {
+        val key = "datris.objectStoreBucketAllowlist"
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    test("bucketAllowlist: unset or blank is None; entries are trimmed and empties dropped") {
+        withBucketAllowlist(None) { assert(ObjectStoreSpark.bucketAllowlist.isEmpty) }
+        withBucketAllowlist(Some("")) { assert(ObjectStoreSpark.bucketAllowlist.isEmpty) }
+        withBucketAllowlist(Some(" , ")) { assert(ObjectStoreSpark.bucketAllowlist.isEmpty) }
+        withBucketAllowlist(Some(" team-a , team-b ,, ")) {
+            assert(ObjectStoreSpark.bucketAllowlist.contains(Set("team-a", "team-b")))
+        }
+    }
+
+    test("bucketAllowed: everything is allowed when the list is unset") {
+        withBucketAllowlist(None) {
+            assert(ObjectStoreSpark.bucketAllowed("anything"))
+            assert(ObjectStoreSpark.bucketAllowed("anything", None))
+        }
+    }
+
+    test("bucketAllowed: listed buckets and the environment default bucket pass, others do not") {
+        withBucketAllowlist(Some("team-a,team-b")) {
+            assert(ObjectStoreSpark.bucketAllowed("team-a"))
+            assert(ObjectStoreSpark.bucketAllowed("team-b", Some("unit-data")))
+            assert(ObjectStoreSpark.bucketAllowed("unit-data", Some("unit-data")), "<env>-data is implicitly allowed even when not listed")
+            assert(!ObjectStoreSpark.bucketAllowed("unit-data", None), "with no known env default, only the list applies")
+            assert(!ObjectStoreSpark.bucketAllowed("other-env-data"))
+            assert(!ObjectStoreSpark.bucketAllowed("other-env-data", Some("unit-data")))
+        }
+    }
+
+    test("resolveBucket returns a minio override unchanged when the allowlist is unset") {
+        withBucketAllowlist(None) {
+            assert(ObjectStoreSpark.resolveBucket(dest("p", "shared-bucket")) == "shared-bucket")
+        }
+    }
+
+    test("resolveBucket returns a listed minio override when the allowlist is set") {
+        withBucketAllowlist(Some("team-a,shared-bucket")) {
+            assert(ObjectStoreSpark.resolveBucket(dest("p", "shared-bucket")) == "shared-bucket")
+        }
+    }
+
+    test("resolveBucket throws for a non-listed minio override when the allowlist is set, naming the bucket and the variable") {
+        withBucketAllowlist(Some("team-a,team-b")) {
+            val e = intercept[DatrisException] { ObjectStoreSpark.resolveBucket(dest("p", "other-env-data")) }
+            assert(e.getMessage.contains("other-env-data"), e.getMessage)
+            assert(e.getMessage.contains("DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST"), e.getMessage)
+        }
+    }
+
+    test("destinationsOverlap compares buckets without the allowlist check, so a stale non-listed override on another pipeline does not throw") {
+        withBucketAllowlist(Some("listed")) {
+            assert(!ObjectStoreSpark.destinationsOverlap(dest("p", "listed"), dest("p", "not-listed")))
+        }
+    }
+
+    test("resolveBucket returns a provider=s3 override when the allowlist is set, even though it is not listed") {
+        withBucketAllowlist(Some("team-a")) {
+            val s3 = ObjectStore(prefixKey = "p", provider = "s3", destinationBucketOverride = "customer-owned-bucket")
+            assert(ObjectStoreSpark.resolveBucket(s3) == "customer-owned-bucket")
+        }
     }
 }

@@ -176,6 +176,7 @@ object ObjectStoreQueryUtil {
             return emptyResult(path, "iceberg")
         }
         val table = new HadoopTables(conf).load(path)
+        IcebergWriter.assertTableLocation(table, path)
         val snapshot = table.currentSnapshot()
         if (snapshot == null) {
             // Table created but nothing ever committed: no rows, no snapshot.

@@ -22,36 +22,9 @@ import scala.collection.JavaConverters._
 @RequestMapping(Array("/api/v1"))
 @RequiresRole(Array("admin"))
 class SecretsAPIController {
-    private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
-    // Substring markers in normalized field names (lowercased, underscores/hyphens
-    // stripped) that flag a field as carrying a credential value. Substring rather
-    // than exact-match because real-world field names commonly carry source/scope
-    // prefixes or suffixes — an exact-match list misses those variations and
-    // leaks the value.
-    //
-    // Mask aggressively: false positives (a field that's masked but the user
-    // wanted visible) are recoverable via the Edit flow; false negatives (a
-    // credential leaking in plain text on the Configuration screen) are not.
-    private val SENSITIVE_MARKERS = Seq(
-        "password",
-        "passwd",
-        "pwd",
-        "secret",
-        "token",
-        "key",
-        "credential",
-        "signature",
-        "bearer",
-        "private"
-    )
+    import SecretsAPIController.{isSensitive, mergeIncoming}
 
-    // Fields whose normalized name pattern-matches a SENSITIVE_MARKER but are
-    // platform-injected bookkeeping/metadata, not the credential itself. Keep
-    // this list tight — add only for fields the platform itself writes (not
-    // user-supplied field names).
-    private val ALWAYS_PLAIN = Set(
-        "createdbykeylabel" // matches "key" but stores a label, not a credential value
-    )
+    private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
 
     private val LOCKED_AI_SLOTS_ON_TRIAL = Set("ai-primary", "codegen", "embedding")
 
@@ -228,31 +201,14 @@ class SecretsAPIController {
                 val scopeContext = if (effectiveType.nonEmpty) Map("_type" -> effectiveType)
                 else Map.empty[String, String]
                 CapabilityCheck.assertScope(request, "secret", "write", scopeContext)
-                val incoming = new java.util.LinkedHashMap[String, Object]()
-                json.entrySet().asScala.foreach { entry =>
-                    val value = entry.getValue
-                    if (value.isJsonPrimitive) {
-                        val key = entry.getKey
-                        val strValue = value.getAsString
-                        if (isSensitive(key) && strValue == "••••••••") {
-                            // Masked placeholder ⇒ preserve existing value at this path (if any).
-                            existing.get(key).filter(_.nonEmpty).foreach(v => incoming.put(key, v))
-                        } else {
-                            incoming.put(key, strValue)
-                        }
-                    }
-                }
 
-                // The shared per-provider key store is MERGE-only: each field is an
-                // independent provider's key, so a partial update (e.g. an API or
-                // MCP caller adding one provider's key) must never drop the other
-                // providers' keys. Every other secret keeps replace semantics —
-                // their fields form one coherent config where omission means removal.
-                if (name == "ai-keys") {
-                    existing.foreach { case (k, v) =>
-                        if (!incoming.containsKey(k) && v.nonEmpty) incoming.put(k, v)
-                    }
+                // Merge the request body against the stored secret (mask / empty
+                // preserves a stored sensitive value; ai-keys merges omitted keys
+                // back). See the companion object's mergeIncoming.
+                val primitiveEntries = json.entrySet().asScala.toSeq.collect {
+                    case entry if entry.getValue.isJsonPrimitive => entry.getKey -> entry.getValue.getAsString
                 }
+                val incoming = mergeIncoming(name, existing.toMap, primitiveEntries)
 
                 // Special-case the codegen secret: if the request omits or blanks out apiKey,
                 // copy it from the AI primary secret at {env}/ai-primary. This lets the UI
@@ -399,12 +355,6 @@ class SecretsAPIController {
         }
     }
 
-    private def isSensitive(fieldName: String): Boolean = {
-        val normalized = fieldName.toLowerCase.replaceAll("[_-]", "")
-        if (ALWAYS_PLAIN.contains(normalized)) false
-        else SENSITIVE_MARKERS.exists(marker => normalized.contains(marker))
-    }
-
     /** Copy a new UI-identity key value into the `ui` slot of oss/api-keys so
       * the auth layer recognizes it. Other labels in the map are preserved
       * (we read, update one slot, write back). Called when the operator saves
@@ -419,5 +369,106 @@ class SecretsAPIController {
         updated.put("ui", newValue)
         SecretsUtil.writeSecret(apiKeysPath, updated)
         logger.info("PUT /secrets/ui-api-key: mirrored value into " + apiKeysPath + " under label 'ui'")
+    }
+}
+
+object SecretsAPIController {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[SecretsAPIController])
+
+    private val MASK = "••••••••"
+
+    // Substring markers in normalized field names (lowercased, underscores/hyphens
+    // stripped) that flag a field as carrying a credential value. Substring rather
+    // than exact-match because real-world field names commonly carry source/scope
+    // prefixes or suffixes — an exact-match list misses those variations and
+    // leaks the value.
+    //
+    // Mask aggressively: false positives (a field that's masked but the user
+    // wanted visible) are recoverable via the Edit flow; false negatives (a
+    // credential leaking in plain text on the Configuration screen) are not.
+    private val SENSITIVE_MARKERS = Seq(
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "key",
+        "credential",
+        "signature",
+        "bearer",
+        "private"
+    )
+
+    // Fields whose normalized name pattern-matches a SENSITIVE_MARKER but are
+    // platform-injected bookkeeping/metadata, not the credential itself. Keep
+    // this list tight — add only for fields the platform itself writes (not
+    // user-supplied field names).
+    private val ALWAYS_PLAIN = Set(
+        "createdbykeylabel" // matches "key" but stores a label, not a credential value
+    )
+
+    private[api] def isSensitive(fieldName: String): Boolean = {
+        val normalized = fieldName.toLowerCase.replaceAll("[_-]", "")
+        if (ALWAYS_PLAIN.contains(normalized)) false
+        else SENSITIVE_MARKERS.exists(marker => normalized.contains(marker))
+    }
+
+    /** Merge a PUT body against the secret currently stored at the path.
+      *
+      * `existing` is the stored secret (empty when none); `incoming` is the
+      * request body's primitive entries, in order. Returns the map handed to
+      * SecretsUtil.writeSecret BEFORE the codegen apiKey fallback,
+      * provider-change clearing and owner-tagging steps in putSecret.
+      *
+      * For a sensitive key, an incoming value that is the mask OR empty/blank
+      * preserves a stored non-empty value — the Secrets tab (and API callers)
+      * send fields they did not touch back as the mask, and an empty box must
+      * never wipe a credential. A mask with nothing stored writes nothing for
+      * that key. Non-sensitive keys are written verbatim, including "".
+      * Omission means removal for every secret except `ai-keys`.
+      *
+      * `ai-keys` carve-out: every field in the shared per-provider key store is
+      * a credential, so the mask preserves the stored value for ANY field (no
+      * marker check). An empty/blank value is written verbatim there — it is the
+      * explicit clear, and the only removal path for a merge-only secret (the
+      * Configuration tab's Azure auth-mode switch depends on it).
+      */
+    private[api] def mergeIncoming(
+        name: String,
+        existing: Map[String, String],
+        incoming: Seq[(String, String)]
+    ): java.util.LinkedHashMap[String, Object] = {
+        val result = new java.util.LinkedHashMap[String, Object]()
+        val isAiKeys = name == "ai-keys"
+        incoming.foreach { case (key, strValue) =>
+            val preserves =
+                if (isAiKeys) strValue == MASK
+                else isSensitive(key) && (strValue == MASK || strValue.trim.isEmpty)
+            if (preserves) {
+                existing.get(key).filter(_.nonEmpty) match {
+                    case Some(stored) =>
+                        result.put(key, stored)
+                        logger.info("PUT /secrets/" + name + ": preserved stored value for field '" + key + "'")
+                    case None =>
+                        // Nothing to preserve: the mask writes nothing; an empty
+                        // string is written as sent.
+                        if (strValue != MASK) result.put(key, strValue)
+                }
+            } else {
+                result.put(key, strValue)
+            }
+        }
+
+        // The shared per-provider key store is MERGE-only: each field is an
+        // independent provider's key, so a partial update (e.g. an API or
+        // MCP caller adding one provider's key) must never drop the other
+        // providers' keys. Every other secret keeps replace semantics —
+        // their fields form one coherent config where omission means removal.
+        if (name == "ai-keys") {
+            existing.foreach { case (k, v) =>
+                if (!result.containsKey(k) && v.nonEmpty) result.put(k, v)
+            }
+        }
+        result
     }
 }
