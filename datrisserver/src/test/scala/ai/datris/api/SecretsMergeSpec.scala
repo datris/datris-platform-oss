@@ -55,20 +55,13 @@ class SecretsMergeSpec extends AnyFunSuite {
     )
 
     test("mask preserves a stored sensitive value") {
-        val out = merge("throwaway-s3", storedS3,
-            "AWS_ACCESS_KEY_ID" -> Mask,
-            "AWS_SECRET_ACCESS_KEY" -> Mask,
-            "_type" -> "tap")
+        val out = merge("throwaway-s3", storedS3, "AWS_ACCESS_KEY_ID" -> Mask, "AWS_SECRET_ACCESS_KEY" -> Mask, "_type" -> "tap")
         assert(out("AWS_ACCESS_KEY_ID") == "AKIA_STORED_ID", out.toString)
         assert(out("AWS_SECRET_ACCESS_KEY") == "stored-secret-value", out.toString)
     }
 
     test("empty string preserves a stored non-empty sensitive value") {
-        val out = merge("throwaway-s3", storedS3,
-            "AWS_ACCESS_KEY_ID" -> "",
-            "AWS_SECRET_ACCESS_KEY" -> "",
-            "REGION" -> "us-east-1",
-            "_type" -> "tap")
+        val out = merge("throwaway-s3", storedS3, "AWS_ACCESS_KEY_ID" -> "", "AWS_SECRET_ACCESS_KEY" -> "", "REGION" -> "us-east-1", "_type" -> "tap")
         assert(out("AWS_ACCESS_KEY_ID") == "AKIA_STORED_ID", "empty must not blank the stored key: " + out)
         assert(out("AWS_SECRET_ACCESS_KEY") == "stored-secret-value", "empty must not blank the stored secret: " + out)
         assert(out("REGION") == "us-east-1")
@@ -97,9 +90,7 @@ class SecretsMergeSpec extends AnyFunSuite {
     }
 
     test("an omitted key is absent from the result for a non-ai-keys secret") {
-        val out = merge("throwaway-s3", storedS3,
-            "AWS_SECRET_ACCESS_KEY" -> Mask,
-            "_type" -> "tap")
+        val out = merge("throwaway-s3", storedS3, "AWS_SECRET_ACCESS_KEY" -> Mask, "_type" -> "tap")
         assert(!out.contains("AWS_ACCESS_KEY_ID"), "omission must mean removal: " + out)
         assert(out("AWS_SECRET_ACCESS_KEY") == "stored-secret-value")
         assert(out("_type") == "tap")
@@ -120,11 +111,21 @@ class SecretsMergeSpec extends AnyFunSuite {
         assert(!out.contains("openai"), out.toString)
     }
 
+    test("ai-keys carve-out: empty string clears a stored key and the mask preserves any field") {
+        // Story amendment: in the shared per-provider key store an explicit ""
+        // is the only removal path (omission merges back), and the Configuration
+        // tab's Azure auth-mode switch relies on it; the mask preserves the
+        // stored value for ANY field, marker or not.
+        val existing = Map("azureApiKey" -> "azure-stored", "awsRegion" -> "us-east-1", "anthropicApiKey" -> "sk-ant-stored")
+        val out = merge("ai-keys", existing, "azureApiKey" -> "", "awsRegion" -> Mask)
+        assert(out.contains("azureApiKey"), out.toString)
+        assert(out("azureApiKey") == "", "empty must clear an ai-keys field: " + out)
+        assert(out("awsRegion") == "us-east-1", "mask must preserve a non-marker ai-keys field: " + out)
+        assert(out("anthropicApiKey") == "sk-ant-stored", out.toString)
+    }
+
     test("a non-sensitive key (REGION) sent as empty string is written as empty string") {
-        val out = merge("throwaway-s3", storedS3 + ("REGION" -> "us-east-1"),
-            "AWS_ACCESS_KEY_ID" -> Mask,
-            "AWS_SECRET_ACCESS_KEY" -> Mask,
-            "REGION" -> "")
+        val out = merge("throwaway-s3", storedS3 + ("REGION" -> "us-east-1"), "AWS_ACCESS_KEY_ID" -> Mask, "AWS_SECRET_ACCESS_KEY" -> Mask, "REGION" -> "")
         assert(out.contains("REGION"), out.toString)
         assert(out("REGION") == "", "non-sensitive empty must be written verbatim: " + out)
         assert(out("AWS_SECRET_ACCESS_KEY") == "stored-secret-value")
