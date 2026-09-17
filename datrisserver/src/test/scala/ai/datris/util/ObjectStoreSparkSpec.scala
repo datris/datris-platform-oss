@@ -197,4 +197,87 @@ class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach with Befo
         }
         assert(spark.sparkContext.hadoopConfiguration.get(s"fs.s3a.bucket.$bucket.endpoint") == "https://127.0.0.1:9000")
     }
+
+    // ---- MinIO bucket allowlist (story: objectstore-bucket-allowlist, B2) ----
+    // Seams pinned on ObjectStoreSpark:
+    //   private[util] def bucketAllowlist: Option[Set[String]]
+    //       reads `datris.objectStoreBucketAllowlist` (runtime twin of
+    //       DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST), comma-split, trimmed,
+    //       empties dropped; unset/empty => None (feature off).
+    //   def bucketAllowed(bucket: String, defaultBucket: Option[String] = <defensive env lookup>): Boolean
+    //       true when the list is unset, when bucket == defaultBucket, or when
+    //       the list contains it. The default argument resolves
+    //       `DatrisEnvironment.current.environment + "-data"` via Try so the
+    //       single-arg form is null-safe here, where the env is not initialised.
+    // resolveBucket re-checks a provider=minio override against the list;
+    // provider=s3 overrides are exempt. Fixtures always set the override so
+    // resolveBucket never touches DatrisEnvironment.current.
+
+    private def withBucketAllowlist[A](value: Option[String])(body: => A): A = {
+        val key = "datris.objectStoreBucketAllowlist"
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    test("bucketAllowlist: unset or blank is None; entries are trimmed and empties dropped") {
+        withBucketAllowlist(None) { assert(ObjectStoreSpark.bucketAllowlist.isEmpty) }
+        withBucketAllowlist(Some("")) { assert(ObjectStoreSpark.bucketAllowlist.isEmpty) }
+        withBucketAllowlist(Some(" , ")) { assert(ObjectStoreSpark.bucketAllowlist.isEmpty) }
+        withBucketAllowlist(Some(" team-a , team-b ,, ")) {
+            assert(ObjectStoreSpark.bucketAllowlist.contains(Set("team-a", "team-b")))
+        }
+    }
+
+    test("bucketAllowed: everything is allowed when the list is unset") {
+        withBucketAllowlist(None) {
+            assert(ObjectStoreSpark.bucketAllowed("anything"))
+            assert(ObjectStoreSpark.bucketAllowed("anything", None))
+        }
+    }
+
+    test("bucketAllowed: listed buckets and the environment default bucket pass, others do not") {
+        withBucketAllowlist(Some("team-a,team-b")) {
+            assert(ObjectStoreSpark.bucketAllowed("team-a"))
+            assert(ObjectStoreSpark.bucketAllowed("team-b", Some("unit-data")))
+            assert(ObjectStoreSpark.bucketAllowed("unit-data", Some("unit-data")), "<env>-data is implicitly allowed even when not listed")
+            assert(!ObjectStoreSpark.bucketAllowed("unit-data", None), "with no known env default, only the list applies")
+            assert(!ObjectStoreSpark.bucketAllowed("other-env-data"))
+            assert(!ObjectStoreSpark.bucketAllowed("other-env-data", Some("unit-data")))
+        }
+    }
+
+    test("resolveBucket returns a minio override unchanged when the allowlist is unset") {
+        withBucketAllowlist(None) {
+            assert(ObjectStoreSpark.resolveBucket(dest("p", "shared-bucket")) == "shared-bucket")
+        }
+    }
+
+    test("resolveBucket returns a listed minio override when the allowlist is set") {
+        withBucketAllowlist(Some("team-a,shared-bucket")) {
+            assert(ObjectStoreSpark.resolveBucket(dest("p", "shared-bucket")) == "shared-bucket")
+        }
+    }
+
+    test("resolveBucket throws for a non-listed minio override when the allowlist is set, naming the bucket and the variable") {
+        withBucketAllowlist(Some("team-a,team-b")) {
+            val e = intercept[DatrisException] { ObjectStoreSpark.resolveBucket(dest("p", "other-env-data")) }
+            assert(e.getMessage.contains("other-env-data"), e.getMessage)
+            assert(e.getMessage.contains("DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST"), e.getMessage)
+        }
+    }
+
+    test("resolveBucket returns a provider=s3 override when the allowlist is set, even though it is not listed") {
+        withBucketAllowlist(Some("team-a")) {
+            val s3 = ObjectStore(prefixKey = "p", provider = "s3", destinationBucketOverride = "customer-owned-bucket")
+            assert(ObjectStoreSpark.resolveBucket(s3) == "customer-owned-bucket")
+        }
+    }
 }

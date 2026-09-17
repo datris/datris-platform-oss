@@ -34,13 +34,16 @@ class DoctorServiceSpec extends AnyFunSuite {
         var disk: Map[String, (Long, Long)] = Map("/srv" -> (100L, 50L)),
         var chat: Seq[(String, AIConfig)] = Nil,
         var chatResponses: Map[String, (Int, String)] = Map.empty,
-        var keyStoreResolves: Boolean = false
+        var keyStoreResolves: Boolean = false,
+        var overrides: List[(String, String, String)] = Nil
     ) extends Probes {
         def vaultLookupSelf(): Option[Map[String, String]] = lookup
         def secret(name: String): Option[Map[String, String]] = secrets.get(name)
         def apiKeyResolves(provider: String, rawKey: String): Boolean = keyStoreResolves
         def classPresent(className: String): Boolean = classes.contains(className)
         def pipelineSources(): List[(String, String)] = pipelines
+        /** (pipelineName, provider, destinationBucketOverride) for objectStore pipelines with an override. */
+        def objectStoreBucketOverrides(): List[(String, String, String)] = overrides
         def httpGet(url: String, timeoutMs: Int): (Int, String) =
             http.getOrElse(url, throw new java.net.ConnectException("Connection refused: " + url))
         def diskUsage(path: String): Option[(Long, Long)] = disk.get(path)
@@ -119,6 +122,76 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(!r.detail.contains("orders"))
         p.classes = Set("com.microsoft.sqlserver.jdbc.SQLServerDriver")
         assert(new JdbcMssqlDriverCheck(p).run().status == "ok")
+    }
+
+    // 3b. objectstore.bucket_overrides (story: objectstore-bucket-allowlist)
+    // Seams pinned: Probes.objectStoreBucketOverrides(): List[(pipeline, provider, bucket)],
+    // class ObjectStoreBucketOverrideCheck(probes) with id "objectstore.bucket_overrides"
+    // and startupSafe = true, reading the same allowlist as the validator via the
+    // `datris.objectStoreBucketAllowlist` system property (twin of
+    // DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST), set/cleared here with try/finally.
+
+    private val allowlistVariable = "DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST"
+
+    private def withBucketAllowlist[A](value: Option[String])(body: => A): A = {
+        val key = "datris.objectStoreBucketAllowlist"
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    test("objectstore.bucket_overrides: id and startupSafe are pinned") {
+        val c = new ObjectStoreBucketOverrideCheck(new FakeProbes())
+        assert(c.id == "objectstore.bucket_overrides")
+        assert(c.startupSafe)
+    }
+
+    test("objectstore.bucket_overrides: no minio overrides is a skip, allowlist set or not") {
+        withBucketAllowlist(None) {
+            assert(new ObjectStoreBucketOverrideCheck(new FakeProbes()).run().status == "skip")
+            val s3Only = new FakeProbes(overrides = List(("customer", "s3", "customer-owned-bucket")))
+            assert(new ObjectStoreBucketOverrideCheck(s3Only).run().status == "skip", "provider=s3 overrides are exempt")
+        }
+        withBucketAllowlist(Some("team-a")) {
+            assert(new ObjectStoreBucketOverrideCheck(new FakeProbes()).run().status == "skip")
+        }
+    }
+
+    test("objectstore.bucket_overrides: allowlist unset with minio overrides warns, naming the pipelines and the variable") {
+        withBucketAllowlist(None) {
+            val p = new FakeProbes(overrides = List(("orders", "minio", "team-a"), ("events", "minio", "team-b"), ("customer", "s3", "customer-owned-bucket")))
+            val r = new ObjectStoreBucketOverrideCheck(p).run()
+            assert(r.status == "warn", r.detail)
+            assert(r.detail.contains("orders") && r.detail.contains("events"), r.detail)
+            assert(!r.detail.contains("customer"), "provider=s3 pipelines must not be listed: " + r.detail)
+            assert(r.remediation.contains(allowlistVariable), r.remediation)
+        }
+    }
+
+    test("objectstore.bucket_overrides: allowlist set and every minio override listed is ok") {
+        withBucketAllowlist(Some("team-a,team-b")) {
+            val p = new FakeProbes(overrides = List(("orders", "minio", "team-a"), ("events", "minio", "team-b"), ("customer", "s3", "not-listed")))
+            val r = new ObjectStoreBucketOverrideCheck(p).run()
+            assert(r.status == "ok", r.detail)
+        }
+    }
+
+    test("objectstore.bucket_overrides: allowlist set and a stored minio override outside it is an error naming the pipeline and bucket") {
+        withBucketAllowlist(Some("team-a")) {
+            val p = new FakeProbes(overrides = List(("orders", "minio", "team-a"), ("rogue", "minio", "other-env-data")))
+            val r = new ObjectStoreBucketOverrideCheck(p).run()
+            assert(r.status == "error", r.detail)
+            assert(r.detail.contains("rogue") && r.detail.contains("other-env-data"), r.detail)
+            assert(!r.detail.contains("orders"), "compliant pipelines must not be flagged: " + r.detail)
+            assert(r.remediation.contains(allowlistVariable), r.remediation)
+        }
     }
 
     // 4. ai.embedding_model
@@ -213,7 +286,8 @@ class DoctorServiceSpec extends AnyFunSuite {
     test("run: full mode includes every non-opt-in check, quick mode only the startup subset, ?probes=ai adds the AI probe") {
         val p = new FakeProbes()
         val full = DoctorService.run("full", Set.empty, Map("cli" -> "1.28.2"), p, slots, "1.28.2")
-        assert(full.checks.map(_.id) == Seq(
+        assert(full.checks.map(_.id).contains("objectstore.bucket_overrides"), "ObjectStoreBucketOverrideCheck must be registered in checks(...)")
+        assert(full.checks.map(_.id).filterNot(_ == "objectstore.bucket_overrides") == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",

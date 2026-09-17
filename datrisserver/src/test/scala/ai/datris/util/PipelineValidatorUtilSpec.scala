@@ -303,4 +303,67 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
             assert(!err.exists(_.contains(ssrfMarker)), s"https:// rule must fire first, got: $err")
         }
     }
+
+    // --- MinIO bucket allowlist (story: objectstore-bucket-allowlist, B2) ------
+    // Seam pinned: the allowlist is read from the `datris.objectStoreBucketAllowlist`
+    // system property (runtime twin of DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST), set
+    // and cleared with try/finally like the SSRF cases above. The rule sits in
+    // the objectStore block BEFORE the existing-pipeline lookup, so acceptance
+    // is again "NPE at the lookup" and rejection is a DatrisException naming the
+    // bucket and the variable. The `<env>-data` implicit allowance cannot be
+    // exercised through validate() here: DatrisEnvironment.current is null in
+    // unit tests and pinning a tenant env would send the lookup into Mongo. It
+    // is pinned at the seam in ObjectStoreSparkSpec and covered by the e2e pass.
+
+    private val allowlistVariable = "DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST"
+
+    private def withBucketAllowlist[A](value: Option[String])(body: => A): A = {
+        val key = "datris.objectStoreBucketAllowlist"
+        val previous = sys.props.get(key)
+        value match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+        try body
+        finally previous match {
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
+    }
+
+    private def minioOverrideConfig(bucket: String): PipelineConfig =
+        objectStoreConfig(s""""provider":"minio","destinationBucketOverride":"$bucket"""")
+
+    test("bucket allowlist unset: a provider=minio destinationBucketOverride validates (unchanged behaviour)") {
+        withBucketAllowlist(None) {
+            val outcome = validationOutcome(minioOverrideConfig("shared-bucket"))
+            assertReachedExistingPipelineLookup(outcome, "allowlist unset, minio override")
+        }
+    }
+
+    test("bucket allowlist set and the minio override is listed: validates") {
+        withBucketAllowlist(Some(" team-a , team-b ,, ")) {
+            val outcome = validationOutcome(minioOverrideConfig("team-b"))
+            assertReachedExistingPipelineLookup(outcome, "allowlist set, listed minio override")
+        }
+    }
+
+    test("bucket allowlist set and the minio override is not listed: rejected naming the bucket and the variable") {
+        withBucketAllowlist(Some("team-a,team-b")) {
+            val err = validationOutcome(minioOverrideConfig("other-env-data")) match {
+                case Some(e: DatrisException) => e.getMessage
+                case Some(other) => fail(s"non-listed minio bucket was not rejected: validate reached the existing-pipeline lookup ($other)")
+                case None => fail("non-listed minio bucket was not rejected: validate returned normally")
+            }
+            assert(err.contains("other-env-data"), s"message must name the bucket, got: $err")
+            assert(err.contains(allowlistVariable), s"message must name $allowlistVariable, got: $err")
+        }
+    }
+
+    test("bucket allowlist set: a provider=s3 destinationBucketOverride validates whether or not it is listed") {
+        withBucketAllowlist(Some("team-a")) {
+            val outcome = validationOutcome(objectStoreConfig(""""provider":"s3","destinationBucketOverride":"customer-owned-bucket""""))
+            assertReachedExistingPipelineLookup(outcome, "allowlist set, provider=s3 override not listed")
+        }
+    }
 }
