@@ -3,7 +3,7 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
-<Update label="v1.31.0" description="September 16, 2026">
+<Update label="v1.32.0" description="September 17, 2026">
   **Pipelines can now land data as Apache Iceberg tables.**
 
   - **Iceberg as an output format.** Set the file format to `iceberg` on an [object-store](/destinations/object-store) or [S3](/destinations/s3) destination and each run commits a real Iceberg table at the pipeline's location: Parquet data files plus the table metadata any Iceberg-aware engine reads. One atomic commit per run; a failed run leaves the previous snapshot intact. No new destination type, no extra service. See [Iceberg](/destinations/iceberg).

@@ -351,7 +351,7 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(readAll(location).count() == 1)
     }
 
-    // ---- v1.31.0 E2E: session created on another thread ---------------------
+    // ---- v1.32.0 E2E: session created on another thread ---------------------
     //
     // In the server the shared SparkSession is created by whichever thread
     // first asks for it (a Tomcat request thread after a restart, typically);

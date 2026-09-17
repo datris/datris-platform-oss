@@ -1,6 +1,6 @@
 # Release Notes
 
-## v1.31.0 — September 16, 2026
+## v1.32.0 — September 17, 2026
 
 **Pipelines can now land data as Apache Iceberg tables.**
 
