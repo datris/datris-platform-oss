@@ -42,6 +42,7 @@ class DoctorServiceSpec extends AnyFunSuite {
         def apiKeyResolves(provider: String, rawKey: String): Boolean = keyStoreResolves
         def classPresent(className: String): Boolean = classes.contains(className)
         def pipelineSources(): List[(String, String)] = pipelines
+
         /** (pipelineName, provider, destinationBucketOverride) for objectStore pipelines with an override. */
         def objectStoreBucketOverrides(): List[(String, String, String)] = overrides
         def httpGet(url: String, timeoutMs: Int): (Int, String) =
