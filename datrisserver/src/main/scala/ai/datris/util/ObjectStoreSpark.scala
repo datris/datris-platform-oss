@@ -88,6 +88,14 @@ object ObjectStoreSpark {
             DatrisEnvironment.current.environment + "-data"
     }
 
+    /** Effective bucket WITHOUT the allowlist check. Only for comparisons that
+      *  merely inspect another pipeline's config (`destinationsOverlap`): a stale
+      *  non-listed override on an unrelated pipeline must not abort the data
+      *  cleanup of a compliant pipeline being deleted. Never use for I/O. */
+    private[util] def resolveBucketUnchecked(o: ObjectStore): String =
+        if (o.destinationBucketOverride != null) o.destinationBucketOverride
+        else DatrisEnvironment.current.environment + "-data"
+
     /** Normalize a prefix key for path comparison and deletion: null-safe,
       *  trimmed, leading/trailing slashes stripped. */
     def normalizePrefix(prefixKey: String): String =
@@ -99,7 +107,7 @@ object ObjectStoreSpark {
       *  "city-forecasts" do NOT overlap; "city" vs "city/2026" do. An empty
       *  prefix spans the whole bucket, so it overlaps everything in it. */
     def destinationsOverlap(a: ObjectStore, b: ObjectStore): Boolean = {
-        if (resolveBucket(a) != resolveBucket(b)) return false
+        if (resolveBucketUnchecked(a) != resolveBucketUnchecked(b)) return false
         val pa = normalizePrefix(a.prefixKey)
         val pb = normalizePrefix(b.prefixKey)
         if (pa.isEmpty || pb.isEmpty) return true

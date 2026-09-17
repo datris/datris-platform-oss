@@ -274,6 +274,12 @@ class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach with Befo
         }
     }
 
+    test("destinationsOverlap compares buckets without the allowlist check, so a stale non-listed override on another pipeline does not throw") {
+        withBucketAllowlist(Some("listed")) {
+            assert(!ObjectStoreSpark.destinationsOverlap(dest("p", "listed"), dest("p", "not-listed")))
+        }
+    }
+
     test("resolveBucket returns a provider=s3 override when the allowlist is set, even though it is not listed") {
         withBucketAllowlist(Some("team-a")) {
             val s3 = ObjectStore(prefixKey = "p", provider = "s3", destinationBucketOverride = "customer-owned-bucket")

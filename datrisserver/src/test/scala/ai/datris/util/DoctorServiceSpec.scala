@@ -287,11 +287,11 @@ class DoctorServiceSpec extends AnyFunSuite {
     test("run: full mode includes every non-opt-in check, quick mode only the startup subset, ?probes=ai adds the AI probe") {
         val p = new FakeProbes()
         val full = DoctorService.run("full", Set.empty, Map("cli" -> "1.28.2"), p, slots, "1.28.2")
-        assert(full.checks.map(_.id).contains("objectstore.bucket_overrides"), "ObjectStoreBucketOverrideCheck must be registered in checks(...)")
-        assert(full.checks.map(_.id).filterNot(_ == "objectstore.bucket_overrides") == Seq(
+        assert(full.checks.map(_.id) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",
+            "objectstore.bucket_overrides",
             "ai.embedding_model",
             "disk.usage",
             "version.skew",
