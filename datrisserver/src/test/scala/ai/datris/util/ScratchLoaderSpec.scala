@@ -304,6 +304,36 @@ class ScratchLoaderSpec extends AnyFunSuite {
         assert(preview.get(1).getAsJsonObject.get("name").getAsString == "b")
     }
 
+    test("the preview is byte-capped and stays a strict prefix of the file") {
+        // A record that does not fit closes the preview for good, even when
+        // later records would fit: the preview must never skip a row.
+        val root = tmpRoot()
+        val status = new RecordingStatusUtil
+        val wide = "x" * 600
+        val rows = List("1,a", "2," + wide, "3,b", "4,c")
+        new ScratchLoader(ctx(status, csvData(rows), csvConfig()), ScratchLoader.Settings(root.toUri.toString.stripSuffix("/"), 200, 24, maxPreviewBytes = 500))
+            .process()
+        val result = status.result
+
+        assert(fileLines(root).size == 4, "the file still holds every row")
+        assert(result.resultRowCount == 4L)
+        val preview = previewArray(result)
+        assert(preview.size() == 1, s"preview must stop at the oversized record, got $preview")
+        assert(preview.get(0).getAsJsonObject.get("id").getAsString == "1")
+        assert(result.resultTruncated, "a byte-capped preview is truncated")
+
+        // An oversized FIRST record leaves the preview empty rather than starting at row 2
+        val root2 = tmpRoot()
+        val status2 = new RecordingStatusUtil
+        new ScratchLoader(
+            ctx(status2, csvData(List("1," + wide, "2,b")), csvConfig()),
+            ScratchLoader.Settings(root2.toUri.toString.stripSuffix("/"), 200, 24, maxPreviewBytes = 500)
+        ).process()
+        assert(fileLines(root2).size == 2)
+        assert(previewArray(status2.result).size() == 0)
+        assert(status2.result.resultTruncated)
+    }
+
     // --- delete-with-data prefix guard -------------------------------------------
 
     test("ScratchPaths.prefix refuses an empty pipeline segment") {

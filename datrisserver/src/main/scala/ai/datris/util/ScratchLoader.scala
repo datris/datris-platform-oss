@@ -55,11 +55,11 @@ object ScratchLoader {
     /** Where `_scratch/...` keys are written plus the two DatrisEnvironment
       * knobs. Production resolves `s3a://<env>-data`; specs pass a `file://`
       * directory, which a plain Hadoop Configuration resolves without Spark. */
-    case class Settings(rootUri: String, inlineRows: Int, retentionHours: Int)
+    case class Settings(rootUri: String, inlineRows: Int, retentionHours: Int, maxPreviewBytes: Int = DefaultMaxPreviewBytes)
 
     /** Byte ceiling on the inline preview so a wide row set cannot bloat the
       * status document (Mongo caps documents at 16 MB; keep well under). */
-    val MaxPreviewBytes: Int = 1024 * 1024
+    val DefaultMaxPreviewBytes: Int = 1024 * 1024
 
     def settingsFromEnvironment(): Settings = {
         val env = DatrisEnvironment.current
@@ -120,8 +120,12 @@ class ScratchLoader(jobContext: JobContext, settings: ScratchLoader.Settings) {
         val fs = path.getFileSystem(ScratchLoader.hadoopConfiguration(settings.rootUri))
         fs.setWriteChecksum(false)
 
+        // The preview is always a strict prefix of the file: it closes at the
+        // first record that would exceed the byte cap and never resumes, so a
+        // caller can page on from preview.size() with no hidden gap.
         val preview = new JsonArray()
         var previewBytes = 0L
+        var previewOpen = true
         var count = 0L
         val writer = new BufferedWriter(new OutputStreamWriter(fs.create(path, true), StandardCharsets.UTF_8))
         try {
@@ -129,12 +133,13 @@ class ScratchLoader(jobContext: JobContext, settings: ScratchLoader.Settings) {
                 writer.write(record)
                 writer.write('\n')
                 count += 1
-                if (preview.size() < settings.inlineRows) {
+                if (previewOpen && preview.size() < settings.inlineRows) {
                     val bytes = record.getBytes(StandardCharsets.UTF_8).length
-                    if (previewBytes + bytes <= ScratchLoader.MaxPreviewBytes) {
+                    if (previewBytes + bytes <= settings.maxPreviewBytes) {
                         preview.add(JsonParser.parseString(record))
                         previewBytes += bytes
-                    }
+                    } else
+                        previewOpen = false
                 }
             }
         } finally {
