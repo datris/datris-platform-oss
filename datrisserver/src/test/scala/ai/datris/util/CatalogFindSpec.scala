@@ -83,4 +83,15 @@ class CatalogFindSpec extends AnyFunSuite {
         assert(w.get("tool").getAsString == "search_weaviate")
         assert(w.getAsJsonObject("args").get("class_name").getAsString == "Documents")
     }
+
+    // ---- scratch destination (story: scratch-destination-server) ----
+
+    test("a scratch pipeline has no howToQuery hint and is not returned as a queryable dataset") {
+        assert(CatalogFind.howToQuery("p", LineageService.DatasetRef("scratch", Nil)) == null)
+        assert(CatalogFind.howToQuery("p", LineageService.DatasetRef("scratch", List("bucket" -> "unit-data", "prefix" -> "_scratch/p/"))) == null)
+        // renderHit derives locations/howToQuery from LineageService.datasets, so
+        // a scratch-only pipeline must surface no location at all.
+        val scratchOnly = PipelineConfig(name = "p", destination = Destination(scratch = ScratchConfig()))
+        assert(LineageService.datasets(scratchOnly).isEmpty)
+    }
 }

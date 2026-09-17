@@ -276,4 +276,18 @@ class LineageServiceSpec extends AnyFunSuite {
         assert(!pg.has("format"), s"non-objectstore nodes must not carry format: $pg")
         assert(!nodes("pipeline:ice").has("format"))
     }
+
+    // ---- scratch destination (story: scratch-destination-server) ----
+    // Scratch results are second-class: never a lineage dataset node.
+
+    test("a scratch destination produces no dataset node") {
+        val scratchOnly = pipeline("answer", catalog = "commerce", dest = Destination(scratch = ScratchConfig()))
+        assert(LineageService.datasets(scratchOnly).isEmpty, "a scratch-only pipeline must yield no DatasetRef")
+
+        val g = LineageService.build(List(tap("fetch", "answer", "commerce")), List(scratchOnly))
+        assert(g.nodes.map(_.id).contains("pipeline:answer"))
+        assert(!g.nodes.exists(_.nodeType == "dataset"), s"no dataset node may exist for scratch: ${g.nodes.map(_.id)}")
+        assert(!g.edges.exists(e => e.from == "pipeline:answer" && e.to.startsWith("dataset:")))
+        assert(!g.nodes.exists(_.id.contains("scratch")), s"nothing in the graph may be keyed on scratch: ${g.nodes.map(_.id)}")
+    }
 }

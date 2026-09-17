@@ -366,4 +366,66 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
             assertReachedExistingPipelineLookup(outcome, "allowlist set, provider=s3 override not listed")
         }
     }
+
+    // --- scratch destination (story: scratch-destination-server) --------------
+    // `destination.scratch: {}` lands the run as a JSON-lines object instead of
+    // a database/table. Structured and semi-structured sources only, never in
+    // combination with another destination, and the existing
+    // `source.schemaProperties` requirement still applies. The rejection cases
+    // use database/kafka companions (not objectStore) so they never reach the
+    // existing-pipeline lookup regardless of where the scratch block sits.
+
+    private def scratchConfig(source: String, schemaFields: String, extraDestination: String = "", schemaProperties: Boolean = true): PipelineConfig = {
+        val schema = if (schemaProperties) s""","schemaProperties":{"fields":[$schemaFields]}""" else ""
+        parse(
+            s"""{"name":"p",
+               |"source":{"fileAttributes":{$source}$schema},
+               |"destination":{"scratch":{}$extraDestination}}""".stripMargin
+        )
+    }
+
+    private val csvSource = """"csvAttributes":{}"""
+    private val csvSchema = """{"name":"id","type":"string"},{"name":"name","type":"string"}"""
+
+    test("scratch combined with another destination is rejected") {
+        val withDb = scratchConfig(
+            csvSource,
+            csvSchema,
+            extraDestination = ""","database":{"dbName":"datris","schema":"public","table":"t","usePostgres":true}"""
+        )
+        assert(withDb.destination.scratch != null, "fixture must parse the scratch destination")
+        val err = validationError(withDb)
+        assert(err.exists(m => m.contains("scratch") && m.toLowerCase.contains("combined")), s"expected the scratch-alone rule, got: $err")
+
+        val withKafka = scratchConfig(csvSource, csvSchema, extraDestination = ""","kafka":{"topic":"events"}""")
+        val err2 = validationError(withKafka)
+        assert(err2.exists(m => m.contains("scratch") && m.toLowerCase.contains("combined")), s"expected the scratch-alone rule, got: $err2")
+    }
+
+    test("scratch with an unstructured source is rejected") {
+        val cfg = scratchConfig(""""unstructuredAttributes":{"fileExtension":"pdf"}""", csvSchema)
+        assert(cfg.destination.scratch != null, "fixture must parse the scratch destination")
+        val err = validationError(cfg)
+        assert(err.exists(_.contains("scratch")), s"unstructured + scratch must be rejected by a message naming scratch, got: $err")
+    }
+
+    test("scratch without source.schemaProperties is rejected") {
+        val cfg = scratchConfig(csvSource, csvSchema, schemaProperties = false)
+        assert(cfg.destination.scratch != null, "fixture must parse the scratch destination")
+        assert(cfg.source.schemaProperties == null)
+        val err = validationError(cfg)
+        assert(err.exists(_.contains("source.schemaProperties")), s"expected the schemaProperties requirement, got: $err")
+    }
+
+    test("scratch alone on a CSV/JSON/XML source validates") {
+        val csv = scratchConfig(csvSource, csvSchema)
+        assert(csv.destination.scratch != null, "fixture must parse the scratch destination")
+        assert(validationError(csv).isEmpty, s"CSV + scratch must validate, got: ${validationError(csv)}")
+
+        val json = scratchConfig(""""jsonAttributes":{}""", """{"name":"_json","type":"string"}""")
+        assert(validationError(json).isEmpty, s"JSON + scratch must validate, got: ${validationError(json)}")
+
+        val xml = scratchConfig(""""xmlAttributes":{}""", """{"name":"_xml","type":"string"}""")
+        assert(validationError(xml).isEmpty, s"XML + scratch must validate, got: ${validationError(xml)}")
+    }
 }
