@@ -632,18 +632,15 @@ object PipelineValidatorUtil {
         }
 
         val source = config.source.copy(schemaProperties = sourceSchemaProperties, fileAttributes = fileAttributes)
-        val destination = Destination(
-            destinationSchemaProperties,
-            database,
-            objectStore,
-            config.destination.restEndpoint,
-            config.destination.kafka,
-            config.destination.activeMQ,
-            config.destination.qdrant,
-            config.destination.weaviate,
-            config.destination.pgvector,
-            config.destination.milvus,
-            config.destination.chroma
+        // copy(), not a positional rebuild: only the normalised fields change and
+        // every other destination field (scratch, authoritative, anything added
+        // later) passes through untouched. The positional form silently dropped
+        // `scratch`, so a REST-created scratch pipeline persisted as
+        // `"destination":{}` and ran with no loader at all.
+        val destination = config.destination.copy(
+            schemaProperties = destinationSchemaProperties,
+            database = database,
+            objectStore = objectStore
         )
 
         config.copy(source = source, destination = destination)

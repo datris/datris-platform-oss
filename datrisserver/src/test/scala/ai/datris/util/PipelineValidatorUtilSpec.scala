@@ -417,6 +417,31 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         assert(err.exists(_.contains("source.schemaProperties")), s"expected the schemaProperties requirement, got: $err")
     }
 
+    test("modify preserves destination.scratch") {
+        // The REST create path runs modify before persisting; a positional
+        // Destination rebuild there once dropped scratch, so the stored config
+        // was `"destination":{}` and the run dispatched no loader.
+        val cfg = scratchConfig(csvSource, csvSchema)
+        val out = PipelineValidatorUtil.modify(cfg)
+        assert(out.destination.scratch != null, "modify must carry destination.scratch through")
+        assert(out.destination.database == null && out.destination.objectStore == null)
+        assert(out.source.schemaProperties.fields.asScala.map(_.name).toList == List("id", "name"))
+        assert(new Gson().toJson(out.destination).contains("\"scratch\""), "persisted JSON must keep the scratch key")
+    }
+
+    test("modify preserves destination.authoritative") {
+        val cfg = parse(
+            """{"name":"p",
+              |"source":{"fileAttributes":{"csvAttributes":{}},"schemaProperties":{"fields":[{"name":"id","type":"string"}]}},
+              |"destination":{"authoritative":"postgres",
+              |"database":{"dbName":"datris","schema":"public","table":"t","usePostgres":true},
+              |"kafka":{"topic":"events"}}}""".stripMargin
+        )
+        val out = PipelineValidatorUtil.modify(cfg)
+        assert(out.destination.authoritative == "postgres", "modify must carry destination.authoritative through")
+        assert(out.destination.kafka != null && out.destination.database != null)
+    }
+
     test("scratch alone on a CSV/JSON/XML source validates") {
         val csv = scratchConfig(csvSource, csvSchema)
         assert(csv.destination.scratch != null, "fixture must parse the scratch destination")
