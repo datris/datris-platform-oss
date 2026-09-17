@@ -5,11 +5,12 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.ObjectStore
-import org.scalatest.BeforeAndAfterEach
+import ai.datris.model.{DatrisException, ObjectStore}
+import org.apache.spark.sql.SparkSession
+import org.scalatest.{BeforeAndAfterAll, BeforeAndAfterEach}
 import org.scalatest.funsuite.AnyFunSuite
 
-class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach {
+class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach with BeforeAndAfterAll {
 
     // The applied-fingerprint map is JVM-global; clear it so cases cannot leak into each other.
     override def beforeEach(): Unit = ObjectStoreSpark.resetAppliedFingerprints()
@@ -124,5 +125,76 @@ class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach {
         assert(!ObjectStoreSpark.credentialsChanged("bucket-a", original))
         ObjectStoreSpark.resetAppliedFingerprints()
         assert(!ObjectStoreSpark.credentialsChanged("bucket-a", rotated))
+    }
+
+    // ---- S3 endpoint SSRF guard in applyPerBucketConfig (story: objectstore-endpoint-ssrf-and-error-bodies, B1) ----
+    // Order pinned: `CredentialResolver.resolve(objectStore)` runs first, then
+    // the guard, then the `fs.s3a.bucket.<bucket>.endpoint` set (story step 2).
+    // For provider=s3 with credentialsSecret=null, resolve returns all-None
+    // without touching Vault or DatrisEnvironment (AWS default-chain fallback),
+    // so these fixtures reach the endpoint block with no secret store. Only the
+    // driver's hadoopConfiguration is needed, hence a real but minimal local
+    // SparkSession built lazily here and stopped in afterAll so
+    // IcebergWriterSpec's `getOrCreate` never inherits it.
+
+    private lazy val localSpark: SparkSession =
+        SparkSession.builder()
+            .master("local[1]")
+            .appName("ObjectStoreSparkSpec")
+            .config("spark.ui.enabled", "false")
+            .getOrCreate()
+    private var sparkStarted = false
+
+    private def sparkForGuard: SparkSession = { sparkStarted = true; localSpark }
+
+    override def afterAll(): Unit = {
+        if (sparkStarted) localSpark.stop()
+    }
+
+    private def withPrivateEgress[A](enabled: Boolean)(body: => A): A = {
+        val key = "datris.allowPrivateEgress"
+        val previous = sys.props.get(key)
+        if (enabled) sys.props(key) = "true" else sys.props -= key
+        try body
+        finally previous match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+    }
+
+    private def s3Dest(endpoint: String, bucket: String): ObjectStore =
+        ObjectStore(prefixKey = "p", provider = "s3", destinationBucketOverride = bucket, endpoint = endpoint)
+
+    test("applyPerBucketConfig refuses a provider=s3 loopback endpoint and never sets it on the Hadoop conf") {
+        val bucket = "ssrf-loopback-bucket"
+        val spark = sparkForGuard
+        withPrivateEgress(enabled = false) {
+            val e = intercept[DatrisException] {
+                ObjectStoreSpark.applyPerBucketConfig(spark, bucket, s3Dest("https://127.0.0.1:9000", bucket))
+            }
+            assert(e.getMessage.contains("private, loopback, or link-local"), e.getMessage)
+        }
+        val set = spark.sparkContext.hadoopConfiguration.get(s"fs.s3a.bucket.$bucket.endpoint")
+        assert(set == null, s"the loopback endpoint must not reach the Hadoop conf, got: $set")
+    }
+
+    test("applyPerBucketConfig refuses a provider=s3 link-local (cloud metadata) endpoint") {
+        val bucket = "ssrf-metadata-bucket"
+        val spark = sparkForGuard
+        withPrivateEgress(enabled = false) {
+            intercept[DatrisException] {
+                ObjectStoreSpark.applyPerBucketConfig(spark, bucket, s3Dest("https://169.254.169.254", bucket))
+            }
+        }
+        assert(spark.sparkContext.hadoopConfiguration.get(s"fs.s3a.bucket.$bucket.endpoint") == null)
+    }
+
+    test("applyPerBucketConfig accepts a provider=s3 loopback endpoint when datris.allowPrivateEgress=true") {
+        val bucket = "ssrf-optin-bucket"
+        val spark = sparkForGuard
+        withPrivateEgress(enabled = true) {
+            ObjectStoreSpark.applyPerBucketConfig(spark, bucket, s3Dest("https://127.0.0.1:9000", bucket))
+        }
+        assert(spark.sparkContext.hadoopConfiguration.get(s"fs.s3a.bucket.$bucket.endpoint") == "https://127.0.0.1:9000")
     }
 }

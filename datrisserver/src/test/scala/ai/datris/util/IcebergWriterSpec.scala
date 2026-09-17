@@ -544,4 +544,67 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(obj.has("snapshotId") && obj.get("snapshotId").getAsLong == w.snapshotId, obj.toString)
         assert(obj.has("snapshotTimestamp") && obj.get("snapshotTimestamp").getAsString.nonEmpty, obj.toString)
     }
+
+    // ---- Story objectstore-endpoint-ssrf-and-error-bodies, B4: table-location authority check ----
+    // CONDITIONAL: story step 8 says B4 is done only if steps 1-7 leave room in
+    // the session; if the implementer defers B4 these two cases stay red and the
+    // lead decides. After `HadoopTables.load(path)` (ObjectStoreQueryUtil.readIceberg
+    // and IcebergWriter.write's `exists` load), `table.location()` must normalise
+    // to the same scheme+authority+path as the requested location, and the
+    // current snapshot's manifest-list must share that scheme+authority;
+    // otherwise a DatrisException naming the mismatch. On file:// scheme and
+    // authority are always equal, so the planted mismatch is a PATH mismatch:
+    // a real table is written at A and its metadata/ copied verbatim under B,
+    // so B's metadata says `"location": A` and its manifest lists live under A.
+    // Today B loads fine and silently reads (and would write) A's data.
+
+    /** Write a real table at `<name>/a`, copy its metadata/ to `<name>/b`, return (a, b). */
+    private def plantRelocatedMetadata(name: String): (String, String) = {
+        val a = newLocation(name + "/a")
+        val b = newLocation(name + "/b")
+        write(df((1L, "east", 1.0), (2L, "west", 2.0)), a, "append")
+
+        val aMeta = java.nio.file.Paths.get(java.net.URI.create(a)).resolve("metadata")
+        val bMeta = java.nio.file.Paths.get(java.net.URI.create(b)).resolve("metadata")
+        Files.createDirectories(bMeta)
+        Files.list(aMeta).iterator().asScala.foreach { f =>
+            Files.copy(f, bMeta.resolve(f.getFileName.toString))
+        }
+        // Sanity: B has metadata only, no data/ of its own, and it loads with A's location.
+        assert(!Files.exists(java.nio.file.Paths.get(java.net.URI.create(b)).resolve("data")))
+        assert(loadTable(b).location().stripSuffix("/") == a, s"planting failed: expected B's metadata to claim location $a")
+        (a, b)
+    }
+
+    test("B4: readPath(iceberg) refuses a table whose metadata points at a different location") {
+        val (a, b) = plantRelocatedMetadata("authority-read")
+
+        val e = intercept[DatrisException] {
+            ObjectStoreQueryUtil.readPath(spark, b, "iceberg", 100)
+        }
+        val msg = e.getMessage
+        assert(msg.contains(b) || msg.contains(a), s"message must name the mismatching locations: $msg")
+    }
+
+    test("B4: IcebergWriter.write refuses an existing table whose metadata points at a different location") {
+        val (a, b) = plantRelocatedMetadata("authority-write")
+        val aSnapshotsBefore = snapshots(a).size
+
+        val e = intercept[DatrisException] {
+            write(df((3L, "north", 3.0)), b, "append")
+        }
+        val msg = e.getMessage
+        assert(msg.contains(b) || msg.contains(a), s"message must name the mismatching locations: $msg")
+        // Nothing may have been written through B into A's table.
+        assert(snapshots(a).size == aSnapshotsBefore, "a refused write must not commit to the real table")
+        assert(readAll(a).count() == 2)
+    }
+
+    test("B4: a normally-created file:// table passes the location check on read and write") {
+        val location = newLocation("authority-ok/t")
+        write(df((1L, "east", 1.0)), location, "append")
+        write(df((2L, "west", 2.0)), location, "append")
+        val result = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
+        assert(result.rows.size() == 2)
+    }
 }

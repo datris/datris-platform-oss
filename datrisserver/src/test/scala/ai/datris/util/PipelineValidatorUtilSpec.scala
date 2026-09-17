@@ -193,4 +193,114 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val config = parse("""{"name":"p","destination":{"database":{"dbName":"mydb","schema":"myschema"}}}""")
         assert(PipelineValidatorUtil.applyDefaults(config) eq config)
     }
+
+    // --- S3 endpoint SSRF guard (story: objectstore-endpoint-ssrf-and-error-bodies, B1) ------
+    // The guard is added in the provider=s3 block AFTER the existing https://
+    // check, which itself sits AFTER the destinationBucketOverride check. So the
+    // bucket sentinel above cannot prove the endpoint rule passed; the only
+    // deterministic point after the endpoint block is the existing-pipeline
+    // lookup, `PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, ...)`.
+    // DatrisEnvironment.current is null in unit tests, so reaching the lookup
+    // throws a NullPointerException, never a DatrisException. Acceptance cases
+    // therefore assert "NPE at the lookup"; rejection cases assert the
+    // SsrfGuard DatrisException text. SsrfGuard honours the
+    // `datris.allowPrivateEgress` system property as the runtime equivalent of
+    // DATRIS_ALLOW_PRIVATE_EGRESS; it is set and cleared with try/finally so it
+    // never leaks into other suites in the forked test JVM.
+
+    private val ssrfMarker = "private, loopback, or link-local"
+
+    private def s3EndpointConfig(provider: String, endpoint: String): PipelineConfig =
+        objectStoreConfig(s""""provider":"$provider","destinationBucketOverride":"my-bucket","endpoint":"$endpoint"""")
+
+    /** Runs validate and returns whatever it throws (None on success). */
+    private def validationOutcome(cfg: PipelineConfig): Option[Throwable] =
+        try { PipelineValidatorUtil.validate(cfg); None }
+        catch { case t: Throwable => Some(t) }
+
+    private def assertReachedExistingPipelineLookup(outcome: Option[Throwable], label: String): Unit = {
+        assert(outcome.isDefined, s"$label: expected the existing-pipeline lookup to fail on the null DatrisEnvironment, but validate returned")
+        assert(
+            !outcome.get.isInstanceOf[DatrisException],
+            s"$label: endpoint rule must have passed and validate must reach the existing-pipeline lookup; got DatrisException: ${outcome.get.getMessage}"
+        )
+        assert(outcome.get.isInstanceOf[NullPointerException], s"$label: expected the null-DatrisEnvironment NPE sentinel, got ${outcome.get}")
+    }
+
+    /** The DatrisException message validate threw, or a readable failure when
+      * the endpoint was NOT rejected (i.e. validate fell through to the lookup NPE). */
+    private def ssrfRejection(cfg: PipelineConfig): String =
+        validationOutcome(cfg) match {
+            case Some(e: DatrisException) => e.getMessage
+            case Some(other) => fail(s"endpoint was not rejected: validate reached the existing-pipeline lookup ($other)")
+            case None => fail("endpoint was not rejected: validate returned normally")
+        }
+
+    private def withPrivateEgress[A](enabled: Boolean)(body: => A): A = {
+        val key = "datris.allowPrivateEgress"
+        val previous = sys.props.get(key)
+        if (enabled) sys.props(key) = "true" else sys.props -= key
+        try body
+        finally previous match {
+            case Some(v) => sys.props(key) = v
+            case None => sys.props -= key
+        }
+    }
+
+    test("provider=s3 with a loopback endpoint is rejected with the SsrfGuard message") {
+        withPrivateEgress(enabled = false) {
+            val err = ssrfRejection(s3EndpointConfig("s3", "https://127.0.0.1/some-bucket"))
+            assert(err.contains(ssrfMarker), s"expected the SsrfGuard rejection, got: $err")
+            assert(err.contains("127.0.0.1"), s"message must name the resolved address, got: $err")
+        }
+    }
+
+    test("provider=s3 with a link-local (cloud metadata) endpoint is rejected with the SsrfGuard message") {
+        withPrivateEgress(enabled = false) {
+            val err = ssrfRejection(s3EndpointConfig("s3", "https://169.254.169.254/latest/meta-data"))
+            assert(err.contains(ssrfMarker), s"expected the SsrfGuard rejection, got: $err")
+        }
+    }
+
+    test("provider=s3 with a loopback endpoint is accepted when datris.allowPrivateEgress=true") {
+        withPrivateEgress(enabled = true) {
+            val outcome = validationOutcome(s3EndpointConfig("s3", "https://127.0.0.1/some-bucket"))
+            assertReachedExistingPipelineLookup(outcome, "allowPrivateEgress opt-in")
+        }
+    }
+
+    test("provider=minio is unaffected by the S3 endpoint guard, whatever the endpoint") {
+        withPrivateEgress(enabled = false) {
+            // Note: provider=minio has no bucket-override requirement either, so
+            // the only thing left between the objectStore rules and the lookup
+            // is the guard — it must not fire for minio.
+            val outcome = validationOutcome(objectStoreConfig(""""provider":"minio","endpoint":"https://127.0.0.1:9000""""))
+            assertReachedExistingPipelineLookup(outcome, "provider=minio loopback endpoint")
+            val outcome2 = validationOutcome(objectStoreConfig(""""provider":"minio","endpoint":"http://minio:9000""""))
+            assertReachedExistingPipelineLookup(outcome2, "provider=minio http endpoint")
+        }
+    }
+
+    test("provider=s3 with a normal AWS endpoint still validates") {
+        // SsrfGuard resolves the host. Offline this would fail for the wrong
+        // reason ("Could not resolve host"), so cancel rather than fail when
+        // the machine cannot resolve it.
+        val host = "s3.us-east-1.amazonaws.com"
+        val resolvable =
+            try { java.net.InetAddress.getAllByName(host).nonEmpty }
+            catch { case _: Exception => false }
+        assume(resolvable, s"$host does not resolve on this machine; cannot exercise the public-endpoint path")
+        withPrivateEgress(enabled = false) {
+            val outcome = validationOutcome(s3EndpointConfig("s3", s"https://$host"))
+            assertReachedExistingPipelineLookup(outcome, "public AWS endpoint")
+        }
+    }
+
+    test("provider=s3 https:// check still runs before the guard: http:// loopback is rejected for http, not SSRF") {
+        withPrivateEgress(enabled = false) {
+            val err = validationError(s3EndpointConfig("s3", "http://127.0.0.1/some-bucket"))
+            assert(err.exists(_.contains("https://")), s"expected the existing https:// rule, got: $err")
+            assert(!err.exists(_.contains(ssrfMarker)), s"https:// rule must fire first, got: $err")
+        }
+    }
 }
