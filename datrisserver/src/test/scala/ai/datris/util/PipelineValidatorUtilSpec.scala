@@ -242,9 +242,9 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         if (enabled) sys.props(key) = "true" else sys.props -= key
         try body
         finally previous match {
-            case Some(v) => sys.props(key) = v
-            case None => sys.props -= key
-        }
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
     }
 
     test("provider=s3 with a loopback endpoint is rejected with the SsrfGuard message") {

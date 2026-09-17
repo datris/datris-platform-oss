@@ -157,9 +157,9 @@ class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach with Befo
         if (enabled) sys.props(key) = "true" else sys.props -= key
         try body
         finally previous match {
-            case Some(v) => sys.props(key) = v
-            case None => sys.props -= key
-        }
+                case Some(v) => sys.props(key) = v
+                case None => sys.props -= key
+            }
     }
 
     private def s3Dest(endpoint: String, bucket: String): ObjectStore =

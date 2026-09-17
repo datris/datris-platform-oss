@@ -58,7 +58,7 @@ class QueryAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
 
@@ -102,7 +102,7 @@ class QueryAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
 
@@ -131,7 +131,7 @@ class QueryAPIController {
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
 
@@ -168,7 +168,7 @@ class QueryAPIController {
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
 
@@ -205,7 +205,7 @@ class QueryAPIController {
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
 
@@ -270,7 +270,7 @@ class QueryAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
 
@@ -293,7 +293,7 @@ class QueryAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
 
@@ -328,12 +328,23 @@ class QueryAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
     }
 }
 
 object QueryAPIController {
+
+    /** The body every catch-all 500 in this controller and PipelineAPIController
+      *  returns: `{"error": "<message>"}` on one line. The full stack trace is
+      *  logged by the caller; it never goes in the response, which the MCP
+      *  server hands to agents verbatim. Null-safe: an exception with no
+      *  message yields its simple class name so the value is always a JSON
+      *  string. Gson does the escaping (quotes, backslashes, newlines). */
+    private[api] def errorBody(e: Throwable): String = {
+        val message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        "{\"error\": " + new Gson().toJson(message) + "}"
+    }
 
     /** The JSON body `POST /api/v1/query/objectstore` returns for a successful
       *  read: pipeline, path, format, columns, results, count, snapshotId,

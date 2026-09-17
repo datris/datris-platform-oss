@@ -227,6 +227,12 @@ object PipelineValidatorUtil {
                     throw new DatrisException(
                         "When 'destination.objectStore.provider' is 's3', the 'endpoint' must use https:// (got: " + config.destination.objectStore.endpoint + ")"
                     )
+                // A user-supplied S3 endpoint aims the server's own S3A client
+                // at whatever host it names, so it goes through the same SSRF
+                // guard as tap HTTP. provider=minio is the operator's global
+                // endpoint, not user-supplied, and is deliberately not checked.
+                if (config.destination.objectStore.endpoint != null && config.destination.objectStore.endpoint.nonEmpty)
+                    SsrfGuard.assertAllowed(config.destination.objectStore.endpoint)
             }
 
             // Get the existing configuration

@@ -115,6 +115,11 @@ object ObjectStoreSpark {
             val effectiveEndpoint = Option(objectStore.endpoint).filter(_.nonEmpty).getOrElse {
                 creds.region.map(r => s"https://s3.$r.amazonaws.com").getOrElse("https://s3.amazonaws.com")
             }
+            // Refuse loopback / private / link-local endpoints here as well as
+            // at validation, so a config saved before the guard existed is
+            // still stopped at run, query and delete time. The region-derived
+            // AWS default above is public and passes.
+            SsrfGuard.assertAllowed(effectiveEndpoint)
             hadoopConf.set(s"fs.s3a.bucket.$bucket.endpoint", effectiveEndpoint)
 
             creds.region.foreach { r =>
