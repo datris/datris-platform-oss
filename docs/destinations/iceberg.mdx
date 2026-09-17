@@ -1,0 +1,127 @@
+---
+title: "Write Apache Iceberg tables to MinIO or S3 from a pipeline"
+sidebarTitle: "Iceberg (MinIO or S3)"
+description: "Land validated pipeline output as an Apache Iceberg table on MinIO or AWS S3 with atomic commits, upsert by key, and schema evolution that any Iceberg-aware engine can read by path."
+---
+
+Use this format when you want pipeline output to land beside your lake as a real table rather than a directory of loose files: one atomic commit per run, upsert by natural key, new columns added without breaking readers, and a location your own query engines open directly, with no Datris in the read path.
+
+Iceberg is a table format, not a file format. The data files it writes are still Parquet; what it adds is a `metadata/` directory next to them that records exactly which files make up the table at each commit. In Datris it is selected the same way as `parquet` or `orc`: set `fileFormat` to `iceberg` on an [Object Store](/destinations/object-store) or [S3](/destinations/s3) destination. There is no new destination type and no extra service to run.
+
+## What an Iceberg table gives you over loose files
+
+| Concern | Loose Parquet and ORC files | Iceberg table |
+|---|---|---|
+| A run fails half-way | Partial files are left under the prefix and readers scan them | Nothing is committed; readers keep seeing the previous snapshot |
+| Loading the same rows again | Duplicates, unless you overwrite the whole prefix | `writeMode: merge` upserts on `keyFields` |
+| Adding a column to the destination schema | Readers see a directory of mixed schemas | The column is added to the table; older rows read as null |
+| What the lake sees | A path to glob | A table with a schema, a partition spec, and a history of snapshots |
+
+## Configuration
+
+```json
+{
+  "destination": {
+    "objectStore": {
+      "prefixKey": "sales/orders",
+      "fileFormat": "iceberg",
+      "writeMode": "merge",
+      "keyFields": ["order_id"],
+      "partitionBy": ["region"]
+    }
+  }
+}
+```
+
+For AWS S3 add `provider`, `destinationBucketOverride` and `credentialsSecret` exactly as on the [S3 page](/destinations/s3); the Iceberg-specific fields are the same for both providers.
+
+### Field reference
+
+| Field | Required | Default | Description |
+|---|---|---|---|
+| `prefixKey` | yes | | Key prefix under the bucket. The Iceberg table lives at this prefix: `metadata/` and `data/` are created under it |
+| `fileFormat` | no | `parquet` | Must be `iceberg` for this page. `parquet` and `orc` keep writing loose files |
+| `writeMode` | no | `append` | `append`, `overwrite`, `merge`, `ignore`, or `errorifexists`. `merge` is only valid with `iceberg` |
+| `keyFields` | with `merge` | | Natural-key columns for `merge`; each must be a column in the destination schema. Not accepted with any other write mode |
+| `partitionBy` | no | | Columns to partition the table by (identity partitioning) |
+| `deleteBeforeWrite` | no | `false` | Remove everything under the prefix before writing, which drops the table and recreates it. Applies on every run while it stays set, so clear it once the table exists |
+| `destinationBucketOverride` | for S3 | `{environment}-data` | Bucket to write to; required when `provider` is `s3` |
+| `provider` | no | `minio` | `minio` (built-in) or `s3` (AWS S3) |
+| `credentialsSecret` | for S3 | | Name of the Platform secret holding `accessKey`, `secretKey` and `region` for the S3 bucket |
+
+`writeToTemporaryLocation` is not accepted together with `iceberg`: commits are already atomic, so it would have nothing to add.
+
+## Write modes
+
+Every run that writes rows produces exactly one new snapshot. Readers see either the snapshot before the run or the one after it, never an in-between state.
+
+| Mode | Behaviour |
+|---|---|
+| `append` | Adds the run's rows to the table as one snapshot. Two runs of the same data give twice the rows |
+| `overwrite` | Replaces the table's contents in one snapshot. On a partitioned table only the partitions present in the run are replaced; untouched partitions keep their rows |
+| `merge` | Upserts on `keyFields`: a row whose key matches an existing row replaces it, every other row is inserted. Re-running the same data leaves the row count unchanged and adds one snapshot |
+| `ignore` | Does nothing if the table already exists |
+| `errorifexists` | Fails the run if the table already exists |
+
+`merge` is a true upsert: all non-key columns of the incoming row overwrite the existing row, including nulls. This matches `keyFields` on the PostgreSQL, MongoDB, Snowflake and Databricks destinations, so an agent that already knows the concept can reuse it here. If your source emits partial rows, coalesce them upstream.
+
+## Partitioning
+
+`partitionBy` creates an identity partition on each named column. Data files land under `data/<column>=<value>/` inside the prefix, and engines that understand Iceberg partition pruning skip partitions your query does not touch. Every column in `partitionBy` must exist in the destination schema.
+
+Adding partitioning to, or removing it from, an existing pipeline is refused because the table would have to be rebuilt: delete the pipeline's destination data first, then re-register it with the new `partitionBy`.
+
+## Schema evolution
+
+Before each write the destination schema is compared with the table's current schema:
+
+- **New nullable columns are added automatically.** Existing rows read as null for the new column. The column is committed before the data is written, so if the data write then fails, the column exists but has no values yet; the failure message says so.
+- **Type changes are refused.** A column whose type differs from the one already in the table stops the run with a message naming the column and both types.
+- **Dropping columns is refused.** A column present in the table but missing from the destination schema stops the run. Remove it from the table with `deleteBeforeWrite` (which recreates the table) or keep it in the schema.
+- **New required columns are refused.** A new column that is not nullable stops the run, since existing rows would have no value for it.
+
+When a change is refused nothing is committed: the table stays at its previous snapshot and the run reports the reason.
+
+## Reading the table from outside Datris
+
+The table is fully described by the files under the prefix. `metadata/` holds one metadata file per commit plus a `version-hint.text` naming the current one; `data/` holds the Parquet files. Any Iceberg-aware engine that can open the location by path reads the current snapshot without contacting Datris. For example, with the Python Iceberg library:
+
+```python
+from pyiceberg.table import StaticTable
+
+table = StaticTable.from_metadata("s3://analytics-data/sales/orders/metadata/v3.metadata.json")
+print(table.scan().to_arrow())
+```
+
+Engines with a path-based Iceberg reader take the prefix itself, for example `iceberg_scan('s3://analytics-data/sales/orders')` in SQL, or `spark.read.format("iceberg").load("s3a://analytics-data/sales/orders")`. Point the engine at the same bucket credentials the pipeline uses; for the built-in MinIO that is the MinIO endpoint with path-style access.
+
+Datris itself reads the table through the same query surface as the other formats: the Search tab, the Assistant, the object-store query endpoint, and the `query_objectstore` MCP tool. For an Iceberg table the result also carries `snapshotId` (the snapshot the rows were read from, returned as a string because the id is a 64-bit number) and `snapshotTimestamp` (ISO-8601). Both are null for `parquet` and `orc`. Querying a pipeline that has never run returns zero rows rather than an error.
+
+## Switching an existing pipeline to Iceberg
+
+A prefix that already holds loose Parquet files or ORC files cannot be converted in place. Changing `fileFormat` to or from `iceberg` on an existing pipeline is refused unless `deleteBeforeWrite` is set, and a write that finds non-Iceberg objects at the prefix stops with a message asking you to set `deleteBeforeWrite` or use a new prefix. Either:
+
+- point the pipeline at a **new `prefixKey`**, so the old files stay where they are; or
+- set **`deleteBeforeWrite: true`**, which removes everything under the prefix and creates the table fresh on the next run. It applies to every run while it stays set: clear it after the first Iceberg run, or each run will drop the table again (re-registering with it cleared passes validation because the pipeline is already `iceberg` on both sides).
+
+Existing `parquet` and `orc` pipelines are unaffected; `fileFormat` still defaults to `parquet`.
+
+## Concurrent runs
+
+Two runs of the same pipeline that would write the same output path are serialised: the second waits for the first to commit, then runs on top of it. This applies to every object-store format, not only Iceberg.
+
+## Deleting the pipeline
+
+Deleting the pipeline with its destination data removes the prefix, which drops the table (metadata and data together).
+
+## Not yet available
+
+- **Catalog registration.** The table is path-based. Registering it in a REST, AWS Glue, or JDBC catalog so that catalog-only engines can query it by name is planned; the data written today does not need to be rewritten when that lands.
+- **Time travel.** Queries read the current snapshot only; reading a table as of an earlier snapshot or timestamp is planned.
+- **Table maintenance.** Expiring old snapshots, compacting small files, and removing orphan files are not yet performed by Datris. Long-lived tables fed by frequent small runs accumulate snapshots and small files; run your engine's maintenance procedures against the path in the meantime.
+- **Partition transforms** such as day, month, or bucket partitions; only identity partitioning is supported.
+- **Iceberg as a source.** Taps do not read Iceberg tables yet.
+
+## Completion notification
+
+A pipeline notification is published on completion, as for the other object-store formats. See [Notifications](/notifications).

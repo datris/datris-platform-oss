@@ -3,6 +3,20 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.31.0" description="September 16, 2026">
+  **Pipelines can now land data as Apache Iceberg tables.**
+
+  - **Iceberg as an output format.** Set the file format to `iceberg` on an [object-store](/destinations/object-store) or [S3](/destinations/s3) destination and each run commits a real Iceberg table at the pipeline's location: Parquet data files plus the table metadata any Iceberg-aware engine reads. One atomic commit per run; a failed run leaves the previous snapshot intact. No new destination type, no extra service. See [Iceberg](/destinations/iceberg).
+  - **Upserts by key.** A new `merge` write mode updates rows matching the configured key fields and inserts the rest; re-running the same data leaves the row count unchanged.
+  - **Partitioning and schema evolution.** Partition by columns; new nullable columns are added automatically, while type changes, dropped columns, and new required columns are refused before anything is written.
+  - **Readable without Datris.** Standard Iceberg tooling opens the table by path. Time travel, catalog registration, table maintenance, and Iceberg as a tap source come later; tables written today will not need rewriting.
+  - **Snapshot in query results** for Iceberg tables; the wizard, MCP tools, and Assistant know the new format and modes; lineage labels object-store destinations with their format.
+  - **Fix:** querying an object-store pipeline that has never run returns an empty result instead of an error (a pipeline whose bucket does not exist also reads as empty).
+  - **Overlapping runs** writing the same object-store location now run one after the other, for every object-store format.
+  - **S3 credential changes apply immediately.** Correcting or rotating S3 credentials in a secret now takes effect on the next run without a restart.
+  - Upgrade: `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required; existing Parquet and ORC pipelines are unaffected. Switching an existing pipeline to Iceberg in place is refused unless `deleteBeforeWrite` is set; use a new prefix to keep the old files. The server image is about 50 MB larger.
+</Update>
+
 <Update label="v1.30.1" description="September 15, 2026">
   **A smaller install, and docs written for the way people search.**
 

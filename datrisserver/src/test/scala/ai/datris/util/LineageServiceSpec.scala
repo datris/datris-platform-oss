@@ -208,4 +208,72 @@ class LineageServiceSpec extends AnyFunSuite {
         val g = LineageService.build(Nil, List(pipeline("p", catalog = null, dest = pgDest)))
         assert(!g.nodes.exists(_.nodeType == "catalog"))
     }
+
+    // ---- iceberg-loader-reader-lineage: objectstore DatasetRef carries the effective file format ----
+    //
+    // Only the coord is asserted here. LineageService.scala:119 joins non-empty
+    // coord values into DatasetRef.name, and stored RunLineageOutput.datasetId
+    // (LineageService.scala:256/305/342) keys on that name, so whether the new
+    // coord also participates in the name is the story's open Backward-compat
+    // question — the implementer either keeps it out of the name or accepts a
+    // one-time re-keying. Neither choice is pinned by this spec.
+
+    private def osDest(fileFormat: String): Destination =
+        Destination(objectStore = ObjectStore(prefixKey = "orders", destinationBucketOverride = "lake", fileFormat = fileFormat))
+
+    test("objectstore DatasetRef carries format=iceberg for an Iceberg pipeline") {
+        val refs = LineageService.datasets(pipeline("p", dest = osDest("iceberg")))
+        val os = refs.find(_.kind == "objectstore").getOrElse(fail("expected an objectstore DatasetRef"))
+        assert(os.coords.toMap.get("format").contains("iceberg"), s"coords were ${os.coords}")
+        assert(os.coords.toMap.get("bucket").contains("lake"))
+        assert(os.coords.toMap.get("prefix").contains("orders"))
+        assert(os.toJson.has("format") && os.toJson.get("format").getAsString == "iceberg", "graph node JSON must label the Iceberg table")
+    }
+
+    test("objectstore DatasetRef carries format=parquet when fileFormat is unset") {
+        val refs = LineageService.datasets(pipeline("p", dest = osDest(null)))
+        val os = refs.find(_.kind == "objectstore").getOrElse(fail("expected an objectstore DatasetRef"))
+        assert(os.coords.toMap.get("format").contains("parquet"), s"coords were ${os.coords}")
+        assert(os.toJson.get("format").getAsString == "parquet")
+    }
+
+    test("objectstore DatasetRef format is the effective (lowercased) format for an explicit value") {
+        val refs = LineageService.datasets(pipeline("p", dest = osDest("ORC")))
+        val os = refs.find(_.kind == "objectstore").get
+        assert(os.coords.toMap.get("format").contains("orc"), s"coords were ${os.coords}")
+    }
+
+    test("objectstore DatasetRef name/id are unchanged by the format coord (existing node identities preserved)") {
+        val iceberg = LineageService.datasets(pipeline("p", dest = osDest("iceberg"))).find(_.kind == "objectstore").get
+        val parquet = LineageService.datasets(pipeline("p", dest = osDest(null))).find(_.kind == "objectstore").get
+        // Pre-story identity: kind + non-empty locating coords, no format.
+        assert(parquet.name == "objectstore:lake.orders", parquet.name)
+        assert(parquet.id == "dataset:objectstore:lake.orders", parquet.id)
+        assert(iceberg.name == parquet.name, s"format must not re-key the node: ${iceberg.name} vs ${parquet.name}")
+        assert(iceberg.id == parquet.id)
+        assert(iceberg.toJson.get("format").getAsString == "iceberg")
+    }
+
+    test("graph dataset node JSON carries format for objectstore nodes only") {
+        val g = LineageService.build(
+            Nil,
+            List(
+                pipeline("ice", dest = osDest("iceberg")),
+                pipeline("pq", dest = Destination(objectStore = ObjectStore(prefixKey = "raw", destinationBucketOverride = "lake"))),
+                pipeline("pg", dest = pgDest)
+            )
+        )
+        val nodes = g.toJson.getAsJsonArray("nodes").asScala.map(_.getAsJsonObject).map(o => o.get("id").getAsString -> o).toMap
+
+        val ice = nodes("dataset:objectstore:lake.orders")
+        assert(ice.has("format") && ice.get("format").getAsString == "iceberg", ice.toString)
+        assert(ice.get("name").getAsString == "objectstore:lake.orders", "format must not enter the node name")
+
+        val pq = nodes("dataset:objectstore:lake.raw")
+        assert(pq.has("format") && pq.get("format").getAsString == "parquet", pq.toString)
+
+        val pg = nodes("dataset:postgres:datris.public.orders")
+        assert(!pg.has("format"), s"non-objectstore nodes must not carry format: $pg")
+        assert(!nodes("pipeline:ice").has("format"))
+    }
 }

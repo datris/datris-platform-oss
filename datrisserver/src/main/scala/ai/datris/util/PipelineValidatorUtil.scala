@@ -176,9 +176,38 @@ object PipelineValidatorUtil {
                 })
             }
             if (config.destination.objectStore.fileFormat != null) {
-                if (config.destination.objectStore.fileFormat.compareTo("parquet") != 0 && config.destination.objectStore.fileFormat.compareTo("orc") != 0)
-                    throw new DatrisException("If the 'destination.objectStore.fileFormat' is defined, it must be either 'parquet' or 'orc'")
+                if (
+                    config.destination.objectStore.fileFormat.compareTo("parquet") != 0 && config.destination.objectStore.fileFormat.compareTo("orc") != 0 &&
+                    config.destination.objectStore.fileFormat.compareTo("iceberg") != 0
+                )
+                    throw new DatrisException("If the 'destination.objectStore.fileFormat' is defined, it must be 'parquet', 'orc' or 'iceberg'")
             }
+
+            // Iceberg-only rules: merge needs keyFields present in the destination
+            // schema; keyFields mean nothing outside merge; Iceberg commits are
+            // already atomic so a temporary-location write would imply behaviour
+            // that does not exist. These run BEFORE the existing-pipeline lookup.
+            val isIceberg = config.destination.objectStore.fileFormat != null && config.destination.objectStore.fileFormat.compareTo("iceberg") == 0
+            val writeMode = if (config.destination.objectStore.writeMode != null) config.destination.objectStore.writeMode.trim.toLowerCase else null
+            val objectStoreKeyFields = config.destination.objectStore.keyFields
+            if (writeMode != null && writeMode.compareTo("merge") == 0) {
+                if (!isIceberg)
+                    throw new DatrisException("'destination.objectStore.writeMode' of 'merge' requires 'fileFormat' to be 'iceberg'")
+                if (objectStoreKeyFields == null || objectStoreKeyFields.isEmpty)
+                    throw new DatrisException(
+                        "'destination.objectStore.writeMode' of 'merge' requires a non-empty 'destination.objectStore.keyFields' (the MERGE ON columns)"
+                    )
+                objectStoreKeyFields.forEach(field => {
+                    if (!schemaFieldNames.contains(field))
+                        throw new DatrisException("'keyFields' field name: " + field + " is not in the schema properties for this pipeline")
+                })
+            } else if (objectStoreKeyFields != null && !objectStoreKeyFields.isEmpty) {
+                throw new DatrisException("'destination.objectStore.keyFields' only applies to writeMode=merge")
+            }
+            if (isIceberg && config.destination.objectStore.writeToTemporaryLocation)
+                throw new DatrisException(
+                    "'destination.objectStore.writeToTemporaryLocation' is not supported when 'fileFormat' is 'iceberg' (Iceberg commits are already atomic)"
+                )
 
             // Provider must be 'minio' (default) or 's3'.
             val provider = if (config.destination.objectStore.provider != null) config.destination.objectStore.provider.toLowerCase else "minio"
@@ -212,6 +241,7 @@ object PipelineValidatorUtil {
                         throw new DatrisException(
                             "Cannot change an existing object store pipeline from partitioned to not partitioned. Delete all S3 data for this pipeline first and then re-register"
                         )
+                    checkIcebergFormatFlip(existingConfig.destination.objectStore, config.destination.objectStore)
                 }
             }
         }
@@ -347,6 +377,22 @@ object PipelineValidatorUtil {
             )
     }
 
+    /** Iceberg tables carry metadata that plain parquet and orc layouts do not (and
+      * vice versa), so flipping an existing pipeline's fileFormat to or from
+      * 'iceberg' needs a clean prefix: reject unless deleteBeforeWrite is set.
+      * parquet<->orc flips are untouched. Package-private so the spec can reach
+      * it without the config-DB lookup that guards its call site.
+      */
+    private[util] def checkIcebergFormatFlip(existing: ObjectStore, updated: ObjectStore): Unit = {
+        val existingIsIceberg = existing.fileFormat != null && existing.fileFormat.compareTo("iceberg") == 0
+        val updatedIsIceberg = updated.fileFormat != null && updated.fileFormat.compareTo("iceberg") == 0
+        if (existingIsIceberg != updatedIsIceberg && !updated.deleteBeforeWrite)
+            throw new DatrisException(
+                "Cannot change an existing object store pipeline " + (if (updatedIsIceberg) "to" else "from") +
+                    " the 'iceberg' file format. Set 'deleteBeforeWrite' to true (or delete all S3 data for this pipeline first and then re-register)"
+            )
+    }
+
     private def validateColumns(sourceSchema: Boolean, config: PipelineConfig): Unit = {
         val fields = {
             if (sourceSchema)
@@ -467,6 +513,12 @@ object PipelineValidatorUtil {
                     else
                         null
                 }
+                val keyFields = {
+                    if (config.destination.objectStore.keyFields != null)
+                        config.destination.objectStore.keyFields.asScala.map(_.toLowerCase).toList.asJava
+                    else
+                        null
+                }
                 val fileFormat = {
                     if (config.source.fileAttributes != null && config.source.fileAttributes.unstructuredAttributes != null)
                         null
@@ -484,6 +536,7 @@ object PipelineValidatorUtil {
                 config.destination.objectStore.copy(
                     prefixKey = config.destination.objectStore.prefixKey.toLowerCase,
                     partitionBy = partitionBy,
+                    keyFields = keyFields,
                     fileFormat = fileFormat,
                     destinationBucketOverride = destinationBucketOverride
                 )

@@ -322,7 +322,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'create_pipeline',
-      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule, objectstore settings) without delete-then-recreate. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks), objectstore (Parquet/ORC files in MinIO or AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). Snowflake and Databricks additionally require credentialsSecret, warehouse, and database.',
+      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule, objectstore settings) without delete-then-recreate. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks), objectstore (Parquet files, ORC files, or an Iceberg table in MinIO or AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). Snowflake and Databricks additionally require credentialsSecret, warehouse, and database.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'content', type: 'string', description: 'Base64-encoded sample data. Required for structured destinations AND objectstore; omit for vector destinations.', required: false, inputType: 'textarea' },
@@ -560,7 +560,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'query_objectstore',
-      description: 'Read rows from a pipeline\'s objectStore destination (Parquet or ORC files in MinIO or AWS S3). Pass the pipeline name; the server resolves the bucket, prefix, format, and credentials from the pipeline config. Returns up to `limit` rows as JSON. Use when list_pipelines shows objectStore as the destination — query_postgres / query_mongodb / search_* will not work against Parquet/ORC files.',
+      description: 'Read rows from a pipeline\'s objectStore destination (Parquet files, ORC files, or an Iceberg table in MinIO or AWS S3). Pass the pipeline name; the server resolves the bucket, prefix, format, and credentials from the pipeline config. Returns up to `limit` rows as JSON, plus snapshotId (a decimal string) and snapshotTimestamp for Iceberg tables. Use when list_pipelines shows objectStore as the destination — query_postgres / query_mongodb / search_* will not work against objectStore data.',
       category: 'Database Query',
       parameters: [
         { name: 'pipeline', type: 'string', description: 'Pipeline name (from list_pipelines)', required: true, inputType: 'text' },

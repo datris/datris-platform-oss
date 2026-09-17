@@ -101,6 +101,8 @@ export class PipelineCreateComponent implements OnInit {
   mongoTable = '';
   osPrefix = '';
   osFormat = 'parquet';
+  osWriteMode = 'append';
+  osKeyFields: string[] = [];
   osBucket = '';
   osDeleteBeforeWrite = false;
   osPartitionBy: string[] = [];
@@ -225,6 +227,13 @@ export class PipelineCreateComponent implements OnInit {
     }
   }
 
+  /** Key Fields multi-select is bound by hand (see template comment). */
+  onOsKeyFieldsChange(target: EventTarget | null): void {
+    const select = target as HTMLSelectElement | null;
+    if (!select) return;
+    this.osKeyFields = Array.from(select.selectedOptions).map(o => o.value).filter(v => !!v);
+  }
+
   loadFromConfig(config: any): void {
     this.pipelineName = config.name || '';
     this.catalog = config.catalog || '';
@@ -336,6 +345,8 @@ export class PipelineCreateComponent implements OnInit {
       this.destType = 'objectstore';
       this.osPrefix = dest.objectStore.prefixKey || '';
       this.osFormat = dest.objectStore.fileFormat || 'parquet';
+      this.osWriteMode = dest.objectStore.writeMode || 'append';
+      this.osKeyFields = Array.isArray(dest.objectStore.keyFields) ? [...dest.objectStore.keyFields] : [];
       this.osBucket = dest.objectStore.destinationBucketOverride || '';
       this.osDeleteBeforeWrite = !!dest.objectStore.deleteBeforeWrite;
       this.osPartitionBy = Array.isArray(dest.objectStore.partitionBy) ? [...dest.objectStore.partitionBy] : [];
@@ -856,6 +867,11 @@ export class PipelineCreateComponent implements OnInit {
         if (!this.dbxTable.trim()) { this.error = 'Table name is required'; return; }
       } else if (this.destType === 'objectstore') {
         if (!this.osPrefix.trim()) { this.error = 'Key is required'; return; }
+        if (this.osFormat === 'iceberg' && this.osWriteMode === 'merge' && this.osKeyFields.filter(k => k && k.trim()).length === 0) {
+          this.error = (this.destSchemaFields.length > 0 && this.destSchemaFields[0].name)
+            ? 'Key Fields are required for merge'
+            : 'Key Fields are required for merge — set the destination schema first, then select them here'; return;
+        }
         if (this.osProvider === 's3') {
           if (!this.osBucket.trim()) { this.error = 'Bucket is required when provider is S3'; return; }
           if (this.osEndpoint.trim() && this.osEndpoint.trim().toLowerCase().startsWith('http://')) {
@@ -1115,6 +1131,14 @@ export class PipelineCreateComponent implements OnInit {
       if (this.osBucket.trim()) os.destinationBucketOverride = this.osBucket.trim();
       const partitions = this.osPartitionBy.filter(p => p && p.trim());
       if (partitions.length > 0) os.partitionBy = partitions;
+      if (this.osFormat === 'iceberg') {
+        os.writeMode = this.osWriteMode || 'append';
+        // The server rejects objectStore.keyFields unless writeMode is merge.
+        if (os.writeMode === 'merge') {
+          const keys = this.osKeyFields.filter(k => k && k.trim());
+          if (keys.length > 0) os.keyFields = keys;
+        }
+      }
       if (this.osProvider === 's3') {
         os.provider = 's3';
         if (this.osEndpoint.trim()) os.endpoint = this.osEndpoint.trim();

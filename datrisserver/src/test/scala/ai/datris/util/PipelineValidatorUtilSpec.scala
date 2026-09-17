@@ -5,9 +5,11 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisException, PipelineConfig}
+import ai.datris.model.{DatrisException, ObjectStore, PipelineConfig}
 import com.google.gson.Gson
 import org.scalatest.funsuite.AnyFunSuite
+
+import scala.collection.JavaConverters._
 
 class PipelineValidatorUtilSpec extends AnyFunSuite {
 
@@ -67,6 +69,117 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         // Other unrelated validations may still fire on this minimal config —
         // the exemption only guarantees the keyFields rule itself is skipped.
         assert(!thrown.exists(_.getMessage.contains("Key field")))
+    }
+
+    // --- Iceberg format / merge / keyFields rules ----------------------------
+    // Every objectStore rule runs BEFORE the existing-pipeline lookup
+    // (PipelineConfigIO.read), which needs a live config DB and is unreachable
+    // here. Rejection cases therefore assert on the rule's own message. The
+    // acceptance case uses a deterministic sentinel that sits AFTER the
+    // fileFormat rule and BEFORE the lookup: provider=s3 without
+    // destinationBucketOverride. If validate reports the bucket error, the
+    // fileFormat rule let "iceberg" through. The in-place parquet→iceberg flip
+    // rule lives inside the lookup branch and is covered by the e2e pass.
+
+    private def objectStoreConfig(
+        objectStore: String,
+        schemaFields: String = """[{"name":"id","type":"string"},{"name":"name","type":"string"}]"""
+    ): PipelineConfig =
+        parse(
+            s"""{"name":"p",
+               |"source":{"fileAttributes":{"csvAttributes":{}},"schemaProperties":{"fields":$schemaFields}},
+               |"destination":{"objectStore":{"prefixKey":"p",$objectStore}}}""".stripMargin
+        )
+
+    private def validationError(cfg: PipelineConfig): Option[String] =
+        try { PipelineValidatorUtil.validate(cfg); None }
+        catch { case e: DatrisException => Some(e.getMessage) }
+
+    private val s3BucketSentinel = "destinationBucketOverride"
+
+    test("objectStore fileFormat=iceberg is accepted") {
+        val cfg = objectStoreConfig(""""fileFormat":"iceberg","provider":"s3"""")
+        val err = validationError(cfg)
+        assert(err.isDefined && err.get.contains(s3BucketSentinel), s"expected the s3 bucket sentinel, got: $err")
+        assert(!err.get.contains("fileFormat"))
+    }
+
+    test("objectStore writeMode=merge without keyFields is rejected") {
+        val cfg = objectStoreConfig(""""fileFormat":"iceberg","writeMode":"merge"""")
+        val err = validationError(cfg)
+        assert(err.exists(_.contains("keyFields")), s"expected a keyFields error, got: $err")
+    }
+
+    test("objectStore writeMode=merge with fileFormat=parquet is rejected") {
+        val cfg = objectStoreConfig(""""fileFormat":"parquet","writeMode":"merge","keyFields":["id"]""")
+        val err = validationError(cfg)
+        assert(err.exists(m => m.contains("merge") && m.contains("iceberg")), s"expected a merge-requires-iceberg error, got: $err")
+    }
+
+    test("objectStore keyFields without writeMode=merge is rejected") {
+        val cfg = objectStoreConfig(""""fileFormat":"iceberg","keyFields":["id"]""")
+        val err = validationError(cfg)
+        assert(err.exists(m => m.contains("keyFields") && m.contains("merge")), s"expected a keyFields-only-for-merge error, got: $err")
+    }
+
+    test("objectStore keyFields naming a column not in the destination schema is rejected") {
+        val cfg = objectStoreConfig(""""fileFormat":"iceberg","writeMode":"merge","keyFields":["id","nope"]""")
+        val err = validationError(cfg)
+        assert(err.exists(_.contains("nope")), s"expected an unknown-column error naming 'nope', got: $err")
+    }
+
+    test("objectStore writeToTemporaryLocation=true with fileFormat=iceberg is rejected") {
+        val cfg = objectStoreConfig(""""fileFormat":"iceberg","writeToTemporaryLocation":true""")
+        val err = validationError(cfg)
+        assert(err.exists(_.toLowerCase.contains("writetotemporarylocation")), s"expected a writeToTemporaryLocation error, got: $err")
+    }
+
+    test("modify lowercases objectStore keyFields like partitionBy") {
+        val cfg = objectStoreConfig(""""fileFormat":"iceberg","writeMode":"merge","keyFields":["ID","Name"],"partitionBy":["Name"]""")
+        val out = PipelineValidatorUtil.modify(cfg)
+        assert(out.destination.objectStore.keyFields.asScala.toList == List("id", "name"))
+        assert(out.destination.objectStore.partitionBy.asScala.toList == List("name"))
+        assert(out.destination.objectStore.fileFormat == "iceberg")
+    }
+
+    // --- existing-pipeline format flip -----------------------------------------
+    // The call site sits behind PipelineConfigIO.read, so the rule is exercised
+    // directly through the extracted helper.
+
+    private def flipError(existingFormat: String, updatedFormat: String, deleteBeforeWrite: Boolean = false): Option[String] =
+        try {
+            PipelineValidatorUtil.checkIcebergFormatFlip(
+                ObjectStore(prefixKey = "p", fileFormat = existingFormat),
+                ObjectStore(prefixKey = "p", fileFormat = updatedFormat, deleteBeforeWrite = deleteBeforeWrite)
+            )
+            None
+        } catch { case e: DatrisException => Some(e.getMessage) }
+
+    test("existing default-format pipeline flipped to iceberg is rejected without deleteBeforeWrite") {
+        val err = flipError(null, "iceberg")
+        assert(err.exists(m => m.contains("iceberg") && m.contains("deleteBeforeWrite")), s"got: $err")
+    }
+
+    test("existing iceberg pipeline flipped to default format is rejected without deleteBeforeWrite") {
+        val err = flipError("iceberg", null)
+        assert(err.exists(m => m.contains("iceberg") && m.contains("deleteBeforeWrite")), s"got: $err")
+    }
+
+    test("iceberg format flip in either direction is accepted with deleteBeforeWrite=true") {
+        assert(flipError(null, "iceberg", deleteBeforeWrite = true).isEmpty)
+        assert(flipError("iceberg", null, deleteBeforeWrite = true).isEmpty)
+        assert(flipError("parquet", "iceberg", deleteBeforeWrite = true).isEmpty)
+    }
+
+    test("parquet to orc flip is not subject to the iceberg rule") {
+        assert(flipError("parquet", "orc").isEmpty)
+        assert(flipError("iceberg", "iceberg").isEmpty)
+    }
+
+    test("objectStore writeMode is trimmed before the merge rules apply") {
+        val cfg = objectStoreConfig(""""fileFormat":"iceberg","writeMode":" merge """")
+        val err = validationError(cfg)
+        assert(err.exists(_.contains("keyFields")), s"expected a keyFields error, got: $err")
     }
 
     test("applyDefaults is a no-op when destination or database is absent") {

@@ -75,7 +75,7 @@ Full RAG pipeline built in. Extract, chunk, embed, and upsert documents into any
 - **Multiple ingestion methods** - MCP, data upload API, MinIO bucket events, database polling, Kafka streaming
 - **Data quality** - AI rules (LLM-generated), and/or JSON/XML schema validation
 - **Transformations** - AI transformations (LLM-generated), destination schema (drop/rename/retype columns) for structure data
-- **Multiple destinations** - Write to PostgreSQL, MongoDB, Snowflake, Databricks, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, pgvector, or MinIO/S3 (Parquet/ORC) in parallel
+- **Multiple destinations** - Write to PostgreSQL, MongoDB, Snowflake, Databricks, Kafka, ActiveMQ, REST endpoints, Qdrant, Weaviate, Milvus, Chroma, pgvector, or MinIO/S3 (Parquet, ORC, or Apache Iceberg tables) in parallel
 - **Event notifications** - Subscribe to pipeline processing events via ActiveMQ topics
 
 ## Architecture
@@ -91,7 +91,7 @@ Self-hosted on proven open-source infrastructure — no proprietary services, no
 | **ActiveMQ** | File notification queue, pipeline event notifications |
 | **HashiCorp Vault** | Secrets management (database credentials, API keys) |
 | **Apache Kafka** | Optional streaming source and destination |
-| **Apache Spark** | Local Spark for writing Parquet/ORC to MinIO |
+| **Apache Spark** | Local Spark for writing Parquet, ORC, and Iceberg tables to MinIO |
 
 ## Processing Flow
 

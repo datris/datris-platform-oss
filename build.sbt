@@ -1,7 +1,7 @@
 name := "datris-server"
 ThisBuild / organization := "ai.datris"
 ThisBuild / scalaVersion := "2.12.21"
-ThisBuild / version := "1.30.1"
+ThisBuild / version := "1.31.0"
 
 // Match the Docker runtime (eclipse-temurin:17-jre). Without this, javac uses the
 // build host's JDK (e.g. 25), producing class files the runtime can't load.
@@ -262,6 +262,13 @@ lazy val allDependencies = Seq(
     // a NoSuchMethodError on the first Parquet read from S3A. Keep these
     // versions locked together; bumping one requires bumping the other.
     "org.apache.hadoop" % "hadoop-aws" % "3.3.4",
+    // Apache Iceberg table format for objectStore destinations. The
+    // spark-runtime jar is the shaded bundle (own Jackson, Avro, Caffeine,
+    // RoaringBitmap under org.apache.iceberg.shaded), so it does not disturb
+    // the Jackson quad-pin or the Avro CVE pin above — SparkJacksonCompatSpec
+    // is the guard. Must track the Spark minor (3.5) and Scala binary (2.12)
+    // versions pinned here; bump it when Spark moves.
+    "org.apache.iceberg" % "iceberg-spark-runtime-3.5_2.12" % "1.11.0",
 
     // AWS SigV4 signing + credential chain for the Bedrock AI provider.
     // Signer-only: requests are signed here and executed on the shared Apache

@@ -65,7 +65,10 @@ object LineageService {
 
     /** `historical` marks a dataset (or the edge into it) that no current
       * config lands into but a recorded run did — the destination changed
-      * since. `tags` come straight from the tap/pipeline definition. */
+      * since. `tags` come straight from the tap/pipeline definition.
+      * `format` is the objectstore dataset's effective file format (iceberg,
+      * parquet, orc) — a label only, never part of the id; absent on every
+      * other node type so their JSON is unchanged. */
     case class Node(
         id: String,
         nodeType: String,
@@ -73,7 +76,8 @@ object LineageService {
         catalog: Option[String] = None,
         tags: List[String] = Nil,
         historical: Boolean = false,
-        authority: Option[String] = None
+        authority: Option[String] = None,
+        format: Option[String] = None
     ) {
         def toJson: JsonObject = {
             val o = new JsonObject()
@@ -84,6 +88,7 @@ object LineageService {
             if (tags.nonEmpty) { val t = new JsonArray(); tags.foreach(t.add); o.add("tags", t) }
             if (historical) o.addProperty("historical", true)
             authority.foreach(o.addProperty("authority", _))
+            format.foreach(o.addProperty("format", _))
             o
         }
     }
@@ -114,10 +119,20 @@ object LineageService {
         }
     }
 
+    /** Coords that describe a dataset without locating it. They appear in the
+      * node JSON but stay out of `DatasetRef.name`, because stored
+      * RunLineageOutput.datasetId keys on `id` = "dataset:" + name and adding
+      * them to the join would re-key every existing node. */
+    val DescriptiveCoords: Set[String] = Set("format")
+
     /** One landed dataset: destination kind + its coordinates. */
     case class DatasetRef(kind: String, coords: List[(String, String)]) {
-        def name: String = kind + ":" + coords.map(_._2).filter(v => v != null && v.nonEmpty).mkString(".")
+        def name: String =
+            kind + ":" + coords.filterNot(c => DescriptiveCoords.contains(c._1)).map(_._2).filter(v => v != null && v.nonEmpty).mkString(".")
         def id: String = "dataset:" + name
+
+        /** The `format` descriptive coord, when the destination has one. */
+        def format: Option[String] = coords.collectFirst { case ("format", v) if v != null && v.nonEmpty => v }
         def toJson: JsonObject = {
             val o = new JsonObject()
             o.addProperty("kind", kind)
@@ -141,9 +156,16 @@ object LineageService {
         }
         if (d.objectStore != null) {
             val os = d.objectStore
+            // Effective file format (the loader and reader default to parquet):
+            // labels an Iceberg table as such in the graph.
+            val format = Option(os.fileFormat).map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("parquet")
             out += DatasetRef(
                 "objectstore",
-                List("bucket" -> Option(os.destinationBucketOverride).getOrElse(""), "prefix" -> Option(os.prefixKey).getOrElse(p.name))
+                List(
+                    "bucket" -> Option(os.destinationBucketOverride).getOrElse(""),
+                    "prefix" -> Option(os.prefixKey).getOrElse(p.name),
+                    "format" -> format
+                )
             )
         }
         if (d.kafka != null) out += DatasetRef("kafka", List("topic" -> d.kafka.topic))
@@ -243,7 +265,7 @@ object LineageService {
             val pipelineId = "pipeline:" + p.name
             addNode(Node(pipelineId, "pipeline", p.name, Option(p.catalog), tagsOf(p.tags)))
             datasets(p).foreach { ds =>
-                addNode(Node(ds.id, "dataset", ds.name, Option(p.catalog), authority = authority.get(ds.id)))
+                addNode(Node(ds.id, "dataset", ds.name, Option(p.catalog), authority = authority.get(ds.id), format = ds.format))
                 edges += edge(pipelineId, ds.id)
                 if (p.catalog != null && p.catalog.nonEmpty) {
                     addNode(Node("catalog:" + p.catalog, "catalog", p.catalog))

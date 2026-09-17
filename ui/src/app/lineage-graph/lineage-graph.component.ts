@@ -294,6 +294,7 @@ export class LineageGraphComponent implements OnInit, OnDestroy {
           const n = nodes.find(x => x.id === p.data.id);
           if (!n) return '';
           const bits = [`<b>${this.escape(n.name)}</b>`, n.type + (n.historical ? ' · historical' : '') + (n.authority ? ' · ' + n.authority : '')];
+          if (n.format) bits.push('format: ' + this.escape(n.format));
           if (n.catalog) bits.push('catalog: ' + this.escape(n.catalog));
           if (n.tags?.length) bits.push('tags: ' + n.tags.map(t => this.escape(t)).join(', '));
           return bits.join('<br/>');
