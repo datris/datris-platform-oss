@@ -62,4 +62,12 @@ class PolicyRoutesSpec extends AnyFunSuite {
         assert(CapabilityRoutes.lookup("POST", "/api/v1/approvals/pa_1/approve") == RouteCheck.Require("approval", "decide"))
         assert(CapabilityRoutes.lookup("POST", "/api/v1/approvals/pa_1/reject") == RouteCheck.Require("approval", "decide"))
     }
+
+    test("the scratch result route is capability-mapped as a job read") {
+        // plans/stories/scratch-result-endpoint-retention.md: unmapped routes deny
+        // under CAPABILITY_ENFORCEMENT=enforce, so GET /pipeline/result must sit
+        // beside /pipeline/status with the same job:read requirement.
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/pipeline/result") == RouteCheck.Require("job", "read"))
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/pipeline/status") == RouteCheck.Require("job", "read"))
+    }
 }
