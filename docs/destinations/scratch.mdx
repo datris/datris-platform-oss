@@ -1,0 +1,111 @@
+---
+title: "Run a pipeline and get the rows back without landing them"
+sidebarTitle: "Scratch"
+description: "Use the scratch destination to validate, transform, or fetch data through a pipeline and read the result back — nothing is landed, results expire."
+---
+
+Use this destination when you (or an agent) want an answer now — what a source returns for these ids, whether today's file is clean, what a transformation produces — and have no reason to keep the rows. The run goes through the same chain as any other pipeline (preprocessor, data quality, transformation), and instead of a loader writing to a table, the rows are held for a short time so the caller can read them back.
+
+Scratch is a second lane beside ingestion, not a shortcut around it. Ingestion lands validated data beside your lake where it is observed, catalogued and queryable; scratch hands rows back once. Scratch results are **not observed**, **not catalogued**, **not queryable later**, and **expire**. If the rows turn out to be worth keeping, switch the pipeline's destination to a real one — the tap, its schedule and its incremental cursor do not move.
+
+## Keep it, or answer now?
+
+| You want to… | Use |
+|---|---|
+| Keep the data, observe it over time, query it later, or refresh it on a schedule | A real destination — [PostgreSQL](/destinations/postgres), [MongoDB](/destinations/mongodb), [Object Store](/destinations/object-store), [Snowflake](/destinations/snowflake), [Databricks](/destinations/databricks) |
+| See what a source returns for some inputs, check a file against its data quality rules, or preview a transformation — and then move on | **Scratch** |
+| Preview what a tap script produces before wiring it to anything | The tap test run (20-row sample; see [Taps](/taps)) |
+
+Never create a table just to read rows back once; never use scratch for data you will want again.
+
+## Configuration
+
+```json
+"destination": {
+  "scratch": {}
+}
+```
+
+There is nothing to configure per pipeline beyond its presence. Three rules apply:
+
+- **Structured sources only.** CSV, JSON and XML sources; unstructured (document) sources and vector destinations are not accepted.
+- **A sample is required at create time.** Like the object store destination, scratch needs the typed header so data quality rules and transformations can run — send the header row plus a few representative rows, exactly as for a structured destination.
+- **Exclusive.** A scratch pipeline lands nothing anywhere; it cannot be combined with another destination in the same pipeline.
+
+In the pipeline wizard, choose **Scratch** under Destination. It shows no fields.
+
+## What a run produces
+
+Data quality rules behave as everywhere else: a run either yields the whole transformed set (status `success`, or `warning` when rules flagged rows) or nothing (status `error`). There are no rejected rows to read.
+
+When the run finishes, its entry in the status rollup (`GET /api/v1/pipeline/status?…&withrollup=true`, or the MCP `get_pipeline_status` tool) carries the result:
+
+| Field | Description |
+|---|---|
+| `resultUri` | Where the result is held. Present only on scratch runs that produced a result. |
+| `resultRowCount` | Total rows in the result. |
+| `resultExpiresAt` | When the result is deleted. |
+| `resultPreview` | The first rows, inline — up to the configured inline cap. |
+| `resultTruncated` | `true` when the result has more rows than the preview holds. |
+
+For small results the preview is the whole answer. Page past it only when `resultTruncated` is `true`.
+
+## Reading the result
+
+### Run detail page
+
+Ops → Ingestion → the run. When the rollup carries a result, the page shows a **View result** panel: the record grid, **Prev** / **Next** paging, and a footer reading "showing N of M, expires at …". Paging reads the stored result; it never re-runs the source.
+
+### REST
+
+```
+GET /api/v1/pipeline/result?pipelinetoken={token}&offset={offset}&limit={limit}
+```
+
+Pass `pipelinetoken` (one job) or `publishertoken` (the job a tap run submitted). `offset` defaults to `0`; `limit` is clamped to the inline cap, so always advance by the page's `returnedCount`, not by the `limit` you asked for.
+
+```json
+{
+  "records": [ { "id": "1", "city": "c1" }, "…" ],
+  "rowCount": 300,
+  "returnedCount": 200,
+  "offset": 0,
+  "truncated": true,
+  "resultUri": "…",
+  "resultExpiresAt": "2026-09-19T10:00:05Z"
+}
+```
+
+| Status | Meaning |
+|---|---|
+| `404` | The pipeline has no result — only scratch pipelines return rows (or no run matched the token). |
+| `410` | The result has expired. Run the pipeline again. |
+
+See the [Pipeline Status API](/api-reference/status-api#get-a-scratch-pipelines-result) for the full reference.
+
+### CLI
+
+```bash
+# First page, with "showing N of M, expires at …"
+datris pipeline result <pipeline-token>
+
+# Page explicitly
+datris pipeline result <pipeline-token> --offset 200
+
+# Everything, one JSON object per line, paging until the result is exhausted
+datris pipeline result <pipeline-token> --out rows.jsonl
+```
+
+### MCP
+
+Agents read the first rows straight off the `get_pipeline_status` rollup (`resultPreview`) and call `get_pipeline_result` only when `resultTruncated` is `true`. See [MCP Server](/mcp-server#taps).
+
+## Retention and sensitive data
+
+A scratch result holds whatever the source returned, after transformation, in the platform's built-in object store alongside staged documents. It is deleted by an hourly sweep once its retention window passes; reads after that return `410`. Retention is the mitigation: keep it short, especially on shared hosts, and shorten it rather than lengthen it when sources carry personal or otherwise sensitive data. `0` expires results immediately.
+
+The inline preview cap and the retention window are deployment settings — see `SCRATCH_INLINE_ROWS` and `SCRATCH_RETENTION_HOURS` in the [Configuration Reference](/configuration-reference).
+
+<Note>
+A scratch pipeline still records its run history and data quality outcomes like any other pipeline. The rows are transient, and no dataset is registered in the catalog or the lineage graph.
+</Note>

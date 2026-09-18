@@ -85,7 +85,8 @@
               "destinations/chroma",
               "destinations/weaviate",
               "destinations/activemq",
-              "destinations/rest-endpoint"
+              "destinations/rest-endpoint",
+              "destinations/scratch"
             ]
           },
           {

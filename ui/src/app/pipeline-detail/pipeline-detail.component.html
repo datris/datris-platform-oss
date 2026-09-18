@@ -15,6 +15,47 @@
     <p class="suggestion-text" *ngIf="suggestion!.aiDiagnosis"><strong>Diagnosis:</strong> {{ suggestion!.aiDiagnosis }}</p>
     <p class="suggestion-text" *ngIf="suggestion!.aiSuggestion"><strong>Fix:</strong> {{ suggestion!.aiSuggestion }}</p>
   </div>
+  <!-- Scratch result: the run landed nothing and handed the rows back.
+       Only rendered when the rollup carries a resultUri (never on older
+       servers or non-scratch pipelines). Grid markup mirrors the tap test page. -->
+  <div class="result-panel" *ngIf="hasResult">
+    <div class="result-header">
+      <div class="result-title">
+        <span class="material-icons">table_view</span>
+        Result
+        <span class="result-meta" *ngIf="resultJob!.resultRowCount != null">{{ resultJob!.resultRowCount }} row(s)</span>
+      </div>
+      <button class="result-view-btn" *ngIf="!resultOpen" (click)="viewResult()">View result</button>
+    </div>
+    <ng-container *ngIf="resultOpen">
+      <div class="result-error" *ngIf="resultError">{{ resultError }}</div>
+      <ng-container *ngIf="!resultError && resultPage">
+        <div class="table-wrap" *ngIf="resultColumns.length > 0">
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th *ngFor="let col of resultColumns">{{ col }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let row of resultPage!.records">
+                <td *ngFor="let col of resultColumns">{{ formatCell(row[col]) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="result-empty" *ngIf="resultColumns.length === 0">No rows on this page.</div>
+        <div class="result-footer">
+          <span class="preview-note">Showing {{ resultPage!.returnedCount }} of {{ resultPage!.rowCount }}<ng-container *ngIf="resultPage!.offset"> (from row {{ resultPage!.offset + 1 }})</ng-container>, expires at {{ resultPage!.resultExpiresAt || resultJob!.resultExpiresAt }}</span>
+          <div class="result-paging">
+            <button class="page-btn" (click)="prevPage()" [disabled]="!canPrev">Prev</button>
+            <button class="page-btn" (click)="nextPage()" [disabled]="!canNext">Next</button>
+          </div>
+        </div>
+      </ng-container>
+      <div class="result-loading" *ngIf="resultLoading && !resultPage && !resultError">Loading…</div>
+    </ng-container>
+  </div>
   <div class="table-container">
     <table>
       <thead>

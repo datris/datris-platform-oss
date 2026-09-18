@@ -1070,9 +1070,14 @@ paths:
             outcome (success, warning, error, or processing); `rollup.jobs[]`
             carries per-job status (success, warning, error, processing, or
             timed_out) plus `lastError` on failures; `events` is the same raw
-            entry array returned without the flag. Recommended for agents that
-            need a single boolean to poll on. Ignored for pipelinename summary
-            queries, which return their own rollup-equivalent shape.
+            entry array returned without the flag. For a job whose pipeline
+            has a scratch destination, the job also carries `resultUri`,
+            `resultRowCount`, `resultExpiresAt`, `resultPreview` (the first
+            rows, inline, up to the inline cap) and `resultTruncated` (true when
+            more rows follow — page them with GET /api/v1/pipeline/result);
+            these fields are absent on every other job. Recommended for agents
+            that need a single boolean to poll on. Ignored for pipelinename
+            summary queries, which return their own rollup-equivalent shape.
       responses:
         '200':
           description: >-
@@ -1104,6 +1109,76 @@ paths:
                 properties:
                   deleted:
                     type: integer
+        '500':
+          description: Error
+
+  /api/v1/pipeline/result:
+    get:
+      tags: [Status]
+      summary: Get a scratch pipeline's result
+      description: >-
+        Page through the rows a scratch-destination pipeline run produced.
+        Paging reads the stored result and never re-runs the source. Only
+        scratch pipelines have a result. `limit` is clamped server-side to the
+        inline cap, so the next page starts at `offset + returnedCount`, never
+        `offset + limit`. Results expire after the retention window.
+      parameters:
+        - name: pipelinetoken
+          in: query
+          schema:
+            type: string
+          description: Pipeline token of one ingestion job. Exactly one of pipelinetoken or publishertoken is required.
+        - name: publishertoken
+          in: query
+          schema:
+            type: string
+          description: Publisher token from a tap run — resolves to the scratch job that run submitted.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Row offset to start from.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+          description: Rows requested for this page; clamped server-side to the inline cap. Read returnedCount for what actually came back.
+      responses:
+        '200':
+          description: One page of the result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records:
+                    type: array
+                    items:
+                      type: object
+                    description: This page's rows, one object per row
+                  rowCount:
+                    type: integer
+                    description: Total rows in the whole result
+                  returnedCount:
+                    type: integer
+                    description: Rows on this page
+                  offset:
+                    type: integer
+                  truncated:
+                    type: boolean
+                    description: True when more rows follow at offset + returnedCount
+                  resultUri:
+                    type: string
+                  resultExpiresAt:
+                    type: string
+                    description: When the result is deleted
+        '400':
+          description: offset or limit is not an integer
+        '404':
+          description: No run matched the token, or the pipeline is not a scratch pipeline — only scratch pipelines have a result
+        '410':
+          description: The result has expired; run the pipeline again
         '500':
           description: Error
 
