@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 74)
+        assert(MCPToolRoutes.allToolNames.size == 75)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -48,6 +48,17 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(CapabilityRoutes.lookup("GET", "/api/v1/doctor") == RouteCheck.Require("config", "read"))
         assert(MCPToolRoutes.allowedTools(key("config:read")).contains("run_doctor"))
         assert(!MCPToolRoutes.allowedTools(ragBuilder).contains("run_doctor"))
+    }
+
+    // Story: Scratch results over MCP and the CLI (plans/stories/scratch-mcp-cli-prompts.md).
+    // get_pipeline_result is a job read, classified exactly like get_pipeline_status.
+    test("get_pipeline_result is a job:read tool mapped to GET /api/v1/pipeline/result") {
+        assert(MCPToolRoutes.tools.toMap.get("get_pipeline_result") == Some(MCPToolRoutes.Mapped("GET", "/api/v1/pipeline/result")))
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/pipeline/result") == RouteCheck.Require("job", "read"))
+        assert(MCPToolRoutes.allowedTools(key("job:read")).contains("get_pipeline_result"))
+        assert(MCPToolRoutes.allowedTools(ragBuilder).contains("get_pipeline_result"))
+        assert(!MCPToolRoutes.allowedTools(key("nonexistent:nothing")).contains("get_pipeline_result"))
+        assert(!MCPToolRoutes.allowedTools(key("pipeline:read")).contains("get_pipeline_result"))
     }
 
     test("drift guard: every Mapped row resolves in CapabilityRoutes") {
@@ -100,6 +111,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
             "search_qdrant",
             "search_pgvector",
             "get_pipeline_status",
+            "get_pipeline_result",
             "get_job_status",
             "wait_seconds",
             "get_version",
