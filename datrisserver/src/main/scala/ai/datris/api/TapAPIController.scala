@@ -524,15 +524,13 @@ class TapAPIController {
       * Callers put the message under `error` in an otherwise-200 body: the
       * wizard reads only script/scriptPath/packages/changes from these
       * responses, and MCP create_tap hands any body with `error` to the agent. */
-    private def repointUnlessGated(existing: TapConfig, newScriptPath: String): Option[String] = {
-        val repointed = existing.copy(scriptPath = newScriptPath)
-        TapCronGate.check(existing, repointed) match {
-            case None => TapConfigIO.write(repointed); None
+    private def repointUnlessGated(existing: TapConfig, newScriptPath: String): Option[String] =
+        TapCronGate.checkAiRepoint(existing, newScriptPath) match {
+            case None => TapConfigIO.write(existing.copy(scriptPath = newScriptPath)); None
             case Some(msg) =>
                 logger.info("Not repointing scheduled tap '" + existing.name + "' at untested script: " + msg)
-                Some(TapCronGate.storeRefusal(existing.name))
+                Some(msg)
         }
-    }
 
     @PostMapping(path = Array("/tap/script"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def storeScript(

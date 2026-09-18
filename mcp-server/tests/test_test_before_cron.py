@@ -102,6 +102,35 @@ def test_update_tap_returns_409_body_verbatim(monkeypatch):
     assert json.loads(out) == json.loads(CONFLICT_BODY), out
 
 
+def test_create_tap_instruction_lane_does_not_fall_back_when_store_is_gated(monkeypatch):
+    """Scheduled repo-backed tap + create_tap(instruction=...): the generated
+    script is re-stored through /tap/script, which the gate refuses. The tool
+    must hand that 409 body back, NOT fall back to the built-in copy and save
+    an unscheduled MinIO tap over the scheduled repo tap."""
+    store_body = json.dumps({"error": (
+        "Tap 'prices' cannot be scheduled: its script changed since it last passed a test run. "
+        "Remedy: clear its cronExpression first (update_tap with an empty cron_expression), "
+        "store the script, call test_tap, then update_tap with the cron."
+    )})
+    calls = []
+
+    def call(method, path, timeout=300, **kwargs):
+        calls.append((method, path))
+        if method == "post" and path == "/api/v1/tap/generate":
+            return json.dumps({"script": "def fetch():\n    return []\n", "scriptPath": "tap-scripts/prices_9ea4e291.py", "packages": []})
+        if method == "get" and path == "/api/v1/code-repo":
+            return json.dumps({"enabled": True, "repo": "org/taps"})
+        if method == "post" and path == "/api/v1/tap/script":
+            return store_body
+        if method == "post" and path == "/api/v1/tap":
+            raise AssertionError("must not save the tap after a gated store")
+        return ""
+    monkeypatch.setattr(server, "_call", call)
+    out = server._dispatch("create_tap", {"name": "prices", "instruction": "fetch prices", "target_pipeline": "prices"})
+    assert json.loads(out) == json.loads(store_body), out
+    assert ("post", "/api/v1/tap") not in calls, calls
+
+
 # -------------------------------------------- Acceptance bullet 7 (prose) ---
 # The four prose sites the story names now state the platform-enforced 409
 # and the three-call remedy, in the same order the remedy runs.

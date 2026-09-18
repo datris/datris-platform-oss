@@ -68,6 +68,28 @@ class TapScriptStoreGateSpec extends AnyFunSuite {
         assert(TapCronGate.checkScriptStore(minio(cron = Cron), Old, _ => Some(Old)).isEmpty)
     }
 
+    test("identical bytes that differ only in trailing newline or line endings are allowed") {
+        // The object-store reader joins lines and drops the final newline.
+        assert(TapCronGate.checkScriptStore(minio(cron = Cron), Old, _ => Some(Old.stripSuffix("\n"))).isEmpty, "posted with trailing newline, stored without")
+        assert(TapCronGate.checkScriptStore(minio(cron = Cron), Old.stripSuffix("\n"), _ => Some(Old)).isEmpty, "stored with trailing newline, posted without")
+        assert(TapCronGate.checkScriptStore(gh(cron = Cron), Old.replace("\n", "\r\n"), _ => Some(Old)).isEmpty, "CRLF vs LF")
+        // Exact equality otherwise: a one-character edit is still a change.
+        assert(TapCronGate.checkScriptStore(minio(cron = Cron), Old + "#", _ => Some(Old)).isDefined)
+    }
+
+    test("AI script endpoints never repoint a scheduled tap, on either lane") {
+        val newPath = "tap-scripts/prices_9ea4e291.py"
+        // Repo-backed tap: identity is the pinned commit, so a scriptPath swap must be caught here.
+        val ghRefused = TapCronGate.checkAiRepoint(gh(cron = Cron, stamp = "gh:b49f667", testStatus = "success"), newPath)
+        assert(ghRefused.isDefined && ghRefused.get == TapCronGate.storeRefusal("prices"), ghRefused.toString)
+        assert(TapCronGate.checkAiRepoint(minio(cron = Cron), newPath).isDefined)
+        // Unscheduled, new, or same path: allowed.
+        assert(TapCronGate.checkAiRepoint(gh(), newPath).isEmpty)
+        assert(TapCronGate.checkAiRepoint(minio(), newPath).isEmpty)
+        assert(TapCronGate.checkAiRepoint(null, newPath).isEmpty)
+        assert(TapCronGate.checkAiRepoint(minio(cron = Cron), "tap-scripts/prices_1.py").isEmpty, "same path is not a repoint")
+    }
+
     test("an unreadable stored script under a cron is refused rather than silently replaced") {
         assert(TapCronGate.checkScriptStore(gh(cron = Cron), New, _ => None).isDefined)
         assert(TapCronGate.checkScriptStore(gh(cron = Cron), New, _ => throw new RuntimeException("connection refused")).isDefined)

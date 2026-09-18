@@ -3802,6 +3802,12 @@ def _dispatch(name: str, args: dict) -> str:
                     store_result = _call("post", "/api/v1/tap/script", json={"tapName": tap_name, "script": gen_script})
                     try:
                         store_data = json.loads(store_result)
+                        if "cannot be scheduled" in str(store_data.get("error", "")):
+                            # Test-before-cron gate: the tap is scheduled and these
+                            # are new bytes. Never fall back to the built-in copy —
+                            # that would silently convert a scheduled repo tap into
+                            # an unscheduled MinIO tap. Hand the remedy to the agent.
+                            return store_result
                         if "error" not in store_data:
                             script_path = store_data.get("scriptPath")
                             script_storage = store_data.get("storage")

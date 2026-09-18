@@ -96,9 +96,26 @@ object TapCronGate {
     def checkScriptStore(existing: TapConfig, script: String, readScript: TapConfig => Option[String]): Option[String] = {
         if (existing == null || blankToNull(existing.cronExpression) == null) return None
         val stored = scala.util.Try(readScript(existing)).toOption.flatten
-        if (stored.contains(script)) None
+        // Exact equality on normalised text: the object-store reader joins
+        // lines and drops the trailing newline, and editors differ on CRLF /
+        // final newline — none of that is a script change.
+        if (stored.exists(normalise(_) == normalise(script))) None
         else Some(storeRefusal(existing.name))
     }
+
+    /** Up-front gate for the AI script endpoints (`/tap/generate|fix|review|optimize`),
+      * which always write NEW bytes: a SCHEDULED tap must never be repointed at
+      * them, regardless of storage lane (for a repo-backed tap the identity is
+      * the pinned commit, so `check` alone would let a scriptPath swap through).
+      * None when the tap is new, unscheduled, or the path is unchanged. */
+    def checkAiRepoint(existing: TapConfig, newScriptPath: String): Option[String] = {
+        if (existing == null || blankToNull(existing.cronExpression) == null) return None
+        if (blankToNull(newScriptPath) == blankToNull(existing.scriptPath)) None
+        else Some(storeRefusal(existing.name))
+    }
+
+    private def normalise(text: String): String =
+        if (text == null) "" else text.replace("\r\n", "\n").replaceAll("\\s+$", "")
 
     /** The store-lane refusal: same "cannot be scheduled: " prefix (the wizard
       * keys on it), store-lane remedy. Also used by the AI script endpoints
