@@ -176,6 +176,81 @@ def pipelines(json_output):
         click.echo(json.dumps(result, indent=2)[:500])
 
 
+@cli.group("pipeline")
+def pipeline_group():
+    """Commands on a single pipeline run (e.g. read a scratch pipeline's result)."""
+    pass
+
+
+def _explain_result_error(err):
+    """Translate a get_pipeline_result error into the two cases a human hits.
+
+    The MCP tool relays the server body verbatim (no status code), so match
+    on a leading status code OR the server's own 404 / 410 message shapes.
+    """
+    text = str(err)
+    low = text.strip().lower()
+    if low.startswith("404") or low.startswith("only scratch pipelines") or low.startswith("no pipeline run found"):
+        return "Error: only scratch pipelines have a result (or this server predates scratch results)"
+    if low.startswith("410") or ("expire" in low and "run the pipeline again" in low):
+        return "Error: the result expired — run the pipeline again"
+    return f"Error: {text[:200]}"
+
+
+@pipeline_group.command("result")
+@click.argument("token")
+@click.option("--offset", type=int, default=None, help="Row offset to start from (default 0)")
+@click.option("--limit", type=int, default=None, help="Rows per page (server default and cap apply)")
+@click.option("--out", type=click.Path(dir_okay=False), default=None, help="Write every row as one JSON object per line to this file, paging until the result is exhausted")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def pipeline_result(token, offset, limit, out, json_output):
+    """Read the rows a scratch pipeline produced (TOKEN is the pipeline token)."""
+    def page(off, lim):
+        args = {"pipeline_token": token}
+        if off is not None:
+            args["offset"] = off
+        if lim is not None:
+            args["limit"] = lim
+        return mcp("get_pipeline_result", args)
+
+    if out:
+        written = 0
+        current = offset or 0
+        with open(out, "w") as f:
+            while True:
+                result = page(current, limit)
+                if not isinstance(result, dict) or "error" in result:
+                    click.echo(_explain_result_error(result.get("error", result) if isinstance(result, dict) else result))
+                    sys.exit(1)
+                records = result.get("records") or []
+                for rec in records:
+                    f.write(json.dumps(rec) + "\n")
+                written += len(records)
+                if not result.get("truncated") or not records:
+                    break
+                current += len(records)
+        click.echo(f"  \u2713 Wrote {written} row(s) to {out}")
+        return
+
+    result = page(offset, limit)
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        if isinstance(result, dict) and "error" in result:
+            sys.exit(1)
+        return
+    if not isinstance(result, dict) or "error" in result:
+        click.echo(_explain_result_error(result.get("error", result) if isinstance(result, dict) else result))
+        sys.exit(1)
+    records = result.get("records") or []
+    total = result.get("total", len(records))
+    expires = result.get("expiresAt", "unknown")
+    click.echo(f"  showing {len(records)} of {total}, expires at {expires}")
+    if result.get("truncated"):
+        click.echo(f"  (truncated — use --offset {result.get('offset', 0) + len(records)} for the next page, or --out to fetch everything)")
+    for rec in records:
+        click.echo("  " + json.dumps(rec))
+
+
 @cli.command()
 @click.argument("file", type=click.Path(exists=True))
 @click.option("--pipeline", "-p", default=None, help="Pipeline name (default: derived from filename)")

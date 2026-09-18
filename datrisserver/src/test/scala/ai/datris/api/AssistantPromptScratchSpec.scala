@@ -38,8 +38,10 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
     test("rule says the keep / query later / schedule cases still go to a real destination") {
         val low = rule.toLowerCase
         assert(low.contains("schedule"))
-        assert(low.contains("never create a table") || low.contains("never create a throwaway table"),
-            "rule must forbid creating a table just to read rows back once")
+        assert(
+            low.contains("never create a table") || low.contains("never create a throwaway table"),
+            "rule must forbid creating a table just to read rows back once"
+        )
     }
 
     test("rule mentions promotion via update_pipeline") {

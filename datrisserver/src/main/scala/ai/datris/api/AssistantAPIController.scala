@@ -402,6 +402,7 @@ class AssistantAPIController {
             "- When you propose a destination, state the destination type and the proposed name explicitly so the user can correct you before you build it.\n"
         )
         sb.append("\n")
+        sb.append(AssistantAPIController.KeepOrScratchRule).append("\n")
         sb.append("## Attached files (drag-and-drop)\n\n")
         sb.append(
             "- When the user drops a file into their message, an \"Attached file(s)\" block appears in that message listing each file's name, detected type, byte size, a content sample, and an `attachmentId`. Wherever a tool wants file `content` — `create_pipeline`, `upload_data`, `profile_data` — set the `content` argument to the file's `attachmentId` value (just the handle string, e.g. `content: \"<attachmentId>\"`). The platform substitutes the real bytes when the tool runs. Never paste, base64-encode, or fabricate file content yourself.\n"
@@ -641,4 +642,19 @@ class AssistantAPIController {
         tool.add("input_schema", schema)
         tool
     }
+}
+
+object AssistantAPIController {
+
+    /** KEEP-OR-SCRATCH rule (plans/fetch-only-taps.md §5), the same fork the MCP
+      * server instructions carry. Lifted out of `buildSystemPrompt` so a spec can
+      * read the wording directly. No domains, proper-noun APIs or concrete
+      * schedules: they leak into the Assistant's answers as domain bias.
+      */
+    private[datris] val KeepOrScratchRule: String =
+        "## KEEP-OR-SCRATCH rule (apply before choosing a destination)\n\n" +
+            "- If the user wants the data kept, observed, queried later, or refreshed on a schedule, use a real destination — exactly as described above.\n" +
+            "- If the user (or you, on your own initiative) wants an answer now, a validation result, or a transformed view and has no reason to keep the rows, create the pipeline with `destination: {\"scratch\": {}}` instead: run it, poll `get_pipeline_status` until `rollup.allDone` is true, read the rows off the rollup's `resultPreview`, and call `get_pipeline_result` only when `resultTruncated` is true and you need the rest. Never create a table just to read rows back once.\n" +
+            "- Scratch results are never catalogued or queryable later and expire after the retention window, so read them promptly. Nothing is landed anywhere.\n" +
+            "- If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from scratch to a real one). The tap, its schedule, and its incremental cursor do not move.\n"
 }
