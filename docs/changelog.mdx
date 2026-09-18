@@ -3,6 +3,19 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.33.1" description="September 18, 2026">
+  **A schedule only ever runs code that has passed a test.**
+
+  - **Test before you schedule.** A tap can carry a schedule only once the exact script that will run on it has passed a server-side test run. Saving a schedule on a never-tested or just-edited script is refused with a message naming the tap and the remedy: save unscheduled, test, then add the schedule. Cadence changes, clearing the schedule, and metadata edits on a tested tap need no re-test. See [Taps](/taps).
+  - **Editing a scheduled tap never repoints the schedule at untested code** — by hand, by an agent over MCP, through the AI generate, fix, review and optimize helpers, or by restoring an earlier version. The scheduled script keeps running as it was until the new one is tested and the schedule re-applied.
+  - **The wizard handles it for you.** Saving a scheduled tap saves it unscheduled, runs the test, and applies the schedule on success; on failure the tap is kept without its schedule and the wizard says so.
+  - **Existing scheduled taps are untouched.** They keep running and stay editable; their first schedule or script change is accepted if the tap has ever tested or run successfully.
+  - **Fix:** the CLI works on Python 3.14 (every command previously failed with an event-loop error).
+  - **Fix:** upload, generate and profile return a plain error message instead of a stack trace.
+  - **Fix:** the MCP Registry listing now names the settings the server actually reads; a Glama directory listing was added.
+  - Upgrade: `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. Agents editing a scheduled tap's script must clear the schedule first and re-test (the tools explain this on refusal). CLI users on pip or Homebrew: upgrade for the Python 3.14 fix.
+</Update>
+
 <Update label="v1.33.0" description="September 18, 2026">
   **Run a pipeline and get the rows back, without landing them.**
 
