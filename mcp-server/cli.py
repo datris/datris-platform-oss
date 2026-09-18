@@ -128,8 +128,12 @@ async def _disconnect():
 
 
 def mcp(name, args=None):
-    """Synchronous wrapper for MCP tool calls."""
-    return asyncio.get_event_loop().run_until_complete(_call_tool(name, args))
+    """Synchronous wrapper for MCP tool calls.
+
+    asyncio.run creates a fresh loop per call; get_event_loop() raised
+    "There is no current event loop" on Python 3.14 for every command.
+    """
+    return asyncio.run(_call_tool(name, args))
 
 
 def b64_file(path):
