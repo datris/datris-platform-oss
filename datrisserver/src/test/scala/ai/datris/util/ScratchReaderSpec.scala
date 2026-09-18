@@ -193,7 +193,10 @@ class ScratchReaderSpec extends AnyFunSuite {
             ScratchReader.read(settings(root), job(-1, resultUri = null), Some(0L), Some(10))
         }
         assert(e.status == 404, s"expected 404, got ${e.status}")
-        assert(e.getMessage != null && e.getMessage.toLowerCase.contains("scratch"), s"message must say only scratch pipelines have a result, got: ${e.getMessage}")
+        assert(
+            e.getMessage != null && e.getMessage.toLowerCase.contains("scratch"),
+            s"message must say only scratch pipelines have a result, got: ${e.getMessage}"
+        )
     }
 
     test("a missing object is a 410") {
@@ -203,7 +206,10 @@ class ScratchReaderSpec extends AnyFunSuite {
             ScratchReader.read(settings(root), scratchJob(root, 300), Some(0L), Some(10))
         }
         assert(e.status == 410, s"expected 410, got ${e.status}")
-        assert(e.getMessage != null && e.getMessage.toLowerCase.contains("run the pipeline again"), s"message must tell the caller to run it again, got: ${e.getMessage}")
+        assert(
+            e.getMessage != null && e.getMessage.toLowerCase.contains("run the pipeline again"),
+            s"message must tell the caller to run it again, got: ${e.getMessage}"
+        )
     }
 
     test("the key is recomputed from the rollup's pipeline + token, not read off resultUri") {
