@@ -1182,8 +1182,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     this.saving = true;
     this.error = '';
 
-    const writeTapConfig = (scriptPathToUse: string) => {
-      const config: any = this.isHttpTap
+    const buildConfig = (scriptPathToUse: string): any => this.isHttpTap
         ? {
             name: this.tapName.trim(),
             description: this.description,
@@ -1222,6 +1221,9 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             source: this.sourceInput.trim() || ''
           };
 
+    const writeTapConfig = (scriptPathToUse: string) => {
+      const config: any = buildConfig(scriptPathToUse);
+
       const onSaved = () => {
         this.saving = false;
         // If a pipeline is linked, advance to step 5 so the user can optionally
@@ -1259,7 +1261,16 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     // browser memory until something pushes them. Without this, save can
     // commit a scriptPath whose file in MinIO doesn't match what the user
     // sees (or doesn't exist at all, after a regression auto-revert).
-    if (!this.isHttpTap && this.script && this.script.trim()) {
+    // The server refuses to store different bytes for a tap that currently
+    // has a schedule (test-before-cron; nothing is written, so the repo never
+    // drifts ahead of the pin). The wizard clears the schedule on the stored
+    // tap, stores again, and then the config save re-applies it after a
+    // server-side test. Only one retry: a second refusal is a real error.
+    const isCronGate = (err: any) =>
+      err && err.status === 409 && typeof (err.error && err.error.error) === 'string' &&
+      err.error.error.indexOf('cannot be scheduled') >= 0;
+
+    const storeThenWrite = (retryAfterClearingCron: boolean) => {
       this.tapService.storeScript(this.tapName.trim(), this.script, this.scriptPath, this.storageParam(), this.scriptCommitSha).subscribe({
         next: (result) => {
           this.applyStoredScript(result);
@@ -1267,6 +1278,17 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           writeTapConfig(this.scriptPath);
         },
         error: (err) => {
+          if (isCronGate(err) && retryAfterClearingCron) {
+            const unscheduled = { ...buildConfig(this.scriptPath), cronExpression: null };
+            this.tapService.createOrUpdateTap(unscheduled).subscribe({
+              next: () => storeThenWrite(false),
+              error: (e2) => {
+                this.error = 'Save failed: ' + ((e2 && e2.error && e2.error.error) || (e2 && e2.error) || (e2 && e2.message));
+                this.saving = false;
+              }
+            });
+            return;
+          }
           if (err && err.status === 409) {
             // Someone committed this script in the repo since we loaded it.
             this.error = (err.error && err.error.error) ||
@@ -1278,6 +1300,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
           this.saving = false;
         }
       });
+    };
+
+    if (!this.isHttpTap && this.script && this.script.trim()) {
+      storeThenWrite(true);
     } else {
       writeTapConfig(this.scriptPath);
     }

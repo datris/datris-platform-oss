@@ -537,6 +537,16 @@ class TapAPIController {
 
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
 
+            // Test-before-cron, evaluated BEFORE any bytes are written: a script
+            // edit on a SCHEDULED tap is refused up front, so nothing is committed
+            // to the repo (or MinIO) that the tap will not be repointed at. The
+            // remedy clears the cron first, after which the store is allowed.
+            TapCronGate.checkScriptStore(existing, script, t => TapCodeStore.forTap(t).readScript(t)) match {
+                case Some(msg) =>
+                    return ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
+                case None =>
+            }
+
             // Backend resolution: explicit request > the tap's current backend
             // (existing taps never switch silently) > tenant default.
             val store =
@@ -559,12 +569,10 @@ class TapAPIController {
                     scriptRepoPath = stored.scriptRepoPath,
                     scriptCommitSha = stored.scriptCommitSha
                 )
-                // Test-before-cron: repointing a SCHEDULED tap at untested bytes
-                // would let the scheduler fire them before the gated save ever
-                // runs. Leave the stored tap on its tested script; the new
-                // reference is still returned so the caller can test against it
-                // and the gated POST /tap decides (409 with the cron, or accept a
-                // save that clears it).
+                // Belt and braces behind checkScriptStore above: never repoint a
+                // SCHEDULED tap at untested bytes (the scheduler would fire them
+                // before the gated save ever runs). The new reference is still
+                // returned so the caller can test against it.
                 TapCronGate.check(existing, repointed) match {
                     case None => TapConfigIO.write(repointed)
                     case Some(msg) =>

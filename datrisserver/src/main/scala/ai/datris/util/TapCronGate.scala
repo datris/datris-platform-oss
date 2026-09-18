@@ -77,6 +77,23 @@ object TapCronGate {
         }
     }
 
+    /** Up-front gate for `POST /tap/script`: may `script` replace the stored
+      * bytes of `existing`? Evaluated BEFORE anything is written, so a refused
+      * edit under a cron never commits to the repo or MinIO (a commit that the
+      * tap is not repointed at would leave the repo head ahead of the pin and
+      * every later store would fail the drift check).
+      *
+      * Rule: nothing to gate when the tap is new or unscheduled; identical
+      * bytes are a no-op; different (or unreadable stored) bytes under a cron
+      * are the "script changed" refusal — the remedy clears the cron first.
+      * `readScript` reads the CURRENT stored bytes of `existing`. */
+    def checkScriptStore(existing: TapConfig, script: String, readScript: TapConfig => Option[String]): Option[String] = {
+        if (existing == null || blankToNull(existing.cronExpression) == null) return None
+        val stored = scala.util.Try(readScript(existing)).toOption.flatten
+        if (stored.contains(script)) None
+        else Some(refusal(existing.name, "its script changed since it last passed a test run"))
+    }
+
     private def sameScriptRef(a: TapConfig, b: TapConfig): Boolean =
         a.isHttp == b.isHttp &&
             blankToNull(a.endpointUrl) == blankToNull(b.endpointUrl) &&

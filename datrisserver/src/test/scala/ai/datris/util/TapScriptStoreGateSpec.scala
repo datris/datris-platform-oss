@@ -1,0 +1,70 @@
+package ai.datris.util
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+ */
+
+import ai.datris.model.TapConfig
+import org.scalatest.funsuite.AnyFunSuite
+
+/** Story: Test-before-cron gate — `POST /tap/script` ordering.
+  *
+  *  `TapCronGate.checkScriptStore(existing, script, readScript)` is evaluated
+  *  BEFORE the code store writes anything, so a refused script edit under a
+  *  cron never commits to the repo (which would leave the repo head ahead of
+  *  the tap's pinned commit and make every later store fail the drift check).
+  */
+class TapScriptStoreGateSpec extends AnyFunSuite {
+
+    private val Cron = "0 0 3 * * ?"
+    private val Remedy = "save the tap without `cronExpression`, call `test_tap`, then `update_tap` with the cron"
+    private val Old = "def fetch():\n    return [{'a': 1}]\n"
+    private val New = "def fetch():\n    return [{'a': 2}]\n"
+
+    private val noRead: TapConfig => Option[String] =
+        _ => throw new AssertionError("must not read the stored script when there is nothing to gate")
+
+    private def gh(cron: String = null, stamp: String = null, testStatus: String = null): TapConfig =
+        TapConfig(
+            name = "prices",
+            description = "d",
+            targetPipeline = "p",
+            scriptStorage = "github",
+            scriptRepoPath = "taps/prices.py",
+            scriptCommitSha = "b49f667",
+            cronExpression = cron,
+            lastTestRunScriptId = stamp,
+            lastTestRunStatus = testStatus
+        )
+
+    private def minio(cron: String = null): TapConfig =
+        TapConfig(name = "prices", description = "d", targetPipeline = "p", scriptPath = "tap-scripts/prices_1.py", cronExpression = cron)
+
+    test("a new or unscheduled tap is never gated and nothing is read") {
+        assert(TapCronGate.checkScriptStore(null, New, noRead).isEmpty)
+        assert(TapCronGate.checkScriptStore(gh(), New, noRead).isEmpty)
+        assert(TapCronGate.checkScriptStore(gh(cron = "  "), New, noRead).isEmpty)
+        assert(TapCronGate.checkScriptStore(minio(), New, noRead).isEmpty)
+    }
+
+    test("different bytes under a cron are refused before any write, on both lanes") {
+        val refused = TapCronGate.checkScriptStore(gh(cron = Cron, stamp = "gh:b49f667", testStatus = "success"), New, _ => Some(Old))
+        assert(refused.isDefined, "a scheduled github tap must not have new bytes committed")
+        assert(refused.get.contains("prices") && refused.get.contains(Remedy), refused.get)
+        assert(refused.get.toLowerCase.contains("script"), refused.get)
+        assert(TapCronGate.checkScriptStore(minio(cron = Cron), New, _ => Some(Old)).isDefined)
+        // Legacy unstamped scheduled tap: same rule (cron unchanged + script changed).
+        assert(TapCronGate.checkScriptStore(gh(cron = Cron), New, _ => Some(Old)).isDefined)
+    }
+
+    test("identical bytes under a cron are a no-op and allowed") {
+        assert(TapCronGate.checkScriptStore(gh(cron = Cron, stamp = "gh:b49f667", testStatus = "success"), Old, _ => Some(Old)).isEmpty)
+        assert(TapCronGate.checkScriptStore(minio(cron = Cron), Old, _ => Some(Old)).isEmpty)
+    }
+
+    test("an unreadable stored script under a cron is refused rather than silently replaced") {
+        assert(TapCronGate.checkScriptStore(gh(cron = Cron), New, _ => None).isDefined)
+        assert(TapCronGate.checkScriptStore(gh(cron = Cron), New, _ => throw new RuntimeException("connection refused")).isDefined)
+    }
+}
