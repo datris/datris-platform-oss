@@ -18,15 +18,15 @@
       },
       "environmentVariables": [
         {
-          "name": "PIPELINE_URL",
-          "description": "URL of the Datris pipeline server",
+          "name": "DATRIS_API_URL",
+          "description": "URL of the Datris server API (default http://localhost:8080)",
           "isRequired": true,
           "format": "string",
           "isSecret": false
         },
         {
-          "name": "PIPELINE_API_KEY",
-          "description": "API key for the Datris pipeline server (if key validation is enabled)",
+          "name": "DATRIS_API_KEY",
+          "description": "API key for the Datris server (only when USE_API_KEYS=true)",
           "isRequired": false,
           "format": "string",
           "isSecret": true
@@ -43,15 +43,15 @@
       },
       "environmentVariables": [
         {
-          "name": "PIPELINE_URL",
-          "description": "URL of the Datris pipeline server",
+          "name": "DATRIS_API_URL",
+          "description": "URL of the Datris server API (default http://localhost:8080)",
           "isRequired": true,
           "format": "string",
           "isSecret": false
         },
         {
-          "name": "PIPELINE_API_KEY",
-          "description": "API key for the Datris pipeline server (if key validation is enabled)",
+          "name": "DATRIS_API_KEY",
+          "description": "API key for the Datris server (only when USE_API_KEYS=true)",
           "isRequired": false,
           "format": "string",
           "isSecret": true
