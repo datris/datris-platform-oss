@@ -44,8 +44,12 @@ class TapScriptIdentitySpec extends AnyFunSuite {
 
     test("github-backed taps key on scriptCommitSha") {
         val t = TapConfig(
-            name = "orders", description = "d", targetPipeline = "p",
-            scriptStorage = "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = "0123abcd0123abcd"
+            name = "orders",
+            description = "d",
+            targetPipeline = "p",
+            scriptStorage = "github",
+            scriptRepoPath = "taps/orders.py",
+            scriptCommitSha = "0123abcd0123abcd"
         )
         assert(TapScriptIdentity.of(t).contains("gh:0123abcd0123abcd"))
         assert(TapScriptIdentity.of(t, noRead).contains("gh:0123abcd0123abcd"), "repo identity is the pin, not the bytes")
@@ -53,8 +57,11 @@ class TapScriptIdentitySpec extends AnyFunSuite {
 
     test("HTTP taps key on endpointUrl") {
         val t = TapConfig(
-            name = "feed", description = "d", targetPipeline = "p",
-            scriptKind = "http", endpointUrl = "https://feeds.example.org/v1/prices"
+            name = "feed",
+            description = "d",
+            targetPipeline = "p",
+            scriptKind = "http",
+            endpointUrl = "https://feeds.example.org/v1/prices"
         )
         assert(TapScriptIdentity.of(t).contains("http:https://feeds.example.org/v1/prices"))
         assert(TapScriptIdentity.of(t, noRead).contains("http:https://feeds.example.org/v1/prices"))
@@ -79,8 +86,12 @@ class TapScriptIdentitySpec extends AnyFunSuite {
         assert(TapScriptIdentity.of(minio("")).isEmpty)
         // Repo-backed tap with no pinned commit: there are no exact bytes to promise.
         val unpinned = TapConfig(
-            name = "orders", description = "d", targetPipeline = "p",
-            scriptStorage = "github", scriptRepoPath = "taps/orders.py", scriptCommitSha = null
+            name = "orders",
+            description = "d",
+            targetPipeline = "p",
+            scriptStorage = "github",
+            scriptRepoPath = "taps/orders.py",
+            scriptCommitSha = null
         )
         assert(TapScriptIdentity.of(unpinned, _ => None).isEmpty)
     }

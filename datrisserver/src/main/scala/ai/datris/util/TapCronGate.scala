@@ -1,0 +1,92 @@
+package ai.datris.util
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+ */
+
+import ai.datris.model.TapConfig
+
+/** Test-before-cron gate (plans/stories/test-before-cron.md).
+  *
+  * A tap may only carry a schedule once the exact script (or HTTP endpoint)
+  * that will run on it has passed a `mode=test` run. Pure: all branching lives
+  * here so it is unit-testable without Spring, Mongo or MinIO.
+  *
+  * Rules:
+  *  - the incoming cron is null (never scheduled / being cleared) → allow;
+  *  - the cron is unchanged and the script identity matches what the stored
+  *    tap was tested with (or, for an unstamped legacy tap, the stored script
+  *    is unchanged) → allow — unrelated edits never need a test;
+  *  - the cron changes (incl. null → set) → allow only when the stored tap has
+  *    a successful test stamped for the incoming identity, or is a legacy
+  *    unstamped tap with a prior successful test or real run;
+  *  - the cron is unchanged but the identity differs from the stamp → refuse
+  *    (script edit on a scheduled tap).
+  *
+  * Test state is read from `existing` ONLY. Clients (UI save, taps-list cron
+  * edit) post stale or forged `lastTestRun*` fields in the body; they are ignored.
+  */
+object TapCronGate {
+
+    val Remedy = "save the tap without `cronExpression`, call `test_tap`, then `update_tap` with the cron"
+
+    /** `existing` is the STORED tap (null when the name is new); `incoming` is
+      * the request body after script-reference preservation. Returns the 409
+      * refusal message, or None to allow the save. */
+    def check(existing: TapConfig, incoming: TapConfig): Option[String] = {
+        val incomingCron = blankToNull(incoming.cronExpression)
+        if (incomingCron == null) return None
+
+        val name = incoming.name
+        val existingCron = if (existing == null) null else blankToNull(existing.cronExpression)
+        val cronChanged = existingCron != incomingCron
+
+        if (existing == null)
+            return Some(refusal(name, "its script has never passed a test run"))
+
+        val incomingId = TapScriptIdentity.of(incoming)
+        val stamp = blankToNull(existing.lastTestRunScriptId)
+        val testedGreen = "success".equalsIgnoreCase(existing.lastTestRunStatus)
+
+        if (stamp != null) {
+            // Stamped tap: the stamp names the exact bytes that passed the test.
+            val identityMatches = incomingId.contains(stamp)
+            if (identityMatches && testedGreen) None
+            else if (!identityMatches)
+                Some(refusal(name, "its script changed since it last passed a test run"))
+            else Some(refusal(name, "its script has never passed a test run"))
+        } else {
+            // Legacy / unstamped tap (pre-upgrade or never tested).
+            val existingId = TapScriptIdentity.of(existing)
+            val scriptUnchanged = incomingId.isDefined && incomingId == existingId
+            // Unrelated edit (cron untouched) on a legacy tap whose script the
+            // store cannot read right now: the reference itself is unchanged, so
+            // nothing new is being scheduled. No identity is minted either way.
+            val sameUnreadableRef = incomingId.isEmpty && existingId.isEmpty && sameScriptRef(existing, incoming)
+            if (!cronChanged && (scriptUnchanged || sameUnreadableRef)) None
+            else if (!cronChanged)
+                Some(refusal(name, "its script changed since it last passed a test run"))
+            else {
+                val ranGreen = "success".equalsIgnoreCase(existing.lastRunStatus)
+                if (scriptUnchanged && (testedGreen || ranGreen)) None
+                else if (!scriptUnchanged)
+                    Some(refusal(name, "its script changed since it last passed a test run"))
+                else Some(refusal(name, "its script has never passed a test run"))
+            }
+        }
+    }
+
+    private def sameScriptRef(a: TapConfig, b: TapConfig): Boolean =
+        a.isHttp == b.isHttp &&
+            blankToNull(a.endpointUrl) == blankToNull(b.endpointUrl) &&
+            blankToNull(a.scriptStorage) == blankToNull(b.scriptStorage) &&
+            blankToNull(a.scriptPath) == blankToNull(b.scriptPath) &&
+            blankToNull(a.scriptRepoPath) == blankToNull(b.scriptRepoPath) &&
+            blankToNull(a.scriptCommitSha) == blankToNull(b.scriptCommitSha)
+
+    private def refusal(name: String, reason: String): String =
+        "Tap '" + name + "' cannot be scheduled: " + reason + ". Remedy: " + Remedy + "."
+
+    private def blankToNull(s: String): String = if (s == null || s.trim.isEmpty) null else s
+}

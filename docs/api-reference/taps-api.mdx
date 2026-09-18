@@ -91,6 +91,19 @@ Content-Type: application/json
 
 Mismatches return **HTTP 400** with a message naming the violation. Also enforced at run time in `TapRunner.feedDocumentPipeline` in case the pipeline is reshaped after the tap is saved.
 
+**Test-before-cron rule (HTTP 409).** A tap may only carry a `cronExpression` once the exact script (or, for HTTP taps, the exact `endpointUrl`) that will run on that schedule has passed a test run (`POST /api/v1/tap/run` with `mode: "test"`). The save is refused with **HTTP 409** and nothing is persisted (no new version is minted) when either:
+
+- the `cronExpression` is being set or changed and the stored tap has no successful test for the script being saved, or
+- the `cronExpression` is unchanged but the script (new `scriptPath` / `scriptCommitSha` / `endpointUrl`) differs from the one that last passed a test.
+
+```json
+{
+  "error": "Tap 'stock-prices-tap' cannot be scheduled: its script has never passed a test run. Remedy: save the tap without `cronExpression`, call `test_tap`, then `update_tap` with the cron."
+}
+```
+
+Remedy, in order: save the tap **without** `cronExpression`; run it with `mode: "test"` until it succeeds (the server stamps the tested script on the tap as `lastTestRunScriptId`); then save again with the `cronExpression`. Clearing a cron, and cadence-only or metadata edits (description, tags, `targetPipeline`, `enabled`) on a tap whose current script has passed a test, are always accepted. Test state is read from the stored tap only — `lastTestRun*` fields in the request body are ignored. Pre-existing scheduled taps keep running and stay editable; the first cron or script change on such a tap is accepted if the tap has ever tested or run successfully, otherwise it needs a test run first. The same rule applies to `POST /api/v1/tap/version/restore`.
+
 ## Delete Tap
 
 ```
@@ -382,7 +395,7 @@ Executes a saved tap. Optionally sends data to the configured pipeline.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | (required) | Tap name |
-| `mode` | string | `"test"` | `"run"` feeds records into `targetPipeline`; `"test"` executes the script and returns sample results without persisting |
+| `mode` | string | `"test"` | `"run"` feeds records into `targetPipeline`; `"test"` executes the script and returns sample results without persisting. A successful `mode=test` also records `lastTestRunStatus: "success"` and `lastTestRunScriptId` (the identity of the tested script or endpoint) on the tap, which is what allows a `cronExpression` to be saved — see the test-before-cron rule under Create or Update Tap |
 | `params` | object | `{}` | Optional per-run parameters exposed to the script as environment variables (nested values JSON-encoded) |
 
 **Response:**

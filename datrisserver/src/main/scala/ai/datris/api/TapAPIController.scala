@@ -395,14 +395,30 @@ class TapAPIController {
                     // wipe them on an unrelated edit; an explicit empty list clears.
                     tags = if (tapConfigWithScript.tags == null) existing.tags else tapConfigWithScript.tags,
                     // Same rule for the declared source: omitted ⇒ keep; "" ⇒ clear.
-                    source = if (tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source
+                    source = if (tapConfigWithScript.source == null) existing.source else tapConfigWithScript.source,
+                    // Test outcome + script stamp are server-owned (written only by
+                    // the run endpoint in mode=test). Clients echo stale copies in the
+                    // save body; never let a body promote a tap to "tested".
+                    lastTestRunStatus = existing.lastTestRunStatus,
+                    lastTestRunScriptId = existing.lastTestRunScriptId
                 )
             else
                 tapConfigWithScript.copy(
                     createdAt = now,
                     updatedAt = now,
-                    createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull
+                    createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull,
+                    lastTestRunStatus = null,
+                    lastTestRunScriptId = null
                 )
+
+            // Test-before-cron gate: a schedule may only be set on a script (or
+            // endpoint) that has passed a mode=test run. Reads test state from
+            // the STORED tap only. Refused saves persist nothing and mint no version.
+            TapCronGate.check(existing, configToSave) match {
+                case Some(msg) =>
+                    return ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
+                case None =>
+            }
 
             // Definition-edit write → mints a new immutable version snapshot.
             // (Status churn from TapRunner stays on plain TapConfigIO.write.)
@@ -1014,14 +1030,21 @@ class TapAPIController {
                     val sdf = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
                     sdf.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
                     val now = sdf.format(new java.util.Date())
+                    val passed = result.error == null
                     val updated = tapConfig.copy(
-                        lastTestRunStatus = if (result.error == null) "success" else "failure",
+                        lastTestRunStatus = if (passed) "success" else "failure",
                         lastTestRunTime = now,
                         lastTestRunRecordCount = result.recordCount,
                         lastTestRunError = result.error,
                         lastTestRunDataType = result.dataType,
-                        lastTestRunColumns = result.columns
+                        lastTestRunColumns = result.columns,
+                        // Stamp the identity of the exact script/endpoint that just
+                        // passed, so TapCronGate can tie a later cron to these bytes.
+                        // A failed test clears the stamp: the previous green no longer
+                        // vouches for what is stored now.
+                        lastTestRunScriptId = if (passed) TapScriptIdentity.of(tapConfig).orNull else null
                     )
+                    // Status churn: plain write, no version minted.
                     TapConfigIO.write(updated)
                 }
 

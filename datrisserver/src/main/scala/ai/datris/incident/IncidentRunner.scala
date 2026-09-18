@@ -421,7 +421,8 @@ object IncidentRunner {
                             lastTestRunRecordCount = live.lastTestRunRecordCount,
                             lastTestRunError = live.lastTestRunError,
                             lastTestRunDataType = live.lastTestRunDataType,
-                            lastTestRunColumns = live.lastTestRunColumns
+                            lastTestRunColumns = live.lastTestRunColumns,
+                            lastTestRunScriptId = live.lastTestRunScriptId
                         )
                         TapConfigIO.writeVersioned(restored, "incident " + id + ": reverted after failed verification", RecoveryKey.Label)
                         step(id, "execute", "reverted tap to version " + target)
