@@ -226,8 +226,8 @@ describe('PipelineCreateComponent — Scratch destination', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         { provide: PipelineService, useValue: {
-            // The instance advertises scratch alongside the other structured destinations.
-            getAvailableDestinations: () => of(['postgres', 'mongodb', 'objectstore', 'scratch']),
+            // The real server shape: scratch is never advertised — it follows objectstore.
+            getAvailableDestinations: () => of(['postgres', 'mongodb', 'objectstore']),
             getPipelines: () => of([]),
             getPipeline: () => of({})
         } },
@@ -275,6 +275,17 @@ describe('PipelineCreateComponent — Scratch destination', () => {
     expect((scratch!.textContent || '').trim()).toMatch(/^Scratch/);
     expect(scratch!.disabled).withContext('enabled when the instance advertises scratch').toBeFalse();
     expect(component.isDestAvailable('scratch')).toBeTrue();
+  });
+
+  it('Scratch is disabled when the instance does not advertise objectstore', () => {
+    component.availableDestinations = ['postgres'];
+    expect(component.isDestAvailable('scratch')).toBeFalse();
+    onDestinationStep('postgres');
+    const scratch = Array.from(destTypeSelect()!.querySelectorAll('option'))
+      .find(o => (o as HTMLOptionElement).value === 'scratch') as HTMLOptionElement | undefined;
+    expect(scratch).toBeDefined();
+    expect(scratch!.disabled).withContext('rendered but disabled, like the other structured destinations').toBeTrue();
+    expect((scratch!.textContent || '')).toContain('Not installed');
   });
 
   it('choosing Scratch shows no destination fields', () => {

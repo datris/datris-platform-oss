@@ -461,9 +461,10 @@
             <option value="restendpoint">REST Endpoint</option>
           </optgroup>
           <optgroup label="Answer now" *ngIf="sourceType !== 'unstructured'">
-            <!-- [selected] mirrors the Iceberg key-fields options: reopening a saved
-                 scratch pipeline reflects the selection synchronously, before ngModel's
-                 deferred write. -->
+            <!-- [selected]: ngModel writes destType in a microtask, and until then Chrome
+                 default-selects the first statically rendered option (ActiveMQ) — the
+                 *ngIf options above are inserted afterwards. Binding selected makes a
+                 reopened scratch pipeline show Scratch in the same change-detection pass. -->
             <option value="scratch" [selected]="destType === 'scratch'" [disabled]="!isDestAvailable('scratch')">Scratch (nothing landed){{ isDestAvailable('scratch') ? '' : ' — Not installed' }}</option>
           </optgroup>
           <optgroup label="Vector Databases">

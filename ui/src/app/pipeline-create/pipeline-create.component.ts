@@ -475,11 +475,15 @@ export class PipelineCreateComponent implements OnInit {
 
   /** True when the structured destination is installed on this instance.
    *  FAIL-OPEN: an unknown availability list (call pending or failed) enables
-   *  everything — a blip must never hide options. Only the structured
-   *  destinations (and scratch) are gated; other types always return true. */
+   *  everything — a blip must never hide options. Only the five structured
+   *  destinations are gated; other types always return true. Scratch is never
+   *  advertised by /api/v1/destinations/available — it writes to the built-in
+   *  object store, the same store the objectstore probe checks — so it follows
+   *  objectstore's availability. */
   isDestAvailable(name: string): boolean {
     if (this.availableDestinations === null) return true;
-    const structured = ['mongodb', 'postgres', 'objectstore', 'snowflake', 'databricks', 'scratch'];
+    if (name === 'scratch') return this.availableDestinations.includes('objectstore');
+    const structured = ['mongodb', 'postgres', 'objectstore', 'snowflake', 'databricks'];
     if (!structured.includes(name)) return true;
     return this.availableDestinations.includes(name);
   }
