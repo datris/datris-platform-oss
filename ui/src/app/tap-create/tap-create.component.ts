@@ -1222,21 +1222,33 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             source: this.sourceInput.trim() || ''
           };
 
+      const onSaved = () => {
+        this.saving = false;
+        // If a pipeline is linked, advance to step 5 so the user can optionally
+        // run the tap and push data to the pipeline before leaving. Otherwise
+        // there's nothing meaningful to do on step 5 — go straight to /taps.
+        if (this.targetPipeline) {
+          this.step = 5;
+          this.loadTargetPipelineConfig();
+        } else {
+          this.router.navigate(['/taps']);
+        }
+      };
+      const errText = (err: any) => (err && err.error && err.error.error) || (err && err.error) || (err && err.message);
+
       this.tapService.createOrUpdateTap(config).subscribe({
-        next: () => {
-          this.saving = false;
-          // If a pipeline is linked, advance to step 5 so the user can optionally
-          // run the tap and push data to the pipeline before leaving. Otherwise
-          // there's nothing meaningful to do on step 5 — go straight to /taps.
-          if (this.targetPipeline) {
-            this.step = 5;
-            this.loadTargetPipelineConfig();
-          } else {
-            this.router.navigate(['/taps']);
-          }
-        },
+        next: onSaved,
         error: (err) => {
-          this.error = 'Save failed: ' + (err.error || err.message);
+          if (err && err.status === 409 && config.cronExpression) {
+            // Test-before-cron gate: the server only accepts a schedule on a
+            // script it has itself seen pass a test run. The wizard's Test
+            // Script runs against the unsaved body and stamps nothing, so
+            // satisfy the gate here: save unscheduled, run a server-side test,
+            // then apply the schedule.
+            this.saveScheduledViaServerTest(config, onSaved, errText);
+            return;
+          }
+          this.error = 'Save failed: ' + errText(err);
           this.saving = false;
         }
       });
@@ -1269,6 +1281,41 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     } else {
       writeTapConfig(this.scriptPath);
     }
+  }
+
+  /** Save-without-cron → server-side test run → save-with-cron. Used when the
+   *  direct save was refused (409) by the test-before-cron gate. If the test
+   *  fails the tap stays saved but unscheduled, and the error says so. */
+  private saveScheduledViaServerTest(config: any, onSaved: () => void, errText: (err: any) => string): void {
+    const unscheduled = { ...config, cronExpression: null };
+    this.tapService.createOrUpdateTap(unscheduled).subscribe({
+      next: () => {
+        this.tapService.runTap(config.name, 'test').subscribe({
+          next: (result) => {
+            if (result && result.error) {
+              this.error = 'Saved without schedule: test failed — ' + result.error;
+              this.saving = false;
+              return;
+            }
+            this.tapService.createOrUpdateTap(config).subscribe({
+              next: onSaved,
+              error: (err) => {
+                this.error = 'Saved without schedule: could not apply the schedule — ' + errText(err);
+                this.saving = false;
+              }
+            });
+          },
+          error: (err) => {
+            this.error = 'Saved without schedule: test run failed — ' + errText(err);
+            this.saving = false;
+          }
+        });
+      },
+      error: (err) => {
+        this.error = 'Save failed: ' + errText(err);
+        this.saving = false;
+      }
+    });
   }
 
   /** Explicit storage request for storeScript. Existing taps stick to their

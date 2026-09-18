@@ -553,14 +553,23 @@ class TapAPIController {
             val stored = store.storeScript(tapName, script, prior, actorLabel(request))
 
             if (existing != null) {
-                TapConfigIO.write(
-                    existing.copy(
-                        scriptStorage = stored.storage,
-                        scriptPath = stored.scriptPath,
-                        scriptRepoPath = stored.scriptRepoPath,
-                        scriptCommitSha = stored.scriptCommitSha
-                    )
+                val repointed = existing.copy(
+                    scriptStorage = stored.storage,
+                    scriptPath = stored.scriptPath,
+                    scriptRepoPath = stored.scriptRepoPath,
+                    scriptCommitSha = stored.scriptCommitSha
                 )
+                // Test-before-cron: repointing a SCHEDULED tap at untested bytes
+                // would let the scheduler fire them before the gated save ever
+                // runs. Leave the stored tap on its tested script; the new
+                // reference is still returned so the caller can test against it
+                // and the gated POST /tap decides (409 with the cron, or accept a
+                // save that clears it).
+                TapCronGate.check(existing, repointed) match {
+                    case None => TapConfigIO.write(repointed)
+                    case Some(msg) =>
+                        logger.info("POST /tap/script: not repointing scheduled tap '" + tapName + "' at untested script: " + msg)
+                }
             }
 
             val gson = new Gson
