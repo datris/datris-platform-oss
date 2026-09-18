@@ -105,6 +105,12 @@ class StreamNotifier {
             val (sourceColumns, csvStream) = {
                 if (csvAttributes.header) {
                     val headerBytes = readLineBytes(buffered)
+                    // A 0-byte payload has no header to evolve against; fail here
+                    // so schema evolution never sees "" as a new column.
+                    if (headerBytes.isEmpty)
+                        throw new DatrisException(
+                            "No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row."
+                        )
                     val headerLine = new String(headerBytes, StandardCharsets.UTF_8).stripLineEnd
                     val columns = headerLine.split(Pattern.quote(delimiter)).map(_.toLowerCase).toList
                     (columns, new SequenceInputStream(new ByteArrayInputStream(headerBytes), buffered): InputStream)

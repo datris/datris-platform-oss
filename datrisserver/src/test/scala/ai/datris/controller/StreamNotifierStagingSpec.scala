@@ -153,6 +153,12 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         val e = intercept[DatrisException](stage("id,amount\n", csvConfig))
         assert(e.getMessage.contains("No data rows found in uploaded file for pipeline: orders"), s"got: ${e.getMessage}")
         assert(e.getMessage.contains("The file may be empty or contain only a header row."))
+
+        // A 0-byte payload must fail the same way, before schema evolution can
+        // mistake the missing header for a new "" column and rewrite the config.
+        val empty = intercept[DatrisException](stage("", csvConfig))
+        assert(empty.getMessage.contains("No data rows found in uploaded file for pipeline: orders"), s"got: ${empty.getMessage}")
+        assert(csvConfig.source.schemaProperties.fields.asScala.map(_.name).toList == List("id", "amount"), "schema untouched")
     }
 
     // Acceptance 10 (unit-level half): the run's record count and data type are
