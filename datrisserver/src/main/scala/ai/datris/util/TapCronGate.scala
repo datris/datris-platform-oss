@@ -31,6 +31,12 @@ object TapCronGate {
 
     val Remedy = "save the tap without `cronExpression`, call `test_tap`, then `update_tap` with the cron"
 
+    /** Remedy for the STORE lane (`POST /tap/script`, AI script endpoints): the
+      * stored tap still carries its cron, so re-saving without a cron would hit
+      * the same gate. The cron has to be cleared on the stored tap first. */
+    val StoreRemedy =
+        "clear its cronExpression first (update_tap with an empty cron_expression), store the script, call test_tap, then update_tap with the cron"
+
     /** `existing` is the STORED tap (null when the name is new); `incoming` is
       * the request body after script-reference preservation. Returns the 409
       * refusal message, or None to allow the save. */
@@ -91,8 +97,14 @@ object TapCronGate {
         if (existing == null || blankToNull(existing.cronExpression) == null) return None
         val stored = scala.util.Try(readScript(existing)).toOption.flatten
         if (stored.contains(script)) None
-        else Some(refusal(existing.name, "its script changed since it last passed a test run"))
+        else Some(storeRefusal(existing.name))
     }
+
+    /** The store-lane refusal: same "cannot be scheduled: " prefix (the wizard
+      * keys on it), store-lane remedy. Also used by the AI script endpoints
+      * when they decline to repoint a scheduled tap. */
+    def storeRefusal(name: String): String =
+        "Tap '" + name + "' cannot be scheduled: its script changed since it last passed a test run. Remedy: " + StoreRemedy + "."
 
     private def sameScriptRef(a: TapConfig, b: TapConfig): Boolean =
         a.isHttp == b.isHttp &&

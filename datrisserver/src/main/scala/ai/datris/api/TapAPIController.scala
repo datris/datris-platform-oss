@@ -530,7 +530,7 @@ class TapAPIController {
             case None => TapConfigIO.write(repointed); None
             case Some(msg) =>
                 logger.info("Not repointing scheduled tap '" + existing.name + "' at untested script: " + msg)
-                Some(msg)
+                Some(TapCronGate.storeRefusal(existing.name))
         }
     }
 

@@ -1289,13 +1289,16 @@ export class TapCreateComponent implements OnInit, OnDestroy {
             });
             return;
           }
+          // After the clear-cron retry the stored tap is already unscheduled;
+          // say so, or a failure here silently loses the nightly run.
+          const prefix = retryAfterClearingCron ? '' : 'Saved without schedule (cleared to allow the script edit): ';
           if (err && err.status === 409) {
             // Someone committed this script in the repo since we loaded it.
-            this.error = (err.error && err.error.error) ||
-              'The script changed in the repository since you opened it. Use "Load latest" in the drift banner, reapply your edits, and save again.';
+            this.error = prefix + ((err.error && err.error.error) ||
+              'The script changed in the repository since you opened it. Use "Load latest" in the drift banner, reapply your edits, and save again.');
             this.checkDrift();
           } else {
-            this.error = 'Save failed (could not store script): ' + (err.error || err.message);
+            this.error = prefix + 'Save failed (could not store script): ' + (err.error || err.message);
           }
           this.saving = false;
         }

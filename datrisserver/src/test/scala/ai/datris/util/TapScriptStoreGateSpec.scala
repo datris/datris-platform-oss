@@ -18,7 +18,10 @@ import org.scalatest.funsuite.AnyFunSuite
 class TapScriptStoreGateSpec extends AnyFunSuite {
 
     private val Cron = "0 0 3 * * ?"
-    private val Remedy = "save the tap without `cronExpression`, call `test_tap`, then `update_tap` with the cron"
+    // Store-lane remedy: re-saving without a cron would hit the same gate (the
+    // STORED tap still has its cron), so the message must say to clear it first.
+    private val Remedy =
+        "clear its cronExpression first (update_tap with an empty cron_expression), store the script, call test_tap, then update_tap with the cron"
     private val Old = "def fetch():\n    return [{'a': 1}]\n"
     private val New = "def fetch():\n    return [{'a': 2}]\n"
 
@@ -52,6 +55,8 @@ class TapScriptStoreGateSpec extends AnyFunSuite {
         val refused = TapCronGate.checkScriptStore(gh(cron = Cron, stamp = "gh:b49f667", testStatus = "success"), New, _ => Some(Old))
         assert(refused.isDefined, "a scheduled github tap must not have new bytes committed")
         assert(refused.get.contains("prices") && refused.get.contains(Remedy), refused.get)
+        assert(refused.get.contains("cannot be scheduled: "), s"wizard keys on this prefix: ${refused.get}")
+        assert(refused.get == TapCronGate.storeRefusal("prices"), "AI endpoints reuse the same store-lane message")
         assert(refused.get.toLowerCase.contains("script"), refused.get)
         assert(TapCronGate.checkScriptStore(minio(cron = Cron), New, _ => Some(Old)).isDefined)
         // Legacy unstamped scheduled tap: same rule (cron unchanged + script changed).
