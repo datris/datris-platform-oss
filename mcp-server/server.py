@@ -2519,12 +2519,12 @@ def _base_tools():
             name="get_pipeline_result",
             description=(
                 "Read the rows a scratch pipeline produced. Only pipelines whose destination is scratch have a result — anything else is a 404 "
-                "(a 404 for a pipeline you know is scratch means the server predates scratch results: report the version mismatch and stop, do not retry). "
+                "(an error body of `Not Found` / `status: 404` — rather than the endpoint's own `Only scratch pipelines have a result` message — for a pipeline you know is scratch means the server predates scratch results: report the version mismatch and stop, do not retry). "
                 "The first rows are already on the `get_pipeline_status` rollup as `resultPreview`, so call this ONLY when the rollup's `resultTruncated` is true and you need the rest. "
-                "Paging with `offset`/`limit` never re-runs the source — it reads the stored result. "
+                "Paging with `offset`/`limit` never re-runs the source — it reads the stored result. `limit` is clamped server-side, so the next offset is always `offset + returnedCount`, never `offset + limit`. "
                 "Results expire after the retention window, so read them promptly; a 410 means the result is gone and the pipeline must be run again. "
                 "Pass `publisher_token` (from run_tap) or `pipeline_token` (a single ingestion job); exactly one of the two must be supplied. "
-                "Response shape: `{records: [...], offset, limit, total, truncated, expiresAt}`."
+                "Response shape: `{records: [...], rowCount, returnedCount, offset, truncated, resultUri, resultExpiresAt}` — `rowCount` is the whole result, `returnedCount` this page."
             ),
             inputSchema={
                 "type": "object",
@@ -2539,11 +2539,11 @@ def _base_tools():
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "Row offset to start from (default 0). Use the previous page's offset + limit."
+                        "description": "Row offset to start from (default 0). Use the previous page's offset + returnedCount (not + limit — limit is clamped server-side)."
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum rows to return in this page (server default and cap apply)."
+                        "description": "Requested rows for this page. The server clamps it to its inline cap; read returnedCount for what actually came back."
                     },
                 },
                 "required": []

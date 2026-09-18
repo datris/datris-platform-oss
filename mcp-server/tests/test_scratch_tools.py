@@ -112,6 +112,12 @@ def test_get_pipeline_result_description_covers_scratch_preview_rerun_and_expiry
     assert "expire" in low, d
 
 
+def test_get_pipeline_result_description_names_the_real_page_shape():
+    d = _tool("get_pipeline_result").description
+    assert "returnedCount" in d and "rowCount" in d, d
+    assert "total" not in d and "expiresAt" not in d.replace("resultExpiresAt", ""), d
+
+
 def test_get_pipeline_result_description_mentions_preview_before_paging():
     d = _tool("get_pipeline_result").description
     preview_at = d.find("resultPreview")

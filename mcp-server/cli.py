@@ -182,19 +182,29 @@ def pipeline_group():
     pass
 
 
-def _explain_result_error(err):
+def _explain_result_error(result):
     """Translate a get_pipeline_result error into the two cases a human hits.
 
-    The MCP tool relays the server body verbatim (no status code), so match
-    on a leading status code OR the server's own 404 / 410 message shapes.
+    The MCP tool relays the server body verbatim, so there are three shapes:
+    the endpoint's own `{"error": "Only scratch pipelines have a result; ..."}`
+    / `{"error": "Scratch results expire after N hour(s); ... run the pipeline
+    again"}`, Spring's default `{"status": 404, "error": "Not Found", ...}`
+    from a server that predates the route, and a bare string.
     """
+    status = result.get("status") if isinstance(result, dict) else None
+    err = result.get("error", result) if isinstance(result, dict) else result
     text = str(err)
     low = text.strip().lower()
-    if low.startswith("404") or low.startswith("only scratch pipelines") or low.startswith("no pipeline run found"):
+    if (status == 404 or low == "not found" or low.startswith("404")
+            or low.startswith("only scratch pipelines") or low.startswith("no pipeline run found")):
         return "Error: only scratch pipelines have a result (or this server predates scratch results)"
-    if low.startswith("410") or ("expire" in low and "run the pipeline again" in low):
+    if status == 410 or low == "gone" or low.startswith("410") or ("expire" in low and "run the pipeline again" in low):
         return "Error: the result expired — run the pipeline again"
     return f"Error: {text[:200]}"
+
+
+def _is_result_error(result):
+    return not isinstance(result, dict) or "error" in result or "records" not in result
 
 
 @pipeline_group.command("result")
@@ -219,8 +229,8 @@ def pipeline_result(token, offset, limit, out, json_output):
         with open(out, "w") as f:
             while True:
                 result = page(current, limit)
-                if not isinstance(result, dict) or "error" in result:
-                    click.echo(_explain_result_error(result.get("error", result) if isinstance(result, dict) else result))
+                if _is_result_error(result):
+                    click.echo(_explain_result_error(result))
                     sys.exit(1)
                 records = result.get("records") or []
                 for rec in records:
@@ -228,25 +238,27 @@ def pipeline_result(token, offset, limit, out, json_output):
                 written += len(records)
                 if not result.get("truncated") or not records:
                     break
-                current += len(records)
+                # limit is clamped server-side: advance by what actually came back.
+                current += result.get("returnedCount", len(records))
         click.echo(f"  \u2713 Wrote {written} row(s) to {out}")
         return
 
     result = page(offset, limit)
     if json_output:
         click.echo(json.dumps(result, indent=2))
-        if isinstance(result, dict) and "error" in result:
+        if _is_result_error(result):
             sys.exit(1)
         return
-    if not isinstance(result, dict) or "error" in result:
-        click.echo(_explain_result_error(result.get("error", result) if isinstance(result, dict) else result))
+    if _is_result_error(result):
+        click.echo(_explain_result_error(result))
         sys.exit(1)
     records = result.get("records") or []
-    total = result.get("total", len(records))
-    expires = result.get("expiresAt", "unknown")
-    click.echo(f"  showing {len(records)} of {total}, expires at {expires}")
+    returned = result.get("returnedCount", len(records))
+    total = result.get("rowCount", len(records))
+    expires = result.get("resultExpiresAt", "unknown")
+    click.echo(f"  showing {returned} of {total}, expires at {expires}")
     if result.get("truncated"):
-        click.echo(f"  (truncated — use --offset {result.get('offset', 0) + len(records)} for the next page, or --out to fetch everything)")
+        click.echo(f"  (truncated — use --offset {result.get('offset', 0) + returned} for the next page, or --out to fetch everything)")
     for rec in records:
         click.echo("  " + json.dumps(rec))
 

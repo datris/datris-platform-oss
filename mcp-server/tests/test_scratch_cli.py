@@ -30,7 +30,7 @@ class _Mcp:
             return self.single
         if self.pages:
             return self.pages.pop(0)
-        return {"records": [], "offset": 0, "limit": 0, "total": 0, "truncated": False}
+        return {"records": [], "rowCount": 0, "returnedCount": 0, "offset": 0, "truncated": False}
 
 
 def _run(argv):
@@ -40,8 +40,8 @@ def _run(argv):
 # ------------------------------------------------------ Acceptance bullet 5 ---
 
 def test_pipeline_result_calls_get_pipeline_result_once_with_token(monkeypatch):
-    stub = _Mcp(single={"records": [{"id": 1}], "offset": 0, "limit": 100, "total": 1,
-                        "truncated": False, "expiresAt": "2026-09-19T00:00:00Z"})
+    stub = _Mcp(single={"records": [{"id": 1}], "rowCount": 1, "returnedCount": 1, "offset": 0,
+                        "truncated": False, "resultUri": "s3a://x/y", "resultExpiresAt": "2026-09-19T00:00:00Z"})
     monkeypatch.setattr(cli, "mcp", stub)
     res = _run(["pipeline", "result", "TOK"])
     assert res.exit_code == 0, res.output
@@ -53,8 +53,8 @@ def test_pipeline_result_calls_get_pipeline_result_once_with_token(monkeypatch):
 
 
 def test_pipeline_result_prints_showing_n_of_m_and_records(monkeypatch):
-    stub = _Mcp(single={"records": [{"id": 1}, {"id": 2}], "offset": 0, "limit": 100, "total": 2,
-                        "truncated": False, "expiresAt": "2026-09-19T00:00:00Z"})
+    stub = _Mcp(single={"records": [{"id": 1}, {"id": 2}], "rowCount": 2, "returnedCount": 2, "offset": 0,
+                        "truncated": False, "resultUri": "s3a://x/y", "resultExpiresAt": "2026-09-19T00:00:00Z"})
     monkeypatch.setattr(cli, "mcp", stub)
     res = _run(["pipeline", "result", "TOK"])
     assert res.exit_code == 0, res.output
@@ -64,7 +64,8 @@ def test_pipeline_result_prints_showing_n_of_m_and_records(monkeypatch):
 
 
 def test_pipeline_result_json_prints_raw_payload(monkeypatch):
-    payload = {"records": [{"id": 1}], "offset": 0, "limit": 100, "total": 1, "truncated": False}
+    payload = {"records": [{"id": 1}], "rowCount": 1, "returnedCount": 1, "offset": 0, "truncated": False,
+               "resultUri": "s3a://x/y", "resultExpiresAt": "2026-09-19T00:00:00Z"}
     stub = _Mcp(single=payload)
     monkeypatch.setattr(cli, "mcp", stub)
     res = _run(["pipeline", "result", "TOK", "--json"])
@@ -73,7 +74,8 @@ def test_pipeline_result_json_prints_raw_payload(monkeypatch):
 
 
 def test_pipeline_result_offset_and_limit_pass_through(monkeypatch):
-    stub = _Mcp(single={"records": [], "offset": 40, "limit": 20, "total": 0, "truncated": False})
+    stub = _Mcp(single={"records": [], "rowCount": 0, "returnedCount": 0, "offset": 40, "truncated": False,
+                        "resultUri": "s3a://x/y", "resultExpiresAt": "2026-09-19T00:00:00Z"})
     monkeypatch.setattr(cli, "mcp", stub)
     res = _run(["pipeline", "result", "TOK", "--offset", "40", "--limit", "20"])
     assert res.exit_code == 0, res.output
@@ -84,9 +86,9 @@ def test_pipeline_result_offset_and_limit_pass_through(monkeypatch):
 
 def test_pipeline_result_out_pages_until_not_truncated(monkeypatch, tmp_path):
     pages = [
-        {"records": [{"n": 1}, {"n": 2}], "offset": 0, "limit": 2, "total": 5, "truncated": True},
-        {"records": [{"n": 3}, {"n": 4}], "offset": 2, "limit": 2, "total": 5, "truncated": True},
-        {"records": [{"n": 5}], "offset": 4, "limit": 2, "total": 5, "truncated": False},
+        {"records": [{"n": 1}, {"n": 2}], "rowCount": 5, "returnedCount": 2, "offset": 0, "truncated": True},
+        {"records": [{"n": 3}, {"n": 4}], "rowCount": 5, "returnedCount": 2, "offset": 2, "truncated": True},
+        {"records": [{"n": 5}], "rowCount": 5, "returnedCount": 1, "offset": 4, "truncated": False},
     ]
     stub = _Mcp(pages=pages)
     monkeypatch.setattr(cli, "mcp", stub)
@@ -106,11 +108,23 @@ def test_pipeline_result_out_pages_until_not_truncated(monkeypatch, tmp_path):
 
 
 def test_pipeline_result_404_and_410_are_explained(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "mcp", _Mcp(single={"error": "404 Not Found: no result for pipeline"}))
+    # The endpoint's own 404 body (QueryAPIController.errorBody of ScratchResultException).
+    monkeypatch.setattr(cli, "mcp", _Mcp(single={
+        "error": "Only scratch pipelines have a result; job 'TOK' did not write one"}))
     res = _run(["pipeline", "result", "TOK"])
     assert "only scratch pipelines have a result" in res.output.lower(), res.output
 
-    monkeypatch.setattr(cli, "mcp", _Mcp(single={"error": "410 Gone: result expired"}))
+    # Spring's default 404 body from a server that predates the route (version mismatch).
+    monkeypatch.setattr(cli, "mcp", _Mcp(single={
+        "timestamp": "2026-09-18T14:00:00.000+00:00", "status": 404, "error": "Not Found",
+        "path": "/api/v1/pipeline/result"}))
+    res = _run(["pipeline", "result", "TOK"])
+    assert "only scratch pipelines have a result" in res.output.lower(), res.output
+    assert "predates scratch results" in res.output.lower(), res.output
+
+    # The endpoint's own 410 body.
+    monkeypatch.setattr(cli, "mcp", _Mcp(single={
+        "error": "Scratch results expire after 24 hour(s); this one is gone — run the pipeline again"}))
     res = _run(["pipeline", "result", "TOK"])
     assert "expired" in res.output.lower() and "run the pipeline again" in res.output.lower(), res.output
 
