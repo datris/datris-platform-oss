@@ -516,6 +516,24 @@ class TapAPIController {
         }
     }
 
+    /** Repoint an existing tap at freshly written MinIO bytes unless the
+      * test-before-cron gate refuses (scheduled tap, untested bytes): then the
+      * stored tap stays on its tested script and the gate message is returned
+      * so the caller can surface it. The new script and reference are still
+      * returned to the caller either way (the wizard needs the bytes to show).
+      * Callers put the message under `error` in an otherwise-200 body: the
+      * wizard reads only script/scriptPath/packages/changes from these
+      * responses, and MCP create_tap hands any body with `error` to the agent. */
+    private def repointUnlessGated(existing: TapConfig, newScriptPath: String): Option[String] = {
+        val repointed = existing.copy(scriptPath = newScriptPath)
+        TapCronGate.check(existing, repointed) match {
+            case None => TapConfigIO.write(repointed); None
+            case Some(msg) =>
+                logger.info("Not repointing scheduled tap '" + existing.name + "' at untested script: " + msg)
+                Some(msg)
+        }
+    }
+
     @PostMapping(path = Array("/tap/script"), consumes = Array(MediaType.APPLICATION_JSON_VALUE), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def storeScript(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
@@ -697,9 +715,7 @@ class TapAPIController {
 
             // Update scriptPath in MongoDB if tap already exists
             val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
-            if (existing != null) {
-                TapConfigIO.write(existing.copy(scriptPath = result.scriptPath))
-            }
+            val gateMsg = if (existing != null) repointUnlessGated(existing, result.scriptPath) else None
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
@@ -707,6 +723,7 @@ class TapAPIController {
             response.put("packages", result.packages)
             response.put("scriptPath", result.scriptPath)
             response.put("injectedPrompts", result.injectedPrompts)
+            gateMsg.foreach(response.put("error", _))
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -775,15 +792,14 @@ class TapAPIController {
 
             // Update scriptPath in MongoDB if tap already exists
             val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, Option(tapName).getOrElse(""))
-            if (existingTap != null) {
-                TapConfigIO.write(existingTap.copy(scriptPath = result.scriptPath))
-            }
+            val gateMsg = if (existingTap != null) repointUnlessGated(existingTap, result.scriptPath) else None
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
             response.put("script", result.script)
             response.put("packages", result.packages)
             response.put("scriptPath", result.scriptPath)
+            gateMsg.foreach(response.put("error", _))
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -816,12 +832,13 @@ class TapAPIController {
             val result = TapScriptReviewer.review(tapName, script, recordCount, durationMs, logs, oldScriptPath, priorIterations)
 
             // Persist the new scriptPath onto the TapConfig if the tap already exists.
-            if (result.rewritten) {
-                val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
-                if (existingTap != null && result.scriptPath != null && result.scriptPath != oldScriptPath) {
-                    TapConfigIO.write(existingTap.copy(scriptPath = result.scriptPath))
-                }
-            }
+            val gateMsg =
+                if (result.rewritten) {
+                    val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
+                    if (existingTap != null && result.scriptPath != null && result.scriptPath != oldScriptPath)
+                        repointUnlessGated(existingTap, result.scriptPath)
+                    else None
+                } else None
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
@@ -830,6 +847,7 @@ class TapAPIController {
             response.put("scriptPath", result.scriptPath)
             response.put("changes", result.changes)
             response.put("rewritten", Boolean.box(result.rewritten))
+            gateMsg.foreach(response.put("error", _))
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
@@ -862,9 +880,10 @@ class TapAPIController {
             val opt = TapScriptOptimizer.optimize(tapName, script, recordCount, durationMs, logs, oldScriptPath, priorIterations)
 
             val existingTap = TapConfigIO.read(DatrisEnvironment.current.tapTableName, tapName)
-            if (existingTap != null && opt.scriptPath != null && opt.scriptPath != oldScriptPath) {
-                TapConfigIO.write(existingTap.copy(scriptPath = opt.scriptPath))
-            }
+            val gateMsg =
+                if (existingTap != null && opt.scriptPath != null && opt.scriptPath != oldScriptPath)
+                    repointUnlessGated(existingTap, opt.scriptPath)
+                else None
 
             val gson = new Gson
             val response = new java.util.HashMap[String, Any]()
@@ -872,6 +891,7 @@ class TapAPIController {
             response.put("packages", opt.packages)
             response.put("scriptPath", opt.scriptPath)
             response.put("changes", opt.changes)
+            gateMsg.foreach(response.put("error", _))
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
             case e: Exception =>
