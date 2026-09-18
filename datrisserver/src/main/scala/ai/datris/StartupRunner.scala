@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model._
-import ai.datris.util.{PipelineConfigIO, NotificationUtil, SecretsUtil, SessionStore, UserStore}
+import ai.datris.util.{PipelineConfigIO, NotificationUtil, SecretsUtil, SessionStore, StagingArea, UserStore}
 import ai.datris.controller.KafkaConsumerRunner
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.beans.factory.annotation.Value
@@ -179,6 +179,16 @@ class StartupRunner extends ApplicationRunner {
 
     @Value("${scratchRetentionHours:24}")
     var scratchRetentionHours: Int = _
+
+    // Pipeline payload staging: local directory for a run's staged files and
+    // the cap on what a deprecated whole-payload reader may materialize. Both
+    // resolve from the documented env var names directly (DATRIS_TEMP_DIR,
+    // PIPELINE_MATERIALIZE_MAX_MB) as well as the Spring property.
+    @Value("${datris.tempDir:${DATRIS_TEMP_DIR:/tmp/datris-staging}}")
+    var tempDir: String = _
+
+    @Value("${pipelineMaterializeMaxMB:${PIPELINE_MATERIALIZE_MAX_MB:256}}")
+    var pipelineMaterializeMaxMB: Int = _
 
     @Value("${dateFormat:yyyy-MM-dd HH:mm:ss z}")
     var dateFormat: String = _
@@ -367,6 +377,8 @@ class StartupRunner extends ApplicationRunner {
             tapMaxOutputMB = tapMaxOutputMB,
             scratchInlineRows = scratchInlineRows,
             scratchRetentionHours = scratchRetentionHours,
+            tempDir = tempDir,
+            pipelineMaterializeMaxMB = pipelineMaterializeMaxMB,
             dateFormat = dateFormat,
             dateTimezone = dateTimezone,
             postgresDatabase = postgresDatabase,
@@ -392,6 +404,15 @@ class StartupRunner extends ApplicationRunner {
         )
 
         DatrisEnvironment.init(pipelineEnvironment)
+
+        // Payload staging: create the root and reclaim anything a previous
+        // process left behind (a run that died before its JobRunner finally).
+        try {
+            StagingArea.ensureRoot()
+            StagingArea.sweepOlderThan(StagingArea.SweepAge)
+        } catch {
+            case e: Exception => logger.warn("Staging area init failed for " + tempDir + ": " + e.getMessage)
+        }
 
         // Initialize MinIO after Pipeline init because SecretsUtil uses the Pipeline env
         val minIOConfig = {

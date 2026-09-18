@@ -128,7 +128,7 @@ object ProvenanceStamper {
             else ctx.config.destination
 
         ctx.copy(
-            data = data.copy(header = newHeader, headerWithSchema = newHeaderWithSchema, rows = newRows),
+            data = data.withRows(newRows).copy(header = newHeader, headerWithSchema = newHeaderWithSchema),
             config = ctx.config.copy(source = newSource, destination = newDestination)
         )
     }
@@ -156,7 +156,7 @@ object ProvenanceStamper {
         ) return ctx
         val injected = injectJson(ctx.data.rawData, values)
         if (injected == null) ctx
-        else ctx.copy(data = ctx.data.copy(rawData = injected))
+        else ctx.copy(data = ctx.data.withRawData(injected))
     }
 
     /** Inject the stamp keys into a JSON payload: array of objects, a single

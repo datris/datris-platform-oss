@@ -218,6 +218,12 @@ case class DatrisEnvironment(
     // `_scratch/` object is kept (only computed into resultExpiresAt for now).
     scratchInlineRows: Int = 200,
     scratchRetentionHours: Int = 24,
+    // Pipeline payload staging (plans/streaming-pipeline.md): where a run's
+    // staged files live (DATRIS_TEMP_DIR) and the largest staged payload a
+    // deprecated whole-payload reader (Data.rows / Data.rawData) may pull into
+    // heap (PIPELINE_MATERIALIZE_MAX_MB).
+    tempDir: String = "/tmp/datris-staging",
+    pipelineMaterializeMaxMB: Int = 256,
     dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
     dateTimezone: String = "UTC",
     postgresDatabase: String = "datris",

@@ -13,7 +13,9 @@ import ai.datris.model.{Data, INITIALIZED, JobContext}
 import ai.datris.util.CSVReader
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.io.ByteArrayInputStream
+import java.io.{BufferedInputStream, ByteArrayInputStream, ByteArrayOutputStream, InputStream, SequenceInputStream}
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.util.UUID
 import java.util.regex.Pattern
 import scala.collection.JavaConverters._
@@ -22,7 +24,14 @@ class StreamNotifier {
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
     private val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
 
-    def process(byteArray: Array[Byte], filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo = null): JobContext = {
+    def process(byteArray: Array[Byte], filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo = null): JobContext =
+        process(new ByteArrayInputStream(byteArray), byteArray.length.toLong, filename, pipeline, publisherToken, tapFeed)
+
+    /** Stage `source` for one pipeline run. `sizeHint` is the payload size in
+      * bytes when the caller knows it (upload Content-Length, tap output size);
+      * it is recorded as `Data.size` and in the status stream. The stream is
+      * consumed and closed here. */
+    def process(source: InputStream, sizeHint: Long, filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo): JobContext = {
         logger.info("StreamNotifier processing pipeline: " + pipeline + ", filename: " + filename)
         statusUtil.setFilename("stream: " + pipeline)
 
@@ -57,9 +66,9 @@ class StreamNotifier {
             )
 
             statusUtil.info("begin", "Stream data received, pipeline: " + pipeline + ", filename: " + filename)
-            statusUtil.info("processing", "Total data size: " + byteArray.length.toString)
+            statusUtil.info("processing", "Total data size: " + sizeHint.toString)
 
-            val (dataObj, resolvedConfig) = parseData(byteArray, config)
+            val (dataObj, resolvedConfig) = StagingArea.withToken(pipelineToken)(stageData(source, sizeHint, config))
 
             statusUtil.info("end", "Process completed successfully")
 
@@ -71,62 +80,89 @@ class StreamNotifier {
         }
     }
 
-    private def parseData(byteArray: Array[Byte], originalConfig: PipelineConfig): (Data, PipelineConfig) = {
+    /** Write the incoming payload to a staged file and describe it as `Data`.
+      * CSV: the header line is read off the stream, `DataUtil.evolveSchema`
+      * runs exactly as before, and the rows are projected to schema order
+      * straight into a `Delimited` file. JSON: streamed to NDJSON (array →
+      * one line per element, single object → one line). XML stages verbatim.
+      * Unstructured stages verbatim and still fills `rawBytes`. */
+    private[controller] def stageData(source: InputStream, sizeHint: Long, originalConfig: PipelineConfig): (Data, PipelineConfig) = {
         var config = originalConfig
-        val size = byteArray.length.toLong
+        val size = sizeHint
 
         if (config.source.fileAttributes.csvAttributes != null) {
+            val csvAttributes = config.source.fileAttributes.csvAttributes
             val trimColumns = config.transformation != null && config.transformation.trimColumnWhitespace
+            val delimiter = csvAttributes.delimiter
 
-            val sourceColumns = {
-                if (config.source.fileAttributes.csvAttributes.header) {
-                    val headerLine = new String(byteArray, "UTF-8").linesIterator.next()
-                    headerLine.split(Pattern.quote(config.source.fileAttributes.csvAttributes.delimiter)).map(_.toLowerCase).toList
+            // Read the header line off the stream, then hand the parser the
+            // header bytes followed by the rest of the stream so it sees exactly
+            // the record sequence it did when the whole payload was in memory.
+            val buffered = new BufferedInputStream(source)
+            val (sourceColumns, csvStream) = {
+                if (csvAttributes.header) {
+                    val headerBytes = readLineBytes(buffered)
+                    val headerLine = new String(headerBytes, StandardCharsets.UTF_8).stripLineEnd
+                    val columns = headerLine.split(Pattern.quote(delimiter)).map(_.toLowerCase).toList
+                    (columns, new SequenceInputStream(new ByteArrayInputStream(headerBytes), buffered): InputStream)
                 } else
-                    config.source.schemaProperties.fields.asScala.map(_.name).toList
+                    (config.source.schemaProperties.fields.asScala.map(_.name).toList, buffered: InputStream)
             }
 
             // Schema evolution: detect new/missing columns, update config
             val (resolvedConfig, schemaColumns, presentColumns, missingColumns) = DataUtil.evolveSchema(sourceColumns, config, statusUtil)
             config = resolvedConfig
 
-            val csvData = new CSVReader().readFromStream(
-                new ByteArrayInputStream(byteArray),
-                config.source.fileAttributes.csvAttributes.header,
-                config.source.fileAttributes.csvAttributes.delimiter,
-                sourceColumns,
-                presentColumns,
-                trimColumns = trimColumns
-            ).split("\n").toList
+            val format = StagedFormat.Delimited(delimiter)
+            val (path, writer) = StagingArea.newWriter("notifier", format)
+            val rowCount =
+                try
+                    new CSVReader().readToWriter(
+                        csvStream,
+                        csvAttributes.header,
+                        delimiter,
+                        sourceColumns,
+                        presentColumns,
+                        trimColumns = trimColumns,
+                        removeHeader = true,
+                        out = writer
+                    )
+                finally writer.close()
 
-            val delimiter = config.source.fileAttributes.csvAttributes.delimiter
-            val (header, rows) = {
-                val dataRows = if (config.source.fileAttributes.csvAttributes.header)
-                    if (csvData.nonEmpty) csvData.tail else List.empty[String]
-                else
-                    csvData
+            // Return only present columns when some are missing — PostgresLoader
+            // will COPY only these, and Postgres will default missing columns to NULL
+            val header = if (missingColumns.isEmpty) schemaColumns else presentColumns
 
-                if (missingColumns.isEmpty) {
-                    (schemaColumns, dataRows)
-                } else {
-                    // Return only present columns — PostgresLoader will COPY only these,
-                    // and Postgres will default missing columns to NULL
-                    (presentColumns, dataRows)
-                }
-            }
-
-            if (rows.isEmpty)
+            if (rowCount == 0)
                 throw new DatrisException(
                     "No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row."
                 )
 
-            (Data(size, header, config.source.schemaProperties.fields.asScala.toList, rows, null), config)
-        } else if (config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
-            (Data(size, null, null, null, new String(byteArray, "UTF-8")), config)
+            val staged = StagedPayload(path.toString, format, rowCount, Files.size(path))
+            (new Data(size, header, config.source.schemaProperties.fields.asScala.toList, staged, null), config)
+        } else if (config.source.fileAttributes.jsonAttributes != null) {
+            (new Data(size, null, null, PayloadStager.stageJson("notifier", source), null), config)
+        } else if (config.source.fileAttributes.xmlAttributes != null) {
+            (new Data(size, null, null, PayloadStager.stageStream("notifier", StagedFormat.Xml, source), null), config)
         } else if (config.source.fileAttributes.unstructuredAttributes != null) {
-            (Data(size, null, null, null, null, byteArray), config)
+            val bytes =
+                try source.readAllBytes()
+                finally source.close()
+            (new Data(size, null, null, PayloadStager.stageBytes("notifier", bytes), bytes), config)
         } else
             throw new DatrisException("StreamNotifier: unsupported file type in pipeline config for pipeline: " + config.name)
+    }
+
+    /** Bytes up to and including the first '\n' (or EOF), without reading past it. */
+    private def readLineBytes(in: InputStream): Array[Byte] = {
+        val buf = new ByteArrayOutputStream()
+        var b = in.read()
+        while (b != -1) {
+            buf.write(b)
+            if (b == '\n') return buf.toByteArray
+            b = in.read()
+        }
+        buf.toByteArray
     }
 
     def process(config: PipelineConfig, data: String): JobContext = {
@@ -148,7 +184,7 @@ class StreamNotifier {
             val jsonMetadata = gson.toJson(metadata)
             NoSQLDbUtil.setItemNameValue(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", jsonMetadata)
 
-            val dataObj = Data(data.length, null, null, null, data)
+            val dataObj = StagingArea.withToken(pipelineToken)(Data(data.length, null, null, null, data))
 
             statusUtil.info("end", "Process completed successfully")
 

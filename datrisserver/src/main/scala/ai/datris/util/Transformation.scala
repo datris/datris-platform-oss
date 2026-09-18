@@ -55,7 +55,7 @@ class Transformation(jobContext: JobContext) {
         val deduped = jobContext.data.rows.size - distinct.size
         if (deduped > 0) {
             statusUtil.info("processing", deduped.toString + " rows were duplicates and removed")
-            val newData = jobContext.data.copy(rows = distinct)
+            val newData = jobContext.data.withRows(distinct)
             jobContext.copy(data = newData)
         } else
             jobContext
@@ -117,7 +117,7 @@ class Transformation(jobContext: JobContext) {
             statusUtil.info("processing", removed.toString + " rows were removed during the javascript transformation")
 
         val headerWithSchema = config.destination.schemaProperties.fields.asScala.toList
-        val newData = ctx.data.copy(headerWithSchema = headerWithSchema, rows = transformed)
+        val newData = ctx.data.withRows(transformed).copy(headerWithSchema = headerWithSchema)
         ctx.copy(data = newData)
     }
 
@@ -144,7 +144,7 @@ class Transformation(jobContext: JobContext) {
                 val rowMaps = ctx.data.rows.map(row => RowUtil.getRowAsMap(row, config, ctx.data.header).asJava)
                 val transformedRows = callRestTransformBatch(endpointUrl, pipelineName, pipelineToken, rowMaps, timeoutMs, bearerToken, apiKey, delimiter)
                 statusUtil.info("processing", "REST batch transformation returned " + transformedRows.size + " rows (from " + ctx.data.rows.size + ")")
-                val newData = ctx.data.copy(rows = transformedRows)
+                val newData = ctx.data.withRows(transformedRows)
                 ctx.copy(data = newData)
 
             case _ => // "row" mode
@@ -163,7 +163,7 @@ class Transformation(jobContext: JobContext) {
                 if (removed > 0)
                     statusUtil.info("processing", removed.toString + " rows were removed during the REST endpoint transformation")
 
-                val newData = ctx.data.copy(rows = transformed)
+                val newData = ctx.data.withRows(transformed)
                 ctx.copy(data = newData)
         }
     }
@@ -300,17 +300,16 @@ class Transformation(jobContext: JobContext) {
                 )
             } else if (!result.headerFromScript)
                 statusUtil.info("processing", "CodeGen transformation output carried no header; keeping the source columns")
-            val newData = jobContext.data.copy(
+            val newData = jobContext.data.withRows(result.rows).copy(
                 header = newHeader,
-                headerWithSchema = rebuildHeaderSchema(newHeader, jobContext.data.headerWithSchema),
-                rows = result.rows
+                headerWithSchema = rebuildHeaderSchema(newHeader, jobContext.data.headerWithSchema)
             )
             jobContext.copy(data = newData)
         } else if (rawData != null) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen transformation on " + (if (isJson) "JSON" else "XML") + " data")
             val transformedRaw = CodeGenTransformationEvaluator.transformRaw(instruction, rawData, isJson, config.name)
-            val newData = jobContext.data.copy(rawData = transformedRaw)
+            val newData = jobContext.data.withRawData(transformedRaw)
             jobContext.copy(data = newData)
         } else {
             jobContext
