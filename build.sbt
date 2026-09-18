@@ -68,12 +68,13 @@ lazy val datrisserver = project
             // wire protocol is compatible with the 3.5+ servers Spark supports.
             "org.apache.avro" % "avro" % "1.11.4",
             "org.apache.zookeeper" % "zookeeper" % "3.8.6",
-            // minio still ships a stale bcprov. 1.84 patches the LDAP
-            // injection (CertPath/X509LDAP) on top of the earlier GOST
-            // keystream fix — neither code path is used here, but the
-            // override clears the alerts. Keep this override when bumping
-            // minio.
-            "org.bouncycastle" % "bcprov-jdk18on" % "1.84",
+            // minio still ships a stale bcprov. 1.86 patches the name-
+            // constraints bypass (trailing dot in rfc822Name/URI) and the
+            // lazy ASN.1 nesting-depth guard reset, on top of the earlier
+            // LDAP-injection and GOST fixes — none of these code paths are
+            // used here, but the override clears the alerts. Keep this
+            // override when bumping minio.
+            "org.bouncycastle" % "bcprov-jdk18on" % "1.86",
             // Netty: Spark/azure-core-http-netty/qdrant drag in assorted 4.1.x
             // jars with HTTP/2 + SPDY decoder DoS CVEs; 4.1.137.Final also
             // patches the CORS Vary-header cache-poisoning advisory. All
