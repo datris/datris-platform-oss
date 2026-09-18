@@ -199,3 +199,149 @@ describe('PipelineCreateComponent — Iceberg object-store format', () => {
     expect(os.keyFields).toBeUndefined();
   });
 });
+
+/**
+ * Story: Scratch destination in the UI and the docs
+ * (plans/stories/scratch-ui-docs.md) — pipeline-create.component.spec.ts bullet.
+ *
+ * Pins: the Destination Type select offers a `scratch` option (only when the
+ * instance advertises it, like the other structured destinations); choosing
+ * it renders no destination field rows, only the hint "Nothing is landed;
+ * results expire."; buildConfig() emits `destination.scratch = {}` and neither
+ * `database` nor `objectStore`; a postgres config round-trips unchanged; a
+ * saved `{ destination: { scratch: {} } }` reopens with destType 'scratch'.
+ */
+describe('PipelineCreateComponent — Scratch destination', () => {
+  let fixture: ComponentFixture<PipelineCreateComponent>;
+  let component: PipelineCreateComponent;
+  let el: HTMLElement;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      declarations: [PipelineCreateComponent],
+      imports: [FormsModule],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        { provide: PipelineService, useValue: {
+            // The instance advertises scratch alongside the other structured destinations.
+            getAvailableDestinations: () => of(['postgres', 'mongodb', 'objectstore', 'scratch']),
+            getPipelines: () => of([]),
+            getPipeline: () => of({})
+        } },
+        { provide: SearchService, useValue: { getPipelines: () => of([]) } },
+        { provide: HealthService, useValue: { isAvailable: () => true, refresh: () => Promise.resolve() } },
+        { provide: TapService, useValue: { getTaps: () => of([]) } },
+        { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap({}), paramMap: convertToParamMap({}) } } }
+      ]
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(PipelineCreateComponent);
+    component = fixture.componentInstance;
+    el = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+  });
+
+  function onDestinationStep(destType: string): void {
+    component.sourceType = 'csv';
+    component.step = 8;
+    component.destType = destType;
+    component.destSchemaFields = [{ name: 'id', type: 'string' }, { name: 'amount', type: 'double' }];
+    fixture.detectChanges();
+  }
+
+  function destTypeSelect(): HTMLSelectElement | null {
+    const rows = Array.from(el.querySelectorAll('.form-row')) as HTMLElement[];
+    const row = rows.find(r => /destination\s*type/i.test((r.querySelector('label.form-label')?.textContent || '').trim()));
+    return row ? (row.querySelector('select') as HTMLSelectElement | null) : null;
+  }
+
+  /** Labelled form rows/fields on the step other than the Destination Type select itself. */
+  function fieldLabelsBesidesDestType(): string[] {
+    return (Array.from(el.querySelectorAll('.form-row, .form-field')) as HTMLElement[])
+      .map(r => (r.querySelector('label.form-label')?.textContent || '').trim())
+      .filter(t => t && !/destination\s*type/i.test(t));
+  }
+
+  it('the destination select offers Scratch', () => {
+    onDestinationStep('postgres');
+    const select = destTypeSelect();
+    expect(select).withContext('Destination Type select').not.toBeNull();
+    const scratch = Array.from(select!.querySelectorAll('option'))
+      .find(o => (o as HTMLOptionElement).value === 'scratch') as HTMLOptionElement | undefined;
+    expect(scratch).withContext('option[value=scratch]').toBeDefined();
+    expect((scratch!.textContent || '').trim()).toMatch(/^Scratch/);
+    expect(scratch!.disabled).withContext('enabled when the instance advertises scratch').toBeFalse();
+    expect(component.isDestAvailable('scratch')).toBeTrue();
+  });
+
+  it('choosing Scratch shows no destination fields', () => {
+    onDestinationStep('postgres');
+    expect(fieldLabelsBesidesDestType().length).withContext('postgres renders field rows').toBeGreaterThan(0);
+
+    onDestinationStep('scratch');
+    expect(fieldLabelsBesidesDestType()).withContext('scratch renders no field rows').toEqual([]);
+    expect(el.querySelectorAll('select[multiple]').length).withContext('no key-field multi-select').toBe(0);
+    const step = el.textContent || '';
+    expect(step).toContain('Nothing is landed; results expire.');
+  });
+
+  it('buildConfig emits destination.scratch = {} and no database or objectStore key', () => {
+    component.loadFromConfig({
+      name: 'answer-now',
+      source: { fileAttributes: { csvAttributes: { delimiter: ',' } } },
+      destination: { schemaProperties: { fields: [{ name: 'id', type: 'string' }] } }
+    });
+    component.destType = 'scratch';
+    const dest = component.buildConfig().destination;
+    expect(dest.scratch).toEqual({});
+    expect(dest.database).toBeUndefined();
+    expect(dest.objectStore).toBeUndefined();
+    expect(dest.kafka).toBeUndefined();
+    // The server requires the sample: schemaProperties is left alone.
+    expect(dest.schemaProperties?.fields?.map((f: any) => f.name)).toEqual(['id']);
+  });
+
+  it('a postgres config is unchanged', () => {
+    component.loadFromConfig({
+      name: 'orders',
+      source: { fileAttributes: { csvAttributes: { delimiter: ',' } } },
+      destination: {
+        schemaProperties: { fields: [{ name: 'id', type: 'string' }] },
+        database: { dbName: 'datris', schema: 'public', table: 'orders', usePostgres: true, truncateBeforeWrite: false, keyFields: ['id'] }
+      }
+    });
+    expect(component.destType).toBe('postgres');
+    const dest = component.buildConfig().destination;
+    expect(dest.scratch).toBeUndefined();
+    expect(dest.database).toEqual(jasmine.objectContaining({
+      dbName: 'datris', schema: 'public', table: 'orders', usePostgres: true, truncateBeforeWrite: false, keyFields: ['id']
+    }));
+  });
+
+  it('a saved scratch pipeline reopens as Scratch', () => {
+    component.loadFromConfig({
+      name: 'answer-now',
+      source: { fileAttributes: { csvAttributes: { delimiter: ',' } } },
+      destination: {
+        schemaProperties: { fields: [{ name: 'id', type: 'string' }] },
+        scratch: {}
+      }
+    });
+    expect(component.destType).toBe('scratch');
+
+    component.step = 8;
+    fixture.detectChanges();
+    const select = destTypeSelect();
+    expect(select).not.toBeNull();
+    const selected = Array.from(select!.querySelectorAll('option'))
+      .find(o => (o as HTMLOptionElement).selected) as HTMLOptionElement | undefined;
+    expect(selected?.value).toBe('scratch');
+    // Round-trips: saving again still emits scratch and nothing else.
+    const dest = component.buildConfig().destination;
+    expect(dest.scratch).toEqual({});
+    expect(dest.database).toBeUndefined();
+  });
+});
