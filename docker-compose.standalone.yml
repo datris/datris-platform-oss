@@ -347,6 +347,10 @@ services:
       DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST: "${DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST:-}"
       # Cap on a single tap script's output (MB); the server fails fast above it.
       TAPMAXOUTPUTMB: "${TAP_MAX_OUTPUT_MB:-100}"
+      # Scratch destination: rows inlined on the run status / per page of
+      # /pipeline/result, and how many hours a _scratch/ result is kept.
+      SCRATCHINLINEROWS: "${SCRATCH_INLINE_ROWS:-200}"
+      SCRATCHRETENTIONHOURS: "${SCRATCH_RETENTION_HOURS:-24}"
       # Operator-override fallback model when Anthropic Opus is sustained-
       # overloaded; read by AgentLoop.sonnetFallbackFor() at runtime.
       ANTHROPIC_OVERLOAD_FALLBACK_MODEL: "${ANTHROPIC_OVERLOAD_FALLBACK_MODEL:-}"

@@ -61,6 +61,18 @@ class ScheduledBatchTasks {
         }
     }
 
+    @Scheduled(fixedRateString = "${schedule.scratchSweep:3600000}")
+    private def scratchSweep(): Unit = {
+        try {
+            if (isAppInitialized) {
+                ai.datris.util.ScratchSweeper.sweep(ai.datris.util.ScratchLoader.settingsFromEnvironment())
+            }
+        } catch {
+            case e: Exception =>
+                logger.error("scratchSweep error: " + Throwables.getStackTraceAsString(e))
+        }
+    }
+
     @Scheduled(fixedRateString = "${schedule.doctorTick:60000}")
     private def doctorTick(): Unit = {
         try {

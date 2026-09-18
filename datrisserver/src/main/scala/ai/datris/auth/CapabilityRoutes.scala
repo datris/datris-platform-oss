@@ -68,6 +68,7 @@ object CapabilityRoutes {
         Route("POST", "/api/v1/pipeline/upload", "document", "upload"),
         Route("POST", "/api/v1/pipeline/profile", "metadata", "read"),
         Route("GET", "/api/v1/pipeline/status", "job", "read"),
+        Route("GET", "/api/v1/pipeline/result", "job", "read"),
         Route("DELETE", "/api/v1/pipeline/status", "job", "kill"),
         // Pipeline definition versions (read/diff = read; restore = update)
         Route("GET", "/api/v1/pipeline/versions", "pipeline", "read"),
