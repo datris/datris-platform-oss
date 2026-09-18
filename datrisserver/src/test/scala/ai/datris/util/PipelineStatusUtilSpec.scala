@@ -82,4 +82,21 @@ class PipelineStatusUtilSpec extends AnyFunSuite {
         assert(job.lastError.processName == "PostgresLoader")
         assert(job.lastError.aiSummary == "check the host")
     }
+
+    // ---- scratch destination (story: scratch-destination-server) ----
+
+    test("non-scratch jobs have null result fields") {
+        val events = List(
+            ev("JobRunner", "begin", "info", "Process started"),
+            ev("PostgresLoader", "end", "info", "Process completed successfully"),
+            ev("JobRunner", "end", "info", "Process completed")
+        )
+        val job = PipelineStatusUtil.classifyJob(events)
+        assert(job.status == "success")
+        assert(job.resultUri == null)
+        assert(job.resultRowCount == null)
+        assert(job.resultExpiresAt == null)
+        assert(job.resultPreview == null)
+        assert(job.resultTruncated == null)
+    }
 }

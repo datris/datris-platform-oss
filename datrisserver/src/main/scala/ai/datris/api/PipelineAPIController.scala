@@ -537,6 +537,21 @@ class PipelineAPIController {
                 case e: Exception => logger.warn("Failed to delete object store data: " + e.getMessage)
             }
         }
+
+        // Scratch — recursively delete `_scratch/<pipeline>/` from <env>-data and
+        // nothing else. The prefix comes from ScratchPaths.prefix, which refuses
+        // a blank or path-traversing pipeline segment; assert it here too before
+        // handing it to the recursive delete.
+        if (dest.scratch != null) {
+            try {
+                val prefix = ScratchPaths.prefix(config.name)
+                if (!prefix.startsWith(ScratchPaths.Root) || prefix == ScratchPaths.Root)
+                    throw new IllegalStateException("refusing to delete scratch data: prefix '" + prefix + "' is not under " + ScratchPaths.Root)
+                ScratchLoader.deleteScratchData(config.name)
+            } catch {
+                case e: Exception => logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
+            }
+        }
     }
 
     /** Names of other pipelines whose objectStore destination would be hit by a

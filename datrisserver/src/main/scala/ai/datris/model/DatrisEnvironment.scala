@@ -214,6 +214,10 @@ case class DatrisEnvironment(
     tapPromptTableName: String = null,
     tapScriptTimeoutSeconds: Int = 300,
     tapMaxOutputMB: Int = 100,
+    // Scratch destination: rows inlined on the run status, and how long the
+    // `_scratch/` object is kept (only computed into resultExpiresAt for now).
+    scratchInlineRows: Int = 200,
+    scratchRetentionHours: Int = 24,
     dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
     dateTimezone: String = "UTC",
     postgresDatabase: String = "datris",

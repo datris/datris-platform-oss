@@ -109,6 +109,8 @@ object CatalogFind {
                     "schema" -> coords.getOrElse("schema", "public")
                 )
             case "chroma" => obj("search_chroma")("query" -> "<your question>", "collection" -> coords.getOrElse("collection", ""))
+            // Scratch results expire and are never queryable later: no hint.
+            case "scratch" => null
             case _ => null
         }
     }
@@ -123,6 +125,10 @@ object CatalogFind {
 
         val scored = visible
             .filter(_ != null)
+            // Scratch pipelines land no dataset anyone can query later
+            // (LineageService.datasets yields nothing for them), so they are
+            // never a findable dataset.
+            .filter(p => p.destination == null || p.destination.scratch == null)
             .map(p => Candidate(p, tapForPipeline.get(p.name), score(queryTokens, p, tapForPipeline.get(p.name))))
             .filter(c => queryTokens.isEmpty || c.score > 0)
             // Ties: pipelines whose primary dataset is the system of record first.

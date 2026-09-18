@@ -176,6 +176,12 @@ object LineageService {
             out += DatasetRef("pgvector", List("schema" -> Option(d.pgvector.schemaName).getOrElse("public"), "table" -> d.pgvector.tableName))
         if (d.milvus != null) out += DatasetRef("milvus", List("collection" -> d.milvus.collectionName))
         if (d.chroma != null) out += DatasetRef("chroma", List("collection" -> d.chroma.collectionName))
+        // `d.scratch` is deliberately NOT a dataset: a scratch result is a
+        // throwaway JSON-lines object under `_scratch/<pipeline>/` that expires,
+        // is never catalogued and is never queryable later. Giving it a node
+        // would advertise it as data downstream can depend on. The run-lineage
+        // doc still records a "scratch" output (kind from the JobRunner dispatch
+        // tag) with datasetId = null.
         out.result()
     }
 
