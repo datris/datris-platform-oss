@@ -2110,7 +2110,9 @@ paths:
         '400':
           description: Validation error
         '409':
-          description: Cron set on an untested script (test-before-cron). Body is `{"error": "<tap name + remedy>"}`.
+          description: >-
+            Cron set on an untested script (test-before-cron). Body is
+            `{"error": "<tap name + remedy>"}`.
     delete:
       tags: [Taps]
       summary: Delete a tap
@@ -3051,7 +3053,9 @@ paths:
         '404':
           description: No such version for this tap
         '409':
-          description: The snapshot's script differs from the one that last passed a test while a cron is set (test-before-cron). Body is `{"error": "<tap name + remedy>"}`.
+          description: >-
+            The snapshot's script differs from the one that last passed a test while a
+            cron is set (test-before-cron). Body is `{"error": "<tap name + remedy>"}`.
         '500':
           description: Error
 
