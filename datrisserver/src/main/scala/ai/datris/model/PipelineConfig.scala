@@ -65,10 +65,11 @@ case class Destination(
     scratch: ScratchConfig = null,
     // Which destination kind is the golden copy when a pipeline lands into more
     // than one (postgres | mongodb | snowflake | databricks | objectstore | kafka
-    // | activemq | qdrant | weaviate | pgvector | milvus | chroma | scratch).
+    // | activemq | qdrant | weaviate | pgvector | milvus | chroma).
     // Ignored for a single destination (implicitly authoritative); absent with
     // several ⇒ all "undeclared" in lineage until a human decides. Never
-    // inferred. `scratch` is listed for completeness only: it is always alone.
+    // inferred. `scratch` is not a valid value: it is always the sole
+    // destination and never a lineage dataset, so the authority check rejects it.
     authoritative: String = null
 )
 
