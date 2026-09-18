@@ -22,7 +22,7 @@ import httpx
 from httpx_sse import aconnect_sse
 
 MCP_URL = os.getenv("MCP_SERVER_URL", "http://localhost:3000/sse")
-CLI_VERSION = "1.32.0"
+CLI_VERSION = "1.33.0"
 
 # ── MCP Client (lightweight, sync-wrapped) ────────────────────────────
 
@@ -174,6 +174,93 @@ def pipelines(json_output):
             click.echo(f"  {name} {dest}")
     else:
         click.echo(json.dumps(result, indent=2)[:500])
+
+
+@cli.group("pipeline")
+def pipeline_group():
+    """Commands on a single pipeline run (e.g. read a scratch pipeline's result)."""
+    pass
+
+
+def _explain_result_error(result):
+    """Translate a get_pipeline_result error into the two cases a human hits.
+
+    The MCP tool relays the server body verbatim, so there are three shapes:
+    the endpoint's own `{"error": "Only scratch pipelines have a result; ..."}`
+    / `{"error": "Scratch results expire after N hour(s); ... run the pipeline
+    again"}`, Spring's default `{"status": 404, "error": "Not Found", ...}`
+    from a server that predates the route, and a bare string.
+    """
+    status = result.get("status") if isinstance(result, dict) else None
+    err = result.get("error", result) if isinstance(result, dict) else result
+    text = str(err)
+    low = text.strip().lower()
+    if (status == 404 or low == "not found" or low.startswith("404")
+            or low.startswith("only scratch pipelines") or low.startswith("no pipeline run found")):
+        return "Error: only scratch pipelines have a result (or this server predates scratch results)"
+    if status == 410 or low == "gone" or low.startswith("410") or ("expire" in low and "run the pipeline again" in low):
+        return "Error: the result expired — run the pipeline again"
+    return f"Error: {text[:200]}"
+
+
+def _is_result_error(result):
+    return not isinstance(result, dict) or "error" in result or "records" not in result
+
+
+@pipeline_group.command("result")
+@click.argument("token")
+@click.option("--offset", type=int, default=None, help="Row offset to start from (default 0)")
+@click.option("--limit", type=int, default=None, help="Rows per page (server default and cap apply)")
+@click.option("--out", type=click.Path(dir_okay=False), default=None, help="Write every row as one JSON object per line to this file, paging until the result is exhausted")
+@click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
+def pipeline_result(token, offset, limit, out, json_output):
+    """Read the rows a scratch pipeline produced (TOKEN is the pipeline token)."""
+    def page(off, lim):
+        args = {"pipeline_token": token}
+        if off is not None:
+            args["offset"] = off
+        if lim is not None:
+            args["limit"] = lim
+        return mcp("get_pipeline_result", args)
+
+    if out:
+        written = 0
+        current = offset or 0
+        with open(out, "w") as f:
+            while True:
+                result = page(current, limit)
+                if _is_result_error(result):
+                    click.echo(_explain_result_error(result))
+                    sys.exit(1)
+                records = result.get("records") or []
+                for rec in records:
+                    f.write(json.dumps(rec) + "\n")
+                written += len(records)
+                if not result.get("truncated") or not records:
+                    break
+                # limit is clamped server-side: advance by what actually came back.
+                current += result.get("returnedCount", len(records))
+        click.echo(f"  \u2713 Wrote {written} row(s) to {out}")
+        return
+
+    result = page(offset, limit)
+    if json_output:
+        click.echo(json.dumps(result, indent=2))
+        if _is_result_error(result):
+            sys.exit(1)
+        return
+    if _is_result_error(result):
+        click.echo(_explain_result_error(result))
+        sys.exit(1)
+    records = result.get("records") or []
+    returned = result.get("returnedCount", len(records))
+    total = result.get("rowCount", len(records))
+    expires = result.get("resultExpiresAt", "unknown")
+    click.echo(f"  showing {returned} of {total}, expires at {expires}")
+    if result.get("truncated"):
+        click.echo(f"  (truncated — use --offset {result.get('offset', 0) + returned} for the next page, or --out to fetch everything)")
+    for rec in records:
+        click.echo("  " + json.dumps(rec))
 
 
 @cli.command()

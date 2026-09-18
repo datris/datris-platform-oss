@@ -3,6 +3,19 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.33.0" description="September 18, 2026">
+  **Run a pipeline and get the rows back, without landing them.**
+
+  - **Scratch destination.** For when you, or an agent, want an answer now rather than a dataset: what a source returns for these ids, whether today's file passes its rules, what a transformation produces. The run goes through the same preprocessing, data quality and transformation chain as any other pipeline; the rows are held briefly so the caller can read them back. Nothing is landed, catalogued or added to lineage, and the result expires after a retention window you control. Structured sources only; cannot be combined with another destination. See [Scratch](/destinations/scratch).
+  - **Reading the result.** The first rows ride on the run's status. Larger results page from the run detail page's **View result** panel, from the CLI (`datris pipeline result`), and from the new `get_pipeline_result` MCP tool. Paging never re-runs the source.
+  - **Agents know when to keep and when to scratch.** The MCP server and the Assistant follow a keep-or-scratch rule: data to be kept, observed, queried later or refreshed on a schedule goes to a real destination; a one-off answer goes to scratch. Fetch-only taps target a scratch pipeline; promote it later by changing the destination — the tap, its schedule and its incremental position do not move.
+  - **Scratch in the UI.** The pipeline wizard offers Scratch under Destination; the Pipelines list badges scratch pipelines.
+  - **Fix:** editing a secret keeps the values you did not change — saving one field no longer blanks the masked sensitive fields you left alone, in the UI and over the API.
+  - **Fix:** the destination's authoritative flag set over the REST API was silently ignored; it is now applied and validated.
+  - **Hardening.** S3 object-store endpoints pass the same network safeguards as other outbound connections; pipelines writing to the built-in object store can be restricted to an allowlist of buckets (off by default, reported by the doctor); query and status error responses no longer include internal diagnostic detail.
+  - Upgrade: `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. No configuration changes required. Scratch results are held for 24 hours by default; shorten it on shared hosts. CLI users on pip or Homebrew: upgrade to pick up `datris pipeline result`.
+</Update>
+
 <Update label="v1.32.0" description="September 17, 2026">
   **Pipelines can now land data as Apache Iceberg tables.**
 

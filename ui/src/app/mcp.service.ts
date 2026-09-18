@@ -275,6 +275,15 @@ export class McpService {
         }
         return this.http.get<any>('/api/v1/pipeline/status?pipelinetoken=' + encodeURIComponent(params['pipeline_token']));
       }
+      case 'get_pipeline_result': {
+        let url = '/api/v1/pipeline/result?';
+        url += params['publisher_token']
+          ? 'publishertoken=' + encodeURIComponent(params['publisher_token'])
+          : 'pipelinetoken=' + encodeURIComponent(params['pipeline_token']);
+        if (params['offset'] !== undefined && params['offset'] !== null && String(params['offset']) !== '') url += '&offset=' + encodeURIComponent(String(params['offset']));
+        if (params['limit'] !== undefined && params['limit'] !== null && String(params['limit']) !== '') url += '&limit=' + encodeURIComponent(String(params['limit']));
+        return this.http.get<any>(url);
+      }
 
       // Definition versions
       case 'list_tap_versions':

@@ -161,6 +161,16 @@ Add `&withrollup=true` to a `publishertoken` or `pipelinetoken` query and the re
 
 `rollup.allDone` flips to `true` when every job has reached a terminal state. `rollup.status` is the aggregate outcome — `success`, `warning`, `error`, or `processing`. Per-job `status` values are `success`, `warning`, `error`, `processing`, or `timed_out` (no terminal event within 8 hours of the first event). When a job's `status` is `error`, `lastError` carries the failing process and its message.
 
+**Scratch result fields.** A job whose pipeline has a [scratch](/destinations/scratch) destination carries its result on the rollup once the run finishes. These fields are absent on every other job:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `resultUri` | string | Where the result is held. Present only when the run produced a result. |
+| `resultRowCount` | integer | Total rows in the result. |
+| `resultExpiresAt` | string | When the result is deleted; reads after this return `410`. |
+| `resultPreview` | array | The first rows, inline — up to the configured inline cap (`scratchInlineRows`). |
+| `resultTruncated` | boolean | `true` when the result has more rows than `resultPreview` holds — page the rest with [Get a Scratch Pipeline's Result](#get-a-scratch-pipelines-result). |
+
 Polling pattern (agents and clients):
 
 1. Call with `withrollup=true`.
@@ -172,6 +182,65 @@ Without `withrollup=true`, all three queries return their original array shapes 
 ---
 
 *Use one of `publishertoken`, `pipelinetoken`, or `pipelinename`. When multiple are supplied, `publishertoken` wins over `pipelinetoken` wins over `pipelinename`.
+
+---
+
+## Get a Scratch Pipeline's Result
+
+```
+GET /api/v1/pipeline/result?pipelinetoken={token}&offset={offset}&limit={limit}
+```
+
+Page through the rows a [scratch](/destinations/scratch) pipeline run produced. Paging reads the stored result — it never re-runs the source. Only scratch pipelines have a result.
+
+**Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pipelinetoken` | query | Yes* | Pipeline token of one ingestion job |
+| `publishertoken` | query | Yes* | Publisher token from `/tap/run` — resolves to the scratch job that run submitted |
+| `offset` | query | No | Row offset to start from (default `0`) |
+| `limit` | query | No | Rows requested for this page. Clamped server-side to the inline cap (`scratchInlineRows`), so advance by the page's `returnedCount`, never by `limit`. |
+
+\*Exactly one of `pipelinetoken` or `publishertoken`.
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/pipeline/result?pipelinetoken=pt-abc12345-...&offset=200"
+```
+
+**Response:** `200 OK`
+```json
+{
+  "records": [
+    { "id": "201", "city": "c201" },
+    { "id": "202", "city": "c202" }
+  ],
+  "rowCount": 300,
+  "returnedCount": 100,
+  "offset": 200,
+  "truncated": false,
+  "resultUri": "...",
+  "resultExpiresAt": "2026-09-19T10:00:05Z"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `records` | This page's rows, one object per row |
+| `rowCount` | Total rows in the whole result |
+| `returnedCount` | Rows on this page |
+| `offset` | The offset this page starts at |
+| `truncated` | `true` when more rows follow — the next page starts at `offset + returnedCount` |
+| `resultUri` | Where the result is held |
+| `resultExpiresAt` | When the result is deleted |
+
+**Errors:**
+
+| Status | Meaning |
+|--------|---------|
+| `400` | `offset` or `limit` is not an integer |
+| `404` | No run matched the token, or the pipeline is not a scratch pipeline — only scratch pipelines have a result |
+| `410` | The result has expired; run the pipeline again |
 
 ---
 

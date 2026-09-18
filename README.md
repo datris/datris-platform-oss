@@ -131,7 +131,7 @@ Source (File Upload / MinIO Event / Database Pull / Kafka)
 
 | Feature | Description |
 |---------|-------------|
-| **MCP Server** | 73 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps |
+| **MCP Server** | 75 tools for AI agents — pipeline CRUD, upload, query, search, profiling, taps |
 | **AI Data Quality** | Plain English validation rules — AI generates and runs a validation script |
 | **AI Transformation** | Plain English transformations — AI generates and runs a transformation script |
 | **AI Schema Generation** | Upload a file, get a complete pipeline config |

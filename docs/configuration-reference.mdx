@@ -78,6 +78,8 @@ Do **not** use `docker compose restart` to apply an `.env` change. `restart` reu
 | `cron.retry.cap` | `3` | Maximum automatic retries per failed scheduled tap run |
 | `cron.retry.backoffMinutes` | `5,15` | Comma-separated backoff ladder (minutes) between automatic retries; the last value repeats |
 | `tapMaxOutputMB` | `100` | Hard cap on a tap script's stdout output, in megabytes. Runs that exceed the cap fail fast with an actionable error (the agent is told to chunk the source range smaller via `run_tap` `params`) before the JSON is parsed — preventing the whole batch from buffering in JVM heap and OOM-killing the server. Override per deployment with the `TAP_MAX_OUTPUT_MB` env var. |
+| `scratchInlineRows` | `200` | For pipelines with a `scratch` destination: how many result rows ride inline on the run status (`resultPreview`), and the hard maximum page size for `GET /api/v1/pipeline/result`. Override per deployment with the `SCRATCH_INLINE_ROWS` env var. |
+| `scratchRetentionHours` | `24` | How long a scratch result object is kept before the hourly sweep deletes it; reads after expiry return 410 and the caller runs the pipeline again. A scratch result holds whatever the source returned, so retention is the mitigation — keep it short. `0` expires results immediately. Override per deployment with the `SCRATCH_RETENTION_HOURS` env var. |
 
 ### Authentication
 
@@ -390,6 +392,8 @@ These environment variables are read by `docker-compose.yml` and passed into the
 |----------|---------|-------------|
 | `JAVA_OPTS` | `-Xms512m -Xmx2g` | JVM heap sizing for the datris-server process. The default is a 2 GB max heap: the minimal install (`TEI_ENABLED=0`, `POSTGRES_ENABLED=0`) fits a 4 GB Docker memory allocation, and the full stack with the bundled TEI embedder needs about 8 GB. Bump on larger hosts (e.g. `-Xms1g -Xmx8g` for 24 GB). See [Installation → JVM Heap Sizing](/installation#jvm-heap-sizing) for the full sizing table and Docker Desktop ceiling notes. |
 | `TAP_MAX_OUTPUT_MB` | `100` | Override the `tapMaxOutputMB` cap. Applies to all tap scripts; affects when the platform fails fast on oversized output. Raise on hosts with larger heaps when single-shot backfills genuinely need more buffer; lower on memory-constrained deployments to fail earlier. |
+| `SCRATCH_INLINE_ROWS` | `200` | Override `scratchInlineRows`: rows inlined on a scratch run's status and the maximum `limit` per `/pipeline/result` page. |
+| `SCRATCH_RETENTION_HOURS` | `24` | Override `scratchRetentionHours`: hours a scratch result object survives before the hourly sweep deletes it. Scratch results hold whatever the source returned, so shorten this rather than lengthen it on shared hosts. |
 | `USE_USER_AUTH` | `false` | Enable username/password login + admin gating. See [User Authentication](/user-auth). |
 | `USE_API_KEYS` | `false` | Enable per-tenant API-key gating on the REST/MCP API. See [API Keys](/api-keys). |
 | `MULTI_TENANT` | `false` | Advanced: switch to per-tenant database isolation, with each request routed by its API key. Requires `USE_API_KEYS=true`. |

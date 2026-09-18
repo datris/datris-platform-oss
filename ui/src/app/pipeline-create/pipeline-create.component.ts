@@ -332,6 +332,9 @@ export class PipelineCreateComponent implements OnInit {
       this.sfCredentialsSecret = dest.database.credentialsSecret || '';
       this.dbTruncateBeforeWrite = !!dest.database.truncateBeforeWrite;
       this.sfKeyFields = Array.isArray(dest.database.keyFields) ? [...dest.database.keyFields] : [];
+    } else if (dest?.scratch) {
+      // Nothing to reopen beyond the selection — scratch has no fields.
+      this.destType = 'scratch';
     } else if (dest?.database?.useDatabricks) {
       this.destType = 'databricks';
       this.dbxCatalog = dest.database.dbName || '';
@@ -473,9 +476,13 @@ export class PipelineCreateComponent implements OnInit {
   /** True when the structured destination is installed on this instance.
    *  FAIL-OPEN: an unknown availability list (call pending or failed) enables
    *  everything — a blip must never hide options. Only the five structured
-   *  destinations are gated; other types always return true. */
+   *  destinations are gated; other types always return true. Scratch is never
+   *  advertised by /api/v1/destinations/available — it writes to the built-in
+   *  object store, the same store the objectstore probe checks — so it follows
+   *  objectstore's availability. */
   isDestAvailable(name: string): boolean {
     if (this.availableDestinations === null) return true;
+    if (name === 'scratch') return this.availableDestinations.includes('objectstore');
     const structured = ['mongodb', 'postgres', 'objectstore', 'snowflake', 'databricks'];
     if (!structured.includes(name)) return true;
     return this.availableDestinations.includes(name);
@@ -1126,6 +1133,10 @@ export class PipelineCreateComponent implements OnInit {
       const dbxKeys = this.dbxKeyFields.filter(k => k && k.trim());
       if (dbxKeys.length > 0) dbxDb.keyFields = dbxKeys;
       config.destination.database = dbxDb;
+    } else if (this.destType === 'scratch') {
+      // Nothing is landed: no table, database, key fields or truncate flag.
+      // schemaProperties stays — the server requires the sample for the typed header.
+      config.destination.scratch = {};
     } else if (this.destType === 'objectstore') {
       const os: any = { prefixKey: this.osPrefix, fileFormat: this.osFormat, deleteBeforeWrite: this.osDeleteBeforeWrite };
       if (this.osBucket.trim()) os.destinationBucketOverride = this.osBucket.trim();

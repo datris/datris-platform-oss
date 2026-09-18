@@ -191,6 +191,18 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'get_pipeline_result',
+      description: 'Read the rows a scratch pipeline produced. Only pipelines whose destination is scratch have a result (anything else is a 404). The first rows already ride on the get_pipeline_status rollup as `resultPreview`, so call this only when the rollup\'s `resultTruncated` is true. Paging never re-runs the source; `limit` is clamped server-side, so the next offset is `offset + returnedCount`. Results expire after the retention window — a 410 means run the pipeline again. Response: {records, rowCount, returnedCount, offset, truncated, resultUri, resultExpiresAt}.',
+      category: 'Taps',
+      parameters: [
+        { name: 'publisher_token', type: 'string', description: 'UUID from run_tap — reads the result of the scratch job that run submitted', required: false, inputType: 'text' },
+        { name: 'pipeline_token', type: 'string', description: 'UUID of a single ingestion job (from upload_data or rollup.jobs[].pipelineToken)', required: false, inputType: 'text' },
+        { name: 'offset', type: 'integer', description: 'Row offset to start from (default 0). Use the previous page\'s offset + returnedCount', required: false, inputType: 'number' },
+        { name: 'limit', type: 'integer', description: 'Requested rows for this page; the server clamps it to its inline cap', required: false, inputType: 'number' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'test_tap',
       description: 'Test-run a tap without pushing data to the pipeline.',
       category: 'Taps',

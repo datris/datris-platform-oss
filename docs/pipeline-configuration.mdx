@@ -328,6 +328,23 @@ Used by all vector store destinations.
 | `maxChunkTokens` | int | 0 (off) | Optional token-count cap. When set, the chunker refuses to emit any chunk over this estimate, splitting oversized output before it ever reaches the embedding API. Recommended: ~80% of the embedding model's input cap (e.g. 6500 for `text-embedding-3-small`). Without it, the server-side embedding guard catches oversized chunks as a fallback. |
 | `tokensPerCharRatio` | float | 2.0 | Chars-per-token ratio for the chunker's heuristic counter. Lower is more conservative (more splits); raise to ~3.5 for predictable Latin prose. |
 
+### Destination > Scratch
+
+Nothing is landed: the run's rows are held briefly and handed back to the caller, then expire. Use it for an answer now — a validation result or a transformed view — never for data you want to keep. See [Scratch](/destinations/scratch).
+
+```json
+"destination": {
+  "scratch": {}
+}
+```
+
+| Rule | |
+|-------|-------------|
+| Fields | None — the object is empty. |
+| Sources | Structured only (CSV, JSON, XML); a sample is required at create time so the typed header exists. |
+| Exclusive | Cannot be combined with any other destination in the same pipeline. |
+| Reading rows | The status rollup carries `resultPreview`; page the rest with `GET /api/v1/pipeline/result`, `datris pipeline result`, or the `get_pipeline_result` MCP tool. |
+
 ### Destination > Schema Properties (Optional)
 
 Define a separate destination schema if column mapping differs from the source:
@@ -357,3 +374,5 @@ A single pipeline can write to multiple destinations simultaneously. All destina
   "restEndpoint": { ... }
 }
 ```
+
+`scratch` is the exception: a scratch pipeline lands nothing, so it cannot be combined with another destination.

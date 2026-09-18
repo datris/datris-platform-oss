@@ -66,12 +66,29 @@ object ScratchLoader {
         Settings("s3a://" + env.environment + "-data", env.scratchInlineRows, env.scratchRetentionHours)
     }
 
-    /** Hadoop configuration able to resolve `rootUri`. s3a needs the per-bucket
-      * MinIO settings SparkSessionManager applies; anything else (file://) is
-      * served by the default local FileSystem. */
-    private[util] def hadoopConfiguration(rootUri: String): Configuration =
-        if (rootUri.startsWith("s3a://")) SparkSessionManager.getOrCreate().sparkContext.hadoopConfiguration
-        else new Configuration()
+    /** Hadoop configuration able to resolve `rootUri` without a SparkSession.
+      * s3a gets the same six global `fs.s3a.*` values SparkSessionManager
+      * applies for the built-in MinIO (`<env>-data` is always the platform's
+      * own bucket, so the per-bucket / provider=s3 settings ObjectStoreSpark
+      * layers on for user destinations do not apply here). Anything else
+      * (file://) is served by the default local FileSystem. Kept Spark-free so
+      * the hourly ScratchSweeper and `/pipeline/result` never boot a
+      * `local[*]` driver on installs that have no other reason to. */
+    private[util] def hadoopConfiguration(rootUri: String): Configuration = {
+        val conf = new Configuration()
+        if (rootUri.startsWith("s3a://")) {
+            val minIOConfig = DatrisEnvironment.current.minIOConfig
+            if (minIOConfig != null) {
+                conf.set("fs.s3a.endpoint", minIOConfig.endpoint)
+                conf.set("fs.s3a.access.key", minIOConfig.accessKey)
+                conf.set("fs.s3a.secret.key", minIOConfig.secretKey)
+                conf.set("fs.s3a.path.style.access", "true")
+                conf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+                conf.set("fs.s3a.connection.ssl.enabled", "false")
+            }
+        }
+        conf
+    }
 
     /** Delete-with-data for a scratch pipeline: recursively remove
       * `s3a://<env>-data/_scratch/<pipeline>/` and nothing else. The prefix is

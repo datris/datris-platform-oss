@@ -82,6 +82,7 @@
           </td>
           <td class="embed-details" [title]="getDestinations(ds)">
             {{ getDestinations(ds) || '—' }}
+            <span class="scratch-badge" *ngIf="isScratch(ds)" title="Nothing is landed — runs hand the rows back and the result expires">Scratch</span>
             <button class="text-type-badge" *ngIf="isAllText(ds)"
                     (click)="openDestTypesDialog($event, ds.name)"
                     title="All destination columns are stored as text — set real types">text</button>
@@ -169,6 +170,7 @@
           <td>{{ getSourceType(ds) }}</td>
           <td>
             {{ getDestinations(ds) }}
+            <span class="scratch-badge" *ngIf="isScratch(ds)" title="Nothing is landed — runs hand the rows back and the result expires">Scratch</span>
             <button class="text-type-badge" *ngIf="isAllText(ds)"
                     (click)="openDestTypesDialog($event, ds.name)"
                     title="All destination columns are stored as text — set real types">text</button>

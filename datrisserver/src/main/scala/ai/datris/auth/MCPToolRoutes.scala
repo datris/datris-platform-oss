@@ -113,6 +113,7 @@ object MCPToolRoutes {
         "list_taps" -> Mapped("GET", "/api/v1/taps"),
         "run_tap" -> Mapped("POST", "/api/v1/tap/run"),
         "get_pipeline_status" -> Mapped("GET", "/api/v1/pipeline/status"),
+        "get_pipeline_result" -> Mapped("GET", "/api/v1/pipeline/result"),
         "delete_tap" -> Mapped("DELETE", "/api/v1/tap"),
         "get_tap" -> Mapped("GET", "/api/v1/tap"),
         "get_tap_logs" -> Mapped("GET", "/api/v1/tap/logs"),

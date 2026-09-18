@@ -35,6 +35,7 @@ schedule:
   checkTapSchedules: "30000"
   incidentSweep: "300000"  # recovery-agent sweep: resume approvals, stale/volume signals
   doctorTick: "60000"      # how often the periodic doctor checks whether doctor.intervalMinutes has elapsed
+  scratchSweep: "3600000"  # hourly: delete _scratch/ result objects older than scratchRetentionHours
 tapScriptTimeoutSeconds: "300"
 dateFormat: "yyyy-MM-dd HH:mm:ss z"
 dateTimezone: "America/New_York"

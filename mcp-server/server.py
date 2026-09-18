@@ -390,6 +390,9 @@ Before calling `run_tap` AND before setting `cron_expression` on a tap whose scr
 If `test_tap` fails, fix the script (call `create_tap` again with a corrected `instruction` or revised `script`) and re-test until it succeeds. ONLY THEN call `run_tap` or set `cron_expression`. Setting a cron on an untested script ships a guaranteed-bad nightly run; the user delegated the schedule to Datris, not the validation to luck.
 Existing taps that have run successfully do NOT need a fresh `test_tap` for cadence-only changes (`cron_expression`, `target_pipeline`, `enabled` toggle) — only when the script itself just changed.
 
+KEEP-OR-SCRATCH RULE (read this before choosing a destination):
+If the user wants the data kept, observed, queried later, or refreshed on a schedule, use a real destination — exactly as today, offering the structured set the way the destination-offering rule below describes. If the user (or you, on your own initiative) wants an answer now, a validation result, or a transformed view and has no reason to keep the rows, create the pipeline with `destination: {"scratch": {}}` instead: run it, poll `get_pipeline_status` until `rollup.allDone` is true, then read the rows straight off the rollup's `resultPreview`; call `get_pipeline_result` only when `resultTruncated` is true and you need the rest. NEVER create a table just to read rows back once. Scratch results are never catalogued or queryable later and expire after the retention window, so read them promptly. If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from scratch to a real one) — the tap, its schedule, and its incremental cursor do not move.
+
 EVIDENCE RULE (read this before summarizing what you did):
 NEVER narrate a create / update / delete / run operation as completed unless the corresponding tool call appears in THIS turn. The collapsed tool-call blocks in your message are the ONLY evidence that work actually happened — your prose must match them. Specifically:
   - If you intended to set up a pipeline + tap but only called `create_tap`, do NOT write "pipeline and tap are live." Write what's true: "tap created; pipeline still needs to be created" and then call `create_pipeline`.
@@ -892,6 +895,16 @@ The credentials secret is human-owned (not `_type=tap`), so the agent does NOT c
 
 Storage formats: `parquet`, `orc` (loose columnar files), `iceberg` (a table at the prefix with snapshots and schema evolution)
 Write modes: `overwrite`, `append`, `ignore`, `errorifexists`, and `merge` (iceberg only — requires `keyFields`)
+
+### scratch — run the pipeline and hand the rows back, without landing them
+
+```json
+"destination": {
+  "scratch": {}
+}
+```
+
+Same source shape as the structured destinations (a sample is still required for schema detection); nothing is written anywhere. `scratch` cannot be combined with any other destination block in the same config. The run's rows come back on the `get_pipeline_status` rollup as `resultPreview` (first page) with `resultTruncated`, `resultRowCount` and `resultExpiresAt`; page past the preview with `get_pipeline_result`. Results expire after the retention window and are never catalogued or queryable later — promote the pipeline with `update_pipeline` if the rows turn out to be worth keeping.
 
 ### kafka
 
@@ -1532,7 +1545,7 @@ def _base_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. THREE destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token), warehouse (the SQL warehouse ID), and database (the Unity Catalog name). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
+            description="Create a pipeline. FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token), warehouse (the SQL warehouse ID), and database (the Unity Catalog name). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. SCRATCH (scratch) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-SCRATCH RULE). SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1554,8 +1567,8 @@ def _base_tools():
                     },
                     "destination": {
                         "type": "string",
-                        "enum": ["postgres", "mongodb", "snowflake", "databricks", "objectstore", "qdrant", "weaviate", "milvus", "chroma", "pgvector"],
-                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). Use 'objectstore' for Parquet files, ORC files, or an Iceberg table (fileFormat=iceberg) in MinIO (default provider) or AWS S3 (set provider=s3). Use 'snowflake' to load the user's Snowflake account — requires credentialsSecret, warehouse, and database. Use 'databricks' to load a Unity Catalog managed Delta table in the user's Databricks workspace — requires credentialsSecret, warehouse (SQL warehouse ID), and database (Unity Catalog name)."
+                        "enum": ["postgres", "mongodb", "snowflake", "databricks", "objectstore", "qdrant", "weaviate", "milvus", "chroma", "pgvector", "scratch"],
+                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). Use 'scratch' when nothing should be landed and the rows should come back to the caller (status rollup resultPreview + get_pipeline_result); table/database/keyFields are ignored for it. Use 'objectstore' for Parquet files, ORC files, or an Iceberg table (fileFormat=iceberg) in MinIO (default provider) or AWS S3 (set provider=s3). Use 'snowflake' to load the user's Snowflake account — requires credentialsSecret, warehouse, and database. Use 'databricks' to load a Unity Catalog managed Delta table in the user's Databricks workspace — requires credentialsSecret, warehouse (SQL warehouse ID), and database (Unity Catalog name)."
                     },
                     "table": {
                         "type": "string",
@@ -1715,7 +1728,7 @@ def _base_tools():
         ),
         Tool(
             name="upload_data",
-            description="Upload data to a registered pipeline for processing. Send the ENTIRE file content as a single base64-encoded string in ONE call — do not pre-split or chunk the content client-side. Vector destinations (pgvector, qdrant, weaviate, milvus, chroma) apply recursive chunking server-side using the pipeline's configured chunkSize/chunkOverlap; for those, one upload_data call yields many embedded chunks automatically. The pipeline's rules are applied: schema validation, data quality checks, transformations, then routing to the configured destination. Returns a pipelineToken for tracking job status via get_job_status.",
+            description="Upload data to a registered pipeline for processing. Send the ENTIRE file content as a single base64-encoded string in ONE call — do not pre-split or chunk the content client-side. Vector destinations (pgvector, qdrant, weaviate, milvus, chroma) apply recursive chunking server-side using the pipeline's configured chunkSize/chunkOverlap; for those, one upload_data call yields many embedded chunks automatically. The pipeline's rules are applied: schema validation, data quality checks, transformations, then routing to the configured destination. A pipeline whose destination is scratch validates or transforms the file and hands the rows back (status rollup `resultPreview`, then get_pipeline_result) instead of landing them. Returns a pipelineToken for tracking job status via get_job_status.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2360,7 +2373,7 @@ def _base_tools():
             name="create_tap",
             description=(
                 "Create a tap — a fetcher that pulls data from an external source and pushes it into a pipeline. Two kinds: a Python script the platform executes (default — provide a plain-English `instruction` to have AI generate the script, or supply your own `script` directly), or `kind: \"http\"` — a user-hosted HTTP endpoint (any language) that Datris POSTs the run context to on each run and which responds with the tap envelope; pass `endpoint_url` and see the tap-http-contract doc. HTTP taps run no code on the platform; AI script generation and the DATRIS_PLATFORM_* platform-data callback do NOT apply to them, so keep any tap whose fetch logic reads platform data as a Python tap. "
-                "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. Only skip target_pipeline if the user explicitly wants a fetch-only tap. "
+                "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. For a fetch-only tap (the user wants the rows back, not landed), target a pipeline whose destination is scratch — see the KEEP-OR-SCRATCH RULE in the server instructions. "
                 "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
                 "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen. "
                 "Scripts can read data already stored in Datris WITHOUT credentials: every run auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE, and the script queries via POST http://{host}:{port}/api/v1/query/postgres with {\"sql\": ..., \"database\": <pg_db>, \"limit\": -1} (or /query/mongodb with query/database/collection/limit) — the platform executes it with its own credentials and returns {results, count}. NEVER request the platform's own DB credentials in a tap secret and NEVER hardcode a snapshot of platform data into the script — read it live. The tap secret carries only the external source's credentials."
@@ -2443,7 +2456,7 @@ def _base_tools():
                 "If the tap script doesn't yet read a particular param, update the script by calling `create_tap` again with the same `name` and a revised `script` (create_tap upserts and replaces the existing script). That's the right shape for parameterized runs.\n"
                 "\n"
                 "REQUIRED next steps based on the response:\n"
-                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true. Then read `rollup.status` (`success`/`warning`/`error`) and `rollup.jobs[].lastError`. Do not report completion or query the destination before that.\n"
+                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true. Then read `rollup.status` (`success`/`warning`/`error`) and `rollup.jobs[].lastError`. Do not report completion or query the destination before that. For a scratch pipeline (nothing landed), read the rows off the rollup's `resultPreview` and `resultTruncated`; call `get_pipeline_result` only when `resultTruncated` is true.\n"
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
@@ -2497,6 +2510,40 @@ def _base_tools():
                     "pipeline_token": {
                         "type": "string",
                         "description": "UUID for a single ingestion job. Returns status rows for that one job."
+                    },
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_pipeline_result",
+            description=(
+                "Read the rows a scratch pipeline produced. Only pipelines whose destination is scratch have a result — anything else is a 404 "
+                "(an error body of `Not Found` / `status: 404` — rather than the endpoint's own `Only scratch pipelines have a result` message — for a pipeline you know is scratch means the server predates scratch results: report the version mismatch and stop, do not retry). "
+                "The first rows are already on the `get_pipeline_status` rollup as `resultPreview`, so call this ONLY when the rollup's `resultTruncated` is true and you need the rest. "
+                "Paging with `offset`/`limit` never re-runs the source — it reads the stored result. `limit` is clamped server-side, so the next offset is always `offset + returnedCount`, never `offset + limit`. "
+                "Results expire after the retention window, so read them promptly; a 410 means the result is gone and the pipeline must be run again. "
+                "Pass `publisher_token` (from run_tap) or `pipeline_token` (a single ingestion job); exactly one of the two must be supplied. "
+                "Response shape: `{records: [...], rowCount, returnedCount, offset, truncated, resultUri, resultExpiresAt}` — `rowCount` is the whole result, `returnedCount` this page."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "publisher_token": {
+                        "type": "string",
+                        "description": "UUID returned from run_tap. Reads the result of the scratch pipeline job that run submitted."
+                    },
+                    "pipeline_token": {
+                        "type": "string",
+                        "description": "UUID of a single ingestion job (from upload_data or rollup.jobs[].pipelineToken)."
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Row offset to start from (default 0). Use the previous page's offset + returnedCount (not + limit — limit is clamped server-side)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Requested rows for this page. The server clamps it to its inline cap; read returnedCount for what actually came back."
                     },
                 },
                 "required": []
@@ -3254,6 +3301,10 @@ def _dispatch(name: str, args: dict) -> str:
                 if args.get("credentialsSecret"):
                     obj_cfg["credentialsSecret"] = args["credentialsSecret"]
             dest["objectStore"] = obj_cfg
+        elif dest_type == "scratch":
+            # Nothing is landed: the rows ride back on the status rollup and
+            # /api/v1/pipeline/result. table / database / keyFields don't apply.
+            dest["scratch"] = {}
         else:
             dest["database"] = {"dbName": db_name, "schema": "public", "table": table_name, "usePostgres": True}
 
@@ -3833,6 +3884,22 @@ def _dispatch(name: str, args: dict) -> str:
         elif pipeline:
             params["pipelinetoken"] = pipeline
         return _call("get", "/api/v1/pipeline/status", params=params)
+
+    elif name == "get_pipeline_result":
+        publisher = args.get("publisher_token")
+        pipeline = args.get("pipeline_token")
+        if not publisher and not pipeline:
+            return json.dumps({"error": "Pass publisher_token (from run_tap) or pipeline_token — exactly one is required."})
+        params = {}
+        if publisher:
+            params["publishertoken"] = publisher
+        else:
+            params["pipelinetoken"] = pipeline
+        if args.get("offset") is not None:
+            params["offset"] = int(args["offset"])
+        if args.get("limit") is not None:
+            params["limit"] = int(args["limit"])
+        return _call("get", "/api/v1/pipeline/result", params=params)
 
     elif name == "delete_tap":
         return _call("delete", f"/api/v1/tap?name={args['name']}")
