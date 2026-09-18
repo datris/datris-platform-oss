@@ -82,7 +82,10 @@ object JobRunner {
         }
         if (data.rawBytes != null) return (1, "document")
         staged.format match {
-            case StagedFormat.NdJson | StagedFormat.Xml | StagedFormat.Text if staged.bytes > 0 => (staged.rowCount.toInt, "record")
+            // An empty JSON array stages as a 0-byte NDJSON file but is still a
+            // (0, "record") payload, as it was when rawData held "[]".
+            case StagedFormat.NdJson if staged.bytes > 0 || staged.arraySource => (staged.rowCount.toInt, "record")
+            case StagedFormat.Xml | StagedFormat.Text if staged.bytes > 0 => (staged.rowCount.toInt, "record")
             case _ => (0, null)
         }
     }

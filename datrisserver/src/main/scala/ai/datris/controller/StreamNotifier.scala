@@ -34,9 +34,9 @@ class StreamNotifier {
     def process(source: InputStream, sizeHint: Long, filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo): JobContext = {
         logger.info("StreamNotifier processing pipeline: " + pipeline + ", filename: " + filename)
         statusUtil.setFilename("stream: " + pipeline)
+        val pipelineToken = UUID.randomUUID().toString
 
         try {
-            val pipelineToken = UUID.randomUUID().toString
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(Option(publisherToken).getOrElse(pipelineToken))
 
@@ -75,6 +75,9 @@ class StreamNotifier {
             JobContext(pipelineToken, metadata, dataObj, resolvedConfig, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
         } catch {
             case e: Exception =>
+                // No JobContext exists yet, so no JobRunner finally will reclaim
+                // whatever stageData wrote before failing.
+                StagingArea.delete(pipelineToken)
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
                 throw new DatrisException("StreamNotifier error: " + Throwables.getStackTraceAsString(e))
         }
@@ -169,10 +172,10 @@ class StreamNotifier {
         val pipeline = config.name
         logger.info("Processing stream message for pipeline: " + pipeline)
         statusUtil.setFilename("stream: " + pipeline)
+        // Generate a UUID to track the pipeline through the pipeline
+        val pipelineToken = UUID.randomUUID().toString
 
         try {
-            // Generate a UUID to track the pipeline through the pipeline
-            val pipelineToken = UUID.randomUUID().toString
             statusUtil.setPipelineToken(pipelineToken)
             statusUtil.setPublisherToken(pipelineToken)
             statusUtil.info("begin", "Stream received for pipeline: " + pipeline)
@@ -191,6 +194,7 @@ class StreamNotifier {
             JobContext(pipelineToken, metadata, dataObj, config, null, INITIALIZED, null, statusUtil)
         } catch {
             case e: Exception =>
+                StagingArea.delete(pipelineToken)
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
                 throw new DatrisException("FileNotifier error: " + Throwables.getStackTraceAsString(e))
         }

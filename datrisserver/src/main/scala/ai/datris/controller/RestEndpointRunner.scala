@@ -140,7 +140,11 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
             header = Option(dataMap.get("header")).map(_.asInstanceOf[java.util.List[String]].asScala.toList).getOrElse(original.header),
             headerWithSchema = original.headerWithSchema,
             rows = Option(dataMap.get("rows")).map(_.asInstanceOf[java.util.List[String]].asScala.toList).getOrElse(original.rows),
-            rawData = Option(dataMap.get("rawData")).map(_.asInstanceOf[String]).getOrElse(original.rawData)
+            rawData = Option(dataMap.get("rawData")).map(_.asInstanceOf[String]).getOrElse(original.rawData),
+            delimiter = {
+                val fa = if (jobContext.config.source != null) jobContext.config.source.fileAttributes else null
+                if (fa != null && fa.csvAttributes != null && fa.csvAttributes.delimiter != null) fa.csvAttributes.delimiter else ","
+            }
         )
     }
 }

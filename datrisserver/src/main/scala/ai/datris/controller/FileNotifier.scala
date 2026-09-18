@@ -43,8 +43,9 @@ class FileNotifier {
             if (config == null)
                 throw new DatrisException("Pipeline: " + metadata.pipeline + " is not configured in the NoSQL database")
 
-            // Read the data into memory (includes schema evolution)
-            val (data, resolvedConfig) = DataUtil.read(bucket, key, config, metadata, statusUtil)
+            // Read the data (includes schema evolution). Staged under the run
+            // token so JobRunner.run()'s finally removes the files with the run.
+            val (data, resolvedConfig) = StagingArea.withToken(pipelineToken)(DataUtil.read(bucket, key, config, metadata, statusUtil))
             statusUtil.info("processing", "Total file size: " + data.size.toString)
 
             statusUtil.info("end", "Process completed successfully")
