@@ -421,7 +421,13 @@ object IncidentRunner {
                             lastTestRunRecordCount = live.lastTestRunRecordCount,
                             lastTestRunError = live.lastTestRunError,
                             lastTestRunDataType = live.lastTestRunDataType,
-                            lastTestRunColumns = live.lastTestRunColumns
+                            lastTestRunColumns = live.lastTestRunColumns,
+                            // The live stamp names the BAD script's identity; the
+                            // reverted script is a different one. Drop the stamp so
+                            // the tap falls back to the unstamped branch of
+                            // TapCronGate (unrelated edits pass; the next cron change
+                            // is grandfathered by the prior success).
+                            lastTestRunScriptId = null
                         )
                         TapConfigIO.writeVersioned(restored, "incident " + id + ": reverted after failed verification", RecoveryKey.Label)
                         step(id, "execute", "reverted tap to version " + target)

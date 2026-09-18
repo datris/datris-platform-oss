@@ -71,7 +71,14 @@ case class TapConfig(
     // comes from (e.g. "SEC EDGAR", "financialmodelingprep.com"). Optional:
     // when absent, TapSourceResolver derives it from the endpoint host (HTTP
     // taps) or the host the script references most. Never credentials.
-    source: String = null
+    source: String = null,
+    // Server-stamped identity of the exact script (or endpoint) that last
+    // passed a `mode=test` run — see TapScriptIdentity ("gh:<sha>",
+    // "http:<url>", or sha256 of the MinIO script bytes). TapCronGate compares
+    // it against the incoming save so a cron can only be set on tested bytes.
+    // Gson gives absent → null on pre-upgrade docs, which means "unstamped /
+    // legacy" and is grandfathered by TapCronGate.
+    lastTestRunScriptId: String = null
 ) {
 
     /** True when this tap is a user-hosted HTTP endpoint rather than a

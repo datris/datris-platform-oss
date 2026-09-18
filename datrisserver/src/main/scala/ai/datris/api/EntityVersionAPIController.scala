@@ -91,15 +91,23 @@ class EntityVersionAPIController {
                             lastTestRunRecordCount = live.lastTestRunRecordCount,
                             lastTestRunError = live.lastTestRunError,
                             lastTestRunDataType = live.lastTestRunDataType,
-                            lastTestRunColumns = live.lastTestRunColumns
+                            lastTestRunColumns = live.lastTestRunColumns,
+                            lastTestRunScriptId = live.lastTestRunScriptId
                         )
                     else snap
-                val saved = TapConfigIO.writeVersioned(
-                    restored,
-                    "restored from version " + version,
-                    VersionActor.resolve(request)
-                )
-                ok(gson.toJson(saved))
+                // Test-before-cron gate: restoring a snapshot whose script bytes differ
+                // from the tested stamp while a cron is set is refused, same as a save.
+                TapCronGate.check(live, restored) match {
+                    case Some(msg) =>
+                        ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
+                    case None =>
+                        val saved = TapConfigIO.writeVersioned(
+                            restored,
+                            "restored from version " + version,
+                            VersionActor.resolve(request)
+                        )
+                        ok(gson.toJson(saved))
+                }
         }
     }
 

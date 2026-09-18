@@ -381,6 +381,14 @@ components:
           type: string
         lastTestRunDataType:
           type: string
+        lastTestRunScriptId:
+          type: string
+          readOnly: true
+          description: |
+            Server-stamped identity of the exact script (or endpoint) that last passed a
+            `mode=test` run (`gh:<sha>`, `http:<url>`, or sha256 of the stored script).
+            Compared against the saved script when a `cronExpression` is set. Ignored in
+            request bodies; null on pre-existing taps.
         lastTestRunColumns:
           type: array
           items:
@@ -2077,7 +2085,15 @@ paths:
     post:
       tags: [Taps]
       summary: Create or update a tap
-      description: Creates a new tap or updates an existing tap with the same `name`.
+      description: |
+        Creates a new tap or updates an existing tap with the same `name`.
+
+        Test-before-cron: a `cronExpression` may only be saved once the exact script
+        (or HTTP endpoint) that will run on it has passed a `mode=test` run. Setting or
+        changing a cron on an untested script, or changing the script under an existing
+        cron, is refused with 409 and nothing is persisted. Remedy: save without
+        `cronExpression`, run `POST /api/v1/tap/run` with `mode=test`, then save again
+        with the cron.
       requestBody:
         required: true
         content:
@@ -2093,6 +2109,8 @@ paths:
                 $ref: '#/components/schemas/TapConfig'
         '400':
           description: Validation error
+        '409':
+          description: Cron set on an untested script (test-before-cron). Body is `{"error": "<tap name + remedy>"}`.
     delete:
       tags: [Taps]
       summary: Delete a tap
@@ -3032,6 +3050,8 @@ paths:
                 $ref: '#/components/schemas/TapConfig'
         '404':
           description: No such version for this tap
+        '409':
+          description: The snapshot's script differs from the one that last passed a test while a cron is set (test-before-cron). Body is `{"error": "<tap name + remedy>"}`.
         '500':
           description: Error
 

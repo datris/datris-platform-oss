@@ -134,6 +134,10 @@ Set up automatic runs with a CRON expression:
 
 The **Schedule is active** checkbox controls whether the cron actually fires. Uncheck it to pause a tap without losing its schedule definition — useful when you want to temporarily stop a tap but keep its CRON expression intact for later.
 
+<Note>
+**Test before you schedule.** A tap can only be saved with a schedule once the exact script (or HTTP endpoint) that will run on it has passed a test run. Saving a schedule on a never-tested or just-edited script is refused with HTTP 409. The schedule is applied only after a server-side test run of the saved tap: the wizard does this for you automatically on save (save unscheduled, test, then schedule — if the test fails the tap is saved without its schedule and the error says so); via MCP save without the cron, call `test_tap`, then `update_tap` with the cron; via REST save without `cronExpression`, call `POST /api/v1/tap/run` with `mode: "test"`, then save again with the cron. The wizard's own Test Script button previews an unsaved script and does not satisfy the gate by itself. Cadence changes on an already-tested tap need no re-test.
+</Note>
+
 ### Step 4: Review & Save
 
 Review all settings (including a human-readable description of the CRON schedule, e.g. `0 0 16 ? * MON-FRI — at 4:00 PM, on MON-FRI`).
@@ -257,6 +261,8 @@ Click the play button on the taps list to open the Run page:
 - **Run Again** button for re-execution
 
 ### CRON Schedule
+A schedule can only be saved once the tap's current script (or HTTP endpoint) has passed a test run — `POST /api/v1/tap` returns **HTTP 409** otherwise, and the error names the tap and the remedy: save the tap without `cronExpression`, call `test_tap`, then `update_tap` with the cron. Editing the script of a scheduled tap is refused the same way until the new script is re-tested. Cadence-only changes, clearing the cron, and metadata edits (description, tags, target pipeline, enabled) on a tested tap are always accepted. Taps scheduled before this rule existed keep running untouched; their first cron or script change is accepted if the tap has ever tested or run successfully.
+
 Taps with a `cronExpression` run automatically. The scheduler checks every 30 seconds for taps that are due. A tap won't fire if it's already running. For a tap that has never run before, the scheduler anchors the "next valid cron time" to `updatedAt` or `createdAt`, so the first scheduled slot after the tap was saved fires on its own — no manual bootstrap run needed.
 
 ### Sending Data to Pipelines

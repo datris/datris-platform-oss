@@ -388,6 +388,7 @@ Before calling `run_tap` AND before setting `cron_expression` on a tap whose scr
   - Any tap just created via `create_tap` (whether AI-generated from `instruction` or user-supplied via `script`)
   - Any tap whose script was just replaced (call `create_tap` again with the same name and a new `script` or `instruction` — create_tap upserts by name)
 If `test_tap` fails, fix the script (call `create_tap` again with a corrected `instruction` or revised `script`) and re-test until it succeeds. ONLY THEN call `run_tap` or set `cron_expression`. Setting a cron on an untested script ships a guaranteed-bad nightly run; the user delegated the schedule to Datris, not the validation to luck.
+The platform ENFORCES this: saving a tap with a `cron_expression` whose current script (or HTTP endpoint) has not passed `test_tap` is refused with HTTP 409 and an `error` naming the tap. Remedy, in order: save the tap without `cron_expression` (`create_tap` with no cron), call `test_tap` until it succeeds, then `update_tap` with the `cron_expression`. Changing the script under an existing cron is refused the same way until the new script is re-tested. To replace the script of a SCHEDULED tap, clear the cron via `update_tap` (empty `cron_expression`) FIRST, then `create_tap` with the new script, `test_tap`, then `update_tap` with the cron — re-calling `create_tap` without a cron does not help, because the STORED tap still has its cron.
 Existing taps that have run successfully do NOT need a fresh `test_tap` for cadence-only changes (`cron_expression`, `target_pipeline`, `enabled` toggle) — only when the script itself just changed.
 
 KEEP-OR-SCRATCH RULE (read this before choosing a destination):
@@ -415,6 +416,7 @@ NEVER rules:
   - NEVER respond to a data-related ask without first calling list_pipelines and list_taps (see FIRST-RESPONSE RULE above)
   - NEVER respond to a recurrence/timely ask with shell commands, external cron, or off-platform schedulers — set a `cron_expression` on the tap (see SCHEDULING RULE above)
   - NEVER call `run_tap` or set `cron_expression` on a tap whose current script hasn't been validated by a successful `test_tap` (see VALIDATION RULE above)
+  - NEVER retry a 409 from `create_tap`/`update_tap` with the same cron — it means the script is untested; save without the cron, `test_tap`, then `update_tap` with the cron
   - NEVER narrate a create/update/delete/run as completed without the corresponding tool call in THIS turn (see EVIDENCE RULE above). If you intended to do N things and only did some, say which and finish the rest.
   - NEVER ask the user for the platform's own database credentials so a tap script can read data already stored in Datris, and NEVER freeze a snapshot of platform data into a script because you believe the script can't reach it. Tap scripts reach platform data credential-free: every run auto-injects DATRIS_PLATFORM_HOST / DATRIS_PLATFORM_PORT / DATRIS_POSTGRES_DATABASE / DATRIS_MONGODB_DATABASE, and the script calls the platform's query API itself (see Tap workflow below).
   - NEVER use profile_data to determine how to generate a pipeline configuration
@@ -444,6 +446,7 @@ Tap workflow (for step 3 Option B):
   Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever — the platform authenticates the callback per run by itself (a run-scoped DATRIS_PLATFORM_TOKEN the wrapper attaches to requests/urllib calls aimed at DATRIS_PLATFORM_HOST), so never add an x-api-key to these calls or ask the user for one. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
   2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
+     The platform refuses a save with a `cron_expression` on an untested script (HTTP 409): create without the cron, test_tap, then update_tap with the cron.
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
   4. Run: call run_tap to execute and push data to the pipeline.
      After `run_tap` returns, READ the response's `persisted` field BEFORE doing anything else:
@@ -1116,6 +1119,7 @@ If the user already has the file in hand, prefer `upload_data` against an existi
 2. **Create.** Call `create_tap` with either `instruction` (AI generates the Python `fetch()` function) or `script` (you provide it directly). Writing the script yourself is usually faster and more reliable than AI generation. Pass `target_pipeline` so the tap actually persists to a destination — without it, runs come back with `persistedReason: no_target_pipeline`.
    - **HTTP taps** (`kind: "http"` + `endpoint_url`): the tap is a service the USER hosts, in any language; Datris POSTs `{tap, params, state, testLimit}` to the endpoint each run and the endpoint responds with the same envelope a script produces (`{"type": ..., "data": [...], "state": {...}}`). Auth: if the tap's secret has an `endpoint_token` field it is sent as `Authorization: Bearer` — no other secret fields are ever forwarded. Everything else in this reference (params, state, scheduling, run flow, polling, verification) applies identically. What does NOT apply: `instruction`/`script`/`packages`, AI codegen actions, and the platform-data callback below — an HTTP tap cannot read platform data, so keep platform-data-driven taps as Python taps. Only suggest HTTP kind when the user says they want to implement the tap themselves outside the platform (existing service, non-Python language).
 3. **Test.** Call `test_tap` to validate the script without persisting. **MANDATORY for any newly-created or just-updated script** — see the VALIDATION RULE below. If the script errors, fix it by calling `create_tap` again with the same name and a corrected `instruction` or revised `script` (create_tap upserts and replaces the existing script), and re-test until it succeeds.
+   The platform enforces this order: a save carrying `cron_expression` for a script that has not passed `test_tap` is refused with HTTP 409 — create without the cron, `test_tap`, then `update_tap` with the cron.
 4. **Schedule (if recurring).** If the user mentioned any recurrence cue, set `cron_expression` — see the SCHEDULING RULE below.
 5. **Run.** Call `run_tap` with `name` and optional `params`. Read the response — see the run-flow section below.
 6. **Poll.** When `persisted: true`, call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true.
@@ -1165,6 +1169,13 @@ If `test_tap` fails:
 3. Re-run `test_tap`. Iterate until it passes.
 
 Only THEN are you allowed to call `run_tap` or set `cron_expression`. Setting a cron on a never-tested script ships a guaranteed-bad nightly run; the user delegated the schedule to Datris, not the validation to luck.
+
+**Enforced by the platform (HTTP 409).** `POST /api/v1/tap` refuses to save a `cronExpression` on a script (or HTTP endpoint) that has not passed a test run, and refuses a script change under an existing cron until the new script is re-tested. The `error` in the 409 body names the tap and the remedy — follow it in this order:
+1. Save the tap **without** `cron_expression` (`create_tap` with no cron, or `update_tap` clearing it).
+2. Call `test_tap` and iterate until it succeeds — the platform stamps the tested script.
+3. Call `update_tap` with the `cron_expression`.
+Do not retry the refused save unchanged; the answer will be the same 409.
+To replace the script of a SCHEDULED tap: clear the cron via `update_tap` (empty `cron_expression`) FIRST, then `create_tap` with the new script, `test_tap`, then `update_tap` with the cron. The store step keys on the STORED tap's cron, so `create_tap` without a cron is refused the same way until the cron is cleared.
 
 ### When `test_tap` is NOT needed
 
@@ -2376,6 +2387,7 @@ def _base_tools():
                 "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. For a fetch-only tap (the user wants the rows back, not landed), target a pipeline whose destination is scratch — see the KEEP-OR-SCRATCH RULE in the server instructions. "
                 "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
                 "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen. "
+                "The platform enforces this: passing `cron_expression` for a script (or endpoint) that has not passed `test_tap` returns HTTP 409 with the remedy — create the tap without `cron_expression`, call `test_tap` until it succeeds, then `update_tap` with the cron. Replacing the script of a scheduled tap is refused the same way until re-tested — to replace the script of a SCHEDULED tap, clear the cron via `update_tap` (empty `cron_expression`) first, then call `create_tap` with the new script, `test_tap`, then `update_tap` with the cron. "
                 "Scripts can read data already stored in Datris WITHOUT credentials: every run auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE, and the script queries via POST http://{host}:{port}/api/v1/query/postgres with {\"sql\": ..., \"database\": <pg_db>, \"limit\": -1} (or /query/mongodb with query/database/collection/limit) — the platform executes it with its own credentials and returns {results, count}. NEVER request the platform's own DB credentials in a tap secret and NEVER hardcode a snapshot of platform data into the script — read it live. The tap secret carries only the external source's credentials."
             ),
             inputSchema={
@@ -2695,6 +2707,7 @@ def _base_tools():
                 "USE THIS to set or adjust a tap's schedule (`cron_expression`) whenever the user describes a recurrence (nightly, daily, every morning, market open, etc.). "
                 "The platform's scheduler runs the tap on the cadence you set — no external cron, Airflow DAG, or shell loop is needed (or wanted). See the SCHEDULING RULE in the server instructions. "
                 "VALIDATION RULE: if you're enabling a `cron_expression` on a tap whose script has NEVER been validated, call `test_tap` FIRST and confirm it succeeds. The cadence-change path is safe for taps that have already run successfully; it is not safe to set a cron on a never-tested script. "
+                "The platform enforces this: setting `cron_expression` on an untested script returns HTTP 409 with the remedy — save the tap without the cron, call `test_tap` until it succeeds, then call `update_tap` again with the cron. Cadence-only changes on a tap whose current script has passed `test_tap` are accepted. "
                 "To change the SCRIPT itself, call `create_tap` again with the same `name` and the new `script` or `instruction` — create_tap upserts by name and replaces the existing script. There is no separate script-only update tool."
             ),
             inputSchema={
@@ -3789,6 +3802,12 @@ def _dispatch(name: str, args: dict) -> str:
                     store_result = _call("post", "/api/v1/tap/script", json={"tapName": tap_name, "script": gen_script})
                     try:
                         store_data = json.loads(store_result)
+                        if "cannot be scheduled" in str(store_data.get("error", "")):
+                            # Test-before-cron gate: the tap is scheduled and these
+                            # are new bytes. Never fall back to the built-in copy —
+                            # that would silently convert a scheduled repo tap into
+                            # an unscheduled MinIO tap. Hand the remedy to the agent.
+                            return store_result
                         if "error" not in store_data:
                             script_path = store_data.get("scriptPath")
                             script_storage = store_data.get("storage")
