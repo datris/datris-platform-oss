@@ -22,10 +22,10 @@ class FileNotifier {
     def process(bucket: String, key: String): JobContext = {
         logger.info("Processing queue message, bucket: " + bucket + ", key: " + key)
         statusUtil.setFilename(bucket + "/" + key)
+        // Generate a UUID to track the pipeline through the pipeline
+        val pipelineToken = UUID.randomUUID().toString
 
         try {
-            // Generate a UUID to track the pipeline through the pipeline
-            val pipelineToken = UUID.randomUUID().toString
             statusUtil.setPipelineToken(pipelineToken)
 
             val metadata = new PipelineMetadataUtil(statusUtil).read(bucket, key)
@@ -53,6 +53,9 @@ class FileNotifier {
             JobContext(pipelineToken, metadata, data, resolvedConfig, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
         } catch {
             case e: Exception =>
+                // No JobContext exists yet, so no JobRunner finally will reclaim
+                // whatever DataUtil.read staged before the failure.
+                StagingArea.delete(pipelineToken)
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
                 throw new DatrisException("FileNotifier error: " + Throwables.getStackTraceAsString(e))
         }
