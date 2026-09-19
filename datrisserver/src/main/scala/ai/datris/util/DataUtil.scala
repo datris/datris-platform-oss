@@ -165,7 +165,7 @@ object DataUtil {
                 )
 
             val headerWithSchema = resolvedConfig.source.schemaProperties.fields.asScala.toList
-            (Data(size, header, headerWithSchema, data, null), resolvedConfig)
+            (Data(size, header, headerWithSchema, data, null, delimiter = resolvedConfig.source.fileAttributes.csvAttributes.delimiter), resolvedConfig)
         } else if (config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
             val fileUrl = files.head
             val rawData = ObjectStoreUtil.readBucketObject(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))

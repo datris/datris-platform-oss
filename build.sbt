@@ -174,17 +174,31 @@ lazy val datrisserver = project
             "org.scalatestplus" %% "mockito-5-12" % "3.2.19.0" % Test
         ),
         Test / fork := true,
-        // Spark 3.5 on JDK 17 --add-opens; harmless for pure tests. The bytebuddy
+        // Spark 3.5 on JDK 17 --add-opens (the same set docker-init.sh passes to
+        // the server, so a spec that runs a local SparkSession — e.g. the CSV
+        // read in SparkObjectStoreLoaderSpec, which touches sun.util.calendar —
+        // behaves as production does); harmless for pure tests. The bytebuddy
         // flag lets mockito mock JDK interfaces on JVMs newer than it knows about
         // (e.g. a Java 25 dev machine); no-op where the JVM is already supported.
         Test / javaOptions ++= Seq(
             "-Dnet.bytebuddy.experimental=true",
             "--add-opens=java.base/java.lang=ALL-UNNAMED",
             "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+            "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+            "--add-opens=java.base/java.io=ALL-UNNAMED",
+            "--add-opens=java.base/java.net=ALL-UNNAMED",
             "--add-opens=java.base/java.nio=ALL-UNNAMED",
             "--add-opens=java.base/java.util=ALL-UNNAMED",
-            "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
-        )
+            "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+            "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+            "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+            "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+            "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+            "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED"
+        ),
+        // Opt-in heap cap for the forked test JVM (e.g. DATRIS_TEST_XMX=512m) so
+        // the streaming specs can prove bounded memory; default heap unchanged.
+        Test / javaOptions ++= sys.env.get("DATRIS_TEST_XMX").map("-Xmx" + _).toSeq
     )
 
 lazy val allDependencies = Seq(

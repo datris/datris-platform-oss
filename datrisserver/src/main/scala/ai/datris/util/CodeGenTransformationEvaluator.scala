@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException}
+import ai.datris.model.{Data, DatrisEnvironment, DatrisException, StagedFormat, StagedPayload}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.file.{Files, Path}
@@ -30,16 +30,18 @@ object CodeGenTransformationEvaluator {
 
     /**
      * Transform CSV data using CodeGen.
-     * Generates a Python script via LLM, executes it locally.
+     * Generates a Python script via LLM, executes it locally. The script reads
+     * the staged payload from a file and writes a file; its output is adopted
+     * into the staging area, so the rows never pass through the JVM heap.
      *
      * @param instruction Plain-English transformation instruction
-     * @param header      CSV column names
-     * @param rows        CSV data rows
+     * @param data        The delimited payload (header + staged rows)
      * @param delimiter   CSV delimiter
-     * @return Transformed header (when the script emitted one, else the input header) and rows
+     * @return Transformed header (when the script emitted one, else the input header) and the staged rows
      */
-    def transformCsv(instruction: String, header: List[String], rows: List[String], delimiter: String, pipelineName: String = null): CsvTransformResult = {
-        val sampleRows = rows.take(MAX_SAMPLE_ROWS)
+    def transformCsv(instruction: String, data: Data, delimiter: String, pipelineName: String = null): CsvStagedResult = {
+        val header = data.header
+        val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
         val headerLine = header.mkString(delimiter)
 
         val userPrompt =
@@ -53,11 +55,46 @@ object CodeGenTransformationEvaluator {
                |The input CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.
                |Write a header row FIRST (the output column names, in order), then the data rows. Use the same delimiter.""".stripMargin
 
-        val csvContent = (headerLine +: rows).mkString("\n")
-        val result = transform(userPrompt, csvContent, "csv", instruction, pipelineName)
-        val lines = result.split("\n").toList.filter(_.nonEmpty)
-        splitHeader(lines, header, rows.size, delimiter)
+        val output = transform(userPrompt, data, "csv", instruction, pipelineName)
+        try stageCsvOutput(output, header, data.rowCount, delimiter)
+        finally Files.deleteIfExists(output)
     }
+
+    /** Two passes over the script's output file, neither holding it in heap.
+      * Pass 1 reads the first record, counts the records and checks whether the
+      * first record recurs; [[decideHeader]] then applies exactly the rule
+      * [[splitHeader]] applies to an in-memory list. Pass 2 stages the records
+      * (skipping the header when there is one). Records are read quote-aware,
+      * so a value holding an embedded newline stays one record; empty records
+      * are dropped as the line filter always did. */
+    private[util] def stageCsvOutput(output: Path, inputHeader: List[String], inputRowCount: Long, delimiter: String): CsvStagedResult = {
+        def records(): CloseableIterator[String] = {
+            val it = StagedRows.delimited(output.toString, delimiter)
+            CloseableIterator(it.filter(_.nonEmpty), () => it.close())
+        }
+        var first: String = null
+        var count = 0L
+        var firstRecurs = false
+        CloseableIterator.using(records()) { it =>
+            while (it.hasNext) {
+                val r = it.next()
+                if (first == null) first = r
+                else if (!firstRecurs && r == first) firstRecurs = true
+                count += 1
+            }
+        }
+        if (first == null) return CsvStagedResult(inputHeader, PayloadStager.stageRowIterator("transform", Iterator.empty, delimiter), headerFromScript = false)
+        val headerFromScript = decideHeader(first, inputHeader, inputRowCount, count, firstRecurs, delimiter)
+        val staged = CloseableIterator.using(records()) { it =>
+            PayloadStager.stageRowIterator("transform", if (headerFromScript) it.drop(1) else it, delimiter)
+        }
+        val header = if (headerFromScript) splitLine(first, delimiter).map(_.trim) else inputHeader
+        CsvStagedResult(header, staged, headerFromScript)
+    }
+
+    /** Output of a CSV transformation as staged rows: the header the script
+      * emitted (or the input header when it emitted none) and the staged data. */
+    case class CsvStagedResult(header: List[String], staged: StagedPayload, headerFromScript: Boolean)
 
     /** Output of a CSV transformation: the header the script emitted (or the
       * input header when it emitted none) and the data rows. */
@@ -72,16 +109,32 @@ object CodeGenTransformationEvaluator {
       * lose its first row. */
     private[datris] def splitHeader(lines: List[String], inputHeader: List[String], inputRowCount: Int, delimiter: String): CsvTransformResult = {
         if (lines.isEmpty) return CsvTransformResult(inputHeader, Nil, headerFromScript = false)
-        val first = splitLine(lines.head, delimiter).map(_.trim)
-        val numeric = "^[-+]?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?$".r
-        val looksLikeHeader =
-            first.nonEmpty && first.forall(t => t.nonEmpty && numeric.findFirstIn(t).isEmpty) && first.distinct.size == first.size
-        val countSaysHeader = lines.size == inputRowCount + 1
-        val sameAsInput = first.map(_.toLowerCase) == inputHeader.map(_.toLowerCase)
-        if (sameAsInput || (looksLikeHeader && (countSaysHeader || !lines.tail.contains(lines.head))))
-            CsvTransformResult(first, lines.tail, headerFromScript = true)
+        if (decideHeader(lines.head, inputHeader, inputRowCount.toLong, lines.size.toLong, lines.tail.contains(lines.head), delimiter))
+            CsvTransformResult(splitLine(lines.head, delimiter).map(_.trim), lines.tail, headerFromScript = true)
         else
             CsvTransformResult(inputHeader, lines, headerFromScript = false)
+    }
+
+    private val numeric = "^[-+]?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?$".r
+
+    /** The pure header rule, over facts a streaming pass can gather without
+      * holding the output: `first` is the first (non-empty) output record,
+      * `recordCount` the number of output records and `firstRecurs` whether
+      * `first` appears again as a later record. */
+    private[datris] def decideHeader(
+        first: String,
+        inputHeader: List[String],
+        inputRowCount: Long,
+        recordCount: Long,
+        firstRecurs: Boolean,
+        delimiter: String
+    ): Boolean = {
+        val tokens = splitLine(first, delimiter).map(_.trim)
+        val looksLikeHeader =
+            tokens.nonEmpty && tokens.forall(t => t.nonEmpty && numeric.findFirstIn(t).isEmpty) && tokens.distinct.size == tokens.size
+        val countSaysHeader = recordCount == inputRowCount + 1
+        val sameAsInput = tokens.map(_.toLowerCase) == inputHeader.map(_.toLowerCase)
+        sameAsInput || (looksLikeHeader && (countSaysHeader || !firstRecurs))
     }
 
     /** Minimal RFC4180-style split for one line (quotes, doubled quotes). */
@@ -104,16 +157,18 @@ object CodeGenTransformationEvaluator {
     }
 
     /**
-     * Transform raw JSON/XML data using CodeGen.
+     * Transform raw JSON/XML data using CodeGen. The script's output file is
+     * adopted into the staging area: JSON is re-staged record per line (an
+     * array explodes into records, as at ingest), XML verbatim.
      *
      * @param instruction Plain-English transformation instruction
-     * @param rawData     The raw JSON or XML content
+     * @param data        The JSON or XML payload
      * @param isJson      True for JSON, false for XML
-     * @return Transformed raw content
+     * @return The transformed payload, staged
      */
-    def transformRaw(instruction: String, rawData: String, isJson: Boolean, pipelineName: String = null): String = {
+    def transformRaw(instruction: String, data: Data, isJson: Boolean, pipelineName: String = null): StagedPayload = {
         val format = if (isJson) "JSON" else "XML"
-        val sample = rawData.take(2000)
+        val sample = CodeGenRuleEvaluator.sampleDocument(data, 2000)
 
         val parseInstruction = if (isJson) {
             "Parse the file as JSON using the json module. Write the transformed JSON to the output file."
@@ -130,10 +185,27 @@ object CodeGenTransformationEvaluator {
                |
                |$parseInstruction""".stripMargin
 
-        transform(userPrompt, rawData, format.toLowerCase, instruction, pipelineName)
+        val output = transform(userPrompt, data, format.toLowerCase, instruction, pipelineName)
+        if (isJson) {
+            // Same rule as Data.withRawData → stageRawString: JSON that parses is
+            // staged as NDJSON, anything else is kept verbatim.
+            val staged =
+                try Some(PayloadStager.stageJson("transform", Files.newInputStream(output)))
+                catch { case _: Exception => None }
+            staged match {
+                case Some(p) =>
+                    Files.deleteIfExists(output)
+                    p
+                case None => PayloadStager.adopt("transform", output, StagedFormat.Text)
+            }
+        } else
+            PayloadStager.adopt("transform", output, StagedFormat.Xml)
     }
 
-    private def transform(userPrompt: String, fileContent: String, fileExtension: String, instruction: String = null, pipelineName: String = null): String = {
+    /** Generate the script, run it with the staged input as `sys.argv[1]` and a
+      * fresh output file as `sys.argv[2]`, and return that output file's path.
+      * The caller adopts (or stages from) the output and removes it. */
+    private def transform(userPrompt: String, data: Data, fileExtension: String, instruction: String = null, pipelineName: String = null): Path = {
         logger.info("CodeGen Transformation: generating Python transformation script")
 
         // Step 1: Generate the Python script via LLM (uses codegen config when set)
@@ -148,29 +220,30 @@ object CodeGenTransformationEvaluator {
         CodeGenScriptIO.write(pipelineName, "transformation", instruction, cleanScript)
         logger.info("CodeGen Transformation: script content:\n" + cleanScript)
 
-        // Step 2: Write data and script to temp files
-        val inputFile: Path = Files.createTempFile("tx_input_", "." + fileExtension)
+        // Step 2: Stream the input into the staging area; script + output are temp files
+        val inputFile: Path = CodeGenRuleEvaluator.stageInput(data, fileExtension)
         val outputFile: Path = Files.createTempFile("tx_output_", "." + fileExtension)
         val scriptFile: Path = Files.createTempFile("tx_codegen_", ".py")
 
         try {
-            Files.write(inputFile, fileContent.getBytes("UTF-8"))
             Files.write(scriptFile, cleanScript.getBytes("UTF-8"))
 
             // Step 3: Execute the script
-            val result = executeWithTimeout(scriptFile.toString, inputFile.toString, outputFile.toString, SCRIPT_TIMEOUT_SECONDS)
+            executeWithTimeout(scriptFile.toString, inputFile.toString, outputFile.toString, SCRIPT_TIMEOUT_SECONDS)
             logger.info("CodeGen Transformation: script executed successfully")
 
-            // Step 4: Read the output file
-            new String(Files.readAllBytes(outputFile), "UTF-8").trim
+            // Step 4: Hand the output file back for adoption
+            outputFile
         } catch {
-            case e: DatrisException => throw e
+            case e: DatrisException =>
+                Files.deleteIfExists(outputFile)
+                throw e
             case e: Exception =>
+                Files.deleteIfExists(outputFile)
                 logger.error("CodeGen Transformation script failed", e)
                 throw new DatrisException("CodeGen transformation script failed: " + e.getMessage)
         } finally {
             Files.deleteIfExists(inputFile)
-            Files.deleteIfExists(outputFile)
             Files.deleteIfExists(scriptFile)
         }
     }

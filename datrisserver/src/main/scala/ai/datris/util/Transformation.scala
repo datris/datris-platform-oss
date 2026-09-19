@@ -14,6 +14,7 @@ import java.util.Date
 import javax.script.ScriptEngineManager
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.util.Try
 
 class Transformation(jobContext: JobContext) {
     private val config = jobContext.config
@@ -51,11 +52,13 @@ class Transformation(jobContext: JobContext) {
     private def deduplicate(jobContext: JobContext): JobContext = {
         statusUtil.info("processing", "Running deduplication")
 
+        // Deprecated, in-heap: gated by name above PIPELINE_MATERIALIZE_MAX_MB.
+        jobContext.data.materializeFor("Deduplication (transformation.deduplicate)")
         val distinct = jobContext.data.rows.distinct
         val deduped = jobContext.data.rows.size - distinct.size
         if (deduped > 0) {
             statusUtil.info("processing", deduped.toString + " rows were duplicates and removed")
-            val newData = jobContext.data.copy(rows = distinct)
+            val newData = jobContext.data.withRows(distinct)
             jobContext.copy(data = newData)
         } else
             jobContext
@@ -82,6 +85,9 @@ class Transformation(jobContext: JobContext) {
         if (rowFunction.parameters == null || rowFunction.parameters.isEmpty)
             throw new DatrisException("Javascript row function does not contain any parameters")
 
+        // Deprecated, in-heap: gated by name above PIPELINE_MATERIALIZE_MAX_MB,
+        // before the script is even fetched.
+        ctx.data.materializeFor("JavaScript row function")
         val filePath = rowFunction.parameters.get(0)
         val javascript = {
             val url = {
@@ -117,7 +123,7 @@ class Transformation(jobContext: JobContext) {
             statusUtil.info("processing", removed.toString + " rows were removed during the javascript transformation")
 
         val headerWithSchema = config.destination.schemaProperties.fields.asScala.toList
-        val newData = ctx.data.copy(headerWithSchema = headerWithSchema, rows = transformed)
+        val newData = ctx.data.withRows(transformed).copy(headerWithSchema = headerWithSchema)
         ctx.copy(data = newData)
     }
 
@@ -133,6 +139,11 @@ class Transformation(jobContext: JobContext) {
         else 30000
         val bearerToken = if (rowFunction.parameters.size() > 3 && rowFunction.parameters.get(3).nonEmpty) rowFunction.parameters.get(3) else null
         val apiKey = if (rowFunction.parameters.size() > 4 && rowFunction.parameters.get(4).nonEmpty) rowFunction.parameters.get(4) else null
+        // parameters[5]: batch mode only — rows per call; 0 (default) is one call carrying every row.
+        val batchSize =
+            if (rowFunction.parameters.size() > 5)
+                Option(rowFunction.parameters.get(5)).map(_.trim).filter(_.nonEmpty).flatMap(s => Try(s.toInt).toOption).map(math.max(0, _)).getOrElse(0)
+            else 0
         val delimiter = config.source.fileAttributes.csvAttributes.delimiter
         val pipelineName = config.name
         val pipelineToken = jobContext.pipelineToken
@@ -140,31 +151,57 @@ class Transformation(jobContext: JobContext) {
         statusUtil.info("processing", "Running transformation row function: restEndpoint, mode: " + mode + ", URL: " + endpointUrl)
 
         mode match {
+            case "batch" if batchSize > 0 =>
+                // Chunks of `batchSize` rows read from the staged file; each call
+                // carries the same {pipelineName, pipelineToken, rows} envelope and
+                // the responses are stitched into one new staged file in call order.
+                val rows = ctx.data.rowIterator()
+                val newStaged =
+                    try {
+                        val transformed = rows.grouped(batchSize).flatMap { batch =>
+                            val rowMaps = batch.toList.map(row => RowUtil.getRowAsMap(row, config, ctx.data.header).asJava)
+                            callRestTransformBatch(endpointUrl, pipelineName, pipelineToken, rowMaps, timeoutMs, bearerToken, apiKey, delimiter)
+                        }
+                        PayloadStager.stageRowIterator("rest-batch", transformed, delimiter)
+                    } finally rows.close()
+                statusUtil.info(
+                    "processing",
+                    "REST batch transformation returned " + newStaged.rowCount + " rows (from " + ctx.data.rowCount + ", " + batchSize + " per call)"
+                )
+                ctx.copy(data = ctx.data.withStaged(newStaged))
+
             case "batch" =>
+                // No batch size: today's exact single call with every row, in heap
+                // and gated by name above PIPELINE_MATERIALIZE_MAX_MB.
+                ctx.data.materializeFor("REST endpoint row function in batch mode without a batch size (parameters[5])")
                 val rowMaps = ctx.data.rows.map(row => RowUtil.getRowAsMap(row, config, ctx.data.header).asJava)
                 val transformedRows = callRestTransformBatch(endpointUrl, pipelineName, pipelineToken, rowMaps, timeoutMs, bearerToken, apiKey, delimiter)
-                statusUtil.info("processing", "REST batch transformation returned " + transformedRows.size + " rows (from " + ctx.data.rows.size + ")")
-                val newData = ctx.data.copy(rows = transformedRows)
+                statusUtil.info("processing", "REST batch transformation returned " + transformedRows.size + " rows (from " + ctx.data.rowCount + ")")
+                val newData = ctx.data.withRows(transformedRows)
                 ctx.copy(data = newData)
 
-            case _ => // "row" mode
+            case _ => // "row" mode: one call per row, streamed straight into a new staged file
                 var removed: Long = 0
-                val transformed = ctx.data.rows.flatMap(row => {
-                    val columnMap = RowUtil.getRowAsMap(row, config, ctx.data.header)
-                    val result = callRestTransformRow(endpointUrl, pipelineName, pipelineToken, columnMap, timeoutMs, bearerToken, apiKey, delimiter)
-                    if (result != null) {
-                        Some(result)
-                    } else {
-                        removed = removed + 1
-                        None
-                    }
-                })
+                val rows = ctx.data.rowIterator()
+                val newStaged =
+                    try {
+                        val transformed = rows.flatMap(row => {
+                            val columnMap = RowUtil.getRowAsMap(row, config, ctx.data.header)
+                            val result = callRestTransformRow(endpointUrl, pipelineName, pipelineToken, columnMap, timeoutMs, bearerToken, apiKey, delimiter)
+                            if (result != null) {
+                                Some(result)
+                            } else {
+                                removed = removed + 1
+                                None
+                            }
+                        })
+                        PayloadStager.stageRowIterator("rest-row", transformed, delimiter)
+                    } finally rows.close()
 
                 if (removed > 0)
                     statusUtil.info("processing", removed.toString + " rows were removed during the REST endpoint transformation")
 
-                val newData = ctx.data.copy(rows = transformed)
-                ctx.copy(data = newData)
+                ctx.copy(data = ctx.data.withStaged(newStaged))
         }
     }
 
@@ -273,15 +310,16 @@ class Transformation(jobContext: JobContext) {
     private def runAITransformation(jobContext: JobContext): JobContext = {
         val aiTransformation = config.transformation.aiTransformation
         val instruction = aiTransformation.instruction
-        val rows = if (jobContext.data.rows != null) jobContext.data.rows else List.empty[String]
-        val rawData = jobContext.data.rawData
+        val data = jobContext.data
 
         statusUtil.info("processing", "AI Transformation instruction: " + instruction)
 
-        if (rows.nonEmpty && jobContext.data.header != null) {
+        // Dispatch on the staged format; the CodeGen script reads and writes
+        // files, so the payload never passes through heap.
+        if (data.isDelimited && data.rowCount > 0 && data.header != null) {
             val delimiter = config.source.fileAttributes.csvAttributes.delimiter
-            statusUtil.info("processing", "CodeGen transformation on " + rows.size + " rows")
-            val result = CodeGenTransformationEvaluator.transformCsv(instruction, jobContext.data.header, rows, delimiter, config.name)
+            statusUtil.info("processing", "CodeGen transformation on " + data.rowCount + " rows")
+            val result = CodeGenTransformationEvaluator.transformCsv(instruction, data, delimiter, config.name)
             // The transformation may add, drop or reorder columns. Carry the
             // emitted header forward so downstream loaders project by name
             // against the new shape instead of positionally against the old
@@ -300,18 +338,16 @@ class Transformation(jobContext: JobContext) {
                 )
             } else if (!result.headerFromScript)
                 statusUtil.info("processing", "CodeGen transformation output carried no header; keeping the source columns")
-            val newData = jobContext.data.copy(
+            val newData = data.withStaged(result.staged).copy(
                 header = newHeader,
-                headerWithSchema = rebuildHeaderSchema(newHeader, jobContext.data.headerWithSchema),
-                rows = result.rows
+                headerWithSchema = rebuildHeaderSchema(newHeader, data.headerWithSchema)
             )
             jobContext.copy(data = newData)
-        } else if (rawData != null) {
+        } else if (data.isDocument) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen transformation on " + (if (isJson) "JSON" else "XML") + " data")
-            val transformedRaw = CodeGenTransformationEvaluator.transformRaw(instruction, rawData, isJson, config.name)
-            val newData = jobContext.data.copy(rawData = transformedRaw)
-            jobContext.copy(data = newData)
+            val transformed = CodeGenTransformationEvaluator.transformRaw(instruction, data, isJson, config.name)
+            jobContext.copy(data = data.withStaged(transformed))
         } else {
             jobContext
         }

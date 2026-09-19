@@ -39,6 +39,7 @@ volumes:
   mongodb-data:
   mongodb-configdb:
   minio-data:
+  datris-staging:    # staged pipeline payloads (DATRIS_TEMP_DIR), swept at boot
   kafka-data:        # used by the opt-in kafka profile (COMPOSE_PROFILES=kafka)
   zookeeper-data:    # used by the opt-in kafka profile
   zookeeper-log:     # used by the opt-in kafka profile
@@ -347,6 +348,13 @@ services:
       DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST: "${DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST:-}"
       # Cap on a single tap script's output (MB); the server fails fast above it.
       TAPMAXOUTPUTMB: "${TAP_MAX_OUTPUT_MB:-100}"
+      # Pipeline payload staging: a run's payload is written once to
+      # DATRIS_TEMP_DIR (the datris-staging volume) and read from there by
+      # every stage. PIPELINE_MATERIALIZE_MAX_MB caps what a stage that still
+      # reads the whole payload into heap may pull in; above it the run fails
+      # with a named error instead of an OutOfMemoryError.
+      DATRIS_TEMP_DIR: "${DATRIS_TEMP_DIR:-/tmp/datris-staging}"
+      PIPELINE_MATERIALIZE_MAX_MB: "${PIPELINE_MATERIALIZE_MAX_MB:-256}"
       # Scratch destination: rows inlined on the run status / per page of
       # /pipeline/result, and how many hours a _scratch/ result is kept.
       SCRATCHINLINEROWS: "${SCRATCH_INLINE_ROWS:-200}"
@@ -400,6 +408,9 @@ services:
       - pip-cache:/root/.cache/pip
       - datris-vault-token:/vault-token:ro
       - tap-runner-token:/tap-runner-token:ro
+      # Staged pipeline payloads (DATRIS_TEMP_DIR). Named so in-flight staged
+      # files survive a container recreate; the server sweeps stale runs at boot.
+      - datris-staging:/tmp/datris-staging
     networks:
       - datris-net
       - tap-net

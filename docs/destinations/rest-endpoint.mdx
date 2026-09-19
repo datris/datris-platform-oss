@@ -57,6 +57,31 @@ The endpoint must return a JSON response with the following structure:
 
 The response data is forwarded to downstream steps in the pipeline.
 
+## Batching
+
+By default (`batchSize` = `0`) the pipeline makes exactly one call carrying every row. Set `batchSize` to a positive number to send row-based (CSV) payloads in batches of that many rows, one call per batch, in source order. Each batched request carries the same envelope plus two extra top-level fields:
+
+```json
+{
+  "pipelineToken": "abc-123",
+  "pipelineName": "orders",
+  "batch": 1,
+  "ofBatches": 3,
+  "data": {
+    "size": 6983,
+    "header": ["order_id", "amount", "region"],
+    "rows": ["1001,59.99,us-east", "1002,24.50,eu-west"]
+  }
+}
+```
+
+| Field       | Description                                              |
+|-------------|----------------------------------------------------------|
+| `batch`     | 1-based index of this batch                              |
+| `ofBatches` | Total number of batches in the run (`ceil(rows / batchSize)`) |
+
+Batched requests are only checked for an `{"error": ...}` response; the response data is not forwarded anywhere. JSON and XML payloads (`rawData`) are always sent in a single call regardless of `batchSize`. With `async` set, each batch waits for its own callback before the next batch is sent.
+
 ## Sync and Async Modes
 
 Set `async` to control whether the pipeline waits for a response:
@@ -85,7 +110,8 @@ The `timeoutMs` field controls the maximum time in milliseconds the pipeline wil
       "endpoint": "https://api.example.com/ingest",
       "async": false,
       "bearerToken": "eyJhbGciOiJIUzI1NiIs...",
-      "timeoutMs": 300000
+      "timeoutMs": 300000,
+      "batchSize": 0
     }
   }
 }
@@ -100,6 +126,7 @@ The `timeoutMs` field controls the maximum time in milliseconds the pipeline wil
 | `bearerToken`    | no       |         | Bearer token added as `Authorization: Bearer` header  |
 | `apiKey`         | no       |         | API key sent as an `x-api-key` header                 |
 | `timeoutMs`      | no       | `300000`| Response (sync) or callback (async) timeout in milliseconds |
+| `batchSize`      | no       | `0`     | Rows per call for row-based payloads. `0` = one call with every row (the default behaviour); `> 0` adds `batch` / `ofBatches` to each request |
 
 ## Completion Notification
 

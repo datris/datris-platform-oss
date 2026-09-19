@@ -178,6 +178,7 @@ Supported types: `boolean`, `int`, `tinyint`, `smallint`, `bigint`, `float`, `do
 | `async` | boolean | `false` | If true, returns immediately |
 | `bearerToken` | string | null | Authorization bearer token |
 | `timeoutMs` | int | 300000 | Request timeout (milliseconds) |
+| `batchSize` | int | 0 | Rows per call for row-based payloads; `0` sends every row in one call. When `> 0`, each request also carries `batch` and `ofBatches`, and every response's `data.rows` are stitched in call order. See [Preprocessor](/preprocessor#batching) |
 
 ### Data Quality
 
@@ -264,6 +265,7 @@ Exactly one of `usePostgres`, `useMongoDB`, `useSnowflake`, or `useDatabricks` m
 | `apiKey` | string | null | API key for authentication |
 | `timeoutSeconds` | int | 0 | Request timeout (seconds); 0 means unset |
 | `timeoutMs` | int | 300000 | Request timeout (milliseconds) |
+| `batchSize` | int | 0 | Rows per call for row-based payloads; `0` sends every row in one call. When `> 0`, each request also carries `batch` and `ofBatches`. See [REST Endpoint](/destinations/rest-endpoint#batching) |
 
 ### Destination > Qdrant
 

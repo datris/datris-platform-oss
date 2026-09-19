@@ -10,8 +10,13 @@ RUN mkdir -p /usr/src/datrisserver /usr/src/datrisserver/config
 COPY ${JAR_FILE} /usr/src/datrisserver/datrisserver.jar
 COPY docker-init.sh /usr/src/datrisserver/docker-init.sh
 RUN chmod +x /usr/src/datrisserver/docker-init.sh
+# /tmp/datris-staging is the DATRIS_TEMP_DIR mountpoint (named datris-staging
+# volume). It must exist in the image owned by datris: Docker seeds an empty
+# named volume from the image path's ownership, and a mountpoint it has to
+# create itself is root:root, which the non-root server cannot write to.
 RUN groupadd -r datris && useradd -r -g datris -d /usr/src/datrisserver datris \
-    && chown -R datris:datris /usr/src/datrisserver
+    && mkdir -p /tmp/datris-staging \
+    && chown -R datris:datris /usr/src/datrisserver /tmp/datris-staging
 USER datris
 # Liveness only (any HTTP response counts): /api/v1/health/services probes every
 # backend and is too slow/heavy for a container healthcheck.
