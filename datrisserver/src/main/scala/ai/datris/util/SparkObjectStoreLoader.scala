@@ -6,10 +6,10 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.Gson
-import ai.datris.model.{Notification, DatrisEnvironment, SchemaField}
+import ai.datris.model.{DatrisEnvironment, DatrisException, Notification, SchemaField, StagedFormat}
 import ai.datris.model.JobContext
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.{Row, SaveMode}
+import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.concurrent.ConcurrentHashMap
@@ -31,6 +31,61 @@ object SparkObjectStoreLoader {
         lock.lock()
         try body
         finally lock.unlock()
+    }
+
+    /** Read the staged delimited file with Spark's CSV reader under the
+      *  destination schema (plans/stories/streaming-pipeline-phase2.md, step 7).
+      *  Replaces `parallelize(rows.map(split + castValue))`: the payload no
+      *  longer passes through the driver heap. Spark runs in-process
+      *  (SparkSessionManager builds a local[*] session), so the run's staged
+      *  file is readable by every task through `file://`.
+      *
+      *  Semantics kept from the old path: header-less input, the configured
+      *  delimiter, values trimmed, an empty value is null, and a value that
+      *  does not cast to its column type fails the load (FAILFAST, as
+      *  `castValue`'s exception did). RFC 4180 quoting (`""` escapes a quote,
+      *  multi-line quoted values) is honoured, which the old `split` was not:
+      *  a quoted value containing the delimiter now parses as one column. */
+    private[util] def stagedDataFrame(spark: SparkSession, stagedPath: String, schemaFields: List[SchemaField], delimiter: String): DataFrame = {
+        val schema = buildSchema(schemaFields)
+        if (stagedPath == null)
+            return spark.createDataFrame(spark.sparkContext.emptyRDD[Row], schema)
+        val uri = java.nio.file.Paths.get(stagedPath).toAbsolutePath.toUri.toString // file:///...
+        spark.read
+            .schema(schema)
+            .option("header", "false")
+            .option("delimiter", delimiter)
+            .option("quote", "\"")
+            .option("escape", "\"")
+            .option("multiLine", "true")
+            .option("ignoreLeadingWhiteSpace", "true")
+            .option("ignoreTrailingWhiteSpace", "true")
+            .option("nullValue", "")
+            .option("emptyValue", "")
+            .option("mode", "FAILFAST")
+            .csv(uri)
+    }
+
+    private[util] def buildSchema(fields: List[SchemaField]): StructType = {
+        StructType(fields.map(field => {
+            val dataType = field.`type`.toLowerCase match {
+                case "boolean" => BooleanType
+                case "int" | "integer" => IntegerType
+                case "tinyint" => ByteType
+                case "smallint" => ShortType
+                case "bigint" => LongType
+                case "float" => FloatType
+                case "double" => DoubleType
+                case t if t.startsWith("decimal(") => {
+                    val params = t.stripPrefix("decimal(").stripSuffix(")").split(",").map(_.trim.toInt)
+                    DecimalType(params(0), if (params.length > 1) params(1) else 0)
+                }
+                case "date" => DateType
+                case "timestamp" => TimestampType
+                case _ => StringType
+            }
+            StructField(field.name, dataType, nullable = true)
+        }))
     }
 }
 
@@ -54,9 +109,8 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
 
         // Build schema from pipeline config
         val schemaFields = config.destination.schemaProperties.fields.asScala.toList
-        val sparkSchema = buildSchema(schemaFields)
+        val sparkSchema = SparkObjectStoreLoader.buildSchema(schemaFields)
 
-        // Convert data rows to Spark Rows
         val delimiter = {
             if (
                 config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null
@@ -67,17 +121,17 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 ","
         }
 
-        val rows = jobContext.data.rows.map(row => {
-            val values = row.split(delimiter, -1)
-            Row.fromSeq(values.indices.map(i => {
-                val value = if (i < values.length) values(i).trim else ""
-                if (value.isEmpty) null
-                else castValue(value, schemaFields(i).`type`)
-            }))
-        })
-
-        val rdd = spark.sparkContext.parallelize(rows)
-        val df = spark.createDataFrame(rdd, sparkSchema)
+        // Read the staged file directly (no driver-side row list). Only a
+        // delimited payload has rows to write (the old `data.rows` was null —
+        // and failed — for anything else).
+        val staged = jobContext.data.staged
+        val stagedPath =
+            if (staged == null || staged.isEmpty) null
+            else staged.format match {
+                case StagedFormat.Delimited(_) => staged.path
+                case other => throw new DatrisException("objectStore destination needs delimited rows; the payload is " + other)
+            }
+        val df = SparkObjectStoreLoader.stagedDataFrame(spark, stagedPath, schemaFields, delimiter)
 
         // Determine file format (default parquet)
         val fileFormat = {
@@ -164,45 +218,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                         ", snapshot " + r.snapshotId + " (deleted " + r.deletedRecords + ", total " + r.totalRecords + " rows)"
                 )
             case _ =>
-                statusUtil.info("end", "Process completed, wrote " + jobContext.data.rows.size + " rows to " + outputPath)
-        }
-    }
-
-    private def buildSchema(fields: List[SchemaField]): StructType = {
-        StructType(fields.map(field => {
-            val dataType = field.`type`.toLowerCase match {
-                case "boolean" => BooleanType
-                case "int" | "integer" => IntegerType
-                case "tinyint" => ByteType
-                case "smallint" => ShortType
-                case "bigint" => LongType
-                case "float" => FloatType
-                case "double" => DoubleType
-                case t if t.startsWith("decimal(") => {
-                    val params = t.stripPrefix("decimal(").stripSuffix(")").split(",").map(_.trim.toInt)
-                    DecimalType(params(0), if (params.length > 1) params(1) else 0)
-                }
-                case "date" => DateType
-                case "timestamp" => TimestampType
-                case _ => StringType
-            }
-            StructField(field.name, dataType, nullable = true)
-        }))
-    }
-
-    private def castValue(value: String, fieldType: String): Any = {
-        fieldType.toLowerCase match {
-            case "boolean" => value.toBoolean
-            case "int" | "integer" => value.toInt
-            case "tinyint" => value.toByte
-            case "smallint" => value.toShort
-            case "bigint" => value.toLong
-            case "float" => value.toFloat
-            case "double" => value.toDouble
-            case t if t.startsWith("decimal(") => new java.math.BigDecimal(value)
-            case "date" => java.sql.Date.valueOf(value)
-            case "timestamp" => java.sql.Timestamp.valueOf(value)
-            case _ => value
+                statusUtil.info("end", "Process completed, wrote " + jobContext.data.rowCount + " rows to " + outputPath)
         }
     }
 

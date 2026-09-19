@@ -64,7 +64,10 @@ class CSVReader {
                 else {
                     val line = columnNumbers.map(colNumber => {
                         val value = record.get(colNumber)
-                        if (value != null && (value.contains(delimiter) || value.contains("\"") || value.contains("\n")))
+                        // A lone "\r" must be quoted too: the staged file is read
+                        // back record by record (StagedRows), and an unquoted CR
+                        // would be taken as a line terminator.
+                        if (value != null && (value.contains(delimiter) || value.contains("\"") || value.contains("\n") || value.contains("\r")))
                             "\"" + value.replace("\"", "\"\"") + "\""
                         else
                             value

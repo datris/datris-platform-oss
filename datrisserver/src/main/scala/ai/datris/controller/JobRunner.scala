@@ -221,7 +221,11 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     Some("databricks" -> runLoader("DatabricksLoader")(new DatabricksLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.restEndpoint != null)
-                    Some("rest" -> runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextStamped, config.destination.restEndpoint).process()))
+                    Some("rest" -> runLoader("RestEndpointRunner")(new RestEndpointRunner(
+                        jobContextStamped,
+                        config.destination.restEndpoint,
+                        destination = true
+                    ).process()))
                 else None,
                 if (config.destination.kafka != null)
                     Some("kafka" -> runLoader("KafkaLoader")(new KafkaLoader(jobContextStamped).process()))

@@ -751,6 +751,8 @@ paths:
                     objectStore supports two providers via the `provider` field: `minio` (default, uses the built-in MinIO credentials) and `s3` (AWS S3). For `provider: s3`, set `destinationBucketOverride` (required), `credentialsSecret` (Vault secret with `accessKey`/`secretKey`/`region` and optional `sessionToken`), and optionally `endpoint` (must be https://). Region lives in the credentials secret, not on the objectStore config.
 
                     `fileFormat` accepts `parquet` (default), `orc`, or `iceberg`; with `iceberg`, `writeMode` may also be `merge`, which upserts on the `keyFields` array (each a destination schema column).
+
+                    restEndpoint takes `endpoint`, `async`, `bearerToken`, `apiKey`, `timeoutMs` and an optional `batchSize` (default `0` = one call carrying every row). With `batchSize > 0`, row-based payloads are POSTed in batches of that many rows, each request also carrying top-level `batch` (1-based) and `ofBatches`.
       responses:
         '200':
           description: Pipeline created/updated

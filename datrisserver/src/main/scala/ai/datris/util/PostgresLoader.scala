@@ -13,7 +13,6 @@ import org.postgresql.core.BaseConnection
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.sql.{Connection, Statement}
-import java.util.UUID
 import scala.collection.JavaConverters._
 import scala.util.Try
 
@@ -55,9 +54,7 @@ class PostgresLoader(jobContext: JobContext) {
                 conn.setAutoCommit(false)
             val statement = conn.createStatement()
             try {
-                val file = createStagingFile()
-
-                copyInto(conn, statement, file)
+                copyInto(conn, statement)
 
                 if (config.destination.database.useTransaction)
                     conn.commit()
@@ -74,69 +71,33 @@ class PostgresLoader(jobContext: JobContext) {
         }
     }
 
-    private def createStagingFile(): String = {
-        // Write the data to a temp location
-        val tempUrl = "s3://" + DatrisEnvironment.current.environment + "-temp/data/" + UUID.randomUUID().toString + ".csv"
-        val data = if (jobContext.data.rows != null && jobContext.data.rows.nonEmpty)
-            projectRowsToDestSchema(jobContext.data.rows).mkString("\n")
-        else if (jobContext.data.rawData != null)
-            // Wrap rawData in CSV quoting — escape internal quotes by doubling them
-            "\"" + jobContext.data.rawData.replace("\"", "\"\"") + "\""
-        else
-            throw new DatrisException("No data to load — both rows and rawData are empty")
-        ObjectStoreUtil.writeBucketObject(ObjectStoreUtil.getBucket(tempUrl), ObjectStoreUtil.getKey(tempUrl), data)
-        tempUrl
-    }
+    /** The COPY payload, streamed straight from the staged file through
+      * [[DestSchemaProjector.csvBody]] — no temp object, no whole-payload
+      * String. Opened once per COPY. */
+    private def openCopyStream(): StagedRows.TextChunkInputStream =
+        new StagedRows.TextChunkInputStream(DestSchemaProjector.csvBody(jobContext))
 
-    private def projectRowsToDestSchema(rows: List[String]): List[String] = {
-        val sourceFields = config.source.schemaProperties.fields.asScala.toList
-        val destFields = config.destination.schemaProperties.fields.asScala.toList
-
-        // Determine delimiter — CSV uses configured delimiter, fallback to comma
-        val delimiter = if (config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null)
-            config.source.fileAttributes.csvAttributes.delimiter
-        else
-            ","
-
-        logger.info("projectRowsToDestSchema: source fields=" + sourceFields.map(_.name).mkString(",") +
-            " dest fields=" + destFields.map(_.name).mkString(","))
-
-        // If source and destination schemas have the same fields in the same order, no projection needed
-        if (sourceFields.size == destFields.size && sourceFields.map(_.name.toLowerCase) == destFields.map(_.name.toLowerCase)) {
-            logger.info("projectRowsToDestSchema: schemas match, no projection needed")
-            return rows
-        }
-
-        // Build a map from source field name (lowercase) to its position index
-        val sourceIndex: Map[String, Int] = {
-            if (jobContext.data.header != null && jobContext.data.header.nonEmpty)
-                jobContext.data.header.zipWithIndex.map { case (name, idx) => name.toLowerCase -> idx }.toMap
-            else
-                sourceFields.zipWithIndex.map { case (f, idx) => f.name.toLowerCase -> idx }.toMap
-        }
-
-        // For each destination field that exists in source, find its index
-        // Missing columns (dropped from CSV) are skipped — Postgres defaults them to NULL
-        val projectedDest = destFields.filter(f => sourceIndex.contains(f.name.toLowerCase))
-        val destColumnIndices = projectedDest.map(f => sourceIndex(f.name.toLowerCase))
-
-        if (projectedDest.size < destFields.size) {
-            val missing = destFields.filterNot(f => sourceIndex.contains(f.name.toLowerCase)).map(_.name)
-            statusUtil.info("processing", "Dropped columns (will be NULL in destination): " + missing.mkString(", "))
-        }
-
-        statusUtil.info(
-            "processing",
-            "Projecting " + sourceFields.size + " source columns to " + projectedDest.size + " destination columns: " + projectedDest.map(_.name).mkString(", ")
-        )
-
-        rows.map { row =>
-            val columns = row.split(delimiter, -1).toList
-            destColumnIndices.map(idx => if (idx < columns.size) columns(idx) else "").mkString(delimiter)
+    /** Run a COPY FROM STDIN fed by [[openCopyStream]]. A failure raised while
+      * projecting rows is the loader's error (not the driver's truncated-copy
+      * message). Returns the rows the driver reports. */
+    private def copyFromStaged(conn: Connection, sql: String): Long = {
+        val inputStream = openCopyStream()
+        try {
+            new CopyManager(conn.unwrap(classOf[BaseConnection])).copyIn(sql, inputStream)
+        } catch {
+            case e: Exception =>
+                if (inputStream.failure != null) {
+                    val failure = new DatrisException("Failed while projecting rows for COPY: " + inputStream.failure.getMessage)
+                    failure.initCause(inputStream.failure)
+                    throw failure
+                }
+                throw e
+        } finally {
+            inputStream.close()
         }
     }
 
-    private def copyInto(conn: Connection, statement: Statement, fileUrl: String): Unit = {
+    private def copyInto(conn: Connection, statement: Statement): Unit = {
         statusUtil.info("processing", "Copying data into " + config.destination.database.table)
 
         if (!config.destination.database.manageTableManually)
@@ -159,15 +120,15 @@ class PostgresLoader(jobContext: JobContext) {
             config.destination.database.keyFields != null &&
             !config.destination.database.keyFields.isEmpty
 
-        if (useUpsert) upsertInto(conn, statement, fileUrl)
-        else rawCopyInto(conn, statement, fileUrl)
+        if (useUpsert) upsertInto(conn, statement)
+        else rawCopyInto(conn, statement)
     }
 
     /** Original load path: COPY straight into the target table. Fastest, used when
      *  keyFields aren't set or truncateBeforeWrite=true. Duplicates against any
      *  unique constraint fail the load — that's the contract for non-keyFields
      *  pipelines, and that's what truncate prevents in the truncate case. */
-    private def rawCopyInto(conn: Connection, statement: Statement, fileUrl: String): Unit = {
+    private def rawCopyInto(conn: Connection, statement: Statement): Unit = {
         val sql = new StringBuilder()
         sql.append("COPY " + "\"" + config.destination.database.schema + "\"" + "." + "\"" + config.destination.database.table + "\"")
 
@@ -198,12 +159,8 @@ class PostgresLoader(jobContext: JobContext) {
         sql.append(")")
 
         statusUtil.info("processing", "Copy command: " + sql.toString())
-        val inputStream = ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
-        val rowsInserted = new CopyManager(conn.unwrap(classOf[BaseConnection]))
-            .copyIn(sql.mkString, inputStream)
+        val rowsInserted = copyFromStaged(conn, sql.mkString)
         statusUtil.info("processing", "Rows inserted into table: " + rowsInserted.toString)
-
-        inputStream.close()
     }
 
     /** Upsert path: COPY into a session-local staging table, then INSERT…SELECT
@@ -215,7 +172,7 @@ class PostgresLoader(jobContext: JobContext) {
      *  (full overwrite of non-key columns, including NULLs). Sources that need
      *  "merge non-nulls only" must coalesce upstream. This matches Mongo's
      *  upsertJSON semantics in MongoDBLoader. */
-    private def upsertInto(conn: Connection, statement: Statement, fileUrl: String): Unit = {
+    private def upsertInto(conn: Connection, statement: Statement): Unit = {
         val schema = config.destination.database.schema
         val tableName = config.destination.database.table
         val targetRef = "\"" + dbName + "\".\"" + schema + "\".\"" + tableName + "\""
@@ -266,13 +223,7 @@ class PostgresLoader(jobContext: JobContext) {
             copySql.append(")")
 
             statusUtil.info("processing", "Copy command (staging): " + copySql.toString())
-            val inputStream = ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
-            val rowsCopied =
-                try {
-                    new CopyManager(conn.unwrap(classOf[BaseConnection])).copyIn(copySql.mkString, inputStream)
-                } finally {
-                    inputStream.close()
-                }
+            val rowsCopied = copyFromStaged(conn, copySql.mkString)
             statusUtil.info("processing", "Rows copied to staging: " + rowsCopied)
 
             // Upsert: INSERT...SELECT ON CONFLICT. If every column in the load

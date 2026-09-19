@@ -76,51 +76,26 @@ class DatabricksLoader(jobContext: JobContext) {
      *  the Snowflake staging file, this one carries a header row of the
      *  destination column names, so every load statement can reference the CSV
      *  columns by name instead of by position. */
+    /** Write the projected destination CSV to a local temp file for PUT. Unlike
+     *  the Snowflake staging file, this one carries a header row of the
+     *  destination column names, so every load statement can reference the CSV
+     *  columns by name instead of by position. The body is streamed from the
+     *  staged payload piece by piece (DestSchemaProjector.csvBody), never held
+     *  whole in heap. */
     private def createStagingFile(): Path = {
         val header = copyFields().map(f => csvHeaderCell(f.name)).mkString(csvDelimiter())
-        val data = if (jobContext.data.rows != null && jobContext.data.rows.nonEmpty)
-            header + "\n" + projectRowsToDestSchema(jobContext.data.rows).mkString("\n")
-        else if (jobContext.data.rawData != null)
-            header + "\n" + "\"" + jobContext.data.rawData.replace("\"", "\"\"") + "\""
-        else
-            throw new DatrisException("No data to load — both rows and rawData are empty")
-
         val file = Files.createTempFile("databricks-load-", ".csv")
         file.toFile.deleteOnExit()
-        Files.write(file, data.getBytes(StandardCharsets.UTF_8))
+        val body = DestSchemaProjector.csvBody(jobContext)
+        try {
+            val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
+            try {
+                writer.write(header)
+                writer.write("\n")
+                body.foreach(writer.write)
+            } finally writer.close()
+        } finally body.close()
         file
-    }
-
-    /** Reorder/drop source columns to match the destination schema. Mirrors
-     *  PostgresLoader.projectRowsToDestSchema. */
-    private def projectRowsToDestSchema(rows: List[String]): List[String] = {
-        val sourceFields = config.source.schemaProperties.fields.asScala.toList
-        val destFields = config.destination.schemaProperties.fields.asScala.toList
-
-        val delimiter = csvDelimiter()
-
-        if (sourceFields.size == destFields.size && sourceFields.map(_.name.toLowerCase) == destFields.map(_.name.toLowerCase))
-            return rows
-
-        val sourceIndex: Map[String, Int] = {
-            if (jobContext.data.header != null && jobContext.data.header.nonEmpty)
-                jobContext.data.header.zipWithIndex.map { case (name, idx) => name.toLowerCase -> idx }.toMap
-            else
-                sourceFields.zipWithIndex.map { case (f, idx) => f.name.toLowerCase -> idx }.toMap
-        }
-
-        val projectedDest = destFields.filter(f => sourceIndex.contains(f.name.toLowerCase))
-        val destColumnIndices = projectedDest.map(f => sourceIndex(f.name.toLowerCase))
-
-        if (projectedDest.size < destFields.size) {
-            val missing = destFields.filterNot(f => sourceIndex.contains(f.name.toLowerCase)).map(_.name)
-            statusUtil.info("processing", "Dropped columns (will be NULL in destination): " + missing.mkString(", "))
-        }
-
-        rows.map { row =>
-            val columns = row.split(delimiter, -1).toList
-            destColumnIndices.map(idx => if (idx < columns.size) columns(idx) else "").mkString(delimiter)
-        }
     }
 
     private def loadData(statement: Statement, stagedPath: String): Unit = {

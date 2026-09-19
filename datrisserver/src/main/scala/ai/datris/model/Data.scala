@@ -5,10 +5,10 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.util.{PayloadStager, StagingArea}
+import ai.datris.util.{CloseableIterator, PayloadStager, StagedRows, StagingArea}
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.io.{BufferedReader, InputStream}
+import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 
@@ -33,18 +33,25 @@ case class Data(
     /** Records in the staged payload: delimited rows, NDJSON lines, 1 for a non-empty document. */
     def rowCount: Long = payload.rowCount
 
-    /** Stream the staged lines (delimited rows or NDJSON records) without
-      * holding them in memory. The reader closes itself when exhausted. */
-    def rowIterator(): Iterator[String] = {
-        val p = payload
-        p.format match {
-            case StagedFormat.Delimited(_) | StagedFormat.NdJson if !p.isEmpty => lineIterator(p.path)
-            case _ => Iterator.empty
-        }
-    }
+    /** Stream the staged records without holding them in memory: delimited
+      * rows (record-aware — a quoted value holding a line terminator stays
+      * inside its row) or NDJSON lines. Closes itself when exhausted; callers
+      * that stop early must call `close()`. */
+    def rowIterator(): CloseableIterator[String] = openRecords()
 
     /** One JSON record per element; only meaningful for NDJSON payloads. */
-    def recordIterator(): Iterator[String] = rowIterator()
+    def recordIterator(): CloseableIterator[String] = openRecords()
+
+    // Shared by both public iterators so a subclass overriding one (a
+    // counting spy in the specs) is not invoked twice for the other.
+    private def openRecords(): CloseableIterator[String] = {
+        val p = payload
+        p.format match {
+            case StagedFormat.Delimited(delimiter) if !p.isEmpty => StagedRows.delimited(p.path, delimiter)
+            case StagedFormat.NdJson if !p.isEmpty => StagedRows.lines(p.path)
+            case _ => CloseableIterator.empty
+        }
+    }
 
     /** Raw bytes of the staged file. Caller closes. Empty stream for an empty payload. */
     def openStream(): InputStream =
@@ -61,7 +68,7 @@ case class Data(
                 if (p.isEmpty) List.empty
                 else {
                     checkMaterialize(p)
-                    lineIterator(p.path).toList
+                    openRecords().toList
                 }
             case _ => null
         }
@@ -75,7 +82,7 @@ case class Data(
         p.format match {
             case StagedFormat.NdJson =>
                 checkMaterialize(p)
-                val lines = lineIterator(p.path)
+                val lines = StagedRows.lines(p.path)
                 if (p.arraySource) lines.mkString("[", ",", "]") else lines.mkString("\n")
             case StagedFormat.Xml | StagedFormat.Text =>
                 if (p.isEmpty) null
@@ -143,47 +150,6 @@ object Data {
             else if (rawBytes != null) PayloadStager.stageBytes("data", rawBytes)
             else StagedPayload.empty
         new Data(size, header, headerWithSchema, staged, rawBytes)
-    }
-
-    private def lineIterator(path: String): Iterator[String] = {
-        val reader = Files.newBufferedReader(Paths.get(path), StandardCharsets.UTF_8)
-        new LineIterator(reader)
-    }
-
-    /** Reads lines lazily; closes the reader at EOF (or on a read failure). */
-    private class LineIterator(reader: BufferedReader) extends Iterator[String] {
-        private var nextLine: String = _
-        private var closed = false
-
-        private def fill(): Unit =
-            if (nextLine == null && !closed) {
-                try nextLine = reader.readLine()
-                catch {
-                    case e: Exception =>
-                        close()
-                        throw e
-                }
-                if (nextLine == null) close()
-            }
-
-        private def close(): Unit = {
-            closed = true
-            try reader.close()
-            catch { case _: Exception => () }
-        }
-
-        override def hasNext: Boolean = {
-            fill()
-            nextLine != null
-        }
-
-        override def next(): String = {
-            fill()
-            if (nextLine == null) throw new NoSuchElementException("staged payload exhausted")
-            val line = nextLine
-            nextLine = null
-            line
-        }
     }
 
     /** First stack frame outside this class, as `Class.method:line`. */
