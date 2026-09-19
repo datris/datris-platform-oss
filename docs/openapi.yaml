@@ -734,13 +734,17 @@ paths:
                   description: Source configuration (fileAttributes, schemaProperties)
                 preprocessor:
                   type: object
-                  description: Optional REST endpoint preprocessor
+                  description: |
+                    Optional REST endpoint preprocessor (`endpoint`, `async`, `bearerToken`, `apiKey`, `timeoutMs`, `batchSize`). `batchSize` defaults to `0` (one call carrying every row, whose response `data` replaces the payload). With `batchSize > 0`, row-based payloads are POSTed in batches of that many rows — each request also carrying top-level `batch` (1-based) and `ofBatches` — and every response's `data.rows` are stitched, in call order, into the payload passed downstream.
                 dataQuality:
                   type: object
                   description: Data quality rules (AI rules, header validation, schema validation)
                 transformation:
                   type: object
-                  description: Transformation rules (AI transformation, deduplication, trimming)
+                  description: |
+                    Transformation rules (AI transformation, deduplication, row functions).
+
+                    `rowFunctions` is an array of `{ "function", "parameters" }`. For `"function": "restEndpoint"` the positional `parameters` are `[url, mode, timeoutMs, bearerToken, apiKey, batchSize]`: `mode` is `"row"` (default; one call per row carrying `{pipelineName, pipelineToken, row}`, a `null` row in the response removes it) or `"batch"` (calls carry `{pipelineName, pipelineToken, rows}`). In batch mode the optional sixth parameter `batchSize` (default `0`) sets the rows per call: `0` makes one call carrying every row; `> 0` sends ceil(rows / batchSize) calls of that many rows, in source order, and stitches the responses in call order. Only `url` is required.
                 destination:
                   type: object
                   description: |

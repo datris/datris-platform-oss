@@ -411,15 +411,25 @@ class LoaderStreamingSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(data.materialized.isEmpty, s"batched mode must stream rowIterator(), not materialize via ${data.materialized}")
     }
 
-    test("RestEndpointRunner preprocessor role ignores batchSize and keeps today's single body") {
+    // Phase 3 (plans/stories/streaming-pipeline-phase3.md, Step 6): the
+    // preprocessor role honours batchSize too; batchSize = 0 keeps today's body.
+    test("RestEndpointRunner preprocessor role honours batchSize and keeps today's single body at batchSize 0") {
         val data = delimitedData(restRows, List("id", "name"))
         val endpoint = RestEndpoint(endpoint = "http://rest.invalid/hook", batchSize = 250)
         val cfg = restConfig(endpoint).copy(preprocessor = endpoint)
         val runner = new RestEndpointRunner(ctx(cfg, data, new RecordingStatusUtil), endpoint)
 
-        val bodies = runner.requestBodies().toList
-        assert(bodies.size == 1, "the preprocessor path is Phase 3 and stays one call")
-        assert(JsonParser.parseString(bodies.head) == legacyBody(data))
+        val bodies = runner.requestBodies().map(b => JsonParser.parseString(b).getAsJsonObject).toList
+        assert(bodies.size == 3, "600 rows / 250 = 3 calls for the preprocessor too")
+        assert(bodies.map(_.get("batch").getAsInt) == List(1, 2, 3))
+        assert(bodies.forall(_.get("ofBatches").getAsInt == 3))
+        assert(bodies.map(_.getAsJsonObject("data").getAsJsonArray("rows").size()) == List(250, 250, 100))
+
+        val single = RestEndpoint(endpoint = "http://rest.invalid/hook", batchSize = 0)
+        val singleRunner = new RestEndpointRunner(ctx(restConfig(single).copy(preprocessor = single), data, new RecordingStatusUtil), single)
+        val singleBodies = singleRunner.requestBodies().toList
+        assert(singleBodies.size == 1, "batchSize 0 is today's one call")
+        assert(JsonParser.parseString(singleBodies.head) == legacyBody(data))
     }
 
     // ---- Unit-level proxy for "the materialized-payload log names no loader":

@@ -37,10 +37,14 @@ class DataQuality(jobContext: JobContext) {
             }
 
             statusUtil.info("processing", "Validating the incoming data for pipeline: " + config.name + ", against the validation schema: " + schemaFileUrl)
-            if (config.source.fileAttributes.jsonAttributes != null)
+            // Deprecated, in-heap: gated by name above PIPELINE_MATERIALIZE_MAX_MB.
+            if (config.source.fileAttributes.jsonAttributes != null) {
+                jobContext.data.materializeFor("JSON schema validation (dataQuality.validationSchema)")
                 SchemaValidationUtil.validateJson(jobContext.data.rawData, schemaFileUrl)
-            else if (config.source.fileAttributes.xmlAttributes != null)
+            } else if (config.source.fileAttributes.xmlAttributes != null) {
+                jobContext.data.materializeFor("XML schema validation (dataQuality.validationSchema)")
                 SchemaValidationUtil.validateXml(jobContext.data.rawData, schemaFileUrl)
+            }
         }
 
         // AI rule (CodeGen)?
@@ -102,21 +106,21 @@ class DataQuality(jobContext: JobContext) {
     private def runAIRule(data: Data): Unit = {
         val aiRule = config.dataQuality.aiRule
         val instruction = aiRule.instruction
-        val rows = if (data.rows != null) data.rows else List.empty[String]
-        val rawData = data.rawData
 
         statusUtil.info("processing", "AI Data Quality instruction: " + instruction)
 
         statusUtil.info("processing", "Running CodeGen data quality rule")
 
-        val failures = if (rows.nonEmpty && data.header != null) {
+        // Dispatch on the staged format; the script reads the staged file, so
+        // the payload never passes through heap.
+        val failures = if (data.isDelimited && data.rowCount > 0 && data.header != null) {
             val delimiter = config.source.fileAttributes.csvAttributes.delimiter
-            statusUtil.info("processing", "CodeGen rule validating " + rows.size + " rows")
-            CodeGenRuleEvaluator.evaluateCsv(instruction, data.header, rows, delimiter)
-        } else if (rawData != null) {
+            statusUtil.info("processing", "CodeGen rule validating " + data.rowCount + " rows")
+            CodeGenRuleEvaluator.evaluateCsv(instruction, data, delimiter)
+        } else if (data.isDocument) {
             val isJson = config.source.fileAttributes.jsonAttributes != null
             statusUtil.info("processing", "CodeGen rule on " + (if (isJson) "JSON" else "XML") + " data")
-            CodeGenRuleEvaluator.evaluateRaw(instruction, rawData, isJson)
+            CodeGenRuleEvaluator.evaluateRaw(instruction, data, isJson)
         } else {
             List.empty
         }

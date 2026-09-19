@@ -9,6 +9,7 @@ import ai.datris.model._
 import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.nio.file.Files
 import scala.collection.JavaConverters._
 
 /** Appends per-run provenance onto a job's data, once, after transformation and
@@ -22,8 +23,8 @@ import scala.collection.JavaConverters._
   *    fast path). The stored pipeline definition is never touched — provenance
   *    columns must not leak into the config document, its version snapshots,
   *    or the dest-types dialog.
-  *  - JSON rawData: keys injected into each object (array, single object, or
-  *    NDJSON lines). XML is not stamped.
+  *  - JSON payloads: keys injected into each object, streamed record by record
+  *    through the staged NDJSON file. XML is not stamped.
   *  - unstructured/vector data (rawBytes): keys injected into the in-memory
   *    vector destination `metadata` maps; the vector loaders already write
   *    that map onto every chunk.
@@ -55,10 +56,12 @@ object ProvenanceStamper {
         try {
             val values = stampValues(ctx, java.time.Instant.now().toString)
             if (values.isEmpty) return ctx
+            // Dispatch on the staged format: never touch the deprecated
+            // `rows` / `rawData` accessors, which materialize the payload.
             val stamped =
                 if (ctx.data == null) ctx
-                else if (ctx.data.rows != null && ctx.data.header != null) stampDelimited(ctx, values)
-                else if (ctx.data.rawData != null) stampRaw(ctx, values)
+                else if (ctx.data.isDelimited && ctx.data.header != null) stampDelimited(ctx, values)
+                else if (ctx.data.isDocument) stampRaw(ctx, values)
                 else if (ctx.data.rawBytes != null) stampVector(ctx, values)
                 else ctx
             if ((stamped ne ctx) && ctx.statusUtil != null)
@@ -110,7 +113,12 @@ object ProvenanceStamper {
         val suffix = values.map(v => csvEncode(Option(v._2).getOrElse(""), delimiter)).mkString(delimiter)
 
         val newHeader = data.header ++ names
-        val newRows = data.rows.map(row => row + delimiter + suffix)
+        // Row by row from the staged file into a new staged file: the payload
+        // never lives in heap, whatever its size.
+        val rows = data.rowIterator()
+        val newStaged =
+            try PayloadStager.stageRowIterator("stamp", rows.map(row => row + delimiter + suffix), delimiter)
+            finally rows.close()
         val newHeaderWithSchema =
             if (data.headerWithSchema != null) data.headerWithSchema ++ names.map(n => SchemaField(n, "string"))
             else data.headerWithSchema
@@ -128,7 +136,7 @@ object ProvenanceStamper {
             else ctx.config.destination
 
         ctx.copy(
-            data = data.withRows(newRows).copy(header = newHeader, headerWithSchema = newHeaderWithSchema),
+            data = data.withStaged(newStaged).copy(header = newHeader, headerWithSchema = newHeaderWithSchema),
             config = ctx.config.copy(source = newSource, destination = newDestination)
         )
     }
@@ -154,9 +162,62 @@ object ProvenanceStamper {
             ctx.config.source != null && ctx.config.source.fileAttributes != null &&
             ctx.config.source.fileAttributes.xmlAttributes != null
         ) return ctx
-        val injected = injectJson(ctx.data.rawData, values)
-        if (injected == null) ctx
-        else ctx.copy(data = ctx.data.withRawData(injected))
+        // Only NDJSON is stampable; an opaque text document is left alone (as
+        // `injectJson` did for anything that is not JSON).
+        if (!ctx.data.isNdJson) return ctx
+        stampNdJson(ctx, values) match {
+            case Some(staged) => ctx.copy(data = ctx.data.withStaged(staged))
+            case None => ctx
+        }
+    }
+
+    /** Stream the staged NDJSON through the stamp, one record per line, into a
+      * new staged file. Same rules as [[injectJson]]: every line must parse, only
+      * objects are stamped, an already-stamped payload (no object changed) is
+      * left untouched. Returns None when nothing was stamped. */
+    private def stampNdJson(ctx: JobContext, values: List[(String, String)]): Option[StagedPayload] = {
+        val nonNull = values.filter(_._2 != null)
+        if (nonNull.isEmpty) return None
+        val source = ctx.data.staged
+        if (source.isEmpty || source.rowCount == 0) return None
+        val gson = new Gson
+        val format = StagedFormat.NdJson
+        val (path, writer) = StagingArea.newWriter("stamp", format)
+        var changed = false
+        var failed = false
+        var count = 0L
+        val records = ctx.data.recordIterator()
+        try {
+            while (!failed && records.hasNext) {
+                val line = records.next()
+                val out =
+                    if (line.trim.isEmpty) line
+                    else {
+                        val el = JsonParser.parseString(line)
+                        if (el.isJsonObject) {
+                            val obj = el.getAsJsonObject
+                            if (!obj.has(RunId)) {
+                                nonNull.foreach { case (k, v) => obj.addProperty(k, v) }
+                                changed = true
+                            }
+                            gson.toJson(el)
+                        } else line
+                    }
+                if (count > 0) writer.write("\n")
+                writer.write(out)
+                count += 1
+            }
+        } catch {
+            // A line that does not parse: leave the payload untouched.
+            case _: Exception => failed = true
+        } finally {
+            records.close()
+            writer.close()
+        }
+        if (failed || !changed) {
+            Files.deleteIfExists(path)
+            None
+        } else Some(StagedPayload(path.toString, format, count, Files.size(path), source.arraySource))
     }
 
     /** Inject the stamp keys into a JSON payload: array of objects, a single

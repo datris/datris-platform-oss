@@ -69,14 +69,21 @@ object StagingArea {
     def forToken(token: String): Path = Files.createDirectories(root.resolve(safeName(token)))
 
     /** A fresh file path for a staged payload in the current run's directory. */
-    def newFile(stage: String, format: StagedFormat): Path = {
+    def newFile(stage: String, format: StagedFormat): Path = newFile(stage, format.extension)
+
+    /** A fresh file path with an explicit extension (for files a script reads
+      * by name, e.g. the `.json` a CodeGen script expects). */
+    def newFile(stage: String, extension: String): Path = {
         val dir = forToken(currentTokenOption.getOrElse(UnscopedDir))
-        dir.resolve(safeName(stage) + "-" + UUID.randomUUID().toString + "." + format.extension)
+        dir.resolve(safeName(stage) + "-" + UUID.randomUUID().toString + "." + extension)
     }
 
     /** Open a UTF-8 writer on a new staged file. Caller closes it. */
-    def newWriter(stage: String, format: StagedFormat): (Path, Writer) = {
-        val path = newFile(stage, format)
+    def newWriter(stage: String, format: StagedFormat): (Path, Writer) = newWriter(stage, format.extension)
+
+    /** Open a UTF-8 writer on a new staged file with an explicit extension. Caller closes it. */
+    def newWriter(stage: String, extension: String): (Path, Writer) = {
+        val path = newFile(stage, extension)
         (path, new BufferedWriter(Files.newBufferedWriter(path, StandardCharsets.UTF_8)))
     }
 

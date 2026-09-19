@@ -5,11 +5,12 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException}
+import ai.datris.model.{Data, DatrisEnvironment, DatrisException, StagedFormat, StagedPayload}
 import com.google.gson.{GsonBuilder, JsonArray}
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.nio.file.{Files, Path}
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path, Paths}
 import scala.collection.JavaConverters._
 
 object CodeGenRuleEvaluator {
@@ -33,16 +34,17 @@ object CodeGenRuleEvaluator {
     /**
      * Evaluate a plain-English rule against CSV data using CodeGen.
      * Generates a Python script via LLM, executes it locally against the data.
+     * The script reads the staged payload (header line first) from a file; the
+     * rows never pass through the JVM heap.
      *
      * @param rule      Plain-English validation rule
-     * @param header    CSV column names
-     * @param rows      CSV data rows
+     * @param data      The delimited payload (header + staged rows)
      * @param delimiter CSV delimiter
      * @return List of (rowIndex, failureReason) tuples
      */
-    def evaluateCsv(rule: String, header: List[String], rows: List[String], delimiter: String): List[(Int, String)] = {
-        val sampleRows = rows.take(MAX_SAMPLE_ROWS)
-        val headerLine = header.mkString(delimiter)
+    def evaluateCsv(rule: String, data: Data, delimiter: String): List[(Int, String)] = {
+        val sampleRows = CloseableIterator.using(data.rowIterator())(_.take(MAX_SAMPLE_ROWS).toList)
+        val headerLine = data.header.mkString(delimiter)
 
         val userPrompt =
             s"""Format: CSV (delimiter: "${escapeDelimiter(delimiter)}")
@@ -54,22 +56,20 @@ object CodeGenRuleEvaluator {
                |
                |The CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.""".stripMargin
 
-        // Write CSV data to temp file
-        val csvContent = (headerLine +: rows).mkString("\n")
-        evaluate(userPrompt, csvContent, "csv")
+        evaluate(userPrompt, data)
     }
 
     /**
      * Evaluate a plain-English rule against raw JSON/XML data using CodeGen.
      *
-     * @param rule    Plain-English validation rule
-     * @param rawData The raw JSON or XML content
-     * @param isJson  True for JSON, false for XML
+     * @param rule   Plain-English validation rule
+     * @param data   The JSON or XML payload
+     * @param isJson True for JSON, false for XML
      * @return List of (recordIndex, failureReason) tuples
      */
-    def evaluateRaw(rule: String, rawData: String, isJson: Boolean): List[(Int, String)] = {
+    def evaluateRaw(rule: String, data: Data, isJson: Boolean): List[(Int, String)] = {
         val format = if (isJson) "JSON" else "XML"
-        val sample = rawData.take(2000)
+        val sample = sampleDocument(data, 2000)
 
         val parseInstruction = if (isJson) {
             "Parse the file as a JSON array of objects using the json module."
@@ -86,10 +86,104 @@ object CodeGenRuleEvaluator {
                |
                |$parseInstruction""".stripMargin
 
-        evaluate(userPrompt, rawData, format.toLowerCase)
+        evaluate(userPrompt, data)
     }
 
-    private def evaluate(userPrompt: String, fileContent: String, fileExtension: String): List[(Int, String)] = {
+    /** The first `chars` characters of the document exactly as the script will
+      * see it (a JSON array re-wrapped in `[...]`, NDJSON line per record, XML
+      * verbatim) — read from the staged file, never the whole payload. */
+    private[util] def sampleDocument(data: Data, chars: Int): String = {
+        val sb = new java.lang.StringBuilder(chars)
+        val staged = data.staged
+        if (staged == null || staged.isEmpty) return ""
+        if (data.isNdJson) {
+            val open = if (staged.arraySource) "[" else ""
+            val sep = if (staged.arraySource) "," else "\n"
+            sb.append(open)
+            val it = data.recordIterator()
+            try {
+                var first = true
+                while (it.hasNext && sb.length < chars) {
+                    if (!first) sb.append(sep)
+                    sb.append(it.next())
+                    first = false
+                }
+                if (!it.hasNext && staged.arraySource) sb.append("]")
+            } finally it.close()
+        } else {
+            val reader = Files.newBufferedReader(Paths.get(staged.path), StandardCharsets.UTF_8)
+            try {
+                val buf = new Array[Char](chars)
+                var n = reader.read(buf)
+                while (n > 0 && sb.length < chars) {
+                    sb.append(buf, 0, n)
+                    n = reader.read(buf)
+                }
+            } finally reader.close()
+        }
+        val text = sb.toString
+        if (text.length > chars) text.substring(0, chars) else text
+    }
+
+    /** The file handed to a CodeGen script as `sys.argv[1]`, written into the
+      * run's staging area (so `JobRunner`'s cleanup reclaims it) by streaming
+      * the staged payload — the script contract is unchanged:
+      *  - delimited: header line, then the staged rows (byte-equal to the
+      *    `(headerLine +: rows).mkString("\n")` the script used to get);
+      *  - JSON: one array `[...]` when the payload arrived as an array, else
+      *    the NDJSON lines as they are;
+      *  - XML / text: the document verbatim.
+      * Shared with `CodeGenTransformationEvaluator`. */
+    private[util] def stageInput(data: Data): Path = {
+        val staged = if (data.staged == null) StagedPayload.empty else data.staged
+        staged.format match {
+            case StagedFormat.Delimited(delimiter) =>
+                val (path, writer) = StagingArea.newWriter("codegen-input", "csv")
+                try {
+                    if (data.header != null) writer.write(data.header.mkString(delimiter))
+                    if (!staged.isEmpty && staged.rowCount > 0) {
+                        if (data.header != null) writer.write("\n")
+                        copyText(data.openStream(), writer)
+                    }
+                } finally writer.close()
+                path
+            case StagedFormat.NdJson =>
+                val (path, writer) = StagingArea.newWriter("codegen-input", "json")
+                try {
+                    if (staged.arraySource) writer.write("[")
+                    val it = data.recordIterator()
+                    try {
+                        var first = true
+                        while (it.hasNext) {
+                            if (!first) writer.write(if (staged.arraySource) "," else "\n")
+                            writer.write(it.next())
+                            first = false
+                        }
+                    } finally it.close()
+                    if (staged.arraySource) writer.write("]")
+                } finally writer.close()
+                path
+            case other =>
+                val (path, writer) = StagingArea.newWriter("codegen-input", other.extension)
+                try copyText(data.openStream(), writer)
+                finally writer.close()
+                path
+        }
+    }
+
+    private def copyText(in: java.io.InputStream, out: java.io.Writer): Unit = {
+        val reader = new java.io.InputStreamReader(in, StandardCharsets.UTF_8)
+        try {
+            val buf = new Array[Char](64 * 1024)
+            var n = reader.read(buf)
+            while (n >= 0) {
+                if (n > 0) out.write(buf, 0, n)
+                n = reader.read(buf)
+            }
+        } finally reader.close()
+    }
+
+    private def evaluate(userPrompt: String, data: Data): List[(Int, String)] = {
         logger.info("CodeGen DQ: generating Python validation script")
 
         // Step 1: Generate the Python script via LLM (uses codegen config when set)
@@ -101,12 +195,11 @@ object CodeGenRuleEvaluator {
         logger.info("CodeGen DQ: generated script (" + cleanScript.length + " chars)")
         logger.info("CodeGen DQ: script content:\n" + cleanScript)
 
-        // Step 2: Write data and script to temp files
-        val dataFile: Path = Files.createTempFile("dq_data_", "." + fileExtension)
+        // Step 2: Stream the data into the staging area; the script goes to a temp file
+        val dataFile: Path = stageInput(data)
         val scriptFile: Path = Files.createTempFile("dq_codegen_", ".py")
 
         try {
-            Files.write(dataFile, fileContent.getBytes("UTF-8"))
             Files.write(scriptFile, cleanScript.getBytes("UTF-8"))
 
             // Step 3: Execute the script

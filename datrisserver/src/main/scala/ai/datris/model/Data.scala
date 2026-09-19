@@ -33,6 +33,33 @@ case class Data(
     /** Records in the staged payload: delimited rows, NDJSON lines, 1 for a non-empty document. */
     def rowCount: Long = payload.rowCount
 
+    // Format predicates, so stage dispatch reads the staged shape instead of
+    // null-checking the deprecated accessors (which materialize the payload).
+
+    /** Delimited rows (possibly zero of them) — what `rows != null` used to mean. */
+    def isDelimited: Boolean = payload.format match {
+        case StagedFormat.Delimited(_) => true
+        case _ => false
+    }
+
+    /** One JSON value per line (a JSON array, object or NDJSON payload at ingest). */
+    def isNdJson: Boolean = payload.format == StagedFormat.NdJson
+
+    /** A non-empty XML or opaque text document. */
+    def isVerbatimDocument: Boolean = payload.format match {
+        case StagedFormat.Xml | StagedFormat.Text => !payload.isEmpty
+        case _ => false
+    }
+
+    /** JSON, XML or text payload — what `rawData != null` used to mean. */
+    def isDocument: Boolean = isNdJson || isVerbatimDocument
+
+    /** The delimiter of a delimited payload; `,` for any other format. */
+    def delimiter: String = payload.format match {
+        case StagedFormat.Delimited(d) => d
+        case _ => ","
+    }
+
     /** Stream the staged records without holding them in memory: delimited
       * rows (record-aware — a quoted value holding a line terminator stays
       * inside its row) or NDJSON lines. Closes itself when exhausted; callers
@@ -94,16 +121,16 @@ case class Data(
         }
     }
 
+    /** Swap in a payload a streaming stage already wrote (or adopted) into the
+      * staging area. Header, schema and size carry over; the previous file
+      * stays on disk until the run directory is removed. */
+    def withStaged(newStaged: StagedPayload): Data = copy(staged = newStaged)
+
     /** Replace the delimited rows: writes a NEW staged file and leaves the
       * previous one on disk (the run directory is removed as a whole when the
       * job ends, never mid-run). */
-    def withRows(newRows: List[String]): Data = {
-        val delimiter = payload.format match {
-            case StagedFormat.Delimited(d) => d
-            case _ => ","
-        }
+    def withRows(newRows: List[String]): Data =
         copy(staged = PayloadStager.stageRows("rows", newRows, delimiter))
-    }
 
     /** Replace the raw JSON / XML / text payload: writes a NEW staged file. */
     def withRawData(newRawData: String): Data = {
@@ -116,6 +143,22 @@ case class Data(
                 case _ => PayloadStager.stageRawString("raw", newRawData)
             }
         copy(staged = newStaged)
+    }
+
+    /** Gate for a feature that still reads the whole payload into heap
+      * (deduplication, JavaScript row functions, schema validation, the
+      * single-call REST preprocessor). Below `PIPELINE_MATERIALIZE_MAX_MB` it
+      * is silent and the caller goes on to use [[rows]] / [[rawData]] as
+      * before; above it the run fails with an error that names the feature —
+      * not a stack frame — and tells the operator what to do. */
+    def materializeFor(feature: String): Unit = {
+        val p = payload
+        val capMB = StagingArea.materializeMaxMB
+        if (p.bytes > capMB.toLong * 1024L * 1024L)
+            throw new DatrisException(
+                feature + " reads the whole payload into memory (" + p.bytes + " bytes) and " + StagingArea.MaterializeCapEnvVar + " is " +
+                    capMB + " MB. Raise it for this install, or use a CodeGen rule/transformation, which streams."
+            )
     }
 
     private def checkMaterialize(p: StagedPayload): Unit = {
