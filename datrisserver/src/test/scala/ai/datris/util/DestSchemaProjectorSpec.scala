@@ -232,6 +232,37 @@ class DestSchemaProjectorSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(projected == legacy)
     }
 
+    // Review finding 5: the projector splits the delimiter literally. The
+    // deleted loaders used String.split(delimiter) — a regex — so "|" split on
+    // every character; that output was wrong, so the legacy oracle is not the
+    // reference here.
+    test("a regex-special delimiter (|) splits literally, unlike the old regex split") {
+        val rows = List("1|alice|10", "2|b.ob|20")
+        val cfg = config(Seq("id", "name", "age"), Seq("age", "name"), "|")
+        val status = new RecordingStatusUtil
+        val projected = DestSchemaProjector.project(ctx(cfg, List("id", "name", "age"), rows, "|", status), rows.iterator).toList
+        assert(projected == List("10|alice", "20|b.ob"))
+        val legacy = legacyProject(ctx(cfg, List("id", "name", "age"), rows, "|", new RecordingStatusUtil), rows)
+        assert(legacy != projected, "the regex split produced per-character garbage; the projector must not reproduce it")
+    }
+
+    // Review finding 1: the "No data to load" guard the SQL loaders run before
+    // any DDL / TRUNCATE. A delimited payload that came out empty (a row
+    // function dropped every row) must be rejected up front.
+    test("hasCsvBody is false for an empty delimited payload and true once it has rows") {
+        val cfg = config(Seq("id", "name"), Seq("id", "name"), ",")
+        val empty = ctx(cfg, List("id", "name"), Nil, ",", new RecordingStatusUtil)
+        assert(empty.data.staged.rowCount == 0L)
+        assert(!DestSchemaProjector.hasCsvBody(empty))
+        assertThrows[DatrisException](DestSchemaProjector.requireCsvBody(empty))
+        assertThrows[DatrisException](DestSchemaProjector.csvBody(empty))
+        val some = ctx(cfg, List("id", "name"), List("1,a"), ",", new RecordingStatusUtil)
+        assert(DestSchemaProjector.hasCsvBody(some))
+        val body = DestSchemaProjector.csvBody(some)
+        try assert(body.mkString == "1,a")
+        finally body.close()
+    }
+
     // The point of the extraction: it must stream, not collect.
     test("projection is lazy: an unbounded row iterator can be consumed one element at a time") {
         val cfg = config(Seq("id", "name"), Seq("name", "id"), ",")

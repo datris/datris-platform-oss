@@ -64,22 +64,26 @@ class SnowflakeLoader(jobContext: JobContext) {
     }
 
     /** Write the projected destination CSV to a local temp file for PUT. Unlike
-     *  Postgres (which streams from an S3 temp object), Snowflake's PUT needs a
-     *  local file path. The CSV is built exactly as Postgres builds it. */
-    /** Write the projected destination CSV to a local temp file for PUT. Unlike
      *  Postgres (which streams straight into COPY), Snowflake's PUT needs a
      *  local file path. The CSV is streamed from the staged payload piece by
      *  piece (DestSchemaProjector.csvBody) — the same bytes Postgres feeds to
-     *  COPY, never held whole in heap. */
+     *  COPY, never held whole in heap. The temp file is removed if the write
+     *  fails; on success `process()` removes it after the PUT. */
     private def createStagingFile(): Path = {
         val file = Files.createTempFile("snowflake-load-", ".csv")
         file.toFile.deleteOnExit()
-        val body = DestSchemaProjector.csvBody(jobContext)
         try {
-            val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
-            try body.foreach(writer.write)
-            finally writer.close()
-        } finally body.close()
+            val body = DestSchemaProjector.csvBody(jobContext)
+            try {
+                val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
+                try body.foreach(writer.write)
+                finally writer.close()
+            } finally body.close()
+        } catch {
+            case e: Throwable =>
+                Try(Files.deleteIfExists(file))
+                throw e
+        }
         file
     }
 

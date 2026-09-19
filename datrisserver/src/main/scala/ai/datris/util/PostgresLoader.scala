@@ -98,6 +98,12 @@ class PostgresLoader(jobContext: JobContext) {
     }
 
     private def copyInto(conn: Connection, statement: Statement): Unit = {
+        // Fail on an empty payload BEFORE any DDL or TRUNCATE — the pre-Phase-2
+        // staging-file step threw here, so a truncate-and-load whose payload
+        // came out empty (e.g. a row function dropped every row) must leave
+        // the table untouched, autocommit or not.
+        DestSchemaProjector.requireCsvBody(jobContext)
+
         statusUtil.info("processing", "Copying data into " + config.destination.database.table)
 
         if (!config.destination.database.manageTableManually)

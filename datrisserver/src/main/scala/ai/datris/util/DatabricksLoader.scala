@@ -75,26 +75,29 @@ class DatabricksLoader(jobContext: JobContext) {
     /** Write the projected destination CSV to a local temp file for PUT. Unlike
      *  the Snowflake staging file, this one carries a header row of the
      *  destination column names, so every load statement can reference the CSV
-     *  columns by name instead of by position. */
-    /** Write the projected destination CSV to a local temp file for PUT. Unlike
-     *  the Snowflake staging file, this one carries a header row of the
-     *  destination column names, so every load statement can reference the CSV
      *  columns by name instead of by position. The body is streamed from the
      *  staged payload piece by piece (DestSchemaProjector.csvBody), never held
-     *  whole in heap. */
+     *  whole in heap. The temp file is removed if the write fails; on success
+     *  `process()` removes it after the PUT. */
     private def createStagingFile(): Path = {
         val header = copyFields().map(f => csvHeaderCell(f.name)).mkString(csvDelimiter())
         val file = Files.createTempFile("databricks-load-", ".csv")
         file.toFile.deleteOnExit()
-        val body = DestSchemaProjector.csvBody(jobContext)
         try {
-            val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
+            val body = DestSchemaProjector.csvBody(jobContext)
             try {
-                writer.write(header)
-                writer.write("\n")
-                body.foreach(writer.write)
-            } finally writer.close()
-        } finally body.close()
+                val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
+                try {
+                    writer.write(header)
+                    writer.write("\n")
+                    body.foreach(writer.write)
+                } finally writer.close()
+            } finally body.close()
+        } catch {
+            case e: Throwable =>
+                Try(Files.deleteIfExists(file))
+                throw e
+        }
         file
     }
 

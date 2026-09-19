@@ -86,16 +86,37 @@ object DestSchemaProjector {
       * (quotes doubled) for JSON / XML / text — the same bytes the loaders
       * built in memory before Phase 2. Throws the loaders' "No data to load"
       * error for an empty payload. The caller must close the iterator. */
+    /** True when [[csvBody]] has something to load: a non-empty delimited
+      * payload or a JSON / XML / text document. Loaders check this BEFORE any
+      * DDL or TRUNCATE so an empty payload fails without touching the table. */
+    def hasCsvBody(jobContext: JobContext): Boolean = {
+        val staged = jobContext.data.staged
+        if (staged == null || staged.isEmpty) false
+        else staged.format match {
+            case StagedFormat.Delimited(_) => staged.rowCount > 0L
+            case StagedFormat.Binary => false
+            case _ => true
+        }
+    }
+
+    /** Throw the loaders' "No data to load" error unless [[hasCsvBody]]. */
+    def requireCsvBody(jobContext: JobContext): Unit =
+        if (!hasCsvBody(jobContext)) throw new DatrisException("No data to load — both rows and rawData are empty")
+
     def csvBody(jobContext: JobContext): CloseableIterator[String] = {
         val data = jobContext.data
         val staged = data.staged
-        if (staged == null || staged.isEmpty)
-            throw new DatrisException("No data to load — both rows and rawData are empty")
+        requireCsvBody(jobContext)
         staged.format match {
             case StagedFormat.Delimited(_) =>
-                if (staged.rowCount == 0L) throw new DatrisException("No data to load — both rows and rawData are empty")
                 val source = data.rowIterator()
-                val projected = project(jobContext, source)
+                val projected =
+                    try project(jobContext, source)
+                    catch {
+                        case e: Throwable =>
+                            source.close()
+                            throw e
+                    }
                 var first = true
                 CloseableIterator(
                     projected.map { row =>
