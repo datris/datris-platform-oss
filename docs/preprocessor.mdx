@@ -53,10 +53,11 @@ Add a `preprocessor` section to the pipeline configuration:
 | `apiKey` | string | `null` | Optional API key sent to the endpoint as an `x-api-key` header |
 | `timeoutMs` | int | `300000` | Request timeout in milliseconds |
 | `timeoutSeconds` | int | `0` | Legacy timeout in seconds; used only when `timeoutMs` is `0` or omitted. Prefer `timeoutMs` |
+| `batchSize` | int | `0` | Rows per call for row-based (CSV) payloads. `0` makes one call carrying every row; `> 0` sends batches of that many rows, each request also carrying `batch` and `ofBatches`, and stitches every response's `data.rows` in call order. See [Batching](#batching) |
 
 ## Synchronous Mode
 
-In synchronous mode (`async: false`), the pipeline POSTs the data to the endpoint and waits for the response. The response replaces the pipeline data.
+In synchronous mode (`async: false`), the pipeline POSTs the data to the endpoint and waits for the response. The response replaces the pipeline data (with `batchSize > 0`, the stitched responses do — see [Batching](#batching)).
 
 ### Request Payload
 
@@ -103,6 +104,10 @@ You can modify, add, or remove rows. The pipeline continues with whatever data i
   "error": "Data validation failed: missing required field"
 }
 ```
+
+## Batching
+
+By default (`batchSize` = `0`) the pipeline makes exactly one call carrying every row, and that call has to fit in memory (it is subject to `PIPELINE_MATERIALIZE_MAX_MB`). Set `batchSize` to a positive number to send row-based (CSV) payloads in batches of that many rows, one call per batch, in source order, streamed from disk. Each batched request carries the same envelope plus two extra top-level fields, `batch` (1-based) and `ofBatches`, and its `data.rows` holds only that batch. Every response is read exactly like the single-call response — `data.rows` replaces that batch's rows, and a response that leaves `rows` out keeps them — and the results are stitched, in call order, into the data the pipeline continues with. The `header` from the first response that carries one applies to the whole payload. JSON/XML payloads and `async` callbacks are unaffected by `batchSize` beyond one callback being awaited per batch.
 
 ## Asynchronous Mode
 

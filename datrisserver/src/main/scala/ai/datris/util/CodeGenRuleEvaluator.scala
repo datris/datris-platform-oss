@@ -56,7 +56,7 @@ object CodeGenRuleEvaluator {
                |
                |The CSV file has a header row as the first line. Read with the csv module using the appropriate delimiter.""".stripMargin
 
-        evaluate(userPrompt, data)
+        evaluate(userPrompt, data, "csv")
     }
 
     /**
@@ -86,7 +86,7 @@ object CodeGenRuleEvaluator {
                |
                |$parseInstruction""".stripMargin
 
-        evaluate(userPrompt, data)
+        evaluate(userPrompt, data, format.toLowerCase)
     }
 
     /** The first `chars` characters of the document exactly as the script will
@@ -133,8 +133,11 @@ object CodeGenRuleEvaluator {
       *  - JSON: one array `[...]` when the payload arrived as an array, else
       *    the NDJSON lines as they are;
       *  - XML / text: the document verbatim.
+      * `documentExtension` names the file a verbatim document gets (a JSON
+      * pipeline whose payload was staged as text still hands the script a
+      * `.json`); null means the staged format's own extension.
       * Shared with `CodeGenTransformationEvaluator`. */
-    private[util] def stageInput(data: Data): Path = {
+    private[util] def stageInput(data: Data, documentExtension: String = null): Path = {
         val staged = if (data.staged == null) StagedPayload.empty else data.staged
         staged.format match {
             case StagedFormat.Delimited(delimiter) =>
@@ -164,7 +167,7 @@ object CodeGenRuleEvaluator {
                 } finally writer.close()
                 path
             case other =>
-                val (path, writer) = StagingArea.newWriter("codegen-input", other.extension)
+                val (path, writer) = StagingArea.newWriter("codegen-input", Option(documentExtension).getOrElse(other.extension))
                 try copyText(data.openStream(), writer)
                 finally writer.close()
                 path
@@ -183,7 +186,7 @@ object CodeGenRuleEvaluator {
         } finally reader.close()
     }
 
-    private def evaluate(userPrompt: String, data: Data): List[(Int, String)] = {
+    private def evaluate(userPrompt: String, data: Data, fileExtension: String): List[(Int, String)] = {
         logger.info("CodeGen DQ: generating Python validation script")
 
         // Step 1: Generate the Python script via LLM (uses codegen config when set)
@@ -196,7 +199,7 @@ object CodeGenRuleEvaluator {
         logger.info("CodeGen DQ: script content:\n" + cleanScript)
 
         // Step 2: Stream the data into the staging area; the script goes to a temp file
-        val dataFile: Path = stageInput(data)
+        val dataFile: Path = stageInput(data, fileExtension)
         val scriptFile: Path = Files.createTempFile("dq_codegen_", ".py")
 
         try {

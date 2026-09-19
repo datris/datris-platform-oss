@@ -67,7 +67,7 @@ object CodeGenTransformationEvaluator {
       * (skipping the header when there is one). Records are read quote-aware,
       * so a value holding an embedded newline stays one record; empty records
       * are dropped as the line filter always did. */
-    private def stageCsvOutput(output: Path, inputHeader: List[String], inputRowCount: Long, delimiter: String): CsvStagedResult = {
+    private[util] def stageCsvOutput(output: Path, inputHeader: List[String], inputRowCount: Long, delimiter: String): CsvStagedResult = {
         def records(): CloseableIterator[String] = {
             val it = StagedRows.delimited(output.toString, delimiter)
             CloseableIterator(it.filter(_.nonEmpty), () => it.close())
@@ -221,7 +221,7 @@ object CodeGenTransformationEvaluator {
         logger.info("CodeGen Transformation: script content:\n" + cleanScript)
 
         // Step 2: Stream the input into the staging area; script + output are temp files
-        val inputFile: Path = CodeGenRuleEvaluator.stageInput(data)
+        val inputFile: Path = CodeGenRuleEvaluator.stageInput(data, fileExtension)
         val outputFile: Path = Files.createTempFile("tx_output_", "." + fileExtension)
         val scriptFile: Path = Files.createTempFile("tx_codegen_", ".py")
 

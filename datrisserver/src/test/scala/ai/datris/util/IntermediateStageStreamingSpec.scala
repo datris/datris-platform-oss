@@ -146,6 +146,23 @@ class IntermediateStageStreamingSpec extends AnyFunSuite with BeforeAndAfterAll 
         }
     }
 
+    /** Preprocessor endpoint that only rewrites the header: `{"data":{"header":[...]}}`, no rows. */
+    private val headerOnlyHandler = new HttpHandler {
+        override def handle(exchange: HttpExchange): Unit = {
+            val body = new String(exchange.getRequestBody.readAllBytes(), StandardCharsets.UTF_8)
+            calls.incrementAndGet()
+            val req = JsonParser.parseString(body).getAsJsonObject
+            rowsPerCall.synchronized(rowsPerCall += req.getAsJsonObject("data").getAsJsonArray("rows").size())
+            val header = new com.google.gson.JsonArray
+            header.add("ID"); header.add("NAME")
+            val data = new com.google.gson.JsonObject
+            data.add("header", header)
+            val resp = new com.google.gson.JsonObject
+            resp.add("data", data)
+            reply(exchange, gson.toJson(resp))
+        }
+    }
+
     private def reply(exchange: HttpExchange, json: String): Unit = {
         val bytes = json.getBytes(StandardCharsets.UTF_8)
         exchange.getResponseHeaders.set("Content-Type", "application/json")
@@ -161,6 +178,7 @@ class IntermediateStageStreamingSpec extends AnyFunSuite with BeforeAndAfterAll 
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/rowfn", rowFunctionHandler)
         server.createContext("/pre", preprocessorHandler)
+        server.createContext("/pre-header", headerOnlyHandler)
         server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool())
         server.start()
     }
@@ -627,6 +645,63 @@ class IntermediateStageStreamingSpec extends AnyFunSuite with BeforeAndAfterAll 
             assert(rowsOf(result.data) == fiveThousand.map(_.toUpperCase), "every response's rows, in call order")
             assert(result.data.header == List("id", "name"))
             assert(data.materialized.isEmpty, s"the batched preprocessor must stream rowIterator(), not materialize via ${data.materialized}")
+        }
+    }
+
+    // Review fix: a batched response that leaves `rows` out keeps that batch's
+    // original rows, exactly as the single call does ("Any of header, rows, or
+    // rawData you leave out of the response keeps its original value").
+    test("a batched REST preprocessor whose responses omit data.rows keeps every batch's original rows and takes the header") {
+        withCap(256) {
+            reset()
+            val endpoint = RestEndpoint(endpoint = url("/pre-header"), batchSize = 500)
+            val cfg = csvConfig("pre", List("id", "name")).copy(preprocessor = endpoint)
+            val data = new SpyData(delimitedData(fiveThousand, List("id", "name")))
+
+            val result = new RestEndpointRunner(ctx(cfg, data), endpoint).process()
+
+            assert(calls.get() == 10)
+            assert(result.data.rowCount == 5000, s"rows left out of every response must be kept, got ${result.data.rowCount}")
+            assert(rowsOf(result.data) == fiveThousand)
+            assert(result.data.header == List("ID", "NAME"))
+            assert(data.materialized.isEmpty)
+        }
+    }
+
+    // Review fix: stageCsvOutput's two on-disk passes (header decision, empty
+    // record filter, empty output) have their own cases.
+    test("stageCsvOutput takes the script's header and keeps a quoted embedded newline as one row") {
+        withCap(256) {
+            val out = Files.createTempFile("tx_output_", ".csv")
+            Files.write(out, "id,v\n1,\"a\nb\"".getBytes(StandardCharsets.UTF_8))
+            val r = CodeGenTransformationEvaluator.stageCsvOutput(out, List("id", "v"), 1L, ",")
+            assert(r.headerFromScript && r.header == List("id", "v"))
+            assert(r.staged.rowCount == 1)
+            assert(rowsOf(new Data(0L, r.header, null, r.staged, null)) == List("1,\"a\nb\""))
+            assert(java.nio.file.Paths.get(r.staged.path).startsWith(StagingArea.forToken(TOKEN)))
+            Files.deleteIfExists(out)
+        }
+    }
+
+    test("stageCsvOutput keeps the input header when the first line is numeric, dropping empty records") {
+        withCap(256) {
+            val out = Files.createTempFile("tx_output_", ".csv")
+            Files.write(out, "1,2\n\n3,4\n5,6\n".getBytes(StandardCharsets.UTF_8))
+            val r = CodeGenTransformationEvaluator.stageCsvOutput(out, List("id", "v"), 3L, ",")
+            assert(!r.headerFromScript && r.header == List("id", "v"))
+            assert(r.staged.rowCount == 3)
+            assert(rowsOf(new Data(0L, r.header, null, r.staged, null)) == List("1,2", "3,4", "5,6"))
+            Files.deleteIfExists(out)
+        }
+    }
+
+    test("stageCsvOutput on an empty output file stages zero rows and keeps the input header") {
+        withCap(256) {
+            val out = Files.createTempFile("tx_output_", ".csv")
+            val r = CodeGenTransformationEvaluator.stageCsvOutput(out, List("id", "v"), 3L, ",")
+            assert(!r.headerFromScript && r.header == List("id", "v"))
+            assert(r.staged.rowCount == 0 && r.staged.format == StagedFormat.Delimited(","))
+            Files.deleteIfExists(out)
         }
     }
 

@@ -14,6 +14,7 @@ import java.util.Date
 import javax.script.ScriptEngineManager
 import scala.collection.JavaConverters._
 import scala.collection.mutable
+import scala.util.Try
 
 class Transformation(jobContext: JobContext) {
     private val config = jobContext.config
@@ -139,10 +140,10 @@ class Transformation(jobContext: JobContext) {
         val bearerToken = if (rowFunction.parameters.size() > 3 && rowFunction.parameters.get(3).nonEmpty) rowFunction.parameters.get(3) else null
         val apiKey = if (rowFunction.parameters.size() > 4 && rowFunction.parameters.get(4).nonEmpty) rowFunction.parameters.get(4) else null
         // parameters[5]: batch mode only — rows per call; 0 (default) is one call carrying every row.
-        val batchSize = if (rowFunction.parameters.size() > 5)
-            try { math.max(0, rowFunction.parameters.get(5).trim.toInt) }
-            catch { case _: NumberFormatException => 0 }
-        else 0
+        val batchSize =
+            if (rowFunction.parameters.size() > 5)
+                Option(rowFunction.parameters.get(5)).map(_.trim).filter(_.nonEmpty).flatMap(s => Try(s.toInt).toOption).map(math.max(0, _)).getOrElse(0)
+            else 0
         val delimiter = config.source.fileAttributes.csvAttributes.delimiter
         val pipelineName = config.name
         val pipelineToken = jobContext.pipelineToken

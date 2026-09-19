@@ -98,24 +98,36 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
       * batched iterator reads the staged file lazily; `close()` it if you stop
       * early. */
     private[datris] def requestBodies(): CloseableIterator[String] = {
+        val batches = requestBatches()
+        CloseableIterator(batches.map(_._1), () => batches.close())
+    }
+
+    /** [[requestBodies]] paired with the rows each body carries (Nil for the
+      * single whole-payload call), so the preprocessor can keep a batch's
+      * original rows when the response leaves `rows` out. */
+    private[datris] def requestBatches(): CloseableIterator[(String, List[String])] = {
         if (!batched)
-            return CloseableIterator(Iterator.single(buildRequestBody(jobContext.pipelineToken, jobContext.config.name, jobContext.data)), () => ())
+            return CloseableIterator(
+                Iterator.single((buildRequestBody(jobContext.pipelineToken, jobContext.config.name, jobContext.data), List.empty[String])),
+                () => ()
+            )
         val data = jobContext.data
         val batchSize = config.batchSize
         val ofBatches = ((data.rowCount + batchSize - 1) / batchSize).toInt
         val rows = data.rowIterator()
         val bodies = rows.grouped(batchSize).zipWithIndex.map { case (batch, index) =>
+            val batchRows = batch.toList
             val map = new java.util.HashMap[String, AnyRef]()
             map.put("size", java.lang.Long.valueOf(data.size))
             map.put("header", data.header.asJava)
-            map.put("rows", batch.asJava)
+            map.put("rows", batchRows.asJava)
             val payload = new java.util.HashMap[String, AnyRef]()
             payload.put("pipelineToken", jobContext.pipelineToken)
             payload.put("pipelineName", jobContext.config.name)
             payload.put("batch", java.lang.Integer.valueOf(index + 1))
             payload.put("ofBatches", java.lang.Integer.valueOf(ofBatches))
             payload.put("data", map)
-            gson.toJson(payload)
+            (gson.toJson(payload), batchRows)
         }
         CloseableIterator(bodies, () => rows.close())
     }
@@ -194,19 +206,20 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
 
     /** Preprocessor role, batchSize > 0: one call per batch, in order; each
       * response's `data.rows` are appended to one new staged file as they
-      * arrive, so neither the payload nor the responses live in heap. The
-      * header comes from the first response that carries one, else the run's;
-      * `size` and the schema carry over. */
+      * arrive, so neither the payload nor the responses live in heap. As in
+      * the single call, a response that leaves `rows` out keeps that batch's
+      * original rows. The header comes from the first response that carries
+      * one, else the run's; `size` and the schema carry over. */
     private def processBatchedPreprocessor(pipelineToken: String): JobContext = {
         val statusUtil = jobContext.statusUtil
         val original = jobContext.data
         val delimiter = original.delimiter
         var header: List[String] = null
         var sent = 0
-        val bodies = requestBodies()
+        val bodies = requestBatches()
         val staged =
             try {
-                val rows = bodies.flatMap { body =>
+                val rows = bodies.flatMap { case (body, batchRows) =>
                     val response = postAndAwait(pipelineToken, body)
                     checkForError(response)
                     val result = gson.fromJson(response, classOf[java.util.Map[String, Any]])
@@ -217,7 +230,7 @@ class RestEndpointRunner(jobContext: JobContext, restEndpointConfig: RestEndpoin
                     if (header == null)
                         Option(dataMap.get("header")).foreach(h => header = h.asInstanceOf[java.util.List[String]].asScala.toList)
                     sent += 1
-                    Option(dataMap.get("rows")).map(_.asInstanceOf[java.util.List[String]].asScala.toList).getOrElse(Nil)
+                    Option(dataMap.get("rows")).map(_.asInstanceOf[java.util.List[String]].asScala.toList).getOrElse(batchRows)
                 }
                 PayloadStager.stageRowIterator("preprocessor", rows, delimiter)
             } finally bodies.close()

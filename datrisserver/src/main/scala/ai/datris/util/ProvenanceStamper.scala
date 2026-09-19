@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model._
-import com.google.gson.{Gson, JsonElement, JsonObject, JsonParser}
+import com.google.gson.{Gson, JsonElement, JsonObject, JsonParseException, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.file.Files
@@ -208,8 +208,10 @@ object ProvenanceStamper {
                 count += 1
             }
         } catch {
-            // A line that does not parse: leave the payload untouched.
-            case _: Exception => failed = true
+            // A line that does not parse: leave the payload untouched. Anything
+            // else (an I/O failure writing the new file) propagates to stamp()'s
+            // catch, which records the miss on the job status.
+            case _: JsonParseException => failed = true
         } finally {
             records.close()
             writer.close()
