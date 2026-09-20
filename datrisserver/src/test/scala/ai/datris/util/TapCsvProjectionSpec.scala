@@ -152,6 +152,18 @@ class TapCsvProjectionSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(filesUnder(root).isEmpty, "the token dir must still release after a failed projection: " + filesUnder(root))
     }
 
+    test("header cells that normalize to the same name fail with the named projection error") {
+        // "Amount" and "amount" both normalize to `amount`; without the guard the
+        // projection writes a CSV with two identically-named columns.
+        val result = stagedUnder("tap-proj-dupe", """[["Amount","amount"],[1,2]]""", dataType = "csv")
+        try {
+            val e = intercept[DatrisException](TapRunner.projectForCsv(result, ",", "tap-t"))
+            assert(e.getMessage.contains("duplicate column names after normalization: amount"), e.getMessage)
+            assert(e.getMessage.contains("cannot be projected into CSV pipeline tap-t"), e.getMessage)
+        } finally TapRunner.release(result)
+        assert(filesUnder(root).isEmpty, "the token dir must still release after a failed projection: " + filesUnder(root))
+    }
+
     test("a mixed object/array payload fails with the named projection error") {
         // First line an object (so the wrapper typed it json), then an array —
         // today's jsonToCsv threw on line 2 and the catch fed the raw file as .json.
