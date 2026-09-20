@@ -853,6 +853,7 @@ object TapScriptRunner {
             // disk budget once `data` is seen to be an array, which streams.
             val materializeBytes: Long = StagingArea.materializeMaxMB.toLong * 1024L * 1024L
             var dataIsArray = false
+            var dataSeen = false
             val responseBody = new BoundedPrefixInputStream(
                 response.body(),
                 512,
@@ -860,7 +861,7 @@ object TapScriptRunner {
                     if (dataIsArray) new DatrisException(StagingArea.budgetExceededMessage(bytes))
                     else
                         new DatrisException(
-                            "Tap endpoint response is a single document of more than " + StagingArea.materializeMaxMB +
+                            "Tap endpoint response " + (if (dataSeen) "is a single document" else "prefix before \"data\" is") + " of more than " + StagingArea.materializeMaxMB +
                                 " MB, which is read whole into memory (" + StagingArea.MaterializeCapEnvVar + " = " +
                                 StagingArea.materializeMaxMB + " MB). Raise it for this install, or return the payload as a " +
                                 "\"data\" array of records, which streams to disk under " + StagingArea.PayloadBudgetEnvVar + "."
@@ -870,7 +871,6 @@ object TapScriptRunner {
             var dataType = ""
             var logs: String = null
             var newStateJson: String = null
-            var dataSeen = false
             var dataNull = false
             var dataString: String = null
             var arrayStaged: StagedPayload = null
@@ -946,10 +946,10 @@ object TapScriptRunner {
                 else if (dataType == "xml" || dataType == "text")
                     PayloadStager.stageText("tap", if (dataType == "xml") StagedFormat.Xml else StagedFormat.Text, dataString)
                 else
-                    // A string under a json/csv/document type: stage its parsed value when
-                    // it parses, else the string itself as one JSON value.
-                    try PayloadStager.stageJson("tap", new java.io.StringReader(dataString))
-                    catch { case _: Exception => PayloadStager.stageJson("tap", new java.io.StringReader(stagingGson.toJson(dataString))) }
+                    // A string under a json/csv/document type is not a record list: 0
+                    // records, exactly as the wrapper and legacy lanes count it (and as
+                    // countRecords did on main) — a double-encoded array is not parsed.
+                    PayloadStager.stageJson("tap", new java.io.StringReader(stagingGson.toJson(dataString))).copy(rowCount = 0L)
             if (StagingArea.overBudget(staged.bytes)) throw new DatrisException(StagingArea.budgetExceededMessage(staged.bytes))
             val recordCount =
                 if (dataType == "json" || dataType == "csv" || dataType == "document") staged.rowCount.toInt else 1

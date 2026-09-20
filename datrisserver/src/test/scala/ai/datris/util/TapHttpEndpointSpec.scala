@@ -282,6 +282,21 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(result.staged == null)
     }
 
+    test("a string data value under type json is 0 records, not parsed (double-encoded arrays stay no_records as on main)") {
+        install(200, """{"type": "json", "data": "[{\"a\": 1}]"}""")
+        val result = TapScriptRunner.run(httpTap())
+        assert(result.error == null, String.valueOf(result.error))
+        assert(result.recordCount == 0)
+        assert(result.staged != null && result.staged.rowCount == 0L)
+        ai.datris.util.StagingArea.delete(java.nio.file.Paths.get(result.staged.path).getParent.getFileName.toString)
+
+        install(200, """{"type": "json", "data": "hello"}""")
+        val scalar = TapScriptRunner.run(httpTap())
+        assert(scalar.error == null, String.valueOf(scalar.error))
+        assert(scalar.recordCount == 0)
+        ai.datris.util.StagingArea.delete(java.nio.file.Paths.get(scalar.staged.path).getParent.getFileName.toString)
+    }
+
     test("oversized state blob is rejected with the state-cap message") {
         val bigState = "\"" + ("s" * (70 * 1024)) + "\""
         install(200, s"""{"type": "json", "data": [], "state": {"blob": $bigState}}""")
