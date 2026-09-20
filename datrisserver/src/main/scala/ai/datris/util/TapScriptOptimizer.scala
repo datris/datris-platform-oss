@@ -35,7 +35,7 @@ object TapScriptOptimizer {
           |- "changes": array of 1-5 short bullets describing what you changed (e.g. "Parallelized record fetches with ThreadPoolExecutor(10)", "Removed 0.25s per-item sleep", "Added 0.25s sleep between calls — source reported burst-pattern warning"). If the logs make optimization unsafe or the script is already well-tuned, return an empty array and the script unchanged.
           |
           |HARD PRESERVATION RULES (must not change):
-          |- Keep the `fetch()` function signature and its return shape.
+          |- Keep the `fetch()` function signature and its return shape. `fetch()` may return a list of records or `yield` them (a generator / iterator) — the platform streams yielded records to disk. If the script materialises a large result in memory (a list of millions of rows, a whole DataFrame `.to_dict("records")`), converting it to `yield` per chunk is a correct optimisation; never do the reverse.
           |- Keep all `os.environ.get(...)` reads for Vault-injected secrets.
           |- Keep the `DATRIS_TAP_TEST_LIMIT` env-var handling and the `sample_cap` / `source_limit` convention — test runs must still cap sample size.
           |- Keep the incremental-sync state handling if present: the `DATRIS_TAP_STATE` env-var read and the `DATRIS_STATE` module-global assignment are the platform's bookmark contract, not dead code. Never remove them, and never change what the state tracks.

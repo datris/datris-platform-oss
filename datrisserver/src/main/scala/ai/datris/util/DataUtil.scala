@@ -9,10 +9,11 @@ import ai.datris.model.{PipelineConfig, PipelineMetadata, DatrisException, Schem
 import ai.datris.model.Data
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.io.{BufferedReader, InputStream, InputStreamReader, Writer}
+import org.apache.commons.csv.{CSVFormat, CSVParser}
+
+import java.io.{BufferedReader, InputStream, InputStreamReader, StringReader, Writer}
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
-import java.util.regex.Pattern
 import scala.collection.JavaConverters._
 
 object DataUtil {
@@ -94,6 +95,41 @@ object DataUtil {
         (updatedConfig, schemaColumns, presentColumns, missingColumns)
     }
 
+    /** The CSV header line, validated with commons-csv BEFORE `evolveSchema` sees
+      * it: exactly one record, at least one column, every column non-blank
+      * after trim. A payload whose line 1 is not CSV (a JSON array, a JSON
+      * object, binary junk) used to be split on the delimiter, evolve the
+      * schema with garbage columns — writing the config — and only then fail in
+      * the parser. Now the parser's own message is thrown first and nothing is
+      * written. Returns the lower-cased column names, as the callers always did. */
+    def validatedCsvHeader(headerLine: String, delimiter: String, pipelineName: String): List[String] = {
+        val format = CSVFormat.RFC4180.builder().setDelimiter(delimiter).build()
+        val records =
+            try {
+                val parser = new CSVParser(new StringReader(headerLine), format)
+                try parser.getRecords.asScala.toList
+                finally parser.close()
+            } catch {
+                case e: DatrisException => throw e
+                case e: Exception =>
+                    throw new DatrisException(
+                        "Invalid CSV header line for pipeline " + pipelineName + ": " + e.getMessage +
+                            ". The first line of the file must be a delimited header row."
+                    )
+            }
+        if (records.size != 1)
+            throw new DatrisException(
+                "Invalid CSV header line for pipeline " + pipelineName + ": expected one header record, parsed " + records.size
+            )
+        val columns = records.head.iterator().asScala.map(_.toLowerCase).toList
+        if (columns.isEmpty || columns.exists(_.trim.isEmpty))
+            throw new DatrisException(
+                "Invalid CSV header line for pipeline " + pipelineName + ": every column must have a name, got [" +
+                    columns.mkString(delimiter) + "]"
+            )
+        columns
+    }
+
     def read(bucket: String, key: String, config: PipelineConfig, metadata: PipelineMetadata, statusUtil: StatusUtil): (Data, PipelineConfig) = {
         val files = new PipelineMetadataUtil(statusUtil).getFiles(metadata)
         val size = getSize(bucket, key, metadata)
@@ -126,7 +162,7 @@ object DataUtil {
                     val reader = new BufferedReader(new InputStreamReader(open(files.head), StandardCharsets.UTF_8))
                     try {
                         val headerLine = Option(reader.readLine()).getOrElse("")
-                        headerLine.split(Pattern.quote(delimiter)).map(_.toLowerCase).toList
+                        validatedCsvHeader(headerLine, delimiter, config.name)
                     } finally reader.close()
                 } else
                     config.source.schemaProperties.fields.asScala.map(_.name).toList

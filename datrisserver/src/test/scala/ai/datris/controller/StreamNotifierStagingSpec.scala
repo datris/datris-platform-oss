@@ -465,4 +465,85 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         StagingArea.delete("run-token-xml")
         StagingArea.delete("tap-token-1")
     }
+
+    // ---- Story: taps survive large sources (plans/stories/tap-large-sources.md), Step 6 ----
+    //
+    //  The CSV branch validates the header line with commons-csv BEFORE
+    //  `DataUtil.evolveSchema`: exactly one record, ≥1 column, every column
+    //  non-blank after trim; otherwise the parser's message is thrown as a
+    //  `DatrisException` and `PipelineConfigIO.write` is never reached. Today
+    //  the raw header is split on the delimiter, evolveSchema adds the garbage
+    //  as new columns (writing the config), and only then does the parser fail.
+    //
+    //  This spec's environment has `mongoDbConfig = null`, so any write attempt
+    //  surfaces as a non-DatrisException (or a Mongo/NullPointer message) —
+    //  that is how "write is never called" is observable here. The junk inputs
+    //  all carry a quote-led token followed by a non-delimiter, which
+    //  commons-csv rejects with "invalid char between encapsulated token and
+    //  delimiter"; a junk line that happens to be valid CSV (e.g. `%PDF-1.4`)
+    //  is out of the guard's reach by design.
+
+    private def assertHeaderRejected(e: DatrisException, label: String): Unit = {
+        val msg = e.getMessage
+        val lower = msg.toLowerCase
+        assert(!lower.contains("no data rows found"), s"$label: must fail on the header, not on the row count: $msg")
+        assert(
+            lower.contains("encapsulated") || lower.contains("invalid char") || lower.contains("(line 1)"),
+            s"$label: the parser's message must surface: $msg"
+        )
+        assert(
+            !lower.contains("mongo") && !lower.contains("nullpointer") && !lower.contains("schema evolution"),
+            s"$label: schema evolution must not have run: $msg"
+        )
+    }
+
+    test("a CSV pipeline fed a JSON array / JSON object / binary junk as line 1 fails with the parse error and PipelineConfigIO.write is never called") {
+        val jsonArrayFirst = "[\"id\",\"amount\"]\n[1,5]\n[2,9]\n"
+        val jsonObjectFirst = "{\"id\":1,\"amount\":5}\n{\"id\":2,\"amount\":9}\n"
+        val binaryJunk = Array[Byte](0x22, 0x00, 0x01, 0x22, 0x02, 0x03, 0x7f.toByte, 0x0a, '1', ',', '2', 0x0a)
+
+        val a = intercept[DatrisException](StagingArea.withToken("junk-array")(stage(jsonArrayFirst, csvConfig)))
+        StagingArea.delete("junk-array")
+        assertHeaderRejected(a, "JSON array line 1")
+
+        val o = intercept[DatrisException](StagingArea.withToken("junk-object")(stage(jsonObjectFirst, csvConfig)))
+        StagingArea.delete("junk-object")
+        assertHeaderRejected(o, "JSON object line 1")
+
+        val b = intercept[DatrisException](StagingArea.withToken("junk-binary")(stage(binaryJunk, csvConfig)))
+        StagingArea.delete("junk-binary")
+        assertHeaderRejected(b, "binary junk line 1")
+
+        // The pipeline's schema and version are untouched.
+        assert(csvConfig.source.schemaProperties.fields.asScala.map(_.name).toList == List("id", "amount"), "schema untouched")
+        assert(csvConfig.source.schemaProperties.schemaVersion == config(FileAttributes(csvAttributes = CsvAttributes())).source.schemaProperties.schemaVersion)
+    }
+
+    test("a CSV header with a blank column name is rejected before schema evolution") {
+        // `id,,amount` parses as three columns, one of them "" — evolveSchema
+        // would add "" as a field. Same guard, same outcome: no write.
+        val e = intercept[DatrisException](StagingArea.withToken("junk-blank-col")(stage("id,,amount\n1,x,5\n", csvConfig)))
+        StagingArea.delete("junk-blank-col")
+        val lower = e.getMessage.toLowerCase
+        assert(!lower.contains("no data rows found"), e.getMessage)
+        assert(!lower.contains("mongo") && !lower.contains("nullpointer"), "schema evolution must not have run: " + e.getMessage)
+    }
+
+    test("DataUtil.read: an object-store CSV pickup whose line 1 is a JSON array fails with the parse error and never evolves the schema") {
+        val su = new CapturingStatusUtil
+        val e = intercept[DatrisException] {
+            StagingArea.withToken("pickup-junk") {
+                ai.datris.util.DataUtil.read(
+                    List("s3://raw/orders/junk.csv"),
+                    opener(Map("s3://raw/orders/junk.csv" -> "[\"id\",\"amount\"]\n[1,5]\n")),
+                    24L,
+                    csvConfig,
+                    su
+                )
+            }
+        }
+        StagingArea.delete("pickup-junk")
+        assertHeaderRejected(e, "object-store pickup")
+        assert(!su.events.exists(_._2.contains("Schema evolution")), "no schema-evolution status event may be emitted: " + su.events)
+    }
 }

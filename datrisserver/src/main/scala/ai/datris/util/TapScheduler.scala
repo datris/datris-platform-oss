@@ -16,12 +16,16 @@ import java.util.{Date, TimeZone}
 object TapScheduler {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
-    def checkSchedules(): Unit = {
-        val taps = TapConfigIO.readAll(DatrisEnvironment.current.tapTableName)
-        val now = new Date()
+    def checkSchedules(): Unit =
+        checkSchedules(TapConfigIO.readAll(DatrisEnvironment.current.tapTableName), new Date())
 
+    /** One scheduler tick over the given taps. A null / blank cron is
+      * "unscheduled" and skipped silently (taps stored with "" before blank
+      * normalisation at save time must not log an error every tick). */
+    private[util] def checkSchedules(taps: Seq[TapConfig], now: Date): Unit = {
         taps.foreach(tap => {
-            if (tap.cronExpression != null && tap.enabled && tap.lastRunStatus != "running") {
+            val scheduled = tap.cronExpression != null && tap.cronExpression.trim.nonEmpty
+            if (scheduled && tap.enabled && tap.lastRunStatus != "running") {
                 try {
                     val cron = new CronExpression(tap.cronExpression)
                     cron.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))

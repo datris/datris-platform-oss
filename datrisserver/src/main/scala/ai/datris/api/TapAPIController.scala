@@ -386,7 +386,8 @@ class TapAPIController {
             val sdf2 = new java.text.SimpleDateFormat(DatrisEnvironment.current.dateFormat)
             sdf2.setTimeZone(java.util.TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
             val now = sdf2.format(new java.util.Date())
-            val configToSave = if (existing != null)
+            // A blank cron means unscheduled: stored as null, never "".
+            val configToSave = TapCronGate.normalizeCron(if (existing != null)
                 tapConfigWithScript.copy(
                     createdAt = existing.createdAt,
                     updatedAt = now,
@@ -409,7 +410,7 @@ class TapAPIController {
                     createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull,
                     lastTestRunStatus = null,
                     lastTestRunScriptId = null
-                )
+                ))
 
             // Test-before-cron gate: a schedule may only be set on a script (or
             // endpoint) that has passed a mode=test run. Reads test state from
