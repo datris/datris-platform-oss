@@ -362,13 +362,7 @@ object TapRunner {
             val delimiter = if (pipelineConfig.source.fileAttributes.csvAttributes.delimiter != null)
                 pipelineConfig.source.fileAttributes.csvAttributes.delimiter
             else ","
-            val (feed, filename): (StagedPayload, String) =
-                try { (jsonToCsv(result.staged, delimiter), "tap-" + tapConfig.name + ".csv") }
-                catch {
-                    case e: Exception =>
-                        logger.error("TapRunner: jsonToCsv failed: " + e.getMessage)
-                        (result.staged, "tap-" + tapConfig.name + ".json")
-                }
+            val (feed, filename) = projectForCsv(result, delimiter, "tap-" + tapConfig.name)
             val source = new BufferedInputStream(Files.newInputStream(Paths.get(feed.path)))
             new StreamNotifier().process(source, feed.bytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)
         } else
@@ -561,6 +555,22 @@ object TapRunner {
         val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
         digest.map("%02x".format(_)).mkString
     }
+
+    /** The CSV projection a CSV pipeline is fed, written INSIDE the tap run's own
+      * staging directory (feedPipeline runs after TapScriptRunner.run has left its
+      * token scope, so an unbound `newWriter` would land in `_unscoped/` and
+      * outlive the run — the InputStream overload copies rather than moves). It
+      * is reclaimed with the tap token dir by `release`. Falls back to the raw
+      * staged file (fed as `.json`) when the payload is not a JSON record list. */
+    private[util] def projectForCsv(result: TapScriptResult, delimiter: String, baseName: String): (StagedPayload, String) =
+        StagingArea.withToken(TapScriptRunner.stagingTokenOf(result.staged)) {
+            try { (jsonToCsv(result.staged, delimiter), baseName + ".csv") }
+            catch {
+                case e: Exception =>
+                    logger.error("TapRunner: jsonToCsv failed: " + e.getMessage)
+                    (result.staged, baseName + ".json")
+            }
+        }
 
     /** Streaming projection of a staged NDJSON record list into a Delimited
       * staged file: header = union of keys across ALL records (first-seen

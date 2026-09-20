@@ -258,10 +258,17 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             trailer = execute(body, stream=write)
+        except (BrokenPipeError, ConnectionResetError):
+            # The server dropped the socket (over-budget abort); the tap process
+            # was already killed in _run_streaming's finally. Nothing to report to.
+            return
         except Exception as e:  # noqa: BLE001 - headers are out; report via the trailer
             trailer = {"stdout": "", "stderr": "tap-runner: " + str(e), "exitCode": -1, "timedOut": False}
-        write(RECORD_TRAILER_SENTINEL + json.dumps(trailer).encode("utf-8") + b"\n")
-        self.wfile.write(b"0\r\n\r\n")
+        try:
+            write(RECORD_TRAILER_SENTINEL + json.dumps(trailer).encode("utf-8") + b"\n")
+            self.wfile.write(b"0\r\n\r\n")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_GET(self):
         if self.path == "/health":
