@@ -102,7 +102,9 @@ object TapScriptRunner {
           |_t0 = time.time()
           |result = mod.fetch()
           |_elapsed = time.time() - _t0
-          |sys.stdout = _real_stdout
+          |# stdout stays redirected for the WHOLE run: a generator's body (and its
+          |# print() calls) executes during the lookahead and the write loop below,
+          |# not inside mod.fetch(). Only the envelope goes to the real stdout.
           |# Normalize the {"records": [...], "state": {...}} shape. The documented
           |# contract is "return the record list, set global DATRIS_STATE" — but code
           |# generators naturally produce this envelope instead, and without this
@@ -270,7 +272,7 @@ object TapScriptRunner {
           |if _new_state is not None:
           |    envelope["state"] = json.loads(json.dumps(_new_state, default=str))
           |    print("[wrapper] fetch() emitted state: " + json.dumps(envelope["state"], default=str)[:200], file=sys.stderr, flush=True)
-          |print(json.dumps(envelope))
+          |print(json.dumps(envelope), file=_real_stdout, flush=True)
           |""".stripMargin
 
     // State blobs are cursors, not data stores. Anything near this size is a

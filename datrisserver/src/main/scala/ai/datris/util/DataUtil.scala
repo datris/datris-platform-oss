@@ -121,7 +121,10 @@ object DataUtil {
             throw new DatrisException(
                 "Invalid CSV header line for pipeline " + pipelineName + ": expected one header record, parsed " + records.size
             )
-        val columns = records.head.iterator().asScala.map(_.toLowerCase).toList
+        // Trailing empties (`id,amount,` — Excel / Sheets exports) are dropped, as
+        // the previous String.split did; an interior blank (`id,,amount`) or an
+        // all-blank header is still rejected.
+        val columns = records.head.iterator().asScala.map(_.toLowerCase).toList.reverse.dropWhile(_.trim.isEmpty).reverse
         if (columns.isEmpty || columns.exists(_.trim.isEmpty))
             throw new DatrisException(
                 "Invalid CSV header line for pipeline " + pipelineName + ": every column must have a name, got [" +

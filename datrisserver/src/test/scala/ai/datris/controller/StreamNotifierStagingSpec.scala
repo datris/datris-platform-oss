@@ -519,6 +519,13 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(csvConfig.source.schemaProperties.schemaVersion == config(FileAttributes(csvAttributes = CsvAttributes())).source.schemaProperties.schemaVersion)
     }
 
+    test("a CSV header with a trailing delimiter (Excel / Sheets export) still lands with the trailing empty dropped") {
+        val (data, resolved) = StagingArea.withToken("trailing-delim")(stage("id,amount,\n1,5,\n2,9,\n", csvConfig))
+        StagingArea.delete("trailing-delim")
+        assert(data.header == List("id", "amount"), "trailing empty column is dropped as before: " + data.header)
+        assert(resolved.source.schemaProperties.schemaVersion == csvConfig.source.schemaProperties.schemaVersion, "no schema evolution")
+    }
+
     test("a CSV header with a blank column name is rejected before schema evolution") {
         // `id,,amount` parses as three columns, one of them "" — evolveSchema
         // would add "" as a field. Same guard, same outcome: no write.

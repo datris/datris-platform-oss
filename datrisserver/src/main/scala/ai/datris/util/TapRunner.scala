@@ -642,6 +642,11 @@ object TapRunner {
             } else if (first.isJsonArray) {
                 val header = first.getAsJsonArray.asScala.map(h => TapScriptRunner.normalizeColumnName(cell(h))).toList
                 if (header.isEmpty) throw new DatrisException("line 1 (the header row) is an empty array")
+                if (header.distinct.size != header.size)
+                    throw new DatrisException(
+                        "the header row has duplicate column names after normalization: " +
+                            header.groupBy(identity).collect { case (k, v) if v.size > 1 => k }.mkString(", ")
+                    )
                 writer.write(header.mkString(delimiter))
                 val width = header.size
                 val it = StagedRows.lines(staged.path)

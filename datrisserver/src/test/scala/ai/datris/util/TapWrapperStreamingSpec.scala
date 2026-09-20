@@ -236,6 +236,30 @@ class TapWrapperStreamingSpec extends AnyFunSuite with BeforeAndAfterAll {
         } finally Files.deleteIfExists(file)
     }
 
+    test("a bare print() inside a generator body goes to stderr, never ahead of the envelope on stdout") {
+        assume(pythonAvailable, "python3 not available")
+        val script =
+            """def fetch():
+              |    print("progress: page 1")
+              |    yield {"a": 1}
+              |    print("progress: page 2")
+              |    yield {"a": 2}
+              |""".stripMargin
+        val (code, out, err, file) = runWrapper(script)
+        try {
+            assert(code == 0, out + "\n" + err)
+            val e = envelope(out) // parses only if stdout is exactly the envelope
+            assert(e.get("count").getAsLong == 2L, out)
+            assert(!out.contains("progress"), "script prints must not reach stdout: " + out)
+            assert(err.contains("progress: page 1") && err.contains("progress: page 2"), "script prints go to stderr: " + err)
+        } finally Files.deleteIfExists(file)
+
+        val (c2, o2, e2, _) = runWrapper(script, filePath = false)
+        assert(c2 == 0, o2 + "\n" + e2)
+        assert(envelope(o2).getAsJsonArray("data").size() == 2, o2)
+        assert(!o2.contains("progress") && e2.contains("progress: page 2"), o2 + "\n" + e2)
+    }
+
     // ================================================================
     // Acceptance 2 — type sniff from the first item; empty iterator
     // ================================================================
