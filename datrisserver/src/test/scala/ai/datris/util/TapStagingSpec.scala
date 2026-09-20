@@ -64,8 +64,8 @@ import scala.collection.JavaConverters._
   *  }}}
   *
   *  Budget failure wording (story Step 1):
-  *  `The tap payload exceeded the configured disk budget for one run (PIPELINE_MAX_PAYLOAD_MB = <n> MB, got ~<m> MB).
-  *   Raise it, or chunk the source range via run_tap params.`
+  *  `The payload exceeded the configured disk budget for one run (PIPELINE_MAX_PAYLOAD_MB = <n> MB, got ~<m> MB).
+  *   Raise it, or split the source (for a tap, chunk the source range via run_tap params).`
   *
   *  The 500,000-record case is meant to run with `DATRIS_TEST_XMX=512m`
   *  (build.sbt forwards it as -Xmx); it asserts the cap took effect whenever

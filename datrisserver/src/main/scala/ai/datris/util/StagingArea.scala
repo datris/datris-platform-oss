@@ -81,9 +81,9 @@ object StagingArea {
 
     /** The failure wording for an over-budget run (story Step 1). `bytes` is what was written before the run was stopped. */
     def budgetExceededMessage(bytes: Long): String =
-        "The tap payload exceeded the configured disk budget for one run (" + PayloadBudgetEnvVar + " = " + payloadBudgetMB +
+        "The payload exceeded the configured disk budget for one run (" + PayloadBudgetEnvVar + " = " + payloadBudgetMB +
             " MB, got ~" + math.max(bytes / (1024L * 1024L), payloadBudgetMB.toLong + 1L).toString + " MB). " +
-            "Raise it, or chunk the source range via run_tap params."
+            "Raise it, or split the source (for a tap, chunk the source range via run_tap params)."
 
     /** Create the root and the multipart spool under it (idempotent). Called once at boot. */
     def ensureRoot(): Path = {

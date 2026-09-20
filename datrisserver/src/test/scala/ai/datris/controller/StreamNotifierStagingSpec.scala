@@ -404,6 +404,56 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(two.getMessage.contains("No data rows found in uploaded file for pipeline: orders"), s"got: ${two.getMessage}")
     }
 
+    // Phase 5 review: the object-store pickup lane is bounded by the same budget.
+    test("DataUtil.read: a CSV or JSON pickup above PIPELINE_MAX_PAYLOAD_MB fails with the disk-budget message and leaves no file in the token dir") {
+        val row = "1,\"" + ("x" * 60) + "\"\n"
+        val csv = new StringBuilder("id,amount\n")
+        while (csv.length < 1536 * 1024) csv.append(row)
+        val json = new StringBuilder("[")
+        var i = 0
+        while (json.length < 1536 * 1024) {
+            if (i > 0) json.append(",")
+            json.append("{\"id\":").append(i).append(",\"pad\":\"").append("p" * 80).append("\"}")
+            i += 1
+        }
+        json.append("]")
+        val su = new CapturingStatusUtil
+
+        def filesIn(token: String): List[Path] = {
+            val dir = StagingArea.forToken(token)
+            val s = Files.walk(dir)
+            try s.iterator().asScala.filter(Files.isRegularFile(_)).toList
+            finally s.close()
+        }
+
+        TenantContext.set(budgetEnv(1))
+        try {
+            val c = intercept[DatrisException] {
+                StagingArea.withToken("pickup-budget-csv") {
+                    ai.datris.util.DataUtil.read(List("s3://raw/big.csv"), opener(Map("s3://raw/big.csv" -> csv.toString)), 1L, csvConfig, su)
+                }
+            }
+            assert(c.getMessage.contains(StagingArea.PayloadBudgetEnvVar + " = 1 MB"), s"got: ${c.getMessage}")
+            assert(c.getMessage.contains("disk budget"), s"got: ${c.getMessage}")
+            StagingArea.delete("pickup-budget-csv")
+            assert(filesIn("pickup-budget-csv").isEmpty, "the run dir is reclaimed like FileNotifier's catch does")
+
+            val j = intercept[DatrisException] {
+                StagingArea.withToken("pickup-budget-json") {
+                    ai.datris.util.DataUtil.read(List("s3://raw/big.json"), opener(Map("s3://raw/big.json" -> json.toString)), 1L, jsonConfig, su)
+                }
+            }
+            assert(j.getMessage.contains(StagingArea.PayloadBudgetEnvVar), s"got: ${j.getMessage}")
+            assert(j.getMessage.contains("disk budget"), s"got: ${j.getMessage}")
+            StagingArea.delete("pickup-budget-json")
+            assert(filesIn("pickup-budget-json").isEmpty)
+        } finally {
+            StagingArea.delete("pickup-budget-csv")
+            StagingArea.delete("pickup-budget-json")
+            TenantContext.set(testEnv)
+        }
+    }
+
     test("staged overload: an XML payload is adopted verbatim with rowCount 1") {
         val xml = "<?xml version=\"1.0\"?><orders><order id=\"1\"/></orders>"
         val staged = tapStaged(_ => PayloadStager.stageText("tap", StagedFormat.Xml, xml))

@@ -136,7 +136,9 @@ object DataUtil {
             val (resolvedConfig, schemaColumns, presentColumns, missingColumns) = evolveSchema(sourceColumns, config, statusUtil)
 
             val format = StagedFormat.Delimited(delimiter)
-            val (path, writer) = StagingArea.newWriter("notifier", format)
+            // Budgeted like the upload lane: PIPELINE_MAX_PAYLOAD_MB bounds what
+            // one pickup may stage on disk; FileNotifier drops the run dir on failure.
+            val (path, writer) = StagingArea.newBudgetedWriter("notifier", format)
             var rowCount = 0L
             try
                 files.foreach { fileUrl =>
@@ -171,15 +173,16 @@ object DataUtil {
         } else if (config.source.fileAttributes.jsonAttributes != null) {
             val fileUrl = files.head
             val staged =
-                try PayloadStager.stageJson("notifier", open(fileUrl))
+                try PayloadStager.stageJson("notifier", new InputStreamReader(open(fileUrl), StandardCharsets.UTF_8), budgeted = true)
                 catch {
+                    case e: DatrisException => throw e // the disk budget, not a parse failure
                     case e: Exception =>
                         logger.warn("Source file " + fileUrl + " is not valid JSON (" + e.getMessage + "); staging it verbatim")
-                        PayloadStager.stageStream("notifier", StagedFormat.Text, open(fileUrl))
+                        PayloadStager.stageStream("notifier", StagedFormat.Text, open(fileUrl), budgeted = true)
                 }
             (new Data(size, null, null, staged, null), config)
         } else if (config.source.fileAttributes.xmlAttributes != null) {
-            (new Data(size, null, null, PayloadStager.stageStream("notifier", StagedFormat.Xml, open(files.head)), null), config)
+            (new Data(size, null, null, PayloadStager.stageStream("notifier", StagedFormat.Xml, open(files.head), budgeted = true), null), config)
         } else if (config.source.fileAttributes.unstructuredAttributes != null) {
             val inputStream = open(files.head)
             val rawBytes =
