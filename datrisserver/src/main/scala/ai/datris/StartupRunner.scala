@@ -165,11 +165,21 @@ class StartupRunner extends ApplicationRunner {
     @Value("${cron.retry.backoffMinutes:5,15}")
     var cronRetryBackoffMinutes: String = _
 
-    // Tap script output ceiling. Guards the JVM from buffering massive script
-    // output and OOM'ing the server; the agent sees an actionable error and
-    // can retry with a smaller chunk (e.g., shorter date window).
-    @Value("${tapMaxOutputMB:100}")
-    var tapMaxOutputMB: Int = _
+    // Per-run payload disk budget (PIPELINE_MAX_PAYLOAD_MB): a tap run's staged
+    // output is stopped above it; 0 = unlimited. Bound as strings so an empty
+    // container var (compose forwards the deprecated alias with no default)
+    // reads as "unset" (-1) rather than failing conversion. TAP_MAX_OUTPUT_MB /
+    // tapMaxOutputMB is the deprecated alias, honoured for one release when the
+    // new property is not set.
+    @Value("${tapMaxOutputMB:}")
+    var tapMaxOutputMBRaw: String = _
+
+    @Value("${pipelineMaxPayloadMB:${PIPELINE_MAX_PAYLOAD_MB:}}")
+    var pipelineMaxPayloadMBRaw: String = _
+
+    /** -1 when blank or not an integer. */
+    private def optionalInt(raw: String): Int =
+        Option(raw).map(_.trim).filter(_.nonEmpty).flatMap(v => scala.util.Try(v.toInt).toOption).getOrElse(-1)
 
     // Scratch destination: how many result rows ride inline on the run status
     // (resultPreview) and how long a `_scratch/` object is retained before it
@@ -340,6 +350,24 @@ class StartupRunner extends ApplicationRunner {
             mongoDbInternalDatabase
         )
 
+        // Payload disk budget: the new property wins; the deprecated alias is
+        // honoured only when the new one is unset, with a one-line warning either way.
+        val tapMaxOutputMB = optionalInt(tapMaxOutputMBRaw)
+        val pipelineMaxPayloadMB = optionalInt(pipelineMaxPayloadMBRaw)
+        if (tapMaxOutputMB >= 0) {
+            if (pipelineMaxPayloadMB >= 0)
+                logger.warn(
+                    "TAP_MAX_OUTPUT_MB=" + tapMaxOutputMB + " is deprecated and ignored because PIPELINE_MAX_PAYLOAD_MB=" +
+                        pipelineMaxPayloadMB + " is set (the bundled compose files default it to " + StagingArea.DefaultPayloadBudgetMB +
+                        "). Set PIPELINE_MAX_PAYLOAD_MB to the value you want and remove TAP_MAX_OUTPUT_MB; the alias goes away next release."
+                )
+            else
+                logger.warn(
+                    "TAP_MAX_OUTPUT_MB=" + tapMaxOutputMB + " is deprecated; it is honoured as the per-run payload disk budget for this release. " +
+                        "Rename it to PIPELINE_MAX_PAYLOAD_MB (MB, 0 = unlimited, default " + StagingArea.DefaultPayloadBudgetMB + ")."
+                )
+        }
+
         val pipelineEnvironment = DatrisEnvironment(
             initialized = false,
             environment,
@@ -375,6 +403,7 @@ class StartupRunner extends ApplicationRunner {
             tapPromptTableName = environment + "-tap-prompt",
             tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
             tapMaxOutputMB = tapMaxOutputMB,
+            pipelineMaxPayloadMB = pipelineMaxPayloadMB,
             scratchInlineRows = scratchInlineRows,
             scratchRetentionHours = scratchRetentionHours,
             tempDir = tempDir,

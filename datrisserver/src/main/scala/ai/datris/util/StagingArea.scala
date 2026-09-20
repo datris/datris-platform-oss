@@ -34,6 +34,13 @@ object StagingArea {
     val TempDirEnvVar: String = "DATRIS_TEMP_DIR"
     val SweepAge: Duration = 24.hours
 
+    // Per-run payload disk budget (plans/streaming-pipeline.md, Phase 4). Replaces
+    // the old in-heap tap output cap (TAP_MAX_OUTPUT_MB): the bytes now land in a
+    // staged file, so the ceiling is disk, not heap, and the default is 4 GB.
+    val PayloadBudgetEnvVar: String = "PIPELINE_MAX_PAYLOAD_MB"
+    val LegacyPayloadBudgetEnvVar: String = "TAP_MAX_OUTPUT_MB"
+    val DefaultPayloadBudgetMB: Int = 4096
+
     private val UnscopedDir = "_unscoped"
 
     private val currentToken = new ThreadLocal[String]()
@@ -45,6 +52,31 @@ object StagingArea {
 
     /** Whole-payload materialization cap in MB for the current tenant/thread. */
     def materializeMaxMB: Int = env.map(_.pipelineMaterializeMaxMB).filter(_ > 0).getOrElse(DefaultMaterializeMaxMB)
+
+    /** Effective per-run payload disk budget, MB; 0 = unlimited. Precedence:
+      * `pipelineMaxPayloadMB` when >= 0; else the deprecated `tapMaxOutputMB`
+      * when >= 0; else [[DefaultPayloadBudgetMB]]. Both carry "unset" as -1 so an
+      * explicit 0 keeps meaning unlimited. */
+    def payloadBudgetMB: Int = env match {
+        case Some(e) if e.pipelineMaxPayloadMB >= 0 => e.pipelineMaxPayloadMB
+        case Some(e) if e.tapMaxOutputMB >= 0 => e.tapMaxOutputMB
+        case _ => DefaultPayloadBudgetMB
+    }
+
+    /** The budget in bytes, or 0 when unlimited. */
+    def payloadBudgetBytes: Long = payloadBudgetMB.toLong * 1024L * 1024L
+
+    /** True when `bytes` written for one run exceed the budget. */
+    def overBudget(bytes: Long): Boolean = {
+        val limit = payloadBudgetBytes
+        limit > 0 && bytes > limit
+    }
+
+    /** The failure wording for an over-budget run (story Step 1). `bytes` is what was written before the run was stopped. */
+    def budgetExceededMessage(bytes: Long): String =
+        "The tap payload exceeded the configured disk budget for one run (" + PayloadBudgetEnvVar + " = " + payloadBudgetMB +
+            " MB, got ~" + math.max(bytes / (1024L * 1024L), payloadBudgetMB.toLong + 1L).toString + " MB). " +
+            "Raise it, or chunk the source range via run_tap params."
 
     /** Create the root (idempotent). Called once at boot. */
     def ensureRoot(): Path = Files.createDirectories(root)

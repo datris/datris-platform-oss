@@ -2659,8 +2659,9 @@ paths:
       tags: [Taps]
       summary: Test a tap
       description: |
-        Executes the tap script without sending data to a pipeline. Returns results, logs, and an
-        AI-generated diagnosis if errors or zero records are detected.
+        Executes the tap script without sending data to a pipeline. Returns a preview of the
+        records (the first 20 of a record list, with `recordsTruncated: true` when there were
+        more), logs, and an AI-generated diagnosis if errors or zero records are detected.
       parameters:
         - name: testLimit
           in: query
@@ -2684,8 +2685,12 @@ paths:
                 properties:
                   records:
                     type: array
+                    description: Preview of the fetched records, capped at the first 20 of a record list.
                     items:
                       type: object
+                  recordsTruncated:
+                    type: boolean
+                    description: Present and true when the preview was capped; `recordCount` holds the full count.
                   recordCount:
                     type: integer
                   dataType:

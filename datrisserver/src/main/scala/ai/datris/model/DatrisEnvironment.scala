@@ -213,7 +213,8 @@ case class DatrisEnvironment(
     tapLedgerTableName: String = null,
     tapPromptTableName: String = null,
     tapScriptTimeoutSeconds: Int = 300,
-    tapMaxOutputMB: Int = 100,
+    // Deprecated alias of pipelineMaxPayloadMB (TAP_MAX_OUTPUT_MB); -1 = unset.
+    tapMaxOutputMB: Int = -1,
     // Scratch destination: rows inlined on the run status, and how long the
     // `_scratch/` object is kept (only computed into resultExpiresAt for now).
     scratchInlineRows: Int = 200,
@@ -224,6 +225,11 @@ case class DatrisEnvironment(
     // heap (PIPELINE_MATERIALIZE_MAX_MB).
     tempDir: String = "/tmp/datris-staging",
     pipelineMaterializeMaxMB: Int = 256,
+    // Per-run payload disk budget in MB (PIPELINE_MAX_PAYLOAD_MB): the most a
+    // tap run may stage before it is stopped. -1 = unset (resolved by
+    // StagingArea.payloadBudgetMB: explicit value, else the deprecated
+    // tapMaxOutputMB, else 4096); 0 = unlimited.
+    pipelineMaxPayloadMB: Int = -1,
     dateFormat: String = "yyyy-MM-dd HH:mm:ss z",
     dateTimezone: String = "UTC",
     postgresDatabase: String = "datris",

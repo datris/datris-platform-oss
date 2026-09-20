@@ -926,9 +926,15 @@ class TapAPIController {
             val result = TapRunner.run(tapConfig, mode = "test", testLimit = testLimitInt)
             val testDurationMs = System.currentTimeMillis() - testStartMs
             val gson = new Gson
-            val recordsJson = if (result.records != null) JsonParser.parseString(result.records) else null
+            // Preview off the staged file (Phase 4): the first testRecordSampleSize
+            // records plus `recordsTruncated` when there were more. The staged
+            // file is released once the preview is built.
+            val (recordsJson, recordsTruncated) =
+                try TapRunner.preview(result.staged, TapAPIController.testRecordSampleSize)
+                finally TapRunner.release(result)
             val response = new java.util.HashMap[String, Any]()
             response.put("records", recordsJson)
+            if (recordsTruncated) response.put("recordsTruncated", java.lang.Boolean.TRUE)
             response.put("recordCount", Integer.valueOf(result.recordCount))
             response.put("error", result.error)
             response.put("logs", result.logs)
@@ -1084,25 +1090,20 @@ class TapAPIController {
                 }
 
                 val gson = new Gson
-                val rawRecords = if (result.records != null) JsonParser.parseString(result.records) else null
 
                 // Records policy:
                 //   - mode=run: omit records entirely. They are in transit to the destination;
                 //     the agent must verify via get_pipeline_status, not from this body.
-                //     `recordCount` is enough to summarize what was submitted.
-                //   - mode=test: include records as a preview, capped at TapAPIController.testRecordSampleSize.
-                //     Set `recordsTruncated=true` when we trimmed it.
-                val (recordsToReturn, recordsTruncated) =
+                //     `recordCount` is enough to summarize what was submitted. (TapRunner
+                //     already released the tap's staging directory.)
+                //   - mode=test: include records as a preview read off the staged file,
+                //     capped at TapAPIController.testRecordSampleSize; `recordsTruncated=true`
+                //     when we trimmed it. The staged file is released after the preview.
+                val (recordsToReturn, recordsTruncated): (com.google.gson.JsonElement, Boolean) =
                     if (mode == "run") (null, false)
-                    else if (rawRecords != null && rawRecords.isJsonArray) {
-                        val arr = rawRecords.getAsJsonArray
-                        if (arr.size > TapAPIController.testRecordSampleSize) {
-                            val sample = new com.google.gson.JsonArray
-                            var i = 0
-                            while (i < TapAPIController.testRecordSampleSize) { sample.add(arr.get(i)); i += 1 }
-                            (sample: com.google.gson.JsonElement, true)
-                        } else (rawRecords: com.google.gson.JsonElement, false)
-                    } else (rawRecords: com.google.gson.JsonElement, false)
+                    else
+                        try TapRunner.preview(result.staged, TapAPIController.testRecordSampleSize)
+                        finally TapRunner.release(result)
 
                 val hasTargetPipeline = tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
                 val persisted = mode == "run" && hasTargetPipeline && result.error == null && result.recordCount > 0

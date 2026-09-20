@@ -5,12 +5,14 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, TapConfig, TapDocumentLedger, TapFeedInfo, TapRunLog}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, StagedFormat, StagedPayload, TapConfig, TapDocumentLedger, TapFeedInfo, TapRunLog}
 import ai.datris.controller.{JobRunner, StreamNotifier}
-import com.google.gson.{Gson, JsonParser}
+import com.google.gson.{Gson, JsonArray, JsonElement, JsonParser, JsonPrimitive}
 import org.slf4j.{Logger, LoggerFactory}
 
-import java.io.ByteArrayInputStream
+import java.io.{BufferedInputStream, ByteArrayInputStream}
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.{Date, TimeZone, UUID}
@@ -45,6 +47,10 @@ object TapRunner {
         // still false provably fed nothing downstream, so an automatic re-run
         // cannot double-write (the retry-safety gate).
         var feedStarted = false
+        // The script result, so the finally can drop the tap run's own staging
+        // directory once the last StreamNotifier hand-off is done (real runs).
+        // Test runs keep it: the API layer previews the staged file, then releases.
+        var scriptResult: TapScriptResult = null
 
         // Only update status in DB for real runs, not tests
         if (push) {
@@ -65,6 +71,7 @@ object TapRunner {
                 }
 
             val result = TapScriptRunner.run(tapConfig, testLimit, params, previousState)
+            scriptResult = result
             val durationMs = System.currentTimeMillis() - startMs
 
             if (result.error != null) {
@@ -178,7 +185,7 @@ object TapRunner {
             // Push to pipeline if requested, records exist, and a target pipeline is configured
             val (processedCount, pipelineTokens) =
                 if (
-                    push && result.records != null && result.recordCount > 0 &&
+                    push && result.staged != null && !result.staged.isEmpty && result.recordCount > 0 &&
                     tapConfig.targetPipeline != null && tapConfig.targetPipeline.nonEmpty
                 ) {
                     feedStarted = true
@@ -241,6 +248,44 @@ object TapRunner {
                 }
                 writeRunLog(tapConfig.name, now, "failure", 0, null, null, e.getMessage, mode, durationMs, scriptCommitSha = tapConfig.scriptCommitSha)
                 TapScriptResult(null, 0, e.getMessage)
+        } finally {
+            // Real runs: every StreamNotifier hand-off has adopted (moved) what it
+            // needs out of the tap's staging directory, so drop the directory now.
+            if (push) TapScriptRunner.release(scriptResult)
+        }
+    }
+
+    /** Release the tap run's staging directory (test-mode callers, after the preview). */
+    def release(result: TapScriptResult): Unit = TapScriptRunner.release(result)
+
+    /** A preview of a test run's records read off the staged file: the first
+      * `limit` records of an NDJSON record list as a JSON array (with a
+      * truncated flag when there were more), the single value of a one-object
+      * payload, or the verbatim text of an xml / text payload (capped at 1 MB).
+      * Returns (null, false) when there is nothing staged. */
+    def preview(staged: StagedPayload, limit: Int): (JsonElement, Boolean) = {
+        if (staged == null || staged.isEmpty) return (null, false)
+        staged.format match {
+            case StagedFormat.NdJson =>
+                val it = StagedRows.lines(staged.path)
+                try {
+                    if (!staged.arraySource) {
+                        (if (it.hasNext) JsonParser.parseString(it.next()) else null, false)
+                    } else {
+                        val arr = new JsonArray()
+                        var n = 0
+                        while (it.hasNext && n < limit) { arr.add(JsonParser.parseString(it.next())); n += 1 }
+                        (arr, it.hasNext)
+                    }
+                } finally it.close()
+            case StagedFormat.Xml | StagedFormat.Text =>
+                val cap = 1024L * 1024L
+                val in = Files.newInputStream(Paths.get(staged.path))
+                try {
+                    val bytes = in.readNBytes(cap.toInt)
+                    (new JsonPrimitive(new String(bytes, StandardCharsets.UTF_8)), staged.bytes > cap)
+                } finally in.close()
+            case _ => (null, false)
         }
     }
 
@@ -309,23 +354,32 @@ object TapRunner {
             pipelineConfig.source.fileAttributes != null &&
             pipelineConfig.source.fileAttributes.csvAttributes != null
 
-        val (bytes, filename) = if (pipelineExpectsCsv) {
+        // CSV pipelines get a streamed projection of the records into a delimited
+        // staged file, fed through the InputStream overload so schema evolution
+        // and the CSV parser run exactly as for an upload. JSON / XML / text
+        // pipelines adopt the staged file as-is — no bytes through the heap.
+        val jobContext = if (pipelineExpectsCsv) {
             val delimiter = if (pipelineConfig.source.fileAttributes.csvAttributes.delimiter != null)
                 pipelineConfig.source.fileAttributes.csvAttributes.delimiter
             else ","
-            try {
-                val csv = jsonToCsv(result.records, delimiter)
-                (csv.getBytes("UTF-8"), "tap-" + tapConfig.name + ".csv")
-            } catch {
-                case e: Exception =>
-                    logger.error("TapRunner: jsonToCsv failed: " + e.getMessage)
-                    (result.records.getBytes("UTF-8"), "tap-" + tapConfig.name + ".json")
-            }
-        } else {
-            (result.records.getBytes("UTF-8"), "tap-" + tapConfig.name + ".json")
-        }
-
-        val jobContext = new StreamNotifier().process(bytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)
+            val (feed, filename): (StagedPayload, String) =
+                try { (jsonToCsv(result.staged, delimiter), "tap-" + tapConfig.name + ".csv") }
+                catch {
+                    case e: Exception =>
+                        logger.error("TapRunner: jsonToCsv failed: " + e.getMessage)
+                        (result.staged, "tap-" + tapConfig.name + ".json")
+                }
+            val source = new BufferedInputStream(Files.newInputStream(Paths.get(feed.path)))
+            new StreamNotifier().process(source, feed.bytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)
+        } else
+            new StreamNotifier().process(
+                result.staged,
+                result.staged.bytes,
+                "tap-" + tapConfig.name + ".json",
+                tapConfig.targetPipeline,
+                publisherToken,
+                tapFeed
+            )
         GlobalJobContext.addJobContext(jobContext)
         logger.info("TapRunner: submitted job for pipeline: " + tapConfig.targetPipeline + ", token: " + jobContext.pipelineToken)
         val tokens = new java.util.ArrayList[String]()
@@ -382,77 +436,59 @@ object TapRunner {
         sdf.setTimeZone(TimeZone.getTimeZone(env.dateTimezone))
 
         val gson = new Gson
-        val array = JsonParser.parseString(result.records).getAsJsonArray
 
         var processed = 0
         var skipped = 0
         var failed = 0
 
-        val it = array.iterator()
-        while (it.hasNext) {
-            val obj = it.next().getAsJsonObject
-            val uri = Option(obj.get("uri")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("")
-            val filename = Option(obj.get("filename")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("document.bin")
-            val contentB64 = Option(obj.get("content")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("")
+        // One document per NDJSON line off the staged file; each document still
+        // materializes on its own (base64 decode) — that is per-document, not per-run.
+        val it = StagedRows.lines(result.staged.path)
+        try while (it.hasNext) {
+                val obj = JsonParser.parseString(it.next()).getAsJsonObject
+                val uri = Option(obj.get("uri")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("")
+                val filename = Option(obj.get("filename")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("document.bin")
+                val contentB64 = Option(obj.get("content")).filter(!_.isJsonNull).map(_.getAsString).getOrElse("")
 
-            if (uri.isEmpty || contentB64.isEmpty) {
-                logger.warn("TapRunner: document missing uri or content, skipping")
-                failed += 1
-            } else {
-                try {
-                    val rawBytes = java.util.Base64.getDecoder.decode(contentB64)
-                    val providedHash = Option(obj.get("content_hash")).filter(!_.isJsonNull).map(_.getAsString).orNull
-                    val contentHash = if (providedHash != null && providedHash.nonEmpty) providedHash else sha256(rawBytes)
+                if (uri.isEmpty || contentB64.isEmpty) {
+                    logger.warn("TapRunner: document missing uri or content, skipping")
+                    failed += 1
+                } else {
+                    try {
+                        val rawBytes = java.util.Base64.getDecoder.decode(contentB64)
+                        val providedHash = Option(obj.get("content_hash")).filter(!_.isJsonNull).map(_.getAsString).orNull
+                        val contentHash = if (providedHash != null && providedHash.nonEmpty) providedHash else sha256(rawBytes)
 
-                    val metadata: java.util.Map[String, String] = Option(obj.get("metadata"))
-                        .filter(e => !e.isJsonNull && e.isJsonObject)
-                        .map { elem =>
-                            val m = new java.util.LinkedHashMap[String, String]()
-                            elem.getAsJsonObject.entrySet().asScala.foreach { e =>
-                                val v = e.getValue
-                                m.put(e.getKey, if (v.isJsonNull) null else if (v.isJsonPrimitive) v.getAsString else v.toString)
+                        val metadata: java.util.Map[String, String] = Option(obj.get("metadata"))
+                            .filter(e => !e.isJsonNull && e.isJsonObject)
+                            .map { elem =>
+                                val m = new java.util.LinkedHashMap[String, String]()
+                                elem.getAsJsonObject.entrySet().asScala.foreach { e =>
+                                    val v = e.getValue
+                                    m.put(e.getKey, if (v.isJsonNull) null else if (v.isJsonPrimitive) v.getAsString else v.toString)
+                                }
+                                m
+                            }.orNull
+
+                        val now = sdf.format(new Date())
+
+                        if (known.get(uri).contains(contentHash)) {
+                            skipped += 1
+                            // Refresh lastSeenAt so operators can see the tap is still finding the doc
+                            val existing = TapDocumentLedgerIO.read(ledgerTable, tapConfig.name, uri)
+                            if (existing != null) {
+                                TapDocumentLedgerIO.write(ledgerTable, existing.copy(lastSeenAt = now))
                             }
-                            m
-                        }.orNull
+                        } else {
+                            val stagedKey = "tap-docs/" + tapConfig.name + "/" +
+                                UUID.randomUUID().toString.substring(0, 8) + "_" + filename
+                            ObjectStoreUtil.writeBucketObjectFromStream(bucket, stagedKey, new ByteArrayInputStream(rawBytes), rawBytes.length.toLong)
 
-                    val now = sdf.format(new Date())
+                            val firstSeen = TapDocumentLedgerIO.read(ledgerTable, tapConfig.name, uri) match {
+                                case null => now
+                                case prev => prev.firstSeenAt
+                            }
 
-                    if (known.get(uri).contains(contentHash)) {
-                        skipped += 1
-                        // Refresh lastSeenAt so operators can see the tap is still finding the doc
-                        val existing = TapDocumentLedgerIO.read(ledgerTable, tapConfig.name, uri)
-                        if (existing != null) {
-                            TapDocumentLedgerIO.write(ledgerTable, existing.copy(lastSeenAt = now))
-                        }
-                    } else {
-                        val stagedKey = "tap-docs/" + tapConfig.name + "/" +
-                            UUID.randomUUID().toString.substring(0, 8) + "_" + filename
-                        ObjectStoreUtil.writeBucketObjectFromStream(bucket, stagedKey, new ByteArrayInputStream(rawBytes), rawBytes.length.toLong)
-
-                        val firstSeen = TapDocumentLedgerIO.read(ledgerTable, tapConfig.name, uri) match {
-                            case null => now
-                            case prev => prev.firstSeenAt
-                        }
-
-                        TapDocumentLedgerIO.write(
-                            ledgerTable,
-                            TapDocumentLedger(
-                                uri = uri,
-                                tapName = tapConfig.name,
-                                stagedPath = stagedKey,
-                                filename = filename,
-                                contentHash = contentHash,
-                                firstSeenAt = firstSeen,
-                                lastSeenAt = now,
-                                status = "staged",
-                                metadata = metadata
-                            )
-                        )
-
-                        try {
-                            val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)
-                            GlobalJobContext.addJobContext(jobContext)
-                            tokens.add(jobContext.pipelineToken)
                             TapDocumentLedgerIO.write(
                                 ledgerTable,
                                 TapDocumentLedger(
@@ -463,14 +499,15 @@ object TapRunner {
                                     contentHash = contentHash,
                                     firstSeenAt = firstSeen,
                                     lastSeenAt = now,
-                                    status = "processed",
+                                    status = "staged",
                                     metadata = metadata
                                 )
                             )
-                            processed += 1
-                        } catch {
-                            case e: Exception =>
-                                logger.warn("TapRunner: pipeline submission failed for uri=" + uri + ": " + e.getMessage)
+
+                            try {
+                                val jobContext = new StreamNotifier().process(rawBytes, filename, tapConfig.targetPipeline, publisherToken, tapFeed)
+                                GlobalJobContext.addJobContext(jobContext)
+                                tokens.add(jobContext.pipelineToken)
                                 TapDocumentLedgerIO.write(
                                     ledgerTable,
                                     TapDocumentLedger(
@@ -481,20 +518,39 @@ object TapRunner {
                                         contentHash = contentHash,
                                         firstSeenAt = firstSeen,
                                         lastSeenAt = now,
-                                        status = "failed",
+                                        status = "processed",
                                         metadata = metadata
                                     )
                                 )
-                                failed += 1
+                                processed += 1
+                            } catch {
+                                case e: Exception =>
+                                    logger.warn("TapRunner: pipeline submission failed for uri=" + uri + ": " + e.getMessage)
+                                    TapDocumentLedgerIO.write(
+                                        ledgerTable,
+                                        TapDocumentLedger(
+                                            uri = uri,
+                                            tapName = tapConfig.name,
+                                            stagedPath = stagedKey,
+                                            filename = filename,
+                                            contentHash = contentHash,
+                                            firstSeenAt = firstSeen,
+                                            lastSeenAt = now,
+                                            status = "failed",
+                                            metadata = metadata
+                                        )
+                                    )
+                                    failed += 1
+                            }
                         }
+                    } catch {
+                        case e: Exception =>
+                            logger.warn("TapRunner: document handling failed for uri=" + uri + ": " + e.getMessage)
+                            failed += 1
                     }
-                } catch {
-                    case e: Exception =>
-                        logger.warn("TapRunner: document handling failed for uri=" + uri + ": " + e.getMessage)
-                        failed += 1
                 }
             }
-        }
+        finally it.close()
 
         logger.info("TapRunner: document tap '" + tapConfig.name + "' processed=" + processed +
             ", skipped=" + skipped + ", failed=" + failed)
@@ -506,40 +562,53 @@ object TapRunner {
         digest.map("%02x".format(_)).mkString
     }
 
-    private def jsonToCsv(json: String, delimiter: String = ","): String = {
+    /** Streaming projection of a staged NDJSON record list into a Delimited
+      * staged file: header = union of keys across ALL records (first-seen
+      * order — variable-shape sources would otherwise lose later-only columns),
+      * then one row per record with the same quoting rules as before (a value
+      * holding the delimiter, a quote or a line break is quoted, quotes doubled);
+      * null / absent → empty. An empty list yields a 0-byte file. Throws when a
+      * record is not a JSON object (the caller falls back to feeding the raw file). */
+    private[util] def jsonToCsv(staged: StagedPayload, delimiter: String = ","): StagedPayload = {
         import scala.collection.JavaConverters._
-        val jsonArray = com.google.gson.JsonParser.parseString(json).getAsJsonArray
-        if (jsonArray.size() == 0) return ""
+        val format = StagedFormat.Delimited(delimiter)
+        if (staged == null || staged.isEmpty || staged.format != StagedFormat.NdJson)
+            throw new DatrisException("jsonToCsv: the tap payload is not a JSON record list")
 
-        // Compute the union of keys across ALL records, preserving first-seen order.
-        // Some sources emit records with variable shape,
-        // and using only the first record's keys silently drops columns that appear later.
+        // Pass 1: the key union.
         val seen = scala.collection.mutable.LinkedHashSet[String]()
-        (0 until jsonArray.size()).foreach { i =>
-            val obj = jsonArray.get(i).getAsJsonObject
-            obj.keySet().asScala.foreach(seen.add)
-        }
+        val pass1 = StagedRows.lines(staged.path)
+        try while (pass1.hasNext) JsonParser.parseString(pass1.next()).getAsJsonObject.keySet().asScala.foreach(seen.add)
+        finally pass1.close()
         val columns = seen.toList
-        val header = columns.mkString(delimiter)
 
-        val rows = (0 until jsonArray.size()).map(i => {
-            val obj = jsonArray.get(i).getAsJsonObject
-            columns.map(col => {
-                val elem = obj.get(col)
-                if (elem == null || elem.isJsonNull) ""
-                else {
-                    val s = if (elem.isJsonPrimitive) {
-                        val prim = elem.getAsJsonPrimitive
-                        if (prim.isString) prim.getAsString
-                        else prim.getAsString // returns raw number string: "1782800", "254.2"
-                    } else elem.toString
-                    if (s.contains(delimiter) || s.contains("\"") || s.contains("\n") || s.contains("\r"))
-                        "\"" + s.replace("\"", "\"\"") + "\""
-                    else s
-                }
-            }).mkString(delimiter)
-        })
-
-        (header +: rows).mkString("\n")
+        val (path, writer) = StagingArea.newWriter("tap-csv", format)
+        try {
+            if (columns.nonEmpty) {
+                writer.write(columns.mkString(delimiter))
+                val pass2 = StagedRows.lines(staged.path)
+                try while (pass2.hasNext) {
+                        val obj = JsonParser.parseString(pass2.next()).getAsJsonObject
+                        val row = columns.map(col => {
+                            val elem = obj.get(col)
+                            if (elem == null || elem.isJsonNull) ""
+                            else {
+                                val s = if (elem.isJsonPrimitive) {
+                                    val prim = elem.getAsJsonPrimitive
+                                    if (prim.isString) prim.getAsString
+                                    else prim.getAsString // returns raw number string: "1782800", "254.2"
+                                } else elem.toString
+                                if (s.contains(delimiter) || s.contains("\"") || s.contains("\n") || s.contains("\r"))
+                                    "\"" + s.replace("\"", "\"\"") + "\""
+                                else s
+                            }
+                        }).mkString(delimiter)
+                        writer.write("\n")
+                        writer.write(row)
+                    }
+                finally pass2.close()
+            }
+        } finally writer.close()
+        StagedPayload(path.toString, format, staged.rowCount, Files.size(path))
     }
 }

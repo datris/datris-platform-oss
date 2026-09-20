@@ -1253,7 +1253,7 @@ ids = json.loads(ids_json)
 
 ## Incremental sync — persistent state (bookmarks)
 
-The platform persists a small JSON state object per tap between runs, so a scheduled tap fetches only what's new instead of re-fetching everything. This is the right tool for RECURRING data needs; `params` is the right tool for per-call overrides. A tap using state runs at constant size forever — no growing full refreshes marching toward the output cap.
+The platform persists a small JSON state object per tap between runs, so a scheduled tap fetches only what's new instead of re-fetching everything. This is the right tool for RECURRING data needs; `params` is the right tool for per-call overrides. A tap using state runs at constant size forever — no growing full refreshes marching toward the payload disk budget.
 
 ### The contract
 
@@ -1367,7 +1367,7 @@ Do not query the destination or report completion to the user before polling com
 
 ### Common `run_error` causes
 
-- **Output exceeded size limit** — script produced more JSON than the configured tap output cap (default 100MB). The whole batch is buffered before pipeline loading; very large fetches risk OOM. Durable fix for a RECURRING tap: make it incremental (see "Incremental sync — persistent state" above) so every run fetches only what's new and stays small forever. One-off fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
+- **Payload exceeded the disk budget** — the run staged more than `PIPELINE_MAX_PAYLOAD_MB` (default 4096 MB, 0 = unlimited) on the platform's staging disk; records stream to disk, never through heap, so this is a disk ceiling. The error names the variable — the operator can raise it. Durable fix for a RECURRING tap: make it incremental (see "Incremental sync — persistent state" above) so every run fetches only what's new and stays small forever. One-off fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
 - **Script raised an exception** — read the `logs` field for the Python traceback. Common: 403/404 from the source API (auth, entitlements), timeout, JSON parse error on malformed response.
 - **Subprocess timed out** — script ran longer than `tapScriptTimeoutSeconds` (default 300). Either the source is genuinely slow (chunk smaller via params) or the script has a bug (infinite loop, missing pagination break).
 

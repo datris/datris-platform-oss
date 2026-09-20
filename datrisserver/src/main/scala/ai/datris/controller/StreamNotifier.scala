@@ -15,7 +15,7 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import java.io.{BufferedInputStream, ByteArrayInputStream, ByteArrayOutputStream, InputStream, SequenceInputStream}
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
+import java.nio.file.{Files, Paths, StandardCopyOption}
 import java.util.UUID
 import java.util.regex.Pattern
 import scala.collection.JavaConverters._
@@ -31,7 +31,27 @@ class StreamNotifier {
       * bytes when the caller knows it (upload Content-Length, tap output size);
       * it is recorded as `Data.size` and in the status stream. The stream is
       * consumed and closed here. */
-    def process(source: InputStream, sizeHint: Long, filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo): JobContext = {
+    def process(source: InputStream, sizeHint: Long, filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo): JobContext =
+        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, config => stageData(source, sizeHint, config))
+
+    /** Hand an already-staged, already-counted payload (a tap run's NDJSON /
+      * XML / text file, plans/stories/streaming-pipeline-phase4.md) to one
+      * pipeline run. The file is ADOPTED into the run's token directory — no
+      * re-parse, no re-count, `arraySource` and `rowCount` preserved — so the
+      * JobRunner cleanup reclaims it with the rest of the run. CSV and
+      * unstructured pipelines still go through the `InputStream` overload's
+      * parsing (schema evolution / rawBytes), fed from the staged file. */
+    def process(staged: StagedPayload, sizeHint: Long, filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo): JobContext =
+        processWith(sizeHint, filename, pipeline, publisherToken, tapFeed, config => stageData(staged, sizeHint, config))
+
+    private def processWith(
+        sizeHint: Long,
+        filename: String,
+        pipeline: String,
+        publisherToken: String,
+        tapFeed: TapFeedInfo,
+        stage: PipelineConfig => (Data, PipelineConfig)
+    ): JobContext = {
         logger.info("StreamNotifier processing pipeline: " + pipeline + ", filename: " + filename)
         statusUtil.setFilename("stream: " + pipeline)
         val pipelineToken = UUID.randomUUID().toString
@@ -68,7 +88,7 @@ class StreamNotifier {
             statusUtil.info("begin", "Stream data received, pipeline: " + pipeline + ", filename: " + filename)
             statusUtil.info("processing", "Total data size: " + sizeHint.toString)
 
-            val (dataObj, resolvedConfig) = StagingArea.withToken(pipelineToken)(stageData(source, sizeHint, config))
+            val (dataObj, resolvedConfig) = StagingArea.withToken(pipelineToken)(stage(config))
 
             statusUtil.info("end", "Process completed successfully")
 
@@ -160,6 +180,30 @@ class StreamNotifier {
             (new Data(size, null, null, PayloadStager.stageBytes("notifier", bytes), bytes), config)
         } else
             throw new DatrisException("StreamNotifier: unsupported file type in pipeline config for pipeline: " + config.name)
+    }
+
+    /** Adopt a staged tap payload into the current run's token directory. The
+      * adopted file keeps its format, `rowCount` and `arraySource`; `Data.size`
+      * is `sizeHint`, header and rawBytes are null, and the config is returned
+      * as-is (no schema evolution on the JSON / XML path). A payload whose
+      * format does not match what the pipeline expects (CSV, unstructured, or a
+      * mismatch such as XML into a JSON pipeline) is fed through the
+      * `InputStream` overload instead, which parses it exactly as an upload. */
+    private[controller] def stageData(staged: StagedPayload, sizeHint: Long, config: PipelineConfig): (Data, PipelineConfig) = {
+        if (staged == null || staged.isEmpty)
+            throw new DatrisException("StreamNotifier: no staged payload to feed for pipeline: " + config.name)
+        val attrs = config.source.fileAttributes
+        val adoptable =
+            (attrs.jsonAttributes != null && staged.format == StagedFormat.NdJson) ||
+                (attrs.xmlAttributes != null && (staged.format == StagedFormat.Xml || staged.format == StagedFormat.Text))
+        if (!adoptable) {
+            val source = new BufferedInputStream(Files.newInputStream(Paths.get(staged.path)))
+            return stageData(source, sizeHint, config)
+        }
+        val target = StagingArea.newFile("notifier", staged.format)
+        Files.move(Paths.get(staged.path), target, StandardCopyOption.REPLACE_EXISTING)
+        val adopted = staged.copy(path = target.toString)
+        (new Data(sizeHint, null, null, adopted, null), config)
     }
 
     /** Bytes up to and including the first '\n' (or EOF), without reading past it. */

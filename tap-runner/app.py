@@ -9,12 +9,16 @@ a single tap run to /execute; this runner executes it as a fresh subprocess in a
 per-run scratch dir and returns stdout/stderr/exitCode. Nothing here can read platform
 secrets off disk or reach Vault, because they simply are not present in this container.
 """
+import errno
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("TAP_RUNNER_PORT", "8090"))
@@ -76,7 +80,113 @@ def _install_packages(packages, scratch):
     return os.path.join(venv, "bin", "python3")
 
 
-def execute(body):
+# Streaming protocol (streaming-pipeline Phase 4). A request carrying
+# `recordsStream: true` gets a chunked, non-JSON response: the bytes the tap
+# wrote to DATRIS_TAP_OUTPUT (a FIFO in the run's scratch) as they arrive, then
+# one trailer — the byte 0x1E followed by a JSON line
+# {"stdout", "stderr", "exitCode", "timedOut"}. The wrapper never emits a raw
+# 0x1E (JSON escapes control characters; the verbatim xml/text branch strips
+# it), so the FIRST 0x1E in the stream is the trailer separator.
+RECORD_TRAILER_SENTINEL = b"\x1e"
+FIFO_READ_SIZE = 64 * 1024
+
+
+def _decode(chunks):
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _drain(pipe, sink):
+    """Read a child pipe to EOF on its own thread (a full pipe would otherwise stall the child)."""
+    try:
+        while True:
+            data = pipe.read(FIFO_READ_SIZE)
+            if not data:
+                break
+            sink.append(data)
+    finally:
+        pipe.close()
+
+
+def _pump_fifo(fd, write):
+    """Forward whatever is readable on the non-blocking FIFO. Returns
+    "data" when bytes were forwarded, "eof" when read() returned 0 (no writer
+    connected yet, or the writer closed), "empty" on EAGAIN (writer connected,
+    nothing buffered)."""
+    forwarded = False
+    while True:
+        try:
+            data = os.read(fd, FIFO_READ_SIZE)
+        except BlockingIOError:
+            return "data" if forwarded else "empty"
+        except OSError as e:
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return "data" if forwarded else "empty"
+            raise
+        if not data:
+            return "data" if forwarded else "eof"
+        write(data)
+        forwarded = True
+
+
+def _run_streaming(python, wrapper_path, script_path, run_env, scratch, timeout, write):
+    """Run the wrapper with DATRIS_TAP_OUTPUT pointed at a FIFO, forwarding the
+    record bytes through `write` while the child runs. Returns the trailer dict.
+    The FIFO is opened O_RDONLY | O_NONBLOCK before the child starts and polled
+    alongside it, so a script that never opens it (raises first) cannot deadlock
+    the runner; timeout and non-zero exit still produce a trailer."""
+    fifo = os.path.join(scratch, "records.fifo")
+    os.mkfifo(fifo, 0o600)
+    run_env = dict(run_env)
+    run_env["DATRIS_TAP_OUTPUT"] = fifo
+    fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    proc = None
+    out_chunks, err_chunks = [], []
+    timed_out = False
+    try:
+        proc = subprocess.Popen([python, wrapper_path, script_path], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=run_env, cwd=scratch)
+        t_out = threading.Thread(target=_drain, args=(proc.stdout, out_chunks), daemon=True)
+        t_err = threading.Thread(target=_drain, args=(proc.stderr, err_chunks), daemon=True)
+        t_out.start()
+        t_err.start()
+        deadline = time.monotonic() + timeout
+        while True:
+            state = _pump_fifo(fd, write)
+            if proc.poll() is not None:
+                # Child gone: forward what is still buffered in the pipe, then stop.
+                while _pump_fifo(fd, write) == "data":
+                    pass
+                break
+            if time.monotonic() > deadline:
+                timed_out = True
+                proc.kill()
+                proc.wait()
+                while _pump_fifo(fd, write) == "data":
+                    pass
+                break
+            if state == "empty":
+                # A writer is connected and the pipe is empty: wake on data.
+                select.select([fd], [], [], 0.25)
+            elif state == "eof":
+                # No writer yet (or it already closed): poll the child.
+                time.sleep(0.05)
+        t_out.join(5)
+        t_err.join(5)
+        exit_code = -1 if timed_out else proc.returncode
+        return {"stdout": _decode(out_chunks), "stderr": _decode(err_chunks),
+                "exitCode": exit_code, "timedOut": timed_out}
+    finally:
+        if proc is not None and proc.poll() is None:
+            # The response side failed (client went away): don't leave the tap running.
+            proc.kill()
+            proc.wait()
+        os.close(fd)
+
+
+def execute(body, stream=None):
+    """Run one tap. Legacy (stream is None): returns the JSON result dict.
+    Streaming (stream is a write(bytes) callback): forwards record bytes through
+    it as they arrive and returns the trailer dict."""
     script = body.get("script") or ""
     wrapper = body.get("wrapper") or ""
     handed = body.get("env") or {}
@@ -99,6 +209,9 @@ def execute(body):
         run_env = _base_env(scratch)
         run_env.update({str(k): ("" if v is None else str(v)) for k, v in handed.items()})
 
+        if stream is not None:
+            return _run_streaming(python, wrapper_path, script_path, run_env, scratch, timeout, stream)
+
         try:
             proc = subprocess.run([python, wrapper_path, script_path],
                                   capture_output=True, text=True, timeout=timeout,
@@ -114,13 +227,41 @@ def execute(body):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1 so the streaming path can use chunked transfer encoding. Every
+    # response still closes the connection (one run per connection, as before).
+    protocol_version = "HTTP/1.1"
+
     def _send(self, code, obj):
         data = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
+        self.close_connection = True
+
+    def _send_stream(self, body):
+        """Streaming sibling of _send: chunked record bytes, then the 0x1E trailer."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        def write(data):
+            if data:
+                self.wfile.write(b"%x\r\n" % len(data))
+                self.wfile.write(data)
+                self.wfile.write(b"\r\n")
+
+        try:
+            trailer = execute(body, stream=write)
+        except Exception as e:  # noqa: BLE001 - headers are out; report via the trailer
+            trailer = {"stdout": "", "stderr": "tap-runner: " + str(e), "exitCode": -1, "timedOut": False}
+        write(RECORD_TRAILER_SENTINEL + json.dumps(trailer).encode("utf-8") + b"\n")
+        self.wfile.write(b"0\r\n\r\n")
 
     def do_GET(self):
         if self.path == "/health":
@@ -138,7 +279,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length > 0 else b"{}"
-            result = execute(json.loads(raw.decode("utf-8")))
+            body = json.loads(raw.decode("utf-8"))
+            if body.get("recordsStream") is True:
+                self._send_stream(body)
+                return
+            result = execute(body)
             self._send(200, result)
         except Exception as e:  # noqa: BLE001 - report any failure as 500 to the server
             self._send(500, {"error": str(e)})

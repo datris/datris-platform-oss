@@ -5,9 +5,10 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{DatrisEnvironment, DatrisException, TapConfig}
+import ai.datris.model.{DatrisEnvironment, DatrisException, StagedFormat, StagedPayload, TapConfig}
 import org.slf4j.{Logger, LoggerFactory}
-import com.google.gson.{JsonArray, JsonObject, JsonParser}
+import com.google.gson.stream.{JsonReader, JsonToken}
+import com.google.gson.{GsonBuilder, JsonArray, JsonElement, JsonObject, JsonParser}
 import org.apache.http.HttpHeaders
 import org.apache.http.client.config.RequestConfig
 import org.apache.http.client.methods.HttpPost
@@ -15,14 +16,18 @@ import org.apache.http.entity.StringEntity
 import org.apache.http.impl.client.HttpClients
 import org.apache.http.util.EntityUtils
 
-import java.nio.file.{Files, Path}
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path, Paths}
 import scala.collection.JavaConverters._
-import scala.concurrent.{Await, Future}
-import scala.concurrent.duration._
-import scala.concurrent.ExecutionContext.Implicits.global
 
+/** What a tap run produced. `staged` is the payload on disk (plans/stories/
+  * streaming-pipeline-phase4.md): NDJSON with `arraySource = true` for a record
+  * list, one line for a single object, XML / text verbatim with rowCount 1;
+  * null on error. The file lives in the tap run's own StagingArea token
+  * directory until TapRunner hands it to StreamNotifier (which adopts it into
+  * the pipeline run) or releases it. */
 case class TapScriptResult(
-    records: String,
+    staged: StagedPayload,
     recordCount: Int,
     error: String,
     logs: String = null,
@@ -109,19 +114,21 @@ object TapScriptRunner {
           |    if isinstance(result.get("state"), dict) and getattr(mod, "DATRIS_STATE", None) is None:
           |        mod.DATRIS_STATE = result["state"]
           |    result = result["records"]
-          |# Detect data type from result
+          |# Detect data type from result. _records is the list to serialize
+          |# record-at-a-time on the file path (None for a single value / string).
+          |_records = None
           |if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict) and 'uri' in result[0] and 'content' in result[0]:
           |    # Document tap: list of {uri, filename, content (base64), ...}
           |    data_type = "document"
-          |    data = json.dumps(result, default=str)
+          |    _records = result
           |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
           |    # Normalize dict keys to strings (handles Timestamp, numpy keys)
           |    result = [{str(k): v for k, v in row.items()} for row in result if isinstance(row, dict)]
-          |    data = json.dumps(result, default=str)
           |    data_type = "json"
+          |    _records = result
           |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], (list, tuple)):
           |    data_type = "csv"
-          |    data = json.dumps(result)
+          |    _records = result
           |elif isinstance(result, str):
           |    trimmed = result.strip()
           |    if trimmed.startswith("<?xml") or trimmed.startswith("<"):
@@ -130,24 +137,94 @@ object TapScriptRunner {
           |        data_type = "json"
           |    else:
           |        data_type = "text"
-          |    data = json.dumps(result)
           |elif isinstance(result, list):
           |    data_type = "json"
-          |    data = json.dumps(result)
+          |    _records = result
           |else:
           |    data_type = "json"
-          |    data = json.dumps(result)
-          |# Lifecycle summary on stderr — visible in tap-run logs whether the script
-          |# printed anything or not.
-          |if data_type in ("json", "csv", "document") and isinstance(json.loads(data), list):
-          |    _count = len(json.loads(data))
-          |    print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |_out_path = os.environ.get("DATRIS_TAP_OUTPUT")
+          |if _out_path:
+          |    # File path (streaming-pipeline Phase 4): the records go to the file the
+          |    # platform named, one compact JSON value per line, and stdout carries only
+          |    # a small envelope {type, count, columns, state}. The whole-payload JSON
+          |    # string is never built. The file is created even for 0 records. It is
+          |    # opened for write only (a FIFO in the sidecar) and never removed here.
+          |    # `columns` is the union of record keys in first-seen order for a list of
+          |    # dicts, [] for any other list, and null for a single value — so the
+          |    # platform can tell a record list from one object without re-reading.
+          |    _count = 0
+          |    _columns = None
+          |    with open(_out_path, "w", encoding="utf-8", newline="") as _f:
+          |        if _records is not None:
+          |            _columns = {}
+          |            _dicts = True
+          |            for _row in _records:
+          |                if _dicts and isinstance(_row, dict):
+          |                    for _k in _row:
+          |                        if _k not in _columns:
+          |                            _columns[_k] = True
+          |                else:
+          |                    _dicts = False
+          |                _f.write(json.dumps(_row, default=str, separators=(",", ":")))
+          |                _f.write("\n")
+          |                _count += 1
+          |            _columns = list(_columns) if _dicts else []
+          |        elif data_type in ("xml", "text"):
+          |            # Verbatim, not JSON-quoted. A raw 0x1E byte is stripped: it is the
+          |            # sidecar's record/trailer separator and can never be payload.
+          |            _f.write(result.replace("\x1e", ""))
+          |            _count = 1
+          |        else:
+          |            _value = result
+          |            if isinstance(result, str):
+          |                # A JSON-looking string: use its parsed value when it parses.
+          |                try:
+          |                    _value = json.loads(result)
+          |                except Exception:
+          |                    _value = result
+          |            if isinstance(_value, list):
+          |                _columns = {}
+          |                _dicts = True
+          |                for _row in _value:
+          |                    if _dicts and isinstance(_row, dict):
+          |                        for _k in _row:
+          |                            if _k not in _columns:
+          |                                _columns[_k] = True
+          |                    else:
+          |                        _dicts = False
+          |                    _f.write(json.dumps(_row, default=str, separators=(",", ":")))
+          |                    _f.write("\n")
+          |                    _count += 1
+          |                _columns = list(_columns) if _dicts else []
+          |            else:
+          |                _f.write(json.dumps(_value, default=str, separators=(",", ":")))
+          |                _f.write("\n")
+          |                _count = 1
+          |    if isinstance(_columns, list):
+          |        print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |    else:
+          |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |    envelope = {"type": data_type, "count": _count, "columns": _columns}
           |else:
-          |    print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
-          |envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
+          |    # Inline path (no DATRIS_TAP_OUTPUT): the whole payload rides on stdout as
+          |    # `data`, exactly as before the file path existed.
+          |    if data_type == "document":
+          |        data = json.dumps(result, default=str)
+          |    elif data_type == "json" and _records is not None and len(_records) > 0 and isinstance(_records[0], dict):
+          |        data = json.dumps(result, default=str)
+          |    else:
+          |        data = json.dumps(result)
+          |    # Lifecycle summary on stderr - visible in tap-run logs whether the script
+          |    # printed anything or not.
+          |    if data_type in ("json", "csv", "document") and isinstance(json.loads(data), list):
+          |        _count = len(json.loads(data))
+          |        print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |    else:
+          |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |    envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
           |# Incremental-sync state: a script that wants the platform to remember its
           |# position sets a module-global dict DATRIS_STATE inside fetch(). Absent or
-          |# non-dict → no state key, and the previously committed state stays put.
+          |# non-dict -> no state key, and the previously committed state stays put.
           |_new_state = getattr(mod, "DATRIS_STATE", None)
           |if _new_state is not None and not isinstance(_new_state, dict):
           |    print(f"[wrapper] DATRIS_STATE ignored: expected dict, got {type(_new_state).__name__}", file=sys.stderr, flush=True)
@@ -191,7 +268,47 @@ object TapScriptRunner {
                     ". Open Edit Tap and regenerate the script, or paste a new one."
             )
         )
+        runScript(tapConfig, scriptContent, testLimit, params, previousState)
+    }
 
+    /** Element-at-a-time re-serialization must not alter the data (same
+      * settings as PayloadStager): keep nulls, keep `<`/`>`/`&` unescaped. */
+    private val stagingGson = new GsonBuilder().serializeNulls().disableHtmlEscaping().create()
+
+    /** Token-directory name of a staged tap payload, or null. */
+    private[util] def stagingTokenOf(staged: StagedPayload): String =
+        if (staged == null || staged.path == null) null
+        else Option(Paths.get(staged.path).getParent).map(_.getFileName.toString).orNull
+
+    /** Drop the tap run's own staging directory (the one `runScript` / `runHttp`
+      * bound). Called by TapRunner after the last StreamNotifier hand-off, and by
+      * the API layer after a test-mode preview. Never throws. */
+    def release(result: TapScriptResult): Unit =
+        if (result != null) StagingArea.delete(stagingTokenOf(result.staged))
+
+    /** The body of [[run]] after the storage read: secret/env assembly, execution
+      * (sidecar or in-process), envelope parsing and staging. Binds its own
+      * StagingArea token — a failed run leaves nothing under the staging root. */
+    private[util] def runScript(
+        tapConfig: TapConfig,
+        scriptContent: String,
+        testLimit: Int = 0,
+        params: Map[String, String] = Map.empty,
+        previousState: String = null
+    ): TapScriptResult = {
+        val tapToken = "tap-" + java.util.UUID.randomUUID().toString
+        val result = StagingArea.withToken(tapToken)(runScriptStaged(tapConfig, scriptContent, testLimit, params, previousState))
+        if (result.error != null) StagingArea.delete(tapToken)
+        result
+    }
+
+    private def runScriptStaged(
+        tapConfig: TapConfig,
+        scriptContent: String,
+        testLimit: Int,
+        params: Map[String, String],
+        previousState: String
+    ): TapScriptResult = {
         // Step 2: Write script and wrapper to temp files
         val scriptFile: Path = Files.createTempFile("tap_script_", ".py")
         val wrapperFile: Path = Files.createTempFile("tap_wrapper_", ".py")
@@ -216,6 +333,11 @@ object TapScriptRunner {
         // proves the script had what it needed, so the signal is only acted on when
         // the run also produced no records (see TapRunner).
         var detectedMissingSecretFields: Seq[String] = Nil
+
+        // Where the wrapper writes its records (DATRIS_TAP_OUTPUT): a file in the
+        // tap run's staging directory. The sidecar streams into it; in-process the
+        // wrapper writes it directly.
+        val outputPath: Path = StagingArea.newFile("tap", StagedFormat.NdJson)
 
         try {
             // Step 4: Load secrets as env vars if configured.
@@ -317,7 +439,7 @@ object TapScriptRunner {
             secretValuesForMasking = secretValues
             val (rawOutput, rawLogs) =
                 if (useTapRunner) {
-                    executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, scriptTimeoutSeconds, secretValues)
+                    executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, scriptTimeoutSeconds, secretValues, outputPath)
                 } else {
                     warnInProcess("tap " + tapConfig.name)
                     // In-process path: materialize the script/wrapper, install any extra
@@ -326,47 +448,50 @@ object TapScriptRunner {
                     Files.write(wrapperFile, WRAPPER_TEMPLATE.getBytes("UTF-8"))
                     venvDir = installPackages(tapConfig)
                     val python = venvDir.map(_.resolve("bin").resolve("python3").toString).getOrElse("python3")
-                    executeWithTimeout(python, wrapperFile.toString, scriptFile.toString, scriptTimeoutSeconds, allEnvVars, secretValues)
+                    executeWithTimeout(
+                        python,
+                        wrapperFile.toString,
+                        scriptFile.toString,
+                        scriptTimeoutSeconds,
+                        allEnvVars :+ ("DATRIS_TAP_OUTPUT" -> outputPath.toString),
+                        secretValues,
+                        outputPath
+                    )
                 }
             // Mask secret values in logs before they're persisted (TapRunLog), surfaced via
             // get_tap_logs / the run-history UI, or echoed to the platform's own logger.
             // A script's print() that incidentally includes an API key would otherwise leak
             // through the run history to anyone with tap access.
             val logs = if (rawLogs.nonEmpty) maskSecrets(rawLogs, secretValues) else rawLogs
-            logger.info("TapScriptRunner: script executed, output length: " + rawOutput.length + " chars")
+            logger.info("TapScriptRunner: script executed, envelope length: " + rawOutput.length + " chars")
             if (logs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + logs)
 
-            // Guard the JVM from buffering huge tap outputs. The runner holds the
-            // entire script stdout as a String, then JSON-parses it into a Map —
-            // both copies live in heap simultaneously. A 200MB script output can
-            // OOM-kill the server before the agent finds out the chunk was too big.
-            // Fail fast with an actionable message the agent can act on.
-            val maxBytes: Long = DatrisEnvironment.current.tapMaxOutputMB.toLong * 1024L * 1024L
-            if (rawOutput.length.toLong > maxBytes) {
-                val actualMB = rawOutput.length / (1024 * 1024)
-                throw new DatrisException(
-                    "Tap script output exceeded the " + DatrisEnvironment.current.tapMaxOutputMB +
-                        " MB limit (got ~" + actualMB + " MB). The whole batch is buffered in memory before " +
-                        "loading to the pipeline, so very large fetches risk OOM-ing the server. " +
-                        "Reduce the source range — e.g., a shorter date window, smaller page size, " +
-                        "or per-record/per-day chunks — and call run_tap again. " +
-                        "Multiple smaller runs all land in the same destination pipeline."
-                )
-            }
+            // Disk budget on what the wrapper wrote (the sidecar and in-process paths
+            // already stop a run mid-write; this covers the final size).
+            val writtenBytes = if (Files.exists(outputPath)) Files.size(outputPath) else 0L
+            if (StagingArea.overBudget(writtenBytes)) throw new DatrisException(StagingArea.budgetExceededMessage(writtenBytes))
 
-            // Step 5: Parse envelope to extract data type and records
-            val gson = new com.google.gson.Gson
-            val envelope = gson.fromJson(rawOutput, classOf[java.util.Map[String, Any]])
-            val dataType = Option(envelope.get("type")).map(_.toString).getOrElse("json")
-            val data = envelope.get("data")
+            // Step 5: Parse the envelope — only {type, count, columns, state} (the
+            // records are in outputPath). An older runner still answers with the
+            // inline `data` envelope, which is staged from the string instead.
+            val envelope: JsonObject =
+                try JsonParser.parseString(rawOutput).getAsJsonObject
+                catch {
+                    case _: Exception =>
+                        throw new DatrisException(
+                            "Tap script produced no result envelope on stdout (the wrapper exited before it could report). " +
+                                "stdout: " + maskSecrets(rawOutput.take(300), secretValues)
+                        )
+                }
+            val dataType = Option(envelope.get("type")).filter(e => e.isJsonPrimitive).map(_.getAsString).getOrElse("json")
 
             // Optional incremental-sync state emitted by the script (wrapper puts it on
             // the envelope only when the script set a dict DATRIS_STATE). Extracted with
-            // JsonParser — NOT via the gson Map above — so number literals survive
-            // verbatim: the Map path turns every JSON number into a Double and would
-            // re-serialize an integer cursor 1785850779844 as 1785850779844.0, which a
-            // script interpolating it into a source URL would send malformed. Oversized
-            // state is a script bug — a cursor should be bytes, not a payload.
+            // JsonParser — NOT via a gson Map — so number literals survive verbatim: a
+            // Map path turns every JSON number into a Double and would re-serialize an
+            // integer cursor 1785850779844 as 1785850779844.0, which a script
+            // interpolating it into a source URL would send malformed. Oversized state
+            // is a script bug — a cursor should be bytes, not a payload.
             val newStateJson: String = extractStateJson(rawOutput)
             if (newStateJson != null && newStateJson.length > MaxStateBytes) {
                 throw new DatrisException(
@@ -376,22 +501,36 @@ object TapScriptRunner {
                         "Reduce DATRIS_STATE to the minimal position marker the next run needs."
                 )
             }
-            val dataJson = gson.toJson(data)
-            val recordCount = if (dataType == "json" || dataType == "csv" || dataType == "document") countRecords(dataJson) else 1
+
+            val (staged, columnsHint): (StagedPayload, Option[List[String]]) =
+                if (envelope.has("data")) {
+                    // Legacy inline envelope (older datris-tap-runner): stage the data element.
+                    Files.deleteIfExists(outputPath)
+                    (stageInlineData(envelope.get("data"), dataType), None)
+                } else {
+                    if (!Files.exists(outputPath))
+                        throw new DatrisException("Tap script reported a result but wrote no output file (" + outputPath.getFileName + ")")
+                    val count = Option(envelope.get("count")).filter(_.isJsonPrimitive).map(_.getAsLong).getOrElse(0L)
+                    val columns: Option[List[String]] = Option(envelope.get("columns"))
+                        .filter(_.isJsonArray)
+                        .map(_.getAsJsonArray.asScala.map(_.getAsString).toList)
+                    (describeStagedOutput(outputPath, dataType, count, isList = columns.isDefined), columns)
+                }
+            val recordCount = if (dataType == "json" || dataType == "csv" || dataType == "document") staged.rowCount.toInt else 1
 
             // For CSV-shaped data: normalize column names so they pass PipelineValidatorUtil
             // (which only allows [A-Za-z0-9_]+) and so downstream SQL doesn't need quoting.
             // Rewrites BOTH the records (key by key) and the extracted columns array.
             // No-op for json/xml/text — those go to mongo destinations as raw blobs.
-            val (normalizedDataJson, columns): (String, java.util.List[String]) =
-                if (dataType == "csv" && recordCount > 0) normalizeCsvColumns(dataJson, gson)
-                else (dataJson, null)
+            val (normalizedStaged, columns): (StagedPayload, java.util.List[String]) =
+                if (dataType == "csv" && recordCount > 0) normalizeCsvColumns(staged, columnsHint)
+                else (staged, null)
 
             logger.info("TapScriptRunner: dataType=" + dataType + ", fetched " + recordCount + " records" +
                 (if (columns != null) ", columns=" + columns else ""))
 
             TapScriptResult(
-                normalizedDataJson,
+                normalizedStaged,
                 recordCount,
                 null,
                 if (logs.nonEmpty) logs else null,
@@ -421,41 +560,97 @@ object TapScriptRunner {
         }
     }
 
+    /** Describe the file the wrapper wrote as a staged payload. Record lists are
+      * NDJSON with `arraySource`; a single JSON value is one NDJSON line without
+      * it; xml / text are verbatim with rowCount 1. The file is renamed to the
+      * format's extension. */
+    private def describeStagedOutput(outputPath: Path, dataType: String, count: Long, isList: Boolean): StagedPayload = {
+        val bytes = Files.size(outputPath)
+        val format: StagedFormat = dataType match {
+            case "xml" => StagedFormat.Xml
+            case "text" => StagedFormat.Text
+            case _ => StagedFormat.NdJson
+        }
+        val path =
+            if (format == StagedFormat.NdJson) outputPath
+            else {
+                val renamed = outputPath.resolveSibling(outputPath.getFileName.toString.stripSuffix(".ndjson") + "." + format.extension)
+                Files.move(outputPath, renamed, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                renamed
+            }
+        format match {
+            case StagedFormat.NdJson => StagedPayload(path.toString, format, count, bytes, arraySource = isList)
+            case _ => StagedPayload(path.toString, format, if (bytes > 0) 1L else 0L, bytes)
+        }
+    }
+
+    /** Stage the `data` element of a legacy inline envelope (older tap runner or
+      * HTTP endpoint that answered with everything in one JSON body). */
+    private def stageInlineData(data: JsonElement, dataType: String): StagedPayload = {
+        if (data == null || data.isJsonNull) return StagedPayload.empty
+        if (data.isJsonPrimitive && data.getAsJsonPrimitive.isString && (dataType == "xml" || dataType == "text"))
+            PayloadStager.stageText("tap", if (dataType == "xml") StagedFormat.Xml else StagedFormat.Text, data.getAsString)
+        else PayloadStager.stageJson("tap", new java.io.StringReader(data.toString))
+    }
+
     /** For CSV-shaped data: normalize column names so they pass PipelineValidatorUtil
       * (which only allows [A-Za-z0-9_]+) and so downstream SQL doesn't need quoting.
-      * Rewrites BOTH the records (key by key) and the extracted columns array.
-      * Shared by the script and HTTP paths; no-op fallback on any parse trouble. */
-    private def normalizeCsvColumns(dataJson: String, gson: com.google.gson.Gson): (String, java.util.List[String]) = {
+      * Rewrites BOTH the records (key by key) and the extracted columns array, as a
+      * streaming pass over the staged NDJSON file: the key union comes from the
+      * wrapper envelope's `columns` when present, else from a first pass over the
+      * lines. Every rewritten record carries every union key, in union order, JSON
+      * null when absent; numbers are re-serialized verbatim. Shared by the script
+      * and HTTP paths; no-op fallback (original file, null columns) on any parse
+      * trouble — e.g. a csv payload whose rows are arrays, not objects. */
+    private def normalizeCsvColumns(staged: StagedPayload, columnsHint: Option[List[String]]): (StagedPayload, java.util.List[String]) = {
+        if (staged == null || staged.isEmpty || staged.rowCount == 0 || staged.format != StagedFormat.NdJson) return (staged, null)
+        var rewrittenPath: Path = null
         try {
-            val list = gson.fromJson(dataJson, classOf[java.util.List[java.util.Map[String, Any]]])
-            if (list != null && !list.isEmpty) {
-                // Compute the union of keys across ALL records (first-seen order).
-                // Some sources emit variable-shape rows; using only the first
-                // record's keys silently drops columns that appear in later records and
-                // breaks downstream pipeline schemas built from this list.
+            // Compute the union of keys across ALL records (first-seen order).
+            // Some sources emit variable-shape rows; using only the first
+            // record's keys silently drops columns that appear in later records and
+            // breaks downstream pipeline schemas built from this list.
+            val allKeys: List[String] = columnsHint.getOrElse {
                 val seen = scala.collection.mutable.LinkedHashSet[String]()
-                list.asScala.foreach(row => row.keySet().asScala.foreach(seen.add))
-                val allKeys = seen.toList
-                val keyMap: Map[String, String] = allKeys.map(k => k -> normalizeColumnName(k)).toMap
-                val normalizedCols = new java.util.ArrayList[String](allKeys.map(keyMap).asJava)
-                val rewrittenList = new java.util.ArrayList[java.util.Map[String, Any]](list.size())
-                list.asScala.foreach { row =>
-                    val newRow = new java.util.LinkedHashMap[String, Any]()
+                val it = StagedRows.lines(staged.path)
+                try while (it.hasNext) JsonParser.parseString(it.next()).getAsJsonObject.keySet().asScala.foreach(seen.add)
+                finally it.close()
+                seen.toList
+            }
+            if (allKeys.isEmpty) return (staged, null)
+            val keyMap: Map[String, String] = allKeys.map(k => k -> normalizeColumnName(k)).toMap
+            val normalizedCols = new java.util.ArrayList[String](allKeys.map(keyMap).asJava)
+
+            val (path, writer) = StagingArea.newWriter("tap", StagedFormat.NdJson)
+            rewrittenPath = path
+            var count = 0L
+            val it = StagedRows.lines(staged.path)
+            try {
+                while (it.hasNext) {
+                    val row = JsonParser.parseString(it.next()).getAsJsonObject
+                    val newRow = new JsonObject()
                     // Insert in union order so every record has the same key order;
                     // missing keys become null.
                     allKeys.foreach { k =>
                         val normalized = keyMap(k)
-                        if (row.containsKey(k)) newRow.put(normalized, row.get(k))
-                        else newRow.put(normalized, null)
+                        if (row.has(k)) newRow.add(normalized, row.get(k))
+                        else newRow.add(normalized, com.google.gson.JsonNull.INSTANCE)
                     }
-                    rewrittenList.add(newRow)
+                    if (count > 0) writer.write("\n")
+                    writer.write(stagingGson.toJson(newRow))
+                    count += 1
                 }
-                (gson.toJson(rewrittenList), normalizedCols)
-            } else (dataJson, null)
+            } finally {
+                it.close()
+                writer.close()
+            }
+            Files.deleteIfExists(Paths.get(staged.path))
+            (StagedPayload(path.toString, StagedFormat.NdJson, count, Files.size(path), arraySource = true), normalizedCols)
         } catch {
             case e: Exception =>
                 logger.warn("Column-name normalization of tap output failed — passing data through unnormalized", e)
-                (dataJson, null)
+                if (rewrittenPath != null) Files.deleteIfExists(rewrittenPath)
+                (staged, null)
         }
     }
 
@@ -478,6 +673,38 @@ object TapScriptRunner {
       * call provably fed nothing downstream (TapRunner marks script-phase failures
       * retry-safe). */
     private def runHttp(
+        tapConfig: TapConfig,
+        testLimit: Int,
+        params: Map[String, String],
+        previousState: String
+    ): TapScriptResult = {
+        // Own staging token, like runScript: a failed call leaves nothing on disk.
+        val tapToken = "tap-" + java.util.UUID.randomUUID().toString
+        val result = StagingArea.withToken(tapToken)(runHttpStaged(tapConfig, testLimit, params, previousState))
+        if (result.error != null) StagingArea.delete(tapToken)
+        result
+    }
+
+    /** An InputStream that remembers its first bytes, so an error message can
+      * quote an excerpt of a response that was otherwise streamed to disk. */
+    private class PrefixCapturingInputStream(in: java.io.InputStream, limit: Int) extends java.io.FilterInputStream(in) {
+        private val prefix = new java.io.ByteArrayOutputStream()
+        private def remember(b: Array[Byte], off: Int, len: Int): Unit =
+            if (prefix.size() < limit) prefix.write(b, off, math.min(len, limit - prefix.size()))
+        override def read(): Int = {
+            val b = in.read()
+            if (b >= 0 && prefix.size() < limit) prefix.write(b)
+            b
+        }
+        override def read(b: Array[Byte], off: Int, len: Int): Int = {
+            val n = in.read(b, off, len)
+            if (n > 0) remember(b, off, n)
+            n
+        }
+        def excerpt: String = new String(prefix.toByteArray, StandardCharsets.UTF_8)
+    }
+
+    private def runHttpStaged(
         tapConfig: TapConfig,
         testLimit: Int,
         params: Map[String, String],
@@ -585,31 +812,21 @@ object TapScriptRunner {
                         )
                 }
 
-            // Response bodies are untrusted input: stream up to the same output cap
-            // script taps get, then abort — never buffer an unbounded body.
-            val maxBytes: Long = DatrisEnvironment.current.tapMaxOutputMB.toLong * 1024L * 1024L
-            val rawBody: String = {
-                val in = response.body()
-                try {
-                    val buf = new java.io.ByteArrayOutputStream()
-                    val chunk = new Array[Byte](64 * 1024)
-                    var n = in.read(chunk)
-                    while (n >= 0) {
-                        buf.write(chunk, 0, n)
-                        if (buf.size().toLong > maxBytes)
-                            throw new DatrisException(
-                                "Tap endpoint response exceeded the " + DatrisEnvironment.current.tapMaxOutputMB +
-                                    " MB limit. The whole batch is buffered in memory before loading to the " +
-                                    "pipeline, so very large fetches risk OOM-ing the server. Return a smaller " +
-                                    "page plus a state cursor and let the next run continue."
-                            )
-                        n = in.read(chunk)
-                    }
-                    new String(buf.toByteArray, java.nio.charset.StandardCharsets.UTF_8)
-                } finally in.close()
-            }
-
             if (response.statusCode() != 200) {
+                // Read a bounded excerpt only — the body is untrusted and unbounded.
+                val excerpt = {
+                    val in = response.body()
+                    try {
+                        val buf = new Array[Byte](1024)
+                        var total = 0
+                        var n = in.read(buf, 0, buf.length)
+                        while (n > 0 && total < buf.length) {
+                            total += n
+                            n = if (total < buf.length) in.read(buf, total, buf.length - total) else 0
+                        }
+                        new String(buf, 0, total, StandardCharsets.UTF_8)
+                    } finally in.close()
+                }
                 // 405 almost always means a GET-only route — the single most
                 // common first-contact mistake. Lead with the fix, not the
                 // endpoint's HTML error page.
@@ -620,26 +837,70 @@ object TapScriptRunner {
                     else ""
                 throw new DatrisException(
                     "Tap endpoint returned HTTP " + response.statusCode() + ". " + methodHint +
-                        "Response: " + maskSecrets(rawBody.take(1000), tokenForMasking)
+                        "Response: " + maskSecrets(excerpt.take(1000), tokenForMasking)
                 )
             }
 
-            // Parse the envelope with JsonParser — NOT via a gson Map — so number
-            // literals survive verbatim (same rationale as extractStateJson).
-            val envelope =
-                try JsonParser.parseString(rawBody).getAsJsonObject
-                catch {
-                    case _: Exception =>
-                        throw new DatrisException(
-                            "Tap endpoint response is not a JSON envelope. Expected " +
-                                "{\"type\": \"json|csv|xml|text|document\", \"data\": ...}. Got: " +
-                                maskSecrets(rawBody.take(500), tokenForMasking) + " " + ContractPointer
-                        )
-                }
-            val dataType = Option(envelope.get("type"))
-                .filter(e => !e.isJsonNull && e.isJsonPrimitive)
-                .map(_.getAsString)
-                .getOrElse("")
+            // Walk the envelope with a JsonReader: the `data` array is written to a
+            // staged NDJSON file element by element (never held whole), a `data`
+            // string is staged verbatim, `state` is captured with JsonParser so
+            // number literals survive verbatim (same rationale as extractStateJson),
+            // `type` / `logs` as before. The disk budget is enforced on bytes written.
+            val responseBody = new PrefixCapturingInputStream(response.body(), 512)
+            var dataType = ""
+            var logs: String = null
+            var newStateJson: String = null
+            var dataSeen = false
+            var dataNull = false
+            var dataString: String = null
+            var arrayStaged: StagedPayload = null
+            def notAnEnvelope(): DatrisException =
+                new DatrisException(
+                    "Tap endpoint response is not a JSON envelope. Expected " +
+                        "{\"type\": \"json|csv|xml|text|document\", \"data\": ...}. Got: " +
+                        maskSecrets(responseBody.excerpt.take(500), tokenForMasking) + " " + ContractPointer
+                )
+            try {
+                val reader = new JsonReader(new java.io.InputStreamReader(responseBody, StandardCharsets.UTF_8))
+                reader.setLenient(true)
+                try {
+                    if (reader.peek() != JsonToken.BEGIN_OBJECT) throw notAnEnvelope()
+                    reader.beginObject()
+                    while (reader.hasNext) {
+                        reader.nextName() match {
+                            case "type" =>
+                                if (reader.peek() == JsonToken.STRING) dataType = reader.nextString() else reader.skipValue()
+                            case "logs" =>
+                                if (reader.peek() == JsonToken.STRING) logs = maskSecrets(reader.nextString(), tokenForMasking) else reader.skipValue()
+                            case "state" =>
+                                val st = JsonParser.parseReader(reader)
+                                newStateJson = if (st.isJsonObject) st.toString else null
+                            case "data" =>
+                                dataSeen = true
+                                reader.peek() match {
+                                    case JsonToken.NULL =>
+                                        reader.nextNull()
+                                        dataNull = true
+                                    case JsonToken.BEGIN_ARRAY =>
+                                        arrayStaged = stageJsonArray(reader)
+                                    case JsonToken.STRING =>
+                                        dataString = reader.nextString()
+                                    case _ =>
+                                        // A single object / number / boolean: one NDJSON line.
+                                        val element = JsonParser.parseReader(reader)
+                                        arrayStaged = PayloadStager.stageJson("tap", new java.io.StringReader(stagingGson.toJson(element)))
+                                }
+                            case _ => reader.skipValue()
+                        }
+                    }
+                    reader.endObject()
+                } finally reader.close()
+            } catch {
+                case e: DatrisException => throw e
+                case _: com.google.gson.JsonParseException | _: java.io.IOException | _: IllegalStateException | _: NumberFormatException =>
+                    throw notAnEnvelope()
+            }
+
             if (!HttpEnvelopeTypes.contains(dataType))
                 throw new DatrisException(
                     "Tap endpoint envelope is missing a valid \"type\" field (got: " +
@@ -647,7 +908,7 @@ object TapScriptRunner {
                         "). HTTP taps must declare one of json|csv|xml|text|document — there is no " +
                         "type-sniffing on this path. " + ContractPointer
                 )
-            if (!envelope.has("data") || envelope.get("data").isJsonNull)
+            if (!dataSeen || dataNull)
                 throw new DatrisException(
                     "Tap endpoint envelope has no \"data\" field. Return {\"type\": \"" + dataType +
                         "\", \"data\": [...]} — an empty array is the correct way to report no records. " +
@@ -656,20 +917,21 @@ object TapScriptRunner {
 
             // Optional logs — the endpoint's stderr equivalent, carried into the run
             // log and masked exactly like script stderr.
-            val logs: String = Option(envelope.get("logs"))
-                .filter(e => !e.isJsonNull && e.isJsonPrimitive)
-                .map(e => maskSecrets(e.getAsString, tokenForMasking))
-                .orNull
             if (logs != null && logs.nonEmpty) logger.info("TapScriptRunner: HTTP tap logs:\n" + logs)
 
-            // element.toString preserves the endpoint's exact JSON (integers stay
-            // integers); for xml/text the data element is a JSON string and toString
-            // yields its quoted form — byte-identical to what the wrapper path stores.
-            val dataJson = envelope.get("data").toString
+            val staged: StagedPayload =
+                if (arrayStaged != null) arrayStaged
+                else if (dataType == "xml" || dataType == "text")
+                    PayloadStager.stageText("tap", if (dataType == "xml") StagedFormat.Xml else StagedFormat.Text, dataString)
+                else
+                    // A string under a json/csv/document type: stage its parsed value when
+                    // it parses, else the string itself as one JSON value.
+                    try PayloadStager.stageJson("tap", new java.io.StringReader(dataString))
+                    catch { case _: Exception => PayloadStager.stageJson("tap", new java.io.StringReader(stagingGson.toJson(dataString))) }
+            if (StagingArea.overBudget(staged.bytes)) throw new DatrisException(StagingArea.budgetExceededMessage(staged.bytes))
             val recordCount =
-                if (dataType == "json" || dataType == "csv" || dataType == "document") countRecords(dataJson) else 1
+                if (dataType == "json" || dataType == "csv" || dataType == "document") staged.rowCount.toInt else 1
 
-            val newStateJson: String = extractStateJson(rawBody)
             if (newStateJson != null && newStateJson.length > MaxStateBytes)
                 throw new DatrisException(
                     "Tap endpoint emitted a state blob of ~" + (newStateJson.length / 1024) +
@@ -678,16 +940,15 @@ object TapScriptRunner {
                         "Reduce the envelope's \"state\" to the minimal position marker the next run needs."
                 )
 
-            val gson = new com.google.gson.Gson
-            val (normalizedDataJson, columns): (String, java.util.List[String]) =
-                if (dataType == "csv" && recordCount > 0) normalizeCsvColumns(dataJson, gson)
-                else (dataJson, null)
+            val (normalizedStaged, columns): (StagedPayload, java.util.List[String]) =
+                if (dataType == "csv" && recordCount > 0) normalizeCsvColumns(staged, None)
+                else (staged, null)
 
             logger.info("TapScriptRunner: HTTP tap dataType=" + dataType + ", fetched " + recordCount + " records" +
                 (if (columns != null) ", columns=" + columns else ""))
 
             TapScriptResult(
-                normalizedDataJson,
+                normalizedStaged,
                 recordCount,
                 null,
                 logs,
@@ -705,6 +966,28 @@ object TapScriptRunner {
                 val reason = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
                 TapScriptResult(null, 0, maskSecrets("Tap endpoint request failed: " + reason, tokenForMasking))
         }
+    }
+
+    /** Stream the JSON array the reader is positioned on into a staged NDJSON
+      * file, one compact element per line, stopping the run when the bytes
+      * written pass the disk budget. */
+    private def stageJsonArray(reader: JsonReader): StagedPayload = {
+        val (path, writer) = StagingArea.newWriter("tap", StagedFormat.NdJson)
+        var count = 0L
+        var written = 0L
+        try {
+            reader.beginArray()
+            while (reader.hasNext) {
+                val line = stagingGson.toJson(JsonParser.parseReader(reader))
+                if (count > 0) { writer.write("\n"); written += 1 }
+                writer.write(line)
+                written += line.getBytes(StandardCharsets.UTF_8).length
+                count += 1
+                if (StagingArea.overBudget(written)) throw new DatrisException(StagingArea.budgetExceededMessage(written))
+            }
+            reader.endArray()
+        } finally writer.close()
+        StagedPayload(path.toString, StagedFormat.NdJson, count, Files.size(path), arraySource = true)
     }
 
     /** Pull the optional `state` object out of the wrapper envelope, preserving the
@@ -892,21 +1175,30 @@ object TapScriptRunner {
     // would point at the runner itself.
     private def tapRunnerCallbackHost: String = sys.env.getOrElse("TAP_RUNNER_CALLBACK_HOST", "datris")
 
+    /** Record/trailer separator of the sidecar's streaming response (see tap-runner/app.py). */
+    private val RecordTrailerSentinel: Byte = 0x1e
+
     /** Execute a tap in the datris-tap-runner sidecar instead of in-process. Sends the script,
       * wrapper, per-run env (allEnvVars: platform DATRIS_*, params, the tap's own secret) and any
-      * declared packages; returns (stdout, stderr) with the same contract as executeWithTimeout.
-      * The runner installs packages and runs the wrapper itself, so no local venv/temp files. */
+      * declared packages with `recordsStream: true`; the runner points DATRIS_TAP_OUTPUT at a FIFO
+      * and streams the record bytes back in a chunked response followed by a 0x1E-prefixed trailer
+      * {stdout, stderr, exitCode, timedOut}. The bytes are written to `outputPath` as they arrive
+      * (disk budget enforced on the way); returns (stdout, stderr) with the same contract as
+      * executeWithTimeout. An older runner answers `application/json` with everything inline —
+      * that legacy body is returned as-is (its `data` envelope is staged by the caller). */
     private def executeViaRunner(
         script: String,
         envVars: Seq[(String, String)],
         packages: java.util.List[String],
         timeoutSec: Int,
-        secretValues: Seq[String]
+        secretValues: Seq[String],
+        outputPath: Path
     ): (String, String) = {
         val payload = new JsonObject()
         payload.addProperty("script", script)
         payload.addProperty("wrapper", WRAPPER_TEMPLATE)
         payload.addProperty("timeoutSec", Integer.valueOf(timeoutSec))
+        payload.addProperty("recordsStream", java.lang.Boolean.TRUE)
         val envObj = new JsonObject()
         envVars.foreach { case (k, v) => envObj.addProperty(k, if (v == null) "" else v) }
         payload.add("env", envObj)
@@ -926,15 +1218,54 @@ object TapScriptRunner {
             val post = new HttpPost(tapRunnerUrl + "/execute")
             post.addHeader(HttpHeaders.CONTENT_TYPE, "application/json")
             if (tapRunnerToken.nonEmpty) post.addHeader("Authorization", "Bearer " + tapRunnerToken)
-            post.setEntity(new StringEntity(payload.toString, java.nio.charset.StandardCharsets.UTF_8))
+            post.setEntity(new StringEntity(payload.toString, StandardCharsets.UTF_8))
 
             val response = httpClient.execute(post)
             try {
                 val status = response.getStatusLine.getStatusCode
-                val raw = EntityUtils.toString(response.getEntity, java.nio.charset.StandardCharsets.UTF_8)
-                if (status != 200)
-                    throw new DatrisException("Tap runner returned " + status + ": " + maskSecrets(raw.take(500), secretValues))
-                val obj = JsonParser.parseString(raw).getAsJsonObject
+                val contentType = Option(response.getEntity).flatMap(e => Option(e.getContentType)).map(_.getValue.toLowerCase).getOrElse("")
+                val streamed = status == 200 && !contentType.contains("application/json")
+                val obj: JsonObject =
+                    if (!streamed) {
+                        val raw = EntityUtils.toString(response.getEntity, StandardCharsets.UTF_8)
+                        if (status != 200)
+                            throw new DatrisException("Tap runner returned " + status + ": " + maskSecrets(raw.take(500), secretValues))
+                        JsonParser.parseString(raw).getAsJsonObject
+                    } else {
+                        // Streamed: record bytes up to the first 0x1E go to the staged file;
+                        // the rest is the trailer.
+                        val trailer = new java.io.ByteArrayOutputStream()
+                        val in = response.getEntity.getContent
+                        val out = new java.io.BufferedOutputStream(Files.newOutputStream(outputPath))
+                        var written = 0L
+                        try {
+                            val buf = new Array[Byte](64 * 1024)
+                            var inTrailer = false
+                            var n = in.read(buf)
+                            while (n >= 0) {
+                                var off = 0
+                                if (!inTrailer) {
+                                    var i = 0
+                                    while (i < n && buf(i) != RecordTrailerSentinel) i += 1
+                                    if (i > 0) {
+                                        out.write(buf, 0, i)
+                                        written += i
+                                        if (StagingArea.overBudget(written)) throw new DatrisException(StagingArea.budgetExceededMessage(written))
+                                    }
+                                    if (i < n) { inTrailer = true; off = i + 1 }
+                                    else off = n
+                                }
+                                if (inTrailer && off < n) trailer.write(buf, off, n - off)
+                                n = in.read(buf)
+                            }
+                            if (!inTrailer)
+                                throw new DatrisException("Tap runner response ended without a result trailer (the runner may have died mid-run)")
+                        } finally {
+                            out.close()
+                            in.close()
+                        }
+                        JsonParser.parseString(new String(trailer.toByteArray, StandardCharsets.UTF_8).trim).getAsJsonObject
+                    }
                 if (obj.has("timedOut") && obj.get("timedOut").getAsBoolean)
                     throw new DatrisException("Tap script timed out after " + timeoutSec + " seconds")
                 val exitCode = if (obj.has("exitCode")) obj.get("exitCode").getAsInt else -1
@@ -963,7 +1294,8 @@ object TapScriptRunner {
         scriptPath: String,
         timeoutSec: Int,
         envVars: Seq[(String, String)] = Seq.empty,
-        secretValues: Seq[String] = Seq.empty
+        secretValues: Seq[String] = Seq.empty,
+        outputPath: Path = null
     ): (String, String) = {
         val stdout = new StringBuilder
         val stderr = new StringBuilder
@@ -997,7 +1329,7 @@ object TapScriptRunner {
             val t = new Thread(new Runnable {
                 override def run(): Unit = {
                     val reader = new java.io.BufferedReader(
-                        new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8)
+                        new java.io.InputStreamReader(in, StandardCharsets.UTF_8)
                     )
                     try {
                         var line = reader.readLine()
@@ -1013,23 +1345,37 @@ object TapScriptRunner {
         val outThread = pump(process.getInputStream, stdout)
         val errThread = pump(process.getErrorStream, stderr)
 
-        val future = Future { process.waitFor() }
         try {
-            val exitCode = Await.result(future, timeoutSec.seconds)
+            // Wait in short steps so the run can be stopped as soon as the file the
+            // wrapper is writing (DATRIS_TAP_OUTPUT) passes the disk budget, not
+            // only when it exits.
+            val deadline = System.currentTimeMillis() + timeoutSec.toLong * 1000L
+            var exitCode: Option[Int] = None
+            while (exitCode.isEmpty) {
+                if (process.waitFor(250, java.util.concurrent.TimeUnit.MILLISECONDS)) exitCode = Some(process.exitValue())
+                else if (System.currentTimeMillis() > deadline) {
+                    process.destroyForcibly()
+                    throw new DatrisException("Tap script timed out after " + timeoutSec + " seconds")
+                } else if (outputPath != null && Files.exists(outputPath)) {
+                    val written = Files.size(outputPath)
+                    if (StagingArea.overBudget(written)) {
+                        process.destroyForcibly()
+                        throw new DatrisException(StagingArea.budgetExceededMessage(written))
+                    }
+                }
+            }
             outThread.join(5000)
             errThread.join(5000)
-            if (exitCode != 0) {
+            if (exitCode.get != 0) {
                 val errOutput = maskSecrets(stderr.toString.take(1000), secretValues)
-                logger.error("Tap script exited with code " + exitCode + ": " + errOutput)
-                throw new DatrisException("Tap script failed (exit code " + exitCode + "): " + errOutput)
+                logger.error("Tap script exited with code " + exitCode.get + ": " + errOutput)
+                throw new DatrisException("Tap script failed (exit code " + exitCode.get + "): " + errOutput)
             }
             (stdout.toString.trim, stderr.toString.trim)
         } catch {
-            case _: java.util.concurrent.TimeoutException =>
-                process.destroyForcibly()
-                throw new DatrisException("Tap script timed out after " + timeoutSec + " seconds")
             case e: DatrisException => throw e
             case e: Exception =>
+                process.destroyForcibly()
                 throw new DatrisException("Tap script execution error: " + maskSecrets(e.getMessage, secretValues))
         }
     }
@@ -1101,14 +1447,5 @@ object TapScriptRunner {
             if (secret == null || secret.length < 4) acc
             else acc.replace(secret, "••••••••")
         }
-    }
-
-    private def countRecords(json: String): Int = {
-        if (json == null || json.isEmpty) return 0
-        val trimmed = json.trim
-        if (!trimmed.startsWith("[")) return 0
-        val gson = new com.google.gson.Gson
-        val list = gson.fromJson(trimmed, classOf[java.util.List[Any]])
-        if (list == null) 0 else list.size()
     }
 }

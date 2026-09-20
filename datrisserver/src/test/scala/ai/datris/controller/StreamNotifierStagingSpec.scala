@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model._
+import ai.datris.util.{PayloadStager, StagingArea}
 import com.google.gson.JsonParser
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.funsuite.AnyFunSuite
@@ -177,5 +178,67 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         val (doc, _) = stage(bytes, unstructuredConfig)
         assert(JobRunner.deriveCountAndType(doc) == ((1, "document")))
         assert(doc.rawBytes != null && doc.rawBytes.sameElements(bytes), "unstructured payloads still fill rawBytes")
+    }
+
+    // ---- Phase 4 (plans/stories/streaming-pipeline-phase4.md): the staged overload ----
+    //
+    //  {{{
+    //  def process(staged: StagedPayload, sizeHint: Long, filename: String, pipeline: String, publisherToken: String, tapFeed: TapFeedInfo): JobContext
+    //  private[controller] def stageData(staged: StagedPayload, sizeHint: Long, config: PipelineConfig): (Data, PipelineConfig)
+    //  }}}
+    //
+    //  A tap run has already staged and counted its payload (NDJSON / XML /
+    //  text). The overload ADOPTS that file into the run's token directory —
+    //  no re-parse, no re-count — preserving `arraySource` and `rowCount`, so
+    //  the JobRunner cleanup reclaims it with the rest of the run.
+
+    private val xmlConfig = config(FileAttributes(xmlAttributes = XmlAttributes()))
+
+    /** Stage a payload under a "tap" token, the way TapScriptRunner does before handing over. */
+    private def tapStaged(stage: StagedPayload => StagedPayload): StagedPayload = StagingArea.withToken("tap-token-1")(stage(null))
+
+    private def adopt(staged: StagedPayload, cfg: PipelineConfig, runToken: String): (Data, PipelineConfig) =
+        StagingArea.withToken(runToken)(new StreamNotifier().stageData(staged, staged.bytes, cfg))
+
+    test("staged overload: a tap's NDJSON record list is adopted into the run dir with arraySource and rowCount intact") {
+        val staged =
+            tapStaged(_ => PayloadStager.stageJson("tap", new java.io.StringReader("""[{"id":1,"amount":5},{"id":2,"amount":9},{"id":3,"amount":11}]""")))
+        assert(staged.arraySource && staged.rowCount == 3L)
+        val (data, resolved) = adopt(staged, jsonConfig, "run-token-json")
+
+        assert(data.staged.format == StagedFormat.NdJson)
+        assert(data.staged.arraySource, "arraySource is preserved, not re-derived")
+        assert(data.rowCount == 3L)
+        assert(data.size == staged.bytes)
+        assert(data.header == null && data.rawBytes == null)
+        assert(Paths.get(data.staged.path).startsWith(StagingArea.forToken("run-token-json")), s"adopted into the run's token dir, got ${data.staged.path}")
+        assert(stagedLines(data).map(l => JsonParser.parseString(l).getAsJsonObject.get("id").getAsInt) == List(1, 2, 3))
+        assert(JobRunner.deriveCountAndType(data) == ((3, "record")))
+        assert(resolved eq jsonConfig, "no schema evolution on the JSON path")
+        StagingArea.delete("run-token-json")
+        StagingArea.delete("tap-token-1")
+    }
+
+    test("staged overload: a single-object NDJSON payload keeps arraySource == false and rowCount 1") {
+        val staged = tapStaged(_ => PayloadStager.stageJson("tap", new java.io.StringReader("""{"answer":42}""")))
+        assert(!staged.arraySource && staged.rowCount == 1L)
+        val (data, _) = adopt(staged, jsonConfig, "run-token-single")
+        assert(!data.staged.arraySource)
+        assert(data.rowCount == 1L)
+        assert(JobRunner.deriveCountAndType(data) == ((1, "record")))
+        StagingArea.delete("run-token-single")
+        StagingArea.delete("tap-token-1")
+    }
+
+    test("staged overload: an XML payload is adopted verbatim with rowCount 1") {
+        val xml = "<?xml version=\"1.0\"?><orders><order id=\"1\"/></orders>"
+        val staged = tapStaged(_ => PayloadStager.stageText("tap", StagedFormat.Xml, xml))
+        val (data, _) = adopt(staged, xmlConfig, "run-token-xml")
+        assert(data.staged.format == StagedFormat.Xml)
+        assert(data.rowCount == 1L)
+        assert(new String(Files.readAllBytes(Paths.get(data.staged.path)), StandardCharsets.UTF_8) == xml)
+        assert(Paths.get(data.staged.path).startsWith(StagingArea.forToken("run-token-xml")))
+        StagingArea.delete("run-token-xml")
+        StagingArea.delete("tap-token-1")
     }
 }
