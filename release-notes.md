@@ -1,6 +1,6 @@
 # Release Notes
 
-## v{version} — {date}
+## v1.34.0 — September 20, 2026
 
 **A pipeline run is no longer limited by memory.**
 
