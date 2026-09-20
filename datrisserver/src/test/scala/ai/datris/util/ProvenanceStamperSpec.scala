@@ -9,8 +9,16 @@ import ai.datris.model._
 import org.scalatest.funsuite.AnyFunSuite
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 
 class ProvenanceStamperSpec extends AnyFunSuite {
+
+    /** Rows of a staged payload, read through the streaming iterator (never `Data.rows`). */
+    private def rowsOf(data: Data): List[String] = {
+        val it = data.rowIterator()
+        try it.toList
+        finally it.close()
+    }
 
     private def fields(names: String*): java.util.List[SchemaField] =
         new java.util.ArrayList[SchemaField](names.map(n => SchemaField(n, "string")).asJava)
@@ -67,7 +75,7 @@ class ProvenanceStamperSpec extends AnyFunSuite {
         assert(stamped.config.source.schemaProperties.fields.asScala.map(_.name).toList == List("id", "amount") ++ names)
         assert(stamped.config.destination.schemaProperties.fields.asScala.map(_.name).toList == List("id", "amount") ++ names)
         // Every row gains exactly the appended columns, same order.
-        val cols = stamped.data.rows.head.split(",", -1)
+        val cols = rowsOf(stamped.data).head.split(",", -1)
         assert(cols.length == 2 + names.size)
         assert(cols(2) == "run-123") // _datris_run_id
         assert(cols(4) == "7") // _datris_config_version
@@ -75,19 +83,19 @@ class ProvenanceStamperSpec extends AnyFunSuite {
         assert(cols(6) == "a1b2c3d") // _datris_script_sha
         assert(cols(7) == "example-host") // _datris_source
         // All rows carry the identical constant suffix.
-        assert(stamped.data.rows.map(_.split(",", -1).drop(2).toList).distinct.size == 1)
+        assert(rowsOf(stamped.data).map(_.split(",", -1).drop(2).toList).distinct.size == 1)
     }
 
     test("stamping is idempotent — an already-stamped header is left alone") {
         val once = ProvenanceStamper.stamp(delimitedCtx(config(stamp = true), tapMetadata))
         val twice = ProvenanceStamper.stamp(once)
         assert(twice.data.header == once.data.header)
-        assert(twice.data.rows == once.data.rows)
+        assert(rowsOf(twice.data) == rowsOf(once.data))
     }
 
     test("direct uploads stamp empty tap fields, not nulls that shift columns") {
         val stamped = ProvenanceStamper.stamp(delimitedCtx(config(stamp = true), metadata = null))
-        val cols = stamped.data.rows.head.split(",", -1)
+        val cols = rowsOf(stamped.data).head.split(",", -1)
         assert(cols.length == 2 + ProvenanceStamper.AllFields.size)
         assert(cols(5) == "") // _datris_tap_run empty for non-tap jobs
         assert(cols(6) == "")
@@ -144,5 +152,50 @@ class ProvenanceStamperSpec extends AnyFunSuite {
         val values = ProvenanceStamper.stampValues(ctx, "2026-09-02T00:00:00Z").toMap
         assert(values(ProvenanceStamper.ConfigVersion) == "1")
         assert(values(ProvenanceStamper.IngestedAt) == "2026-09-02T00:00:00Z")
+    }
+
+    // Phase 5 (plans/stories/streaming-pipeline-phase5.md, Step 10): the NDJSON
+    // stamp serializes with the same Gson as PayloadStager — explicit nulls kept,
+    // no HTML escaping — so stamping never alters a record's values.
+    test("stamping an NDJSON record with a null member and a '<' keeps the null and does not escape the '<'") {
+        val jsonCfg = config(stamp = true).copy(
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("id", "amount")),
+                fileAttributes = FileAttributes(jsonAttributes = JsonAttributes())
+            )
+        )
+        val raw = "[{\"id\":1,\"note\":null,\"html\":\"<b>a & b</b>\"},{\"id\":2,\"note\":\"x\",\"html\":\">\"}]"
+        val ctx = JobContext("run-123", tapMetadata, Data(10L, null, null, null, raw), jsonCfg, null, INITIALIZED, null, null)
+        assert(ctx.data.isNdJson, "fixture stages as NDJSON")
+        val before = rowsOf(ctx.data)
+        assert(before.head.contains("\"note\":null") && before.head.contains("<b>a & b</b>"), "PayloadStager already keeps nulls and '<': " + before.head)
+
+        val stamped = ProvenanceStamper.stamp(ctx)
+        val lines = rowsOf(stamped.data)
+        assert(lines.size == 2)
+        assert(lines.head.contains("\"" + ProvenanceStamper.RunId + "\":\"run-123\""), "stamped: " + lines.head)
+        assert(lines.head.contains("\"note\":null"), "the explicit null survives stamping: " + lines.head)
+        assert(lines.head.contains("<b>a & b</b>"), "'<', '>' and '&' are not HTML-escaped: " + lines.head)
+        assert(!lines.head.contains("\\u003c") && !lines.head.contains("\\u0026"), "no \\u003c / \\u0026 escapes: " + lines.head)
+        assert(lines(1).contains("\"html\":\">\""), lines(1))
+        val obj = com.google.gson.JsonParser.parseString(lines.head).getAsJsonObject
+        assert(obj.has("note") && obj.get("note").isJsonNull)
+        assert(obj.get("html").getAsString == "<b>a & b</b>")
+    }
+
+    // Phase 3 (plans/stories/streaming-pipeline-phase3.md): stampDelimited
+    // rewrites the staged file row by row and never reads `Data.rows`.
+    test("a delimited payload stamps with no materialization warning") {
+        val base = delimitedCtx(config(stamp = true), tapMetadata)
+        val materialized = new ListBuffer[String]()
+        val spy = new Data(base.data.size, base.data.header, base.data.headerWithSchema, base.data.staged, base.data.rawBytes) {
+            override def rows: List[String] = { materialized += "rows"; super.rows }
+            override def rawData: String = { materialized += "rawData"; super.rawData }
+        }
+        val stamped = ProvenanceStamper.stamp(base.copy(data = spy))
+        assert(stamped.data.header == List("id", "amount") ++ ProvenanceStamper.AllFields, "stamping happened")
+        assert(stamped.data.rowCount == 2)
+        assert(rowsOf(stamped.data).forall(_.split(",", -1).length == 2 + ProvenanceStamper.AllFields.size))
+        assert(materialized.isEmpty, s"ProvenanceStamper materialized the payload via $materialized (this is the 'staged payload materialized by' warning)")
     }
 }

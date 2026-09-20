@@ -64,6 +64,7 @@ jobs:
         run: |
           python3 -m pip install --quiet --user -r mcp-server/requirements.txt pytest click httpx httpx-sse
           python3 -m pytest mcp-server/tests -q
+          python3 -m pytest tap-runner/tests -q
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

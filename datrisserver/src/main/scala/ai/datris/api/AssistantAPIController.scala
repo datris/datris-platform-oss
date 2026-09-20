@@ -483,6 +483,9 @@ class AssistantAPIController {
         sb.append("\n")
         sb.append("## Run the tap when you're done\n\n")
         sb.append(
+            "- **Never split a source for size.** One run handles multi-GB payloads — records stream to disk, never through memory. Do NOT cap a run at N rows, slice a month into several runs, or write resume-from-destination logic because the output looks large. Fetch the whole requested range in one run. Chunk only when the source API pages natively, when a single fetch would exceed the tap script timeout, or when the user explicitly asks for a bounded window. If a run fails saying the payload exceeded the disk budget, tell the user the operator can raise PIPELINE_MAX_PAYLOAD_MB.\n"
+        )
+        sb.append(
             "- **No schedule → run it once at the end.** When you've just finished creating a tap + pipeline pair AND the tap has NO cron schedule configured, call `run_tap` once at the very end to actually pull data into the pipeline. A fresh pipeline with zero records is not a useful artifact — the user wants to see real data flowing. Mention what you're doing in one short sentence (\"Running the tap now to load the first batch.\") and then surface the result count when it finishes.\n"
         )
         sb.append(

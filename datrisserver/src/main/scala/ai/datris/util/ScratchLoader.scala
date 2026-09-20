@@ -145,8 +145,9 @@ class ScratchLoader(jobContext: JobContext, settings: ScratchLoader.Settings) {
         var previewOpen = true
         var count = 0L
         val writer = new BufferedWriter(new OutputStreamWriter(fs.create(path, true), StandardCharsets.UTF_8))
+        val records = this.records()
         try {
-            records().foreach { record =>
+            records.foreach { record =>
                 writer.write(record)
                 writer.write('\n')
                 count += 1
@@ -160,7 +161,8 @@ class ScratchLoader(jobContext: JobContext, settings: ScratchLoader.Settings) {
                 }
             }
         } finally {
-            writer.close()
+            try records.close()
+            finally writer.close()
         }
 
         val expiresAt = Instant.now().plus(Duration.ofHours(settings.retentionHours.toLong)).toString
@@ -177,22 +179,36 @@ class ScratchLoader(jobContext: JobContext, settings: ScratchLoader.Settings) {
         statusUtil.info("end", "Process completed")
     }
 
-    /** One compact JSON object per record, in source order. */
-    private def records(): Iterator[String] = {
+    /** One compact JSON object per record, in source order. Delimited rows
+      * and NDJSON records stream from the staged file; XML (and any text that
+      * did not stage as JSON) still goes through the materialize-gated
+      * `rawData` accessor. Caller closes. */
+    private def records(): CloseableIterator[String] = {
         val data = jobContext.data
+        val staged = data.staged
         val fileAttributes = if (config.source != null) config.source.fileAttributes else null
-        if (data.rawData != null && data.rawData.trim.nonEmpty) {
-            if (fileAttributes != null && fileAttributes.xmlAttributes != null) xmlRecords(data.rawData)
-            else jsonRecords(data.rawData, fileAttributes)
-        } else if (data.header != null && data.rows != null)
-            csvRecords(data)
-        else
+        if (staged == null || staged.isEmpty)
             throw new DatrisException("No data available to write to the scratch destination")
+        staged.format match {
+            case StagedFormat.Delimited(_) if data.header != null => csvRecords(data)
+            case StagedFormat.NdJson if fileAttributes == null || fileAttributes.xmlAttributes == null => jsonRecords(data)
+            case StagedFormat.NdJson | StagedFormat.Xml | StagedFormat.Text =>
+                data.materializeFor("Scratch destination single-message mode (JSON/XML/text payload)")
+                val rawData = data.rawData
+                if (rawData == null || rawData.trim.isEmpty)
+                    throw new DatrisException("No data available to write to the scratch destination")
+                val it =
+                    if (fileAttributes != null && fileAttributes.xmlAttributes != null) xmlRecords(rawData)
+                    else rawJsonRecords(rawData, fileAttributes)
+                CloseableIterator(it, () => ())
+            case _ =>
+                throw new DatrisException("No data available to write to the scratch destination")
+        }
     }
 
     /** CSV: one object per row keyed by header, splitting on the configured
       * delimiter (literal, so "|" works) and padding short rows with "". */
-    private def csvRecords(data: Data): Iterator[String] = {
+    private def csvRecords(data: Data): CloseableIterator[String] = {
         val header = data.header
         val delimiter = {
             if (
@@ -206,20 +222,36 @@ class ScratchLoader(jobContext: JobContext, settings: ScratchLoader.Settings) {
                 ","
         }
         val splitter = Pattern.quote(delimiter)
-        data.rows.iterator.map { row =>
-            val fields = row.split(splitter, -1)
-            val record = new java.util.LinkedHashMap[String, String]()
-            header.indices.foreach { i =>
-                record.put(header(i), if (i < fields.length) fields(i) else "")
-            }
-            gson.toJson(record)
-        }
+        val rows = data.rowIterator()
+        CloseableIterator(
+            rows.map { row =>
+                val fields = row.split(splitter, -1)
+                val record = new java.util.LinkedHashMap[String, String]()
+                header.indices.foreach { i =>
+                    record.put(header(i), if (i < fields.length) fields(i) else "")
+                }
+                gson.toJson(record)
+            },
+            () => rows.close()
+        )
     }
 
-    /** JSON: the same blob-splitting as MongoDBLoader.loadJsonDocuments —
-      * newline-delimited when everyRowContainsObject, otherwise an array's
-      * elements or the single object itself. Records pass through unchanged. */
-    private def jsonRecords(rawData: String, fileAttributes: FileAttributes): Iterator[String] = {
+    /** JSON: one staged NDJSON record per element (the Phase 1 stager already
+      * split an array into elements and NDJSON into lines), re-serialized
+      * compactly with nulls kept. */
+    private def jsonRecords(data: Data): CloseableIterator[String] = {
+        val records = data.recordIterator()
+        CloseableIterator(
+            records.map(_.trim).filter(_.nonEmpty).map(line => gson.toJson(JsonParser.parseString(line))),
+            () => records.close()
+        )
+    }
+
+    /** JSON from an in-memory string (text that did not stage as NDJSON): the
+      * same blob-splitting as the pre-streaming MongoDBLoader — newline-
+      * delimited when everyRowContainsObject, otherwise an array's elements or
+      * the single object itself. */
+    private def rawJsonRecords(rawData: String, fileAttributes: FileAttributes): Iterator[String] = {
         val everyRowContainsObject =
             if (fileAttributes != null && fileAttributes.jsonAttributes != null) fileAttributes.jsonAttributes.everyRowContainsObject
             else true

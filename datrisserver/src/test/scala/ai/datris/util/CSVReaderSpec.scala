@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import java.io.ByteArrayInputStream
+import java.io.{ByteArrayInputStream, StringWriter}
 import java.nio.charset.StandardCharsets
 
 class CSVReaderSpec extends AnyFunSuite {
@@ -107,5 +107,111 @@ class CSVReaderSpec extends AnyFunSuite {
             removeHeader = true
         )
         assert(out == "2")
+    }
+
+    // plans/stories/streaming-pipeline.md, Phase 1: `readToWriter(..., out: Writer): Long`
+    // is the streaming form of readFromStream — same parsing, same output bytes,
+    // written to `out` instead of returned; returns the number of rows written.
+    // Cases with header=true & removeHeader=false only check byte identity, since
+    // whether the header line counts as a "row" is not what the story pins down.
+    private val parityCases: Seq[(String, String, String, List[String], List[String], Boolean, Boolean)] = Seq(
+        // (label, input, delimiter, columnList, columnFilter, trimColumns, removeHeader)
+        ("column filter in filter order", "a,b,c\n1,2,3\n4,5,6", ",", List("a", "b", "c"), List("a", "c"), false, false),
+        ("header removed", "a,b\n1,2\n3,4", ",", List("a", "b"), List("a", "b"), false, true),
+        ("case-insensitive filter", "Name,Age\nbob,7", ",", List("Name", "Age"), List("name"), false, true),
+        ("delimiter in value re-quoted", "a,b\n\"x,y\",2", ",", List("a", "b"), List("a", "b"), false, true),
+        ("embedded quotes doubled", "a\n\"say \"\"hi\"\"\"", ",", List("a"), List("a"), false, true),
+        ("trimColumns", "a,b\n 1 , 2 ", ",", List("a", "b"), List("a", "b"), true, true),
+        ("empty lines ignored", "a\n1\n\n2", ",", List("a"), List("a"), false, true),
+        ("alternate delimiter", "a|b\n1|2", "|", List("a", "b"), List("b"), false, true),
+        ("header only, nothing left", "a,b\n", ",", List("a", "b"), List("a", "b"), false, true)
+    )
+
+    test("readToWriter returns the row count and writes byte-identical output to readFromStream") {
+        parityCases.foreach { case (label, input, delimiter, columnList, columnFilter, trimColumns, removeHeader) =>
+            val expected = reader.readFromStream(
+                stream(input),
+                header = true,
+                delimiter = delimiter,
+                columnList = columnList,
+                columnFilter = columnFilter,
+                trimColumns = trimColumns,
+                removeHeader = removeHeader
+            )
+            val sw = new StringWriter
+            val count = reader.readToWriter(
+                stream(input),
+                header = true,
+                delimiter = delimiter,
+                columnList = columnList,
+                columnFilter = columnFilter,
+                trimColumns = trimColumns,
+                removeHeader = removeHeader,
+                out = sw
+            )
+            assert(sw.toString == expected, s"$label: readToWriter output differs from readFromStream")
+            if (removeHeader) {
+                val expectedRows = if (expected.isEmpty) 0L else expected.split("\n").length.toLong
+                assert(count == expectedRows, s"$label: expected $expectedRows rows written, got $count")
+            }
+        }
+    }
+
+    test("readToWriter without a header counts every data row") {
+        val sw = new StringWriter
+        val count = reader.readToWriter(
+            stream("1,2\n3,4\n5,6"),
+            header = false,
+            delimiter = ",",
+            columnList = List("a", "b"),
+            columnFilter = List("b", "a"),
+            out = sw
+        )
+        assert(count == 3L)
+        assert(sw.toString == "2,1\n4,3\n6,5")
+    }
+
+    // plans/stories/streaming-pipeline-phase5.md, Step 6: a non-empty columnFilter
+    // that matches no source column used to stage blank rows (one "" per record)
+    // whose count disagreed with iteration. It now fails the run with a
+    // DatrisException naming the filter and the source header.
+    test("readToWriter: a columnFilter matching no source column raises a DatrisException naming the filter and the header") {
+        val e = intercept[ai.datris.model.DatrisException] {
+            reader.readToWriter(
+                stream("id,amount\n1,5\n2,9"),
+                header = true,
+                delimiter = ",",
+                columnList = List("id", "amount"),
+                columnFilter = List("customer_id", "total"),
+                removeHeader = true,
+                out = new StringWriter
+            )
+        }
+        assert(e.getMessage.contains("customer_id") && e.getMessage.contains("total"), "names the filter: " + e.getMessage)
+        assert(e.getMessage.contains("id") && e.getMessage.contains("amount"), "names the source header: " + e.getMessage)
+    }
+
+    test("readToWriter: an empty columnFilter is not the mismatch case and still writes nothing per record") {
+        val sw = new StringWriter
+        val count = reader.readToWriter(
+            stream("id,amount\n1,5"),
+            header = true,
+            delimiter = ",",
+            columnList = List("id", "amount"),
+            columnFilter = Nil,
+            removeHeader = true,
+            out = sw
+        )
+        assert(count == 1L)
+        assert(sw.toString == "")
+    }
+
+    test("readToWriter closes the stream it was given, like readFromStream") {
+        var closed = false
+        val tracking = new ByteArrayInputStream("a\n1".getBytes(StandardCharsets.UTF_8)) {
+            override def close(): Unit = { closed = true; super.close() }
+        }
+        reader.readToWriter(tracking, header = true, delimiter = ",", columnList = List("a"), columnFilter = List("a"), out = new StringWriter)
+        assert(closed)
     }
 }

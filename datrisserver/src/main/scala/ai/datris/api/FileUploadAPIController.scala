@@ -6,19 +6,18 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import ai.datris.model.{GlobalJobContext, DatrisEnvironment, DatrisException}
-import ai.datris.util.{AIProfileUtil, AISchemaUtil, PipelineConfigIO, ObjectStoreUtil, StatusUtil}
+import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext, JobContext}
+import ai.datris.util.{AIProfileUtil, AISchemaUtil, PipelineConfigIO, StagingArea, StatusUtil}
 import ai.datris.controller.StreamNotifier
 import ai.datris.util.APIKeyValidator
-import org.apache.commons.compress.archivers.ArchiveStreamFactory
-import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 import org.springframework.web.multipart.MultipartFile
 
-import java.io.{BufferedInputStream, ByteArrayInputStream}
-import scala.util.control.Breaks._
+import java.io.BufferedInputStream
+import java.nio.file.Files
+import java.util.UUID
 
 @RestController
 @RequestMapping(Array("/api/v1"))
@@ -42,104 +41,44 @@ class FileUploadAPIController {
             if (config == null)
                 throw new IllegalArgumentException("Pipeline '" + pipeline + "' is not registered. Use POST /api/v1/pipeline to register it first.")
 
-            val byteArray = multipartFile.getBytes
             val filename = multipartFile.getOriginalFilename
+            val isCsv = config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null
+            val csvHeader = isCsv && config.source.fileAttributes.csvAttributes.header
 
-            if (isCompressed(filename)) {
-                // Compressed files: extract all entries, concatenate data, submit as single batch job
-                val extractedFiles = new java.util.ArrayList[(String, Array[Byte])]()
-                val lower = filename.toLowerCase
+            // The part streams into staged files under an upload token
+            // (plans/stories/streaming-pipeline-phase5.md, Step 2); each staged
+            // file is then fed to its own run, which copies it into the run's
+            // own directory (JobRunner's to reclaim). The upload directory goes
+            // in the finally, success or failure.
+            val uploadToken = "upload-" + UUID.randomUUID().toString
+            try
+                StagingArea.withToken(uploadToken) {
+                    val staged = UploadStager.stage(multipartFile.getInputStream, filename, isCsv, csvHeader)
 
-                if (lower.endsWith(".gz")) {
-                    val gzIn = new GzipCompressorInputStream(new BufferedInputStream(new ByteArrayInputStream(byteArray)))
-                    val extractedBytes = gzIn.readAllBytes()
-                    gzIn.close()
-                    val extractedName = filename.replaceAll("(?i)\\.gz$", "")
-                    extractedFiles.add((extractedName, extractedBytes))
-                } else {
-                    val buffered = new BufferedInputStream(new ByteArrayInputStream(byteArray))
-                    val archiveIn: org.apache.commons.compress.archivers.ArchiveInputStream[_ <: org.apache.commons.compress.archivers.ArchiveEntry] =
-                        new ArchiveStreamFactory().createArchiveInputStream(buffered)
-                    breakable {
-                        while (true) {
-                            val entry = archiveIn.getNextEntry
-                            if (entry == null) break
-                            if (
-                                !entry.isDirectory &&
-                                !entry.getName.startsWith("__MAC") &&
-                                !entry.getName.startsWith("META-INF") &&
-                                !entry.getName.startsWith("./._")
-                            ) {
-                                // Read entry bytes using a buffer — readAllBytes() can over-read on archive streams
-                                val buffer = new java.io.ByteArrayOutputStream()
-                                val buf = new Array[Byte](8192)
-                                var len = archiveIn.read(buf)
-                                while (len != -1) {
-                                    buffer.write(buf, 0, len)
-                                    len = archiveIn.read(buf)
-                                }
-                                val entryBytes = buffer.toByteArray
-                                val entryName = entry.getName.split("/").last
-                                extractedFiles.add((entryName, entryBytes))
-                            }
-                        }
-                    }
-                    archiveIn.close()
-                }
-
-                import scala.collection.JavaConverters._
-
-                if (extractedFiles.size() == 0) {
-                    throw new DatrisException("No files found in archive: " + filename)
-                }
-
-                val isCsv = config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null
-
-                if (isCsv && extractedFiles.size() > 1) {
-                    // CSV batch mode: concatenate all files into one payload (skip headers on files 2+)
-                    logger.info("CSV batch mode: " + extractedFiles.size() + " files extracted from " + filename)
-                    val combined = new java.io.ByteArrayOutputStream()
-                    var firstFile = true
-                    for ((name, bytes) <- extractedFiles.asScala) {
-                        logger.info("  Batch file: " + name + " (" + bytes.length + " bytes)")
-                        if (firstFile) {
-                            combined.write(bytes)
-                            firstFile = false
-                        } else {
-                            val content = new String(bytes, "UTF-8")
-                            val lines = content.split("\n", 2)
-                            if (lines.length > 1 && config.source.fileAttributes.csvAttributes.header) {
-                                if (!combined.toString("UTF-8").endsWith("\n")) combined.write('\n')
-                                combined.write(lines(1).getBytes("UTF-8"))
-                            } else {
-                                if (!combined.toString("UTF-8").endsWith("\n")) combined.write('\n')
-                                combined.write(bytes)
-                            }
-                        }
-                    }
-                    val batchBytes = combined.toByteArray
-                    logger.info("CSV batch combined size: " + batchBytes.length + " bytes from " + extractedFiles.size() + " files")
-                    val jobContext = new StreamNotifier().process(batchBytes, extractedFiles.get(0)._1, pipeline, publishertoken)
-                    GlobalJobContext.addJobContext(jobContext)
-                    new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)
-                } else {
-                    // Non-CSV or single file: process each file individually
-                    logger.info("Processing " + extractedFiles.size() + " file(s) individually from " + filename)
-                    val pipelineTokens = new java.util.ArrayList[String]()
-                    for ((name, bytes) <- extractedFiles.asScala) {
-                        logger.info("  Processing: " + name + " (" + bytes.length + " bytes)")
-                        val jobContext = new StreamNotifier().process(bytes, name, pipeline, publishertoken)
+                    def submit(file: StagedUpload): JobContext = {
+                        val in = new BufferedInputStream(Files.newInputStream(file.path))
+                        val jobContext = new StreamNotifier().process(in, file.bytes, file.name, pipeline, publishertoken, null)
                         GlobalJobContext.addJobContext(jobContext)
-                        pipelineTokens.add(jobContext.pipelineToken)
+                        jobContext
                     }
-                    new ResponseEntity[String](pipelineTokens.size() + " file(s) submitted", HttpStatus.OK)
+
+                    if (!UploadStager.isArchive(filename)) {
+                        // Single file: process directly via StreamNotifier
+                        new ResponseEntity[String](submit(staged.head).pipelineToken, HttpStatus.OK)
+                    } else if (staged.size == 1 && staged.head.batchedEntries > 1) {
+                        // CSV batch mode: every entry concatenated into one payload, one run
+                        new ResponseEntity[String](submit(staged.head).pipelineToken, HttpStatus.OK)
+                    } else {
+                        // Non-CSV or single file: process each file individually
+                        logger.info("Processing " + staged.size + " file(s) individually from " + filename)
+                        staged.foreach { file =>
+                            logger.info("  Processing: " + file.name + " (" + file.bytes + " bytes)")
+                            submit(file)
+                        }
+                        new ResponseEntity[String](staged.size + " file(s) submitted", HttpStatus.OK)
+                    }
                 }
-            } else {
-                // Single file: process directly via StreamNotifier
-                val jobContext = new StreamNotifier().process(byteArray, filename, pipeline, publishertoken)
-                GlobalJobContext.addJobContext(jobContext)
-                new ResponseEntity[String](jobContext.pipelineToken, HttpStatus.OK)
-            }
+            finally StagingArea.delete(uploadToken)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -229,10 +168,5 @@ class FileUploadAPIController {
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
         }
-    }
-
-    private def isCompressed(filename: String): Boolean = {
-        val lower = filename.toLowerCase
-        lower.endsWith(".zip") || lower.endsWith(".gz") || lower.endsWith(".tar") || lower.endsWith(".jar")
     }
 }

@@ -22,10 +22,10 @@ class FileNotifier {
     def process(bucket: String, key: String): JobContext = {
         logger.info("Processing queue message, bucket: " + bucket + ", key: " + key)
         statusUtil.setFilename(bucket + "/" + key)
+        // Generate a UUID to track the pipeline through the pipeline
+        val pipelineToken = UUID.randomUUID().toString
 
         try {
-            // Generate a UUID to track the pipeline through the pipeline
-            val pipelineToken = UUID.randomUUID().toString
             statusUtil.setPipelineToken(pipelineToken)
 
             val metadata = new PipelineMetadataUtil(statusUtil).read(bucket, key)
@@ -43,8 +43,9 @@ class FileNotifier {
             if (config == null)
                 throw new DatrisException("Pipeline: " + metadata.pipeline + " is not configured in the NoSQL database")
 
-            // Read the data into memory (includes schema evolution)
-            val (data, resolvedConfig) = DataUtil.read(bucket, key, config, metadata, statusUtil)
+            // Read the data (includes schema evolution). Staged under the run
+            // token so JobRunner.run()'s finally removes the files with the run.
+            val (data, resolvedConfig) = StagingArea.withToken(pipelineToken)(DataUtil.read(bucket, key, config, metadata, statusUtil))
             statusUtil.info("processing", "Total file size: " + data.size.toString)
 
             statusUtil.info("end", "Process completed successfully")
@@ -52,6 +53,9 @@ class FileNotifier {
             JobContext(pipelineToken, metadata, data, resolvedConfig, null, INITIALIZED, null, statusUtil, DatrisEnvironment.current)
         } catch {
             case e: Exception =>
+                // No JobContext exists yet, so no JobRunner finally will reclaim
+                // whatever DataUtil.read staged before the failure.
+                StagingArea.delete(pipelineToken)
                 statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
                 throw new DatrisException("FileNotifier error: " + Throwables.getStackTraceAsString(e))
         }

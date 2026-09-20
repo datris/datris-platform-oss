@@ -103,7 +103,11 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         pgvectorSecretName = null,
         multiTenant = false,
         tapScriptTimeoutSeconds = 2,
-        tapMaxOutputMB = 1
+        // Phase 4: the output cap is the per-run disk budget (PIPELINE_MAX_PAYLOAD_MB);
+        // a single-document `data` string is still read whole, under the
+        // materialization cap.
+        pipelineMaterializeMaxMB = 1,
+        pipelineMaxPayloadMB = 1
     )
 
     private def httpTap(url: String = null): TapConfig = TapConfig(
@@ -257,14 +261,40 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(result.error.contains("host.docker.internal"))
     }
 
-    test("oversized response aborts with the output-cap message") {
-        // tapMaxOutputMB=1 in testEnv; send ~1.2MB.
+    test("oversized response aborts with the disk-budget message naming PIPELINE_MAX_PAYLOAD_MB") {
+        // pipelineMaxPayloadMB=1 in testEnv; send ~1.2MB.
         val bigRecord = "\"" + ("x" * 1024) + "\""
         val records = Seq.fill(1200)(bigRecord).mkString("[", ",", "]")
         install(200, s"""{"type": "json", "data": $records}""")
         val result = TapScriptRunner.run(httpTap())
         assert(result.error != null)
-        assert(result.error.contains("MB limit"))
+        assert(result.error.contains("disk budget"), result.error)
+        assert(result.error.contains("PIPELINE_MAX_PAYLOAD_MB = 1 MB"), result.error)
+        assert(!result.error.contains("MB limit"), "old wording is gone: " + result.error)
+    }
+
+    test("oversized single-document data string is refused under the materialization cap, not buffered") {
+        // pipelineMaterializeMaxMB=1 in testEnv; a ~1.2 MB text document.
+        install(200, s"""{"type": "text", "data": "${"t" * (1200 * 1024)}"}""")
+        val result = TapScriptRunner.run(httpTap())
+        assert(result.error != null)
+        assert(result.error.contains("PIPELINE_MATERIALIZE_MAX_MB"), result.error)
+        assert(result.staged == null)
+    }
+
+    test("a string data value under type json is 0 records, not parsed (double-encoded arrays stay no_records as on main)") {
+        install(200, """{"type": "json", "data": "[{\"a\": 1}]"}""")
+        val result = TapScriptRunner.run(httpTap())
+        assert(result.error == null, String.valueOf(result.error))
+        assert(result.recordCount == 0)
+        assert(result.staged != null && result.staged.rowCount == 0L)
+        ai.datris.util.StagingArea.delete(java.nio.file.Paths.get(result.staged.path).getParent.getFileName.toString)
+
+        install(200, """{"type": "json", "data": "hello"}""")
+        val scalar = TapScriptRunner.run(httpTap())
+        assert(scalar.error == null, String.valueOf(scalar.error))
+        assert(scalar.recordCount == 0)
+        ai.datris.util.StagingArea.delete(java.nio.file.Paths.get(scalar.staged.path).getParent.getFileName.toString)
     }
 
     test("oversized state blob is rejected with the state-cap message") {
@@ -289,6 +319,12 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(result.error == null)
         assert(result.recordCount == 1)
         assert(result.dataType == "document")
-        assert(result.records.contains("a.pdf"))
+        // Records live in the staged file now, not on the result.
+        assert(result.staged != null && !result.staged.isEmpty)
+        assert(result.staged.format == ai.datris.model.StagedFormat.NdJson)
+        assert(result.staged.rowCount == 1L)
+        val staged = new String(java.nio.file.Files.readAllBytes(java.nio.file.Paths.get(result.staged.path)), StandardCharsets.UTF_8)
+        assert(staged.contains("a.pdf"))
+        ai.datris.util.StagingArea.delete(java.nio.file.Paths.get(result.staged.path).getParent.getFileName.toString)
     }
 }

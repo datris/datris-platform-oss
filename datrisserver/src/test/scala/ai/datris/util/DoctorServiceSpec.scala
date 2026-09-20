@@ -15,6 +15,9 @@ class DoctorServiceSpec extends AnyFunSuite {
 
     private val slots = Slots("oss/ai-primary", "oss/codegen", "oss/embedding")
 
+    private val GB: Long = 1024L * 1024L * 1024L
+    private val MB: Long = 1024L * 1024L
+
     private val goodPrimary =
         Map("provider" -> "anthropic", "endpoint" -> "https://api.anthropic.com/v1/messages", "model" -> "claude-fable-5-1", "apiKey" -> "sk-ant")
     private val goodCodegen =
@@ -35,8 +38,13 @@ class DoctorServiceSpec extends AnyFunSuite {
         var chat: Seq[(String, AIConfig)] = Nil,
         var chatResponses: Map[String, (Int, String)] = Map.empty,
         var keyStoreResolves: Boolean = false,
-        var overrides: List[(String, String, String)] = Nil
+        var overrides: List[(String, String, String)] = Nil,
+        // Phase 5 (plans/stories/streaming-pipeline-phase5.md): the staging area.
+        var staging: StagingAreaState = StagingAreaState("/tmp/datris-staging", exists = true, writable = true, usableBytes = 10L * GB),
+        var orphans: (List[String], Long) = (Nil, 0L)
     ) extends Probes {
+        def stagingArea(): StagingAreaState = staging
+        def stagingOrphans(): (List[String], Long) = orphans
         def vaultLookupSelf(): Option[Map[String, String]] = lookup
         def secret(name: String): Option[Map[String, String]] = secrets.get(name)
         def apiKeyResolves(provider: String, rawKey: String): Boolean = keyStoreResolves
@@ -232,6 +240,157 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(at(85).detail.contains("85% used"))
     }
 
+    // 5b. staging.area / staging.orphans (plans/stories/streaming-pipeline-phase5.md, Steps 7-8)
+    //
+    // Seams pinned:
+    //   case class StagingAreaState(root: String, exists: Boolean, writable: Boolean, usableBytes: Long)   // in object DoctorService
+    //   Probes.stagingArea(): StagingAreaState        — root exists? write+delete probe ok? usable bytes on its file store
+    //   Probes.stagingOrphans(): (List[String], Long) — run-dir names older than StagingArea.SweepAge (not _multipart/_unscoped), total bytes
+    //   class StagingAreaCheck(probes, budgetMB: Int) extends Check   id "staging.area",    startupSafe = true
+    //       error: root missing / unwritable / < 1 GB free; warn: free < budgetMB (0 = unlimited never warns); else ok
+    //       remediation names DATRIS_TEMP_DIR, the datris-staging volume and PIPELINE_MAX_PAYLOAD_MB
+    //   class StagingOrphansCheck(probes) extends Check                id "staging.orphans", startupSafe = true
+    //       ok at 0 dirs; warn when any; error when bytes >= 1 GB; detail carries the count; remediation = restart (boot sweep) or remove
+    //   StagingArea.MultipartDir = "_multipart"; ensureRoot() creates it; sweepOlderThan skips it; orphanScan(maxAge): (List[Path], Long)
+
+    test("staging.area: ids and startupSafe are pinned") {
+        val p = new FakeProbes()
+        assert(new StagingAreaCheck(p, 4096).id == "staging.area")
+        assert(new StagingAreaCheck(p, 4096).startupSafe)
+        assert(new StagingOrphansCheck(p).id == "staging.orphans")
+        assert(new StagingOrphansCheck(p).startupSafe)
+    }
+
+    test("staging.area: writable with room for one run is ok and reports the free space") {
+        val r = new StagingAreaCheck(new FakeProbes(), 4096).run()
+        assert(r.status == "ok", r.detail)
+        assert(r.detail.contains("/tmp/datris-staging"))
+        assert(r.detail.contains("10.0 GB"), "free space is reported: " + r.detail)
+    }
+
+    test("staging.area: free space under the resolved payload budget is a warn naming both") {
+        val p = new FakeProbes(staging = StagingAreaState("/tmp/datris-staging", exists = true, writable = true, usableBytes = 3L * GB))
+        val r = new StagingAreaCheck(p, 4096).run()
+        assert(r.status == "warn", r.detail)
+        assert(r.detail.contains("4096"), "the budget the run may need: " + r.detail)
+        assert(r.remediation.contains("PIPELINE_MAX_PAYLOAD_MB"), r.remediation)
+        assert(r.remediation.contains("DATRIS_TEMP_DIR"), r.remediation)
+        assert(r.remediation.contains("datris-staging"), r.remediation)
+        // An unlimited budget (0) cannot be "under" the free space.
+        assert(new StagingAreaCheck(p, 0).run().status == "ok")
+        // Exactly the budget is not under it.
+        p.staging = p.staging.copy(usableBytes = 4096L * MB)
+        assert(new StagingAreaCheck(p, 4096).run().status == "ok")
+    }
+
+    test("staging.area: less than 1 GB free is an error even when the budget is small") {
+        val p = new FakeProbes(staging = StagingAreaState("/tmp/datris-staging", exists = true, writable = true, usableBytes = 900L * MB))
+        val r = new StagingAreaCheck(p, 100).run()
+        assert(r.status == "error", r.detail)
+        assert(r.remediation.contains("DATRIS_TEMP_DIR"), r.remediation)
+    }
+
+    test("staging.area: a missing root or a failed write probe is an error whose remediation names DATRIS_TEMP_DIR and the volume") {
+        val missing = new FakeProbes(staging = StagingAreaState("/srv/staging", exists = false, writable = false, usableBytes = 0L))
+        val m = new StagingAreaCheck(missing, 4096).run()
+        assert(m.status == "error", m.detail)
+        assert(m.detail.contains("/srv/staging"), m.detail)
+        assert(m.remediation.contains("DATRIS_TEMP_DIR"), m.remediation)
+        assert(m.remediation.contains("datris-staging"), m.remediation)
+
+        val readOnly = new FakeProbes(staging = StagingAreaState("/srv/staging", exists = true, writable = false, usableBytes = 50L * GB))
+        val u = new StagingAreaCheck(readOnly, 4096).run()
+        assert(u.status == "error", "unwritable with plenty of space is still an error: " + u.detail)
+        assert(u.remediation.contains("DATRIS_TEMP_DIR"), u.remediation)
+    }
+
+    test("staging.orphans: ok at 0, warn at 2 dirs with the count, error at >= 1 GB") {
+        assert(new StagingOrphansCheck(new FakeProbes()).run().status == "ok")
+
+        val two = new FakeProbes(orphans = (List("a1b2c3d4-run", "e5f6a7b8-run"), 12L * MB))
+        val w = new StagingOrphansCheck(two).run()
+        assert(w.status == "warn", w.detail)
+        assert(w.detail.contains("2"), "count in detail: " + w.detail)
+        assert(w.detail.contains("a1b2c3d4-run"), "the directories are named so an operator can find them: " + w.detail)
+        assert(w.remediation.nonEmpty)
+        assert(w.remediation.toLowerCase.contains("restart") || w.remediation.toLowerCase.contains("remove"), w.remediation)
+
+        val big = new FakeProbes(orphans = (List("a1b2c3d4-run"), 1L * GB))
+        assert(new StagingOrphansCheck(big).run().status == "error")
+        val justUnder = new FakeProbes(orphans = (List("a1b2c3d4-run"), 1L * GB - 1L))
+        assert(new StagingOrphansCheck(justUnder).run().status == "warn")
+    }
+
+    /** A per-thread environment whose staging root is a private temp dir, for the live StagingArea seams. */
+    private def stagingEnv(root: java.nio.file.Path): ai.datris.model.DatrisEnvironment = ai.datris.model.DatrisEnvironment(
+        initialized = true,
+        environment = "test",
+        fileNotifierQueue = null,
+        ttlFileNotifierQueueMessages = 0,
+        pipelineTopic = null,
+        pipelineTableName = null,
+        archivedMetadataTableName = null,
+        pipelineStatusTableName = null,
+        fileNotifierMessageTableName = null,
+        dataPullTableName = null,
+        useApiKeys = false,
+        apiKeysSecretName = null,
+        postgresSecretName = null,
+        mongoDbSecretName = null,
+        kafkaProducerSecretName = null,
+        kafkaConsumerConfig = null,
+        mongoDbConfig = null,
+        minIOConfig = null,
+        activeMQConfig = null,
+        aiConfig = null,
+        aiEnabled = false,
+        embeddingSecretName = null,
+        qdrantSecretName = null,
+        weaviateSecretName = null,
+        milvusSecretName = null,
+        chromaSecretName = null,
+        pgvectorSecretName = null,
+        multiTenant = false,
+        tempDir = root.toString
+    )
+
+    private def touchOld(p: java.nio.file.Path, ageHours: Long): Unit = {
+        java.nio.file.Files.createDirectories(p.getParent)
+        java.nio.file.Files.write(p, Array.fill[Byte](1024)(1))
+        val old = java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() - ageHours * 3600L * 1000L)
+        java.nio.file.Files.setLastModifiedTime(p, old)
+        java.nio.file.Files.setLastModifiedTime(p.getParent, old)
+    }
+
+    test("staging.orphans: orphanScan finds run dirs older than the sweep age with their bytes and skips _multipart and _unscoped") {
+        import java.nio.file.Files
+        val root = Files.createTempDirectory("doctor-staging-orphans")
+        ai.datris.model.TenantContext.set(stagingEnv(root))
+        try {
+            assert(StagingArea.MultipartDir == "_multipart")
+            StagingArea.ensureRoot()
+            assert(Files.isDirectory(root.resolve("_multipart")), "ensureRoot creates the multipart spool dir at boot")
+
+            touchOld(root.resolve("_multipart").resolve("upload_123.tmp"), 48)
+            touchOld(root.resolve("_unscoped").resolve("data-1.csv"), 48)
+            touchOld(root.resolve("old-run-1").resolve("notifier-1.csv"), 48)
+            touchOld(root.resolve("old-run-2").resolve("notifier-2.csv"), 30)
+            touchOld(root.resolve("fresh-run").resolve("notifier-3.csv"), 1)
+
+            val (dirs, bytes) = StagingArea.orphanScan(StagingArea.SweepAge)
+            assert(dirs.map(_.getFileName.toString).sorted == List("old-run-1", "old-run-2"), s"got $dirs")
+            assert(bytes == 2048L, s"total bytes of the orphaned run dirs, got $bytes")
+
+            // The boot sweep still reclaims the old run dirs but never touches the multipart spool.
+            StagingArea.sweepOlderThan(StagingArea.SweepAge)
+            assert(Files.exists(root.resolve("_multipart").resolve("upload_123.tmp")), "the sweep skips _multipart")
+            assert(!Files.exists(root.resolve("old-run-1")), "old run dirs are swept")
+            assert(Files.exists(root.resolve("fresh-run").resolve("notifier-3.csv")))
+            val (after, afterBytes) = StagingArea.orphanScan(StagingArea.SweepAge)
+            assert(after.isEmpty && afterBytes == 0L)
+        } finally ai.datris.model.TenantContext.clear()
+    }
+
     // version.skew
     test("version.skew: same major.minor ok, patch drift ok, minor drift warn, unknown warn") {
         assert(new VersionSkewCheck("1.28.2", Map.empty).run().status == "ok")
@@ -287,7 +446,13 @@ class DoctorServiceSpec extends AnyFunSuite {
     test("run: full mode includes every non-opt-in check, quick mode only the startup subset, ?probes=ai adds the AI probe") {
         val p = new FakeProbes()
         val full = DoctorService.run("full", Set.empty, Map("cli" -> "1.28.2"), p, slots, "1.28.2")
-        assert(full.checks.map(_.id) == Seq(
+        // Phase 5: both staging checks are registered (position not pinned) and
+        // run at boot; the pre-existing order is unchanged around them.
+        assert(full.checks.map(_.id).contains("staging.area"), full.checks.map(_.id).toString)
+        assert(full.checks.map(_.id).contains("staging.orphans"), full.checks.map(_.id).toString)
+        val quickIds = DoctorService.run("quick", Set.empty, Map.empty, p, slots, "1.28.2").checks.map(_.id)
+        assert(quickIds.contains("staging.area") && quickIds.contains("staging.orphans"), "startup-safe: " + quickIds)
+        assert(full.checks.map(_.id).filterNot(Set("staging.area", "staging.orphans")) == Seq(
             "vault.token_ttl",
             "vault.ai_slots",
             "jdbc.mssql_driver",

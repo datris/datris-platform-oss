@@ -6,8 +6,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import com.google.gson.{Gson, JsonElement, JsonParser}
-import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, Data}
+import com.google.gson.Gson
+import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, Data, StagedFormat, StagedPayload}
 import ai.datris.model.{CANCELLED, JobContext, RunLineage, RunLineageInput, RunLineageOutput}
 import ai.datris.util._
 import org.slf4j.{Logger, LoggerFactory}
@@ -69,21 +69,25 @@ object JobRunner {
         }
     }
 
-    /** Derive a per-job record count and data type from the job's Data shape.
-     *  CSV/delimited → row count, "record". Unstructured (rawBytes) → 1, "document".
-     *  JSON/XML → array length if rawData parses as a JSON array, else 1, "record". */
+    /** Derive a per-job record count and data type from the staged payload.
+     *  Delimited → row count, "record". Unstructured (rawBytes) → 1, "document".
+     *  JSON → record count (array elements, or 1 for a single object), "record".
+     *  XML/text → 1, "record". Same numbers the in-memory shape produced. */
     private[controller] def deriveCountAndType(data: Data): (Int, String) = {
         if (data == null) return (0, null)
-        if (data.rows != null && data.rows.nonEmpty) return (data.rows.size, "record")
-        if (data.rawBytes != null) return (1, "document")
-        if (data.rawData != null && data.rawData.nonEmpty) {
-            try {
-                val el: JsonElement = JsonParser.parseString(data.rawData)
-                if (el != null && el.isJsonArray) return (el.getAsJsonArray.size(), "record")
-            } catch { case _: Throwable => () }
-            return (1, "record")
+        val staged = if (data.staged == null) StagedPayload.empty else data.staged
+        staged.format match {
+            case StagedFormat.Delimited(_) if staged.rowCount > 0 => return (staged.rowCount.toInt, "record")
+            case _ => ()
         }
-        (0, null)
+        if (data.rawBytes != null) return (1, "document")
+        staged.format match {
+            // An empty JSON array stages as a 0-byte NDJSON file but is still a
+            // (0, "record") payload, as it was when rawData held "[]".
+            case StagedFormat.NdJson if staged.bytes > 0 || staged.arraySource => (staged.rowCount.toInt, "record")
+            case StagedFormat.Xml | StagedFormat.Text if staged.bytes > 0 => (staged.rowCount.toInt, "record")
+            case _ => (0, null)
+        }
     }
 }
 
@@ -96,8 +100,11 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             TenantContext.set(jobContext.tenantEnvironment)
         }
         try {
-            runInternal()
+            StagingArea.withToken(jobContext.pipelineToken)(runInternal())
         } finally {
+            // The run's staged files are dropped only here, once every stage
+            // and loader is done — never mid-run.
+            StagingArea.delete(jobContext.pipelineToken)
             TenantContext.clear()
         }
     }
@@ -161,7 +168,7 @@ class JobRunner(jobContext: JobContext) extends Runnable {
             // Wrap each destination loader to propagate tenant context to the thread pool
             def withTenant[T](f: => T): T = {
                 if (tenantEnv != null) TenantContext.set(tenantEnv)
-                try { f }
+                try { StagingArea.withToken(jobContext.pipelineToken)(f) }
                 finally { TenantContext.clear() }
             }
 
@@ -214,7 +221,11 @@ class JobRunner(jobContext: JobContext) extends Runnable {
                     Some("databricks" -> runLoader("DatabricksLoader")(new DatabricksLoader(jobContextStamped).process()))
                 else None,
                 if (config.destination.restEndpoint != null)
-                    Some("rest" -> runLoader("RestEndpointRunner")(new RestEndpointRunner(jobContextStamped, config.destination.restEndpoint).process()))
+                    Some("rest" -> runLoader("RestEndpointRunner")(new RestEndpointRunner(
+                        jobContextStamped,
+                        config.destination.restEndpoint,
+                        destination = true
+                    ).process()))
                 else None,
                 if (config.destination.kafka != null)
                     Some("kafka" -> runLoader("KafkaLoader")(new KafkaLoader(jobContextStamped).process()))

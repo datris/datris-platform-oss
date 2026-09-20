@@ -80,15 +80,23 @@ class KafkaLoader(jobContext: JobContext) {
 
     private def sendRecords(producer: KafkaProducer[String, String], topic: String, keyField: String): Long = {
         val data = jobContext.data
+        val staged = data.staged
 
-        if (data.rawData != null && data.rawData.trim.nonEmpty) {
-            // Send the entire raw data as a single JSON record
-            sendRawData(producer, topic, keyField, data.rawData)
-        } else if (data.header != null && data.rows != null) {
-            // Send structured data (header + rows) as JSON records
-            sendStructuredData(producer, topic, keyField, data)
-        } else {
+        // Dispatch on the staged format: delimited rows stream through
+        // rowIterator(); JSON / XML / text still go out as one record built from
+        // the (materialize-gated) rawData accessor.
+        if (staged == null || staged.isEmpty)
             throw new DatrisException("No data available to send to Kafka")
+        staged.format match {
+            case StagedFormat.Delimited(_) if data.header != null =>
+                sendStructuredData(producer, topic, keyField, data)
+            case StagedFormat.NdJson | StagedFormat.Xml | StagedFormat.Text =>
+                data.materializeFor("Kafka destination single-message mode (JSON/XML/text payload)")
+                val rawData = data.rawData
+                if (rawData != null && rawData.trim.nonEmpty) sendRawData(producer, topic, keyField, rawData)
+                else throw new DatrisException("No data available to send to Kafka")
+            case _ =>
+                throw new DatrisException("No data available to send to Kafka")
         }
     }
 
@@ -111,21 +119,24 @@ class KafkaLoader(jobContext: JobContext) {
         var count: Long = 0
         val gson = new Gson()
 
-        data.rows.foreach { row =>
-            val fields = row.split(delimiter, -1)
-            val jsonMap = new java.util.LinkedHashMap[String, String]()
-            header.indices.foreach { i =>
-                val value = if (i < fields.length) fields(i) else ""
-                jsonMap.put(header(i), value)
+        val rows = data.rowIterator()
+        try
+            rows.foreach { row =>
+                val fields = row.split(delimiter, -1)
+                val jsonMap = new java.util.LinkedHashMap[String, String]()
+                header.indices.foreach { i =>
+                    val value = if (i < fields.length) fields(i) else ""
+                    jsonMap.put(header(i), value)
+                }
+
+                val value = gson.toJson(jsonMap)
+                val key = if (keyIndex >= 0 && keyIndex < fields.length) fields(keyIndex) else null
+
+                val record = new ProducerRecord[String, String](topic, key, value)
+                producer.send(record).get()
+                count += 1
             }
-
-            val value = gson.toJson(jsonMap)
-            val key = if (keyIndex >= 0 && keyIndex < fields.length) fields(keyIndex) else null
-
-            val record = new ProducerRecord[String, String](topic, key, value)
-            producer.send(record).get()
-            count += 1
-        }
+        finally rows.close()
 
         count
     }

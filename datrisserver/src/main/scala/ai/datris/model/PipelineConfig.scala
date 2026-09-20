@@ -225,7 +225,11 @@ case class RestEndpoint(
     bearerToken: String = null,
     apiKey: String = null,
     timeoutSeconds: Int = 0,
-    timeoutMs: Int = 300000
+    timeoutMs: Int = 300000,
+    // Destination role only: rows per HTTP call. 0 (default) = one call
+    // carrying every row, exactly as before batching existed. When > 0 each
+    // call carries `batchSize` rows plus top-level `batch` / `ofBatches`.
+    batchSize: Int = 0
 )
 case class ObjectStore(
     prefixKey: String = null,

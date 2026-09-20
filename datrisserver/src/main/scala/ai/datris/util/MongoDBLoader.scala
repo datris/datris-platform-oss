@@ -5,13 +5,21 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import com.google.gson.{Gson, JsonParser}
+import com.google.gson.Gson
 import ai.datris.model.{Notification, DatrisEnvironment, DatrisException}
 import ai.datris.model._
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ArrayBuffer
 import scala.util.Try
+
+object MongoDBLoader {
+
+    /** Records read from the staged NDJSON file per batch. Fixed: loader-side
+      * memory is BatchSize × record width, whatever the payload size. */
+    val BatchSize: Int = 1000
+}
 
 class MongoDBLoader(jobContext: JobContext) {
     private val logger: Logger = LoggerFactory.getLogger(classOf[MongoDBLoader])
@@ -105,102 +113,63 @@ class MongoDBLoader(jobContext: JobContext) {
         everyRowContainsObject: Boolean,
         session: com.mongodb.client.ClientSession
     ): Long = {
-        val rawData = jobContext.data.rawData
-        if (rawData == null || rawData.trim.isEmpty)
-            throw new DatrisException("No raw JSON data found in the dataset")
-
-        statusUtil.info("processing", "Processing raw JSON data, size: " + rawData.length + " bytes")
-
-        val jsonBlobs: Seq[String] = {
-            if (everyRowContainsObject) {
-                rawData.split("\n").map(_.trim).filter(_.nonEmpty).toSeq
-            } else {
-                val parsed = JsonParser.parseString(rawData.trim)
-                if (parsed.isJsonArray) {
-                    val gson = new Gson()
-                    parsed.getAsJsonArray.asScala
-                        .map(element => gson.toJson(element))
-                        .toSeq
-                } else {
-                    Seq(rawData.trim)
-                }
-            }
-        }
-
         val hasConfiguredKeys = config.destination.database.keyFields != null && !config.destination.database.keyFields.isEmpty
-        var count: Long = 0
-        if (hasConfiguredKeys) {
-            statusUtil.info(
-                "processing",
-                "Using key fields for upsert: " +
-                    config.destination.database.keyFields.asScala.mkString(", ")
-            )
-            jsonBlobs.foreach(json => {
-                dbUtil.upsertJSON(collectionName, config.destination.database.keyFields, json, session)
-                count += 1
-            })
-        } else {
-            statusUtil.info("processing", "No key fields configured, inserting with auto-generated _id")
-            jsonBlobs.foreach(json => {
-                dbUtil.insertJSON(collectionName, json, session)
-                count += 1
-            })
-        }
-        count
+        if (hasConfiguredKeys)
+            loadInBatches(everyRowContainsObject, json => dbUtil.upsertJSON(collectionName, config.destination.database.keyFields, json, session))
+        else
+            loadInBatches(everyRowContainsObject, json => dbUtil.insertJSON(collectionName, json, session))
     }
 
-    private def loadJsonDocuments(dbUtil: NoSQLDbUtility, collectionName: String, everyRowContainsObject: Boolean): Long = {
-        val rawData = jobContext.data.rawData
-        if (rawData == null || rawData.trim.isEmpty)
+    private[util] def loadJsonDocuments(dbUtil: NoSQLDbUtility, collectionName: String, everyRowContainsObject: Boolean): Long = {
+        val hasConfiguredKeys = config.destination.database.keyFields != null && !config.destination.database.keyFields.isEmpty
+        if (hasConfiguredKeys)
+            loadInBatches(everyRowContainsObject, json => dbUtil.upsertJSON(collectionName, config.destination.database.keyFields, json))
+        else
+            loadInBatches(everyRowContainsObject, json => dbUtil.insertJSON(collectionName, json))
+    }
+
+    /** Stream the staged NDJSON records in batches of [[MongoDBLoader.BatchSize]]
+      * and write each with `write`. The Phase 1 stager already exploded a JSON
+      * array into one line per element and kept NDJSON line-per-record, so
+      * both `everyRowContainsObject` shapes arrive here as one record per line;
+      * the flag is reported for the status trail as before. Returns the number
+      * of documents written — the same count the pre-streaming code returned. */
+    private def loadInBatches(everyRowContainsObject: Boolean, write: String => Unit): Long = {
+        val staged = jobContext.data.staged
+        if (staged == null || staged.isEmpty || staged.rowCount == 0L)
             throw new DatrisException("No raw JSON data found in the dataset")
-
-        statusUtil.info("processing", "Processing raw JSON data, size: " + rawData.length + " bytes")
-
-        val jsonBlobs: Seq[String] = {
-            if (everyRowContainsObject) {
-                // Each line contains a complete JSON object (NDJSON)
-                rawData.split("\n").map(_.trim).filter(_.nonEmpty).toSeq
-            } else {
-                val parsed = JsonParser.parseString(rawData.trim)
-
-                if (parsed.isJsonArray) {
-                    // Unwrap the array - each element becomes a separate document
-                    val gson = new Gson()
-                    parsed.getAsJsonArray.asScala
-                        .map(element => gson.toJson(element))
-                        .toSeq
-                } else {
-                    // Single JSON object
-                    Seq(rawData.trim)
-                }
-            }
+        staged.format match {
+            case StagedFormat.NdJson => ()
+            case other => throw new DatrisException("No raw JSON data found in the dataset (staged payload is " + other + ")")
         }
 
+        statusUtil.info("processing", "Processing raw JSON data, size: " + staged.bytes + " bytes")
         val hasConfiguredKeys = config.destination.database.keyFields != null && !config.destination.database.keyFields.isEmpty
-
-        var count: Long = 0
-        if (hasConfiguredKeys) {
-            // Upsert using the configured key fields - supports compound keys
+        if (hasConfiguredKeys)
             statusUtil.info(
                 "processing",
                 "Using key fields for upsert: " +
                     config.destination.database.keyFields.asScala.mkString(", ")
             )
-
-            jsonBlobs.foreach(json => {
-                dbUtil.upsertJSON(collectionName, config.destination.database.keyFields, json)
-                count += 1
-            })
-        } else {
-            // No key fields configured - let MongoDB auto-generate _id
+        else
             statusUtil.info("processing", "No key fields configured, inserting with auto-generated _id")
 
-            jsonBlobs.foreach(json => {
-                dbUtil.insertJSON(collectionName, json)
-                count += 1
-            })
-        }
-
+        var count: Long = 0
+        val records = jobContext.data.recordIterator()
+        try {
+            val batch = new ArrayBuffer[String](MongoDBLoader.BatchSize)
+            while (records.hasNext) {
+                batch.clear()
+                while (batch.size < MongoDBLoader.BatchSize && records.hasNext) {
+                    val json = records.next().trim
+                    if (json.nonEmpty) batch += json
+                }
+                batch.foreach { json =>
+                    write(json)
+                    count += 1
+                }
+            }
+        } finally records.close()
         count
     }
 

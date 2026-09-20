@@ -78,7 +78,7 @@ normal cron retry ladder.
 `document`-type records use the same shape as document taps:
 `{"uri": "...", "filename": "...", "content": "<base64>", "content_hash": "...", "metadata": {...}}`.
 
-The whole response is capped at the platform's tap output limit (default 100 MB). Bigger
+The response is streamed to the platform's staging disk and capped at the per-run payload disk budget (`PIPELINE_MAX_PAYLOAD_MB`, default 4096 MB). Bigger
 fetches should be chunked — see below.
 
 ## Auth

@@ -100,6 +100,11 @@ object DoctorService {
     /** The AI slot secret names the server was configured with. */
     case class Slots(aiPrimarySecret: String, codegenSecret: String, embeddingSecret: String)
 
+    /** What the staging-area probe saw (plans/stories/streaming-pipeline-phase5.md,
+      * Step 7): the resolved root, whether it exists, whether a write+delete
+      * probe succeeded, and the usable bytes on its file store. */
+    case class StagingAreaState(root: String, exists: Boolean, writable: Boolean, usableBytes: Long)
+
     /** Everything a check touches outside the JVM, so specs can fake it. */
     trait Probes {
 
@@ -123,6 +128,12 @@ object DoctorService {
         /** (totalBytes, usableBytes) for the file store holding `path`. */
         def diskUsage(path: String): Option[(Long, Long)]
         def envSeen(names: Seq[String]): Map[String, Boolean]
+
+        /** The payload staging root: exists, writable, free space on its file store. */
+        def stagingArea(): StagingAreaState
+
+        /** Run directories older than the sweep age, with their total bytes (excluding `_multipart` / `_unscoped`). */
+        def stagingOrphans(): (List[String], Long)
 
         /** Chat slots configured on this server: (label, config). */
         def chatSlots(): Seq[(String, AIConfig)]
@@ -370,6 +381,51 @@ object DoctorService {
         }
     }
 
+    private val OneGB: Long = 1024L * 1024L * 1024L
+
+    /** The payload staging area (`DATRIS_TEMP_DIR`, the `datris-staging`
+      * volume) must exist, take a write, and have room for one run: error when
+      * missing / unwritable / under 1 GB free, warn when the free space is
+      * below the per-run payload budget (`budgetMB`; 0 = unlimited never warns). */
+    class StagingAreaCheck(probes: Probes, budgetMB: Int) extends Check {
+        val id = "staging.area"
+        val startupSafe = true
+        private val remediation =
+            "Point DATRIS_TEMP_DIR at a writable directory with room for one run (it is the datris-staging volume under the bundled compose: " +
+                "`docker volume inspect datris-staging`, and free space on the disk holding Docker's data root)."
+        def run(): CheckResult = {
+            val s = probes.stagingArea()
+            if (!s.exists) error("staging area " + s.root + " does not exist", remediation)
+            else if (!s.writable) error("staging area " + s.root + " is not writable (" + gb(s.usableBytes) + " free)", remediation)
+            else if (s.usableBytes < OneGB)
+                error("staging area " + s.root + " has " + gb(s.usableBytes) + " free; a run needs at least 1 GB", remediation)
+            else if (budgetMB > 0 && s.usableBytes < budgetMB.toLong * 1024L * 1024L)
+                warn(
+                    "staging area " + s.root + " has " + gb(s.usableBytes) + " free, under the per-run payload budget of " + budgetMB +
+                        " MB (PIPELINE_MAX_PAYLOAD_MB); a run near the budget will fail on disk",
+                    remediation + " Or lower PIPELINE_MAX_PAYLOAD_MB so an oversized run stops before the disk fills."
+                )
+            else ok("staging area " + s.root + " writable, " + gb(s.usableBytes) + " free")
+        }
+    }
+
+    /** Run directories a crashed process left under the staging root (older
+      * than the 24 h sweep age): warn when any, error when they hold >= 1 GB. */
+    class StagingOrphansCheck(probes: Probes) extends Check {
+        val id = "staging.orphans"
+        val startupSafe = true
+        def run(): CheckResult = {
+            val (dirs, bytes) = probes.stagingOrphans()
+            if (dirs.isEmpty) return ok("no orphaned run directories")
+            val named = dirs.take(10).mkString(", ") + (if (dirs.size > 10) ", …" else "")
+            val detail = dirs.size + " orphaned run director" + (if (dirs.size == 1) "y" else "ies") + " older than " +
+                StagingArea.SweepAge.toHours + " h holding " + gb(bytes) + " under the staging area: " + named
+            val remediation = "Restart datris (the boot sweep removes staged files older than " + StagingArea.SweepAge.toHours +
+                " h), or remove those directories under DATRIS_TEMP_DIR by hand."
+            if (bytes >= OneGB) error(detail, remediation) else warn(detail, remediation)
+        }
+    }
+
     /** Compares the server's version with whatever versions the calling
       * clients report (`?cli=`, `?mcp=`, `?ui=`). Major.minor must match. */
     class VersionSkewCheck(serverVersion: String, clients: Map[String, String]) extends Check {
@@ -400,7 +456,8 @@ object DoctorService {
     class EnvSeenCheck(probes: Probes) extends Check {
         val id = "env.seen"
         val startupSafe = true
-        val names = Seq("DATRIS_ENV", "DATRIS_ALLOW_PLAINTEXT_DB", "DATRIS_ALLOW_PRIVATE_EGRESS", "TAPMAXOUTPUTMB", "VAULT_TOKEN_FILE")
+        val names =
+            Seq("DATRIS_ENV", "DATRIS_ALLOW_PLAINTEXT_DB", "DATRIS_ALLOW_PRIVATE_EGRESS", "PIPELINE_MAX_PAYLOAD_MB", "TAPMAXOUTPUTMB", "VAULT_TOKEN_FILE")
         def run(): CheckResult = {
             val seen = probes.envSeen(names)
             val present = names.filter(n => seen.getOrElse(n, false))
@@ -509,6 +566,8 @@ object DoctorService {
             new ObjectStoreBucketOverrideCheck(probes),
             new AiEmbeddingModelCheck(probes, slots, startup),
             new DiskUsageCheck(probes, Seq(System.getProperty("user.dir"), System.getProperty("java.io.tmpdir"))),
+            new StagingAreaCheck(probes, StagingArea.payloadBudgetMB),
+            new StagingOrphansCheck(probes),
             new VersionSkewCheck(serverVersion, clients),
             new EnvSeenCheck(probes),
             new AiModelReachableCheck(probes, slots)
@@ -673,6 +732,34 @@ object DoctorService {
 
         def envSeen(names: Seq[String]): Map[String, Boolean] =
             names.map(n => n -> sys.env.get(n).exists(_.nonEmpty)).toMap
+
+        def stagingArea(): StagingAreaState = {
+            val root = StagingArea.root
+            val exists = java.nio.file.Files.isDirectory(root)
+            val writable = exists && {
+                try {
+                    val probe = java.nio.file.Files.createTempFile(root, ".doctor-", ".probe")
+                    try { java.nio.file.Files.write(probe, "ok".getBytes(StandardCharsets.UTF_8)); true }
+                    finally java.nio.file.Files.deleteIfExists(probe)
+                } catch { case _: Exception => false }
+            }
+            val usable =
+                if (!exists) 0L
+                else
+                    try java.nio.file.Files.getFileStore(root).getUsableSpace
+                    catch { case _: Exception => 0L }
+            StagingAreaState(root.toString, exists, writable, usable)
+        }
+
+        def stagingOrphans(): (List[String], Long) =
+            try {
+                val (dirs, bytes) = StagingArea.orphanScan(StagingArea.SweepAge)
+                (dirs.map(_.getFileName.toString), bytes)
+            } catch {
+                case e: Exception =>
+                    logger.debug("staging orphan scan for doctor failed: " + e.getMessage)
+                    (Nil, 0L)
+            }
 
         def chatSlots(): Seq[(String, AIConfig)] = {
             val env = DatrisEnvironment.values

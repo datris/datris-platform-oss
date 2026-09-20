@@ -1,8 +1,13 @@
 spring:
   servlet:
     multipart:
-      max-file-size: 1GB
-      max-request-size: 1GB
+      # Upload ceiling (MB). Parsed before the API key is checked, so it stays
+      # small and separate from PIPELINE_MAX_PAYLOAD_MB (the per-run disk budget).
+      max-file-size: ${DATRIS_MAX_UPLOAD_MB:1024}MB
+      max-request-size: ${DATRIS_MAX_UPLOAD_MB:1024}MB
+      # Tomcat spools every part to disk here (file-size-threshold is 0): the
+      # staging volume, not the container's writable layer. Created at boot.
+      location: ${DATRIS_TEMP_DIR:/tmp/datris-staging}/_multipart
   server:
     tomcat:
       connection-timeout: "600000"
