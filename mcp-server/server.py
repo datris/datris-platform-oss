@@ -459,7 +459,7 @@ Tap workflow (for step 3 Option B):
 
 Long-form references — read on demand to verify your mental model:
   - `datris://pipeline-config-reference` — pipeline source/destination shapes, codegen rules, vector vs structured.
-  - `datris://tap-workflow-reference` — full tap workflow: creation, params, SCHEDULING RULE with CRON cookbook, run flow, error handling (`persistedReason` table, size limits), document taps, outcome verification. Re-read this any time you're unsure about how taps work or what the platform expects.
+  - `datris://tap-workflow-reference` — full tap workflow: creation, params, SCHEDULING RULE with CRON cookbook, run flow, error handling (`persistedReason` table, payload disk budget guidance), document taps, outcome verification. Re-read this any time you're unsure about how taps work or what the platform expects.
 
 Do NOT call check_service_health as part of the normal workflow — it is slow. Only use it for diagnostics if something fails.
 Do NOT call update_secret unless you need to configure AI provider keys and they are not already set.
@@ -1428,7 +1428,7 @@ async def list_resources():
         Resource(
             uri="datris://tap-workflow-reference",
             name="Tap Workflow Reference",
-            description="Canonical reference for everything tap-related: creation (instruction vs script), reading platform data from a tap script (auto-injected DATRIS_PLATFORM_* env vars + query API callback — no credentials needed), per-run params, incremental sync via persistent state (DATRIS_TAP_STATE bookmarks), scheduling (with CRON cookbook), run flow + polling, error handling (persistedReason table, size-limit guidance), document taps, and outcome verification via publisherToken + get_tap_logs. Re-read this any time you need to verify your understanding of how taps work — including the SCHEDULING RULE for recurring data needs.",
+            description="Canonical reference for everything tap-related: creation (instruction vs script), reading platform data from a tap script (auto-injected DATRIS_PLATFORM_* env vars + query API callback — no credentials needed), per-run params, incremental sync via persistent state (DATRIS_TAP_STATE bookmarks), scheduling (with CRON cookbook), run flow + polling, error handling (persistedReason table, payload disk budget guidance), document taps, and outcome verification via publisherToken + get_tap_logs. Re-read this any time you need to verify your understanding of how taps work — including the SCHEDULING RULE for recurring data needs.",
             mimeType="text/plain",
         ),
     ]
@@ -2473,7 +2473,8 @@ def _base_tools():
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
-                "      - `run_error`: show the `error` string. If the error says output exceeded the size limit, reduce the source range via `params` (shorter date window, smaller page, per-id chunks) and call run_tap again — multiple smaller runs all land in the same destination pipeline. For a recurring tap, the durable fix is making the script incremental via DATRIS_TAP_STATE (see the tap-workflow-reference resource).\n"
+                "      - `run_error`: show the `error` string. If the error says the payload exceeded the disk budget (it names PIPELINE_MAX_PAYLOAD_MB), tell the user the operator can raise that variable; as a one-off alternative, reduce the source range via `params` and call run_tap again — multiple runs all land in the same destination pipeline. For a recurring tap, the durable fix is making the script incremental via DATRIS_TAP_STATE (see the tap-workflow-reference resource).\n"
+                "VOLUME RULE: one run handles multi-GB payloads — records stream to disk, never through memory. Do NOT split a source into several runs, cap a run at N rows, or build resume-from-destination logic because you think the output is too big. Fetch the whole requested range in one run. Chunk only when the source API pages natively, when a single fetch would exceed the script timeout, or when the user explicitly asks for a bounded window.\n"
                 "      - `no_records`: source returned nothing.\n"
                 "      - `debounced`: this tap was triggered server-side within the last 5 seconds. Do NOT retry — your previous call is still running. Use `get_tap_logs` to find the live run's `publisherToken`, then poll `get_pipeline_status`.\n"
                 "      - `already_running` (response `status: skipped`): another run_tap for this tap is already in flight in this agent session. Same handling as `debounced`: wait, then look up the live run in `get_tap_logs`.\n"

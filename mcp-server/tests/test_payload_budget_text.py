@@ -40,6 +40,19 @@ def test_mcp_server_names_the_disk_budget_not_the_100mb_heap_cap():
     assert not _BUFFERED.search(text), "server.py still says the batch is buffered in memory"
 
 
+def test_mcp_server_never_calls_the_budget_a_size_limit():
+    text = _read(SERVER_PY)
+    # "size limit" reads as a fixed cap; the budget is a raisable disk ceiling.
+    assert not re.search(r"size[- ]limit", text, re.IGNORECASE), "server.py still calls the payload budget a size limit"
+    assert "VOLUME RULE" in text and "Do NOT split a source" in text
+
+
+def test_assistant_prompt_forbids_splitting_a_source_for_size():
+    text = _read(os.path.join(REPO_ROOT, "datrisserver", "src", "main", "scala", "ai", "datris", "api", "AssistantAPIController.scala"))
+    assert "Never split a source for size" in text
+    assert NEW_VAR in text
+
+
 def test_mcp_server_keeps_chunking_as_advice_not_a_limit():
     text = _read(SERVER_PY)
     # The run_error cause list still exists and still points at params /
