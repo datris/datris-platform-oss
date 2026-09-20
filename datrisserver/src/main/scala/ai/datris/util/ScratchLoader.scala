@@ -193,6 +193,7 @@ class ScratchLoader(jobContext: JobContext, settings: ScratchLoader.Settings) {
             case StagedFormat.Delimited(_) if data.header != null => csvRecords(data)
             case StagedFormat.NdJson if fileAttributes == null || fileAttributes.xmlAttributes == null => jsonRecords(data)
             case StagedFormat.NdJson | StagedFormat.Xml | StagedFormat.Text =>
+                data.materializeFor("Scratch destination single-message mode (JSON/XML/text payload)")
                 val rawData = data.rawData
                 if (rawData == null || rawData.trim.isEmpty)
                     throw new DatrisException("No data available to write to the scratch destination")

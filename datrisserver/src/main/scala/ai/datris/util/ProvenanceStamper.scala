@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model._
-import com.google.gson.{Gson, JsonElement, JsonObject, JsonParseException, JsonParser}
+import com.google.gson.{JsonElement, JsonObject, JsonParseException, JsonParser}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.nio.file.Files
@@ -180,7 +180,7 @@ object ProvenanceStamper {
         if (nonNull.isEmpty) return None
         val source = ctx.data.staged
         if (source.isEmpty || source.rowCount == 0) return None
-        val gson = new Gson
+        val gson = PayloadStager.gson
         val format = StagedFormat.NdJson
         val (path, writer) = StagingArea.newWriter("stamp", format)
         var changed = false
@@ -229,7 +229,7 @@ object ProvenanceStamper {
         if (rawData == null || rawData.trim.isEmpty) return null
         val nonNull = values.filter(_._2 != null)
         if (nonNull.isEmpty) return null
-        val gson = new Gson
+        val gson = PayloadStager.gson
 
         def injectObject(obj: JsonObject): Boolean = {
             if (obj.has(RunId)) return false

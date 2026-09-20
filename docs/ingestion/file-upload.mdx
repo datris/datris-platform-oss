@@ -86,14 +86,17 @@ The 500 response covers all errors handled by the controller, including an empty
 
 ## Size Limits
 
-The maximum upload size is controlled by `spring.servlet.multipart.max-file-size` in `application.yaml`. The default is 1 GB. Adjust this value if your files exceed the limit:
+Two limits apply, and both are disk-bound — an upload streams to the staging area and never sits in the server's heap, so a multi-GB file lands on the default 2 GB heap.
 
-```yaml
-spring:
-  servlet:
-    multipart:
-      max-file-size: 1GB
-```
+- **Upload ceiling** — `DATRIS_MAX_UPLOAD_MB` (default `1024`, i.e. 1 GB) sets `spring.servlet.multipart.max-file-size` / `max-request-size`. It is checked while the file is received, before the API key is validated, which is why it stays small and separate from the run budget. Set it in `.env` to accept larger files:
+
+  ```bash
+  DATRIS_MAX_UPLOAD_MB=4096
+  ```
+
+- **Per-run disk budget** — `PIPELINE_MAX_PAYLOAD_MB` (default `4096`, `0` = unlimited) is the most one run may stage on disk. An upload — or the combined contents of a batch archive — above it fails with a message naming the variable, and nothing is left on disk. See the [configuration reference](/configuration-reference#container-environment-variables).
+
+Exceeding the upload ceiling produces Spring's default multipart-size error; exceeding the run budget produces the 500 response described above.
 
 ## End-to-end example: CSV to PostgreSQL
 

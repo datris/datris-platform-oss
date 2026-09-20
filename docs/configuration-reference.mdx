@@ -40,8 +40,9 @@ Do **not** use `docker compose restart` to apply an `.env` change. `restart` reu
 
 | Property | Default | Description |
 |----------|---------|-------------|
-| `spring.servlet.multipart.max-file-size` | `1GB` | Maximum upload file size |
-| `spring.servlet.multipart.max-request-size` | `1GB` | Maximum request size |
+| `spring.servlet.multipart.max-file-size` | `${DATRIS_MAX_UPLOAD_MB:1024}MB` | Maximum upload file size (1 GB unless `DATRIS_MAX_UPLOAD_MB` is set) |
+| `spring.servlet.multipart.max-request-size` | `${DATRIS_MAX_UPLOAD_MB:1024}MB` | Maximum request size (same variable) |
+| `spring.servlet.multipart.location` | `${DATRIS_TEMP_DIR:/tmp/datris-staging}/_multipart` | Where an upload is spooled while it is received — on the staging volume, not the container's writable layer |
 | `spring.server.tomcat.connection-timeout` | `600000` | Tomcat connection timeout (ms) |
 
 ### Logging
@@ -394,6 +395,7 @@ These environment variables are read by `docker-compose.yml` and passed into the
 | `JAVA_OPTS` | `-Xms512m -Xmx2g` | JVM heap sizing for the datris-server process. The default is a 2 GB max heap: the minimal install (`TEI_ENABLED=0`, `POSTGRES_ENABLED=0`) fits a 4 GB Docker memory allocation, and the full stack with the bundled TEI embedder needs about 8 GB. Bump on larger hosts (e.g. `-Xms1g -Xmx8g` for 24 GB). See [Installation → JVM Heap Sizing](/installation#jvm-heap-sizing) for the full sizing table and Docker Desktop ceiling notes. |
 | `PIPELINE_MAX_PAYLOAD_MB` | `4096` | Override `pipelineMaxPayloadMB`: the per-run payload disk budget (MB) for tap runs, `0` = unlimited. Bounds what one run may write to the `datris-staging` volume, not JVM heap. Raise for large single-shot backfills on hosts with the disk to hold them; lower on disk-constrained deployments to fail earlier. |
 | `TAP_MAX_OUTPUT_MB` | unset | **Deprecated** alias of `PIPELINE_MAX_PAYLOAD_MB`, honoured for one release when `PIPELINE_MAX_PAYLOAD_MB` is unset; the server logs a deprecation warning at boot while the alias is set. |
+| `DATRIS_MAX_UPLOAD_MB` | `1024` | Largest single file `POST /api/v1/pipeline/upload` accepts, in MB (`spring.servlet.multipart.max-file-size` / `max-request-size`). Deliberately separate from `PIPELINE_MAX_PAYLOAD_MB`: the upload is received before the API key is checked, so this ceiling bounds pre-auth disk exposure and stays small. Raise it to accept multi-GB uploads; the run itself is then bounded by `PIPELINE_MAX_PAYLOAD_MB`. |
 | `DATRIS_TEMP_DIR` | `/tmp/datris-staging` | Local directory where a pipeline run's payload is staged on disk (one sub-directory per run, removed when the run ends; stale runs are swept at boot). Backed by the named `datris-staging` volume in the default compose file. |
 | `PIPELINE_MATERIALIZE_MAX_MB` | `256` | Largest staged payload (MB) a pipeline feature that still reads the whole payload into memory may materialize: deduplication, JavaScript row functions, JSON/XML schema validation, and a REST preprocessor or `restEndpoint` row function in batch mode with no batch size (one call carrying every row). Above it the run fails with an error naming the feature and this variable — `<feature> reads the whole payload into memory (N bytes) and PIPELINE_MATERIALIZE_MAX_MB is 256 MB. Raise it for this install, or use a CodeGen rule/transformation, which streams.` — instead of exhausting the JVM heap. Loaders, provenance stamping, CodeGen rules/transformations and batched REST calls stream the staged file and are never subject to it. Raise together with `JAVA_OPTS` on larger hosts. |
 | `SCRATCH_INLINE_ROWS` | `200` | Override `scratchInlineRows`: rows inlined on a scratch run's status and the maximum `limit` per `/pipeline/result` page. |

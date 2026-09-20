@@ -15,7 +15,7 @@ RUN chmod +x /usr/src/datrisserver/docker-init.sh
 # named volume from the image path's ownership, and a mountpoint it has to
 # create itself is root:root, which the non-root server cannot write to.
 RUN groupadd -r datris && useradd -r -g datris -d /usr/src/datrisserver datris \
-    && mkdir -p /tmp/datris-staging \
+    && mkdir -p /tmp/datris-staging/_multipart \
     && chown -R datris:datris /usr/src/datrisserver /tmp/datris-staging
 USER datris
 # Liveness only (any HTTP response counts): /api/v1/health/services probes every

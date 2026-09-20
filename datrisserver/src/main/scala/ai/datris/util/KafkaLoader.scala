@@ -91,6 +91,7 @@ class KafkaLoader(jobContext: JobContext) {
             case StagedFormat.Delimited(_) if data.header != null =>
                 sendStructuredData(producer, topic, keyField, data)
             case StagedFormat.NdJson | StagedFormat.Xml | StagedFormat.Text =>
+                data.materializeFor("Kafka destination single-message mode (JSON/XML/text payload)")
                 val rawData = data.rawData
                 if (rawData != null && rawData.trim.nonEmpty) sendRawData(producer, topic, keyField, rawData)
                 else throw new DatrisException("No data available to send to Kafka")

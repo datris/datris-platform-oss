@@ -339,6 +339,9 @@ services:
       # with a named error instead of an OutOfMemoryError.
       DATRIS_TEMP_DIR: "${DATRIS_TEMP_DIR:-/tmp/datris-staging}"
       PIPELINE_MATERIALIZE_MAX_MB: "${PIPELINE_MATERIALIZE_MAX_MB:-256}"
+      # Largest single upload (MB) /pipeline/upload accepts. Parsed before the
+      # API key is checked, so it stays separate from the per-run disk budget.
+      DATRIS_MAX_UPLOAD_MB: "${DATRIS_MAX_UPLOAD_MB:-1024}"
       # Scratch destination: rows inlined on the run status / per page of
       # /pipeline/result, and how many hours a _scratch/ result is kept.
       SCRATCHINLINEROWS: "${SCRATCH_INLINE_ROWS:-200}"

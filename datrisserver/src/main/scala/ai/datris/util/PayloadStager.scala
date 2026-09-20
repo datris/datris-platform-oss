@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.model.{StagedFormat, StagedPayload}
 import com.google.gson.stream.{JsonReader, JsonToken}
-import com.google.gson.{GsonBuilder, JsonParser}
+import com.google.gson.{Gson, GsonBuilder, JsonParser}
 
 import java.io.{InputStream, InputStreamReader, Reader, StringReader}
 import java.nio.charset.StandardCharsets
@@ -20,7 +20,8 @@ import java.nio.file.{Files, Path, StandardCopyOption}
 object PayloadStager {
     // Element-at-a-time re-serialization must not alter the data: keep nulls,
     // keep `<`/`>`/`&` unescaped (Gson's default HTML-escaping would rewrite them).
-    private val gson = new GsonBuilder().serializeNulls().disableHtmlEscaping().create()
+    // Shared with ProvenanceStamper so a stamped record keeps exactly these bytes.
+    val gson: Gson = new GsonBuilder().serializeNulls().disableHtmlEscaping().create()
 
     /** Delimited rows, one per line, no trailing newline (the exact bytes
       * `CSVReader.readFromStream` produced before staging existed). */
@@ -78,9 +79,11 @@ object PayloadStager {
     def stageJson(stage: String, source: InputStream): StagedPayload =
         stageJson(stage, new InputStreamReader(source, StandardCharsets.UTF_8))
 
-    def stageJson(stage: String, source: Reader): StagedPayload = {
+    /** With `budgeted` the bytes written are held to the per-run payload budget
+      * (`StagingArea.newBudgetedWriter`); the ingest lanes use it. */
+    def stageJson(stage: String, source: Reader, budgeted: Boolean = false): StagedPayload = {
         val format = StagedFormat.NdJson
-        val (path, writer) = StagingArea.newWriter(stage, format)
+        val (path, writer) = if (budgeted) StagingArea.newBudgetedWriter(stage, format) else StagingArea.newWriter(stage, format)
         var count = 0L
         var arraySource = false
         try {
@@ -112,9 +115,10 @@ object PayloadStager {
         StagedPayload(path.toString, format, if (bytes > 0) 1L else 0L, bytes)
     }
 
-    /** Verbatim stream copy (XML / text). rowCount is 1 for a non-empty payload. */
-    def stageStream(stage: String, format: StagedFormat, source: InputStream): StagedPayload = {
-        val (path, bytes) = StagingArea.copyStream(stage, format, source)
+    /** Verbatim stream copy (XML / text). rowCount is 1 for a non-empty payload.
+      * With `budgeted` the copy is held to the per-run payload budget. */
+    def stageStream(stage: String, format: StagedFormat, source: InputStream, budgeted: Boolean = false): StagedPayload = {
+        val (path, bytes) = StagingArea.copyStream(stage, format, source, budgeted)
         StagedPayload(path.toString, format, if (bytes > 0) 1L else 0L, bytes)
     }
 

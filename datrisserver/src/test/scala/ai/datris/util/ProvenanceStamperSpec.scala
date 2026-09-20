@@ -154,6 +154,35 @@ class ProvenanceStamperSpec extends AnyFunSuite {
         assert(values(ProvenanceStamper.IngestedAt) == "2026-09-02T00:00:00Z")
     }
 
+    // Phase 5 (plans/stories/streaming-pipeline-phase5.md, Step 10): the NDJSON
+    // stamp serializes with the same Gson as PayloadStager — explicit nulls kept,
+    // no HTML escaping — so stamping never alters a record's values.
+    test("stamping an NDJSON record with a null member and a '<' keeps the null and does not escape the '<'") {
+        val jsonCfg = config(stamp = true).copy(
+            source = Source(
+                schemaProperties = SchemaProperties("db", fields("id", "amount")),
+                fileAttributes = FileAttributes(jsonAttributes = JsonAttributes())
+            )
+        )
+        val raw = "[{\"id\":1,\"note\":null,\"html\":\"<b>a & b</b>\"},{\"id\":2,\"note\":\"x\",\"html\":\">\"}]"
+        val ctx = JobContext("run-123", tapMetadata, Data(10L, null, null, null, raw), jsonCfg, null, INITIALIZED, null, null)
+        assert(ctx.data.isNdJson, "fixture stages as NDJSON")
+        val before = rowsOf(ctx.data)
+        assert(before.head.contains("\"note\":null") && before.head.contains("<b>a & b</b>"), "PayloadStager already keeps nulls and '<': " + before.head)
+
+        val stamped = ProvenanceStamper.stamp(ctx)
+        val lines = rowsOf(stamped.data)
+        assert(lines.size == 2)
+        assert(lines.head.contains("\"" + ProvenanceStamper.RunId + "\":\"run-123\""), "stamped: " + lines.head)
+        assert(lines.head.contains("\"note\":null"), "the explicit null survives stamping: " + lines.head)
+        assert(lines.head.contains("<b>a & b</b>"), "'<', '>' and '&' are not HTML-escaped: " + lines.head)
+        assert(!lines.head.contains("\\u003c") && !lines.head.contains("\\u0026"), "no \\u003c / \\u0026 escapes: " + lines.head)
+        assert(lines(1).contains("\"html\":\">\""), lines(1))
+        val obj = com.google.gson.JsonParser.parseString(lines.head).getAsJsonObject
+        assert(obj.has("note") && obj.get("note").isJsonNull)
+        assert(obj.get("html").getAsString == "<b>a & b</b>")
+    }
+
     // Phase 3 (plans/stories/streaming-pipeline-phase3.md): stampDelimited
     // rewrites the staged file row by row and never reads `Data.rows`.
     test("a delimited payload stamps with no materialization warning") {

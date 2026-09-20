@@ -171,6 +171,41 @@ class CSVReaderSpec extends AnyFunSuite {
         assert(sw.toString == "2,1\n4,3\n6,5")
     }
 
+    // plans/stories/streaming-pipeline-phase5.md, Step 6: a non-empty columnFilter
+    // that matches no source column used to stage blank rows (one "" per record)
+    // whose count disagreed with iteration. It now fails the run with a
+    // DatrisException naming the filter and the source header.
+    test("readToWriter: a columnFilter matching no source column raises a DatrisException naming the filter and the header") {
+        val e = intercept[ai.datris.model.DatrisException] {
+            reader.readToWriter(
+                stream("id,amount\n1,5\n2,9"),
+                header = true,
+                delimiter = ",",
+                columnList = List("id", "amount"),
+                columnFilter = List("customer_id", "total"),
+                removeHeader = true,
+                out = new StringWriter
+            )
+        }
+        assert(e.getMessage.contains("customer_id") && e.getMessage.contains("total"), "names the filter: " + e.getMessage)
+        assert(e.getMessage.contains("id") && e.getMessage.contains("amount"), "names the source header: " + e.getMessage)
+    }
+
+    test("readToWriter: an empty columnFilter is not the mismatch case and still writes nothing per record") {
+        val sw = new StringWriter
+        val count = reader.readToWriter(
+            stream("id,amount\n1,5"),
+            header = true,
+            delimiter = ",",
+            columnList = List("id", "amount"),
+            columnFilter = Nil,
+            removeHeader = true,
+            out = sw
+        )
+        assert(count == 1L)
+        assert(sw.toString == "")
+    }
+
     test("readToWriter closes the stream it was given, like readFromStream") {
         var closed = false
         val tracking = new ByteArrayInputStream("a\n1".getBytes(StandardCharsets.UTF_8)) {

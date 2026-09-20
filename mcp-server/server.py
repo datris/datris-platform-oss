@@ -1893,7 +1893,8 @@ def _base_tools():
             name="run_doctor",
             description=(
                 "Run the platform's operational self-check and return a report: Vault token expiry, AI slot secrets complete, "
-                "embedding model actually loaded, disk usage, component version skew, and (opt-in) whether each AI model answers. "
+                "embedding model actually loaded, disk usage, the payload staging area (writable, room for one run, no orphaned "
+                "run directories), component version skew, and (opt-in) whether each AI model answers. "
                 "Each non-ok check carries a remediation command for the operator; nothing is changed. "
                 "Do NOT call run_doctor as part of the normal workflow — it is slow. Only use it for diagnostics when something fails "
                 "or the user asks about the deployment's health. Host-level checks (Docker volumes, container env drift) need "

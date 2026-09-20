@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.DatrisException
 import org.apache.commons.csv.{CSVFormat, CSVParser}
 
 import java.io.{InputStream, InputStreamReader, StringWriter, Writer}
@@ -47,6 +48,16 @@ class CSVReader {
                 if (filteredColumn.equalsIgnoreCase(column)) Some(index) else None
             }
         })
+        // A filter that names columns none of which the source has would stage
+        // one blank row per record — a count that disagrees with what the rows
+        // hold. Fail the run and name both sides instead.
+        if (columnFilter.nonEmpty && columnNumbers.isEmpty) {
+            inputStream.close()
+            throw new DatrisException(
+                "None of the columns to read [" + columnFilter.mkString(", ") + "] exist in the source header [" +
+                    columnList.mkString(", ") + "]. Check the pipeline's source schema against the file's header row."
+            )
+        }
 
         Loan.withResource(
             new CSVParser(

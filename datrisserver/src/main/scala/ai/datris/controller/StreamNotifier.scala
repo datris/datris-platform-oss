@@ -143,7 +143,9 @@ class StreamNotifier {
             config = resolvedConfig
 
             val format = StagedFormat.Delimited(delimiter)
-            val (path, writer) = StagingArea.newWriter("notifier", format)
+            // Budgeted: the upload lane honours PIPELINE_MAX_PAYLOAD_MB on the
+            // bytes written (plans/stories/streaming-pipeline-phase5.md, Step 3).
+            val (path, writer) = StagingArea.newBudgetedWriter("notifier", format)
             val rowCount =
                 try
                     new CSVReader().readToWriter(
@@ -170,13 +172,15 @@ class StreamNotifier {
             val staged = StagedPayload(path.toString, format, rowCount, Files.size(path))
             (new Data(size, header, config.source.schemaProperties.fields.asScala.toList, staged, null), config)
         } else if (config.source.fileAttributes.jsonAttributes != null) {
-            (new Data(size, null, null, PayloadStager.stageJson("notifier", source), null), config)
+            val reader = new java.io.InputStreamReader(source, StandardCharsets.UTF_8)
+            (new Data(size, null, null, PayloadStager.stageJson("notifier", reader, budgeted = true), null), config)
         } else if (config.source.fileAttributes.xmlAttributes != null) {
-            (new Data(size, null, null, PayloadStager.stageStream("notifier", StagedFormat.Xml, source), null), config)
+            (new Data(size, null, null, PayloadStager.stageStream("notifier", StagedFormat.Xml, source, budgeted = true), null), config)
         } else if (config.source.fileAttributes.unstructuredAttributes != null) {
             val bytes =
                 try source.readAllBytes()
                 finally source.close()
+            if (StagingArea.overBudget(bytes.length.toLong)) throw new DatrisException(StagingArea.budgetExceededMessage(bytes.length.toLong))
             (new Data(size, null, null, PayloadStager.stageBytes("notifier", bytes), bytes), config)
         } else
             throw new DatrisException("StreamNotifier: unsupported file type in pipeline config for pipeline: " + config.name)

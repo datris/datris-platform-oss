@@ -230,6 +230,180 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         StagingArea.delete("tap-token-1")
     }
 
+    // ---- Phase 5 (plans/stories/streaming-pipeline-phase5.md), Step 3: the payload budget on the upload lane ----
+    //
+    //  `stageData(InputStream, …)` enforces `StagingArea.overBudget` on the bytes
+    //  it writes and fails with `StagingArea.budgetExceededMessage(bytes)`.
+    //  Before Phase 5 only the tap lanes honoured PIPELINE_MAX_PAYLOAD_MB.
+
+    private def budgetEnv(pipelineMaxPayloadMB: Int): DatrisEnvironment = testEnv.copy(pipelineMaxPayloadMB = pipelineMaxPayloadMB)
+
+    test("stageData: a CSV payload above PIPELINE_MAX_PAYLOAD_MB fails with the disk-budget message; unlimited (0) stages it") {
+        val row = "1,\"" + ("x" * 60) + "\"\n"
+        val big = new StringBuilder("id,amount\n")
+        while (big.length < 1536 * 1024) big.append(row)
+        val bytes = big.toString.getBytes(StandardCharsets.UTF_8)
+
+        TenantContext.set(budgetEnv(1))
+        try {
+            val e = intercept[DatrisException](StagingArea.withToken("budget-run-csv")(stage(bytes, csvConfig)))
+            assert(e.getMessage.contains(StagingArea.PayloadBudgetEnvVar + " = 1 MB"), s"got: ${e.getMessage}")
+            assert(e.getMessage.contains("disk budget"), s"got: ${e.getMessage}")
+        } finally {
+            StagingArea.delete("budget-run-csv")
+            TenantContext.set(testEnv)
+        }
+
+        TenantContext.set(budgetEnv(0))
+        try {
+            val (data, _) = StagingArea.withToken("budget-run-unlimited")(stage(bytes, csvConfig))
+            assert(data.rowCount > 20000L)
+        } finally {
+            StagingArea.delete("budget-run-unlimited")
+            TenantContext.set(testEnv)
+        }
+    }
+
+    test("stageData: a JSON payload above PIPELINE_MAX_PAYLOAD_MB fails with the disk-budget message") {
+        val sb = new StringBuilder("[")
+        var i = 0
+        while (sb.length < 1536 * 1024) {
+            if (i > 0) sb.append(",")
+            sb.append("{\"id\":").append(i).append(",\"pad\":\"").append("p" * 80).append("\"}")
+            i += 1
+        }
+        sb.append("]")
+        TenantContext.set(budgetEnv(1))
+        try {
+            val e = intercept[DatrisException](StagingArea.withToken("budget-run-json")(stage(sb.toString, jsonConfig)))
+            assert(e.getMessage.contains(StagingArea.PayloadBudgetEnvVar), s"got: ${e.getMessage}")
+        } finally {
+            StagingArea.delete("budget-run-json")
+            TenantContext.set(testEnv)
+        }
+    }
+
+    // ---- Phase 5, Step 5: the FileNotifier read (`DataUtil.read`) streams into the staging area ----
+    //
+    //  Seam this spec relies on (the object-store client is a package-level
+    //  `lazy val` and cannot be faked, so the stream-level body of `read` is
+    //  exposed with the file opener injected):
+    //
+    //  {{{
+    //  object DataUtil {
+    //      def read(bucket, key, config, metadata, statusUtil): (Data, PipelineConfig)   // unchanged: resolves files + size, then
+    //      def read(files: List[String], open: String => InputStream, size: Long, config: PipelineConfig, statusUtil: StatusUtil): (Data, PipelineConfig)
+    //          // CSV: header read off file 1 (header=true), evolveSchema as before, then EVERY file streams through
+    //          //      CSVReader.readToWriter into ONE Delimited staged file (removeHeader for files 2+), files in list order;
+    //          //      0 rows -> the existing "No data rows found" DatrisException.
+    //          // JSON: files.head staged as NDJSON (PayloadStager.stageJson: values verbatim, one record per line);
+    //          // XML: files.head copied verbatim; unstructured: files.head copied verbatim + rawBytes.
+    //  }
+    //  }}}
+
+    /** Captures status events instead of writing to Mongo. */
+    private class CapturingStatusUtil extends ai.datris.util.StatusUtil {
+        val events = scala.collection.mutable.ListBuffer[(String, String)]()
+        override def info(state: String, description: String): Unit = events += ((state, description))
+        override def warn(state: String, description: String): Unit = events += ((state, description))
+        override def error(state: String, description: String): Unit = events += ((state, description))
+    }
+
+    private def opener(files: Map[String, String]): String => java.io.InputStream =
+        name => new ByteArrayInputStream(files(name).getBytes(StandardCharsets.UTF_8))
+
+    test("DataUtil.read: a two-file object-store CSV pickup stages header-once with the same row count as before") {
+        val files = Map(
+            "s3://raw/orders/part-1.csv" -> "ID,Amount\n1,5\n2,9\n",
+            "s3://raw/orders/part-2.csv" -> "ID,Amount\n3,\"x,y\"\n4,11"
+        )
+        val su = new CapturingStatusUtil
+        val (data, resolved) = StagingArea.withToken("pickup-csv") {
+            ai.datris.util.DataUtil.read(List("s3://raw/orders/part-1.csv", "s3://raw/orders/part-2.csv"), opener(files), 55L, csvConfig, su)
+        }
+        try {
+            assert(data.isDelimited)
+            assert(data.staged.format == StagedFormat.Delimited(","))
+            assert(data.rowCount == 4L, "2 + 2 data rows, the header counted once")
+            assert(data.header == List("id", "amount"))
+            assert(data.headerWithSchema.map(_.name) == List("id", "amount"))
+            assert(data.size == 55L)
+            assert(data.rowIterator().toList == List("1,5", "2,9", "3,\"x,y\"", "4,11"), "files in order, later headers dropped")
+            assert(stagedLines(data) == List("1,5", "2,9", "3,\"x,y\"", "4,11"), "one staged file holds every file's rows and nothing else")
+            assert(Paths.get(data.staged.path).startsWith(StagingArea.forToken("pickup-csv")), s"staged in the run's dir, got ${data.staged.path}")
+            assert(resolved.source.schemaProperties.fields.asScala.map(_.name).toList == List("id", "amount"))
+            assert(JobRunner.deriveCountAndType(data) == ((4, "record")))
+        } finally StagingArea.delete("pickup-csv")
+    }
+
+    test("DataUtil.read: a JSON object pickup stages verbatim as one record") {
+        val json = "{\n  \"id\": 1,\n  \"note\": null,\n  \"html\": \"<a & b>\"\n}"
+        val su = new CapturingStatusUtil
+        val (data, resolved) = StagingArea.withToken("pickup-json") {
+            ai.datris.util.DataUtil.read(List("s3://raw/orders/one.json"), opener(Map("s3://raw/orders/one.json" -> json)), json.length.toLong, jsonConfig, su)
+        }
+        try {
+            assert(data.isNdJson, "JSON pickups stage as NDJSON like uploads do, so every downstream stage dispatches the same way")
+            assert(data.rowCount == 1L)
+            assert(data.header == null && data.rawBytes == null)
+            val lines = stagedLines(data)
+            assert(lines.size == 1, s"got $lines")
+            val obj = JsonParser.parseString(lines.head).getAsJsonObject
+            assert(obj.get("id").getAsInt == 1)
+            assert(obj.has("note") && obj.get("note").isJsonNull, "explicit null kept: " + lines.head)
+            assert(obj.get("html").getAsString == "<a & b>")
+            assert(lines.head.contains("<a & b>"), "not HTML-escaped: " + lines.head)
+            assert(JobRunner.deriveCountAndType(data) == ((1, "record")))
+            assert(resolved eq jsonConfig)
+            assert(Paths.get(data.staged.path).startsWith(StagingArea.forToken("pickup-json")))
+        } finally StagingArea.delete("pickup-json")
+    }
+
+    test("DataUtil.read: an XML pickup stages verbatim with rowCount 1") {
+        val xml = "<?xml version=\"1.0\"?><orders><order id=\"1\">a &amp; b</order></orders>"
+        val (data, _) = StagingArea.withToken("pickup-xml") {
+            ai.datris.util.DataUtil.read(
+                List("s3://raw/orders/one.xml"),
+                opener(Map("s3://raw/orders/one.xml" -> xml)),
+                xml.length.toLong,
+                xmlConfig,
+                new CapturingStatusUtil
+            )
+        }
+        try {
+            assert(data.staged.format == StagedFormat.Xml)
+            assert(data.rowCount == 1L)
+            assert(new String(Files.readAllBytes(Paths.get(data.staged.path)), StandardCharsets.UTF_8) == xml)
+        } finally StagingArea.delete("pickup-xml")
+    }
+
+    test("DataUtil.read: header-only CSV input still raises 'No data rows found'") {
+        val su = new CapturingStatusUtil
+        val e = intercept[DatrisException] {
+            StagingArea.withToken("pickup-empty") {
+                ai.datris.util.DataUtil.read(List("s3://raw/orders/empty.csv"), opener(Map("s3://raw/orders/empty.csv" -> "id,amount\n")), 10L, csvConfig, su)
+            }
+        }
+        StagingArea.delete("pickup-empty")
+        assert(e.getMessage.contains("No data rows found in uploaded file for pipeline: orders"), s"got: ${e.getMessage}")
+        assert(e.getMessage.contains("The file may be empty or contain only a header row."))
+
+        // Two header-only files are still zero rows.
+        val two = intercept[DatrisException] {
+            StagingArea.withToken("pickup-empty-2") {
+                ai.datris.util.DataUtil.read(
+                    List("s3://raw/orders/e1.csv", "s3://raw/orders/e2.csv"),
+                    opener(Map("s3://raw/orders/e1.csv" -> "id,amount\n", "s3://raw/orders/e2.csv" -> "id,amount\n")),
+                    20L,
+                    csvConfig,
+                    su
+                )
+            }
+        }
+        StagingArea.delete("pickup-empty-2")
+        assert(two.getMessage.contains("No data rows found in uploaded file for pipeline: orders"), s"got: ${two.getMessage}")
+    }
+
     test("staged overload: an XML payload is adopted verbatim with rowCount 1") {
         val xml = "<?xml version=\"1.0\"?><orders><order id=\"1\"/></orders>"
         val staged = tapStaged(_ => PayloadStager.stageText("tap", StagedFormat.Xml, xml))

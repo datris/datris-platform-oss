@@ -5,10 +5,13 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{PipelineConfig, PipelineMetadata, DatrisException, SchemaField}
+import ai.datris.model.{PipelineConfig, PipelineMetadata, DatrisException, SchemaField, StagedFormat, StagedPayload}
 import ai.datris.model.Data
 import org.slf4j.{Logger, LoggerFactory}
 
+import java.io.{BufferedReader, InputStream, InputStreamReader, Writer}
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.util.regex.Pattern
 import scala.collection.JavaConverters._
 
@@ -94,29 +97,37 @@ object DataUtil {
     def read(bucket: String, key: String, config: PipelineConfig, metadata: PipelineMetadata, statusUtil: StatusUtil): (Data, PipelineConfig) = {
         val files = new PipelineMetadataUtil(statusUtil).getFiles(metadata)
         val size = getSize(bucket, key, metadata)
+        read(files, url => ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(url), ObjectStoreUtil.getKey(url)), size, config, statusUtil)
+    }
 
+    /** The FileNotifier read (plans/stories/streaming-pipeline-phase5.md, Step 5),
+      * with the object-store opener injected so the stream-level body is testable.
+      * `files` are read in list order; `open` returns a fresh stream for one of
+      * them (closed here).
+      *  - CSV: the header comes off file 1 (`header = true`), `evolveSchema`
+      *    runs exactly as before, then every file streams through
+      *    `CSVReader.readToWriter` into ONE `Delimited` staged file — the
+      *    header line of files 2+ dropped — and zero rows raise the existing
+      *    "No data rows found" error.
+      *  - JSON: `files.head` staged as NDJSON (`PayloadStager.stageJson`, values
+      *    verbatim); a file that does not parse is staged verbatim as text, the
+      *    fallback this lane has always had.
+      *  - XML and unstructured: `files.head` copied verbatim (unstructured also
+      *    fills `rawBytes`, as the loaders expect). */
+    def read(files: List[String], open: String => InputStream, size: Long, config: PipelineConfig, statusUtil: StatusUtil): (Data, PipelineConfig) = {
         if (config.source.fileAttributes.csvAttributes != null) {
-            val trimColumns = {
-                if (config.transformation != null && config.transformation.trimColumnWhitespace)
-                    true
-                else
-                    false
-            }
+            val csvAttributes = config.source.fileAttributes.csvAttributes
+            val trimColumns = config.transformation != null && config.transformation.trimColumnWhitespace
+            val delimiter = csvAttributes.delimiter
 
             // Read the actual header from the first file if header=true
             val sourceColumns = {
-                if (config.source.fileAttributes.csvAttributes.header) {
-                    val firstFileUrl = files.head
-                    val reader = ObjectStoreUtil.getBufferedReader(
-                        ObjectStoreUtil.getBucket(firstFileUrl),
-                        ObjectStoreUtil.getKey(firstFileUrl)
-                    )
+                if (csvAttributes.header) {
+                    val reader = new BufferedReader(new InputStreamReader(open(files.head), StandardCharsets.UTF_8))
                     try {
-                        val headerLine = reader.readLine()
-                        headerLine.split(Pattern.quote(config.source.fileAttributes.csvAttributes.delimiter)).map(_.toLowerCase).toList
-                    } finally {
-                        reader.close()
-                    }
+                        val headerLine = Option(reader.readLine()).getOrElse("")
+                        headerLine.split(Pattern.quote(delimiter)).map(_.toLowerCase).toList
+                    } finally reader.close()
                 } else
                     config.source.schemaProperties.fields.asScala.map(_.name).toList
             }
@@ -124,64 +135,72 @@ object DataUtil {
             // Schema evolution: detect new/missing columns, update config
             val (resolvedConfig, schemaColumns, presentColumns, missingColumns) = evolveSchema(sourceColumns, config, statusUtil)
 
-            var header: List[String] = null
-            val data = files.zipWithIndex.flatMap { case (fileUrl, index) =>
-                val rows = {
-                    if (index == 0) {
-                        val data = new CSVReader().readFile(
-                            fileUrl,
-                            resolvedConfig.source.fileAttributes.csvAttributes.header,
-                            resolvedConfig.source.fileAttributes.csvAttributes.delimiter,
-                            sourceColumns, // actual CSV column order
-                            presentColumns, // only columns present in CSV
-                            trimColumns = trimColumns
-                        )
-                            .split("\n")
-                            .toList
-                        if (resolvedConfig.source.fileAttributes.csvAttributes.header) {
-                            header = if (missingColumns.isEmpty) schemaColumns else presentColumns
-                            data.tail
-                        } else
-                            data
-                    } else {
-                        new CSVReader().readFile(
-                            fileUrl,
-                            resolvedConfig.source.fileAttributes.csvAttributes.header,
-                            resolvedConfig.source.fileAttributes.csvAttributes.delimiter,
-                            sourceColumns,
-                            presentColumns,
-                            trimColumns = trimColumns,
-                            removeHeader = true
-                        )
-                            .split("\n")
-                            .toList
-                    }
+            val format = StagedFormat.Delimited(delimiter)
+            val (path, writer) = StagingArea.newWriter("notifier", format)
+            var rowCount = 0L
+            try
+                files.foreach { fileUrl =>
+                    // readToWriter separates its own rows with "\n" but writes the
+                    // first one bare; between files the separator is ours, and only
+                    // once the next file proves it has a row.
+                    val out = new FileSeparatorWriter(writer, rowCount > 0)
+                    rowCount += new CSVReader().readToWriter(
+                        open(fileUrl),
+                        csvAttributes.header,
+                        delimiter,
+                        sourceColumns, // actual CSV column order
+                        presentColumns, // only columns present in CSV
+                        trimColumns = trimColumns,
+                        removeHeader = true,
+                        out = out
+                    )
                 }
-                rows
-            }
-            if (data.isEmpty)
+            finally writer.close()
+
+            if (rowCount == 0)
                 throw new DatrisException(
                     "No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row."
                 )
 
+            // Return only present columns when some are missing — PostgresLoader
+            // will COPY only these, and Postgres will default missing columns to NULL
+            val header = if (missingColumns.isEmpty) schemaColumns else presentColumns
             val headerWithSchema = resolvedConfig.source.schemaProperties.fields.asScala.toList
-            (Data(size, header, headerWithSchema, data, null, delimiter = resolvedConfig.source.fileAttributes.csvAttributes.delimiter), resolvedConfig)
-        } else if (config.source.fileAttributes.jsonAttributes != null || config.source.fileAttributes.xmlAttributes != null) {
+            val staged = StagedPayload(path.toString, format, rowCount, Files.size(path))
+            (new Data(size, header, headerWithSchema, staged, null), resolvedConfig)
+        } else if (config.source.fileAttributes.jsonAttributes != null) {
             val fileUrl = files.head
-            val rawData = ObjectStoreUtil.readBucketObject(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
-                .getOrElse(throw new DatrisException("Error reading source file: " + fileUrl))
-            (Data(size, null, null, null, rawData), config)
+            val staged =
+                try PayloadStager.stageJson("notifier", open(fileUrl))
+                catch {
+                    case e: Exception =>
+                        logger.warn("Source file " + fileUrl + " is not valid JSON (" + e.getMessage + "); staging it verbatim")
+                        PayloadStager.stageStream("notifier", StagedFormat.Text, open(fileUrl))
+                }
+            (new Data(size, null, null, staged, null), config)
+        } else if (config.source.fileAttributes.xmlAttributes != null) {
+            (new Data(size, null, null, PayloadStager.stageStream("notifier", StagedFormat.Xml, open(files.head)), null), config)
         } else if (config.source.fileAttributes.unstructuredAttributes != null) {
-            val fileUrl = files.head
-            val inputStream = ObjectStoreUtil.getInputStream(ObjectStoreUtil.getBucket(fileUrl), ObjectStoreUtil.getKey(fileUrl))
-            try {
-                val rawBytes = inputStream.readAllBytes()
-                (Data(size, null, null, null, null, rawBytes), config)
-            } finally {
-                inputStream.close()
-            }
+            val inputStream = open(files.head)
+            val rawBytes =
+                try inputStream.readAllBytes()
+                finally inputStream.close()
+            (new Data(size, null, null, PayloadStager.stageBytes("notifier", rawBytes), rawBytes), config)
         } else
             throw new DatrisException("Unsupported file type in pipeline config for pipeline: " + config.name)
+    }
+
+    /** Writes a "\n" ahead of the first write when `separate` is set, so a
+      * second file's rows join the first file's without a blank line and a
+      * file with no rows adds nothing. `out` is not closed. */
+    private class FileSeparatorWriter(out: Writer, separate: Boolean) extends Writer {
+        private var pending = separate
+        override def write(cbuf: Array[Char], off: Int, len: Int): Unit = {
+            if (pending) { out.write("\n"); pending = false }
+            out.write(cbuf, off, len)
+        }
+        override def flush(): Unit = out.flush()
+        override def close(): Unit = out.flush()
     }
 
     private def getSize(bucket: String, key: String, metadata: PipelineMetadata): Long = {
