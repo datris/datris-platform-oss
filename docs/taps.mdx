@@ -356,7 +356,7 @@ Cron-scheduled runs that legitimately produce zero records (incremental tap that
 
 A tap run's records never sit in the server's heap: the wrapper writes them to a staged file on the `datris-staging` volume as the script returns them, and the pipeline reads that file. What is capped is disk — `PIPELINE_MAX_PAYLOAD_MB` (property `pipelineMaxPayloadMB`) is the per-run payload disk budget in megabytes, default **4096**, `0` = unlimited. A run that stages more than the budget is stopped with an actionable error naming the variable (`The tap payload exceeded the configured disk budget for one run (PIPELINE_MAX_PAYLOAD_MB = 4096 MB, got ~4097 MB). Raise it, or chunk the source range via run_tap params.`). A multi-GB fetch runs on the default 2 GB heap.
 
-`TAP_MAX_OUTPUT_MB` is the deprecated alias of `PIPELINE_MAX_PAYLOAD_MB`, honoured for one release when the new variable is unset (the bundled Compose files default `PIPELINE_MAX_PAYLOAD_MB`, so move your value over); the server logs a deprecation warning at boot when the alias is set.
+`TAP_MAX_OUTPUT_MB` is the deprecated alias of `PIPELINE_MAX_PAYLOAD_MB`, honoured for one release when the new variable is unset; the server logs a deprecation warning at boot when the alias is set.
 
 If a backfill blows the budget, raise it, or reduce the source range using `run_tap` `params` (shorter date window, smaller page, per-symbol chunks) and call again. Multiple smaller runs all land in the same destination pipeline; with `keyFields` configured on a Postgres or MongoDB pipeline, overlapping ranges upsert safely. For a scheduled tap that keeps growing toward the cap, the durable fix is making it incremental — see [Incremental Sync (State)](#incremental-sync-state) — so every run carries only the delta.
 

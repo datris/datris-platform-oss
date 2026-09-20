@@ -103,7 +103,10 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         pgvectorSecretName = null,
         multiTenant = false,
         tapScriptTimeoutSeconds = 2,
-        // Phase 4: the output cap is the per-run disk budget (PIPELINE_MAX_PAYLOAD_MB).
+        // Phase 4: the output cap is the per-run disk budget (PIPELINE_MAX_PAYLOAD_MB);
+        // a single-document `data` string is still read whole, under the
+        // materialization cap.
+        pipelineMaterializeMaxMB = 1,
         pipelineMaxPayloadMB = 1
     )
 
@@ -268,6 +271,15 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(result.error.contains("disk budget"), result.error)
         assert(result.error.contains("PIPELINE_MAX_PAYLOAD_MB = 1 MB"), result.error)
         assert(!result.error.contains("MB limit"), "old wording is gone: " + result.error)
+    }
+
+    test("oversized single-document data string is refused under the materialization cap, not buffered") {
+        // pipelineMaterializeMaxMB=1 in testEnv; a ~1.2 MB text document.
+        install(200, s"""{"type": "text", "data": "${"t" * (1200 * 1024)}"}""")
+        val result = TapScriptRunner.run(httpTap())
+        assert(result.error != null)
+        assert(result.error.contains("PIPELINE_MATERIALIZE_MAX_MB"), result.error)
+        assert(result.staged == null)
     }
 
     test("oversized state blob is rejected with the state-cap message") {

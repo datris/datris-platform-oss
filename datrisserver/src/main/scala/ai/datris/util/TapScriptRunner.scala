@@ -175,31 +175,12 @@ object TapScriptRunner {
           |            _f.write(result.replace("\x1e", ""))
           |            _count = 1
           |        else:
-          |            _value = result
-          |            if isinstance(result, str):
-          |                # A JSON-looking string: use its parsed value when it parses.
-          |                try:
-          |                    _value = json.loads(result)
-          |                except Exception:
-          |                    _value = result
-          |            if isinstance(_value, list):
-          |                _columns = {}
-          |                _dicts = True
-          |                for _row in _value:
-          |                    if _dicts and isinstance(_row, dict):
-          |                        for _k in _row:
-          |                            if _k not in _columns:
-          |                                _columns[_k] = True
-          |                    else:
-          |                        _dicts = False
-          |                    _f.write(json.dumps(_row, default=str, separators=(",", ":")))
-          |                    _f.write("\n")
-          |                    _count += 1
-          |                _columns = list(_columns) if _dicts else []
-          |            else:
-          |                _f.write(json.dumps(_value, default=str, separators=(",", ":")))
-          |                _f.write("\n")
-          |                _count = 1
+          |            # A single JSON value (dict, scalar) is one line, count 1. A string
+          |            # that merely looks like JSON stays a string, as on the inline path,
+          |            # where it counts as 0 records.
+          |            _f.write(json.dumps(result, default=str, separators=(",", ":")))
+          |            _f.write("\n")
+          |            _count = 0 if isinstance(result, str) else 1
           |    if isinstance(_columns, list):
           |        print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |    else:
@@ -590,6 +571,9 @@ object TapScriptRunner {
         if (data == null || data.isJsonNull) return StagedPayload.empty
         if (data.isJsonPrimitive && data.getAsJsonPrimitive.isString && (dataType == "xml" || dataType == "text"))
             PayloadStager.stageText("tap", if (dataType == "xml") StagedFormat.Xml else StagedFormat.Text, data.getAsString)
+        else if (data.isJsonPrimitive && data.getAsJsonPrimitive.isString)
+            // A string under a json/csv/document type counted as 0 records before (not an array).
+            PayloadStager.stageJson("tap", new java.io.StringReader(data.toString)).copy(rowCount = 0L)
         else PayloadStager.stageJson("tap", new java.io.StringReader(data.toString))
     }
 
@@ -685,20 +669,38 @@ object TapScriptRunner {
         result
     }
 
-    /** An InputStream that remembers its first bytes, so an error message can
-      * quote an excerpt of a response that was otherwise streamed to disk. */
-    private class PrefixCapturingInputStream(in: java.io.InputStream, limit: Int) extends java.io.FilterInputStream(in) {
+    /** An InputStream that remembers its first bytes (so an error message can
+      * quote an excerpt of a response that was otherwise streamed to disk) and
+      * counts what it hands out against a bound: the response body is untrusted,
+      * and whatever is NOT streamed element-by-element (a single-document `data`
+      * string, `logs`, `state`) is materialized in heap by the JSON reader, so it
+      * must never be unbounded. `bound` is the per-run materialization cap until
+      * the caller sees `data` is an array and raises it to the disk budget. */
+    private class BoundedPrefixInputStream(in: java.io.InputStream, prefixLimit: Int, onOverflow: Long => DatrisException)
+        extends java.io.FilterInputStream(in) {
         private val prefix = new java.io.ByteArrayOutputStream()
+        @volatile var bound: Long = Long.MaxValue
+        private var count: Long = 0L
+        private def account(n: Int): Unit = {
+            count += n
+            if (count > bound) throw onOverflow(count)
+        }
         private def remember(b: Array[Byte], off: Int, len: Int): Unit =
-            if (prefix.size() < limit) prefix.write(b, off, math.min(len, limit - prefix.size()))
+            if (prefix.size() < prefixLimit) prefix.write(b, off, math.min(len, prefixLimit - prefix.size()))
         override def read(): Int = {
             val b = in.read()
-            if (b >= 0 && prefix.size() < limit) prefix.write(b)
+            if (b >= 0) {
+                if (prefix.size() < prefixLimit) prefix.write(b)
+                account(1)
+            }
             b
         }
         override def read(b: Array[Byte], off: Int, len: Int): Int = {
             val n = in.read(b, off, len)
-            if (n > 0) remember(b, off, n)
+            if (n > 0) {
+                remember(b, off, n)
+                account(n)
+            }
             n
         }
         def excerpt: String = new String(prefix.toByteArray, StandardCharsets.UTF_8)
@@ -846,7 +848,25 @@ object TapScriptRunner {
             // string is staged verbatim, `state` is captured with JsonParser so
             // number literals survive verbatim (same rationale as extractStateJson),
             // `type` / `logs` as before. The disk budget is enforced on bytes written.
-            val responseBody = new PrefixCapturingInputStream(response.body(), 512)
+            // Bound: the materialization cap while the body may be a single document
+            // (PIPELINE_MATERIALIZE_MAX_MB, as any whole-payload read); raised to the
+            // disk budget once `data` is seen to be an array, which streams.
+            val materializeBytes: Long = StagingArea.materializeMaxMB.toLong * 1024L * 1024L
+            var dataIsArray = false
+            val responseBody = new BoundedPrefixInputStream(
+                response.body(),
+                512,
+                bytes =>
+                    if (dataIsArray) new DatrisException(StagingArea.budgetExceededMessage(bytes))
+                    else
+                        new DatrisException(
+                            "Tap endpoint response is a single document of more than " + StagingArea.materializeMaxMB +
+                                " MB, which is read whole into memory (" + StagingArea.MaterializeCapEnvVar + " = " +
+                                StagingArea.materializeMaxMB + " MB). Raise it for this install, or return the payload as a " +
+                                "\"data\" array of records, which streams to disk under " + StagingArea.PayloadBudgetEnvVar + "."
+                        )
+            )
+            responseBody.bound = materializeBytes
             var dataType = ""
             var logs: String = null
             var newStateJson: String = null
@@ -882,6 +902,8 @@ object TapScriptRunner {
                                         reader.nextNull()
                                         dataNull = true
                                     case JsonToken.BEGIN_ARRAY =>
+                                        dataIsArray = true
+                                        responseBody.bound = if (StagingArea.payloadBudgetBytes > 0) StagingArea.payloadBudgetBytes else Long.MaxValue
                                         arrayStaged = stageJsonArray(reader)
                                     case JsonToken.STRING =>
                                         dataString = reader.nextString()
@@ -1239,30 +1261,26 @@ object TapScriptRunner {
                         val out = new java.io.BufferedOutputStream(Files.newOutputStream(outputPath))
                         var written = 0L
                         try {
-                            val buf = new Array[Byte](64 * 1024)
-                            var inTrailer = false
-                            var n = in.read(buf)
-                            while (n >= 0) {
-                                var off = 0
-                                if (!inTrailer) {
-                                    var i = 0
-                                    while (i < n && buf(i) != RecordTrailerSentinel) i += 1
-                                    if (i > 0) {
-                                        out.write(buf, 0, i)
-                                        written += i
-                                        if (StagingArea.overBudget(written)) throw new DatrisException(StagingArea.budgetExceededMessage(written))
+                            try streamRecords(
+                                    in,
+                                    out,
+                                    trailer,
+                                    b => {
+                                        written += b; if (StagingArea.overBudget(written)) throw new DatrisException(StagingArea.budgetExceededMessage(written))
                                     }
-                                    if (i < n) { inTrailer = true; off = i + 1 }
-                                    else off = n
-                                }
-                                if (inTrailer && off < n) trailer.write(buf, off, n - off)
-                                n = in.read(buf)
+                                )
+                            catch {
+                                case e: Exception =>
+                                    // Drop the socket without draining what the runner is still
+                                    // sending (in.close() would read the rest to EOF); the runner's
+                                    // write then fails and it kills the tap process.
+                                    post.abort()
+                                    throw e
                             }
-                            if (!inTrailer)
-                                throw new DatrisException("Tap runner response ended without a result trailer (the runner may have died mid-run)")
                         } finally {
                             out.close()
-                            in.close()
+                            try in.close()
+                            catch { case _: Exception => () }
                         }
                         JsonParser.parseString(new String(trailer.toByteArray, StandardCharsets.UTF_8).trim).getAsJsonObject
                     }
@@ -1286,6 +1304,31 @@ object TapScriptRunner {
         } finally {
             httpClient.close()
         }
+    }
+
+    /** Copy the streamed sidecar response: bytes before the first 0x1E go to
+      * `out` (reporting each written count to `onWritten`), the rest to `trailer`. */
+    private def streamRecords(in: java.io.InputStream, out: java.io.OutputStream, trailer: java.io.ByteArrayOutputStream, onWritten: Int => Unit): Unit = {
+        val buf = new Array[Byte](64 * 1024)
+        var inTrailer = false
+        var n = in.read(buf)
+        while (n >= 0) {
+            var off = 0
+            if (!inTrailer) {
+                var i = 0
+                while (i < n && buf(i) != RecordTrailerSentinel) i += 1
+                if (i > 0) {
+                    out.write(buf, 0, i)
+                    onWritten(i)
+                }
+                if (i < n) { inTrailer = true; off = i + 1 }
+                else off = n
+            }
+            if (inTrailer && off < n) trailer.write(buf, off, n - off)
+            n = in.read(buf)
+        }
+        if (!inTrailer)
+            throw new DatrisException("Tap runner response ended without a result trailer (the runner may have died mid-run)")
     }
 
     private def executeWithTimeout(

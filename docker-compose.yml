@@ -326,11 +326,11 @@ services:
       # Comma-separated MinIO buckets a pipeline's destinationBucketOverride may target (unset = any).
       DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST: "${DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST:-}"
       # Per-run payload disk budget (MB): the most a tap run may stage on the
-      # datris-staging volume before it is stopped; 0 = unlimited.
-      PIPELINE_MAX_PAYLOAD_MB: "${PIPELINE_MAX_PAYLOAD_MB:-4096}"
-      # Deprecated alias of PIPELINE_MAX_PAYLOAD_MB (removed next release). Forwarded
-      # without a default so it only counts as set when it is in .env; the server
-      # logs a deprecation warning when it is, and PIPELINE_MAX_PAYLOAD_MB wins.
+      # datris-staging volume before it is stopped; 0 = unlimited. An explicit
+      # value wins; else the deprecated TAP_MAX_OUTPUT_MB from .env; else 4096.
+      PIPELINE_MAX_PAYLOAD_MB: "${PIPELINE_MAX_PAYLOAD_MB:-${TAP_MAX_OUTPUT_MB:-4096}}"
+      # Deprecated alias (removed next release), forwarded without a default so it
+      # only counts as set when it is in .env; the server logs a warning when it is.
       TAPMAXOUTPUTMB: "${TAP_MAX_OUTPUT_MB:-}"
       # Pipeline payload staging: a run's payload is written once to
       # DATRIS_TEMP_DIR (the datris-staging volume) and read from there by

@@ -355,11 +355,15 @@ class StartupRunner extends ApplicationRunner {
         val tapMaxOutputMB = optionalInt(tapMaxOutputMBRaw)
         val pipelineMaxPayloadMB = optionalInt(pipelineMaxPayloadMBRaw)
         if (tapMaxOutputMB >= 0) {
-            if (pipelineMaxPayloadMB >= 0)
+            if (pipelineMaxPayloadMB >= 0 && pipelineMaxPayloadMB == tapMaxOutputMB)
+                logger.warn(
+                    "TAP_MAX_OUTPUT_MB is deprecated; the per-run payload disk budget resolved to " + pipelineMaxPayloadMB +
+                        " MB. Rename it to PIPELINE_MAX_PAYLOAD_MB; the alias goes away next release."
+                )
+            else if (pipelineMaxPayloadMB >= 0)
                 logger.warn(
                     "TAP_MAX_OUTPUT_MB=" + tapMaxOutputMB + " is deprecated and ignored because PIPELINE_MAX_PAYLOAD_MB=" +
-                        pipelineMaxPayloadMB + " is set (the bundled compose files default it to " + StagingArea.DefaultPayloadBudgetMB +
-                        "). Set PIPELINE_MAX_PAYLOAD_MB to the value you want and remove TAP_MAX_OUTPUT_MB; the alias goes away next release."
+                        pipelineMaxPayloadMB + " is set. Remove TAP_MAX_OUTPUT_MB; the alias goes away next release."
                 )
             else
                 logger.warn(

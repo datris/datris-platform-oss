@@ -400,7 +400,8 @@ object DoctorService {
     class EnvSeenCheck(probes: Probes) extends Check {
         val id = "env.seen"
         val startupSafe = true
-        val names = Seq("DATRIS_ENV", "DATRIS_ALLOW_PLAINTEXT_DB", "DATRIS_ALLOW_PRIVATE_EGRESS", "TAPMAXOUTPUTMB", "VAULT_TOKEN_FILE")
+        val names =
+            Seq("DATRIS_ENV", "DATRIS_ALLOW_PLAINTEXT_DB", "DATRIS_ALLOW_PRIVATE_EGRESS", "PIPELINE_MAX_PAYLOAD_MB", "TAPMAXOUTPUTMB", "VAULT_TOKEN_FILE")
         def run(): CheckResult = {
             val seen = probes.envSeen(names)
             val present = names.filter(n => seen.getOrElse(n, false))

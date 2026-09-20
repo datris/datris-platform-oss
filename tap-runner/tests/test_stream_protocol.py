@@ -30,6 +30,7 @@ import glob
 import http.client
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -220,7 +221,12 @@ print(json.dumps({"keys": keys, "handed": os.environ.get("DATRIS_TAP_PARAM_x")})
     seen = json.loads(trailer["stdout"].strip())
     assert seen["handed"] == "1"
     extra = set(seen["keys"]) - set(app.ALLOWLIST) - {"DATRIS_TAP_PARAM_x", "PIP_NO_CACHE_DIR"}
-    assert extra == set(), f"streaming path leaked env vars into the tap: {extra}"
+    # What the interpreter itself adds to any child, even with an empty env
+    # (macOS injects LC_CTYPE and __CF_USER_TEXT_ENCODING) — not a runner leak.
+    baseline = set(json.loads(subprocess.run(
+        [sys.executable, "-c", "import os,json;print(json.dumps(sorted(os.environ)))"],
+        env={}, capture_output=True, text=True).stdout))
+    assert extra - baseline == set(), f"streaming path leaked env vars into the tap: {extra - baseline}"
 
 
 # -------------------------------------------------------------- legacy path ---

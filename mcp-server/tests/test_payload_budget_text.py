@@ -93,7 +93,7 @@ def test_env_example_documents_the_new_var_and_the_alias():
 def test_compose_forwards_the_new_var_with_default_4096_and_keeps_the_alias():
     for path in (COMPOSE, COMPOSE_STANDALONE):
         text = _read(path)
-        assert re.search(r"\$\{" + NEW_VAR + r":-4096\}", text), f"{os.path.basename(path)} must forward {NEW_VAR} defaulting to 4096"
+        assert re.search(r"\$\{PIPELINE_MAX_PAYLOAD_MB:-(\$\{TAP_MAX_OUTPUT_MB:-)?4096\}?\}", text), f"{os.path.basename(path)} must forward {NEW_VAR} defaulting to 4096"
         assert OLD_VAR in text, f"{os.path.basename(path)} must keep forwarding the alias for one release"
         # The alias must no longer default to 100: that would make the alias
         # always "set" and pin every install at 100 MB.
