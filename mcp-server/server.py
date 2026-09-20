@@ -441,13 +441,16 @@ Tap workflow (for step 3 Option B):
   Taps are Python scripts that fetch data from external sources and push it into pipelines. Use taps when data needs to be pulled from APIs, websites, databases, or other external sources on demand or on a schedule.
   Two ways to create a tap:
     - With instruction: provide a plain-English instruction and the platform's AI generates the script. This is slower (1-2 minutes) because the platform must generate and store the script.
-    - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries.
+    - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries — or, for a large source, yields them one at a time (a generator / iterator); the platform streams yielded records to disk, so a run is never limited by memory unless the script builds the whole result first.
   Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
   Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever — the platform authenticates the callback per run by itself (a run-scoped DATRIS_PLATFORM_TOKEN the wrapper attaches to requests/urllib calls aimed at DATRIS_PLATFORM_HOST), so never add an x-api-key to these calls or ask the user for one. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
   2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
      The platform refuses a save with a `cron_expression` on an untested script (HTTP 409): create without the cron, test_tap, then update_tap with the cron.
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
+     A test killed with exit code -9 (or 137, "killed") ran out of memory: the script built its whole result in memory. Rewrite fetch() to yield records one at a time (read the source in chunks / pages and yield each row) — do not cap the rows or split the source.
+     After two consecutive failed tests, STOP and report the exact error text to the user with what you tried; let the user decide the next step.
+     Never probe the runner environment or read the wrapper to diagnose a failure — the error text, the logs and the script are the whole diagnosis; datris://tap-workflow-reference is the complete contract.
   4. Run: call run_tap to execute and push data to the pipeline.
      After `run_tap` returns, READ the response's `persisted` field BEFORE doing anything else:
        - `persisted: true` → records were handed to the pipeline, but the load is async. You MUST call `get_pipeline_status(publisher_token=response.publisherToken)` and poll (re-call every few seconds) until `rollup.allDone` is true. Only THEN query the destination or report completion to the user. Reporting success before the poll finishes is a bug — the destination will appear empty. Read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failures.
@@ -1166,7 +1169,11 @@ This applies to:
 If `test_tap` fails:
 1. Read the `error` and the `logs` field — they carry the Python traceback or runtime issue.
 2. Fix the script: call `create_tap` again with the same `name` and a corrected `instruction` or revised `script`.
-3. Re-run `test_tap`. Iterate until it passes.
+3. Re-run `test_tap`. Iterate until it passes — but after two consecutive failed tests, STOP and report the exact error text to the user (what you tried, what you think is wrong) instead of iterating blind.
+
+Killed for memory: an `error` reporting exit code -9 (or 137, or the word "killed") with no traceback means the script ran out of memory because `fetch()` built its whole result in memory. The fix is always the same — rewrite `fetch()` to `yield` records one at a time (read the source in chunks / pages / batches and yield each row) instead of returning a list; the platform streams yielded records to disk, so the run is not limited by memory. Do NOT cap the row count, split the source into several runs, or treat the kill as a platform bug.
+
+Never probe the runner environment or read the wrapper to diagnose a failure (no printing `os.environ`, no listing installed packages, no introspecting the platform's own code): this reference is the complete contract, and the error text plus the logs and the script are all the diagnosis needs.
 
 Only THEN are you allowed to call `run_tap` or set `cron_expression`. Setting a cron on a never-tested script ships a guaranteed-bad nightly run; the user delegated the schedule to Datris, not the validation to luck.
 
@@ -1290,9 +1297,12 @@ If none fit (small unordered source), skip state — a full fetch each run is co
 - You've already iterated and know exactly what you want
 
 The script MUST define `fetch()` taking no arguments and returning one of:
-- A list of dicts (structured records)
-- A list of `{uri, filename, content}` dicts where `content` is base64-encoded bytes (document tap — for vector destinations)
+- A list of dicts (structured records) — or a generator / iterator that YIELDS them one at a time (use this for any large source: the platform streams yielded records to disk in one pass, while a list of millions of rows is killed for memory)
+- A list of lists (rows), the first being the header — or a generator yielding them
+- A list of `{uri, filename, content}` dicts where `content` is base64-encoded bytes (document tap — for vector destinations) — or a generator yielding them
 - A string (raw JSON, XML, or text)
+
+Large sources: read the source in chunks / pages / batches (e.g. `pd.read_csv(..., chunksize=50000)`, `pyarrow.parquet.ParquetFile(...).iter_batches()`, one API page at a time) and `yield` each row before fetching the next chunk. Never hold more than one chunk. A tap run handles the whole requested range in ONE run — do not cap the rows or split the source for size. In test mode (`DATRIS_TAP_TEST_LIMIT`) the platform stops pulling a generator after N records; a returned list is never truncated, so the script must still cap its own reads.
 
 ### Pre-installed packages
 
@@ -1368,6 +1378,7 @@ Do not query the destination or report completion to the user before polling com
 ### Common `run_error` causes
 
 - **Payload exceeded the disk budget** — the run staged more than `PIPELINE_MAX_PAYLOAD_MB` (default 4096 MB, 0 = unlimited) on the platform's staging disk; records stream to disk, never through heap, so this is a disk ceiling. The error names the variable — the operator can raise it. Durable fix for a RECURRING tap: make it incremental (see "Incremental sync — persistent state" above) so every run fetches only what's new and stays small forever. One-off fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
+- **Killed (exit code -9 / 137, no traceback)** — out of memory: `fetch()` built its whole result in memory. Rewrite it to `yield` records per chunk / page (see "Creating a tap") — the platform streams yielded records to disk. Do not cap or split the source.
 - **Script raised an exception** — read the `logs` field for the Python traceback. Common: 403/404 from the source API (auth, entitlements), timeout, JSON parse error on malformed response.
 - **Subprocess timed out** — script ran longer than `tapScriptTimeoutSeconds` (default 300). Either the source is genuinely slow (chunk smaller via params) or the script has a bug (infinite loop, missing pagination break).
 
@@ -2389,7 +2400,8 @@ def _base_tools():
                 "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
                 "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen. "
                 "The platform enforces this: passing `cron_expression` for a script (or endpoint) that has not passed `test_tap` returns HTTP 409 with the remedy — create the tap without `cron_expression`, call `test_tap` until it succeeds, then `update_tap` with the cron. Replacing the script of a scheduled tap is refused the same way until re-tested — to replace the script of a SCHEDULED tap, clear the cron via `update_tap` (empty `cron_expression`) first, then call `create_tap` with the new script, `test_tap`, then `update_tap` with the cron. "
-                "Scripts can read data already stored in Datris WITHOUT credentials: every run auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE, and the script queries via POST http://{host}:{port}/api/v1/query/postgres with {\"sql\": ..., \"database\": <pg_db>, \"limit\": -1} (or /query/mongodb with query/database/collection/limit) — the platform executes it with its own credentials and returns {results, count}. NEVER request the platform's own DB credentials in a tap secret and NEVER hardcode a snapshot of platform data into the script — read it live. The tap secret carries only the external source's credentials."
+                "Scripts can read data already stored in Datris WITHOUT credentials: every run auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE, and the script queries via POST http://{host}:{port}/api/v1/query/postgres with {\"sql\": ..., \"database\": <pg_db>, \"limit\": -1} (or /query/mongodb with query/database/collection/limit) — the platform executes it with its own credentials and returns {results, count}. NEVER request the platform's own DB credentials in a tap secret and NEVER hardcode a snapshot of platform data into the script — read it live. The tap secret carries only the external source's credentials. "
+                "Large sources: `fetch()` may `yield` records (a generator / iterator) instead of returning a list — the platform streams yielded records to disk one at a time, so the run is not limited by memory; a script that builds millions of rows into a list is killed for memory (exit code -9). Read the source in chunks / pages and yield each row; never cap the rows or split the source for size."
             ),
             inputSchema={
                 "type": "object",
@@ -2690,7 +2702,11 @@ def _base_tools():
         ),
         Tool(
             name="test_tap",
-            description="Test-run a tap without pushing data to the pipeline. Executes the tap's script and returns results, record count, and any errors. Use this to validate a script before running it for real.",
+            description=(
+                "Test-run a tap without pushing data to the pipeline. Executes the tap's script and returns results, record count, and any errors. Use this to validate a script before running it for real. "
+                "If the error reports exit code -9 (or 137, or \"killed\") with no traceback, the script ran out of memory because fetch() built its whole result in memory: rewrite fetch() to yield records one at a time (read the source in chunks / pages) instead of returning a list, then test again. "
+                "After two consecutive failed tests, stop and report the exact error text to the user instead of iterating further; never probe the runner environment or read the wrapper to diagnose."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {

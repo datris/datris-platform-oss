@@ -78,10 +78,12 @@ class TapCsvProjectionSpec extends AnyFunSuite with BeforeAndAfterAll {
     private def unscoped: List[Path] = filesUnder(root.resolve("_unscoped"))
 
     /** A staged record list under its own tap token, the way TapScriptRunner leaves it. */
-    private def stagedUnder(token: String, json: String): TapScriptResult = {
+    private def stagedUnder(token: String, json: String, dataType: String = "json"): TapScriptResult = {
         val staged = StagingArea.withToken(token)(PayloadStager.stageJson("tap", new java.io.StringReader(json)))
-        TapScriptResult(staged, staged.rowCount.toInt, null, dataType = "json")
+        TapScriptResult(staged, staged.rowCount.toInt, null, dataType = dataType)
     }
+
+    private def linesOf(feed: StagedPayload): List[String] = Files.readAllLines(Paths.get(feed.path), StandardCharsets.UTF_8).asScala.toList
 
     test("the CSV projection is written inside the tap token dir and release() removes it with the dir") {
         val result = stagedUnder("tap-proj-ok", """[{"a":1,"b":"x"},{"a":2}]""")
@@ -98,13 +100,123 @@ class TapCsvProjectionSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(filesUnder(root).isEmpty, "staging root must be empty after the run: " + filesUnder(root))
     }
 
-    test("the jsonToCsv fallback (payload not a record list) leaves nothing behind either") {
-        val result = stagedUnder("tap-proj-fallback", """[[1,2],[3,4]]""")
-        val (feed, filename) = TapRunner.projectForCsv(result, ",", "tap-t")
-        assert(filename == "tap-t.json", "a non-object payload falls back to feeding the raw staged file")
-        assert(feed eq result.staged)
+    // ---- Story: taps survive large sources (plans/stories/tap-large-sources.md), Steps 4-5 ----
+    //
+    //  `projectForCsv` no longer falls back to feeding the raw NDJSON as
+    //  `<base>.json` (that is what put 21 garbage columns on a pipeline schema
+    //  in the field). A csv-typed list-of-lists is projected with row 1 as the
+    //  header — each cell through `TapScriptRunner.normalizeColumnName` — and
+    //  the remaining arrays as rows; short rows pad with empty, long rows are
+    //  an error; a payload that cannot be projected throws
+    //  `DatrisException("tap returned <shape>, which cannot be projected into CSV pipeline <name>: <reason>")`
+    //  before any StreamNotifier call. The token dir is still released.
+
+    test("a csv-typed list-of-lists projects with row 1 as the normalized header") {
+        val result = stagedUnder(
+            "tap-proj-arrays",
+            """[["EPS Estimate","Surprise(%)","Later Key"],[1.5,3,"a,b"],[2],[null,"q\"x","line1\nline2"]]""",
+            dataType = "csv"
+        )
+        val feed =
+            try {
+                val (feed, filename) = TapRunner.projectForCsv(result, ",", "tap-t")
+                assert(filename == "tap-t.csv", "an array payload is projected, never fed raw as .json: " + filename)
+                assert(feed.format == StagedFormat.Delimited(","))
+                assert(Paths.get(feed.path).startsWith(StagingArea.forToken("tap-proj-arrays")), "projection must live in the tap token dir, got " + feed.path)
+                assert(unscoped.isEmpty, "nothing may land under _unscoped: " + unscoped)
+
+                val records = {
+                    val it = StagedRows.delimited(feed.path, ",")
+                    try it.toList
+                    finally it.close()
+                }
+                assert(records.size == 4, "header + 3 rows, got: " + records)
+                assert(records.head == "eps_estimate,surprise_percent,later_key", "row 1 is the header, each cell normalized: " + records.head)
+                assert(records(1) == "1.5,3,\"a,b\"", "numbers verbatim, a value holding the delimiter quoted: " + records(1))
+                assert(records(2) == "2,,", "a short row pads with empty cells: " + records(2))
+                assert(records(3) == ",\"q\"\"x\",\"line1\nline2\"", "null → empty; quotes doubled; an embedded newline is one quoted record: " + records(3))
+                assert(feed.rowCount == 3L, "rowCount is the number of DATA rows (the header is not a record), got " + feed.rowCount)
+                feed
+            } finally TapRunner.release(result)
+
+        assert(!Files.exists(Paths.get(feed.path)), "release() must remove the projection")
+        assert(filesUnder(root).isEmpty, "staging root must be empty after the run: " + filesUnder(root))
+    }
+
+    test("a long row in a csv-typed list-of-lists fails with the named projection error") {
+        val result = stagedUnder("tap-proj-long", """[["a","b"],[1,2],[3,4,5]]""", dataType = "csv")
+        try {
+            val e = intercept[DatrisException](TapRunner.projectForCsv(result, ",", "tap-t"))
+            assert(e.getMessage.contains("cannot be projected into CSV pipeline tap-t"), e.getMessage)
+        } finally TapRunner.release(result)
+        assert(filesUnder(root).isEmpty, "the token dir must still release after a failed projection: " + filesUnder(root))
+    }
+
+    test("header cells that normalize to the same name fail with the named projection error") {
+        // "Amount" and "amount" both normalize to `amount`; without the guard the
+        // projection writes a CSV with two identically-named columns.
+        val result = stagedUnder("tap-proj-dupe", """[["Amount","amount"],[1,2]]""", dataType = "csv")
+        try {
+            val e = intercept[DatrisException](TapRunner.projectForCsv(result, ",", "tap-t"))
+            assert(e.getMessage.contains("duplicate column names after normalization: amount"), e.getMessage)
+            assert(e.getMessage.contains("cannot be projected into CSV pipeline tap-t"), e.getMessage)
+        } finally TapRunner.release(result)
+        assert(filesUnder(root).isEmpty, "the token dir must still release after a failed projection: " + filesUnder(root))
+    }
+
+    test("a mixed object/array payload fails with the named projection error") {
+        // First line an object (so the wrapper typed it json), then an array —
+        // today's jsonToCsv threw on line 2 and the catch fed the raw file as .json.
+        val mixed = stagedUnder("tap-proj-mixed", """[{"a":1,"b":2},[3,4],{"a":5}]""")
+        try {
+            val e = intercept[DatrisException](TapRunner.projectForCsv(mixed, ",", "tap-t"))
+            assert(e.getMessage.startsWith("tap returned "), "message opens with the shape it saw: " + e.getMessage)
+            assert(e.getMessage.contains("cannot be projected into CSV pipeline tap-t"), e.getMessage)
+            assert(e.getMessage.contains(": "), "message ends with the reason: " + e.getMessage)
+        } finally TapRunner.release(mixed)
+        assert(filesUnder(root).isEmpty, filesUnder(root).toString)
+
+        // The other order: arrays first (typed csv), then an object.
+        val mixed2 = stagedUnder("tap-proj-mixed-2", """[["a","b"],[1,2],{"a":3}]""", dataType = "csv")
+        try {
+            val e2 = intercept[DatrisException](TapRunner.projectForCsv(mixed2, ",", "tap-t"))
+            assert(e2.getMessage.contains("cannot be projected into CSV pipeline tap-t"), e2.getMessage)
+        } finally TapRunner.release(mixed2)
+        assert(filesUnder(root).isEmpty, filesUnder(root).toString)
+    }
+
+    test("projectForCsv never returns a .json filename") {
+        // Every shape either projects to .csv or throws — the raw-NDJSON fallback is gone.
+        val objects = stagedUnder("tap-proj-never-json-1", """[{"a":1},{"a":2}]""")
+        try {
+            val (f1, n1) = TapRunner.projectForCsv(objects, ",", "tap-t")
+            assert(n1 == "tap-t.csv" && f1.format == StagedFormat.Delimited(","))
+        } finally TapRunner.release(objects)
+
+        val arrays = stagedUnder("tap-proj-never-json-2", """[["h1","h2"],[1,2]]""", dataType = "csv")
+        try {
+            val (f2, n2) = TapRunner.projectForCsv(arrays, ",", "tap-t")
+            assert(n2 == "tap-t.csv" && f2.format == StagedFormat.Delimited(","), "got " + n2)
+            assert(linesOf(f2).head == "h1,h2")
+        } finally TapRunner.release(arrays)
+
+        // A list of scalars is not a record list of either shape.
+        val scalars = stagedUnder("tap-proj-never-json-3", """[1,2,3]""")
+        try {
+            val e = intercept[DatrisException](TapRunner.projectForCsv(scalars, ",", "tap-t"))
+            assert(e.getMessage.contains("cannot be projected into CSV pipeline tap-t"), e.getMessage)
+        } finally TapRunner.release(scalars)
+
+        // An array payload whose dataType was NOT sniffed as csv (e.g. an HTTP tap
+        // declaring json with array rows) still projects by shape, never .json.
+        val declaredJson = stagedUnder("tap-proj-never-json-4", """[["x"],[1]]""")
+        try {
+            val (f4, n4) = TapRunner.projectForCsv(declaredJson, ",", "tap-t")
+            assert(n4 == "tap-t.csv", "an array payload under a json label still projects: " + n4)
+            assert(linesOf(f4) == List("x", "1"))
+        } finally TapRunner.release(declaredJson)
+
         assert(unscoped.isEmpty)
-        TapRunner.release(result)
         assert(filesUnder(root).isEmpty, filesUnder(root).toString)
     }
 

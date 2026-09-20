@@ -41,7 +41,7 @@ object TapScriptReviewer {
           |  }
           |
           |HARD PRESERVATION RULES:
-          |  - Keep the fetch() signature and return shape.
+          |  - Keep the fetch() signature and return shape. fetch() may return a list or `yield` records (the platform streams yielded records); if the output shows the source is large, prefer yield per chunk over building the whole list — never the reverse.
           |  - Keep os.environ.get(...) reads unchanged.
           |  - Keep DATRIS_TAP_TEST_LIMIT / sample_cap / source_limit handling.
           |  - Keep DATRIS_TAP_STATE / DATRIS_STATE incremental-sync handling if present — it is the platform's bookmark contract, not dead code.

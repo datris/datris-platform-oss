@@ -25,11 +25,17 @@ object TapScriptGenerator {
     private val SYSTEM_PROMPT =
         """You are a code generator. Return a JSON object with two fields:
           |- "script": a valid Python 3 script that defines a function called `fetch()`
-          |  that takes no arguments and returns a list of dictionaries (records).
+          |  that takes no arguments and returns a list of dictionaries (records) — or, for a
+          |  large source, YIELDS them one at a time (a generator, or any iterator).
           |- "packages": a list of any pip packages needed beyond the pre-installed set
           |  (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, pyyaml, openpyxl,
           |  python-dateutil, pytz, google-cloud-storage, azure-storage-blob).
           |  Pre-installed packages do not need to be listed. Use an empty list if none needed.
+          |
+          |Memory — IMPORTANT for large sources:
+          |- The platform streams whatever `fetch()` produces to disk one record at a time, so the run is never limited by memory — but only if the SCRIPT does not build the whole result first. A `fetch()` that appends millions of rows to a list (or loads a whole file into pandas and calls `to_dict("records")`) is killed for memory.
+          |- When the source can be large (a big file, a full table, a long paginated API), `yield` each record from `fetch()` instead of returning a list: read the source in chunks / pages / batches (e.g. `pd.read_csv(..., chunksize=50000)`, `pyarrow.parquet.ParquetFile(...).iter_batches()`, one API page at a time) and `yield` the rows of each chunk before fetching the next. Never hold more than one chunk at a time.
+          |- Returning a list is still fine for small sources. The record shape, key naming, state handling and test-limit rules below apply identically to yielded records.
           |
           |The script must:
           |- Be completely self-contained
@@ -90,11 +96,11 @@ object TapScriptGenerator {
           |Tap scripts MUST always pass `"limit": -1` on both endpoints (but honor the test-sample env var below):
           |- `-1` tells the server to return every matching row. It is the correct value for real cron/manual runs.
           |- Omitting `limit` makes the server apply a preview default (20 for Mongo, 100 for Postgres) and the tap will silently read a tiny slice. Do not rely on the default.
-          |- There is no pagination on these endpoints. A single call returns the full result set; design the rest of the script accordingly (if a source is very large, iterate as you go rather than accumulating every intermediate value).
+          |- There is no pagination on these endpoints. A single call returns the full result set; design the rest of the script accordingly (if a source is very large, `yield` as you go rather than accumulating every intermediate value).
           |
           |Test-sample environment variable `DATRIS_TAP_TEST_LIMIT`:
           |- When the user enables "Limit test sample" in the Create Tap test UI, the runner injects `DATRIS_TAP_TEST_LIMIT` (an integer string, e.g. "20") into the script process. Cron and manual runs never set this variable.
-          |- If `DATRIS_TAP_TEST_LIMIT` is set, the script MUST cap its work at that many records: use it as the `limit` on `/query/*` bodies (instead of -1) AND break out of any per-item iteration (per-record, per-user, per-page, etc.) after that many items. If unset or empty, pass `limit: -1` and iterate unbounded.
+          |- If `DATRIS_TAP_TEST_LIMIT` is set, the script MUST cap its work at that many records: use it as the `limit` on `/query/*` bodies (instead of -1) AND break out of any per-item iteration (per-record, per-user, per-page, etc.) after that many items. If unset or empty, pass `limit: -1` and iterate unbounded. (When `fetch()` yields, the platform also stops pulling after that many records — but still cap the source reads so the test stays fast.)
           |- Required pattern at the top of `fetch()`:
           |    _tl = os.environ.get('DATRIS_TAP_TEST_LIMIT')
           |    sample_cap = int(_tl) if _tl else None            # None = unlimited
@@ -103,7 +109,7 @@ object TapScriptGenerator {
           |
           |Incremental sync — persistent state (`DATRIS_TAP_STATE` in, `DATRIS_STATE` out):
           |- The platform persists a small JSON state object between runs so a recurring tap fetches only what is new. The last committed state is injected as the env var `DATRIS_TAP_STATE` (absent on the very first run). To save new state, assign a dict to the module-global `DATRIS_STATE` inside `fetch()` (declare `global DATRIS_STATE` first). The platform commits it ONLY after a successful run — a failed run automatically re-fetches the same window, so never advance state defensively.
-          |- CRITICAL: `fetch()` must STILL return the plain list of record dicts. Do NOT change the return shape to carry state — never `return {"records": rows, "state": ...}`. State travels ONLY through the `DATRIS_STATE` module-global; the return value stays exactly the record list it would be without state.
+          |- CRITICAL: `fetch()` must STILL return (or yield) the plain record dicts. Do NOT change the return shape to carry state — never `return {"records": rows, "state": ...}`. State travels ONLY through the `DATRIS_STATE` module-global; the return value stays exactly the record list it would be without state. In a generator, assign `DATRIS_STATE` after the last `yield` — the platform reads it once the records are drained.
           |- Derive the cursor from the DATA, not the clock: save the max modified-timestamp / id seen in the fetched records, not "now" — wall-clock cursors silently skip records when clocks disagree with the source.
           |- PREFER an incremental design whenever the tap will run on a schedule and the source supports one of these, in order of preference:
           |  1. Modified-since filtering (an updated-after/modified-since query parameter): state = the newest modification timestamp seen.
@@ -135,7 +141,9 @@ object TapScriptGenerator {
         """You are a code generator for a DOCUMENT TAP. Return a JSON object with two fields:
           |- "script": a valid Python 3 script that defines a function called `fetch()`
           |  that takes no arguments and returns a list of dictionaries, where each dictionary
-          |  describes ONE source document to be ingested.
+          |  describes ONE source document to be ingested. For a large corpus, `yield` each
+          |  document dict instead of returning a list — the platform streams yielded documents
+          |  to disk one at a time, while a list of every document's bytes is killed for memory.
           |- "packages": a list of any pip packages needed beyond the pre-installed set
           |  (requests, beautifulsoup4, pandas, lxml, feedparser, boto3, pyyaml, openpyxl,
           |  python-dateutil, pytz, google-cloud-storage, azure-storage-blob).

@@ -709,4 +709,40 @@ class TapStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
             finally dropStaged(TapScriptResult(csv, 0, null))
         } finally dropStaged(TapScriptResult(staged, 0, null))
     }
+
+    // ================================================================
+    // Story: taps survive large sources (plans/stories/tap-large-sources.md)
+    // — a csv-typed ARRAY payload (list of lists from the real wrapper) into a
+    // CSV pipeline is projected with row 1 as the header, never fed raw as
+    // .json (today: normalizeCsvColumns no-ops on array rows, jsonToCsv throws
+    // on the first array line, and the fallback feeds NDJSON to the CSV lane).
+    // ================================================================
+
+    test("csv-typed array payload from the real wrapper reaches the CSV pipeline projection as .csv with the header row") {
+        assume(pythonAvailable, "python3 not available")
+        val script =
+            """def fetch():
+              |    return [["EPS Estimate", "Surprise(%)"], [1.5, 3], [2, "a,b"]]
+              |""".stripMargin
+        val result = withEnv(env())(TapScriptRunner.runScript(scriptTap(), script))
+        try {
+            assert(result.error == null, String.valueOf(result.error))
+            assert(result.dataType == "csv")
+            assert(result.recordCount == 3)
+            assert(result.staged.format == StagedFormat.NdJson)
+            assert(stagedLines(result.staged).forall(l => JsonParser.parseString(l).isJsonArray), "array rows stay arrays on the staged file")
+
+            val (feed, filename) = withEnv(env())(TapRunner.projectForCsv(result, ",", "tap-t"))
+            assert(filename == "tap-t.csv", "the CSV pipeline is fed a .csv projection, never the raw NDJSON: " + filename)
+            assert(feed.format == StagedFormat.Delimited(","))
+            val lines = fileLines(Paths.get(feed.path))
+            assert(lines.size == 3, s"header + 2 rows, got: $lines")
+            assert(lines.head == "eps_estimate,surprise_percent", "row 1 is the header, normalized like the dict lane: " + lines.head)
+            assert(lines(1) == "1.5,3")
+            assert(lines(2) == "2,\"a,b\"", "today's quoting: " + lines(2))
+            assert(Paths.get(feed.path).startsWith(Paths.get(result.staged.path).getParent), "projection lives in the tap token dir")
+        } finally {
+            TapRunner.release(result)
+        }
+    }
 }

@@ -560,65 +560,122 @@ object TapRunner {
       * staging directory (feedPipeline runs after TapScriptRunner.run has left its
       * token scope, so an unbound `newWriter` would land in `_unscoped/` and
       * outlive the run — the InputStream overload copies rather than moves). It
-      * is reclaimed with the tap token dir by `release`. Falls back to the raw
-      * staged file (fed as `.json`) when the payload is not a JSON record list. */
+      * is reclaimed with the tap token dir by `release`. Every payload either
+      * projects to `<baseName>.csv` or throws a `DatrisException` naming the
+      * shape and the reason — the raw NDJSON is never fed to the CSV lane (that
+      * is what put garbage columns on a pipeline schema in the field). */
     private[util] def projectForCsv(result: TapScriptResult, delimiter: String, baseName: String): (StagedPayload, String) =
         StagingArea.withToken(TapScriptRunner.stagingTokenOf(result.staged)) {
             try { (jsonToCsv(result.staged, delimiter), baseName + ".csv") }
             catch {
                 case e: Exception =>
-                    logger.error("TapRunner: jsonToCsv failed: " + e.getMessage)
-                    (result.staged, baseName + ".json")
+                    val shape = "a " + String.valueOf(result.dataType) + " payload of " + result.recordCount + " record(s)"
+                    val msg = "tap returned " + shape + ", which cannot be projected into CSV pipeline " + baseName + ": " + e.getMessage
+                    logger.error("TapRunner: " + msg)
+                    throw new DatrisException(msg)
             }
         }
 
     /** Streaming projection of a staged NDJSON record list into a Delimited
-      * staged file: header = union of keys across ALL records (first-seen
-      * order — variable-shape sources would otherwise lose later-only columns),
-      * then one row per record with the same quoting rules as before (a value
-      * holding the delimiter, a quote or a line break is quoted, quotes doubled);
-      * null / absent → empty. An empty list yields a 0-byte file. Throws when a
-      * record is not a JSON object (the caller falls back to feeding the raw file). */
+      * staged file. Keyed on the SHAPE of line 1, not the tap's dataType label:
+      *  - JSON objects: header = union of keys across ALL records (first-seen
+      *    order — variable-shape sources would otherwise lose later-only
+      *    columns), then one row per record.
+      *  - JSON arrays (a list of lists): line 1 is the header, each cell through
+      *    `TapScriptRunner.normalizeColumnName`; the remaining arrays are rows —
+      *    short rows pad with empty, a long row is an error. rowCount excludes
+      *    the header.
+      * Same quoting either way (a value holding the delimiter, a quote or a line
+      * break is quoted, quotes doubled); null / absent → empty. Mixed shapes,
+      * scalars throw; an empty list yields a 0-byte file. */
     private[util] def jsonToCsv(staged: StagedPayload, delimiter: String = ","): StagedPayload = {
         import scala.collection.JavaConverters._
         val format = StagedFormat.Delimited(delimiter)
         if (staged == null || staged.isEmpty || staged.format != StagedFormat.NdJson)
-            throw new DatrisException("jsonToCsv: the tap payload is not a JSON record list")
+            throw new DatrisException("the tap payload is not a JSON record list")
 
-        // Pass 1: the key union.
-        val seen = scala.collection.mutable.LinkedHashSet[String]()
-        val pass1 = StagedRows.lines(staged.path)
-        try while (pass1.hasNext) JsonParser.parseString(pass1.next()).getAsJsonObject.keySet().asScala.foreach(seen.add)
-        finally pass1.close()
-        val columns = seen.toList
-
-        val (path, writer) = StagingArea.newWriter("tap-csv", format)
-        try {
-            if (columns.nonEmpty) {
-                writer.write(columns.mkString(delimiter))
-                val pass2 = StagedRows.lines(staged.path)
-                try while (pass2.hasNext) {
-                        val obj = JsonParser.parseString(pass2.next()).getAsJsonObject
-                        val row = columns.map(col => {
-                            val elem = obj.get(col)
-                            if (elem == null || elem.isJsonNull) ""
-                            else {
-                                val s = if (elem.isJsonPrimitive) {
-                                    val prim = elem.getAsJsonPrimitive
-                                    if (prim.isString) prim.getAsString
-                                    else prim.getAsString // returns raw number string: "1782800", "254.2"
-                                } else elem.toString
-                                if (s.contains(delimiter) || s.contains("\"") || s.contains("\n") || s.contains("\r"))
-                                    "\"" + s.replace("\"", "\"\"") + "\""
-                                else s
-                            }
-                        }).mkString(delimiter)
-                        writer.write("\n")
-                        writer.write(row)
-                    }
-                finally pass2.close()
+        def cell(elem: JsonElement): String =
+            if (elem == null || elem.isJsonNull) ""
+            else {
+                val s = if (elem.isJsonPrimitive) elem.getAsJsonPrimitive.getAsString // raw number string: "1782800", "254.2"
+                else elem.toString
+                if (s.contains(delimiter) || s.contains("\"") || s.contains("\n") || s.contains("\r"))
+                    "\"" + s.replace("\"", "\"\"") + "\""
+                else s
             }
+        def kind(e: JsonElement): String =
+            if (e.isJsonObject) "a JSON object" else if (e.isJsonArray) "a JSON array" else if (e.isJsonNull) "null" else "a JSON scalar"
+
+        val first = {
+            val it = StagedRows.lines(staged.path)
+            try if (it.hasNext) JsonParser.parseString(it.next()) else null
+            finally it.close()
+        }
+        val (path, writer) = StagingArea.newWriter("tap-csv", format)
+        var rowCount = staged.rowCount
+        try {
+            if (first == null) {
+                // An empty record list projects to an empty file, as before.
+            } else if (first.isJsonObject) {
+                // Pass 1: the key union.
+                val seen = scala.collection.mutable.LinkedHashSet[String]()
+                val pass1 = StagedRows.lines(staged.path)
+                var n = 0L
+                try while (pass1.hasNext) {
+                        n += 1
+                        val e = JsonParser.parseString(pass1.next())
+                        if (!e.isJsonObject) throw new DatrisException("line " + n + " is " + kind(e) + ", not a JSON object like line 1")
+                        e.getAsJsonObject.keySet().asScala.foreach(seen.add)
+                    }
+                finally pass1.close()
+                val columns = seen.toList
+                if (columns.nonEmpty) {
+                    writer.write(columns.mkString(delimiter))
+                    val pass2 = StagedRows.lines(staged.path)
+                    try while (pass2.hasNext) {
+                            val obj = JsonParser.parseString(pass2.next()).getAsJsonObject
+                            writer.write("\n")
+                            writer.write(columns.map(col => cell(obj.get(col))).mkString(delimiter))
+                        }
+                    finally pass2.close()
+                }
+            } else if (first.isJsonArray) {
+                val header = first.getAsJsonArray.asScala.map(h => TapScriptRunner.normalizeColumnName(cell(h))).toList
+                if (header.isEmpty) throw new DatrisException("line 1 (the header row) is an empty array")
+                if (header.distinct.size != header.size)
+                    throw new DatrisException(
+                        "the header row has duplicate column names after normalization: " +
+                            header.groupBy(identity).collect { case (k, v) if v.size > 1 => k }.mkString(", ")
+                    )
+                writer.write(header.mkString(delimiter))
+                val width = header.size
+                val it = StagedRows.lines(staged.path)
+                var n = 1L
+                var dataRows = 0L
+                try {
+                    it.next() // the header
+                    while (it.hasNext) {
+                        n += 1
+                        val e = JsonParser.parseString(it.next())
+                        if (!e.isJsonArray) throw new DatrisException("line " + n + " is " + kind(e) + ", not a JSON array like the header row")
+                        val arr = e.getAsJsonArray
+                        if (arr.size() > width)
+                            throw new DatrisException("row " + n + " has " + arr.size() + " cells but the header row has " + width)
+                        val cells = arr.asScala.map(cell).toList ++ List.fill(width - arr.size())("")
+                        writer.write("\n")
+                        writer.write(cells.mkString(delimiter))
+                        dataRows += 1
+                    }
+                } finally it.close()
+                rowCount = dataRows
+            } else
+                throw new DatrisException("line 1 is " + kind(first) + "; a CSV pipeline needs JSON objects or arrays (rows)")
+        } catch {
+            case e: Exception =>
+                writer.close()
+                Files.deleteIfExists(path)
+                throw e
         } finally writer.close()
-        StagedPayload(path.toString, format, staged.rowCount, Files.size(path))
+        StagedPayload(path.toString, format, rowCount, Files.size(path))
     }
 }

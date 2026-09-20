@@ -17,7 +17,6 @@ import java.io.{BufferedInputStream, ByteArrayInputStream, ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths, StandardCopyOption}
 import java.util.UUID
-import java.util.regex.Pattern
 import scala.collection.JavaConverters._
 
 class StreamNotifier {
@@ -131,8 +130,11 @@ class StreamNotifier {
                         throw new DatrisException(
                             "No data rows found in uploaded file for pipeline: " + config.name + ". The file may be empty or contain only a header row."
                         )
+                    // Validate the header with commons-csv BEFORE schema evolution
+                    // (guard-before-evolve, like the 0-byte guard above): a line 1
+                    // that is not CSV must never become pipeline columns.
                     val headerLine = new String(headerBytes, StandardCharsets.UTF_8).stripLineEnd
-                    val columns = headerLine.split(Pattern.quote(delimiter)).map(_.toLowerCase).toList
+                    val columns = DataUtil.validatedCsvHeader(headerLine, delimiter, config.name)
                     (columns, new SequenceInputStream(new ByteArrayInputStream(headerBytes), buffered): InputStream)
                 } else
                     (config.source.schemaProperties.fields.asScala.map(_.name).toList, buffered: InputStream)

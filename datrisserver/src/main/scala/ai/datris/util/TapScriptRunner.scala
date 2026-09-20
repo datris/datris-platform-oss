@@ -49,7 +49,7 @@ object TapScriptRunner {
     // fixture scripts — the wrapper is the wire format, and a drift here breaks
     // every tap shape at once.
     private[util] val WRAPPER_TEMPLATE =
-        """import json, sys, os, time, importlib.util
+        """import json, sys, os, time, itertools, importlib.util
           |# Redirect script's print() output to stderr so only JSON goes to stdout.
           |# Wrapper-emitted lifecycle lines (prefixed [wrapper]) also go to stderr so
           |# every run has some log content even when the user's script is silent.
@@ -102,7 +102,9 @@ object TapScriptRunner {
           |_t0 = time.time()
           |result = mod.fetch()
           |_elapsed = time.time() - _t0
-          |sys.stdout = _real_stdout
+          |# stdout stays redirected for the WHOLE run: a generator's body (and its
+          |# print() calls) executes during the lookahead and the write loop below,
+          |# not inside mod.fetch(). Only the envelope goes to the real stdout.
           |# Normalize the {"records": [...], "state": {...}} shape. The documented
           |# contract is "return the record list, set global DATRIS_STATE" — but code
           |# generators naturally produce this envelope instead, and without this
@@ -114,18 +116,49 @@ object TapScriptRunner {
           |    if isinstance(result.get("state"), dict) and getattr(mod, "DATRIS_STATE", None) is None:
           |        mod.DATRIS_STATE = result["state"]
           |    result = result["records"]
-          |# Detect data type from result. _records is the list to serialize
+          |# Detect data type from result. _records is the record sequence to serialize
           |# record-at-a-time on the file path (None for a single value / string).
+          |# _dict_lane: the first record was a plain dict, so non-dict rows are
+          |# dropped (today's list behaviour) and keys are stringified per row.
           |_records = None
-          |if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict) and 'uri' in result[0] and 'content' in result[0]:
+          |_dict_lane = False
+          |_iter_src = None
+          |# Iterator lane (taps survive large sources): fetch() may `yield` records or
+          |# return any iterator. A one-item lookahead sniffs the type exactly like the
+          |# list branch; the rest streams in one pass. str / bytes / dict / list /
+          |# tuple keep their own branches below — only real iterators come here.
+          |if not isinstance(result, (list, tuple, str, bytes, dict)) and hasattr(result, "__next__"):
+          |    _iter_src = result
+          |    try:
+          |        _first = next(_iter_src)
+          |    except StopIteration:
+          |        data_type = "json"
+          |        _records = iter(())
+          |        _dict_lane = True
+          |    else:
+          |        if isinstance(_first, dict) and 'uri' in _first and 'content' in _first:
+          |            data_type = "document"
+          |        elif isinstance(_first, dict):
+          |            data_type = "json"
+          |            _dict_lane = True
+          |        elif isinstance(_first, (list, tuple)):
+          |            data_type = "csv"
+          |        else:
+          |            data_type = "json"
+          |        _records = itertools.chain((_first,), _iter_src)
+          |    # Test mode caps the ITERATOR lane at N records (exactly N pulled, then
+          |    # the generator is closed so its finally runs). A list is never truncated.
+          |    _tl = os.environ.get("DATRIS_TAP_TEST_LIMIT", "").strip()
+          |    if _tl.isdigit() and int(_tl) > 0:
+          |        _records = itertools.islice(_records, int(_tl))
+          |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict) and 'uri' in result[0] and 'content' in result[0]:
           |    # Document tap: list of {uri, filename, content (base64), ...}
           |    data_type = "document"
           |    _records = result
           |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
-          |    # Normalize dict keys to strings (handles Timestamp, numpy keys)
-          |    result = [{str(k): v for k, v in row.items()} for row in result if isinstance(row, dict)]
           |    data_type = "json"
           |    _records = result
+          |    _dict_lane = True
           |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], (list, tuple)):
           |    data_type = "csv"
           |    _records = result
@@ -156,19 +189,31 @@ object TapScriptRunner {
           |    _columns = None
           |    with open(_out_path, "w", encoding="utf-8", newline="") as _f:
           |        if _records is not None:
+          |            # One pass, whether _records is a list or a streaming iterator:
+          |            # write the row, count it, grow the columns union, stringify
+          |            # dict keys per row (Timestamp / numpy keys). The whole result
+          |            # is never held here.
           |            _columns = {}
           |            _dicts = True
           |            for _row in _records:
-          |                if _dicts and isinstance(_row, dict):
-          |                    for _k in _row:
-          |                        if _k not in _columns:
-          |                            _columns[_k] = True
+          |                if isinstance(_row, dict):
+          |                    _row = {str(_k): _v for _k, _v in _row.items()}
+          |                    if _dicts:
+          |                        for _k in _row:
+          |                            if _k not in _columns:
+          |                                _columns[_k] = True
+          |                elif _dict_lane:
+          |                    continue
           |                else:
           |                    _dicts = False
           |                _f.write(json.dumps(_row, default=str, separators=(",", ":")))
           |                _f.write("\n")
           |                _count += 1
           |            _columns = list(_columns) if _dicts else []
+          |            if _iter_src is not None:
+          |                if hasattr(_iter_src, "close"):
+          |                    _iter_src.close()
+          |                _elapsed = time.time() - _t0
           |        elif data_type in ("xml", "text"):
           |            # Verbatim, not JSON-quoted. A raw 0x1E byte is stripped: it is the
           |            # sidecar's record/trailer separator and can never be payload.
@@ -188,7 +233,21 @@ object TapScriptRunner {
           |    envelope = {"type": data_type, "count": _count, "columns": _columns}
           |else:
           |    # Inline path (no DATRIS_TAP_OUTPUT): the whole payload rides on stdout as
-          |    # `data`, exactly as before the file path existed.
+          |    # `data`, exactly as before the file path existed. It is heap-bound by
+          |    # construction, so an iterator is materialised here (only the file path
+          |    # streams); the stderr note says why.
+          |    if _iter_src is not None:
+          |        print("[wrapper] DATRIS_TAP_OUTPUT is not set: fetch() returned an iterator, materializing it in memory (set DATRIS_TAP_OUTPUT to stream it to a file)", file=sys.stderr, flush=True)
+          |        result = list(_records)
+          |        if hasattr(_iter_src, "close"):
+          |            _iter_src.close()
+          |        _records = result
+          |        _elapsed = time.time() - _t0
+          |    if _dict_lane:
+          |        # Normalize dict keys to strings for the whole-payload json.dumps
+          |        # (handles Timestamp, numpy keys); non-dict rows are dropped as before.
+          |        result = [{str(k): v for k, v in row.items()} for row in result if isinstance(row, dict)]
+          |        _records = result
           |    if data_type == "document":
           |        data = json.dumps(result, default=str)
           |    elif data_type == "json" and _records is not None and len(_records) > 0 and isinstance(_records[0], dict):
@@ -213,7 +272,7 @@ object TapScriptRunner {
           |if _new_state is not None:
           |    envelope["state"] = json.loads(json.dumps(_new_state, default=str))
           |    print("[wrapper] fetch() emitted state: " + json.dumps(envelope["state"], default=str)[:200], file=sys.stderr, flush=True)
-          |print(json.dumps(envelope))
+          |print(json.dumps(envelope), file=_real_stdout, flush=True)
           |""".stripMargin
 
     // State blobs are cursors, not data stores. Anything near this size is a
@@ -1293,7 +1352,7 @@ object TapScriptRunner {
                 if (exitCode != 0) {
                     val errOutput = maskSecrets(stderr.take(1000), secretValues)
                     logger.error("Tap script (runner) exited with code " + exitCode + ": " + errOutput)
-                    throw new DatrisException("Tap script failed (exit code " + exitCode + "): " + errOutput)
+                    throw new DatrisException(scriptFailureMessage(exitCode, errOutput))
                 }
                 (stdout.trim, stderr.trim)
             } finally response.close()
@@ -1412,7 +1471,7 @@ object TapScriptRunner {
             if (exitCode.get != 0) {
                 val errOutput = maskSecrets(stderr.toString.take(1000), secretValues)
                 logger.error("Tap script exited with code " + exitCode.get + ": " + errOutput)
-                throw new DatrisException("Tap script failed (exit code " + exitCode.get + "): " + errOutput)
+                throw new DatrisException(scriptFailureMessage(exitCode.get, errOutput))
             }
             (stdout.toString.trim, stderr.toString.trim)
         } catch {
@@ -1422,6 +1481,20 @@ object TapScriptRunner {
                 throw new DatrisException("Tap script execution error: " + maskSecrets(e.getMessage, secretValues))
         }
     }
+
+    /** The failure message for a non-zero exit that did not time out — one helper
+      * for both lanes so the wording is identical. A SIGKILLed child arrives as
+      * -9 from the sidecar (Python's negative signal number) or 137 from the
+      * in-process ProcessBuilder lane (128 + 9); neither is a script traceback,
+      * and with timeouts and the disk budget already handled upstream it is, in
+      * practice, the kernel OOM killer taking a script that materialised its
+      * whole result. Say so and name the fix, keeping the code and the stderr
+      * tail visible. */
+    private[util] def scriptFailureMessage(exitCode: Int, errOutput: String): String =
+        if (exitCode == -9 || exitCode == 137)
+            "Tap script was killed (exit code " + exitCode + "), almost certainly out of memory: fetch() must not build the whole " +
+                "result in memory — yield records instead (see tap-workflow-reference). Last output: " + errOutput
+        else "Tap script failed (exit code " + exitCode + "): " + errOutput
 
     /** Spell-out mapping for special characters that have semantic meaning in
       * column names. Each spell-out is wrapped in underscores so word

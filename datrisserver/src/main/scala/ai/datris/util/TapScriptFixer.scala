@@ -45,6 +45,10 @@ object TapScriptFixer {
               |  fall back to using the `requests` library to call the API directly via HTTP instead of using the SDK.
               |  Direct HTTP calls are more reliable than SDK methods that may be version-dependent.
               |- If pip install failed, verify the correct PyPI package name (pip install name != Python import name).
+              |- If the error says the script was killed (exit code -9 / 137, "killed", "out of memory"), the script built its
+              |  whole result in memory. Rewrite `fetch()` to `yield` records one at a time (read the source in chunks /
+              |  pages / batches and yield each row) instead of returning a list. The platform streams yielded records to
+              |  disk, so the run is not limited by memory. Do NOT cap the row count or split the source into several runs.
               |
               |PRESERVE the incremental-sync state handling if present: the `DATRIS_TAP_STATE` env-var read and the
               |`DATRIS_STATE` module-global assignment are the platform's bookmark contract between runs, not dead code.

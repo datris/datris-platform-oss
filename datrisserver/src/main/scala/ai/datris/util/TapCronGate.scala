@@ -134,5 +134,12 @@ object TapCronGate {
     private def refusal(name: String, reason: String): String =
         "Tap '" + name + "' cannot be scheduled: " + reason + ". Remedy: " + Remedy + "."
 
+    /** Blank / whitespace-only `cronExpression` → null on the config about to be
+      * stored (save and version-restore both call this before `check`). A blank
+      * cron means "unscheduled"; stored verbatim it would throw in the scheduler
+      * on every tick. */
+    def normalizeCron(tap: TapConfig): TapConfig =
+        if (tap != null && tap.cronExpression != null && tap.cronExpression.trim.isEmpty) tap.copy(cronExpression = null) else tap
+
     private def blankToNull(s: String): String = if (s == null || s.trim.isEmpty) null else s
 }

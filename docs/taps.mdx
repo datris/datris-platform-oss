@@ -109,7 +109,7 @@ Review and edit the generated script. You can:
 - If the script fails, an **AI Diagnosis** explains what went wrong and is **auto-applied** — the platform fixes the script and retests, up to 3 attempts. If all retries fail, the diagnosis stays visible for you to review and apply manually
 - Click **Stop Test** to cancel an in-flight test (also halts the auto-fix chain)
 
-**Limit test sample** (checkbox, default on) with an inline record-count input (default `20`, minimum `1`): when enabled, the runner injects `DATRIS_TAP_TEST_LIMIT=<n>` into the script process. Well-written tap scripts honor this env var to cap both their `/api/v1/query/*` reads and per-item iteration loops, making tests fast and low-cost. Cron and manual runs (via *Run Tap*) never set this env var, so production runs always read every row from every source.
+**Limit test sample** (checkbox, default on) with an inline record-count input (default `20`, minimum `1`): when enabled, the runner injects `DATRIS_TAP_TEST_LIMIT=<n>` into the script process. Well-written tap scripts honor this env var to cap both their `/api/v1/query/*` reads and per-item iteration loops, making tests fast and low-cost. When `fetch()` is a generator (it `yield`s records), the platform also stops pulling after `n` records and closes the generator; a returned list is never truncated, so a script that returns a list must cap its own reads. Cron and manual runs (via *Run Tap*) never set this env var, so production runs always read every row from every source.
 
 #### Post-run script review
 
@@ -367,9 +367,10 @@ The system automatically detects the data type from what `fetch()` returns:
 | Return Value | Detected Type |
 |---|---|
 | List of dicts with `uri` and `content` keys | **Document** (triggers the document-tap path) |
-| List of flat dicts (all scalar values) | **CSV** |
+| List of flat dicts (all scalar values) | **JSON** (records — projected to CSV when the target pipeline is CSV, with the union of keys as the header) |
 | List of dicts with nested objects | **JSON** |
-| List of lists/tuples | **CSV** |
+| List of lists/tuples | **CSV** (rows — the first list is the header; a CSV pipeline gets it as the header row, a JSON pipeline gets the arrays as-is) |
+| Generator / iterator (`fetch()` uses `yield`, or returns an iterator) | Detected from the **first record** exactly as above, then streamed to disk one record at a time |
 | XML string | **XML** |
 | Other string | **Text** |
 
@@ -550,10 +551,10 @@ Document taps feed many documents through `StreamNotifier.process` in rapid succ
 
 The `fetch()` function must:
 - Take no arguments
-- Return a list of dictionaries (records) or a string (JSON/XML/text)
-- Handle errors gracefully with try/except
+- Return a list of dictionaries (records), a list of lists (rows, header first), or a string (JSON/XML/text) — or **`yield`** the records / rows one at a time (any generator or iterator works)
+- **For large sources, `yield`.** The platform streams whatever `fetch()` produces to disk one record at a time, so a run is never limited by memory — but only if the script does not build the whole result first. A `fetch()` that appends millions of rows to a list (or loads a whole file into pandas and calls `to_dict("records")`) is killed for memory, and the run fails with an error naming memory and `yield`. Read the source in chunks / pages / batches (`pd.read_csv(..., chunksize=50000)`, `pyarrow.parquet.ParquetFile(...).iter_batches()`, one API page at a time) and `yield` each row before fetching the next chunk. Never cap the rows or split the source into several runs for size.
+- Let exceptions propagate (the wrapper captures the traceback for diagnosis); only catch what you can actually recover from
 - Include timeouts on network requests (30 seconds recommended)
-- Return an empty list on failure rather than raising exceptions
 - Use `os.environ.get()` for any credentials
 - Read `DATRIS_POSTGRES_DATABASE`, `DATRIS_MONGODB_DATABASE`, `DATRIS_PLATFORM_HOST`, and `DATRIS_PLATFORM_PORT` directly without fallback defaults — they are always injected by the platform
 - **Column names are auto-normalized** for tabular results (list of dicts). The platform converts each key to lowercase snake_case using only `[a-z0-9_]` so that downstream pipeline registration succeeds and SQL queries don't need quoting. Examples: `EPS Estimate` → `eps_estimate`, `Surprise(%)` → `surprise_percent`. You can return raw source column names — the platform will clean them — but for clarity in the test preview, prefer to emit clean keys directly. **JSON/XML results destined for MongoDB are not normalized** (they go through as raw blobs in the `_json` field). See [Schema Definition → Column Naming Rules](/schemas#column-naming-rules) for the underlying validator rule.

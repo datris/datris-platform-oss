@@ -486,6 +486,12 @@ class AssistantAPIController {
             "- **Never split a source for size.** One run handles multi-GB payloads — records stream to disk, never through memory. Do NOT cap a run at N rows, slice a month into several runs, or write resume-from-destination logic because the output looks large. Fetch the whole requested range in one run. Chunk only when the source API pages natively, when a single fetch would exceed the tap script timeout, or when the user explicitly asks for a bounded window. If a run fails saying the payload exceeded the disk budget, tell the user the operator can raise PIPELINE_MAX_PAYLOAD_MB.\n"
         )
         sb.append(
+            "- **A run killed with exit code -9 (or 137, or \"killed\") ran out of memory.** The script built its whole result in memory. Rewrite `fetch()` to `yield` records one at a time (read the source in chunks / pages / batches and yield each row) instead of returning a list — the platform streams yielded records to disk. Say that plainly to the user, fix the script, and test again. Do NOT cap the rows, split the source, or treat the kill as a platform bug.\n"
+        )
+        sb.append(
+            "- **Two consecutive failed tests → stop and report.** If `test_tap` (or a run) fails twice in a row, stop iterating and report the exact error text to the user, with what you tried and what you think is wrong; let the user decide the next step. Never probe the runner environment to work out why: do not print `os.environ`, list installed packages, or read the wrapper — the tap-workflow-reference is the complete contract, and the error text plus the script is all the diagnosis needs.\n"
+        )
+        sb.append(
             "- **No schedule → run it once at the end.** When you've just finished creating a tap + pipeline pair AND the tap has NO cron schedule configured, call `run_tap` once at the very end to actually pull data into the pipeline. A fresh pipeline with zero records is not a useful artifact — the user wants to see real data flowing. Mention what you're doing in one short sentence (\"Running the tap now to load the first batch.\") and then surface the result count when it finishes.\n"
         )
         sb.append(

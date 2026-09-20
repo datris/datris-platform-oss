@@ -75,7 +75,7 @@ class EntityVersionAPIController {
                 val snap = gson.fromJson(snapshot.config, classOf[TapConfig])
                 val live = TapConfigIO.read(env.tapTableName, name)
                 // Restore the DEFINITION; preserve current run-status + ownership.
-                val restored =
+                val restored = TapCronGate.normalizeCron(
                     if (live != null)
                         snap.copy(
                             createdAt = live.createdAt,
@@ -95,6 +95,7 @@ class EntityVersionAPIController {
                             lastTestRunScriptId = live.lastTestRunScriptId
                         )
                     else snap
+                )
                 // Test-before-cron gate: restoring a snapshot whose script bytes differ
                 // from the tested stamp while a cron is set is refused, same as a save.
                 TapCronGate.check(live, restored) match {
