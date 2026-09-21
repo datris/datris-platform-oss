@@ -418,6 +418,25 @@ class TapStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         } finally dropStaged(result)
     }
 
+    // Story: tap tests are capped at 20 records (plans/stories/tap-test-limit.md).
+    // The cap is injected ONLY when testLimit > 0, so mode=run (testLimit = 0)
+    // keeps reading every row — the script must not see the env var at all.
+    test("testLimit = 0 leaves DATRIS_TAP_TEST_LIMIT unset") {
+        assume(pythonAvailable, "python3 not available")
+        val script =
+            """import os
+              |def fetch():
+              |    return [{"set": "DATRIS_TAP_TEST_LIMIT" in os.environ}]
+              |""".stripMargin
+        val result = withEnv(env())(TapScriptRunner.runScript(scriptTap(), script, testLimit = 0))
+        try {
+            assert(result.error == null, String.valueOf(result.error))
+            assert(result.recordCount == 1)
+            val line = stagedLines(result.staged).head
+            assert(line.contains("false"), s"the script saw DATRIS_TAP_TEST_LIMIT with testLimit = 0: $line")
+        } finally dropStaged(result)
+    }
+
     test("record lists stage as NdJson with arraySource; a single object stages without it; state is verbatim") {
         assume(pythonAvailable, "python3 not available")
         val list = withEnv(env())(
