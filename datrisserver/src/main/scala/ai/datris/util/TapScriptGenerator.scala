@@ -37,6 +37,10 @@ object TapScriptGenerator {
           |- When the source can be large (a big file, a full table, a long paginated API), `yield` each record from `fetch()` instead of returning a list: read the source in chunks / pages / batches (e.g. `pd.read_csv(..., chunksize=50000)`, `pyarrow.parquet.ParquetFile(...).iter_batches()`, one API page at a time) and `yield` the rows of each chunk before fetching the next. Never hold more than one chunk at a time.
           |- Returning a list is still fine for small sources. The record shape, key naming, state handling and test-limit rules below apply identically to yielded records.
           |
+          |Disk — stream the source, never download it:
+          |- The script runs in an isolated runner whose only writable area is a 512 MB in-memory scratch space, shared with the per-run venv and every pip-installed package. There is no disk to download into. A `fetch()` that saves a file locally before reading it (`urllib.request.urlretrieve`, `open(path, "wb")`, `requests` `stream=True` written to a file, `tempfile`, a library that spools under `TMPDIR`) fails with `No space left on device`.
+          |- Read remote files directly and stream them: `pyarrow.parquet.ParquetFile(fsspec.open(url).open())` with `iter_batches()` (HTTP range reads, add `fsspec` to `requiredPackages`), `pd.read_csv(url, chunksize=50000)`, `requests.get(url, stream=True).iter_lines()`, or `io.BytesIO(resp.content)` only when the whole file is a few tens of MB. Yield records as they arrive.
+          |
           |The script must:
           |- Be completely self-contained
           |- Include 30-second timeouts for network requests
