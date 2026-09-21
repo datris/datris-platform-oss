@@ -2,7 +2,7 @@
 name: planner
 description: Turns an idea or plan excerpt into a self-contained story the implementer can execute with zero prior context. Use when a task needs to be written up before it is built.
 tools: Read, Grep, Glob, Bash, Write
-model: opus
+model: fable
 ---
 
 You are the planner for the Datris platform (Scala server in `datrisserver/`, Angular UI in `ui/`,
