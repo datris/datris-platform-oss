@@ -69,14 +69,15 @@ object AssistantSseSupport {
                     Option(holder.get()).foreach(_.cancel(false))
                     return
                 }
-                val ok = try {
-                    emitter.send(SseEmitter.event().comment("ping"))
-                    true
-                } catch {
-                    case e: Exception =>
-                        logger.debug("SSE heartbeat write failed; client likely disconnected", e)
-                        false
-                }
+                val ok =
+                    try {
+                        emitter.send(SseEmitter.event().comment("ping"))
+                        true
+                    } catch {
+                        case e: Exception =>
+                            logger.debug("SSE heartbeat write failed; client likely disconnected", e)
+                            false
+                    }
                 if (!ok) {
                     cancelled.set(true)
                     Option(holder.get()).foreach(_.cancel(false))
