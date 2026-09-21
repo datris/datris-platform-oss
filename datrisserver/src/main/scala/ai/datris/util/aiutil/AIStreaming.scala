@@ -638,12 +638,13 @@ object AIStreaming {
       * effort on the Responses API. When the model name matches, we skip the
       * cold-cache discovery round-trip. Unknown prefixes still try with
       * reasoning first and fall back on rejection. Same prefix list as
-      * `openAiTokenField` for max_completion_tokens. */
+      * `openAiTokenField` for max_completion_tokens. GPT-6 Astra accepts
+      * `reasoning.effort: medium`. */
     private def likelyReasoningModel(model: String): Boolean = {
         if (model == null) return false
         val m = model.toLowerCase
-        m.startsWith("gpt-5") || m.startsWith("o1") || m.startsWith("o3") ||
-        m.startsWith("o4") || m.startsWith("o5")
+        m.startsWith("gpt-5") || m.startsWith("gpt-6") || m.startsWith("o1") ||
+        m.startsWith("o3") || m.startsWith("o4") || m.startsWith("o5")
     }
 
     private def isOpenAiReasoningError(msg: String): Boolean = {

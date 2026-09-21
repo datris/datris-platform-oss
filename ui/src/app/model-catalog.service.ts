@@ -36,6 +36,7 @@ const FALLBACK: ModelCatalog = {
       { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
     openai: [
+      { value: 'gpt-6-astra', label: 'GPT-6 Astra' },
       { value: 'gpt-5.5', label: 'GPT-5.5 (recommended)', recommended: true },
       { value: 'gpt-5.5-pro', label: 'GPT-5.5 Pro' },
       { value: 'gpt-5.4', label: 'GPT-5.4' },
@@ -74,6 +75,7 @@ const FALLBACK: ModelCatalog = {
       { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
     openai: [
+      { value: 'gpt-6-astra', label: 'GPT-6 Astra' },
       { value: 'gpt-5.5', label: 'GPT-5.5 (recommended)', recommended: true },
       { value: 'gpt-5.5-pro', label: 'GPT-5.5 Pro' },
       { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },

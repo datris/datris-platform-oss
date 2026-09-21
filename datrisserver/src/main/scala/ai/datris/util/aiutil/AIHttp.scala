@@ -422,7 +422,9 @@ object AIHttp {
             requestObj.addProperty("instructions", systemPrompt)
         requestObj.add("input", inputArr)
         requestObj.addProperty("max_output_tokens", maxTokens)
-        if (temperature >= 0) requestObj.addProperty("temperature", temperature)
+        // GPT-6 (Astra) rejects sampling params on the Responses API — never send temperature there.
+        if (temperature >= 0 && !rejectsSamplingParams(aiConfig.model))
+            requestObj.addProperty("temperature", temperature)
 
         attachWebSearchToolResponses(requestObj, aiConfig, useWebSearch)
 

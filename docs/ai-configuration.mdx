@@ -90,6 +90,8 @@ When `OPENAI_API_KEY` is set, all three slots are seeded against OpenAI:
 | `oss/codegen` | openai | `https://api.openai.com/v1/chat/completions` | `gpt-5.6-sol` |
 | `oss/embedding` | openai | `https://api.openai.com/v1/embeddings` | `text-embedding-3-small` |
 
+GPT-6 models (`gpt-6-astra`) are supported for the chat and codegen slots. Requests to the GPT-6 family are routed to the Responses API automatically, whatever endpoint the slot is configured with, and no temperature is sent. Reasoning effort stays at the platform default (`medium`); the `xhigh` and `max` levels are not exposed.
+
 ### Azure OpenAI path
 
 Use your Azure OpenAI resource instead of api.openai.com. All three values are required together — Azure endpoints embed your resource name and models are addressed by **deployment name**, so there are no universal defaults:

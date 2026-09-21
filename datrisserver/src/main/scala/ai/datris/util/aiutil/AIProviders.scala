@@ -21,7 +21,8 @@ object AIProviders {
 
     // OpenAI's Responses API (POST /v1/responses) is used by the codex family
     // and is also valid for newer reasoning models. We auto-route when the
-    // model name contains "codex" or the configured endpoint already points at
+    // model name contains "codex", starts with "gpt-6" (Astra: tool calling is
+    // Responses-only) or the configured endpoint already points at
     // /v1/responses. Request/response shapes are different from chat/completions
     // (input + instructions + max_output_tokens; output[].content[].text).
     // Deliberately restricted to provider "openai": Azure's /openai/v1/responses
@@ -32,7 +33,7 @@ object AIProviders {
         if (aiConfig == null || !aiConfig.provider.toLowerCase.equals("openai")) return false
         val model = Option(aiConfig.model).map(_.toLowerCase).getOrElse("")
         val endpoint = Option(aiConfig.endpoint).map(_.toLowerCase).getOrElse("")
-        model.contains("codex") || endpoint.contains("/v1/responses")
+        model.contains("codex") || model.startsWith("gpt-6") || endpoint.contains("/v1/responses")
     }
 
     private[aiutil] def responsesEndpointFor(aiConfig: AIConfig): String = {
@@ -43,14 +44,15 @@ object AIProviders {
             .replaceFirst("/v1/completions$", "/v1/responses")
     }
 
-    // OpenAI reasoning / GPT-5 family models reject `max_tokens` and require
+    // OpenAI reasoning / GPT-5 / GPT-6 family models reject `max_tokens` and require
     // `max_completion_tokens`. Detect by model-name prefix so we stay compatible
     // with both the legacy (gpt-4*, gpt-3.5*) and newer parameter contracts.
+    // Keep this prefix list identical to `AIStreaming.likelyReasoningModel`.
     private def openAiTokenField(model: String): String = {
         val m = if (model == null) "" else model.toLowerCase
         if (
-            m.startsWith("gpt-5") || m.startsWith("o1") || m.startsWith("o3") ||
-            m.startsWith("o4") || m.startsWith("o5")
+            m.startsWith("gpt-5") || m.startsWith("gpt-6") || m.startsWith("o1") ||
+            m.startsWith("o3") || m.startsWith("o4") || m.startsWith("o5")
         ) "max_completion_tokens"
         else "max_tokens"
     }
@@ -88,13 +90,18 @@ object AIProviders {
       * models. Older thinking-capable models (Sonnet 4.6, Opus 4.6, Haiku 4.5) still
       * require/accept `temperature: 1.0` with thinking on, so their behavior is
       * unchanged. Match the families that reject sampling params: Fable, Mythos,
-      * Opus 4.7, Opus 4.8, Opus 5 (and later Opus), Sonnet 5 (and later Sonnet). */
+      * Opus 4.7, Opus 4.8, Opus 5 (and later Opus), Sonnet 5 (and later Sonnet).
+      * OpenAI's GPT-6 family (Astra) removed `temperature`/`top_p`/`logprobs` on the
+      * direct API and joins the list; it is matched by prefix. Azure's GPT-6
+      * deployments accept them but go through a different path and are deliberately
+      * not exempted here. */
     private[aiutil] def rejectsSamplingParams(model: String): Boolean = {
         if (model == null) return false
         val m = model.toLowerCase
         m.contains("fable") || m.contains("mythos") ||
         m.contains("opus-4-7") || m.contains("opus-4-8") ||
-        m.contains("opus-5") || m.contains("sonnet-5")
+        m.contains("opus-5") || m.contains("sonnet-5") ||
+        m.startsWith("gpt-6")
     }
 
     /** Whether a given AIConfig supports extended thinking — Claude 4.x, whether
