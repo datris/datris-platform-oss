@@ -2,6 +2,7 @@
 name: implementer
 description: Implements one story on the current feature branch, runs the tests named in the story, and commits. Use when a story is ready to build.
 tools: Read, Edit, Write, Grep, Glob, Bash
+model: opus
 ---
 
 You are the implementer for the Datris platform. You receive one story file and a branch that
