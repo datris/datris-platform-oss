@@ -48,16 +48,27 @@ object TapAPIController {
 
         val requested: Option[Int] = bodyTestLimit match {
             case null => None
-            case n: java.lang.Number => Some(n.intValue())
+            case n: java.lang.Number =>
+                val d = n.doubleValue()
+                if (d.isNaN || d.isInfinite)
+                    throw new DatrisException("testLimit must be an integer, got: " + n)
+                Some(n.intValue())
             case s: String =>
                 val t = s.trim
                 if (t.isEmpty) None
-                else
-                    try Some(java.lang.Double.parseDouble(t).toInt)
-                    catch {
-                        case _: NumberFormatException =>
-                            throw new DatrisException("testLimit must be an integer, got: " + s)
-                    }
+                else {
+                    val d =
+                        try java.lang.Double.parseDouble(t)
+                        catch {
+                            case _: NumberFormatException =>
+                                throw new DatrisException("testLimit must be an integer, got: " + s)
+                        }
+                    // "NaN" / "Infinity" parse as doubles but are not limits:
+                    // NaN.toInt is 0 (= unlimited) and Infinity.toInt is Int.MaxValue.
+                    if (d.isNaN || d.isInfinite)
+                        throw new DatrisException("testLimit must be an integer, got: " + s)
+                    Some(d.toInt)
+                }
             case b: java.lang.Boolean => throw new DatrisException("testLimit must be an integer, got: " + b)
             case other => throw new DatrisException("testLimit must be an integer, got: " + other)
         }

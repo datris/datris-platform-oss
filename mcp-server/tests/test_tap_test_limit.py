@@ -89,6 +89,17 @@ def test_test_tap_with_limit_0_sends_0_unlimited(captured):
     assert _posted_run_body(captured) == {"name": "prices", "mode": "test", "testLimit": 0}
 
 
+def test_test_tap_with_non_integer_limit_is_an_error_not_a_silent_20(captured):
+    """Review follow-up: `limit: "all"` must surface as an error (the server's
+    resolveTestLimit rejects it too), never a silent 20-record preview the agent
+    reports as a full-source run."""
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        server._dispatch("test_tap", {"name": "prices", "limit": "all"})
+    assert not [k for m, p, k in captured.calls if (m, p) == ("post", "/api/v1/tap/run")], captured.calls
+
+
 def test_run_tap_still_sends_no_test_limit(captured):
     server._dispatch("run_tap", {"name": "prices"})
     body = _posted_run_body(captured)

@@ -3130,13 +3130,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 def _test_limit(value) -> int:
     """Preview size for `test_tap`. Absent/null = the 20-record default; 0 (or a
-    negative value) is the deliberate unlimited opt-out the server honours."""
+    negative value) is the deliberate unlimited opt-out the server honours.
+
+    A non-integer `limit` is an error, never a silent fall back to 20: an agent
+    that sends `limit: "all"` meaning "full source" must hear about it instead of
+    getting a 20-record preview it reports as the whole run. This mirrors the
+    server's own TapAPIController.resolveTestLimit, which rejects the same input.
+    """
     if value is None:
         return 20
+    if isinstance(value, bool):
+        raise ValueError(f"limit must be an integer, got {value!r}")
     try:
         return int(value)
     except (TypeError, ValueError):
-        return 20
+        raise ValueError(f"limit must be an integer, got {value!r}")
 
 
 def _dispatch(name: str, args: dict) -> str:

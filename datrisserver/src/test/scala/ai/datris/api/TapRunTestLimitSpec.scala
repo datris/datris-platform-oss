@@ -63,6 +63,18 @@ class TapRunTestLimitSpec extends AnyFunSuite {
         assert(TapAPIController.resolveTestLimit("test", "5") == 5)
     }
 
+    // Review follow-up: "NaN" and "Infinity" parse as doubles, so without an
+    // explicit guard they would silently mean "unlimited" (NaN.toInt == 0) and
+    // Int.MaxValue respectively instead of being rejected as non-numeric.
+    test("NaN and Infinity testLimits are DatrisExceptions, not a silent unlimited") {
+        for (bad <- Seq("NaN", "Infinity", "-Infinity")) {
+            val e = intercept[DatrisException] {
+                TapAPIController.resolveTestLimit("test", bad)
+            }
+            assert(e.getMessage != null && e.getMessage.toLowerCase.contains("testlimit"), bad)
+        }
+    }
+
     test("a non-numeric testLimit is a DatrisException") {
         val e = intercept[DatrisException] {
             TapAPIController.resolveTestLimit("test", "lots")
