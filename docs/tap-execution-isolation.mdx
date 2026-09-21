@@ -50,9 +50,14 @@ grant as little as possible:
   and the Datris API — nothing else internal.
 - **Non-root, read-only filesystem.** Tap code runs as an unprivileged user on a read-only root
   filesystem, with all Linux capabilities dropped and privilege escalation disabled.
-- **Ephemeral scratch.** The only writable area is a small in-memory scratch space that is wiped
-  after every run, so nothing a tap writes — temp files, installed packages — survives into the
-  next run.
+- **Ephemeral scratch.** The only writable area is a small in-memory scratch space (**512 MB**
+  by default, a `tmpfs` mount, so it comes out of RAM rather than disk) that is wiped after every
+  run, so nothing a tap writes — temp files, installed packages — survives into the next run. The
+  per-run venv and any pip-installed packages live there too, so a script must **stream the
+  source, never download it**: a `fetch()` that saves a large file to disk (or lets a library
+  spool one under `TMPDIR`) fails with `No space left on device`. Read remote files directly over
+  HTTP in chunks or row groups and `yield` records as they arrive. The 512 MB figure is set on the
+  runner's `tmpfs` entry in the compose file; raise it only on hosts with the RAM to spare.
 
 This is **operating-system container isolation** — separate process, filesystem, and network
 namespaces sharing the host kernel. It is the right boundary for a self-hosted, single-operator

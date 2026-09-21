@@ -49,6 +49,11 @@ object TapScriptFixer {
               |  whole result in memory. Rewrite `fetch()` to `yield` records one at a time (read the source in chunks /
               |  pages / batches and yield each row) instead of returning a list. The platform streams yielded records to
               |  disk, so the run is not limited by memory. Do NOT cap the row count or split the source into several runs.
+              |- If the error says `No space left on device` (or ENOSPC / disk full), the script downloaded the source to
+              |  local disk. The runner has only a 512 MB in-memory scratch space shared with installed packages — there
+              |  is no disk to download into. Rewrite `fetch()` to read the remote file directly and stream it (HTTP range
+              |  reads via `pyarrow.parquet.ParquetFile(fsspec.open(url).open())`, `pd.read_csv(url, chunksize=...)`,
+              |  `requests.get(url, stream=True).iter_lines()`) and `yield` records as they arrive. Never save it first.
               |
               |PRESERVE the incremental-sync state handling if present: the `DATRIS_TAP_STATE` env-var read and the
               |`DATRIS_STATE` module-global assignment are the platform's bookmark contract between runs, not dead code.

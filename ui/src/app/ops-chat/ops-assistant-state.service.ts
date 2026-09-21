@@ -118,6 +118,12 @@ export class OpsAssistantStateService {
         this.streaming = false;
       },
       complete: () => {
+        // The server always sends `done` (or `error`) before closing. A stream
+        // that ends without either was cut by something in between — a proxy
+        // idle timeout, a dropped network — so say so instead of ending silently.
+        if (!assistantTurn.done && !assistantTurn.errorMessage) {
+          assistantTurn.errorMessage = 'The connection closed before the reply finished. A tool call that was running may still complete on the server — check the Ops tab for its outcome, then continue the chat.';
+        }
         assistantTurn.done = true;
         this.streaming = false;
         this.activeSub = null;

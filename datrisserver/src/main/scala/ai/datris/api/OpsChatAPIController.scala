@@ -166,23 +166,27 @@ class OpsChatAPIController {
             ", model=" + aiConfig.model + ", tools=" + toolDefs.size + ", maxIter=" + maxIterations +
             ", hasContext=" + contextSnapshot.isDefined)
 
-        AgentLoop.run(
-            aiConfig = aiConfig,
-            system = systemPrompt,
-            userMessages = withContext,
-            toolDefs = toolDefs,
-            apiKey = uiKey,
-            enableThinking = env.extendedThinking,
-            maxIterations = maxIterations,
-            maxTokensPerCall = maxTokensPerCall,
-            cancelled = () => cancelled.get(),
-            sink = (evt: AgentLoop.LoopEvent) => {
-                // Stop emitting once the client disconnects and flip the cancel
-                // flag so the agent loop unwinds — avoids a broken-pipe write
-                // per remaining token delta.
-                if (!cancelled.get() && !AssistantSseSupport.emitLoopEvent(emitter, evt)) cancelled.set(true)
-            }
-        )
+        // Heartbeat comments keep proxies from closing the SSE socket while a
+        // tool call blocks (see AssistantSseSupport.startHeartbeat).
+        val heartbeat = AssistantSseSupport.startHeartbeat(emitter, cancelled)
+        try AgentLoop.run(
+                aiConfig = aiConfig,
+                system = systemPrompt,
+                userMessages = withContext,
+                toolDefs = toolDefs,
+                apiKey = uiKey,
+                enableThinking = env.extendedThinking,
+                maxIterations = maxIterations,
+                maxTokensPerCall = maxTokensPerCall,
+                cancelled = () => cancelled.get(),
+                sink = (evt: AgentLoop.LoopEvent) => {
+                    // Stop emitting once the client disconnects and flip the cancel
+                    // flag so the agent loop unwinds — avoids a broken-pipe write
+                    // per remaining token delta.
+                    if (!cancelled.get() && !AssistantSseSupport.emitLoopEvent(emitter, evt)) cancelled.set(true)
+                }
+            )
+        finally heartbeat.cancel(false)
 
         // If the client already disconnected (a failed write flipped the
         // cancel flag), skip complete() — flushing to a dead socket would log

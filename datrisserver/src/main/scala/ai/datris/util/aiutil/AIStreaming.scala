@@ -638,23 +638,30 @@ object AIStreaming {
       * effort on the Responses API. When the model name matches, we skip the
       * cold-cache discovery round-trip. Unknown prefixes still try with
       * reasoning first and fall back on rejection. Same prefix list as
-      * `openAiTokenField` for max_completion_tokens. */
+      * `openAiTokenField` for max_completion_tokens. GPT-6 Astra accepts
+      * `reasoning.effort: medium`. */
     private def likelyReasoningModel(model: String): Boolean = {
         if (model == null) return false
         val m = model.toLowerCase
-        m.startsWith("gpt-5") || m.startsWith("o1") || m.startsWith("o3") ||
-        m.startsWith("o4") || m.startsWith("o5")
+        m.startsWith("gpt-5") || m.startsWith("gpt-6") || m.startsWith("o1") ||
+        m.startsWith("o3") || m.startsWith("o4") || m.startsWith("o5")
     }
 
-    private def isOpenAiReasoningError(msg: String): Boolean = {
+    private[aiutil] def isOpenAiReasoningError(msg: String): Boolean = {
         if (msg == null) return false
         val m = msg.toLowerCase
         // Examples Anthropic-style errors phrase these around the unknown
-        // `reasoning` parameter or unsupported `effort` value:
+        // `reasoning` parameter or unsupported `effort`/`summary` value:
         //   "Unknown parameter: 'reasoning'."
         //   "reasoning.effort is not supported on this model"
         //   "This model does not support reasoning"
-        (m.contains("reasoning") && (m.contains("not support") || m.contains("unknown") || m.contains("invalid")))
+        //   "Unknown parameter: 'reasoning.summary'."
+        //   "Your organization must be verified to generate reasoning summaries."
+        // A model that takes `effort` but refuses `summary` must land here too,
+        // otherwise the whole turn fails instead of retrying without reasoning.
+        (m.contains("reasoning") || m.contains("summary")) &&
+        (m.contains("not support") || m.contains("unknown") || m.contains("invalid") ||
+            m.contains("must be verified"))
     }
 
     /** OpenAI Responses API call with tools + (optional) reasoning summary.
@@ -726,9 +733,13 @@ object AIStreaming {
 
         // Reasoning summary — only for reasoning-capable models. Non-reasoning
         // models 400 on this field; we discover that and cache it.
+        // `summary` must be asked for explicitly: without it OpenAI returns a
+        // reasoning item with an EMPTY summary array and the UI's thinking block
+        // never renders. "auto" lets the model pick the summary detail level.
         if (attachReasoning) {
             val reasoning = new JsonObject()
             reasoning.addProperty("effort", "medium")
+            reasoning.addProperty("summary", "auto")
             req.add("reasoning", reasoning)
         }
 

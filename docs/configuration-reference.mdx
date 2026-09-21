@@ -267,7 +267,7 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 |----------|---------|-------------|
 | `AI_PROVIDER` | auto | Explicit provider pick (`anthropic`, `openai`, `azure`, `bedrock`, or `grok`) for the `ai-primary` and `codegen` slots. When unset, whichever API key is present wins (OpenAI wins ties; azure and grok are auto-picked only when they hold the sole key; bedrock is never auto-picked). |
 | `ANTHROPIC_MODEL` | `claude-fable-5-1` | Model seeded into `oss/ai-primary` on the Anthropic path. |
-| `OPENAI_MODEL` | `gpt-5.6-sol` | Model seeded into `oss/ai-primary` on the OpenAI path. |
+| `OPENAI_MODEL` | `gpt-5.6-sol` | Model seeded into `oss/ai-primary` on the OpenAI path. Any OpenAI chat model id is accepted, including `gpt-6-astra`. |
 | `AZURE_OPENAI_ENDPOINT` | — | Azure resource base URL (`https://YOUR-RESOURCE.openai.azure.com`). Required on the Azure path. |
 | `AZURE_OPENAI_MODEL` | — | Chat deployment name seeded into `oss/ai-primary` on the Azure path. Required on the Azure path. |
 | `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | — | Entra ID service principal for keyless Azure OpenAI auth (no API key stored anywhere). Single-tenant only; the Configuration tab's Azure credentials section is the equivalent UI path. On Azure compute, leave all auth unset to use the server's managed identity. |

@@ -11,7 +11,8 @@ import com.knuddels.jtokkit.api.{Encoding, EncodingType, IntArrayList}
 /**
  * Exact token counts for OpenAI tokenizer families via jtokkit. Replaces the
  * heuristic when the embedding secret's `model` matches an OpenAI prefix —
- * cl100k_base for text-embedding-3-* and ada-002, o200k_base for gpt-4o, etc.
+ * cl100k_base for text-embedding-3-* and ada-002, o200k_base for gpt-4o, gpt-5.x,
+ * gpt-6 and the o-series (GPT-6's tokenizer is undocumented; o200k assumed).
  *
  * encode/decode let `TokenGuard.Mode.Split` do lossless token-boundary slicing
  * rather than character-boundary fallback.
@@ -66,7 +67,10 @@ object OpenAITokenCounter {
 
     private def encodingType(model: String): EncodingType = {
         val m = Option(model).getOrElse("").toLowerCase
-        if (m.startsWith("gpt-4o") || m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4"))
+        if (
+            m.startsWith("gpt-4o") || m.startsWith("gpt-5") || m.startsWith("gpt-6") ||
+            m.startsWith("o1") || m.startsWith("o3") || m.startsWith("o4")
+        )
             EncodingType.O200K_BASE
         else if (m.startsWith("text-embedding-3") || m.startsWith("text-embedding-ada") || m.startsWith("gpt-"))
             EncodingType.CL100K_BASE
