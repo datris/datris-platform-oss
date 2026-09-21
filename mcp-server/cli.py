@@ -823,11 +823,13 @@ def tap_show(name, json_output):
 
 @tap.command("test")
 @click.argument("name")
+@click.option("--limit", type=int, default=20, show_default=True,
+              help="Max records to pull for the preview (0 = no cap, streams the whole source)")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
-def tap_test(name, json_output):
-    """Test-run a tap without pushing to the pipeline."""
+def tap_test(name, limit, json_output):
+    """Test-run a tap without pushing to the pipeline (previews the first 20 records)."""
     click.echo(f"  Testing tap '{name}'...")
-    result = mcp("test_tap", {"name": name})
+    result = mcp("test_tap", {"name": name, "limit": limit})
     if json_output:
         click.echo(json.dumps(result, indent=2))
         return
@@ -838,7 +840,7 @@ def tap_test(name, json_output):
         status = result.get("status", "unknown")
         records = result.get("recordCount", 0)
         data_type = result.get("dataType", "")
-        click.echo(f"  ✓ {status} — {records} records ({data_type})")
+        click.echo(f"  ✓ {status} — {records} records (test preview) ({data_type})")
     else:
         click.echo(f"  {result}")
 

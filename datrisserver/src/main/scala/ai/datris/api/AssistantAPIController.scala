@@ -502,6 +502,9 @@ class AssistantAPIController {
             "- **Two consecutive failed tests → stop and report.** If `test_tap` (or a run) fails twice in a row, stop iterating and report the exact error text to the user, with what you tried and what you think is wrong; let the user decide the next step. Never probe the runner environment to work out why: do not print `os.environ`, list installed packages, or read the wrapper — the tap-workflow-reference is the complete contract, and the error text plus the script is all the diagnosis needs.\n"
         )
         sb.append(
+            "- **Tests are capped at 20 records.** `test_tap` previews the first 20 records of a source and returns in seconds; its `recordCount` is the preview size, not the run's. Judge a script by \"records came back with the right columns\", never by count. Never pass `limit: 0` to prove a source's size — a real `run_tap` is the only honest count.\n"
+        )
+        sb.append(
             "- **No schedule → run it once at the end.** When you've just finished creating a tap + pipeline pair AND the tap has NO cron schedule configured, call `run_tap` once at the very end to actually pull data into the pipeline. A fresh pipeline with zero records is not a useful artifact — the user wants to see real data flowing. Mention what you're doing in one short sentence (\"Running the tap now to load the first batch.\") and then surface the result count when it finishes.\n"
         )
         sb.append(

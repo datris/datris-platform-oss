@@ -445,7 +445,7 @@ Tap workflow (for step 3 Option B):
   Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
   Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever — the platform authenticates the callback per run by itself (a run-scoped DATRIS_PLATFORM_TOKEN the wrapper attaches to requests/urllib calls aimed at DATRIS_PLATFORM_HOST), so never add an x-api-key to these calls or ask the user for one. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
-  2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
+  2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. A test previews the first 20 records and returns in seconds (pass `limit` to change it, 0 for no cap), so a test's `recordCount` is the preview size, not what a real run will produce — judge the script by "records came back with the right columns", never by the count. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
      The platform refuses a save with a `cron_expression` on an untested script (HTTP 409): create without the cron, test_tap, then update_tap with the cron.
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
      A test killed with exit code -9 (or 137, "killed") ran out of memory: the script built its whole result in memory. Rewrite fetch() to yield records one at a time (read the source in chunks / pages and yield each row) — do not cap the rows or split the source.
@@ -1122,7 +1122,7 @@ If the user already has the file in hand, prefer `upload_data` against an existi
 1. **Check existing.** Call `list_taps`. If a tap with the right purpose exists, prefer running it (or updating its config) over creating a new one.
 2. **Create.** Call `create_tap` with either `instruction` (AI generates the Python `fetch()` function) or `script` (you provide it directly). Writing the script yourself is usually faster and more reliable than AI generation. Pass `target_pipeline` so the tap actually persists to a destination — without it, runs come back with `persistedReason: no_target_pipeline`.
    - **HTTP taps** (`kind: "http"` + `endpoint_url`): the tap is a service the USER hosts, in any language; Datris POSTs `{tap, params, state, testLimit}` to the endpoint each run and the endpoint responds with the same envelope a script produces (`{"type": ..., "data": [...], "state": {...}}`). Auth: if the tap's secret has an `endpoint_token` field it is sent as `Authorization: Bearer` — no other secret fields are ever forwarded. Everything else in this reference (params, state, scheduling, run flow, polling, verification) applies identically. What does NOT apply: `instruction`/`script`/`packages`, AI codegen actions, and the platform-data callback below — an HTTP tap cannot read platform data, so keep platform-data-driven taps as Python taps. Only suggest HTTP kind when the user says they want to implement the tap themselves outside the platform (existing service, non-Python language).
-3. **Test.** Call `test_tap` to validate the script without persisting. **MANDATORY for any newly-created or just-updated script** — see the VALIDATION RULE below. If the script errors, fix it by calling `create_tap` again with the same name and a corrected `instruction` or revised `script` (create_tap upserts and replaces the existing script), and re-test until it succeeds.
+3. **Test.** Call `test_tap` to validate the script without persisting. A test previews the first 20 records by default (`limit` raises it, `limit: 0` streams the whole source), so the `recordCount` a test returns is the preview size, not what `run_tap` will produce — never quote it to the user as the size of the source. **MANDATORY for any newly-created or just-updated script** — see the VALIDATION RULE below. If the script errors, fix it by calling `create_tap` again with the same name and a corrected `instruction` or revised `script` (create_tap upserts and replaces the existing script), and re-test until it succeeds.
    The platform enforces this order: a save carrying `cron_expression` for a script that has not passed `test_tap` is refused with HTTP 409 — create without the cron, `test_tap`, then `update_tap` with the cron.
 4. **Schedule (if recurring).** If the user mentioned any recurrence cue, set `cron_expression` — see the SCHEDULING RULE below.
 5. **Run.** Call `run_tap` with `name` and optional `params`. Read the response — see the run-flow section below.
@@ -1272,7 +1272,7 @@ The platform persists a small JSON state object per tap between runs, so a sched
 - The last committed state is injected into the script as the `DATRIS_TAP_STATE` env var (absent on the very first run). Scripts read it with `state = json.loads(os.environ.get("DATRIS_TAP_STATE") or "{}")`.
 - The script saves new state by assigning a dict to the module-global `DATRIS_STATE` inside `fetch()` (with `global DATRIS_STATE`).
 - The platform commits the new state ONLY after a successful run (`success` or `no_records`). A failed run leaves the old bookmark, so the automatic retry re-fetches the same window — no data holes. Destinations with upsert absorb any overlap.
-- Test runs (`test_tap`) read state but never commit it.
+- Test runs (`test_tap`) read state but never commit it, and they stop after the first 20 records by default — a test's record count is a preview, not the run's count.
 - State must stay under 64 KB — it's a cursor (timestamp, id watermark, page token, content hash), never a place to store records or credentials. It is stored and displayed unmasked.
 
 ### What to track (in order of preference, by what the source supports)
@@ -1423,7 +1423,7 @@ The platform maintains a per-tap ledger of processed documents (URI + content ha
 | `create_tap` | Create or replace a tap (upserts by name). Pass `cron_expression` here when recurrence is known up-front. |
 | `update_tap` | Change `enabled`, `cron_expression`, `target_pipeline`, or `description` without touching the script. |
 | `create_tap` (upsert) | Replacing an existing tap's script: call `create_tap` again with the same `name` and the new `script` or `instruction`. It upserts by name. There is no separate script-only update tool. |
-| `test_tap` | Validate the script without persisting. Always run before the first real `run_tap`. |
+| `test_tap` | Validate the script without persisting. Previews the first 20 records (`limit` to change, 0 = no cap); the count is a preview, not the run's. Always run before the first real `run_tap`. |
 | `run_tap` | Execute now. Pass `params` for per-call values. |
 | `get_tap_logs` | Run history for a tap (manual + scheduled). Use to recover `publisherToken` for any past run. |
 | `get_tap_ledger` | Document-tap-only: see/clear the dedupe ledger. |
@@ -2711,6 +2711,7 @@ def _base_tools():
             name="test_tap",
             description=(
                 "Test-run a tap without pushing data to the pipeline. Executes the tap's script and returns results, record count, and any errors. Use this to validate a script before running it for real. "
+                "By default a test pulls the first 20 records and returns; `recordCount` from a test is the preview size, not what `run_tap` will produce. "
                 "If the error reports exit code -9 (or 137, or \"killed\") with no traceback, the script ran out of memory because fetch() built its whole result in memory: rewrite fetch() to yield records one at a time (read the source in chunks / pages) instead of returning a list, then test again. "
                 "After two consecutive failed tests, stop and report the exact error text to the user instead of iterating further; never probe the runner environment or read the wrapper to diagnose."
             ),
@@ -2720,6 +2721,11 @@ def _base_tools():
                     "name": {
                         "type": "string",
                         "description": "Name of the tap to test"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Max records to pull for the preview (default 20). 0 = no cap: streams the whole source — only when the user explicitly asks for a full test."
                     },
                 },
                 "required": ["name"]
@@ -3120,6 +3126,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         latency_ms = int((time.time() - started) * 1000)
         _activity_record(session_id, name, status, latency_ms, api_key,
                          arguments, result_text, error_msg)
+
+
+def _test_limit(value) -> int:
+    """Preview size for `test_tap`. Absent/null = the 20-record default; 0 (or a
+    negative value) is the deliberate unlimited opt-out the server honours."""
+    if value is None:
+        return 20
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 20
 
 
 def _dispatch(name: str, args: dict) -> str:
@@ -3977,7 +3994,11 @@ def _dispatch(name: str, args: dict) -> str:
         return _call("post", "/api/v1/tap/state", json={"name": args["name"], "state": state})
 
     elif name == "test_tap":
-        return _call("post", "/api/v1/tap/run", json={"name": args["name"], "mode": "test"})
+        return _call(
+            "post",
+            "/api/v1/tap/run",
+            json={"name": args["name"], "mode": "test", "testLimit": _test_limit(args.get("limit"))},
+        )
 
     elif name == "set_catalog":
         # Read-modify-write: there is no PATCH endpoint for either entity. The

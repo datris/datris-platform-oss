@@ -2726,6 +2726,18 @@ paths:
                   enum: [run, test]
                   default: test
                   description: "'run' feeds records into the configured target pipeline; 'test' executes the script and returns results without persisting"
+                testLimit:
+                  type: integer
+                  default: 20
+                  description: >-
+                    Max records a test pulls before the runner stops the script.
+                    Applies to mode=test only, where it defaults to 20: the runner
+                    injects DATRIS_TAP_TEST_LIMIT and stops pulling from a generator
+                    fetch() after that many records, so a test's recordCount is a
+                    preview size, not what a run produces. 0 (or a negative value)
+                    disables the cap and streams the whole source. Ignored for
+                    mode=run, which always reads every row.
+                  example: 20
                 params:
                   type: object
                   additionalProperties: true

@@ -109,7 +109,7 @@ Review and edit the generated script. You can:
 - If the script fails, an **AI Diagnosis** explains what went wrong and is **auto-applied** — the platform fixes the script and retests, up to 3 attempts. If all retries fail, the diagnosis stays visible for you to review and apply manually
 - Click **Stop Test** to cancel an in-flight test (also halts the auto-fix chain)
 
-**Limit test sample** (checkbox, default on) with an inline record-count input (default `20`, minimum `1`): when enabled, the runner injects `DATRIS_TAP_TEST_LIMIT=<n>` into the script process. Well-written tap scripts honor this env var to cap both their `/api/v1/query/*` reads and per-item iteration loops, making tests fast and low-cost. When `fetch()` is a generator (it `yield`s records), the platform also stops pulling after `n` records and closes the generator; a returned list is never truncated, so a script that returns a list must cap its own reads. Cron and manual runs (via *Run Tap*) never set this env var, so production runs always read every row from every source.
+**Limit test sample** (checkbox, default on) with an inline record-count input (default `20`, minimum `1`): when enabled, the runner injects `DATRIS_TAP_TEST_LIMIT=<n>` into the script process. Well-written tap scripts honor this env var to cap both their `/api/v1/query/*` reads and per-item iteration loops, making tests fast and low-cost. When `fetch()` is a generator (it `yield`s records), the platform also stops pulling after `n` records and closes the generator; a returned list is never truncated, so a script that returns a list must cap its own reads. Test runs started from the MCP `test_tap` tool, the CLI (`datris tap test`) and `POST /api/v1/tap/run` with `mode: "test"` default to 20 records as well — pass `limit` (MCP/CLI) or `testLimit` (REST) to raise the cap, or `0` to disable it and stream the whole source. Because of that, the `recordCount` a test reports is a preview size, not what a real run will produce. Cron runs and `mode=run` runs (the *Run Tap* button, `run_tap`) never set this env var, so production runs always read every row from every source.
 
 #### Post-run script review
 
@@ -280,7 +280,7 @@ When "Send to pipeline" is checked:
 - `pipelineTokens` — the per-job IDs (length 1 for structured, N for document).
 - `recordCount` — how many records the script produced.
 
-`run_tap` does **not** return the records themselves. Use `test_tap` (or the **Test Script** button in the UI) when you need to preview what a script produces before pushing it — `test_tap` returns a sample of up to 20 rows with a `recordsTruncated` flag when trimmed.
+`run_tap` does **not** return the records themselves. Use `test_tap` (or the **Test Script** button in the UI) when you need to preview what a script produces before pushing it — `test_tap` previews the first 20 records by default (`limit` changes the cap, `limit: 0` removes it) and returns a sample of up to 20 rows with a `recordsTruncated` flag when trimmed — its `recordCount` is the preview size, not the size of the source.
 
 Poll `GET /api/v1/pipeline/status?publishertoken=...&withrollup=true` (or the MCP `get_pipeline_status` tool, which sets `withrollup=true` automatically) until `rollup.allDone` is `true`, then read `rollup.status` for the outcome and `rollup.jobs[].lastError` for any failure detail.
 
