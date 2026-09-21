@@ -223,4 +223,44 @@ class AIProvidersSpec extends AnyFunSuite {
     test("defaultEndpointFor grok is the xAI chat/completions URL") {
         assert(AIProviders.defaultEndpointFor("grok") == "https://api.x.ai/v1/chat/completions")
     }
+
+    // ---- gpt-6 (Astra) ----
+
+    test("usesResponsesApi is true for openai gpt-6 on a chat/completions endpoint") {
+        val openai = ai.datris.model.AIConfig(
+            provider = "openai",
+            endpoint = "https://api.openai.com/v1/chat/completions",
+            model = "gpt-6-astra",
+            apiKey = ""
+        )
+        assert(AIProviders.usesResponsesApi(openai))
+        val azure = ai.datris.model.AIConfig(
+            provider = "azure",
+            endpoint = "https://myres.openai.azure.com/openai/v1/chat/completions",
+            model = "gpt-6-astra",
+            apiKey = ""
+        )
+        assert(!AIProviders.usesResponsesApi(azure))
+        val grok = ai.datris.model.AIConfig(
+            provider = "grok",
+            endpoint = "https://api.x.ai/v1/chat/completions",
+            model = "gpt-6-astra",
+            apiKey = ""
+        )
+        assert(!AIProviders.usesResponsesApi(grok))
+    }
+
+    test("addTokenLimit: direct openai gpt-6 uses max_completion_tokens") {
+        val obj = new com.google.gson.JsonObject()
+        AIProviders.addTokenLimit(obj, "openai", "gpt-6-astra", 4096)
+        assert(obj.has("max_completion_tokens"))
+        assert(!obj.has("max_tokens"))
+    }
+
+    test("rejectsSamplingParams: openai gpt-6 family rejects, gpt-5 does not") {
+        assert(AIProviders.rejectsSamplingParams("gpt-6-astra"))
+        assert(AIProviders.rejectsSamplingParams("GPT-6-Astra"))
+        assert(!AIProviders.rejectsSamplingParams("gpt-5.5"))
+        assert(!AIProviders.rejectsSamplingParams("gpt-5.6-sol"))
+    }
 }

@@ -129,4 +129,24 @@ class AIUtilParsingSpec extends AnyFunSuite {
     test("citations: OpenAI chat completions provider yields empty") {
         assert(AIUtil.extractCitations("""{"choices":[]}""", openaiChat) == Nil)
     }
+
+    // ---- gpt-6 (Astra) ----
+
+    test("OpenAI Responses API: routed via gpt-6 model name even on chat endpoint") {
+        val astra = AIConfig("openai", "https://api.openai.com/v1/chat/completions", "gpt-6-astra", "key")
+        val json =
+            """{"output":[
+              |  {"type":"reasoning","summary":[]},
+              |  {"type":"message","content":[{"type":"output_text","text":"Yo"}]}
+              |]}""".stripMargin
+        assert(AIUtil.extractText(json, astra) == "Yo")
+    }
+
+    test("OpenAITokenCounter: gpt-5 and gpt-6 count with o200k_base, embeddings stay cl100k") {
+        assert(OpenAITokenCounter.encodingName("gpt-6-astra") == "o200k_base")
+        assert(OpenAITokenCounter.encodingName("gpt-5.5") == "o200k_base")
+        assert(OpenAITokenCounter.encodingName("gpt-4o") == "o200k_base")
+        assert(OpenAITokenCounter.encodingName("text-embedding-3-small") == "cl100k_base")
+        assert(OpenAITokenCounter.matches("gpt-6-astra"))
+    }
 }
