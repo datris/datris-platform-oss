@@ -166,7 +166,10 @@ class OpsChatAPIController {
             ", model=" + aiConfig.model + ", tools=" + toolDefs.size + ", maxIter=" + maxIterations +
             ", hasContext=" + contextSnapshot.isDefined)
 
-        AgentLoop.run(
+        // Heartbeat comments keep proxies from closing the SSE socket while a
+        // tool call blocks (see AssistantSseSupport.startHeartbeat).
+        val heartbeat = AssistantSseSupport.startHeartbeat(emitter, cancelled)
+        try AgentLoop.run(
             aiConfig = aiConfig,
             system = systemPrompt,
             userMessages = withContext,
@@ -183,6 +186,7 @@ class OpsChatAPIController {
                 if (!cancelled.get() && !AssistantSseSupport.emitLoopEvent(emitter, evt)) cancelled.set(true)
             }
         )
+        finally heartbeat.cancel(false)
 
         // If the client already disconnected (a failed write flipped the
         // cancel flag), skip complete() — flushing to a dead socket would log
