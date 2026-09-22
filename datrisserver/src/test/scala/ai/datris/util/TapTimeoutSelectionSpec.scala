@@ -162,6 +162,23 @@ class TapTimeoutSelectionSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(TapScriptRunner.resolveRunTimeoutSeconds(120, 7200) == 120)
     }
 
+    // Round-2 review: a timeout knob an operator typed wrong must not boot a
+    // useless ceiling (or, for the test knob, fail the boot outright) — blank,
+    // non-numeric, zero and negative all read as "unset" and fall back.
+    test("a blank, non-numeric, zero or negative timeout property reads as unset") {
+        for (raw <- Seq(null, "", "   ", "5m", "1h", "abc", "0", "-5"))
+            assert(
+                TapScriptRunner.timeoutSecondsOrUnset(raw) == -1,
+                "'" + String.valueOf(raw) + "' must read as unset, not as a ceiling"
+            )
+        assert(TapScriptRunner.timeoutSecondsOrUnset(" 600 ") == 600, "a padded integer is still a ceiling")
+
+        // ... and the run resolver treats those the same as a blank value: a 0 s
+        // ceiling would time out every real run instantly.
+        assert(TapScriptRunner.resolveRunTimeoutSeconds(0, 300) == 3600)
+        assert(TapScriptRunner.resolveRunTimeoutSeconds(-5, 7200) == 7200)
+    }
+
     // ================================================================
     // Acceptance 3 — the message names the mode and the knob
     // ================================================================

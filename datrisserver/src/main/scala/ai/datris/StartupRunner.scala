@@ -153,12 +153,14 @@ class StartupRunner extends ApplicationRunner {
 
     // Tap wall-clock ceilings. A TEST is bounded by tapScriptTimeoutSeconds
     // (TAP_SCRIPT_TIMEOUT_SECONDS, default 300); a real or cron RUN by
-    // tapRunTimeoutSeconds (TAP_RUN_TIMEOUT_SECONDS, default 3600). The run
-    // ceiling is bound as a string so a blank container var reads as "unset"
-    // (-1) and resolves to max(3600, tapScriptTimeoutSeconds) — an install that
+    // tapRunTimeoutSeconds (TAP_RUN_TIMEOUT_SECONDS, default 3600). BOTH are
+    // bound as strings: a blank container var then reads as "unset" (-1) rather
+    // than failing conversion, and a typo an operator puts in .env ("5m") warns
+    // and falls back instead of stopping the server from booting. An unset run
+    // ceiling resolves to max(3600, tapScriptTimeoutSeconds), so an install that
     // raised the old single knob never gets a SHORTER real-run ceiling.
-    @Value("${tapScriptTimeoutSeconds:${TAP_SCRIPT_TIMEOUT_SECONDS:300}}")
-    var tapScriptTimeoutSeconds: Int = _
+    @Value("${tapScriptTimeoutSeconds:${TAP_SCRIPT_TIMEOUT_SECONDS:}}")
+    var tapScriptTimeoutSecondsRaw: String = _
 
     @Value("${tapRunTimeoutSeconds:${TAP_RUN_TIMEOUT_SECONDS:}}")
     var tapRunTimeoutSecondsRaw: String = _
@@ -360,22 +362,33 @@ class StartupRunner extends ApplicationRunner {
         )
 
         // Tap wall-clock ceilings: a test is bounded by tapScriptTimeoutSeconds,
-        // a real or cron run by tapRunTimeoutSeconds. An unset run ceiling (blank
-        // container var) resolves to max(3600, tapScriptTimeoutSeconds).
-        val rawTapRunTimeoutSeconds = optionalInt(tapRunTimeoutSecondsRaw)
-        val tapRunTimeoutSecondsRawTrimmed = Option(tapRunTimeoutSecondsRaw).map(_.trim).getOrElse("")
-        if (rawTapRunTimeoutSeconds < 0 && tapRunTimeoutSecondsRawTrimmed.nonEmpty)
-            logger.warn(
-                "TAP_RUN_TIMEOUT_SECONDS='" + tapRunTimeoutSecondsRawTrimmed +
-                    "' is not a whole number of seconds and is ignored; the run ceiling falls back to " +
-                    "max(3600, tapScriptTimeoutSeconds). Set it to an integer, e.g. 3600."
-            )
+        // a real or cron run by tapRunTimeoutSeconds. Anything that is not a
+        // POSITIVE whole number of seconds (blank, "5m", 0, -5) counts as unset:
+        // the test ceiling falls back to 300, the run ceiling to
+        // max(3600, tapScriptTimeoutSeconds). A non-blank bad value warns — an
+        // accepted 0 would time out every run instantly, and a boot failure over
+        // a typo in .env is worse than a documented fallback.
+        def warnBadTimeout(name: String, raw: String, fallback: String): Unit = {
+            val trimmed = Option(raw).map(_.trim).getOrElse("")
+            if (trimmed.nonEmpty)
+                logger.warn(
+                    name + "='" + trimmed + "' is not a positive whole number of seconds and is ignored; " +
+                        "the ceiling falls back to " + fallback + "."
+                )
+        }
+        val rawTapScriptTimeoutSeconds = ai.datris.util.TapScriptRunner.timeoutSecondsOrUnset(tapScriptTimeoutSecondsRaw)
+        if (rawTapScriptTimeoutSeconds <= 0) warnBadTimeout("TAP_SCRIPT_TIMEOUT_SECONDS", tapScriptTimeoutSecondsRaw, "300")
+        val tapScriptTimeoutSeconds = if (rawTapScriptTimeoutSeconds > 0) rawTapScriptTimeoutSeconds else 300
+
+        val rawTapRunTimeoutSeconds = ai.datris.util.TapScriptRunner.timeoutSecondsOrUnset(tapRunTimeoutSecondsRaw)
+        if (rawTapRunTimeoutSeconds <= 0)
+            warnBadTimeout("TAP_RUN_TIMEOUT_SECONDS", tapRunTimeoutSecondsRaw, "max(3600, tapScriptTimeoutSeconds)")
         val tapRunTimeoutSeconds =
             ai.datris.util.TapScriptRunner.resolveRunTimeoutSeconds(rawTapRunTimeoutSeconds, tapScriptTimeoutSeconds)
         logger.info(
             "Tap timeouts: test ceiling " + tapScriptTimeoutSeconds + "s (TAP_SCRIPT_TIMEOUT_SECONDS), run ceiling " +
                 tapRunTimeoutSeconds + "s (TAP_RUN_TIMEOUT_SECONDS" +
-                (if (rawTapRunTimeoutSeconds >= 0) ", explicitly set" else ", unset — defaulted to max(3600, test ceiling)") + ")"
+                (if (rawTapRunTimeoutSeconds > 0) ", explicitly set" else ", unset — defaulted to max(3600, test ceiling)") + ")"
         )
 
         // Payload disk budget: the new property wins; the deprecated alias is

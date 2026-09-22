@@ -73,13 +73,26 @@ object TapScriptRunner {
             s"Tap script timed out after ${t.seconds} seconds (${t.label} mode; raise ${t.envVar}, " +
                 "or chunk the source range via run_tap params)"
 
+    /** Lenient parse of a boot-time timeout property. Returns -1 ("unset") for a
+      * blank value, a value that is not a whole number ("5m"), and a value that
+      * is zero or negative — a 0 s ceiling would time out every run instantly,
+      * so it is treated as unset (and warned about) rather than obeyed. The
+      * caller decides what unset falls back to. */
+    def timeoutSecondsOrUnset(raw: String): Int =
+        Option(raw)
+            .map(_.trim)
+            .filter(_.nonEmpty)
+            .flatMap(v => scala.util.Try(v.toInt).toOption)
+            .filter(_ > 0)
+            .getOrElse(-1)
+
     /** Boot-time resolution of the run ceiling. `rawRunTimeoutSeconds` is -1
       * when TAP_RUN_TIMEOUT_SECONDS / tapRunTimeoutSeconds is blank
-      * (StartupRunner.optionalInt); an unset run ceiling is
+      * (TapScriptRunner.timeoutSecondsOrUnset); an unset run ceiling is
       * max(3600, tapScriptTimeoutSeconds), so an install that raised the old
       * single knob to make long real runs work never gets a SHORTER one. */
     def resolveRunTimeoutSeconds(rawRunTimeoutSeconds: Int, scriptTimeoutSeconds: Int): Int =
-        if (rawRunTimeoutSeconds >= 0) rawRunTimeoutSeconds else math.max(3600, scriptTimeoutSeconds)
+        if (rawRunTimeoutSeconds > 0) rawRunTimeoutSeconds else math.max(3600, scriptTimeoutSeconds)
 
     // private[util] so TapWrapperStateSpec can execute the real wrapper against
     // fixture scripts — the wrapper is the wire format, and a drift here breaks
