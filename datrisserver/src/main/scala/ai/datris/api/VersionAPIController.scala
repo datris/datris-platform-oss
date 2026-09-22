@@ -36,6 +36,10 @@ class VersionAPIController {
             val mongodbDatabase =
                 if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
                 else DatrisEnvironment.current.mongoDbConfig.database
+            // Tap budgets in force on this install (plans/stories/tap-sizing-effective-budgets.md):
+            // additive string fields so an agent sizes a run against the values
+            // this install runs with, not against the documented defaults.
+            val budgets = ai.datris.util.TapBudgets.effective(DatrisEnvironment.current)
             val map = Map(
                 "version" -> BuildInfo.version,
                 // Which jar is running (doctor's build.stale_jar compares these to the checkout).
@@ -51,7 +55,13 @@ class VersionAPIController {
                 "recoveryAgentEnabled" -> DatrisEnvironment.values.recoveryAgentEnabled.toString,
                 "postgresDatabase" -> DatrisEnvironment.current.postgresDatabase,
                 "mongodbDatabase" -> mongodbDatabase,
-                "useTapRunner" -> ai.datris.util.TapScriptRunner.useTapRunner.toString
+                "useTapRunner" -> ai.datris.util.TapScriptRunner.useTapRunner.toString,
+                "pipelineMaxPayloadMB" -> budgets.pipelineMaxPayloadMB.toString,
+                "pipelineMaxPayloadMBSource" -> budgets.pipelineMaxPayloadMBSource,
+                "tapScriptTimeoutSeconds" -> budgets.tapScriptTimeoutSeconds.toString,
+                "tapScriptTimeoutSecondsSource" -> budgets.tapScriptTimeoutSecondsSource,
+                "tapRunTimeoutSeconds" -> budgets.tapRunTimeoutSeconds.toString,
+                "tapRunTimeoutSecondsSource" -> budgets.tapRunTimeoutSecondsSource
             ).asJava
             val gson = new Gson
             new ResponseEntity[String](gson.toJson(map), HttpStatus.OK)

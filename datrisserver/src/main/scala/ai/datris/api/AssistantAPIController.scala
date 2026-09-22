@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
-import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, DestinationAvailabilityUtil, MCPClient, SecretsUtil, TapPromptInjector}
+import ai.datris.util.{AgentLoop, APIKeyValidator, AttachmentStore, DestinationAvailabilityUtil, MCPClient, SecretsUtil, TapBudgets, TapPromptInjector}
 import org.slf4j.{Logger, LoggerFactory}
 import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
@@ -15,6 +15,40 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 
 import java.util.concurrent.{ConcurrentHashMap, Executors, TimeUnit}
 import scala.collection.JavaConverters._
+
+object AssistantAPIController {
+
+    /** The Assistant's tap-sizing rule, with the budgets THIS install runs
+      * with interpolated into the prose (plans/stories/tap-sizing-effective-budgets.md).
+      * The prompt is built per request, so the numbers are always live; the
+      * documented defaults stay in the text as defaults only. Lifted out of
+      * `buildSystemPrompt` (same seam as [[KeepOrScratchRule]]) so a spec can
+      * read the wording directly. No domains, proper-noun APIs or concrete
+      * schedules: they leak into the Assistant's answers as domain bias, and
+      * the worked example carries no budget figure so it cannot be mimicked as
+      * one.
+      */
+    private[datris] def sizingRule(b: TapBudgets.Effective): String = {
+        val disk = TapBudgets.describeDisk(b)
+        val runCeiling = TapBudgets.describeRun(b)
+        val testCeiling = TapBudgets.describeScript(b)
+        "## Run the tap when you're done\n\n" +
+            s"- **Size the run BEFORE building.** For any source the user describes as large, estimate both budgets from measured numbers and show the user those numbers first. Disk: records are staged as JSON with the keys repeated on every row, so bytes per record ≈ 26 bytes × column count for numeric / timestamp / short-string data (long text or nested fields add their own length); rows × that is the staged size, capped per run by PIPELINE_MAX_PAYLOAD_MB — $disk. Time: a `fetch()` that emits one record at a time moves about 15,000 rows per second, one that emits batches about 90,000 rows per second — always name which rate you used, and recommend batches for any source over about one million rows. Compare the minutes with TAP_RUN_TIMEOUT_SECONDS for real and scheduled runs — $runCeiling. These are the values in force on this install: compare every estimate with them, never against the defaults, and only offer 'raise the variable' when the estimate exceeds the value in force. Show the estimate as a four-line table — rows, bytes/record, GB staged, minutes — before you propose anything, so the user can correct the row count, the input you are least sure of (e.g. 20,000,000 rows × 25 columns → ~650 bytes/record → ~13 GB staged → ~4 minutes at the batch rate). If either estimate exceeds its budget, stop and offer exactly three choices: raise the variable (operator action — disk needs matching free space on the staging volume, time holds a runner slot for that long), narrow the requested window, or chunk the range via `run_tap` `params` (several runs land in the same pipeline). Reading only the columns the destination needs cuts both numbers linearly. Do not build the tap, stream for minutes, and then hit a budget error.\n" +
+            s"- **Timeouts.** A tap test is killed after TAP_SCRIPT_TIMEOUT_SECONDS ($testCeiling) and a real or scheduled run after TAP_RUN_TIMEOUT_SECONDS ($runCeiling) — again the values in force, not the defaults. A test is also capped at 20 records, so a passing test says nothing about how long a real run takes — only the estimate above does. If the run would not finish in time, say so before you create anything and offer the three choices above — for the time budget, the first of them is that the operator can raise TAP_RUN_TIMEOUT_SECONDS. Never cap the rows to fit the clock. A timed-out run's error names the mode it ran in and the variable to raise.\n"
+    }
+
+    /** KEEP-OR-SCRATCH rule (plans/fetch-only-taps.md §5), the same fork the MCP
+      * server instructions carry. Lifted out of `buildSystemPrompt` so a spec can
+      * read the wording directly. No domains, proper-noun APIs or concrete
+      * schedules: they leak into the Assistant's answers as domain bias.
+      */
+    private[datris] val KeepOrScratchRule: String =
+        "## KEEP-OR-SCRATCH rule (apply before choosing a destination)\n\n" +
+            "- If the user wants the data kept, observed, queried later, or refreshed on a schedule, use a real destination — exactly as described above.\n" +
+            "- If the user (or you, on your own initiative) wants an answer now, a validation result, or a transformed view and has no reason to keep the rows, create the pipeline with `destination: {\"scratch\": {}}` instead: run it, poll `get_pipeline_status` until `rollup.allDone` is true, read the rows off the rollup's `resultPreview`, and call `get_pipeline_result` only when `resultTruncated` is true and you need the rest. Never create a table just to read rows back once.\n" +
+            "- Scratch results are never catalogued or queryable later and expire after the retention window, so read them promptly. Nothing is landed anywhere.\n" +
+            "- If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from scratch to a real one). The tap, its schedule, and its incremental cursor do not move.\n"
+}
 
 /** REST controller for the in-product Assistant tab.
   *
@@ -485,15 +519,9 @@ class AssistantAPIController {
             "- **Do not assign taps or pipelines to a data catalog** (the `catalog` parameter on `create_tap` and `create_pipeline`, or the `set_catalog` tool) unless the user has explicitly asked you to organize the work under a named catalog. Catalog labels are a user-chosen organizational convention — assigning one for them puts them into a taxonomy they didn't ask for. When unset, the platform shows the tap/pipeline as Uncataloged, which is the right default.\n"
         )
         sb.append("\n")
-        sb.append("## Run the tap when you're done\n\n")
+        sb.append(AssistantAPIController.sizingRule(TapBudgets.effective(DatrisEnvironment.current)))
         sb.append(
-            "- **Never split a source for size.** One run handles multi-GB payloads — records stream to disk, never through memory. Do NOT cap a run at N rows, slice a month into several runs, or write resume-from-destination logic because the output looks large. One run per requested range — the only size-driven exception is when the estimate below exceeds a budget, and then only after the user has chosen chunking. Otherwise chunk only when the source API pages natively or when the user explicitly asks for a bounded window. If a run fails saying the payload exceeded the disk budget, tell the user the operator can raise PIPELINE_MAX_PAYLOAD_MB.\n"
-        )
-        sb.append(
-            "- **Size the run BEFORE building.** For any source the user describes as large, estimate both budgets from measured numbers and show the user those numbers first. Disk: records are staged as JSON with the keys repeated on every row, so bytes per record ≈ 26 bytes × column count for numeric / timestamp / short-string data (long text or nested fields add their own length); rows × that is the staged size, capped per run by PIPELINE_MAX_PAYLOAD_MB (default 4096 MB, 0 = unlimited). Time: a `fetch()` that emits one record at a time moves about 15,000 rows per second, one that emits batches about 90,000 rows per second — always name which rate you used, and recommend batches for any source over about one million rows. Compare the minutes with TAP_RUN_TIMEOUT_SECONDS (default 3600 s for real and scheduled runs). Show the estimate as a four-line table — rows, bytes/record, GB staged, minutes — before you propose anything, so the user can correct the row count, the input you are least sure of (e.g. 20,000,000 rows × 25 columns → ~650 bytes/record → ~13 GB staged → ~4 minutes at the batch rate). If either estimate exceeds its budget, stop and offer exactly three choices: raise the variable (operator action — disk needs matching free space on the staging volume, time holds a runner slot for that long), narrow the requested window, or chunk the range via `run_tap` `params` (several runs land in the same pipeline). Reading only the columns the destination needs cuts both numbers linearly. Do not build the tap, stream for minutes, and then hit a budget error.\n"
-        )
-        sb.append(
-            "- **Timeouts.** A tap test is killed after TAP_SCRIPT_TIMEOUT_SECONDS (default 300 s) and a real or scheduled run after TAP_RUN_TIMEOUT_SECONDS (default 3600 s). A test is also capped at 20 records, so a passing test says nothing about how long a real run takes — only the estimate above does. If the run would not finish in time, say so before you create anything and offer the three choices above — for the time budget, the first of them is that the operator can raise TAP_RUN_TIMEOUT_SECONDS. Never cap the rows to fit the clock. A timed-out run's error names the mode it ran in and the variable to raise.\n"
+            "- **Never split a source for size.** One run handles multi-GB payloads — records stream to disk, never through memory. Do NOT cap a run at N rows, slice a month into several runs, or write resume-from-destination logic because the output looks large. One run per requested range — the only size-driven exception is when the estimate above exceeds a budget, and then only after the user has chosen chunking. Otherwise chunk only when the source API pages natively or when the user explicitly asks for a bounded window. If a run fails saying the payload exceeded the disk budget, tell the user the operator can raise PIPELINE_MAX_PAYLOAD_MB.\n"
         )
         sb.append(
             "- **Yield batches, not rows, for a large columnar or tabular source.** `yield` each batch (a pyarrow `RecordBatch`, a pandas `DataFrame`, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (`columns=[...]`). Yielding one row at a time remains correct for small or API-paged sources.\n"
@@ -673,19 +701,4 @@ class AssistantAPIController {
         tool.add("input_schema", schema)
         tool
     }
-}
-
-object AssistantAPIController {
-
-    /** KEEP-OR-SCRATCH rule (plans/fetch-only-taps.md §5), the same fork the MCP
-      * server instructions carry. Lifted out of `buildSystemPrompt` so a spec can
-      * read the wording directly. No domains, proper-noun APIs or concrete
-      * schedules: they leak into the Assistant's answers as domain bias.
-      */
-    private[datris] val KeepOrScratchRule: String =
-        "## KEEP-OR-SCRATCH rule (apply before choosing a destination)\n\n" +
-            "- If the user wants the data kept, observed, queried later, or refreshed on a schedule, use a real destination — exactly as described above.\n" +
-            "- If the user (or you, on your own initiative) wants an answer now, a validation result, or a transformed view and has no reason to keep the rows, create the pipeline with `destination: {\"scratch\": {}}` instead: run it, poll `get_pipeline_status` until `rollup.allDone` is true, read the rows off the rollup's `resultPreview`, and call `get_pipeline_result` only when `resultTruncated` is true and you need the rest. Never create a table just to read rows back once.\n" +
-            "- Scratch results are never catalogued or queryable later and expire after the retention window, so read them promptly. Nothing is landed anywhere.\n" +
-            "- If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from scratch to a real one). The tap, its schedule, and its incremental cursor do not move.\n"
 }

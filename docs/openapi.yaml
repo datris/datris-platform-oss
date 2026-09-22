@@ -216,6 +216,24 @@ components:
           description: Canonical MongoDB database name
         useTapRunner:
           type: string
+        pipelineMaxPayloadMB:
+          type: string
+          description: Per-run payload disk budget in force on this install, in MB (0 = unlimited)
+        pipelineMaxPayloadMBSource:
+          type: string
+          description: Where the disk budget came from - env, deprecated-alias or default
+        tapScriptTimeoutSeconds:
+          type: string
+          description: Wall-clock ceiling in force for a tap test, in seconds
+        tapScriptTimeoutSecondsSource:
+          type: string
+          description: Where the test ceiling came from - env or default
+        tapRunTimeoutSeconds:
+          type: string
+          description: Wall-clock ceiling in force for a real or scheduled tap run, in seconds
+        tapRunTimeoutSecondsSource:
+          type: string
+          description: Where the run ceiling came from - env or default
 
     KillJobResponse:
       type: object

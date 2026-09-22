@@ -214,9 +214,14 @@ case class DatrisEnvironment(
     tapPromptTableName: String = null,
     // Wall-clock ceiling for a tap TEST (mode=test), in seconds.
     tapScriptTimeoutSeconds: Int = 300,
+    // True when TAP_SCRIPT_TIMEOUT_SECONDS was set explicitly (so a prompt or
+    // /version can say whether the ceiling comes from env or from the default).
+    tapScriptTimeoutSecondsSet: Boolean = false,
     // Wall-clock ceiling for a real or cron tap run (any mode but "test").
     // Resolves to max(3600, tapScriptTimeoutSeconds) when left unset.
     tapRunTimeoutSeconds: Int = 3600,
+    // True when TAP_RUN_TIMEOUT_SECONDS was set explicitly.
+    tapRunTimeoutSecondsSet: Boolean = false,
     // Deprecated alias of pipelineMaxPayloadMB (TAP_MAX_OUTPUT_MB); -1 = unset.
     tapMaxOutputMB: Int = -1,
     // Scratch destination: rows inlined on the run status, and how long the
