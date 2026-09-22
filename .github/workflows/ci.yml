@@ -34,6 +34,12 @@ jobs:
           ./cs setup --yes --apps sbt:1.12.5
           echo "$HOME/.local/share/coursier/bin" >> $GITHUB_PATH
 
+      # The tap wrapper specs execute the REAL WRAPPER_TEMPLATE under python3;
+      # the batch lane's specs `assume` pandas / pyarrow and would silently skip
+      # here without them.
+      - name: Install pandas and pyarrow for the tap wrapper specs
+        run: python3 -m pip install --quiet --user pandas pyarrow
+
       - name: Format check and test
         run: sbt scalafmtCheckAll test
 

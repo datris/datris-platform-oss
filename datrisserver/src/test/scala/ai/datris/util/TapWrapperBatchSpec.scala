@@ -515,7 +515,13 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
         "-Infinity" -> "float(\"-inf\")",
         "None" -> "None",
         "bytes" -> "b\"hi\"",
-        "numpy bool" -> "numpy.bool_(True)",
+        // The row equivalent of a frame's bool column is what df.to_dict("records")
+        // yields: a PYTHON bool (pandas boxes numpy bools on the way out). A batch must
+        // keep a boolean column boolean, or switching a script from rows to batches
+        // would silently turn it into a string column at the destination. The raw
+        // numpy.bool_ row case — still "True", because the per-row encoder is
+        // untouched — is pinned by its own test below.
+        "bool (numpy, boxed as pandas boxes it)" -> "bool(numpy.bool_(True))",
         "nested dict with datetime" -> "{\"k\": datetime.datetime(2026, 9, 20, 12, 0, 0)}"
     )
 
@@ -580,6 +586,20 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
             else None
         }
         assert(failures.isEmpty, "batch/row NDJSON divergence (arrow):\n" + failures.mkString("\n"))
+    }
+
+    test("a raw numpy bool yielded as a row still writes \"True\", and a frame's bool column writes true") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (rowCode, _, rowErr, rowLine) = parityLine("numpy.bool_(True)", "row")
+        assert(rowCode == 0, rowErr)
+        assert(
+            JsonParser.parseString(rowLine).getAsJsonObject.get("v").getAsJsonPrimitive.isString,
+            "the per-row encoder is untouched: json.dumps cannot encode numpy.bool_, so default=str writes the STRING \"True\": " + rowLine
+        )
+        val (frameCode, _, frameErr, frameLine) = parityLine("numpy.bool_(True)", "frame")
+        assert(frameCode == 0, frameErr)
+        val frameVal = JsonParser.parseString(frameLine).getAsJsonObject.get("v").getAsJsonPrimitive
+        assert(frameVal.isBoolean && frameVal.getAsBoolean, "a frame's bool column stays a JSON boolean: " + frameLine)
     }
 
     test("a float needing 17 digits parses within 1e-15 relative and keeps the same json type") {

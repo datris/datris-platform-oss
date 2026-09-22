@@ -353,10 +353,14 @@ object TapScriptRunner {
           |        _any_na = bool(_na.any())
           |        _na_done = False
           |        if _t.is_bool_dtype(_s):
-          |            # str(numpy.bool_(True)) — a bool yielded in a row is not JSON
-          |            # native either, so the batch lane must not "improve" it.
-          |            _v = _s.astype(object).where(~_na, None)
-          |            _v = _v.map(lambda _x: None if _x is None else ("True" if _x else "False"))
+          |            # A bool column stays a JSON boolean: the row equivalent of a
+          |            # frame is df.to_dict("records"), which boxes numpy bools to
+          |            # Python bools, so a script that switches from rows to batches
+          |            # must not turn a boolean column into a string one. (A raw
+          |            # numpy.bool_ yielded as a single ROW still writes "True" — the
+          |            # per-row encoder is untouched.) A nullable NA falls through to
+          |            # the missing-value fixup below and stays null.
+          |            _v = _s
           |        elif _t.is_float_dtype(_s):
           |            try:
           |                _arr = _s.to_numpy(dtype="float64", na_value=_np.nan)
