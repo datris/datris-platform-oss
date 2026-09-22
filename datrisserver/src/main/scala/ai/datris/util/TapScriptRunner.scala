@@ -242,6 +242,9 @@ object TapScriptRunner {
           |# Sentinels for the non-finite floats pandas would otherwise write as null.
           |# They ride through to_json as JSON strings and are restored as the bare
           |# NaN / Infinity / -Infinity tokens json.dumps writes on the per-row path.
+          |# Arrow types to_pandas() round-trips faithfully; everything else is taken
+          |# from to_pylist() (see _write_batch).
+          |_ARROW_PLAIN = ("int", "uint", "float", "double", "half", "bool", "string", "large_string", "timestamp")
           |_NAN_SENT = "\x00DTNaN\x00"
           |_INF_SENT = "\x00DTInf\x00"
           |_NINF_SENT = "\x00DT-Inf\x00"
@@ -371,6 +374,20 @@ object TapScriptRunner {
           |                _cols[_c] = _pd.Series([_json_native(_x) for _x in _s], index=_s.index, dtype=object)
           |                _masked = _masked or _MASK_HIT[0]
           |            continue
+          |        if isinstance(_s.dtype, _pd.CategoricalDtype) or not (
+          |            _t.is_bool_dtype(_s) or _t.is_float_dtype(_s) or _t.is_integer_dtype(_s) or _t.is_string_dtype(_s)
+          |        ):
+          |            # GENERIC FALLBACK. The fast to_json path is only trusted for the
+          |            # dtypes whitelisted below (bool / int / float / string, plus
+          |            # datetime and object above); EVERY other dtype — timedelta,
+          |            # period, interval, categorical, and whatever pandas adds next —
+          |            # is encoded per value from its own scalars, which is exactly
+          |            # what to_dict("records") hands the row encoder. New dtypes are
+          |            # therefore correct-but-slower by default, never wrong.
+          |            _MASK_HIT[0] = False
+          |            _cols[_c] = _pd.Series([_json_native(_x) for _x in _s.astype(object)], index=_s.index, dtype=object)
+          |            _masked = _masked or _MASK_HIT[0]
+          |            continue
           |        _na = _s.isna()
           |        _any_na = bool(_na.any())
           |        _na_done = False
@@ -478,10 +495,25 @@ object TapScriptRunner {
           |                pass
           |        # integer_object_nulls keeps an int column with nulls as Python ints
           |        # (object dtype) instead of floats, so 1 does not become 1.0.
+          |        _src = _b
           |        try:
           |            _b = _b.to_pandas(integer_object_nulls=True)
           |        except TypeError:
           |            _b = _b.to_pandas()
+          |        # to_pandas only round-trips plain numeric / bool / string / timestamp
+          |        # types faithfully: it boxes a list cell as a numpy array, a duration
+          |        # as timedelta64, a dictionary as a Categorical, and so on, none of
+          |        # which encode like the row path's to_pylist(). Every other arrow type
+          |        # is therefore taken straight from to_pylist() as object cells — the
+          |        # values the row path itself yields — and encoded per value.
+          |        import pandas as _pd
+          |        for _ci, _cn in enumerate(_src.schema.names):
+          |            try:
+          |                _col = _src.column(_ci)
+          |                if not str(_col.type).startswith(_ARROW_PLAIN):
+          |                    _b[str(_cn)] = _pd.Series(_col.to_pylist(), index=_b.index, dtype=object)
+          |            except Exception:
+          |                pass
           |        _kind = "frame"
           |    if _kind == "frame":
           |        if _limit is not None and len(_b.index) > _limit:

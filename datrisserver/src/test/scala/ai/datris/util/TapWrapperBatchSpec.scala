@@ -193,11 +193,14 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
           |    # ints beside a float in the same column.
           |    df["qty"] = pd.Series([1, None, 3], dtype=object)
           |    df["mixed"] = pd.Series([1, 2.5, 3], dtype=object)
+          |    # A dtype the fast to_json path does NOT handle: raw, it writes integer
+          |    # milliseconds where the row path writes "0 days 01:00:00".
+          |    df["dur"] = pd.to_timedelta(["1h", None, "2m"])
           |    return df
           |""".stripMargin
 
     private val FixtureColumns =
-        List("id", "name", "ts", "ts_us", "ts_tz", "amount", "nested", "note", "qty", "mixed")
+        List("id", "name", "ts", "ts_us", "ts_tz", "amount", "nested", "note", "qty", "mixed", "dur")
 
     // ================================================================
     // Acceptance 1 — a generator of DataFrames == the same rows one at a time
@@ -254,6 +257,7 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
                 "an object column of Python ints must not be re-inferred to float (1, not 1.0): " + first
             )
             assert(first.get("mixed").getAsString == "1", "ints beside a float in one object column stay ints: " + first)
+            assert(first.get("dur").getAsString == "0 days 01:00:00", "a timedelta keeps the row path's string form: " + first)
             assert(fileLines(batchFile).forall(!_.contains("DataFrame")), "no repr of the frame may reach the file")
         } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
     }
@@ -280,6 +284,11 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
               |        # stay the NaN token.
               |        "qty": pa.array([1, None, 3, 4], type=pa.int64()),
               |        "score": pa.array([1.5, None, float("nan"), 2.5], type=pa.float64()),
+              |        # Types to_pandas() does NOT round-trip: a list cell comes back
+              |        # as a numpy array (str() of which is "[1 2]") and a duration as
+              |        # timedelta64 (which to_json writes as integer milliseconds).
+              |        "tags": pa.array([[1, 2], [3], None, [4, 5]], type=pa.list_(pa.int64())),
+              |        "took": pa.array([1000, 2000, None, 3000], type=pa.duration("ms")),
               |    })
               |""".stripMargin
         val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
@@ -304,7 +313,15 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
             val e = envelope(batchOut)
             assert(e.get("type").getAsString == "json", batchOut)
             assert(e.get("count").getAsLong == 4L, "count is rows across a RecordBatch and a Table: " + batchOut)
-            assert(columnsOf(batchOut) == List("id", "name", "ts", "qty", "score"), batchOut)
+            assert(columnsOf(batchOut) == List("id", "name", "ts", "qty", "score", "tags", "took"), batchOut)
+            assert(
+                fileLines(batchFile).head.contains("\"tags\":[1,2]"),
+                "an arrow list column stays a JSON array, not the str() of a numpy array: " + fileLines(batchFile).head
+            )
+            assert(
+                fileLines(batchFile).head.contains("\"took\":\"0:00:01\""),
+                "an arrow duration keeps to_pylist()'s string form, not integer milliseconds: " + fileLines(batchFile).head
+            )
             val third = JsonParser.parseString(fileLines(batchFile)(2)).getAsJsonObject
             assert(fileLines(batchFile).head.contains("\"qty\":1,"), "an int column with nulls stays int: " + fileLines(batchFile).head)
             assert(third.get("score").getAsString == "NaN", "a real NaN keeps its token: " + third)
@@ -544,7 +561,9 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
         // numpy.bool_ row case — still "True", because the per-row encoder is
         // untouched — is pinned by its own test below.
         "bool (numpy, boxed as pandas boxes it)" -> "bool(numpy.bool_(True))",
-        "nested dict with datetime" -> "{\"k\": datetime.datetime(2026, 9, 20, 12, 0, 0)}"
+        "nested dict with datetime" -> "{\"k\": datetime.datetime(2026, 9, 20, 12, 0, 0)}",
+        "period" -> "pd.Period(\"2026-01\", freq=\"M\")",
+        "interval" -> "pd.Interval(0, 1)"
     )
 
     private val ParityPreamble =
@@ -665,6 +684,144 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
         val a = rowVal.getAsDouble
         val b = frameVal.getAsDouble
         assert(math.abs(a - b) <= 1e-15 * math.abs(a), s"the documented 15-digit divergence must stay within 1e-15 relative: $rowLine vs $frameLine")
+    }
+
+    // ================================================================
+    // The dtype sweep — one column of every family, rows vs batch
+    // ================================================================
+
+    /** Every pandas dtype family in one frame. The batch lane's fast path is
+      *  only trusted for bool / int / float / string / datetime / object;
+      *  everything else (timedelta, period, interval, categorical, and anything
+      *  pandas adds next) must fall back to the per-value encoding the row path
+      *  uses, so a new dtype is slower but never wrong. This is the test that
+      *  catches a whole class of drift at once. */
+    private val SweepFixture =
+        """import datetime, decimal
+          |import numpy as np
+          |import pandas as pd
+          |def frame():
+          |    df = pd.DataFrame(index=range(3))
+          |    df["b"] = pd.Series([True, False, True])
+          |    df["i"] = pd.Series([1, 2, 3], dtype="int64")
+          |    df["f"] = pd.Series([1.5, float("nan"), float("inf")])
+          |    df["I"] = pd.Series([1, None, 3], dtype="Int64")
+          |    df["B"] = pd.Series([True, None, False], dtype="boolean")
+          |    df["s"] = pd.Series(["a", None, "c"], dtype="str")
+          |    df["o"] = pd.Series([1, None, 2.5], dtype=object)
+          |    df["dt"] = pd.to_datetime(["2026-09-20 12:00:00", None, "2026-09-20 12:00:00.123456"], format="mixed")
+          |    df["dtz"] = pd.to_datetime(["2026-09-20 12:00:00", None, "2026-09-20 12:00:00.123456"], format="mixed", utc=True)
+          |    df["td"] = pd.to_timedelta(["1h", None, "2m"])
+          |    df["per"] = pd.Series(pd.period_range("2026-01", periods=3, freq="M"))
+          |    df["iv"] = pd.Series(pd.interval_range(0, periods=3))
+          |    df["cat"] = pd.Series(["x", "y", "x"], dtype="category")
+          |    df["lst"] = pd.Series([[1, 2], None, [3]], dtype=object)
+          |    df["dct"] = pd.Series([{"k": 1}, None, {"k": [1, 2]}], dtype=object)
+          |    df["dec"] = pd.Series([decimal.Decimal("1.50"), None, decimal.Decimal("0.00")], dtype=object)
+          |    df["dte"] = pd.Series([datetime.date(2026, 9, 20), None, datetime.date(2026, 1, 1)], dtype=object)
+          |    df["byt"] = pd.Series([b"hi", None, b"yo"], dtype=object)
+          |    df["nd"] = pd.Series([np.array([1, 2]), None, np.array([3])], dtype=object)
+          |    return df
+          |""".stripMargin
+
+    test("a frame with one column of every pandas dtype family stages exactly as its to_dict(\"records\") rows") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            SweepFixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            SweepFixture +
+                """def fetch():
+                  |    yield frame()
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "the batch run failed: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            assert(columnsOf(batchOut) == columnsOf(rowOut), "same columns: " + batchOut + " vs " + rowOut)
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "every dtype must encode as it does on the row path:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    private val ArrowSweepFixture =
+        """import datetime, decimal
+          |import pyarrow as pa
+          |def table():
+          |    return pa.table({
+          |        "b": pa.array([True, None, False]),
+          |        "i": pa.array([1, None, 3], type=pa.int64()),
+          |        "u": pa.array([1, None, 3], type=pa.uint32()),
+          |        "f": pa.array([1.5, None, float("nan")], type=pa.float64()),
+          |        "f32": pa.array([1.5, None, 2.5], type=pa.float32()),
+          |        "s": pa.array(["a", None, "c"]),
+          |        "ts": pa.array([datetime.datetime(2026, 9, 20, 12, 0, 0), None, datetime.datetime(2026, 1, 2, 3, 4, 5, 123456)], type=pa.timestamp("us")),
+          |        "tstz": pa.array([datetime.datetime(2026, 9, 20, 12, 0, 0), None, datetime.datetime(2026, 1, 2, 3, 4, 5)], type=pa.timestamp("us", tz="+02:00")),
+          |        "d32": pa.array([datetime.date(2026, 9, 20), None, datetime.date(2026, 1, 1)], type=pa.date32()),
+          |        "t64": pa.array([datetime.time(1, 2, 3), None, datetime.time(4, 5, 6)], type=pa.time64("us")),
+          |        "dur": pa.array([1000, None, 2000], type=pa.duration("ms")),
+          |        "dec": pa.array([decimal.Decimal("1.50"), None, decimal.Decimal("0.25")], type=pa.decimal128(9, 2)),
+          |        "bin": pa.array([b"hi", None, b"yo"], type=pa.binary()),
+          |        "lst": pa.array([[1, 2], None, [3]], type=pa.list_(pa.int64())),
+          |        "st": pa.array([{"k": 1}, None, {"k": 2}], type=pa.struct([("k", pa.int64())])),
+          |        "dic": pa.array(["x", "y", "x"]).dictionary_encode(),
+          |        "nul": pa.array([None, None, None], type=pa.null()),
+          |        "mp": pa.array([[("a", 1)], None, [("b", 2)]], type=pa.map_(pa.string(), pa.int64())),
+          |    })
+          |""".stripMargin
+
+    test("a Table with one column of every arrow type stages exactly as its to_pylist() rows") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            ArrowSweepFixture +
+                """def fetch():
+                  |    for _r in table().to_pylist():
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            ArrowSweepFixture +
+                """def fetch():
+                  |    yield table()
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "the batch run failed: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            assert(columnsOf(batchOut) == columnsOf(rowOut), "same columns: " + batchOut + " vs " + rowOut)
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "every arrow type must encode as its to_pylist() row does:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("a batch with duplicate column names fails the run with a clear message") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (code, out, err, file) = runWrapper(
+            """import pandas as pd
+              |def fetch():
+              |    yield pd.DataFrame([[1, 2]], columns=["a", "a"])
+              |""".stripMargin
+        )
+        try {
+            assert(code != 0, "a duplicate-named batch must fail the script, not stage half a row: " + out)
+            assert(
+                err.contains("duplicate column names: a"),
+                "the failure must name the duplicate rather than pandas' \"truth value of a Series is ambiguous\": " + err
+            )
+        } finally Files.deleteIfExists(file)
     }
 
     // ================================================================
