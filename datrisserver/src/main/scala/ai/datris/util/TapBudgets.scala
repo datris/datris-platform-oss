@@ -23,6 +23,11 @@ object TapBudgets {
       * the documented default. */
     val SourceEnv: String = "env"
     val SourceDeprecatedAlias: String = "deprecated-alias"
+
+    /** The run ceiling was left unset and resolved to max(3600, test ceiling),
+      * which is NOT the documented default — reported as its own source so a
+      * reader is not told "default" next to a number that isn't 3600. */
+    val SourceDerived: String = "derived"
     val SourceDefault: String = "default"
 
     /** Documented defaults, repeated in prose so a prompt can label them as
@@ -52,7 +57,10 @@ object TapBudgets {
         val scriptSeconds = if (env == null) 300 else env.tapScriptTimeoutSeconds
         val scriptSource = if (env != null && env.tapScriptTimeoutSecondsSet) SourceEnv else SourceDefault
         val runSeconds = if (env == null) DefaultRunTimeoutSeconds else env.tapRunTimeoutSeconds
-        val runSource = if (env != null && env.tapRunTimeoutSecondsSet) SourceEnv else SourceDefault
+        val runSource =
+            if (env != null && env.tapRunTimeoutSecondsSet) SourceEnv
+            else if (runSeconds != DefaultRunTimeoutSeconds) SourceDerived
+            else SourceDefault
         Effective(diskMB, diskSource, scriptSeconds, scriptSource, runSeconds, runSource)
     }
 

@@ -59,4 +59,4 @@ curl http://localhost:8080/api/v1/version
 | `tapScriptTimeoutSeconds` | Wall-clock ceiling in force for a tap test, in seconds |
 | `tapScriptTimeoutSecondsSource` | Where the test ceiling came from: `env` (`TAP_SCRIPT_TIMEOUT_SECONDS`) or `default` |
 | `tapRunTimeoutSeconds` | Wall-clock ceiling in force for a real or scheduled tap run, in seconds |
-| `tapRunTimeoutSecondsSource` | Where the run ceiling came from: `env` (`TAP_RUN_TIMEOUT_SECONDS`) or `default` |
+| `tapRunTimeoutSecondsSource` | Where the run ceiling came from: `env` (`TAP_RUN_TIMEOUT_SECONDS`), `derived` (unset, resolved to `max(3600, tapScriptTimeoutSeconds)`) or `default` |

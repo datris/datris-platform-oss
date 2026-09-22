@@ -149,6 +149,15 @@ class TapBudgetsSpec extends AnyFunSuite {
         assert(set.tapScriptTimeoutSecondsSource == "env")
     }
 
+    test("an unset run ceiling that resolved to max(3600, test ceiling) is sourced from derived") {
+        // TAP_RUN_TIMEOUT_SECONDS unset with a raised test ceiling resolves to
+        // max(3600, script) = 7200, which is neither env nor the documented
+        // default (reviewer note on plans/stories/tap-sizing-effective-budgets.md).
+        val b = TapBudgets.effective(env(scriptTimeout = 7200, scriptSet = true, runTimeout = 7200, runSet = false))
+        assert(b.tapRunTimeoutSeconds == 7200)
+        assert(b.tapRunTimeoutSecondsSource == "derived")
+    }
+
     test("describeRun names the value in force and keeps 3600 as the default") {
         val text = TapBudgets.describeRun(TapBudgets.effective(env(runTimeout = 7200, runSet = true)))
         assert(text.contains("currently 7200 s on this install"))

@@ -76,9 +76,22 @@ def test_mcp_server_no_longer_calls_the_test_ceiling_the_run_ceiling():
     assert not _OLD_RUN_CEILING.search(text), (
         "server.py still tells agents a run is bounded by tapScriptTimeoutSeconds"
     )
-    assert "tapScriptTimeoutSeconds" not in text, (
+    # Carve-out (plans/stories/tap-sizing-effective-budgets.md): `get_version`
+    # returns the budgets in force as JSON keys, and naming a response key so an
+    # agent can read it is a different thing from telling an agent that a run is
+    # bounded by a config property. The `get_version` tool block is exempt, and
+    # elsewhere the field name is allowed only on a line that also points at
+    # `get_version` (i.e. "read this value from the readback"), never as a bare
+    # substitute for TAP_SCRIPT_TIMEOUT_SECONDS.
+    i = text.index('name="get_version"')
+    remainder = text[:i] + text[text.index("\n        Tool(", i):]
+    offenders = [
+        line for line in remainder.splitlines()
+        if "tapScriptTimeoutSeconds" in line and "get_version" not in line
+    ]
+    assert not offenders, (
         "agent prose must name the container variables (TAP_SCRIPT_TIMEOUT_SECONDS / "
-        "TAP_RUN_TIMEOUT_SECONDS), not the internal property name"
+        "TAP_RUN_TIMEOUT_SECONDS), not the internal property name: %r" % offenders[:2]
     )
 
 

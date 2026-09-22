@@ -1104,12 +1104,6 @@ All vector DB destinations require chunking and embedding config. Call `check_se
 """
 
 
-# The `get_version` response field for the test ceiling. Assembled from parts:
-# agent prose in this file must name the container variable
-# (TAP_SCRIPT_TIMEOUT_SECONDS), never the internal property name, and
-# test_tap_timeout_text.py sweeps the whole file for it.
-_SCRIPT_TIMEOUT_FIELD = "tapScript" + "TimeoutSeconds"
-
 TAP_WORKFLOW_REFERENCE = """\
 # Datris Tap Workflow Reference
 
@@ -1185,7 +1179,7 @@ Killed for memory: an `error` reporting exit code -9 (or 137, or the word "kille
 
 Out of disk — stream the source, never download it: an `error` containing `No space left on device` (or ENOSPC) means the script saved the source to local disk before reading it. The isolated runner has no disk of its own: its only writable area is a 512 MB in-memory scratch space, shared with the per-run venv and every pip-installed package. `urlretrieve`, `open(path, "wb")`, `requests` `stream=True` written to a file, `tempfile`, and libraries that spool under `TMPDIR` all fail there on anything large. Rewrite `fetch()` to read the remote file directly and stream it — `pyarrow.parquet.ParquetFile(fsspec.open(url).open())` with `iter_batches()` (HTTP range reads; add `fsspec` to the packages), `pd.read_csv(url, chunksize=50000)`, `requests.get(url, stream=True).iter_lines()` — and `yield` records as they arrive. Never save the file first, and never ask the operator for more scratch space as the first remedy.
 
-Timeouts: a test is killed after `TAP_SCRIPT_TIMEOUT_SECONDS` (the test ceiling reported by `get_version`; default 300 s) and a real or scheduled run after `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s). A test is also capped at 20 records, so a passing test says nothing about how long a real run takes — only the estimate below does. Never cap the rows to fit the clock.
+Timeouts: a test is killed after `TAP_SCRIPT_TIMEOUT_SECONDS` (`tapScriptTimeoutSeconds` from `get_version`; default 300 s) and a real or scheduled run after `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s). A test is also capped at 20 records, so a passing test says nothing about how long a real run takes — only the estimate below does. Never cap the rows to fit the clock.
 
 Size the run BEFORE building: for any source the user describes as large, estimate both budgets from measured numbers and show the user those numbers first.
 - Read the budgets first: call `get_version` and use its `pipelineMaxPayloadMB` and `tapRunTimeoutSeconds` (each carries a `...Source` of `env`, `deprecated-alias` or `default`). Those are the values in force; the documented defaults below are only what an unset install runs with, so compare estimates with the readback, never with the defaults.
@@ -1404,7 +1398,7 @@ Do not query the destination or report completion to the user before polling com
 - **Payload exceeded the disk budget** — the run staged more than `PIPELINE_MAX_PAYLOAD_MB` (the value in force is `pipelineMaxPayloadMB` from `get_version`; default 4096 MB, 0 = unlimited) on the platform's staging disk; records stream to disk, never through heap, so this is a disk ceiling. The error names the variable — the operator can raise it. Durable fix for a RECURRING tap: make it incremental (see "Incremental sync — persistent state" above) so every run fetches only what's new and stays small forever. One-off fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
 - **Killed (exit code -9 / 137, no traceback)** — out of memory: `fetch()` built its whole result in memory. Rewrite it to `yield` records per chunk / page (see "Creating a tap") — the platform streams yielded records to disk. Do not cap or split the source.
 - **Script raised an exception** — read the `logs` field for the Python traceback. Common: 403/404 from the source API (auth, entitlements), timeout, JSON parse error on malformed response.
-- **Subprocess timed out** — the script ran past the wall-clock ceiling for its mode: a test gets `TAP_SCRIPT_TIMEOUT_SECONDS` (the test ceiling reported by `get_version`; default 300 s), a real or scheduled run gets `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s). The error names the mode and the variable. A test that times out while a run would have finished is expected on a large source — run it instead of shrinking it. For a real run: either the source is genuinely slower than the ceiling (the operator can raise `TAP_RUN_TIMEOUT_SECONDS`, or chunk the range via params) or the script has a bug (infinite loop, missing pagination break). A run that timed out returns the script's logs, its `[wrapper] streamed N records` progress lines and a partial record count. Read them first: a script that reached the source and was still streaming records when the timeout hit is healthy and too long, not wrong — do not rewrite it; tell the user how far it got and offer a smaller window via `params` or the operator's timeout setting.
+- **Subprocess timed out** — the script ran past the wall-clock ceiling for its mode: a test gets `TAP_SCRIPT_TIMEOUT_SECONDS` (`tapScriptTimeoutSeconds` from `get_version`; default 300 s), a real or scheduled run gets `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s). The error names the mode and the variable. A test that times out while a run would have finished is expected on a large source — run it instead of shrinking it. For a real run: either the source is genuinely slower than the ceiling (the operator can raise `TAP_RUN_TIMEOUT_SECONDS`, or chunk the range via params) or the script has a bug (infinite loop, missing pagination break). A run that timed out returns the script's logs, its `[wrapper] streamed N records` progress lines and a partial record count. Read them first: a script that reached the source and was still streaming records when the timeout hit is healthy and too long, not wrong — do not rewrite it; tell the user how far it got and offer a smaller window via `params` or the operator's timeout setting.
 
 ---
 
@@ -1912,9 +1906,10 @@ def _base_tools():
             name="get_version",
             description=(
                 "Get the Datris server version and the tap budgets in force on this install: `pipelineMaxPayloadMB` (MB, 0 = unlimited), "
-                "`" + _SCRIPT_TIMEOUT_FIELD + "` and `tapRunTimeoutSeconds`, each with a `...Source` field (`env`, `deprecated-alias` or "
-                "`default`). Cheap to call: call it before sizing a large source and compare the estimates with these values, not with the "
-                "documented defaults."
+                "`tapScriptTimeoutSeconds` and `tapRunTimeoutSeconds`, each with a `...Source` field (`env`, `deprecated-alias`, `derived` "
+                "or `default`). Cheap to call: call it before sizing a large source and compare the estimates with these values, not with "
+                "the documented defaults (the budget fields are absent on a server older than this feature; then the documented defaults "
+                "apply)."
             ),
             inputSchema={
                 "type": "object",
