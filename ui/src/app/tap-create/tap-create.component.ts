@@ -709,11 +709,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         const msg = typeof err.error === 'string' ? err.error : (err.message || 'Unknown error');
-        if (msg.includes('timed out')) {
-          this.testError = 'Script timed out (5 minute limit). Try fetching less data for testing.';
-        } else {
-          this.testError = 'Test failed: ' + msg.substring(0, 500);
-        }
+        // The server's timeout message names the mode that ran and the
+        // variable that raises its ceiling — show it rather than a hardcoded
+        // limit that is no longer the only one.
+        this.testError = 'Test failed: ' + msg.substring(0, 500);
         this.testing = false;
       }
     });

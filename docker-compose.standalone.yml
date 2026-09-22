@@ -353,6 +353,12 @@ services:
       # Deprecated alias (removed next release), forwarded without a default so it
       # only counts as set when it is in .env; the server logs a warning when it is.
       TAPMAXOUTPUTMB: "${TAP_MAX_OUTPUT_MB:-}"
+      # Wall-clock ceiling for a tap TEST, in seconds: a test fails fast so a
+      # broken script is caught in seconds, not minutes.
+      TAP_SCRIPT_TIMEOUT_SECONDS: "${TAP_SCRIPT_TIMEOUT_SECONDS:-300}"
+      # Wall-clock ceiling for a real or cron tap RUN, in seconds: long enough
+      # for a large streaming source to finish landing in one run.
+      TAP_RUN_TIMEOUT_SECONDS: "${TAP_RUN_TIMEOUT_SECONDS:-3600}"
       # Pipeline payload staging: a run's payload is written once to
       # DATRIS_TEMP_DIR (the datris-staging volume) and read from there by
       # every stage. PIPELINE_MATERIALIZE_MAX_MB caps what a stage that still

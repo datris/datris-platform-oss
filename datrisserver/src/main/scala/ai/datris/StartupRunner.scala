@@ -151,8 +151,17 @@ class StartupRunner extends ApplicationRunner {
     @Value("${secrets.pgvectorSecretName:}")
     var pgvectorSecretName: String = _
 
-    @Value("${tapScriptTimeoutSeconds:300}")
+    // Tap wall-clock ceilings. A TEST is bounded by tapScriptTimeoutSeconds
+    // (TAP_SCRIPT_TIMEOUT_SECONDS, default 300); a real or cron RUN by
+    // tapRunTimeoutSeconds (TAP_RUN_TIMEOUT_SECONDS, default 3600). The run
+    // ceiling is bound as a string so a blank container var reads as "unset"
+    // (-1) and resolves to max(3600, tapScriptTimeoutSeconds) — an install that
+    // raised the old single knob never gets a SHORTER real-run ceiling.
+    @Value("${tapScriptTimeoutSeconds:${TAP_SCRIPT_TIMEOUT_SECONDS:300}}")
     var tapScriptTimeoutSeconds: Int = _
+
+    @Value("${tapRunTimeoutSeconds:${TAP_RUN_TIMEOUT_SECONDS:}}")
+    var tapRunTimeoutSecondsRaw: String = _
 
     // Automatic retry of failed cron-triggered tap runs (transient failures
     // self-clear; only runs that fed nothing downstream are retried).
@@ -352,6 +361,14 @@ class StartupRunner extends ApplicationRunner {
 
         // Payload disk budget: the new property wins; the deprecated alias is
         // honoured only when the new one is unset, with a one-line warning either way.
+        val rawTapRunTimeoutSeconds = optionalInt(tapRunTimeoutSecondsRaw)
+        val tapRunTimeoutSeconds =
+            ai.datris.util.TapScriptRunner.resolveRunTimeoutSeconds(rawTapRunTimeoutSeconds, tapScriptTimeoutSeconds)
+        logger.info(
+            "Tap timeouts: test ceiling " + tapScriptTimeoutSeconds + "s (TAP_SCRIPT_TIMEOUT_SECONDS), run ceiling " +
+                tapRunTimeoutSeconds + "s (TAP_RUN_TIMEOUT_SECONDS" +
+                (if (rawTapRunTimeoutSeconds >= 0) ", explicitly set" else ", unset — defaulted to max(3600, test ceiling)") + ")"
+        )
         val tapMaxOutputMB = optionalInt(tapMaxOutputMBRaw)
         val pipelineMaxPayloadMB = optionalInt(pipelineMaxPayloadMBRaw)
         if (tapMaxOutputMB >= 0) {
@@ -406,6 +423,7 @@ class StartupRunner extends ApplicationRunner {
             tapLedgerTableName = environment + "-tap-ledger",
             tapPromptTableName = environment + "-tap-prompt",
             tapScriptTimeoutSeconds = tapScriptTimeoutSeconds,
+            tapRunTimeoutSeconds = tapRunTimeoutSeconds,
             tapMaxOutputMB = tapMaxOutputMB,
             pipelineMaxPayloadMB = pipelineMaxPayloadMB,
             scratchInlineRows = scratchInlineRows,

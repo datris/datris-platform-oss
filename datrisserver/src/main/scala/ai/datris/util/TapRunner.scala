@@ -70,7 +70,9 @@ object TapRunner {
                         null
                 }
 
-            val result = TapScriptRunner.run(tapConfig, testLimit, params, previousState)
+            // `mode` (not testLimit) picks the wall-clock ceiling: a UI test with
+            // the sample checkbox off has testLimit = 0, and MCP test_tap sends none.
+            val result = TapScriptRunner.run(tapConfig, testLimit, params, previousState, mode)
             scriptResult = result
             val durationMs = System.currentTimeMillis() - startMs
 

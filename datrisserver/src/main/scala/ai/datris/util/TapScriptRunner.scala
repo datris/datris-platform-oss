@@ -43,7 +43,43 @@ case class TapScriptResult(
 
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private def scriptTimeoutSeconds: Int = DatrisEnvironment.current.tapScriptTimeoutSeconds
+
+    /** The wall-clock ceiling in force for one execution, plus the knob that
+      * raises it. A tap TEST is bounded by tapScriptTimeoutSeconds
+      * (TAP_SCRIPT_TIMEOUT_SECONDS, default 300) so a bad script fails fast; a
+      * real or cron run gets tapRunTimeoutSeconds (TAP_RUN_TIMEOUT_SECONDS,
+      * default 3600) so a big streaming source can actually finish. */
+    case class TapTimeout(seconds: Int, envVar: String, label: String)
+
+    /** Only mode == "test" is bounded by the short test ceiling. Cron runs
+      * arrive as mode = "run" from TapScheduler, and anything a caller has not
+      * thought of (null, "", "manual") lands on the run ceiling too — never
+      * silently on the short one. */
+    private[util] def timeoutFor(mode: String): TapTimeout = {
+        val env = DatrisEnvironment.current
+        if (mode != null && mode.trim.equalsIgnoreCase("test"))
+            TapTimeout(env.tapScriptTimeoutSeconds, "TAP_SCRIPT_TIMEOUT_SECONDS", "test")
+        else
+            TapTimeout(env.tapRunTimeoutSeconds, "TAP_RUN_TIMEOUT_SECONDS", "run")
+    }
+
+    /** The one place both timeout throws (the sidecar's `timedOut` trailer and
+      * the in-process deadline) get their text from, so an isolated deployment
+      * and a local run say exactly the same thing. */
+    private[util] def timedOutMessage(t: TapTimeout): String =
+        if (t.label == "test")
+            s"Tap script timed out after ${t.seconds} seconds (${t.label} mode; raise ${t.envVar})"
+        else
+            s"Tap script timed out after ${t.seconds} seconds (${t.label} mode; raise ${t.envVar}, " +
+                "or chunk the source range via run_tap params)"
+
+    /** Boot-time resolution of the run ceiling. `rawRunTimeoutSeconds` is -1
+      * when TAP_RUN_TIMEOUT_SECONDS / tapRunTimeoutSeconds is blank
+      * (StartupRunner.optionalInt); an unset run ceiling is
+      * max(3600, tapScriptTimeoutSeconds), so an install that raised the old
+      * single knob to make long real runs work never gets a SHORTER one. */
+    def resolveRunTimeoutSeconds(rawRunTimeoutSeconds: Int, scriptTimeoutSeconds: Int): Int =
+        if (rawRunTimeoutSeconds >= 0) rawRunTimeoutSeconds else math.max(3600, scriptTimeoutSeconds)
 
     // private[util] so TapWrapperStateSpec can execute the real wrapper against
     // fixture scripts — the wrapper is the wire format, and a drift here breaks
@@ -289,13 +325,14 @@ object TapScriptRunner {
         tapConfig: TapConfig,
         testLimit: Int = 0,
         params: Map[String, String] = Map.empty,
-        previousState: String = null
+        previousState: String = null,
+        mode: String = "run"
     ): TapScriptResult = {
         // HTTP taps run zero code on the platform: the "script" is a user-hosted
         // endpoint speaking the same envelope contract, so the entire Python lane
         // (storage read, wrapper, venv/pip, sidecar, secret-field inference) is
         // skipped and everything downstream of the envelope is shared.
-        if (tapConfig.isHttp) return runHttp(tapConfig, testLimit, params, previousState)
+        if (tapConfig.isHttp) return runHttp(tapConfig, testLimit, params, previousState, mode)
 
         logger.info("TapScriptRunner: executing tap: " + tapConfig.name)
 
@@ -308,7 +345,7 @@ object TapScriptRunner {
                     ". Open Edit Tap and regenerate the script, or paste a new one."
             )
         )
-        runScript(tapConfig, scriptContent, testLimit, params, previousState)
+        runScript(tapConfig, scriptContent, testLimit, params, previousState, mode)
     }
 
     /** Element-at-a-time re-serialization must not alter the data (same
@@ -334,10 +371,11 @@ object TapScriptRunner {
         scriptContent: String,
         testLimit: Int = 0,
         params: Map[String, String] = Map.empty,
-        previousState: String = null
+        previousState: String = null,
+        mode: String = "run"
     ): TapScriptResult = {
         val tapToken = "tap-" + java.util.UUID.randomUUID().toString
-        val result = StagingArea.withToken(tapToken)(runScriptStaged(tapConfig, scriptContent, testLimit, params, previousState))
+        val result = StagingArea.withToken(tapToken)(runScriptStaged(tapConfig, scriptContent, testLimit, params, previousState, mode))
         if (result.error != null) StagingArea.delete(tapToken)
         result
     }
@@ -347,8 +385,11 @@ object TapScriptRunner {
         scriptContent: String,
         testLimit: Int,
         params: Map[String, String],
-        previousState: String
+        previousState: String,
+        mode: String
     ): TapScriptResult = {
+        // Which ceiling this execution runs under, and the knob that raises it.
+        val timeout = timeoutFor(mode)
         // Step 2: Write script and wrapper to temp files
         val scriptFile: Path = Files.createTempFile("tap_script_", ".py")
         val wrapperFile: Path = Files.createTempFile("tap_wrapper_", ".py")
@@ -433,7 +474,7 @@ object TapScriptRunner {
             platformToken = ai.datris.auth.TapRunTokens.issue(
                 tapConfig.name,
                 if (DatrisEnvironment.current.multiTenant) Some(DatrisEnvironment.current.environment) else None,
-                scriptTimeoutSeconds + 60
+                timeout.seconds + 60
             )
             val platformEnvVars = Seq(
                 "DATRIS_POSTGRES_DATABASE" -> DatrisEnvironment.current.postgresDatabase,
@@ -479,7 +520,7 @@ object TapScriptRunner {
             secretValuesForMasking = secretValues
             val (rawOutput, rawLogs) =
                 if (useTapRunner) {
-                    executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, scriptTimeoutSeconds, secretValues, outputPath)
+                    executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, timeout, secretValues, outputPath)
                 } else {
                     warnInProcess("tap " + tapConfig.name)
                     // In-process path: materialize the script/wrapper, install any extra
@@ -492,7 +533,7 @@ object TapScriptRunner {
                         python,
                         wrapperFile.toString,
                         scriptFile.toString,
-                        scriptTimeoutSeconds,
+                        timeout,
                         allEnvVars :+ ("DATRIS_TAP_OUTPUT" -> outputPath.toString),
                         secretValues,
                         outputPath
@@ -719,11 +760,12 @@ object TapScriptRunner {
         tapConfig: TapConfig,
         testLimit: Int,
         params: Map[String, String],
-        previousState: String
+        previousState: String,
+        mode: String
     ): TapScriptResult = {
         // Own staging token, like runScript: a failed call leaves nothing on disk.
         val tapToken = "tap-" + java.util.UUID.randomUUID().toString
-        val result = StagingArea.withToken(tapToken)(runHttpStaged(tapConfig, testLimit, params, previousState))
+        val result = StagingArea.withToken(tapToken)(runHttpStaged(tapConfig, testLimit, params, previousState, mode))
         if (result.error != null) StagingArea.delete(tapToken)
         result
     }
@@ -769,8 +811,12 @@ object TapScriptRunner {
         tapConfig: TapConfig,
         testLimit: Int,
         params: Map[String, String],
-        previousState: String
+        previousState: String,
+        mode: String
     ): TapScriptResult = {
+        // Same two ceilings as the script lane: a test fails fast, a real run
+        // gets the hour.
+        val timeout = timeoutFor(mode)
         logger.info("TapScriptRunner: executing HTTP tap: " + tapConfig.name + " → " + tapConfig.endpointUrl)
         // The endpoint auth token is the only secret in play; used for masking below.
         var tokenForMasking: Seq[String] = Seq.empty
@@ -838,7 +884,7 @@ object TapScriptRunner {
                 .build()
             val requestBuilder = java.net.http.HttpRequest.newBuilder()
                 .uri(java.net.URI.create(tapConfig.endpointUrl))
-                .timeout(java.time.Duration.ofSeconds(scriptTimeoutSeconds.toLong))
+                .timeout(java.time.Duration.ofSeconds(timeout.seconds.toLong))
                 .header("Content-Type", "application/json")
                 .header("X-Datris-Tap", tapConfig.name)
                 .header("User-Agent", "datris-tap/1")
@@ -850,7 +896,8 @@ object TapScriptRunner {
                 catch {
                     case _: java.net.http.HttpTimeoutException =>
                         throw new DatrisException(
-                            "Tap endpoint did not respond within " + scriptTimeoutSeconds + " seconds. " +
+                            "Tap endpoint did not respond within " + timeout.seconds + " seconds (" +
+                                timeout.label + " mode; raise " + timeout.envVar + "). " +
                                 "Long fetches should be chunked: return one page plus a state cursor and let " +
                                 "the next run continue. " + ContractPointer
                         )
@@ -1271,10 +1318,11 @@ object TapScriptRunner {
         script: String,
         envVars: Seq[(String, String)],
         packages: java.util.List[String],
-        timeoutSec: Int,
+        timeout: TapTimeout,
         secretValues: Seq[String],
         outputPath: Path
     ): (String, String) = {
+        val timeoutSec = timeout.seconds
         val payload = new JsonObject()
         payload.addProperty("script", script)
         payload.addProperty("wrapper", WRAPPER_TEMPLATE)
@@ -1344,7 +1392,7 @@ object TapScriptRunner {
                         JsonParser.parseString(new String(trailer.toByteArray, StandardCharsets.UTF_8).trim).getAsJsonObject
                     }
                 if (obj.has("timedOut") && obj.get("timedOut").getAsBoolean)
-                    throw new DatrisException("Tap script timed out after " + timeoutSec + " seconds")
+                    throw new DatrisException(timedOutMessage(timeout))
                 val exitCode = if (obj.has("exitCode")) obj.get("exitCode").getAsInt else -1
                 def str(k: String) = if (obj.has(k) && !obj.get(k).isJsonNull) obj.get(k).getAsString else ""
                 val stdout = str("stdout")
@@ -1394,11 +1442,12 @@ object TapScriptRunner {
         python: String,
         wrapperPath: String,
         scriptPath: String,
-        timeoutSec: Int,
+        timeout: TapTimeout,
         envVars: Seq[(String, String)] = Seq.empty,
         secretValues: Seq[String] = Seq.empty,
         outputPath: Path = null
     ): (String, String) = {
+        val timeoutSec = timeout.seconds
         val stdout = new StringBuilder
         val stderr = new StringBuilder
 
@@ -1457,7 +1506,7 @@ object TapScriptRunner {
                 if (process.waitFor(250, java.util.concurrent.TimeUnit.MILLISECONDS)) exitCode = Some(process.exitValue())
                 else if (System.currentTimeMillis() > deadline) {
                     process.destroyForcibly()
-                    throw new DatrisException("Tap script timed out after " + timeoutSec + " seconds")
+                    throw new DatrisException(timedOutMessage(timeout))
                 } else if (outputPath != null && Files.exists(outputPath)) {
                     val written = Files.size(outputPath)
                     if (StagingArea.overBudget(written)) {

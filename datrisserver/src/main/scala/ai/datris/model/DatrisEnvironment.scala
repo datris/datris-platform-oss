@@ -212,7 +212,11 @@ case class DatrisEnvironment(
     tapLogTableName: String = null,
     tapLedgerTableName: String = null,
     tapPromptTableName: String = null,
+    // Wall-clock ceiling for a tap TEST (mode=test), in seconds.
     tapScriptTimeoutSeconds: Int = 300,
+    // Wall-clock ceiling for a real or cron tap run (any mode but "test").
+    // Resolves to max(3600, tapScriptTimeoutSeconds) when left unset.
+    tapRunTimeoutSeconds: Int = 3600,
     // Deprecated alias of pipelineMaxPayloadMB (TAP_MAX_OUTPUT_MB); -1 = unset.
     tapMaxOutputMB: Int = -1,
     // Scratch destination: rows inlined on the run status, and how long the
