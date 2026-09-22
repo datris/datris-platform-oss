@@ -359,9 +359,17 @@ class StartupRunner extends ApplicationRunner {
             mongoDbInternalDatabase
         )
 
-        // Payload disk budget: the new property wins; the deprecated alias is
-        // honoured only when the new one is unset, with a one-line warning either way.
+        // Tap wall-clock ceilings: a test is bounded by tapScriptTimeoutSeconds,
+        // a real or cron run by tapRunTimeoutSeconds. An unset run ceiling (blank
+        // container var) resolves to max(3600, tapScriptTimeoutSeconds).
         val rawTapRunTimeoutSeconds = optionalInt(tapRunTimeoutSecondsRaw)
+        val tapRunTimeoutSecondsRawTrimmed = Option(tapRunTimeoutSecondsRaw).map(_.trim).getOrElse("")
+        if (rawTapRunTimeoutSeconds < 0 && tapRunTimeoutSecondsRawTrimmed.nonEmpty)
+            logger.warn(
+                "TAP_RUN_TIMEOUT_SECONDS='" + tapRunTimeoutSecondsRawTrimmed +
+                    "' is not a whole number of seconds and is ignored; the run ceiling falls back to " +
+                    "max(3600, tapScriptTimeoutSeconds). Set it to an integer, e.g. 3600."
+            )
         val tapRunTimeoutSeconds =
             ai.datris.util.TapScriptRunner.resolveRunTimeoutSeconds(rawTapRunTimeoutSeconds, tapScriptTimeoutSeconds)
         logger.info(
@@ -369,6 +377,9 @@ class StartupRunner extends ApplicationRunner {
                 tapRunTimeoutSeconds + "s (TAP_RUN_TIMEOUT_SECONDS" +
                 (if (rawTapRunTimeoutSeconds >= 0) ", explicitly set" else ", unset — defaulted to max(3600, test ceiling)") + ")"
         )
+
+        // Payload disk budget: the new property wins; the deprecated alias is
+        // honoured only when the new one is unset, with a one-line warning either way.
         val tapMaxOutputMB = optionalInt(tapMaxOutputMBRaw)
         val pipelineMaxPayloadMB = optionalInt(pipelineMaxPayloadMBRaw)
         if (tapMaxOutputMB >= 0) {

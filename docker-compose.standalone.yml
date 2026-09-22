@@ -357,8 +357,11 @@ services:
       # broken script is caught in seconds, not minutes.
       TAP_SCRIPT_TIMEOUT_SECONDS: "${TAP_SCRIPT_TIMEOUT_SECONDS:-300}"
       # Wall-clock ceiling for a real or cron tap RUN, in seconds: long enough
-      # for a large streaming source to finish landing in one run.
-      TAP_RUN_TIMEOUT_SECONDS: "${TAP_RUN_TIMEOUT_SECONDS:-3600}"
+      # for a large streaming source to finish landing in one run. Forwarded
+      # without a default so an unset value reaches the server as "unset" and
+      # resolves to max(3600, tapScriptTimeoutSeconds) — an install that raised
+      # the old single ceiling never gets a shorter one.
+      TAP_RUN_TIMEOUT_SECONDS: "${TAP_RUN_TIMEOUT_SECONDS:-}"
       # Pipeline payload staging: a run's payload is written once to
       # DATRIS_TEMP_DIR (the datris-staging volume) and read from there by
       # every stage. PIPELINE_MATERIALIZE_MAX_MB caps what a stage that still

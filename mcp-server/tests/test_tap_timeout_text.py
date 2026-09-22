@@ -111,7 +111,10 @@ def test_compose_forwards_both_vars_with_their_defaults():
         text = _read(path)
         name = os.path.basename(path)
         assert re.search(r"\$\{" + TEST_VAR + r":-300\}", text), f"{name} must forward {TEST_VAR} defaulting to 300"
-        assert re.search(r"\$\{" + RUN_VAR + r":-3600\}", text), f"{name} must forward {RUN_VAR} defaulting to 3600"
+        # Forwarded without a default: an unset run ceiling must reach the
+        # server as "unset" so it resolves to max(3600, tapScriptTimeoutSeconds)
+        # rather than being pinned to 3600 inside the container.
+        assert re.search(r"\$\{" + RUN_VAR + r":-\}", text), f"{name} must forward {RUN_VAR} without a default"
 
 
 def test_env_example_documents_both_vars_and_the_test_vs_run_distinction():

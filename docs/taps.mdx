@@ -478,7 +478,7 @@ datris tap delete my-tap
 | Setting | File | Default | Description |
 |---|---|---|---|
 | `tapScriptTimeoutSeconds` (`TAP_SCRIPT_TIMEOUT_SECONDS`) | `.env` | `300` | Wall-clock ceiling for a tap **test**, in seconds |
-| `tapRunTimeoutSeconds` (`TAP_RUN_TIMEOUT_SECONDS`) | `.env` | `3600` | Wall-clock ceiling for a real or scheduled tap **run**, in seconds |
+| `tapRunTimeoutSeconds` (`TAP_RUN_TIMEOUT_SECONDS`) | `.env` | `3600` | Wall-clock ceiling for a real or scheduled tap **run**, in seconds. Unset resolves to `max(3600, tapScriptTimeoutSeconds)` |
 | `schedule.checkTapSchedules` | `application.yaml` | `30000` | CRON scheduler poll interval in milliseconds |
 | `dateFormat` | `application.yaml` | `yyyy-MM-dd HH:mm:ss z` | SimpleDateFormat pattern used for tap run timestamps |
 | `dateTimezone` | `application.yaml` | `UTC` | IANA timezone (e.g., `America/New_York`) for displayed timestamps |
