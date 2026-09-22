@@ -563,7 +563,8 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
         "bool (numpy, boxed as pandas boxes it)" -> "bool(numpy.bool_(True))",
         "nested dict with datetime" -> "{\"k\": datetime.datetime(2026, 9, 20, 12, 0, 0)}",
         "period" -> "pd.Period(\"2026-01\", freq=\"M\")",
-        "interval" -> "pd.Interval(0, 1)"
+        "interval" -> "pd.Interval(0, 1)",
+        "year 1 timestamp (strftime does not zero-pad it)" -> "pd.Timestamp(\"0001-01-01\")"
     )
 
     private val ParityPreamble =
@@ -721,6 +722,12 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
           |    df["dte"] = pd.Series([datetime.date(2026, 9, 20), None, datetime.date(2026, 1, 1)], dtype=object)
           |    df["byt"] = pd.Series([b"hi", None, b"yo"], dtype=object)
           |    df["nd"] = pd.Series([np.array([1, 2]), None, np.array([3])], dtype=object)
+          |    # Object cells the row path BOXES before encoding: pandas NA is a
+          |    # missing value (null, not "<NA>") and a numpy scalar is boxed to its
+          |    # Python equivalent (true / 1.5 / 3, not "True" / "1.5" / "3").
+          |    df["na"] = pd.Series([pd.NA, 1, "x"], dtype=object)
+          |    df["npb"] = pd.Series([np.bool_(True), np.float32(1.5), np.int64(3)], dtype=object)
+          |    df["npd"] = pd.Series([np.datetime64("2026-01-01T00:00:00.5"), np.timedelta64(1000, "ms"), None], dtype=object)
           |    return df
           |""".stripMargin
 
@@ -804,6 +811,72 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
             val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
             assert(diffs.isEmpty, "every arrow type must encode as its to_pylist() row does:\n" + diffs.mkString("\n"))
             assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("an arrow-BACKED pandas frame (dtype_backend=\"pyarrow\") stages exactly as its to_dict(\"records\") rows") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        // What pd.read_parquet(..., dtype_backend="pyarrow") and
+        // pd.read_csv(engine="pyarrow", dtype_backend="pyarrow") hand a script:
+        // ArrowDtype columns, which answer is_datetime64_any_dtype for timestamp
+        // AND date32 but cannot take the vectorised .dt path at all.
+        val fixture = ArrowSweepFixture +
+            """import pandas as pd
+              |def frame():
+              |    return table().to_pandas(types_mapper=pd.ArrowDtype)
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    yield frame()
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "an ArrowDtype frame must not fail the wrapper: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "an arrow-backed dtype must encode as the row path does:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("a frame with a duplicated index (pd.concat) and a sub-microsecond timestamp still stages") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val fixture =
+            """import pandas as pd
+              |def frame():
+              |    a = pd.DataFrame({"v": [pd.Timestamp("2026-01-01 00:00:00.000000001")], "i": [1]})
+              |    b = pd.DataFrame({"v": [pd.Timestamp("2026-01-02")], "i": [2]})
+              |    return pd.concat([a, b])
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(fixture + "def fetch():\n    yield frame()\n")
+        try {
+            assert(rowCode == 0, rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "a duplicated index must not crash the batch lane: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 2L, batchOut)
+            assert(
+                fileLines(batchFile) == fileLines(rowFile),
+                "batch: " + fileLines(batchFile) + "\nrows:  " + fileLines(rowFile)
+            )
+            assert(fileLines(batchFile).head.contains("2026-01-01 00:00:00.000000001"), fileLines(batchFile).head)
         } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
     }
 

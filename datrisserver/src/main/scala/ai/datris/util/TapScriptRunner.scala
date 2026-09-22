@@ -276,14 +276,35 @@ object TapScriptRunner {
           |        return None if len(_b.index) == 0 else _b.head(1).to_dict("records")[0]
           |    return None if _b.num_rows == 0 else _b.slice(0, 1).to_pylist()[0]
           |_MASK_HIT = [False]
+          |# Filled in when pandas is first imported (see _normalise_frame) so
+          |# _json_native can recognise pandas / numpy scalars without importing
+          |# anything itself — a row-only script still pays nothing.
+          |_PD = [None]
+          |_NP = [None]
+          |_NA = [None]
+          |_NPGEN = [None]
           |def _json_native(_v):
           |    # `default=str` semantics, per value: anything json.dumps cannot encode
           |    # becomes str(...), dicts / lists recurse, and a non-finite float becomes
           |    # its sentinel (json.dumps writes the bare NaN / Infinity tokens, to_json
           |    # would write null). This is what keeps an object column (Decimal, bytes,
           |    # date, numpy scalar, nested dict) byte-identical to the per-row encoder.
-          |    if _v is None or _v is True or _v is False or isinstance(_v, str):
+          |    if _v is None or (_NA[0] is not None and _v is _NA[0]):
+          |        # pandas NA is a missing value, not the string "<NA>".
+          |        return None
+          |    if _v is True or _v is False or isinstance(_v, str):
           |        return _v
+          |    if _NPGEN[0] is not None and isinstance(_v, _NPGEN[0]):
+          |        # A numpy SCALAR in an object column: to_dict("records") boxes it to
+          |        # its Python equivalent before the row encoder sees it, so a batch
+          |        # must too (numpy.bool_ -> true, not "True"). numpy.ndarray is not a
+          |        # numpy generic, so an array cell still stringifies as it does on the
+          |        # row path.
+          |        if isinstance(_v, _NP[0].datetime64):
+          |            return str(_PD[0].Timestamp(_v))
+          |        if isinstance(_v, _NP[0].timedelta64):
+          |            return str(_PD[0].Timedelta(_v))
+          |        return _json_native(_v.item())
           |    if isinstance(_v, float):
           |        if _v != _v:
           |            _MASK_HIT[0] = True
@@ -335,6 +356,14 @@ object TapScriptRunner {
           |    _has_ns = None if _ns is None else (_ns != 0)
           |    if _has_ns is not None and bool(_has_ns.any()):
           |        _txt = _txt.where(~_has_ns, _s[_has_ns].map(str))
+          |    # strftime does not zero-pad a year below 1000 ("1-01-01"), so those
+          |    # cells fall back to str(Timestamp) too. NaT reads as year 0 here and is
+          |    # overwritten by the missing-value line below either way.
+          |    _yr = _dt_part(_s, "year")
+          |    if _yr is not None:
+          |        _low = (_yr < 1000)
+          |        if bool(_low.any()):
+          |            _txt = _txt.where(~_low, _s[_low].map(str))
           |    return _txt.where(_s.notna(), _na_txt)
           |def _normalise_frame(_df, _arrow, _nulls):
           |    # Per column, by dtype, vectorised. Returns (frame, masked) where `masked`
@@ -344,11 +373,37 @@ object TapScriptRunner {
           |    # missing value is whatever to_dict("records") boxes it as (often NaN).
           |    import pandas as _pd
           |    import numpy as _np
+          |    if _PD[0] is None:
+          |        _PD[0] = _pd
+          |        _NP[0] = _np
+          |        _NA[0] = _pd.NA
+          |        _NPGEN[0] = _np.generic
           |    _t = _pd.api.types
+          |    # A duplicated index (pd.concat without ignore_index) breaks every
+          |    # subset-aligned assignment below; nothing here depends on the labels.
+          |    _df = _df.reset_index(drop=True)
           |    _cols = {}
           |    _masked = False
+          |    _arrow_dtype = getattr(_pd, "ArrowDtype", None)
           |    for _c in _df.columns:
           |        _s = _df[_c]
+          |        if _arrow_dtype is not None and isinstance(_s.dtype, _arrow_dtype):
+          |            # An arrow-BACKED pandas column (pd.read_parquet/read_csv with
+          |            # dtype_backend="pyarrow", or to_pandas(types_mapper=pd.ArrowDtype)).
+          |            # It answers is_datetime64_any_dtype for timestamp AND date32, but
+          |            # the vectorised .dt path writes garbage on it, so take the values
+          |            # the row path sees and encode them per value.
+          |            _MASK_HIT[0] = False
+          |            _cols[_c] = _pd.Series(
+          |                [
+          |                    _json_native(_x.tolist() if isinstance(_x, _np.ndarray) else _x)
+          |                    for _x in _s.to_numpy(dtype=object, na_value=None)
+          |                ],
+          |                index=_df.index,
+          |                dtype=object,
+          |            )
+          |            _masked = _masked or _MASK_HIT[0]
+          |            continue
           |        if _nulls and _c in _nulls and _t.is_float_dtype(_s) and isinstance(_s.dtype, _np.dtype):
           |            # An arrow null in a numeric column is a true null, but
           |            # to_pandas() has already folded it into NaN (and promoted an
