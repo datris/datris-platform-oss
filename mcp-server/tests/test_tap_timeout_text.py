@@ -163,3 +163,113 @@ def test_ui_shows_the_servers_message_not_a_hardcoded_five_minutes():
     assert "5 minute limit" not in text, (
         "tap-create.component.ts still hardcodes '(5 minute limit)' — the server's message now names the variable"
     )
+
+
+# ===========================================================================
+# Story: tap timeouts keep the script's logs, report progress and a partial
+# record count (plans/stories/tap-timeout-diagnostics.md) — the prose half.
+#
+# A timeout response now carries the script's own logs, its
+# `[wrapper] streamed N records` progress lines and a partial record count.
+# Every agent-facing channel has to say so AND say what to conclude from it,
+# or an agent that sees "timed out" still rewrites a healthy script. One rule,
+# in the same sentence window as the timeout mention:
+#
+#   "A run that timed out returns the script's logs, its `[wrapper] streamed N
+#    records` progress lines and a partial record count. Read them first: a
+#    script that reached the source and was still streaming records when the
+#    timeout hit is healthy and too long, not wrong — do not rewrite it; ..."
+#
+# The existing sweeps above (both ceilings named everywhere, no domain bias)
+# and test_tap_memory_text.py / test_tap_disk_text.py must stay green.
+# ===========================================================================
+
+_DIAG_WINDOW = 900  # chars either side of the timeout mention: one rule, one place
+
+_TIMEOUT_MENTION = re.compile(r"tim(?:ed|es)?\s*out|timeout", re.IGNORECASE)
+_LOGS = re.compile(r"\blogs?\b", re.IGNORECASE)
+_PROGRESS = re.compile(r"\bprogress\b|\bstreamed\b", re.IGNORECASE)
+_PARTIAL_COUNT = re.compile(r"\bpartial\b", re.IGNORECASE)
+_READ_FIRST = re.compile(r"read\b[^.]{0,80}\b(first|before)\b|before\b[^.]{0,80}\bconclud", re.IGNORECASE)
+_HEALTHY = re.compile(r"\bhealthy\b|\btoo long\b|\bnot wrong\b", re.IGNORECASE)
+
+_DIAG_CHECKS = (
+    ("the script's logs", _LOGS),
+    ("the progress / streamed lines", _PROGRESS),
+    ("the partial record count", _PARTIAL_COUNT),
+    ("an instruction to read them first", _READ_FIRST),
+    ("a healthy / too long / not wrong verdict", _HEALTHY),
+)
+
+
+def _block(text, anchor):
+    """The triple-quoted block that starts at `anchor`."""
+    i = text.index(anchor)
+    j = text.index('\n"""', i)
+    return text[i:j]
+
+
+def _tool_block(text, tool_name):
+    i = text.index(f'name="{tool_name}"')
+    return text[i:text.find("\n        Tool(", i)]
+
+
+def _assert_timeout_diagnostics_rule(region, where):
+    missing_by_window = []
+    for m in _TIMEOUT_MENTION.finditer(region):
+        window = region[max(0, m.start() - _DIAG_WINDOW):m.end() + _DIAG_WINDOW]
+        missing = [label for label, rx in _DIAG_CHECKS if not rx.search(window)]
+        if not missing:
+            return
+        missing_by_window.append(missing)
+    assert missing_by_window, f"{where} never mentions a timeout at all"
+    best = min(missing_by_window, key=len)
+    raise AssertionError(
+        f"{where}: no timeout mention is within one sentence window of the whole rule — "
+        f"closest window is missing {best}"
+    )
+
+
+def test_tap_workflow_reference_tells_the_agent_a_timeout_returns_logs_and_a_partial_count():
+    _assert_timeout_diagnostics_rule(
+        _block(_read(SERVER_PY), 'TAP_WORKFLOW_REFERENCE = """'),
+        "server.py tap-workflow-reference",
+    )
+
+
+def test_mcp_instructions_carry_the_timeout_diagnostics_rule():
+    _assert_timeout_diagnostics_rule(
+        _block(_read(SERVER_PY), '_INSTRUCTIONS_TEMPLATE = """'),
+        "server.py instructions",
+    )
+
+
+def test_test_tap_and_run_tap_descriptions_carry_the_timeout_diagnostics_rule():
+    text = _read(SERVER_PY)
+    _assert_timeout_diagnostics_rule(_tool_block(text, "test_tap"), "the test_tap tool description")
+    _assert_timeout_diagnostics_rule(_tool_block(text, "run_tap"), "the run_tap tool description")
+
+
+def test_assistant_prompt_carries_the_timeout_diagnostics_rule():
+    _assert_timeout_diagnostics_rule(_read(ASSISTANT_SCALA), "AssistantAPIController.scala")
+
+
+def test_the_existing_memory_and_disk_rules_are_not_reworded_away():
+    # The new rule is added NEXT TO these, never in place of them
+    # (test_tap_memory_text.py / test_tap_disk_text.py own the full assertions).
+    text = _read(SERVER_PY)
+    assert "exit code -9" in text, "the -9 / out-of-memory rule must stay verbatim"
+    assert "After two consecutive failed tests" in text, "the two-failures rule must stay verbatim"
+    assert "Never probe the runner environment" in text, "the no-probing rule must stay verbatim"
+
+
+def test_taps_doc_states_that_a_timed_out_run_keeps_its_logs_and_partial_count():
+    text = _read(TAPS_MDX)
+    rows = [l for l in text.splitlines() if l.startswith("|") and "`failure`" in l]
+    assert rows, "docs/taps.mdx has no `failure` status row"
+    assert any(_TIMEOUT_MENTION.search(l) and _LOGS.search(l) and _PARTIAL_COUNT.search(l) for l in rows), (
+        "the `failure` row must say a timed-out run keeps the script's logs and a partial record count: " + str(rows)
+    )
+    assert re.search(r"100,?000 records", text) and _PROGRESS.search(text), (
+        "docs/taps.mdx must say the platform prints a progress line every 100,000 records / 30 s for yielding scripts"
+    )
