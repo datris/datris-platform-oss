@@ -79,6 +79,9 @@ object TapRunner {
             if (result.error != null) {
                 // Script errored. This is a real failure — write it as such.
                 // Script failures happen before any pipeline submission → retry-safe.
+                // A timeout arrives here with the script's logs and a PARTIAL record
+                // count (the rows that reached the staging file before the kill); both
+                // go on the run log below. lastRunRecordCount stays 0 — nothing landed.
                 if (push) {
                     val failedConfig = tapConfig.copy(
                         lastRunStatus = "failure",

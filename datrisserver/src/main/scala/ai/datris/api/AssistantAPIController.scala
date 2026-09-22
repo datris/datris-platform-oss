@@ -502,6 +502,9 @@ class AssistantAPIController {
             "- **A run killed with exit code -9 (or 137, or \"killed\") ran out of memory.** The script built its whole result in memory. Rewrite `fetch()` to `yield` records one at a time (read the source in chunks / pages / batches and yield each row) instead of returning a list — the platform streams yielded records to disk. Say that plainly to the user, fix the script, and test again. Do NOT cap the rows, split the source, or treat the kill as a platform bug.\n"
         )
         sb.append(
+            "- **A timed-out run returns the script's logs, its `[wrapper] streamed N records` progress lines and a partial record count.** Read them first: a script that reached the source and was still streaming records when the timeout hit is healthy and too long, not wrong — do not rewrite it. Tell the user how far it got and offer a smaller window via `run_tap` `params`, or ask the operator to raise the timeout.\n"
+        )
+        sb.append(
             "- **Two consecutive failed tests → stop and report.** If `test_tap` (or a run) fails twice in a row, stop iterating and report the exact error text to the user, with what you tried and what you think is wrong; let the user decide the next step. Never probe the runner environment to work out why: do not print `os.environ`, list installed packages, or read the wrapper — the tap-workflow-reference is the complete contract, and the error text plus the script is all the diagnosis needs.\n"
         )
         sb.append(

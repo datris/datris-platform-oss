@@ -73,6 +73,63 @@ object TapScriptRunner {
             s"Tap script timed out after ${t.seconds} seconds (${t.label} mode; raise ${t.envVar}, " +
                 "or chunk the source range via run_tap params)"
 
+    /** A timed-out run, carrying what the script had already produced when it
+      * was killed: `logs` is the masked output a successful run would have
+      * reported (stderr first, then stdout when non-empty) and `partialRecords`
+      * is the number of records that had reached the staging file. Nothing
+      * landed — the count is diagnostic only. */
+    class TapTimeoutException(message: String, val logs: String, val partialRecords: Long) extends DatrisException(message)
+
+    /** How many log lines the timeout message itself carries. The full output is
+      * on `TapTimeoutException.logs` (and in the tap run log). */
+    private val TimeoutTailLines = 20
+
+    /** Build the failure for a timeout once the partial output has been read.
+      * The text is `timedOutMessage(t)` — the prefix the UI matches on plus the
+      * mode/env-var clause — with the partial record count and the last
+      * [[TimeoutTailLines]] log lines appended. Never restate the prefix here.
+      */
+    private[util] def timeoutFailure(
+        timeout: TapTimeout,
+        stdout: String,
+        stderr: String,
+        partialRecords: Long,
+        secretValues: Seq[String]
+    ): TapTimeoutException = {
+        val combined = Seq(stderr, stdout).filter(s => s != null && s.trim.nonEmpty).map(_.stripLineEnd).mkString("\n")
+        val logs = if (secretValues.nonEmpty) maskSecrets(combined, secretValues) else combined
+        val tail = logs.linesIterator.toList.takeRight(TimeoutTailLines).mkString("\n")
+        val counted =
+            if (partialRecords > 0) partialRecords + " records were streamed before the kill (partial, nothing landed)"
+            else "no records had been streamed yet (the partial count is 0)"
+        val message =
+            timedOutMessage(timeout) + "; " + counted + "." +
+                (if (tail.nonEmpty) " Last output:\n" + tail else " The script printed nothing.")
+        new TapTimeoutException(message, logs, partialRecords)
+    }
+
+    /** Records that reached the staging file before the kill: the number of
+      * newline-terminated lines in the file the wrapper was writing. Counted by
+      * scanning bytes — the file is never loaded — so a half-written last line
+      * left by a SIGKILL is ignored. 0 when there is no file (yet). */
+    private[util] def stagedLineCount(outputPath: Path): Long =
+        if (outputPath == null || !Files.exists(outputPath)) 0L
+        else
+            try {
+                val in = new java.io.BufferedInputStream(Files.newInputStream(outputPath), 64 * 1024)
+                try {
+                    val buf = new Array[Byte](64 * 1024)
+                    var count = 0L
+                    var n = in.read(buf)
+                    while (n > 0) {
+                        var i = 0
+                        while (i < n) { if (buf(i) == '\n'.toByte) count += 1; i += 1 }
+                        n = in.read(buf)
+                    }
+                    count
+                } finally in.close()
+            } catch { case _: Exception => 0L }
+
     /** Lenient parse of a boot-time timeout property. Returns -1 ("unset") for a
       * blank value, a value that is not a whole number ("5m"), and a value that
       * is zero or negative — a 0 s ceiling would time out every run instantly,
@@ -236,6 +293,12 @@ object TapScriptRunner {
           |    # platform can tell a record list from one object without re-reading.
           |    _count = 0
           |    _columns = None
+          |    # Progress reporting for the iterator lane: a long stream says how far it
+          |    # got, so a timed-out run reads as "healthy, too long" rather than silent.
+          |    # Gated at every 100,000 records or 30 s, and the clock is only read every
+          |    # 1,000 rows, so the per-row cost is one modulo. The list lane prints none.
+          |    _next_prog = 100000
+          |    _last_prog = _t0
           |    with open(_out_path, "w", encoding="utf-8", newline="") as _f:
           |        if _records is not None:
           |            # One pass, whether _records is a list or a streaming iterator:
@@ -258,6 +321,12 @@ object TapScriptRunner {
           |                _f.write(json.dumps(_row, default=str, separators=(",", ":")))
           |                _f.write("\n")
           |                _count += 1
+          |                if _iter_src is not None and _count % 1000 == 0:
+          |                    _now = time.time()
+          |                    if _count >= _next_prog or _now - _last_prog >= 30:
+          |                        print(f"[wrapper] streamed {_count} records ({_now - _t0:.0f} s)", file=sys.stderr, flush=True)
+          |                        _next_prog = _count + 100000
+          |                        _last_prog = _now
           |            _columns = list(_columns) if _dicts else []
           |            if _iter_src is not None:
           |                if hasattr(_iter_src, "close"):
@@ -634,6 +703,17 @@ object TapScriptRunner {
                 newState = newStateJson
             )
         } catch {
+            case e: TapTimeoutException =>
+                // A timeout keeps what the script produced: the masked logs a successful
+                // run would have reported, and the records that reached the staging file
+                // before the kill (partial — nothing landed, TapRunner leaves
+                // lastRunRecordCount at 0). Must come before the generic DatrisException
+                // case below, which drops both.
+                val masked = if (secretValuesForMasking.nonEmpty) maskSecrets(e.getMessage, secretValuesForMasking) else e.getMessage
+                val maskedLogs = if (secretValuesForMasking.nonEmpty) maskSecrets(e.logs, secretValuesForMasking) else e.logs
+                logger.error("TapScriptRunner failed: " + masked)
+                if (maskedLogs != null && maskedLogs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + maskedLogs)
+                TapScriptResult(null, e.partialRecords.toInt, masked, if (maskedLogs != null && maskedLogs.nonEmpty) maskedLogs else null)
             case e: DatrisException =>
                 // DatrisException messages constructed inside this method are already
                 // masked at throw time (executeWithTimeout). Re-mask defensively in case a
@@ -1404,10 +1484,13 @@ object TapScriptRunner {
                         }
                         JsonParser.parseString(new String(trailer.toByteArray, StandardCharsets.UTF_8).trim).getAsJsonObject
                     }
-                if (obj.has("timedOut") && obj.get("timedOut").getAsBoolean)
-                    throw new DatrisException(timedOutMessage(timeout))
-                val exitCode = if (obj.has("exitCode")) obj.get("exitCode").getAsInt else -1
                 def str(k: String) = if (obj.has(k) && !obj.get(k).isJsonNull) obj.get(k).getAsString else ""
+                // Read the partial stdout/stderr the runner returns in its trailer BEFORE
+                // throwing: they are what the script managed to print before the kill, and
+                // without them a timed-out run's log entry is an error and nothing else.
+                if (obj.has("timedOut") && obj.get("timedOut").getAsBoolean)
+                    throw timeoutFailure(timeout, str("stdout"), str("stderr"), stagedLineCount(outputPath), secretValues)
+                val exitCode = if (obj.has("exitCode")) obj.get("exitCode").getAsInt else -1
                 val stdout = str("stdout")
                 val stderr = str("stderr")
                 if (exitCode != 0) {
@@ -1519,7 +1602,12 @@ object TapScriptRunner {
                 if (process.waitFor(250, java.util.concurrent.TimeUnit.MILLISECONDS)) exitCode = Some(process.exitValue())
                 else if (System.currentTimeMillis() > deadline) {
                     process.destroyForcibly()
-                    throw new DatrisException(timedOutMessage(timeout))
+                    // Join the pumps first: everything the script printed before the kill
+                    // is still in flight on those threads, and it is exactly what makes a
+                    // timeout diagnosable.
+                    outThread.join(5000)
+                    errThread.join(5000)
+                    throw timeoutFailure(timeout, stdout.toString, stderr.toString, stagedLineCount(outputPath), secretValues)
                 } else if (outputPath != null && Files.exists(outputPath)) {
                     val written = Files.size(outputPath)
                     if (StagingArea.overBudget(written)) {
