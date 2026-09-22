@@ -62,7 +62,7 @@ jobs:
       # docker/git runner — no Docker needed.
       - name: MCP server and CLI doctor tests
         run: |
-          python3 -m pip install --quiet --user -r mcp-server/requirements.txt pytest click httpx httpx-sse
+          python3 -m pip install --quiet --user -r mcp-server/requirements.txt pytest click httpx httpx-sse pandas pyarrow
           python3 -m pytest mcp-server/tests -q
           python3 -m pytest tap-runner/tests -q
 

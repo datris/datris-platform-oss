@@ -36,6 +36,7 @@ object TapScriptOptimizer {
           |
           |HARD PRESERVATION RULES (must not change):
           |- Keep the `fetch()` function signature and its return shape. `fetch()` may return a list of records or `yield` them (a generator / iterator) — the platform streams yielded records to disk. If the script materialises a large result in memory (a list of millions of rows, a whole DataFrame `.to_dict("records")`), converting it to `yield` per chunk is a correct optimisation; never do the reverse.
+          |- For a large columnar or tabular source, `yield` each batch (a pyarrow `RecordBatch`, a pandas `DataFrame`, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (`columns=[...]`). Yielding one row at a time remains correct for small or API-paged sources. Turning a per-row yield over a large columnar or tabular source into a per-batch yield is a correct optimisation; never do the reverse.
           |- Keep all `os.environ.get(...)` reads for Vault-injected secrets.
           |- Keep the `DATRIS_TAP_TEST_LIMIT` env-var handling and the `sample_cap` / `source_limit` convention — test runs must still cap sample size.
           |- Keep the incremental-sync state handling if present: the `DATRIS_TAP_STATE` env-var read and the `DATRIS_STATE` module-global assignment are the platform's bookmark contract, not dead code. Never remove them, and never change what the state tracks.

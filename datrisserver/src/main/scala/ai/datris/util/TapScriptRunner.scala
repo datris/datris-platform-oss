@@ -229,6 +229,250 @@ object TapScriptRunner {
           |_records = None
           |_dict_lane = False
           |_iter_src = None
+          |_remaining = None
+          |_batches_seen = 0
+          |# Batch lane (plans/stories/tap-batch-yield.md): fetch() may `yield` a whole
+          |# BATCH as well as a row — a pandas DataFrame, a pyarrow RecordBatch / Table,
+          |# or a list whose first element is a dict (rows) or a list/tuple (cells) — and
+          |# the wrapper writes it as N NDJSON rows in one vectorised call instead of one
+          |# json.dumps per row. Everything downstream is unchanged: `count` is ROWS,
+          |# `columns` is the first-seen union, and a value serialises exactly as it does
+          |# when yielded as a row. pandas is imported lazily (only when the first frame
+          |# appears) and pyarrow is never imported — arrow objects are duck-typed.
+          |# Sentinels for the non-finite floats pandas would otherwise write as null.
+          |# They ride through to_json as JSON strings and are restored as the bare
+          |# NaN / Infinity / -Infinity tokens json.dumps writes on the per-row path.
+          |_NAN_SENT = "\x00DTNaN\x00"
+          |_INF_SENT = "\x00DTInf\x00"
+          |_NINF_SENT = "\x00DT-Inf\x00"
+          |def _batch_kind(_x):
+          |    # str / bytes / dict / tuple are NEVER batches, and neither is [] or a
+          |    # list of scalars: every shape a tap yields today keeps its meaning.
+          |    if isinstance(_x, (str, bytes, dict, tuple)):
+          |        return None
+          |    if isinstance(_x, list):
+          |        if not _x:
+          |            return None
+          |        if isinstance(_x[0], dict):
+          |            return "rows"
+          |        if isinstance(_x[0], (list, tuple)):
+          |            return "cells"
+          |        return None
+          |    _m = type(_x).__module__ or ""
+          |    if _m.startswith("pandas") and hasattr(_x, "to_json") and hasattr(_x, "columns"):
+          |        return "frame"
+          |    if _m.startswith("pyarrow") and hasattr(_x, "to_pandas") and hasattr(_x, "num_rows"):
+          |        return "arrow"
+          |    return None
+          |def _batch_first_row(_kind, _b):
+          |    # The first row of a batch, or None when it is empty. Used only to sniff
+          |    # the data type — the batch itself is not consumed.
+          |    if _kind in ("rows", "cells"):
+          |        return _b[0]
+          |    if _kind == "frame":
+          |        return None if len(_b.index) == 0 else _b.head(1).to_dict("records")[0]
+          |    return None if _b.num_rows == 0 else _b.slice(0, 1).to_pylist()[0]
+          |_MASK_HIT = [False]
+          |def _json_native(_v):
+          |    # `default=str` semantics, per value: anything json.dumps cannot encode
+          |    # becomes str(...), dicts / lists recurse, and a non-finite float becomes
+          |    # its sentinel (json.dumps writes the bare NaN / Infinity tokens, to_json
+          |    # would write null). This is what keeps an object column (Decimal, bytes,
+          |    # date, numpy scalar, nested dict) byte-identical to the per-row encoder.
+          |    if _v is None or _v is True or _v is False or isinstance(_v, str):
+          |        return _v
+          |    if isinstance(_v, float):
+          |        if _v != _v:
+          |            _MASK_HIT[0] = True
+          |            return _NAN_SENT
+          |        if _v == float("inf"):
+          |            _MASK_HIT[0] = True
+          |            return _INF_SENT
+          |        if _v == float("-inf"):
+          |            _MASK_HIT[0] = True
+          |            return _NINF_SENT
+          |        return _v
+          |    if isinstance(_v, int):
+          |        return _v
+          |    if isinstance(_v, dict):
+          |        return {str(_k): _json_native(_x) for _k, _x in _v.items()}
+          |    if isinstance(_v, (list, tuple)):
+          |        return [_json_native(_x) for _x in _v]
+          |    return str(_v)
+          |def _boxed_na(_s, _na):
+          |    # What DataFrame.to_dict("records") puts in a missing cell of THIS column
+          |    # (NaN for a float / str column, None for a nullable extension dtype, NaT
+          |    # for a datetime) — the per-row path json.dumps()es exactly that value, so
+          |    # the batch lane has to write the same thing.
+          |    try:
+          |        return next(iter(_s[_na].head(1).to_dict().values()))
+          |    except Exception:
+          |        return None
+          |def _fmt_datetimes(_s, _na_txt):
+          |    # str(Timestamp): "%Y-%m-%d %H:%M:%S", ".%f" only where microseconds are
+          |    # non-zero, "+HH:MM" (with the colon) when tz-aware, "NaT" for NaT.
+          |    _txt = _s.dt.strftime("%Y-%m-%d %H:%M:%S")
+          |    try:
+          |        _has_us = (_s.dt.microsecond.fillna(0).astype("int64") != 0)
+          |    except Exception:
+          |        _has_us = None
+          |    if _has_us is not None and bool(_has_us.any()):
+          |        _txt = _txt.where(~_has_us, _s.dt.strftime("%Y-%m-%d %H:%M:%S.%f"))
+          |    if getattr(_s.dt, "tz", None) is not None:
+          |        _off = _s.dt.strftime("%z")
+          |        _txt = _txt + _off.str[:3] + ":" + _off.str[3:]
+          |    return _txt.where(_s.notna(), _na_txt)
+          |def _normalise_frame(_df, _arrow):
+          |    # Per column, by dtype, vectorised. Returns (frame, masked) where `masked`
+          |    # says a non-finite float sentinel needs restoring in the serialised text.
+          |    # `_arrow` says the frame came from a RecordBatch / Table: an arrow null is
+          |    # a true null (its row equivalent, to_pylist(), yields None), where a pandas
+          |    # missing value is whatever to_dict("records") boxes it as (often NaN).
+          |    import pandas as _pd
+          |    import numpy as _np
+          |    _t = _pd.api.types
+          |    _cols = {}
+          |    _masked = False
+          |    for _c in _df.columns:
+          |        _s = _df[_c]
+          |        if _t.is_datetime64_any_dtype(_s):
+          |            # NaT is handled inside _fmt_datetimes (str(NaT) == "NaT").
+          |            _cols[_c] = _fmt_datetimes(_s, None if _arrow else "NaT")
+          |            continue
+          |        if _t.is_object_dtype(_s):
+          |            # Per value, like the row encoder. The all-strings fast path is
+          |            # only safe when the column has no missing value to box.
+          |            if not bool(_s.isna().any()) and _t.infer_dtype(_s, skipna=True) in ("string", "empty"):
+          |                _cols[_c] = _s
+          |            else:
+          |                _MASK_HIT[0] = False
+          |                _cols[_c] = _s.map(_json_native)
+          |                _masked = _masked or _MASK_HIT[0]
+          |            continue
+          |        _na = _s.isna()
+          |        _any_na = bool(_na.any())
+          |        _na_done = False
+          |        if _t.is_bool_dtype(_s):
+          |            # str(numpy.bool_(True)) — a bool yielded in a row is not JSON
+          |            # native either, so the batch lane must not "improve" it.
+          |            _v = _s.astype(object).where(~_na, None)
+          |            _v = _v.map(lambda _x: None if _x is None else ("True" if _x else "False"))
+          |        elif _t.is_float_dtype(_s):
+          |            try:
+          |                _arr = _s.to_numpy(dtype="float64", na_value=_np.nan)
+          |            except TypeError:
+          |                _arr = _s.to_numpy(dtype="float64")
+          |            _nan = _np.isnan(_arr)
+          |            if not isinstance(_s.dtype, _np.dtype):
+          |                _nan = _nan & ~_na.to_numpy()
+          |            _inf = _np.isinf(_arr)
+          |            if bool(_nan.any()) or bool(_inf.any()):
+          |                _masked = True
+          |                _v = _s.astype(object)
+          |                _v[_nan] = _NAN_SENT
+          |                _v[_inf & (_arr > 0)] = _INF_SENT
+          |                _v[_inf & (_arr < 0)] = _NINF_SENT
+          |                _na_done = isinstance(_s.dtype, _np.dtype)
+          |            else:
+          |                _v = _s
+          |        else:
+          |            _v = _s
+          |        if _any_na and not _na_done:
+          |            _mv = None if _arrow else _boxed_na(_s, _na)
+          |            if _mv is None:
+          |                pass
+          |            elif isinstance(_mv, float) and _mv != _mv:
+          |                _masked = True
+          |                _v = _v.astype(object)
+          |                _v[_na] = _NAN_SENT
+          |            else:
+          |                _v = _v.astype(object)
+          |                _v[_na] = str(_mv)
+          |        _cols[_c] = _v
+          |    return _pd.DataFrame(_cols, index=_df.index, copy=False), _masked
+          |class _TailWriter(object):
+          |    # to_json(lines=True) does not promise a trailing newline across pandas
+          |    # versions; remember the last character written so one can be added.
+          |    __slots__ = ("f", "last")
+          |    def __init__(self, _f):
+          |        self.f = _f
+          |        self.last = ""
+          |    def write(self, _s):
+          |        if _s:
+          |            self.last = _s[-1]
+          |        return self.f.write(_s)
+          |# Rows per to_json call. A batch is serialised in slices so the JSON text
+          |# (and the normalised copy behind it) never scales with the batch size:
+          |# a 100,000-row frame costs the same transient memory as a 10,000-row one.
+          |_WRITE_CHUNK = 10000
+          |def _write_frame(_df, _f, _arrow=False):
+          |    _rows = len(_df.index)
+          |    if _rows > _WRITE_CHUNK:
+          |        for _i in range(0, _rows, _WRITE_CHUNK):
+          |            _write_chunk(_df.iloc[_i:_i + _WRITE_CHUNK], _f, _arrow)
+          |        return
+          |    _write_chunk(_df, _f, _arrow)
+          |def _write_chunk(_df, _f, _arrow):
+          |    _n, _masked = _normalise_frame(_df, _arrow)
+          |    if _masked:
+          |        _txt = _n.to_json(None, orient="records", lines=True, double_precision=15, force_ascii=True)
+          |        _txt = _txt.replace('"\\u0000DTNaN\\u0000"', "NaN")
+          |        _txt = _txt.replace('"\\u0000DTInf\\u0000"', "Infinity")
+          |        _txt = _txt.replace('"\\u0000DT-Inf\\u0000"', "-Infinity")
+          |        if not _txt.endswith("\n"):
+          |            _txt += "\n"
+          |        _f.write(_txt)
+          |    else:
+          |        _w = _TailWriter(_f)
+          |        _n.to_json(_w, orient="records", lines=True, double_precision=15, force_ascii=True)
+          |        if _w.last != "\n":
+          |            _f.write("\n")
+          |def _write_batch(_kind, _b, _limit, _f):
+          |    # Writes one batch as its rows and returns the number of rows written.
+          |    # `_limit` is the remaining test-mode row budget (None = no limit).
+          |    global _dicts
+          |    _arrow = _kind == "arrow"
+          |    if _kind == "arrow":
+          |        if _limit is not None and _b.num_rows > _limit:
+          |            _b = _b.slice(0, _limit)
+          |        if _b.num_rows == 0:
+          |            return 0
+          |        _b = _b.to_pandas()
+          |        _kind = "frame"
+          |    if _kind == "frame":
+          |        if _limit is not None and len(_b.index) > _limit:
+          |            _b = _b.iloc[:_limit]
+          |        _n = len(_b.index)
+          |        if _n == 0:
+          |            return 0
+          |        _b = _b.copy(deep=False)
+          |        _b.columns = _b.columns.map(str)
+          |        if _dicts:
+          |            for _c in _b.columns:
+          |                if _c not in _columns:
+          |                    _columns[_c] = True
+          |        _write_frame(_b, _f, _arrow)
+          |        return _n
+          |    # rows / cells: the existing per-row encoder, so a list[dict] batch is
+          |    # byte-identical to yielding its rows one at a time.
+          |    _n = 0
+          |    for _row in _b:
+          |        if _limit is not None and _n >= _limit:
+          |            break
+          |        if isinstance(_row, dict):
+          |            _row = {str(_k): _v for _k, _v in _row.items()}
+          |            if _dicts:
+          |                for _k in _row:
+          |                    if _k not in _columns:
+          |                        _columns[_k] = True
+          |        elif _dict_lane:
+          |            continue
+          |        else:
+          |            _dicts = False
+          |        _f.write(json.dumps(_row, default=str, separators=(",", ":")))
+          |        _f.write("\n")
+          |        _n += 1
+          |    return _n
           |# Iterator lane (taps survive large sources): fetch() may `yield` records or
           |# return any iterator. A one-item lookahead sniffs the type exactly like the
           |# list branch; the rest streams in one pass. str / bytes / dict / list /
@@ -242,21 +486,31 @@ object TapScriptRunner {
           |        _records = iter(())
           |        _dict_lane = True
           |    else:
-          |        if isinstance(_first, dict) and 'uri' in _first and 'content' in _first:
-          |            data_type = "document"
-          |        elif isinstance(_first, dict):
+          |        # A BATCH first item types the run from its first ROW, exactly as a
+          |        # row does; an empty first batch types json (dict lane) and the
+          |        # wrapper keeps pulling.
+          |        _fk = _batch_kind(_first)
+          |        _sniff = _batch_first_row(_fk, _first) if _fk is not None else _first
+          |        if _fk is not None and _sniff is None:
           |            data_type = "json"
           |            _dict_lane = True
-          |        elif isinstance(_first, (list, tuple)):
+          |        elif isinstance(_sniff, dict) and 'uri' in _sniff and 'content' in _sniff:
+          |            data_type = "document"
+          |        elif isinstance(_sniff, dict):
+          |            data_type = "json"
+          |            _dict_lane = True
+          |        elif isinstance(_sniff, (list, tuple)):
           |            data_type = "csv"
           |        else:
           |            data_type = "json"
           |        _records = itertools.chain((_first,), _iter_src)
-          |    # Test mode caps the ITERATOR lane at N records (exactly N pulled, then
-          |    # the generator is closed so its finally runs). A list is never truncated.
+          |    # Test mode caps the ITERATOR lane at N ROWS (exactly enough items pulled
+          |    # to fill it, then the generator is closed so its finally runs) — a batch
+          |    # is sliced to the remaining budget, so a 10,000-row batch under limit 20
+          |    # writes 20 rows and costs ONE pull. A list is never truncated.
           |    _tl = os.environ.get("DATRIS_TAP_TEST_LIMIT", "").strip()
           |    if _tl.isdigit() and int(_tl) > 0:
-          |        _records = itertools.islice(_records, int(_tl))
+          |        _remaining = int(_tl)
           |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict) and 'uri' in result[0] and 'content' in result[0]:
           |    # Document tap: list of {uri, filename, content (base64), ...}
           |    data_type = "document"
@@ -308,6 +562,33 @@ object TapScriptRunner {
           |            _columns = {}
           |            _dicts = True
           |            for _row in _records:
+          |                # Batches come from the ITERATOR lane only: a returned list keeps
+          |                # every shape it has today, and a row-only stream pays one
+          |                # isinstance check.
+          |                _bk = None if (_iter_src is None or isinstance(_row, dict)) else _batch_kind(_row)
+          |                if _bk is not None:
+          |                    # A batch is written as its ROWS: _count stays exact per
+          |                    # row, so the progress line and the test limit are blind
+          |                    # to how the script chose to group them.
+          |                    _batches_seen += 1
+          |                    _wrote = _write_batch(_bk, _row, _remaining, _f)
+          |                    _count += _wrote
+          |                    if _iter_src is not None and _wrote > 0:
+          |                        _now = time.time()
+          |                        if _count >= _next_prog or _now - _last_prog >= 30:
+          |                            print(f"[wrapper] streamed {_count} records ({_now - _t0:.0f} s)", file=sys.stderr, flush=True)
+          |                            _next_prog = _count + 100000
+          |                            _last_prog = _now
+          |                    if _remaining is not None:
+          |                        _remaining -= _wrote
+          |                        if _remaining <= 0:
+          |                            break
+          |                    continue
+          |                # A non-batch item consumes exactly one row of the budget,
+          |                # dropped or not — what itertools.islice did before.
+          |                if _remaining is not None:
+          |                    _remaining -= 1
+          |                _skip = False
           |                if isinstance(_row, dict):
           |                    _row = {str(_k): _v for _k, _v in _row.items()}
           |                    if _dicts:
@@ -315,18 +596,21 @@ object TapScriptRunner {
           |                            if _k not in _columns:
           |                                _columns[_k] = True
           |                elif _dict_lane:
-          |                    continue
+          |                    _skip = True
           |                else:
           |                    _dicts = False
-          |                _f.write(json.dumps(_row, default=str, separators=(",", ":")))
-          |                _f.write("\n")
-          |                _count += 1
-          |                if _iter_src is not None and _count % 1000 == 0:
-          |                    _now = time.time()
-          |                    if _count >= _next_prog or _now - _last_prog >= 30:
-          |                        print(f"[wrapper] streamed {_count} records ({_now - _t0:.0f} s)", file=sys.stderr, flush=True)
-          |                        _next_prog = _count + 100000
-          |                        _last_prog = _now
+          |                if not _skip:
+          |                    _f.write(json.dumps(_row, default=str, separators=(",", ":")))
+          |                    _f.write("\n")
+          |                    _count += 1
+          |                    if _iter_src is not None and _count % 1000 == 0:
+          |                        _now = time.time()
+          |                        if _count >= _next_prog or _now - _last_prog >= 30:
+          |                            print(f"[wrapper] streamed {_count} records ({_now - _t0:.0f} s)", file=sys.stderr, flush=True)
+          |                            _next_prog = _count + 100000
+          |                            _last_prog = _now
+          |                if _remaining is not None and _remaining <= 0:
+          |                    break
           |            _columns = list(_columns) if _dicts else []
           |            if _iter_src is not None:
           |                if hasattr(_iter_src, "close"):
@@ -348,6 +632,8 @@ object TapScriptRunner {
           |        print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |    else:
           |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |    if _batches_seen:
+          |        print(f"[wrapper] batch lane: {_batches_seen} batch(es)", file=sys.stderr, flush=True)
           |    envelope = {"type": data_type, "count": _count, "columns": _columns}
           |else:
           |    # Inline path (no DATRIS_TAP_OUTPUT): the whole payload rides on stdout as
@@ -356,9 +642,25 @@ object TapScriptRunner {
           |    # streams); the stderr note says why.
           |    if _iter_src is not None:
           |        print("[wrapper] DATRIS_TAP_OUTPUT is not set: fetch() returned an iterator, materializing it in memory (set DATRIS_TAP_OUTPUT to stream it to a file)", file=sys.stderr, flush=True)
-          |        result = list(_records)
+          |        result = list(itertools.islice(_records, _remaining)) if _remaining is not None else list(_records)
           |        if hasattr(_iter_src, "close"):
           |            _iter_src.close()
+          |        # Batches are materialised into dict rows here, exactly as the
+          |        # iterator itself is: the inline envelope shape never changes.
+          |        _flat = []
+          |        for _item in result:
+          |            _bk = None if isinstance(_item, dict) else _batch_kind(_item)
+          |            if _bk is None:
+          |                _flat.append(_item)
+          |                continue
+          |            _batches_seen += 1
+          |            if _bk == "frame":
+          |                _flat.extend(_item.to_dict("records"))
+          |            elif _bk == "arrow":
+          |                _flat.extend(_item.to_pylist())
+          |            else:
+          |                _flat.extend(_item)
+          |        result = _flat[:_remaining] if _remaining is not None else _flat
           |        _records = result
           |        _elapsed = time.time() - _t0
           |    if _dict_lane:
@@ -379,6 +681,8 @@ object TapScriptRunner {
           |        print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |    else:
           |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |    if _batches_seen:
+          |        print(f"[wrapper] batch lane: {_batches_seen} batch(es)", file=sys.stderr, flush=True)
           |    envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
           |# Incremental-sync state: a script that wants the platform to remember its
           |# position sets a module-global dict DATRIS_STATE inside fetch(). Absent or

@@ -32,6 +32,9 @@ object TapScriptGenerator {
           |  python-dateutil, pytz, google-cloud-storage, azure-storage-blob).
           |  Pre-installed packages do not need to be listed. Use an empty list if none needed.
           |
+          |Batches — IMPORTANT for large columnar or tabular sources:
+          |- For a large columnar or tabular source, `yield` each batch (a pyarrow `RecordBatch`, a pandas `DataFrame`, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (`columns=[...]`). Yielding one row at a time remains correct for small or API-paged sources.
+          |
           |Memory — IMPORTANT for large sources:
           |- The platform streams whatever `fetch()` produces to disk one record at a time, so the run is never limited by memory — but only if the SCRIPT does not build the whole result first. A `fetch()` that appends millions of rows to a list (or loads a whole file into pandas and calls `to_dict("records")`) is killed for memory.
           |- When the source can be large (a big file, a full table, a long paginated API), `yield` each record from `fetch()` instead of returning a list: read the source in chunks / pages / batches (e.g. `pd.read_csv(..., chunksize=50000)`, `pyarrow.parquet.ParquetFile(...).iter_batches()`, one API page at a time) and `yield` the rows of each chunk before fetching the next. Never hold more than one chunk at a time.
