@@ -103,7 +103,7 @@ class EntityVersionAPIController {
                 // Test-before-cron gate: restoring a snapshot whose script bytes differ
                 // from the tested stamp while a cron is set is refused, same as a save.
                 if (cronError.isDefined)
-                    ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": \"" + cronError.get.replace("\"", "'") + "\"}")
+                    ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](TapCronValidation.errorBody(cronError.get))
                 else TapCronGate.check(live, restored) match {
                     case Some(msg) =>
                         ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")

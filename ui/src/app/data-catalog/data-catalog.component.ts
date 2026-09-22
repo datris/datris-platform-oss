@@ -421,6 +421,12 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     return null;
   }
 
+  /** Error bodies are JSON ({"error": "..."}), which Angular parses into an
+   *  object — concatenating it renders "[object Object]" and hides the remedy. */
+  private errText(err: any): string {
+    return (err && err.error && err.error.error) || (err && err.error) || (err && err.message) || 'unknown error';
+  }
+
   private showMoveError(msg: string): void {
     this.moveError = msg;
     if (this.moveErrorTimeout) clearTimeout(this.moveErrorTimeout);
@@ -441,7 +447,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     const updated = { ...tap, catalog: targetCatalog };
     this.tapService.createOrUpdateTap(updated).subscribe({
       next: () => { this.movingItem = ''; this.loadCatalogs(); },
-      error: () => { this.movingItem = ''; this.loadCatalogs(); }
+      // A refused save (e.g. HTTP 400 on a tap whose stored cron is not a valid
+      // 6-field Quartz expression) must show its remedy, not vanish into a
+      // silent reload. The body is {"error": "..."}, parsed into an object.
+      error: (err) => { this.movingItem = ''; this.showMoveError(this.errText(err)); this.loadCatalogs(); }
     });
   }
 
@@ -504,7 +513,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
     for (const tap of realTaps) {
       this.tapService.createOrUpdateTap({ ...tap, catalog: catalogValue }).subscribe({
-        next: done, error: done
+        next: done,
+        // Same as the single-tap move: surface a refused save (e.g. the 400 on
+        // an unparseable stored cron) rather than counting it as done silently.
+        error: (err) => { this.showMoveError(this.errText(err)); done(); }
       });
     }
     for (const pipeline of source.pipelines) {

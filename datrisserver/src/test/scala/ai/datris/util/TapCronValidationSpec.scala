@@ -126,11 +126,32 @@ class TapCronValidationSpec extends AnyFunSuite with BeforeAndAfterAll {
     // -------------------------------------------------- Acceptance 2 -------
 
     test("the 5-field hint puts ? in the day field the Unix form left unspecified") {
+        // Acceptance 2 as amended by the lead: a numeric Unix day-of-week is
+        // TRANSLATED, not copied — Unix counts 0/7 = Sunday, Quartz 1 = Sunday,
+        // so digits carried through would be valid Quartz for the wrong days.
         val weekdays = TapCronValidation.check("prices", "30 5 * * 1-5")
         assert(weekdays.isDefined, "30 5 * * 1-5 must be refused")
         assert(
-            weekdays.get.contains("'0 30 5 ? * 1-5'"),
-            "a set day-of-week means day-of-month becomes ?, expected hint '0 30 5 ? * 1-5': " + weekdays.get
+            weekdays.get.contains("'0 30 5 ? * MON-FRI'"),
+            "a set day-of-week means day-of-month becomes ? and 1-5 (Unix Mon-Fri) becomes MON-FRI, " +
+                "expected hint '0 30 5 ? * MON-FRI': " + weekdays.get
+        )
+
+        // Noon on Sunday, Unix style. (The amendment quoted the input with six
+        // tokens; a six-token string is never a 5-field Unix cron, so the case
+        // is written with the five-field form that yields the stated hint.)
+        val unixSunday = TapCronValidation.check("prices", "0 12 * * 7")
+        assert(unixSunday.isDefined, "0 12 * * 7 must be refused")
+        assert(
+            unixSunday.get.contains("'0 0 12 ? * SUN'"),
+            "Unix day-of-week 7 is Sunday (Quartz 7 is Saturday), expected hint '0 0 12 ? * SUN': " + unixSunday.get
+        )
+
+        val unixSundayZero = TapCronValidation.check("prices", "0 12 * * 0")
+        assert(unixSundayZero.isDefined, "0 12 * * 0 must be refused")
+        assert(
+            unixSundayZero.get.contains("'0 0 12 ? * SUN'"),
+            "Unix day-of-week 0 is Sunday too, expected hint '0 0 12 ? * SUN': " + unixSundayZero.get
         )
 
         val monthly = TapCronValidation.check("prices", "0 0 1 * *")
@@ -188,6 +209,18 @@ class TapCronValidationSpec extends AnyFunSuite with BeforeAndAfterAll {
             TapCronValidation.validate("prices", "*/1 * * * *")
         }
         assert(thrown.getMessage == expected.get, "validate must throw the same message check returns: " + thrown.getMessage)
+    }
+
+    test("the 400 body is valid JSON even when the cron carries quotes or backslashes") {
+        val nasty = "*/1 * \\ \" *"
+        val msg = TapCronValidation.check("prices", nasty)
+        assert(msg.isDefined, "'" + nasty + "' must be refused")
+        val body = TapCronValidation.errorBody(msg.get)
+        // A hand-concatenated body would break here, and the MCP server's
+        // json.loads fallback would then report a 400 as "created successfully".
+        val parsed = com.google.gson.JsonParser.parseString(body).getAsJsonObject
+        assert(parsed.get("error").getAsString == msg.get, "the message must survive JSON encoding intact: " + body)
+        assert(parsed.get("error").getAsString.contains(nasty), "the body must still quote the submitted expression: " + body)
     }
 
     // -------------------------------------------------- Acceptance 7 -------

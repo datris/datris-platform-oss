@@ -466,7 +466,7 @@ class TapAPIController {
             // and before the test-before-cron gate, whose 409 text is unchanged.
             TapCronValidation.check(configToSave.name, configToSave.cronExpression) match {
                 case Some(msg) =>
-                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](TapCronValidation.errorBody(msg))
                 case None =>
             }
 
