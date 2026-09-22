@@ -460,6 +460,16 @@ class TapAPIController {
                     lastTestRunScriptId = null
                 ))
 
+            // Cron validation: a schedule the scheduler cannot parse is refused
+            // here (400) rather than stored to log an error on every tick. Runs
+            // after blank normalisation (blank = unscheduled, never validated)
+            // and before the test-before-cron gate, whose 409 text is unchanged.
+            TapCronValidation.check(configToSave.name, configToSave.cronExpression) match {
+                case Some(msg) =>
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
+                case None =>
+            }
+
             // Test-before-cron gate: a schedule may only be set on a script (or
             // endpoint) that has passed a mode=test run. Reads test state from
             // the STORED tap only. Refused saves persist nothing and mint no version.

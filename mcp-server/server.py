@@ -381,6 +381,7 @@ How to find a "relevant pipeline" in the list response: the response begins with
 SCHEDULING RULE (read this before suggesting any recurring/timely workflow):
 If the user mentions ANY recurrence cue — "nightly", "daily", "hourly", "every morning", "weekly", "at market open", "on a schedule", "recurring", "on a timely basis", "keep this up to date", "refresh this every X" — set a `cron_expression` on the relevant tap via `create_tap` (when first creating) or `update_tap` (when wiring an existing tap). The Datris platform runs the scheduler — once you set `cron_expression`, the tap fires automatically on that cadence, with the same publisherToken + get_tap_logs verification path as manual runs.
 DO NOT respond with shell snippets, cron jobs, Airflow DAGs, or any other external scheduler that just invokes the CLI or the API on a timer. That defeats the platform: the user delegated both "what data" and "when it refreshes" to Datris. Handing back a "run this every night at 9pm" command pushes operational burden the user already chose to offload. The schedule lives on the tap.
+A Datris cron is Quartz: 6 fields — seconds minutes hours day-of-month month day-of-week, plus an optional year (`0 0 * * * ?` = hourly). The 5-field Unix cron every online cron reference shows (`*/1 * * * *`) is refused with HTTP 400 whose `error` quotes the 6-field equivalent — resend that exact expression, do not invent another one.
 After setting the schedule, tell the user what you set — name the tap, give the cron expression, and translate it to plain English (e.g. "runs daily at 5:30am") — then offer to adjust the cadence or chain related taps.
 
 VALIDATION RULE (read this before the first run of any new or updated tap):
@@ -1144,7 +1145,7 @@ After setting `cron_expression`, tell the user the cadence you set in plain Engl
 
 ### Quartz CRON expression cookbook
 
-Datris uses Quartz CRON syntax: `seconds minutes hours day-of-month month day-of-week [year]`. Note the leading SECONDS field — many cron resources online only show 5 fields.
+Datris uses Quartz CRON syntax: `seconds minutes hours day-of-month month day-of-week [year]`. Note the leading SECONDS field — many cron resources online only show 5 fields. That means 6 fields (7 with the year), not 5. A 5-field Unix cron is refused on save with HTTP 400 whose `error` quotes the 6-field equivalent — resend that expression rather than guessing again.
 
 | Cadence | Expression |
 |---|---|
@@ -2451,7 +2452,7 @@ def _base_tools():
                     },
                     "cron_expression": {
                         "type": "string",
-                        "description": "Quartz CRON expression for recurring runs (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
+                        "description": "Quartz CRON expression for recurring runs: 6 fields — seconds minutes hours day-of-month month day-of-week, plus an optional year (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). A 5-field Unix cron such as '*/1 * * * *' is NOT a Datris schedule: the save is refused with HTTP 400 whose `error` quotes the 6-field equivalent to resend. SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
                     },
                     "secret_name": {
                         "type": "string",
@@ -2778,7 +2779,7 @@ def _base_tools():
                     },
                     "cron_expression": {
                         "type": "string",
-                        "description": "Quartz CRON expression for recurring runs (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
+                        "description": "Quartz CRON expression for recurring runs: 6 fields — seconds minutes hours day-of-month month day-of-week, plus an optional year (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). A 5-field Unix cron such as '*/1 * * * *' is NOT a Datris schedule: the save is refused with HTTP 400 whose `error` quotes the 6-field equivalent to resend. SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
                     },
                     "target_pipeline": {
                         "type": "string",

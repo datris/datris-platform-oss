@@ -361,7 +361,11 @@ components:
           description: Name of the tap secret (Vault) injected as env vars at runtime
         cronExpression:
           type: string
-          description: Quartz CRON expression for scheduled runs (omit for manual-only)
+          description: >-
+            Quartz CRON expression for scheduled runs (omit for manual-only). Six
+            fields — seconds minutes hours day-of-month month day-of-week — plus an
+            optional year, e.g. `0 0 * * * ?` (hourly). A 5-field Unix cron such as
+            `*/1 * * * *` is rejected with 400; the error quotes the 6-field equivalent.
         enabled:
           type: boolean
           default: true
@@ -2117,6 +2121,12 @@ paths:
       description: |
         Creates a new tap or updates an existing tap with the same `name`.
 
+        Cron validation: `cronExpression` is a Quartz expression of 6 fields
+        (seconds minutes hours day-of-month month day-of-week) plus an optional
+        year. A malformed expression — including the 5-field Unix form — is
+        refused with 400 and nothing is persisted; for a 5-field input the error
+        carries the 6-field equivalent to resend. A blank cron means unscheduled.
+
         Test-before-cron: a `cronExpression` may only be saved once the exact script
         (or HTTP endpoint) that will run on it has passed a `mode=test` run. Setting or
         changing a cron on an untested script, or changing the script under an existing
@@ -2137,7 +2147,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/TapConfig'
         '400':
-          description: Validation error
+          description: >-
+            Validation error, including a malformed `cronExpression`. Body is
+            `{"error": "<tap name + the 6-field Quartz form to resend>"}`.
         '409':
           description: >-
             Cron set on an untested script (test-before-cron). Body is

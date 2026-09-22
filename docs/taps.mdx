@@ -128,7 +128,8 @@ The test must return records successfully before you can proceed to step 3.
 
 ### Step 3: Schedule (Optional)
 
-Set up automatic runs with a CRON expression:
+Set up automatic runs with a CRON expression. Datris uses Quartz CRON: 6 fields — seconds, minutes, hours, day-of-month, month, day-of-week (plus an optional year), e.g. `0 0 * * * ?` for hourly. A malformed expression — including the familiar 5-field Unix form such as `*/1 * * * *` — is refused with **HTTP 400** and the error quotes the 6-field equivalent to resubmit.
+
 - **Presets**: Every Hour, Daily (Midnight), Weekdays (Midnight), Weekly (Monday)
 - **Custom**: Describe your schedule in plain English (e.g., "Every weekday at 4pm ET") and click Generate to create the CRON expression
 
@@ -261,6 +262,8 @@ Click the play button on the taps list to open the Run page:
 - **Run Again** button for re-execution
 
 ### CRON Schedule
+Datris schedules are Quartz CRON expressions: 6 fields — seconds, minutes, hours, day-of-month, month, day-of-week — plus an optional year. Note the leading **seconds** field: the 5-field Unix form most cron references show (`*/1 * * * *`) is not a Datris schedule. `POST /api/v1/tap` refuses a malformed expression with **HTTP 400**; for a 5-field input the error quotes the 6-field equivalent (here `0 */1 * * * ?`) to resend. Use `?` in whichever of day-of-month / day-of-week you leave unspecified — Quartz requires exactly one of the two to be `?`.
+
 A schedule can only be saved once the tap's current script (or HTTP endpoint) has passed a test run — `POST /api/v1/tap` returns **HTTP 409** otherwise, and the error names the tap and the remedy: save the tap without `cronExpression`, call `test_tap`, then `update_tap` with the cron. Editing the script of a scheduled tap is refused the same way until the new script is re-tested. Cadence-only changes, clearing the cron, and metadata edits (description, tags, target pipeline, enabled) on a tested tap are always accepted. Taps scheduled before this rule existed keep running untouched; their first cron or script change is accepted if the tap has ever tested or run successfully.
 
 Taps with a `cronExpression` run automatically. The scheduler checks every 30 seconds for taps that are due. A tap won't fire if it's already running. For a tap that has never run before, the scheduler anchors the "next valid cron time" to `updatedAt` or `createdAt`, so the first scheduled slot after the tap was saved fires on its own — no manual bootstrap run needed.

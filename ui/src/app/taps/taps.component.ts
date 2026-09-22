@@ -770,7 +770,12 @@ export class TapsComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         this.savingCron = false;
-        this.cronEditError = 'Failed to save: ' + (err.error || err.message);
+        // A refused save (400 malformed cron, 409 test-before-cron gate) comes
+        // back as a JSON body {"error": "..."}, which Angular parses into an
+        // object — concatenating it renders "[object Object]" and hides the
+        // message (including the 6-field cron to resend). Unwrap it first.
+        this.cronEditError =
+          'Failed to save: ' + (((err && err.error && err.error.error) || (err && err.error) || (err && err.message)));
       }
     });
   }
