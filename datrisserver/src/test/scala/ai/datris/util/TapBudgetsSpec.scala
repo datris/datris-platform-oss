@@ -33,7 +33,7 @@ import org.scalatest.funsuite.AnyFunSuite
   *         tapScriptTimeoutSeconds: Int,
   *         tapScriptTimeoutSecondsSource: String,     // "env" | "default"
   *         tapRunTimeoutSeconds: Int,
-  *         tapRunTimeoutSecondsSource: String)        // "env" | "default"
+  *         tapRunTimeoutSecondsSource: String)        // "env" | "derived" | "default"
   *
   *     def effective(env: DatrisEnvironment): Effective
   *     def describeDisk(b: Effective): String

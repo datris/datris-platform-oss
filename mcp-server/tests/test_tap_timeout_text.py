@@ -123,7 +123,15 @@ def test_compose_forwards_both_vars_with_their_defaults():
     for path in (COMPOSE, COMPOSE_STANDALONE):
         text = _read(path)
         name = os.path.basename(path)
-        assert re.search(r"\$\{" + TEST_VAR + r":-300\}", text), f"{name} must forward {TEST_VAR} defaulting to 300"
+        # Forwarded without a default (amended by
+        # plans/stories/tap-sizing-effective-budgets.md, same shape as RUN_VAR
+        # below): compose baking 300 in here handed the JVM a concrete value on
+        # every install, so the server could not tell a set ceiling from an
+        # unset one and GET /api/v1/version reported the source as `env` for
+        # everyone. The 300 default and the source label live in the server.
+        assert re.search(r"\$\{" + TEST_VAR + r":-\}", text), (
+            f"{name} must forward {TEST_VAR} without a default (the server defaults it to 300)"
+        )
         # Forwarded without a default: an unset run ceiling must reach the
         # server as "unset" so it resolves to max(3600, tapScriptTimeoutSeconds)
         # rather than being pinned to 3600 inside the container.
