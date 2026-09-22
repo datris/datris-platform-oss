@@ -147,6 +147,22 @@ class TapCronValidationSpec extends AnyFunSuite with BeforeAndAfterAll {
             "Unix day-of-week 7 is Sunday (Quartz 7 is Saturday), expected hint '0 0 12 ? * SUN': " + unixSunday.get
         )
 
+        // Vixie cron numbers Sunday both 0 and 7, so `0-7` is every day, not
+        // SUN-SUN (which Quartz fires on Sunday alone).
+        val allDays = TapCronValidation.check("prices", "0 12 * * 0-7")
+        assert(allDays.isDefined, "0 12 * * 0-7 must be refused")
+        assert(
+            allDays.get.contains("'0 0 12 ? * SUN-SAT'"),
+            "Unix 0-7 means every day, expected hint '0 0 12 ? * SUN-SAT': " + allDays.get
+        )
+
+        val allDaysStep = TapCronValidation.check("prices", "0 12 * * 0-7/2")
+        assert(allDaysStep.isDefined, "0 12 * * 0-7/2 must be refused")
+        assert(
+            allDaysStep.get.contains("'0 0 12 ? * SUN-SAT/2'"),
+            "the every-day range keeps its step, expected hint '0 0 12 ? * SUN-SAT/2': " + allDaysStep.get
+        )
+
         val unixSundayZero = TapCronValidation.check("prices", "0 12 * * 0")
         assert(unixSundayZero.isDefined, "0 12 * * 0 must be refused")
         assert(

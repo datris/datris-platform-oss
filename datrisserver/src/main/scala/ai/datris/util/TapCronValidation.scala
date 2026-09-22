@@ -91,8 +91,13 @@ object TapCronValidation {
         val slash = field.indexOf('/')
         val base = if (slash >= 0) field.substring(0, slash) else field
         val step = if (slash >= 0) field.substring(slash) else ""
+        // Vixie cron numbers Sunday BOTH 0 and 7, so the range `0-7` means
+        // "every day". Translated endpoint-for-endpoint it would read SUN-SUN,
+        // which Quartz accepts and fires on Sunday only. Collapse it to 0-6
+        // (SUN-SAT) first; the same applies under a step (`0-7/2`).
+        val normalised = base.replaceAll("(^|,)0-7(?=/|,|$)", "$10-6")
         val translated = "\\d+".r.replaceAllIn(
-            base,
+            normalised,
             m => {
                 val n = m.matched.toInt
                 if (n >= 0 && n < UnixDayNames.length) UnixDayNames(n) else m.matched
