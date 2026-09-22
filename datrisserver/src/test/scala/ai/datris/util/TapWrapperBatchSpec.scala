@@ -187,10 +187,17 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
           |         "nested": None, "note": None},
           |    ]
           |def frame():
-          |    return pd.DataFrame(records())
+          |    df = pd.DataFrame(records())
+          |    # Object columns the batch lane must not re-infer: Python ints beside a
+          |    # None (a naive map() brings these back as float64 — 1 becomes 1.0), and
+          |    # ints beside a float in the same column.
+          |    df["qty"] = pd.Series([1, None, 3], dtype=object)
+          |    df["mixed"] = pd.Series([1, 2.5, 3], dtype=object)
+          |    return df
           |""".stripMargin
 
-    private val FixtureColumns = List("id", "name", "ts", "ts_us", "ts_tz", "amount", "nested", "note")
+    private val FixtureColumns =
+        List("id", "name", "ts", "ts_us", "ts_tz", "amount", "nested", "note", "qty", "mixed")
 
     // ================================================================
     // Acceptance 1 — a generator of DataFrames == the same rows one at a time
@@ -242,6 +249,11 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
             assert(first.get("ts_tz").getAsString == "2026-09-20 12:00:00+02:00", "tz offset keeps its colon: " + first)
             assert(first.get("amount").getAsString == "1.50", "Decimal keeps default=str semantics: " + first)
             assert(first.getAsJsonObject("nested").get("k").getAsInt == 1, "a nested dict stays a nested object: " + first)
+            assert(
+                first.get("qty").getAsJsonPrimitive.isNumber && first.get("qty").getAsString == "1",
+                "an object column of Python ints must not be re-inferred to float (1, not 1.0): " + first
+            )
+            assert(first.get("mixed").getAsString == "1", "ints beside a float in one object column stay ints: " + first)
             assert(fileLines(batchFile).forall(!_.contains("DataFrame")), "no repr of the frame may reach the file")
         } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
     }
@@ -261,6 +273,13 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
               |        "id": pa.array([1, 2, 3, 4], type=pa.int64()),
               |        "name": pa.array(["a", "b", None, "d"], type=pa.string()),
               |        "ts": pa.array([datetime.datetime(2026, 9, 20, 12, 0, 0)] * 4, type=pa.timestamp("us")),
+              |        # An arrow NULL in a numeric column is a true null: to_pandas()
+              |        # folds it into NaN (and promotes the int column to float), so
+              |        # without care a batch would write 1.0 / NaN where the rows
+              |        # write 1 / null. The last float cell is a real NaN, which MUST
+              |        # stay the NaN token.
+              |        "qty": pa.array([1, None, 3, 4], type=pa.int64()),
+              |        "score": pa.array([1.5, None, float("nan"), 2.5], type=pa.float64()),
               |    })
               |""".stripMargin
         val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
@@ -285,7 +304,10 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
             val e = envelope(batchOut)
             assert(e.get("type").getAsString == "json", batchOut)
             assert(e.get("count").getAsLong == 4L, "count is rows across a RecordBatch and a Table: " + batchOut)
-            assert(columnsOf(batchOut) == List("id", "name", "ts"), batchOut)
+            assert(columnsOf(batchOut) == List("id", "name", "ts", "qty", "score"), batchOut)
+            val third = JsonParser.parseString(fileLines(batchFile)(2)).getAsJsonObject
+            assert(fileLines(batchFile).head.contains("\"qty\":1,"), "an int column with nulls stays int: " + fileLines(batchFile).head)
+            assert(third.get("score").getAsString == "NaN", "a real NaN keeps its token: " + third)
             assert(
                 fileLines(batchFile) == fileLines(rowFile),
                 "arrow batches must stage the same NDJSON as their to_pylist() rows:\nbatch: " + fileLines(batchFile) + "\nrows:  " + fileLines(rowFile)
@@ -600,6 +622,30 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(frameCode == 0, frameErr)
         val frameVal = JsonParser.parseString(frameLine).getAsJsonObject.get("v").getAsJsonPrimitive
         assert(frameVal.isBoolean && frameVal.getAsBoolean, "a frame's bool column stays a JSON boolean: " + frameLine)
+    }
+
+    /** Not in ParityCases: pyarrow's from_pylist() truncates a nanosecond
+      *  Timestamp to microseconds before the wrapper ever sees it (its own
+      *  to_pylist() reads back 00:00:00), so the arrow table cannot carry this
+      *  case faithfully. The pandas lane can, and must. */
+    test("a sub-microsecond timestamp keeps its nanoseconds in a batch, as it does in a row") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val values = List(
+            "pd.Timestamp(\"2026-01-01 00:00:00.000000001\")",
+            "pd.Timestamp(\"2026-01-01 00:00:00.5\")",
+            "pd.Timestamp(\"2026-01-01\")"
+        )
+        val failures = values.flatMap { expr =>
+            val (rowCode, _, rowErr, rowLine) = parityLine(expr, "row")
+            val (frameCode, _, frameErr, frameLine) = parityLine(expr, "frame")
+            if (rowCode != 0) Some(s"$expr: the per-row baseline failed: $rowErr")
+            else if (frameCode != 0) Some(s"$expr: the one-row DataFrame failed: $frameErr")
+            else if (rowLine != frameLine) Some(s"$expr: row wrote $rowLine but the DataFrame wrote $frameLine")
+            else None
+        }
+        assert(failures.isEmpty, "sub-microsecond divergence:\n" + failures.mkString("\n"))
+        val (_, _, _, nsLine) = parityLine(values.head, "frame")
+        assert(nsLine.contains("2026-01-01 00:00:00.000000001"), "the nanosecond fraction must survive: " + nsLine)
     }
 
     test("a float needing 17 digits parses within 1e-15 relative and keeps the same json type") {

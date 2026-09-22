@@ -308,21 +308,32 @@ object TapScriptRunner {
           |        return next(iter(_s[_na].head(1).to_dict().values()))
           |    except Exception:
           |        return None
+          |def _dt_part(_s, _attr):
+          |    # A datetime part as int64, or None when the dtype has no such part.
+          |    try:
+          |        return _s.dt.__getattribute__(_attr).fillna(0).astype("int64")
+          |    except Exception:
+          |        return None
           |def _fmt_datetimes(_s, _na_txt):
           |    # str(Timestamp): "%Y-%m-%d %H:%M:%S", ".%f" only where microseconds are
           |    # non-zero, "+HH:MM" (with the colon) when tz-aware, "NaT" for NaT.
           |    _txt = _s.dt.strftime("%Y-%m-%d %H:%M:%S")
-          |    try:
-          |        _has_us = (_s.dt.microsecond.fillna(0).astype("int64") != 0)
-          |    except Exception:
-          |        _has_us = None
+          |    _us = _dt_part(_s, "microsecond")
+          |    _has_us = None if _us is None else (_us != 0)
           |    if _has_us is not None and bool(_has_us.any()):
           |        _txt = _txt.where(~_has_us, _s.dt.strftime("%Y-%m-%d %H:%M:%S.%f"))
           |    if getattr(_s.dt, "tz", None) is not None:
           |        _off = _s.dt.strftime("%z")
           |        _txt = _txt + _off.str[:3] + ":" + _off.str[3:]
+          |    # strftime's %f cannot carry nanoseconds, so a sub-microsecond timestamp
+          |    # would silently lose its fraction. Those cells (rare) fall back to the
+          |    # row path's own form, str(Timestamp), which already carries the tz.
+          |    _ns = _dt_part(_s, "nanosecond")
+          |    _has_ns = None if _ns is None else (_ns != 0)
+          |    if _has_ns is not None and bool(_has_ns.any()):
+          |        _txt = _txt.where(~_has_ns, _s[_has_ns].map(str))
           |    return _txt.where(_s.notna(), _na_txt)
-          |def _normalise_frame(_df, _arrow):
+          |def _normalise_frame(_df, _arrow, _nulls):
           |    # Per column, by dtype, vectorised. Returns (frame, masked) where `masked`
           |    # says a non-finite float sentinel needs restoring in the serialised text.
           |    # `_arrow` says the frame came from a RecordBatch / Table: an arrow null is
@@ -335,6 +346,13 @@ object TapScriptRunner {
           |    _masked = False
           |    for _c in _df.columns:
           |        _s = _df[_c]
+          |        if _nulls and _c in _nulls and _t.is_float_dtype(_s) and isinstance(_s.dtype, _np.dtype):
+          |            # An arrow null in a numeric column is a true null, but
+          |            # to_pandas() has already folded it into NaN (and promoted an
+          |            # int column to float). Restore the nulls as None — a real NaN
+          |            # value in the same column keeps its NaN token.
+          |            _s = _s.astype(object)
+          |            _s[_nulls[_c]] = None
           |        if _t.is_datetime64_any_dtype(_s):
           |            # NaT is handled inside _fmt_datetimes (str(NaT) == "NaT").
           |            _cols[_c] = _fmt_datetimes(_s, None if _arrow else "NaT")
@@ -346,7 +364,11 @@ object TapScriptRunner {
           |                _cols[_c] = _s
           |            else:
           |                _MASK_HIT[0] = False
-          |                _cols[_c] = _s.map(_json_native)
+          |                # A list comprehension into an explicit object Series, NOT
+          |                # Series.map: map re-infers the result dtype, so a column of
+          |                # Python ints with a None in it would come back float64 and
+          |                # write 1.0 where the row path writes 1.
+          |                _cols[_c] = _pd.Series([_json_native(_x) for _x in _s], index=_s.index, dtype=object)
           |                _masked = _masked or _MASK_HIT[0]
           |            continue
           |        _na = _s.isna()
@@ -409,15 +431,16 @@ object TapScriptRunner {
           |# (and the normalised copy behind it) never scales with the batch size:
           |# a 100,000-row frame costs the same transient memory as a 10,000-row one.
           |_WRITE_CHUNK = 10000
-          |def _write_frame(_df, _f, _arrow=False):
+          |def _write_frame(_df, _f, _arrow=False, _nulls=None):
           |    _rows = len(_df.index)
           |    if _rows > _WRITE_CHUNK:
           |        for _i in range(0, _rows, _WRITE_CHUNK):
-          |            _write_chunk(_df.iloc[_i:_i + _WRITE_CHUNK], _f, _arrow)
+          |            _slice = None if not _nulls else {_k: _m[_i:_i + _WRITE_CHUNK] for _k, _m in _nulls.items()}
+          |            _write_chunk(_df.iloc[_i:_i + _WRITE_CHUNK], _f, _arrow, _slice)
           |        return
-          |    _write_chunk(_df, _f, _arrow)
-          |def _write_chunk(_df, _f, _arrow):
-          |    _n, _masked = _normalise_frame(_df, _arrow)
+          |    _write_chunk(_df, _f, _arrow, _nulls)
+          |def _write_chunk(_df, _f, _arrow, _nulls):
+          |    _n, _masked = _normalise_frame(_df, _arrow, _nulls)
           |    if _masked:
           |        _txt = _n.to_json(None, orient="records", lines=True, double_precision=15, force_ascii=True)
           |        _txt = _txt.replace('"\\u0000DTNaN\\u0000"', "NaN")
@@ -436,12 +459,29 @@ object TapScriptRunner {
           |    # `_limit` is the remaining test-mode row budget (None = no limit).
           |    global _dicts
           |    _arrow = _kind == "arrow"
+          |    _nulls = None
           |    if _kind == "arrow":
           |        if _limit is not None and _b.num_rows > _limit:
           |            _b = _b.slice(0, _limit)
           |        if _b.num_rows == 0:
           |            return 0
-          |        _b = _b.to_pandas()
+          |        # Which cells of a NUMERIC column are arrow nulls (not NaN). to_pandas
+          |        # loses that distinction — and promotes an int column with nulls to
+          |        # float64 — so the masks are taken from the arrow object itself.
+          |        _nulls = {}
+          |        for _ci, _cn in enumerate(_b.schema.names):
+          |            try:
+          |                _col = _b.column(_ci)
+          |                if _col.null_count and str(_col.type).startswith(("int", "uint", "float", "double", "half")):
+          |                    _nulls[str(_cn)] = _col.is_null().to_numpy(zero_copy_only=False)
+          |            except Exception:
+          |                pass
+          |        # integer_object_nulls keeps an int column with nulls as Python ints
+          |        # (object dtype) instead of floats, so 1 does not become 1.0.
+          |        try:
+          |            _b = _b.to_pandas(integer_object_nulls=True)
+          |        except TypeError:
+          |            _b = _b.to_pandas()
           |        _kind = "frame"
           |    if _kind == "frame":
           |        if _limit is not None and len(_b.index) > _limit:
@@ -451,11 +491,14 @@ object TapScriptRunner {
           |            return 0
           |        _b = _b.copy(deep=False)
           |        _b.columns = _b.columns.map(str)
+          |        if not _b.columns.is_unique:
+          |            _dupes = sorted({_c for _c in _b.columns if list(_b.columns).count(_c) > 1})
+          |            raise ValueError("batch has duplicate column names: " + ", ".join(_dupes))
           |        if _dicts:
           |            for _c in _b.columns:
           |                if _c not in _columns:
           |                    _columns[_c] = True
-          |        _write_frame(_b, _f, _arrow)
+          |        _write_frame(_b, _f, _arrow, _nulls)
           |        return _n
           |    # rows / cells: the existing per-row encoder, so a list[dict] batch is
           |    # byte-identical to yielding its rows one at a time.
