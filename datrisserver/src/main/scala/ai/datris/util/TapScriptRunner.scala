@@ -245,6 +245,9 @@ object TapScriptRunner {
           |# Arrow types to_pandas() round-trips faithfully; everything else is taken
           |# from to_pylist() (see _write_batch).
           |_ARROW_PLAIN = ("int", "uint", "float", "double", "half", "bool", "string", "large_string", "timestamp")
+          |# The arrow *_view types: they answer to _ARROW_PLAIN's "string" prefix but
+          |# have no filter kernel, so they always take the per-value tolist() route.
+          |_ARROW_VIEW = ("string_view", "binary_view")
           |# Arrow-BACKED (pd.ArrowDtype) columns seen this run: how many took the
           |# vectorised fast path and how many stayed on the per-value encoder.
           |# Counted per column PER WRITE CHUNK; stderr diagnostics only.
@@ -414,15 +417,23 @@ object TapScriptRunner {
           |            # paths, so it keeps the per-value encoding, which is correct by
           |            # construction. pyarrow is never imported: the type is read as text.
           |            _at = str(_s.dtype.pyarrow_dtype)
-          |            _plain = _at.startswith(_ARROW_PLAIN) and not (_at.startswith("timestamp") and "tz=" in _at)
+          |            _view = _at.startswith(_ARROW_VIEW)
+          |            _plain = (
+          |                _at.startswith(_ARROW_PLAIN)
+          |                and not _view
+          |                and not (_at.startswith("timestamp") and "tz=" in _at)
+          |            )
           |            if not _plain:
           |                _ARROW_SLOW[0] += 1
           |                _MASK_HIT[0] = False
+          |                # to_numpy(na_value=...) filters the array, and arrow has no
+          |                # filter kernel for the *_view types: a null in a string_view /
+          |                # binary_view column would raise. tolist() has no such gap (it
+          |                # yields pd.NA for a null, which _json_native reads as None,
+          |                # the same value to_dict("records") hands the row encoder).
+          |                _vals = _s.tolist() if _view else _s.to_numpy(dtype=object, na_value=None)
           |                _cols[_c] = _pd.Series(
-          |                    [
-          |                        _json_native(_x.tolist() if isinstance(_x, _np.ndarray) else _x)
-          |                        for _x in _s.to_numpy(dtype=object, na_value=None)
-          |                    ],
+          |                    [_json_native(_x.tolist() if isinstance(_x, _np.ndarray) else _x) for _x in _vals],
           |                    index=_df.index,
           |                    dtype=object,
           |                )
@@ -877,12 +888,9 @@ object TapScriptRunner {
           |    else:
           |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |    if _batches_seen:
-          |        _bl = f"[wrapper] batch lane: {_batches_seen} batch(es)"
-          |        if _ARROW_FAST[0] or _ARROW_SLOW[0]:
-          |            # Diagnostics only (never parsed): how many arrow-BACKED columns
-          |            # took the vectorised path, counted per column per write chunk.
-          |            _bl += f"; arrow-backed columns: {_ARROW_FAST[0]} fast / {_ARROW_SLOW[0]} per-value"
-          |        print(_bl, file=sys.stderr, flush=True)
+          |        # No arrow-column counters here: the inline path flattens a batch with
+          |        # to_dict("records") / to_pylist() and never reaches _normalise_frame.
+          |        print(f"[wrapper] batch lane: {_batches_seen} batch(es)", file=sys.stderr, flush=True)
           |    envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
           |# Incremental-sync state: a script that wants the platform to remember its
           |# position sets a module-global dict DATRIS_STATE inside fetch(). Absent or

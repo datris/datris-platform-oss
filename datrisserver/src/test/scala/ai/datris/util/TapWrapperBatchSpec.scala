@@ -63,6 +63,15 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
     private lazy val pandasAvailable: Boolean = pythonAvailable && moduleAvailable("pandas")
     private lazy val pyarrowAvailable: Boolean = pythonAvailable && moduleAvailable("pyarrow")
 
+    /** The arrow *_view types need pyarrow 16+ (and a pandas that maps them). */
+    private lazy val viewTypesAvailable: Boolean = pyarrowAvailable && moduleAvailable("pandas") && {
+        val probe = "import pyarrow as pa, pandas as pd; " +
+            "pa.table({'a': pa.array(['x', None], type=pa.string_view()), 'b': pa.array([b'y', None], type=pa.binary_view())})" +
+            ".to_pandas(types_mapper=pd.ArrowDtype)"
+        try new ProcessBuilder("python3", "-c", probe).start().waitFor() == 0
+        catch { case _: Exception => false }
+    }
+
     private def env(): DatrisEnvironment = DatrisEnvironment(
         initialized = true,
         environment = "test",
@@ -1012,6 +1021,46 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
             val batch = fileLines(batchFile)
             val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
             assert(diffs.isEmpty, "the per-value path stays byte-equal to the row path:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("a string_view / binary_view ArrowDtype column with a null stages byte-equal to its rows") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        assume(viewTypesAvailable, "this pyarrow cannot build string_view / binary_view arrays")
+        // string_view answers the "string" prefix of _ARROW_PLAIN but arrow has no
+        // filter kernel for it, so to_numpy(na_value=...) raises on a null column.
+        // Both *_view types must stay on the per-value tolist() route.
+        val fixture =
+            """import pandas as pd
+              |import pyarrow as pa
+              |def frame():
+              |    return pa.table({
+              |        "sv": pa.array(["a", None, "c"], type=pa.string_view()),
+              |        "bv": pa.array([b"hi", None, b"yo"], type=pa.binary_view()),
+              |    }).to_pandas(types_mapper=pd.ArrowDtype)
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(fixture + "def fetch():\n    yield frame()\n")
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "a *_view column with a null must not crash the batch run: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            assert(
+                batchErr.contains("arrow-backed columns: 0 fast / 2 per-value"),
+                "string_view and binary_view must stay on the per-value path: " + batchErr
+            )
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "a *_view column must encode as the row path does:\n" + diffs.mkString("\n"))
             assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
         } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
     }
