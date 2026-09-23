@@ -127,7 +127,7 @@ export class PipelineDetailComponent implements OnInit, OnDestroy {
         if (status === 410) {
           this.resultError = 'This result has expired — run the pipeline again.';
         } else if (status === 404) {
-          this.resultError = 'This pipeline has no result — only scratch pipelines return rows.';
+          this.resultError = 'This pipeline has no result. Only Live Read pipelines return rows.';
         } else {
           this.resultError = 'Could not load the result' + (err?.error?.error ? ': ' + err.error.error : '.');
         }

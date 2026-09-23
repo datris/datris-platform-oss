@@ -1112,7 +1112,7 @@ paths:
             carries per-job status (success, warning, error, processing, or
             timed_out) plus `lastError` on failures; `events` is the same raw
             entry array returned without the flag. For a job whose pipeline
-            has a scratch destination, the job also carries `resultUri`,
+            is a Live Read (scratch) pipeline, the job also carries `resultUri`,
             `resultRowCount`, `resultExpiresAt`, `resultPreview` (the first
             rows, inline, up to the inline cap) and `resultTruncated` (true when
             more rows follow — page them with GET /api/v1/pipeline/result);
@@ -1156,11 +1156,11 @@ paths:
   /api/v1/pipeline/result:
     get:
       tags: [Status]
-      summary: Get a scratch pipeline's result
+      summary: Get a Live Read (scratch) pipeline's result
       description: >-
-        Page through the rows a scratch-destination pipeline run produced.
-        Paging reads the stored result and never re-runs the source. Only
-        scratch pipelines have a result. `limit` is clamped server-side to the
+        Page through the rows a Live Read (scratch destination) pipeline run
+        produced. Paging reads the stored result and never re-runs the source.
+        Only Live Read pipelines have a result. `limit` is clamped server-side to the
         inline cap, so the next page starts at `offset + returnedCount`, never
         `offset + limit`. Results expire after the retention window.
       parameters:
@@ -1173,7 +1173,7 @@ paths:
           in: query
           schema:
             type: string
-          description: Publisher token from a tap run — resolves to the scratch job that run submitted.
+          description: Publisher token from a tap run — resolves to the Live Read job that run submitted.
         - name: offset
           in: query
           schema:
@@ -1217,7 +1217,7 @@ paths:
         '400':
           description: offset or limit is not an integer
         '404':
-          description: No run matched the token, or the pipeline is not a scratch pipeline — only scratch pipelines have a result
+          description: No run matched the token, or the pipeline is not a Live Read pipeline — only Live Read pipelines have a result
         '410':
           description: The result has expired; run the pipeline again
         '500':

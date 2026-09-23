@@ -182,7 +182,7 @@ def pipelines(json_output):
 
 @cli.group("pipeline")
 def pipeline_group():
-    """Commands on a single pipeline run (e.g. read a scratch pipeline's result)."""
+    """Commands on a single pipeline run (e.g. read a Live Read pipeline's result)."""
     pass
 
 
@@ -190,9 +190,10 @@ def _explain_result_error(result):
     """Translate a get_pipeline_result error into the two cases a human hits.
 
     The MCP tool relays the server body verbatim, so there are three shapes:
-    the endpoint's own `{"error": "Only scratch pipelines have a result; ..."}`
-    / `{"error": "Scratch results expire after N hour(s); ... run the pipeline
-    again"}`, Spring's default `{"status": 404, "error": "Not Found", ...}`
+    the endpoint's own `{"error": "Only Live Read (scratch) pipelines have a
+    result; ..."}` / `{"error": "Live Read results expire after N hour(s); ...
+    run the pipeline again"}` (pre-rename servers say "Only scratch pipelines"
+    / "Scratch results expire"; both are matched), Spring's default `{"status": 404, "error": "Not Found", ...}`
     from a server that predates the route, and a bare string.
     """
     status = result.get("status") if isinstance(result, dict) else None
@@ -200,8 +201,9 @@ def _explain_result_error(result):
     text = str(err)
     low = text.strip().lower()
     if (status == 404 or low == "not found" or low.startswith("404")
-            or low.startswith("only scratch pipelines") or low.startswith("no pipeline run found")):
-        return "Error: only scratch pipelines have a result (or this server predates scratch results)"
+            or low.startswith("only live read") or low.startswith("only scratch pipelines")
+            or low.startswith("no pipeline run found")):
+        return "Error: only Live Read (scratch) pipelines have a result (or this server predates Live Read results)"
     if status == 410 or low == "gone" or low.startswith("410") or ("expire" in low and "run the pipeline again" in low):
         return "Error: the result expired — run the pipeline again"
     return f"Error: {text[:200]}"
@@ -218,7 +220,7 @@ def _is_result_error(result):
 @click.option("--out", type=click.Path(dir_okay=False), default=None, help="Write every row as one JSON object per line to this file, paging until the result is exhausted")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
 def pipeline_result(token, offset, limit, out, json_output):
-    """Read the rows a scratch pipeline produced (TOKEN is the pipeline token)."""
+    """Read the rows a Live Read pipeline produced (TOKEN is the pipeline token)."""
     def page(off, lim):
         args = {"pipeline_token": token}
         if off is not None:

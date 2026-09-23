@@ -390,7 +390,7 @@ On the Pipeline creation wizard, select **From Tap** to auto-populate the pipeli
 
 ### Fetch-only taps
 
-Every tap has a pipeline. When you want a tap to fetch and hand the rows back — an answer now, a validation result, a transformed view — rather than land them, wire it to a pipeline whose destination is [Scratch](/destinations/scratch). The run goes through data quality and transformation as usual; the rows ride on the run's status rollup (`resultPreview`) and can be paged with `get_pipeline_result`, `datris pipeline result`, or the **View result** panel on the run detail page. Scratch results are not catalogued or queryable later and expire, so read them promptly. If the rows turn out to be worth keeping, change the pipeline's destination — the tap, its schedule and its incremental state do not move.
+Every tap has a pipeline. When you want a tap to fetch and hand the rows back — an answer now, a validation result, a transformed view — rather than land them, wire it to a [Live Read](/destinations/scratch) pipeline (the `scratch` destination). The run goes through data quality and transformation as usual; the rows ride on the run's status rollup (`resultPreview`) and can be paged with `get_pipeline_result`, `datris pipeline result`, or the **View result** panel on the run detail page. Live Read results are not catalogued or queryable later and expire, so read them promptly. If the rows turn out to be worth keeping, change the pipeline's destination — the tap, its schedule and its incremental state do not move.
 
 ## Run History
 
@@ -417,7 +417,7 @@ AI agents can manage taps via MCP:
 | `run_tap` | Execute a tap and push fetched data to the target pipeline. Response carries `persisted`, `persistedReason`, `recordCount`, `publisherToken`, `pipelineTokens` so the agent can confirm what landed. Records themselves are not returned — use `test_tap` to preview a script. |
 | `test_tap` | Test-run a tap without pushing data to the pipeline |
 | `get_pipeline_status` | Watch ingestion progress after a `run_tap`. Pass the response's `publisherToken` to get status rows for every job this run submitted (one for structured taps, N for document taps). |
-| `get_pipeline_result` | Read the rows a [scratch](/destinations/scratch) pipeline produced. The first rows are already on the `get_pipeline_status` rollup (`resultPreview`); call this only when `resultTruncated` is true. Paging never re-runs the source; results expire. |
+| `get_pipeline_result` | Read the rows a [Live Read](/destinations/scratch) pipeline produced. The first rows are already on the `get_pipeline_status` rollup (`resultPreview`); call this only when `resultTruncated` is true. Paging never re-runs the source; results expire. |
 | `update_tap` | Update a tap's config (enabled, schedule, pipeline, description) without regenerating the script |
 | `get_tap_logs` | Get run history for a tap (last 50 entries). Each entry that submitted records includes its `publisherToken`, so an agent can pivot from a scheduled-run log entry to `get_pipeline_status(publisher_token=...)` and verify the run actually landed in the destination — not just that the script ran. |
 | `get_tap_ledger` | Document taps only: read the ledger of discovered documents (URI, filename, status, hashes, first/last seen timestamps). Pass `clear_uri` to force one file to be re-processed on the next run, or `clear_all=true` to force a full re-scan. |
@@ -463,7 +463,7 @@ datris tap test my-tap
 # Run a tap manually
 datris tap run my-tap
 
-# Read the rows a fetch-only (scratch) tap run produced
+# Read the rows a fetch-only (Live Read) tap run produced
 datris pipeline result <pipeline-token> --out rows.jsonl
 
 # View run history

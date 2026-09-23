@@ -37,17 +37,101 @@ object AssistantAPIController {
             s"- **Timeouts.** A tap test is killed after TAP_SCRIPT_TIMEOUT_SECONDS ($testCeiling) and a real or scheduled run after TAP_RUN_TIMEOUT_SECONDS ($runCeiling) — again the values in force, not the defaults. A test is also capped at 20 records, so a passing test says nothing about how long a real run takes — only the estimate above does. If the run would not finish in time, say so before you create anything and offer the three choices above — for the time budget, the first of them is that the operator can raise TAP_RUN_TIMEOUT_SECONDS. Never cap the rows to fit the clock. A timed-out run's error names the mode it ran in and the variable to raise.\n"
     }
 
-    /** KEEP-OR-SCRATCH rule (plans/fetch-only-taps.md §5), the same fork the MCP
+    /** KEEP-OR-READ-LIVE rule (plans/fetch-only-taps.md §5, renamed by
+      * plans/live-read-naming.md), the same fork the MCP
       * server instructions carry. Lifted out of `buildSystemPrompt` so a spec can
       * read the wording directly. No domains, proper-noun APIs or concrete
       * schedules: they leak into the Assistant's answers as domain bias.
       */
     private[datris] val KeepOrScratchRule: String =
-        "## KEEP-OR-SCRATCH rule (apply before choosing a destination)\n\n" +
+        "## KEEP-OR-READ-LIVE rule (apply before choosing a destination)\n\n" +
+            "- Live Read (`destination: {\"scratch\": {}}`) hands the rows back without landing them: the run goes through data quality and transformation, and the rows come back to you instead of being written anywhere.\n" +
             "- If the user wants the data kept, observed, queried later, or refreshed on a schedule, use a real destination — exactly as described above.\n" +
-            "- If the user (or you, on your own initiative) wants an answer now, a validation result, or a transformed view and has no reason to keep the rows, create the pipeline with `destination: {\"scratch\": {}}` instead: run it, poll `get_pipeline_status` until `rollup.allDone` is true, read the rows off the rollup's `resultPreview`, and call `get_pipeline_result` only when `resultTruncated` is true and you need the rest. Never create a table just to read rows back once.\n" +
-            "- Scratch results are never catalogued or queryable later and expire after the retention window, so read them promptly. Nothing is landed anywhere.\n" +
-            "- If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from scratch to a real one). The tap, its schedule, and its incremental cursor do not move.\n"
+            "- If the user (or you, on your own initiative) wants an answer now, a validation result, or a transformed view and has no reason to keep the rows, create the pipeline with `destination: {\"scratch\": {}}` (Live Read) instead: run it, poll `get_pipeline_status` until `rollup.allDone` is true, read the rows off the rollup's `resultPreview`, and call `get_pipeline_result` only when `resultTruncated` is true and you need the rest. Never create a table just to read rows back once.\n" +
+            "- Live Read results are never catalogued or queryable later and expire after the retention window, so read them promptly. Nothing is landed anywhere.\n" +
+            "- If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from `scratch` to a real one). The tap, its schedule, and its incremental cursor do not move.\n"
+
+    /** Prompt-facing display names for the canonical destination names
+      * emitted by DestinationAvailabilityUtil. */
+    private[datris] val destinationDisplayNames = Map(
+        "mongodb" -> "MongoDB",
+        "postgres" -> "PostgreSQL",
+        "objectstore" -> "object store",
+        "snowflake" -> "Snowflake",
+        "databricks" -> "Databricks",
+        "scratch" -> "Live Read"
+    )
+
+    /** Longer blurbs used the first time each destination is named in the
+      * destination-defaults rule. */
+    private[datris] val destinationBlurbs = Map(
+        "mongodb" -> "**MongoDB** (flexible schema, tolerates shape drift across runs)",
+        "postgres" -> "**PostgreSQL**",
+        "objectstore" -> "**object store** (Parquet, ORC, or an Iceberg table)",
+        "snowflake" -> "**Snowflake** (loads the user's own Snowflake account)",
+        "databricks" -> "**Databricks** (loads a Unity Catalog managed Delta table in the user's own workspace)",
+        "scratch" -> "**Live Read** (hands the rows back once through data quality and transformation; nothing is landed or catalogued, the result expires; promote to a real destination later without touching the tap or its schedule)"
+    )
+
+    /** "A, B, or C" — or-join used inside literal prompt examples. */
+    private[datris] def orJoin(items: Seq[String]): String = items match {
+        case Seq() => ""
+        case Seq(a) => a
+        case Seq(a, b) => a + " or " + b
+        case many => many.init.mkString(", ") + ", or " + many.last
+    }
+
+    /** The "Destination defaults" heading and the structured / semi-structured
+      * bullet (without its trailing newline), for the deployment's available
+      * structured destinations. Lifted out of `buildSystemPrompt` so a spec can
+      * read it (plans/live-read-naming.md). Live Read (`scratch`) is never a
+      * structured destination and never the default: it is only named as an
+      * extra option, and only when objectstore is available (mirrors the UI's
+      * `isDestAvailable('scratch')`).
+      */
+    private[datris] def destinationDefaultsRule(structuredDests: Seq[String]): String = {
+        val sb = new StringBuilder
+        val defaultDest = if (structuredDests.contains("mongodb")) "mongodb" else structuredDests.head
+        val altDests = structuredDests.filterNot(_ == defaultDest)
+        val offerLiveRead = structuredDests.contains("objectstore")
+
+        sb.append("## Destination defaults (apply unless the user explicitly asks for something else)\n\n")
+        sb.append("- **Structured / semi-structured taps** (CSV, JSON, XML, API responses, table-shaped data) → ")
+        sb.append(destinationBlurbs(defaultDest)).append(" by default.")
+        if (altDests.nonEmpty) {
+            sb.append(" ").append(altDests.map(destinationBlurbs).mkString(", "))
+            sb.append(if (altDests.size == 1) " is an equally supported alternative." else " are equally supported alternatives.")
+            sb.append(" When proposing a destination for structured data, briefly name every one of these options in the question (e.g. \"")
+            sb.append(destinationDisplayNames(defaultDest)).append(" by default; ")
+            sb.append(orJoin(altDests.map(destinationDisplayNames)))
+            sb.append(
+                if (offerLiveRead)
+                    " also available; or Live Read if you only need the rows back now and nothing kept. Which do you prefer?\") so the user can pick."
+                else " also available — which do you prefer?\") so the user can pick."
+            )
+            sb.append(" Do not silently default to ")
+            sb.append(destinationDisplayNames(defaultDest))
+            sb.append(" without mentioning the alternatives — the user may not know the other options exist.")
+        } else {
+            sb.append(" It is the only structured destination configured in this deployment, so there are no alternatives to offer.")
+        }
+        if (structuredDests.contains("snowflake"))
+            sb.append(
+                " Snowflake requires a `credentialsSecret` platform secret (account/user/key) plus a warehouse and database: when the user picks it, discover the secret via `list_platform_secrets` and ask for the rest — do NOT require any of that to exist before offering it."
+            )
+        if (structuredDests.contains("databricks"))
+            sb.append(
+                " Databricks requires a `credentialsSecret` platform secret (host, plus clientId/clientSecret or token) plus a SQL warehouse ID (`warehouse`) and Unity Catalog catalog (`database`): same flow — discover the secret via `list_platform_secrets`, ask for the rest, never require any of it up front."
+            )
+        if (offerLiveRead) {
+            sb.append(" Also name ").append(destinationBlurbs("scratch"))
+            sb.append(
+                " in the same question, as the option for when the user only needs the rows back now; the KEEP-OR-READ-LIVE rule below decides which one to recommend."
+            )
+            sb.append(" Do not offer Live Read when the user has asked for a schedule.")
+        }
+        sb.toString
+    }
 }
 
 /** REST controller for the in-product Assistant tab.
@@ -63,6 +147,8 @@ object AssistantAPIController {
 @RestController
 @RequestMapping(Array("/api/v1"))
 class AssistantAPIController {
+    import AssistantAPIController.{destinationDisplayNames, orJoin}
+
     private val logger: Logger = LoggerFactory.getLogger(classOf[AssistantAPIController])
 
     // Dedicated executor for chat sessions. Each session blocks one thread for the
@@ -314,34 +400,6 @@ class AssistantAPIController {
         }
     }
 
-    /** Prompt-facing display names for the canonical destination names
-      * emitted by DestinationAvailabilityUtil. */
-    private val destinationDisplayNames = Map(
-        "mongodb" -> "MongoDB",
-        "postgres" -> "PostgreSQL",
-        "objectstore" -> "object store",
-        "snowflake" -> "Snowflake",
-        "databricks" -> "Databricks"
-    )
-
-    /** Longer blurbs used the first time each destination is named in the
-      * destination-defaults rule. */
-    private val destinationBlurbs = Map(
-        "mongodb" -> "**MongoDB** (flexible schema, tolerates shape drift across runs)",
-        "postgres" -> "**PostgreSQL**",
-        "objectstore" -> "**object store** (Parquet, ORC, or an Iceberg table)",
-        "snowflake" -> "**Snowflake** (loads the user's own Snowflake account)",
-        "databricks" -> "**Databricks** (loads a Unity Catalog managed Delta table in the user's own workspace)"
-    )
-
-    /** "A, B, or C" — or-join used inside literal prompt examples. */
-    private def orJoin(items: Seq[String]): String = items match {
-        case Seq() => ""
-        case Seq(a) => a
-        case Seq(a, b) => a + " or " + b
-        case many => many.init.mkString(", ") + ", or " + many.last
-    }
-
     private def buildSystemPrompt(workflowReference: String, tenantEnv: String): String = {
         // Empty when no registry is configured — the prompt is then byte-identical
         // to the pre-registry prompt (see plans/assistant-data-sources-registry.md).
@@ -407,31 +465,8 @@ class AssistantAPIController {
         // names. Fails open to the full five-destination set on any error.
         val structuredDests = DestinationAvailabilityUtil.availableStructuredDestinations()
         val defaultDest = if (structuredDests.contains("mongodb")) "mongodb" else structuredDests.head
-        val altDests = structuredDests.filterNot(_ == defaultDest)
 
-        sb.append("## Destination defaults (apply unless the user explicitly asks for something else)\n\n")
-        sb.append("- **Structured / semi-structured taps** (CSV, JSON, XML, API responses, table-shaped data) → ")
-        sb.append(destinationBlurbs(defaultDest)).append(" by default.")
-        if (altDests.nonEmpty) {
-            sb.append(" ").append(altDests.map(destinationBlurbs).mkString(", "))
-            sb.append(if (altDests.size == 1) " is an equally supported alternative." else " are equally supported alternatives.")
-            sb.append(" When proposing a destination for structured data, briefly name every one of these options in the question (e.g. \"")
-            sb.append(destinationDisplayNames(defaultDest)).append(" by default; ")
-            sb.append(orJoin(altDests.map(destinationDisplayNames)))
-            sb.append(" also available — which do you prefer?\") so the user can pick. Do not silently default to ")
-            sb.append(destinationDisplayNames(defaultDest))
-            sb.append(" without mentioning the alternatives — the user may not know the other options exist.")
-        } else {
-            sb.append(" It is the only structured destination configured in this deployment, so there are no alternatives to offer.")
-        }
-        if (structuredDests.contains("snowflake"))
-            sb.append(
-                " Snowflake requires a `credentialsSecret` platform secret (account/user/key) plus a warehouse and database: when the user picks it, discover the secret via `list_platform_secrets` and ask for the rest — do NOT require any of that to exist before offering it."
-            )
-        if (structuredDests.contains("databricks"))
-            sb.append(
-                " Databricks requires a `credentialsSecret` platform secret (host, plus clientId/clientSecret or token) plus a SQL warehouse ID (`warehouse`) and Unity Catalog catalog (`database`): same flow — discover the secret via `list_platform_secrets`, ask for the rest, never require any of it up front."
-            )
+        sb.append(AssistantAPIController.destinationDefaultsRule(structuredDests))
         sb.append("\n")
         sb.append(
             "- **Document taps** (PDF, DOCX, HTML, plain text, anything destined for retrieval/RAG) → a **vector store** (pgvector, qdrant, weaviate, milvus, or chroma). Pick whichever the tenant already has configured; if multiple are available, pick pgvector by default.\n"

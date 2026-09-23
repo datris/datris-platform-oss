@@ -99,7 +99,12 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
         val text = AssistantAPIController.destinationDefaultsRule(withObjectStore)
         // MongoDB stays the structured default when available.
         assert(text.contains("**MongoDB** (flexible schema, tolerates shape drift across runs) by default."), text)
-        assert(!text.contains("**Live Read** (hands the rows back once through data quality and transformation; nothing is landed or catalogued, the result expires; promote to a real destination later without touching the tap or its schedule) by default"), text)
+        assert(
+            !text.contains(
+                "**Live Read** (hands the rows back once through data quality and transformation; nothing is landed or catalogued, the result expires; promote to a real destination later without touching the tap or its schedule) by default"
+            ),
+            text
+        )
         assert(!text.contains("Live Read by default"), text)
         // Only objectstore available: object store is the default, Live Read is the extra option.
         val osOnly = AssistantAPIController.destinationDefaultsRule(Seq("objectstore"))

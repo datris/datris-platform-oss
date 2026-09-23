@@ -15,14 +15,14 @@
     <p class="suggestion-text" *ngIf="suggestion!.aiDiagnosis"><strong>Diagnosis:</strong> {{ suggestion!.aiDiagnosis }}</p>
     <p class="suggestion-text" *ngIf="suggestion!.aiSuggestion"><strong>Fix:</strong> {{ suggestion!.aiSuggestion }}</p>
   </div>
-  <!-- Scratch result: the run landed nothing and handed the rows back.
+  <!-- Live Read (scratch) result: the run landed nothing and handed the rows back.
        Only rendered when the rollup carries a resultUri (never on older
        servers or non-scratch pipelines). Grid markup mirrors the tap test page. -->
   <div class="result-panel" *ngIf="hasResult">
     <div class="result-header">
       <div class="result-title">
         <span class="material-icons">table_view</span>
-        Result
+        Live Read result
         <span class="result-meta" *ngIf="resultJob!.resultRowCount != null">{{ resultJob!.resultRowCount }} row(s)</span>
       </div>
       <button class="result-view-btn" *ngIf="!resultOpen" (click)="viewResult()">View result</button>
