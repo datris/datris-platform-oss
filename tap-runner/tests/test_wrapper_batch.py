@@ -118,3 +118,55 @@ def test_two_million_rows_yielded_as_twenty_frames_stage_with_bounded_rss(tmp_pa
     assert len(row) == COLUMNS, "each line is one record, not a frame repr: %r" % first[:120]
     assert "DataFrame" not in first.decode("utf-8", "replace"), "the file must hold records, not the frame's repr: %r" % first[:120]
     assert maxrss < BATCH_RSS_BOUND, "streaming %d rows as batches must not grow the interpreter: peak RSS %d MB" % (ROWS, maxrss >> 20)
+
+
+# Story: plans/stories/tap-batch-arrow-backend-fast-path.md — the same 20 x
+# 100,000-row stream, but with arrow-BACKED (ArrowDtype) columns, the backend a
+# tap gets from pd.read_parquet(..., dtype_backend="pyarrow"). The vectorised
+# fast path must not trade the bounded-RSS guarantee for its speed: the wrapper
+# still holds one batch (and one 10,000-row write chunk) at a time.
+ARROW_BATCH_SCRIPT = """\
+import pandas as pd
+import pyarrow as pa
+
+
+def _table(base):
+    cols = {}
+    for c in range(18):
+        cols["f%%02d" %% c] = pa.array([float(base + c) + 0.5] * %(rows)d, type=pa.float64())
+    for c in range(4):
+        cols["i%%02d" %% c] = pa.array(list(range(base, base + %(rows)d)), type=pa.int64())
+    cols["t0"] = pa.array([pd.Timestamp("2026-09-20 12:00:00").to_pydatetime()] * %(rows)d, type=pa.timestamp("us"))
+    cols["t1"] = pa.array([pd.Timestamp("2026-09-20 12:00:00.123456").to_pydatetime()] * %(rows)d, type=pa.timestamp("us"))
+    cols["s0"] = pa.array(["row-%%d" %% base] * %(rows)d)
+    return pa.table(cols)
+
+
+def fetch():
+    for b in range(%(batches)d):
+        yield _table(b * %(rows)d).to_pandas(types_mapper=pd.ArrowDtype)
+""" % {"rows": BATCH_ROWS, "batches": BATCHES}
+
+
+def test_two_million_arrow_dtype_rows_stage_with_bounded_rss(tmp_path):
+    pytest.importorskip("pyarrow", reason="pyarrow not installed in this interpreter")
+    rc, out, err, output, maxrss = run_wrapper(tmp_path, ARROW_BATCH_SCRIPT, "arrow_batches")
+    assert rc == 0, "the ArrowDtype batch run must survive the address-space cap: rc=%s stderr tail: %s" % (rc, err[-500:])
+    env = json.loads(out)
+    assert env["type"] == "json", out
+    assert env["count"] == ROWS, "count is ROWS across all ArrowDtype batches: " + out
+    assert len(env["columns"]) == COLUMNS, "the columns union is the frame's %d columns: %s" % (COLUMNS, out)
+    assert _count_lines(output) == ROWS, "one NDJSON line per ROW of every ArrowDtype batch"
+    with open(output, "rb") as fh:
+        first = fh.readline()
+    row = json.loads(first)
+    assert len(row) == COLUMNS, "each line is one record, not a frame repr: %r" % first[:120]
+    assert row["i00"] == 0 and isinstance(row["i00"], int), "an ArrowDtype int stays an int: %r" % first[:120]
+    # 25 plain columns x 10 write chunks x 20 batches, all on the fast path.
+    assert "arrow-backed columns: %d fast / 0 per-value" % (COLUMNS * (ROWS // 10000)) in err, (
+        "every plain ArrowDtype column must take the fast path: %s" % err[-500:]
+    )
+    assert maxrss < BATCH_RSS_BOUND, "streaming %d ArrowDtype rows must not grow the interpreter: peak RSS %d MB" % (
+        ROWS,
+        maxrss >> 20,
+    )

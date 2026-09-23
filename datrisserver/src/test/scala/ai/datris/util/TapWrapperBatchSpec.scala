@@ -851,6 +851,187 @@ class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
         } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
     }
 
+    // ================================================================
+    // Story: batch lane fast path for arrow-BACKED (ArrowDtype) columns
+    // (plans/stories/tap-batch-arrow-backend-fast-path.md). The sweep above
+    // stays the byte-equality oracle; these pin the counters, the speed and
+    // the null/int boxing the fast path must not change.
+    // ================================================================
+
+    // The plain-type frame an agent gets from pd.read_parquet(dtype_backend="pyarrow"):
+    // int64 / double / bool / string / naive timestamp, no nulls. Built once as an
+    // arrow table so the two backends see identical values.
+    private val ArrowFastFixture =
+        """import datetime
+          |import pyarrow as pa
+          |N = 100000
+          |_BASE = datetime.datetime(2026, 1, 1, 0, 0, 0)
+          |def table():
+          |    return pa.table({
+          |        "i": pa.array(list(range(N)), type=pa.int64()),
+          |        "f": pa.array([x + 0.5 for x in range(N)], type=pa.float64()),
+          |        "b": pa.array([x % 2 == 0 for x in range(N)]),
+          |        "s": pa.array(["row-%d" % x for x in range(N)]),
+          |        "ts": pa.array([_BASE + datetime.timedelta(seconds=x) for x in range(N)], type=pa.timestamp("us")),
+          |    })
+          |""".stripMargin
+
+    /** Median wall time of `runs` wrapper executions, after one warm-up run.
+      *  The staged files of the timed runs are deleted; the warm-up's result is
+      *  returned so the caller can diff its bytes.
+      */
+    private def timeWrapper(script: String, runs: Int = 3): (Long, (Int, String, String, Path)) = {
+        val warm = runWrapper(script)
+        val times = (1 to runs).map { _ =>
+            val t0 = System.nanoTime()
+            val (code, out, err, file) = runWrapper(script)
+            val ms = (System.nanoTime() - t0) / 1000000L
+            Files.deleteIfExists(file)
+            assert(code == 0, "timed run failed: " + out + "\n" + err)
+            ms
+        }.sorted
+        (times(times.length / 2), warm)
+    }
+
+    test("a 100,000-row ArrowDtype frame of int64 / double / bool / string / timestamp takes the fast path") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        // The frame is built and converted ONCE, outside fetch(), and yielded 5
+        // times: the timing below then measures the wrapper's per-batch encoding
+        // rather than the fixture's pyarrow import and table build.
+        val yieldFive =
+            """def fetch():
+              |    for _ in range(5):
+              |        yield _F
+              |""".stripMargin
+        val arrowScript = ArrowFastFixture +
+            "import pandas as pd\n_F = table().to_pandas(types_mapper=pd.ArrowDtype)\n" + yieldFive
+        val numpyScript = ArrowFastFixture + "_F = table().to_pandas()\n" + yieldFive
+        val (numpyMs, (numpyCode, numpyOut, numpyErr, numpyFile)) = timeWrapper(numpyScript)
+        val (arrowMs, (arrowCode, arrowOut, arrowErr, arrowFile)) = timeWrapper(arrowScript)
+        try {
+            assert(numpyCode == 0, "the numpy-backed baseline failed: " + numpyOut + "\n" + numpyErr)
+            assert(arrowCode == 0, "the ArrowDtype run failed: " + arrowOut + "\n" + arrowErr)
+            assert(envelope(arrowOut).get("count").getAsLong == 500000L, arrowOut)
+            // 5 batches x (100,000 rows = 10 write chunks of 10,000) x 5 plain columns.
+            assert(
+                arrowErr.contains("arrow-backed columns: 250 fast / 0 per-value"),
+                "every plain ArrowDtype column of every write chunk must take the fast path: " + arrowErr
+            )
+            assert(
+                java.util.Arrays.equals(fileBytes(arrowFile), fileBytes(numpyFile)),
+                "the ArrowDtype backend must stage byte-identical NDJSON to the numpy-backed one"
+            )
+            // Medians of 3 warm runs; the bound is the story's 1.5x plus a flat
+            // 250ms of process noise so a loaded machine does not flake it.
+            assert(
+                arrowMs <= (numpyMs * 3) / 2 + 250,
+                s"an ArrowDtype frame must land within 1.5x of the numpy-backed one: arrow ${arrowMs}ms vs numpy ${numpyMs}ms"
+            )
+        } finally Seq(arrowFile, numpyFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("nullable ArrowDtype int / bool / string / double columns land as null with the row path's values") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        val fixture =
+            """import pandas as pd
+              |import pyarrow as pa
+              |def frame():
+              |    return pa.table({
+              |        "i": pa.array([1, None, 3], type=pa.int64()),
+              |        "b": pa.array([True, None, False]),
+              |        "s": pa.array(["a", None, "c"]),
+              |        "f": pa.array([1.5, None, float("nan")], type=pa.float64()),
+              |    }).to_pandas(types_mapper=pd.ArrowDtype)
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(fixture + "def fetch():\n    yield frame()\n")
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "the batch run failed: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            assert(
+                batchErr.contains("arrow-backed columns: 4 fast / 0 per-value"),
+                "a nullable plain ArrowDtype column still takes the fast path: " + batchErr
+            )
+            val lines = fileLines(batchFile)
+            assert(lines.size == 3, lines.toString)
+            assert(lines.head.contains("\"i\":1") && !lines.head.contains("\"i\":1.0"), "an int stays an int: " + lines.head)
+            assert(lines(1).contains("\"i\":null"), "an arrow null is null, never \"<NA>\": " + lines(1))
+            assert(lines(1).contains("\"b\":null"), "a nullable bool null is null: " + lines(1))
+            assert(lines(1).contains("\"s\":null"), "a nullable string null is null: " + lines(1))
+            assert(lines(1).contains("\"f\":null"), "a nullable double null is null, not NaN: " + lines(1))
+            assert(!lines.exists(_.contains("<NA>")), "nothing may box as \"<NA>\": " + lines.mkString("\n"))
+            assert(lines(2).contains("\"f\":NaN"), "a real NaN value keeps its NaN token: " + lines(2))
+            assert(
+                java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)),
+                "and byte-for-byte what the row path writes:\n  rows:  " + fileLines(rowFile).mkString("\n         ") +
+                    "\n  batch: " + lines.mkString("\n         ")
+            )
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("tz-aware and date32 ArrowDtype columns still go per value and stay correct") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        val fixture =
+            """import datetime, decimal
+              |import pandas as pd
+              |import pyarrow as pa
+              |def frame():
+              |    return pa.table({
+              |        "tstz": pa.array([datetime.datetime(2026, 9, 20, 12, 0, 0), None, datetime.datetime(2026, 1, 2, 3, 4, 5)], type=pa.timestamp("us", tz="+02:00")),
+              |        "d32": pa.array([datetime.date(2026, 9, 20), None, datetime.date(2026, 1, 1)], type=pa.date32()),
+              |        "t64": pa.array([datetime.time(1, 2, 3), None, datetime.time(4, 5, 6)], type=pa.time64("us")),
+              |        "dec": pa.array([decimal.Decimal("1.50"), None, decimal.Decimal("0.00")], type=pa.decimal128(9, 2)),
+              |    }).to_pandas(types_mapper=pd.ArrowDtype)
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(fixture + "def fetch():\n    yield frame()\n")
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "the batch run failed: " + batchOut + "\n" + batchErr)
+            assert(
+                batchErr.contains("arrow-backed columns: 0 fast / 4 per-value"),
+                "tz-aware timestamp, date32, time64 and decimal128 must stay on the per-value path: " + batchErr
+            )
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "the per-value path stays byte-equal to the row path:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("a numpy-backed batch run prints today's batch lane line with no arrow-column suffix") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (code, out, err, file) = runWrapper(
+            """import pandas as pd
+              |def fetch():
+              |    yield pd.DataFrame({"i": [1, 2, 3], "s": ["a", "b", "c"]})
+              |    yield pd.DataFrame({"i": [4], "s": ["d"]})
+              |""".stripMargin
+        )
+        try {
+            assert(code == 0, out + "\n" + err)
+            val line = err.linesIterator.find(_.contains("[wrapper] batch lane:")).getOrElse("")
+            assert(line == "[wrapper] batch lane: 2 batch(es)", "a numpy-only run keeps today's exact line: [" + line + "]")
+        } finally Files.deleteIfExists(file)
+    }
+
     test("a frame with a duplicated index (pd.concat) and a sub-microsecond timestamp still stages") {
         assume(pandasAvailable, "python3 with pandas not available")
         val fixture =
