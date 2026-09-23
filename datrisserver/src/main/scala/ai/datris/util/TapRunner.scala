@@ -70,13 +70,18 @@ object TapRunner {
                         null
                 }
 
-            val result = TapScriptRunner.run(tapConfig, testLimit, params, previousState)
+            // `mode` (not testLimit) picks the wall-clock ceiling: a UI test with
+            // the sample checkbox off has testLimit = 0, and MCP test_tap sends none.
+            val result = TapScriptRunner.run(tapConfig, testLimit, params, previousState, mode)
             scriptResult = result
             val durationMs = System.currentTimeMillis() - startMs
 
             if (result.error != null) {
                 // Script errored. This is a real failure — write it as such.
                 // Script failures happen before any pipeline submission → retry-safe.
+                // A timeout arrives here with the script's logs and a PARTIAL record
+                // count (the rows that reached the staging file before the kill); both
+                // go on the run log below. lastRunRecordCount stays 0 — nothing landed.
                 if (push) {
                     val failedConfig = tapConfig.copy(
                         lastRunStatus = "failure",

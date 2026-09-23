@@ -43,7 +43,113 @@ case class TapScriptResult(
 
 object TapScriptRunner {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
-    private def scriptTimeoutSeconds: Int = DatrisEnvironment.current.tapScriptTimeoutSeconds
+
+    /** The wall-clock ceiling in force for one execution, plus the knob that
+      * raises it. A tap TEST is bounded by tapScriptTimeoutSeconds
+      * (TAP_SCRIPT_TIMEOUT_SECONDS, default 300) so a bad script fails fast; a
+      * real or cron run gets tapRunTimeoutSeconds (TAP_RUN_TIMEOUT_SECONDS,
+      * default 3600) so a big streaming source can actually finish. */
+    case class TapTimeout(seconds: Int, envVar: String, label: String)
+
+    /** Only mode == "test" is bounded by the short test ceiling. Cron runs
+      * arrive as mode = "run" from TapScheduler, and anything a caller has not
+      * thought of (null, "", "manual") lands on the run ceiling too — never
+      * silently on the short one. */
+    private[util] def timeoutFor(mode: String): TapTimeout = {
+        val env = DatrisEnvironment.current
+        if (mode != null && mode.trim.equalsIgnoreCase("test"))
+            TapTimeout(env.tapScriptTimeoutSeconds, "TAP_SCRIPT_TIMEOUT_SECONDS", "test")
+        else
+            TapTimeout(env.tapRunTimeoutSeconds, "TAP_RUN_TIMEOUT_SECONDS", "run")
+    }
+
+    /** The one place both timeout throws (the sidecar's `timedOut` trailer and
+      * the in-process deadline) get their text from, so an isolated deployment
+      * and a local run say exactly the same thing. */
+    private[util] def timedOutMessage(t: TapTimeout): String =
+        if (t.label == "test")
+            s"Tap script timed out after ${t.seconds} seconds (${t.label} mode; raise ${t.envVar})"
+        else
+            s"Tap script timed out after ${t.seconds} seconds (${t.label} mode; raise ${t.envVar}, " +
+                "or chunk the source range via run_tap params)"
+
+    /** A timed-out run, carrying what the script had already produced when it
+      * was killed: `logs` is the masked output a successful run would have
+      * reported (stderr first, then stdout when non-empty) and `partialRecords`
+      * is the number of records that had reached the staging file. Nothing
+      * landed — the count is diagnostic only. */
+    class TapTimeoutException(message: String, val logs: String, val partialRecords: Long) extends DatrisException(message)
+
+    /** How many log lines the timeout message itself carries. The full output is
+      * on `TapTimeoutException.logs` (and in the tap run log). */
+    private val TimeoutTailLines = 20
+
+    /** Build the failure for a timeout once the partial output has been read.
+      * The text is `timedOutMessage(t)` — the prefix the UI matches on plus the
+      * mode/env-var clause — with the partial record count and the last
+      * [[TimeoutTailLines]] log lines appended. Never restate the prefix here.
+      */
+    private[util] def timeoutFailure(
+        timeout: TapTimeout,
+        stdout: String,
+        stderr: String,
+        partialRecords: Long,
+        secretValues: Seq[String]
+    ): TapTimeoutException = {
+        val combined = Seq(stderr, stdout).filter(s => s != null && s.trim.nonEmpty).map(_.stripLineEnd).mkString("\n")
+        val logs = if (secretValues.nonEmpty) maskSecrets(combined, secretValues) else combined
+        val tail = logs.linesIterator.toList.takeRight(TimeoutTailLines).mkString("\n")
+        val counted =
+            if (partialRecords > 0) partialRecords + " records were streamed before the kill (partial, nothing landed)"
+            else "no records had been streamed yet (the partial count is 0)"
+        val message =
+            timedOutMessage(timeout) + "; " + counted + "." +
+                (if (tail.nonEmpty) " Last output:\n" + tail else " The script printed nothing.")
+        new TapTimeoutException(message, logs, partialRecords)
+    }
+
+    /** Records that reached the staging file before the kill: the number of
+      * newline-terminated lines in the file the wrapper was writing. Counted by
+      * scanning bytes — the file is never loaded — so a half-written last line
+      * left by a SIGKILL is ignored. 0 when there is no file (yet). */
+    private[util] def stagedLineCount(outputPath: Path): Long =
+        if (outputPath == null || !Files.exists(outputPath)) 0L
+        else
+            try {
+                val in = new java.io.BufferedInputStream(Files.newInputStream(outputPath), 64 * 1024)
+                try {
+                    val buf = new Array[Byte](64 * 1024)
+                    var count = 0L
+                    var n = in.read(buf)
+                    while (n > 0) {
+                        var i = 0
+                        while (i < n) { if (buf(i) == '\n'.toByte) count += 1; i += 1 }
+                        n = in.read(buf)
+                    }
+                    count
+                } finally in.close()
+            } catch { case _: Exception => 0L }
+
+    /** Lenient parse of a boot-time timeout property. Returns -1 ("unset") for a
+      * blank value, a value that is not a whole number ("5m"), and a value that
+      * is zero or negative — a 0 s ceiling would time out every run instantly,
+      * so it is treated as unset (and warned about) rather than obeyed. The
+      * caller decides what unset falls back to. */
+    def timeoutSecondsOrUnset(raw: String): Int =
+        Option(raw)
+            .map(_.trim)
+            .filter(_.nonEmpty)
+            .flatMap(v => scala.util.Try(v.toInt).toOption)
+            .filter(_ > 0)
+            .getOrElse(-1)
+
+    /** Boot-time resolution of the run ceiling. `rawRunTimeoutSeconds` is -1
+      * when TAP_RUN_TIMEOUT_SECONDS / tapRunTimeoutSeconds is blank
+      * (TapScriptRunner.timeoutSecondsOrUnset); an unset run ceiling is
+      * max(3600, tapScriptTimeoutSeconds), so an install that raised the old
+      * single knob to make long real runs work never gets a SHORTER one. */
+    def resolveRunTimeoutSeconds(rawRunTimeoutSeconds: Int, scriptTimeoutSeconds: Int): Int =
+        if (rawRunTimeoutSeconds > 0) rawRunTimeoutSeconds else math.max(3600, scriptTimeoutSeconds)
 
     // private[util] so TapWrapperStateSpec can execute the real wrapper against
     // fixture scripts — the wrapper is the wire format, and a drift here breaks
@@ -123,6 +229,451 @@ object TapScriptRunner {
           |_records = None
           |_dict_lane = False
           |_iter_src = None
+          |_remaining = None
+          |_batches_seen = 0
+          |# Batch lane (plans/stories/tap-batch-yield.md): fetch() may `yield` a whole
+          |# BATCH as well as a row — a pandas DataFrame, a pyarrow RecordBatch / Table,
+          |# or a list whose first element is a dict (rows) or a list/tuple (cells) — and
+          |# the wrapper writes it as N NDJSON rows in one vectorised call instead of one
+          |# json.dumps per row. Everything downstream is unchanged: `count` is ROWS,
+          |# `columns` is the first-seen union, and a value serialises exactly as it does
+          |# when yielded as a row. pandas is imported lazily (only when the first frame
+          |# appears) and pyarrow is never imported — arrow objects are duck-typed.
+          |# Sentinels for the non-finite floats pandas would otherwise write as null.
+          |# They ride through to_json as JSON strings and are restored as the bare
+          |# NaN / Infinity / -Infinity tokens json.dumps writes on the per-row path.
+          |# Arrow types to_pandas() round-trips faithfully; everything else is taken
+          |# from to_pylist() (see _write_batch).
+          |_ARROW_PLAIN = ("int", "uint", "float", "double", "half", "bool", "string", "large_string", "timestamp")
+          |# The arrow *_view types: they answer to _ARROW_PLAIN's "string" prefix but
+          |# have no filter kernel, so they always take the per-value tolist() route.
+          |_ARROW_VIEW = ("string_view", "binary_view")
+          |# Arrow-BACKED (pd.ArrowDtype) columns seen this run: how many took the
+          |# vectorised fast path and how many stayed on the per-value encoder.
+          |# Counted per column PER WRITE CHUNK; stderr diagnostics only.
+          |_ARROW_FAST = [0]
+          |_ARROW_SLOW = [0]
+          |_NAN_SENT = "\x00DTNaN\x00"
+          |_INF_SENT = "\x00DTInf\x00"
+          |_NINF_SENT = "\x00DT-Inf\x00"
+          |def _batch_kind(_x):
+          |    # str / bytes / dict / tuple are NEVER batches, and neither is [] or a
+          |    # list of scalars: every shape a tap yields today keeps its meaning.
+          |    if isinstance(_x, (str, bytes, dict, tuple)):
+          |        return None
+          |    if isinstance(_x, list):
+          |        if not _x:
+          |            return None
+          |        if isinstance(_x[0], dict):
+          |            return "rows"
+          |        if isinstance(_x[0], (list, tuple)):
+          |            return "cells"
+          |        return None
+          |    _m = type(_x).__module__ or ""
+          |    if _m.startswith("pandas") and hasattr(_x, "to_json") and hasattr(_x, "columns"):
+          |        return "frame"
+          |    if _m.startswith("pyarrow") and hasattr(_x, "to_pandas") and hasattr(_x, "num_rows"):
+          |        return "arrow"
+          |    return None
+          |def _batch_first_row(_kind, _b):
+          |    # The first row of a batch, or None when it is empty. Used only to sniff
+          |    # the data type — the batch itself is not consumed.
+          |    if _kind in ("rows", "cells"):
+          |        return _b[0]
+          |    if _kind == "frame":
+          |        return None if len(_b.index) == 0 else _b.head(1).to_dict("records")[0]
+          |    return None if _b.num_rows == 0 else _b.slice(0, 1).to_pylist()[0]
+          |_MASK_HIT = [False]
+          |# Filled in when pandas is first imported (see _normalise_frame) so
+          |# _json_native can recognise pandas / numpy scalars without importing
+          |# anything itself — a row-only script still pays nothing.
+          |_PD = [None]
+          |_NP = [None]
+          |_NA = [None]
+          |_NPGEN = [None]
+          |def _json_native(_v):
+          |    # `default=str` semantics, per value: anything json.dumps cannot encode
+          |    # becomes str(...), dicts / lists recurse, and a non-finite float becomes
+          |    # its sentinel (json.dumps writes the bare NaN / Infinity tokens, to_json
+          |    # would write null). This is what keeps an object column (Decimal, bytes,
+          |    # date, numpy scalar, nested dict) byte-identical to the per-row encoder.
+          |    if _v is None or (_NA[0] is not None and _v is _NA[0]):
+          |        # pandas NA is a missing value, not the string "<NA>".
+          |        return None
+          |    if _v is True or _v is False or isinstance(_v, str):
+          |        return _v
+          |    if _NPGEN[0] is not None and isinstance(_v, _NPGEN[0]):
+          |        # A numpy SCALAR in an object column: to_dict("records") boxes it to
+          |        # its Python equivalent before the row encoder sees it, so a batch
+          |        # must too (numpy.bool_ -> true, not "True"). numpy.ndarray is not a
+          |        # numpy generic, so an array cell still stringifies as it does on the
+          |        # row path.
+          |        if isinstance(_v, _NP[0].datetime64):
+          |            return str(_PD[0].Timestamp(_v))
+          |        if isinstance(_v, _NP[0].timedelta64):
+          |            return str(_PD[0].Timedelta(_v))
+          |        return _json_native(_v.item())
+          |    if isinstance(_v, float):
+          |        if _v != _v:
+          |            _MASK_HIT[0] = True
+          |            return _NAN_SENT
+          |        if _v == float("inf"):
+          |            _MASK_HIT[0] = True
+          |            return _INF_SENT
+          |        if _v == float("-inf"):
+          |            _MASK_HIT[0] = True
+          |            return _NINF_SENT
+          |        return _v
+          |    if isinstance(_v, int):
+          |        return _v
+          |    if isinstance(_v, dict):
+          |        return {str(_k): _json_native(_x) for _k, _x in _v.items()}
+          |    if isinstance(_v, (list, tuple)):
+          |        return [_json_native(_x) for _x in _v]
+          |    return str(_v)
+          |def _boxed_na(_s, _na):
+          |    # What DataFrame.to_dict("records") puts in a missing cell of THIS column
+          |    # (NaN for a float / str column, None for a nullable extension dtype, NaT
+          |    # for a datetime) — the per-row path json.dumps()es exactly that value, so
+          |    # the batch lane has to write the same thing.
+          |    try:
+          |        return next(iter(_s[_na].head(1).to_dict().values()))
+          |    except Exception:
+          |        return None
+          |def _dt_part(_s, _attr):
+          |    # A datetime part as int64, or None when the dtype has no such part.
+          |    try:
+          |        return _s.dt.__getattribute__(_attr).fillna(0).astype("int64")
+          |    except Exception:
+          |        return None
+          |def _fmt_datetimes(_s, _na_txt):
+          |    # str(Timestamp): "%Y-%m-%d %H:%M:%S", ".%f" only where microseconds are
+          |    # non-zero, "+HH:MM" (with the colon) when tz-aware, "NaT" for NaT.
+          |    _txt = _s.dt.strftime("%Y-%m-%d %H:%M:%S")
+          |    _us = _dt_part(_s, "microsecond")
+          |    _has_us = None if _us is None else (_us != 0)
+          |    if _has_us is not None and bool(_has_us.any()):
+          |        _txt = _txt.where(~_has_us, _s.dt.strftime("%Y-%m-%d %H:%M:%S.%f"))
+          |    if getattr(_s.dt, "tz", None) is not None:
+          |        _off = _s.dt.strftime("%z")
+          |        _txt = _txt + _off.str[:3] + ":" + _off.str[3:]
+          |    # strftime's %f cannot carry nanoseconds, so a sub-microsecond timestamp
+          |    # would silently lose its fraction. Those cells (rare) fall back to the
+          |    # row path's own form, str(Timestamp), which already carries the tz.
+          |    _ns = _dt_part(_s, "nanosecond")
+          |    _has_ns = None if _ns is None else (_ns != 0)
+          |    if _has_ns is not None and bool(_has_ns.any()):
+          |        _txt = _txt.where(~_has_ns, _s[_has_ns].map(str))
+          |    # strftime does not zero-pad a year below 1000 ("1-01-01"), so those
+          |    # cells fall back to str(Timestamp) too. NaT reads as year 0 here and is
+          |    # overwritten by the missing-value line below either way.
+          |    _yr = _dt_part(_s, "year")
+          |    if _yr is not None:
+          |        _low = (_yr < 1000)
+          |        if bool(_low.any()):
+          |            _txt = _txt.where(~_low, _s[_low].map(str))
+          |    return _txt.where(_s.notna(), _na_txt)
+          |def _normalise_frame(_df, _arrow, _nulls):
+          |    # Per column, by dtype, vectorised. Returns (frame, masked) where `masked`
+          |    # says a non-finite float sentinel needs restoring in the serialised text.
+          |    # `_arrow` says the frame came from a RecordBatch / Table: an arrow null is
+          |    # a true null (its row equivalent, to_pylist(), yields None), where a pandas
+          |    # missing value is whatever to_dict("records") boxes it as (often NaN).
+          |    import pandas as _pd
+          |    import numpy as _np
+          |    if _PD[0] is None:
+          |        _PD[0] = _pd
+          |        _NP[0] = _np
+          |        _NA[0] = _pd.NA
+          |        _NPGEN[0] = _np.generic
+          |    _t = _pd.api.types
+          |    # A duplicated index (pd.concat without ignore_index) breaks every
+          |    # subset-aligned assignment below; nothing here depends on the labels.
+          |    _df = _df.reset_index(drop=True)
+          |    _cols = {}
+          |    _masked = False
+          |    _arrow_dtype = getattr(_pd, "ArrowDtype", None)
+          |    for _c in _df.columns:
+          |        _s = _df[_c]
+          |        # True when this column came from an arrow-BACKED dtype: like a
+          |        # RecordBatch column, its missing value is a TRUE null (the row path,
+          |        # to_dict("records"), boxes an ArrowDtype null as None), never what
+          |        # _boxed_na would report for the numpy/extension dtype it was cast to.
+          |        _from_arrow = False
+          |        # Cells that were arrow nulls in a float column cast below: after the
+          |        # NaN / Infinity sentinel step they become None, so an arrow null
+          |        # writes null while a real NaN value keeps its NaN token.
+          |        _fast_null = None
+          |        if _arrow_dtype is not None and isinstance(_s.dtype, _arrow_dtype):
+          |            # An arrow-BACKED pandas column (pd.read_parquet/read_csv with
+          |            # dtype_backend="pyarrow", or to_pandas(types_mapper=pd.ArrowDtype)).
+          |            # The plain types that make up almost every columnar file — int /
+          |            # uint / float / bool / string / NAIVE timestamp — are cast to
+          |            # their numpy equivalent here and take the vectorised paths below
+          |            # (plans/stories/tap-batch-arrow-backend-fast-path.md). Every other
+          |            # arrow type (tz-aware timestamp, date32, time, duration, decimal,
+          |            # binary, list, struct, map, dictionary, null) answers pandas' dtype
+          |            # predicates but writes garbage through the vectorised .dt / to_json
+          |            # paths, so it keeps the per-value encoding, which is correct by
+          |            # construction. pyarrow is never imported: the type is read as text.
+          |            _at = str(_s.dtype.pyarrow_dtype)
+          |            _view = _at.startswith(_ARROW_VIEW)
+          |            _plain = (
+          |                _at.startswith(_ARROW_PLAIN)
+          |                and not _view
+          |                and not (_at.startswith("timestamp") and "tz=" in _at)
+          |            )
+          |            if not _plain:
+          |                _ARROW_SLOW[0] += 1
+          |                _MASK_HIT[0] = False
+          |                # to_numpy(na_value=...) filters the array, and arrow has no
+          |                # filter kernel for the *_view types: a null in a string_view /
+          |                # binary_view column would raise. tolist() has no such gap (it
+          |                # yields pd.NA for a null, which _json_native reads as None,
+          |                # the same value to_dict("records") hands the row encoder).
+          |                _vals = _s.tolist() if _view else _s.to_numpy(dtype=object, na_value=None)
+          |                _cols[_c] = _pd.Series(
+          |                    [_json_native(_x.tolist() if isinstance(_x, _np.ndarray) else _x) for _x in _vals],
+          |                    index=_df.index,
+          |                    dtype=object,
+          |                )
+          |                _masked = _masked or _MASK_HIT[0]
+          |                continue
+          |            _ARROW_FAST[0] += 1
+          |            _from_arrow = True
+          |            # ArrowExtensionArray.isna() is arrow-null only: a NaN VALUE in a
+          |            # double column is not marked, which is what keeps the two apart.
+          |            _anull = _s.isna()
+          |            _has_null = bool(_anull.any())
+          |            if _at.startswith("timestamp"):
+          |                # datetime64[s|ms|us|ns], NaT for null; _fmt_datetimes writes
+          |                # NaT as null below because _from_arrow is set.
+          |                _s = _s.astype(_s.dtype.numpy_dtype)
+          |            elif _at.startswith(("float", "double", "half")):
+          |                # Plain float64: nulls fold into NaN and are restored as None
+          |                # after the sentinel step (the RecordBatch _nulls treatment).
+          |                _s = _pd.Series(_s.to_numpy(dtype="float64", na_value=_np.nan), index=_df.index)
+          |                if _has_null:
+          |                    _fast_null = _anull.to_numpy()
+          |            elif _has_null or _at.startswith(("string", "large_string")):
+          |                # Python int / bool / str / None are all JSON-native, so this
+          |                # object Series serialises exactly as the row path does: an int
+          |                # stays an int (never 1.0) and a null stays null (never "<NA>",
+          |                # which is what a nullable EXTENSION dtype would box it as).
+          |                # Strings always take this route: numpy_dtype is "<U0" and
+          |                # astype(object) would box the null as pd.NA.
+          |                _cols[_c] = _pd.Series(_s.to_numpy(dtype=object, na_value=None), index=_df.index, dtype=object)
+          |                continue
+          |            else:
+          |                # int / uint / bool with no nulls -> plain numpy dtype.
+          |                _s = _s.astype(_s.dtype.numpy_dtype)
+          |        if _nulls and _c in _nulls and _t.is_float_dtype(_s) and isinstance(_s.dtype, _np.dtype):
+          |            # An arrow null in a numeric column is a true null, but
+          |            # to_pandas() has already folded it into NaN (and promoted an
+          |            # int column to float). Restore the nulls as None — a real NaN
+          |            # value in the same column keeps its NaN token.
+          |            _s = _s.astype(object)
+          |            _s[_nulls[_c]] = None
+          |        if _t.is_datetime64_any_dtype(_s):
+          |            # NaT is handled inside _fmt_datetimes (str(NaT) == "NaT").
+          |            _cols[_c] = _fmt_datetimes(_s, None if (_arrow or _from_arrow) else "NaT")
+          |            continue
+          |        if _t.is_object_dtype(_s):
+          |            # Per value, like the row encoder. The all-strings fast path is
+          |            # only safe when the column has no missing value to box.
+          |            if not bool(_s.isna().any()) and _t.infer_dtype(_s, skipna=True) in ("string", "empty"):
+          |                _cols[_c] = _s
+          |            else:
+          |                _MASK_HIT[0] = False
+          |                # A list comprehension into an explicit object Series, NOT
+          |                # Series.map: map re-infers the result dtype, so a column of
+          |                # Python ints with a None in it would come back float64 and
+          |                # write 1.0 where the row path writes 1.
+          |                _cols[_c] = _pd.Series([_json_native(_x) for _x in _s], index=_s.index, dtype=object)
+          |                _masked = _masked or _MASK_HIT[0]
+          |            continue
+          |        if isinstance(_s.dtype, _pd.CategoricalDtype) or not (
+          |            _t.is_bool_dtype(_s) or _t.is_float_dtype(_s) or _t.is_integer_dtype(_s) or _t.is_string_dtype(_s)
+          |        ):
+          |            # GENERIC FALLBACK. The fast to_json path is only trusted for the
+          |            # dtypes whitelisted below (bool / int / float / string, plus
+          |            # datetime and object above); EVERY other dtype — timedelta,
+          |            # period, interval, categorical, and whatever pandas adds next —
+          |            # is encoded per value from its own scalars, which is exactly
+          |            # what to_dict("records") hands the row encoder. New dtypes are
+          |            # therefore correct-but-slower by default, never wrong.
+          |            _MASK_HIT[0] = False
+          |            _cols[_c] = _pd.Series([_json_native(_x) for _x in _s.astype(object)], index=_s.index, dtype=object)
+          |            _masked = _masked or _MASK_HIT[0]
+          |            continue
+          |        _na = _s.isna()
+          |        _any_na = bool(_na.any())
+          |        _na_done = False
+          |        if _t.is_bool_dtype(_s):
+          |            # A bool column stays a JSON boolean: the row equivalent of a
+          |            # frame is df.to_dict("records"), which boxes numpy bools to
+          |            # Python bools, so a script that switches from rows to batches
+          |            # must not turn a boolean column into a string one. (A raw
+          |            # numpy.bool_ yielded as a single ROW still writes "True" — the
+          |            # per-row encoder is untouched.) A nullable NA falls through to
+          |            # the missing-value fixup below and stays null.
+          |            _v = _s
+          |        elif _t.is_float_dtype(_s):
+          |            try:
+          |                _arr = _s.to_numpy(dtype="float64", na_value=_np.nan)
+          |            except TypeError:
+          |                _arr = _s.to_numpy(dtype="float64")
+          |            _nan = _np.isnan(_arr)
+          |            if not isinstance(_s.dtype, _np.dtype):
+          |                _nan = _nan & ~_na.to_numpy()
+          |            _inf = _np.isinf(_arr)
+          |            if bool(_nan.any()) or bool(_inf.any()):
+          |                _masked = True
+          |                _v = _s.astype(object)
+          |                _v[_nan] = _NAN_SENT
+          |                _v[_inf & (_arr > 0)] = _INF_SENT
+          |                _v[_inf & (_arr < 0)] = _NINF_SENT
+          |                _na_done = isinstance(_s.dtype, _np.dtype)
+          |            else:
+          |                _v = _s
+          |        else:
+          |            _v = _s
+          |        if _fast_null is not None:
+          |            # An arrow null in a cast float column is a true null, not NaN.
+          |            _v = _v.astype(object)
+          |            _v[_fast_null] = None
+          |        if _any_na and not _na_done:
+          |            _mv = None if (_arrow or _from_arrow) else _boxed_na(_s, _na)
+          |            if _mv is None:
+          |                pass
+          |            elif isinstance(_mv, float) and _mv != _mv:
+          |                _masked = True
+          |                _v = _v.astype(object)
+          |                _v[_na] = _NAN_SENT
+          |            else:
+          |                _v = _v.astype(object)
+          |                _v[_na] = str(_mv)
+          |        _cols[_c] = _v
+          |    return _pd.DataFrame(_cols, index=_df.index, copy=False), _masked
+          |class _TailWriter(object):
+          |    # to_json(lines=True) does not promise a trailing newline across pandas
+          |    # versions; remember the last character written so one can be added.
+          |    __slots__ = ("f", "last")
+          |    def __init__(self, _f):
+          |        self.f = _f
+          |        self.last = ""
+          |    def write(self, _s):
+          |        if _s:
+          |            self.last = _s[-1]
+          |        return self.f.write(_s)
+          |# Rows per to_json call. A batch is serialised in slices so the JSON text
+          |# (and the normalised copy behind it) never scales with the batch size:
+          |# a 100,000-row frame costs the same transient memory as a 10,000-row one.
+          |_WRITE_CHUNK = 10000
+          |def _write_frame(_df, _f, _arrow=False, _nulls=None):
+          |    _rows = len(_df.index)
+          |    if _rows > _WRITE_CHUNK:
+          |        for _i in range(0, _rows, _WRITE_CHUNK):
+          |            _slice = None if not _nulls else {_k: _m[_i:_i + _WRITE_CHUNK] for _k, _m in _nulls.items()}
+          |            _write_chunk(_df.iloc[_i:_i + _WRITE_CHUNK], _f, _arrow, _slice)
+          |        return
+          |    _write_chunk(_df, _f, _arrow, _nulls)
+          |def _write_chunk(_df, _f, _arrow, _nulls):
+          |    _n, _masked = _normalise_frame(_df, _arrow, _nulls)
+          |    if _masked:
+          |        _txt = _n.to_json(None, orient="records", lines=True, double_precision=15, force_ascii=True)
+          |        _txt = _txt.replace('"\\u0000DTNaN\\u0000"', "NaN")
+          |        _txt = _txt.replace('"\\u0000DTInf\\u0000"', "Infinity")
+          |        _txt = _txt.replace('"\\u0000DT-Inf\\u0000"', "-Infinity")
+          |        if not _txt.endswith("\n"):
+          |            _txt += "\n"
+          |        _f.write(_txt)
+          |    else:
+          |        _w = _TailWriter(_f)
+          |        _n.to_json(_w, orient="records", lines=True, double_precision=15, force_ascii=True)
+          |        if _w.last != "\n":
+          |            _f.write("\n")
+          |def _write_batch(_kind, _b, _limit, _f):
+          |    # Writes one batch as its rows and returns the number of rows written.
+          |    # `_limit` is the remaining test-mode row budget (None = no limit).
+          |    global _dicts
+          |    _arrow = _kind == "arrow"
+          |    _nulls = None
+          |    if _kind == "arrow":
+          |        if _limit is not None and _b.num_rows > _limit:
+          |            _b = _b.slice(0, _limit)
+          |        if _b.num_rows == 0:
+          |            return 0
+          |        # Which cells of a NUMERIC column are arrow nulls (not NaN). to_pandas
+          |        # loses that distinction — and promotes an int column with nulls to
+          |        # float64 — so the masks are taken from the arrow object itself.
+          |        _nulls = {}
+          |        for _ci, _cn in enumerate(_b.schema.names):
+          |            try:
+          |                _col = _b.column(_ci)
+          |                if _col.null_count and str(_col.type).startswith(("int", "uint", "float", "double", "half")):
+          |                    _nulls[str(_cn)] = _col.is_null().to_numpy(zero_copy_only=False)
+          |            except Exception:
+          |                pass
+          |        # integer_object_nulls keeps an int column with nulls as Python ints
+          |        # (object dtype) instead of floats, so 1 does not become 1.0.
+          |        _src = _b
+          |        try:
+          |            _b = _b.to_pandas(integer_object_nulls=True)
+          |        except TypeError:
+          |            _b = _b.to_pandas()
+          |        # to_pandas only round-trips plain numeric / bool / string / timestamp
+          |        # types faithfully: it boxes a list cell as a numpy array, a duration
+          |        # as timedelta64, a dictionary as a Categorical, and so on, none of
+          |        # which encode like the row path's to_pylist(). Every other arrow type
+          |        # is therefore taken straight from to_pylist() as object cells — the
+          |        # values the row path itself yields — and encoded per value.
+          |        import pandas as _pd
+          |        for _ci, _cn in enumerate(_src.schema.names):
+          |            try:
+          |                _col = _src.column(_ci)
+          |                if not str(_col.type).startswith(_ARROW_PLAIN):
+          |                    _b[str(_cn)] = _pd.Series(_col.to_pylist(), index=_b.index, dtype=object)
+          |            except Exception:
+          |                pass
+          |        _kind = "frame"
+          |    if _kind == "frame":
+          |        if _limit is not None and len(_b.index) > _limit:
+          |            _b = _b.iloc[:_limit]
+          |        _n = len(_b.index)
+          |        if _n == 0:
+          |            return 0
+          |        _b = _b.copy(deep=False)
+          |        _b.columns = _b.columns.map(str)
+          |        if not _b.columns.is_unique:
+          |            _dupes = sorted({_c for _c in _b.columns if list(_b.columns).count(_c) > 1})
+          |            raise ValueError("batch has duplicate column names: " + ", ".join(_dupes))
+          |        if _dicts:
+          |            for _c in _b.columns:
+          |                if _c not in _columns:
+          |                    _columns[_c] = True
+          |        _write_frame(_b, _f, _arrow, _nulls)
+          |        return _n
+          |    # rows / cells: the existing per-row encoder, so a list[dict] batch is
+          |    # byte-identical to yielding its rows one at a time.
+          |    _n = 0
+          |    for _row in _b:
+          |        if _limit is not None and _n >= _limit:
+          |            break
+          |        if isinstance(_row, dict):
+          |            _row = {str(_k): _v for _k, _v in _row.items()}
+          |            if _dicts:
+          |                for _k in _row:
+          |                    if _k not in _columns:
+          |                        _columns[_k] = True
+          |        elif _dict_lane:
+          |            continue
+          |        else:
+          |            _dicts = False
+          |        _f.write(json.dumps(_row, default=str, separators=(",", ":")))
+          |        _f.write("\n")
+          |        _n += 1
+          |    return _n
           |# Iterator lane (taps survive large sources): fetch() may `yield` records or
           |# return any iterator. A one-item lookahead sniffs the type exactly like the
           |# list branch; the rest streams in one pass. str / bytes / dict / list /
@@ -136,21 +687,31 @@ object TapScriptRunner {
           |        _records = iter(())
           |        _dict_lane = True
           |    else:
-          |        if isinstance(_first, dict) and 'uri' in _first and 'content' in _first:
-          |            data_type = "document"
-          |        elif isinstance(_first, dict):
+          |        # A BATCH first item types the run from its first ROW, exactly as a
+          |        # row does; an empty first batch types json (dict lane) and the
+          |        # wrapper keeps pulling.
+          |        _fk = _batch_kind(_first)
+          |        _sniff = _batch_first_row(_fk, _first) if _fk is not None else _first
+          |        if _fk is not None and _sniff is None:
           |            data_type = "json"
           |            _dict_lane = True
-          |        elif isinstance(_first, (list, tuple)):
+          |        elif isinstance(_sniff, dict) and 'uri' in _sniff and 'content' in _sniff:
+          |            data_type = "document"
+          |        elif isinstance(_sniff, dict):
+          |            data_type = "json"
+          |            _dict_lane = True
+          |        elif isinstance(_sniff, (list, tuple)):
           |            data_type = "csv"
           |        else:
           |            data_type = "json"
           |        _records = itertools.chain((_first,), _iter_src)
-          |    # Test mode caps the ITERATOR lane at N records (exactly N pulled, then
-          |    # the generator is closed so its finally runs). A list is never truncated.
+          |    # Test mode caps the ITERATOR lane at N ROWS (exactly enough items pulled
+          |    # to fill it, then the generator is closed so its finally runs) — a batch
+          |    # is sliced to the remaining budget, so a 10,000-row batch under limit 20
+          |    # writes 20 rows and costs ONE pull. A list is never truncated.
           |    _tl = os.environ.get("DATRIS_TAP_TEST_LIMIT", "").strip()
           |    if _tl.isdigit() and int(_tl) > 0:
-          |        _records = itertools.islice(_records, int(_tl))
+          |        _remaining = int(_tl)
           |elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict) and 'uri' in result[0] and 'content' in result[0]:
           |    # Document tap: list of {uri, filename, content (base64), ...}
           |    data_type = "document"
@@ -187,6 +748,12 @@ object TapScriptRunner {
           |    # platform can tell a record list from one object without re-reading.
           |    _count = 0
           |    _columns = None
+          |    # Progress reporting for the iterator lane: a long stream says how far it
+          |    # got, so a timed-out run reads as "healthy, too long" rather than silent.
+          |    # Gated at every 100,000 records or 30 s, and the clock is only read every
+          |    # 1,000 rows, so the per-row cost is one modulo. The list lane prints none.
+          |    _next_prog = 100000
+          |    _last_prog = _t0
           |    with open(_out_path, "w", encoding="utf-8", newline="") as _f:
           |        if _records is not None:
           |            # One pass, whether _records is a list or a streaming iterator:
@@ -196,6 +763,33 @@ object TapScriptRunner {
           |            _columns = {}
           |            _dicts = True
           |            for _row in _records:
+          |                # Batches come from the ITERATOR lane only: a returned list keeps
+          |                # every shape it has today, and a row-only stream pays one
+          |                # isinstance check.
+          |                _bk = None if (_iter_src is None or isinstance(_row, dict)) else _batch_kind(_row)
+          |                if _bk is not None:
+          |                    # A batch is written as its ROWS: _count stays exact per
+          |                    # row, so the progress line and the test limit are blind
+          |                    # to how the script chose to group them.
+          |                    _batches_seen += 1
+          |                    _wrote = _write_batch(_bk, _row, _remaining, _f)
+          |                    _count += _wrote
+          |                    if _iter_src is not None and _wrote > 0:
+          |                        _now = time.time()
+          |                        if _count >= _next_prog or _now - _last_prog >= 30:
+          |                            print(f"[wrapper] streamed {_count} records ({_now - _t0:.0f} s)", file=sys.stderr, flush=True)
+          |                            _next_prog = _count + 100000
+          |                            _last_prog = _now
+          |                    if _remaining is not None:
+          |                        _remaining -= _wrote
+          |                        if _remaining <= 0:
+          |                            break
+          |                    continue
+          |                # A non-batch item consumes exactly one row of the budget,
+          |                # dropped or not — what itertools.islice did before.
+          |                if _remaining is not None:
+          |                    _remaining -= 1
+          |                _skip = False
           |                if isinstance(_row, dict):
           |                    _row = {str(_k): _v for _k, _v in _row.items()}
           |                    if _dicts:
@@ -203,12 +797,21 @@ object TapScriptRunner {
           |                            if _k not in _columns:
           |                                _columns[_k] = True
           |                elif _dict_lane:
-          |                    continue
+          |                    _skip = True
           |                else:
           |                    _dicts = False
-          |                _f.write(json.dumps(_row, default=str, separators=(",", ":")))
-          |                _f.write("\n")
-          |                _count += 1
+          |                if not _skip:
+          |                    _f.write(json.dumps(_row, default=str, separators=(",", ":")))
+          |                    _f.write("\n")
+          |                    _count += 1
+          |                    if _iter_src is not None and _count % 1000 == 0:
+          |                        _now = time.time()
+          |                        if _count >= _next_prog or _now - _last_prog >= 30:
+          |                            print(f"[wrapper] streamed {_count} records ({_now - _t0:.0f} s)", file=sys.stderr, flush=True)
+          |                            _next_prog = _count + 100000
+          |                            _last_prog = _now
+          |                if _remaining is not None and _remaining <= 0:
+          |                    break
           |            _columns = list(_columns) if _dicts else []
           |            if _iter_src is not None:
           |                if hasattr(_iter_src, "close"):
@@ -230,6 +833,13 @@ object TapScriptRunner {
           |        print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |    else:
           |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |    if _batches_seen:
+          |        _bl = f"[wrapper] batch lane: {_batches_seen} batch(es)"
+          |        if _ARROW_FAST[0] or _ARROW_SLOW[0]:
+          |            # Diagnostics only (never parsed): how many arrow-BACKED columns
+          |            # took the vectorised path, counted per column per write chunk.
+          |            _bl += f"; arrow-backed columns: {_ARROW_FAST[0]} fast / {_ARROW_SLOW[0]} per-value"
+          |        print(_bl, file=sys.stderr, flush=True)
           |    envelope = {"type": data_type, "count": _count, "columns": _columns}
           |else:
           |    # Inline path (no DATRIS_TAP_OUTPUT): the whole payload rides on stdout as
@@ -238,9 +848,25 @@ object TapScriptRunner {
           |    # streams); the stderr note says why.
           |    if _iter_src is not None:
           |        print("[wrapper] DATRIS_TAP_OUTPUT is not set: fetch() returned an iterator, materializing it in memory (set DATRIS_TAP_OUTPUT to stream it to a file)", file=sys.stderr, flush=True)
-          |        result = list(_records)
+          |        result = list(itertools.islice(_records, _remaining)) if _remaining is not None else list(_records)
           |        if hasattr(_iter_src, "close"):
           |            _iter_src.close()
+          |        # Batches are materialised into dict rows here, exactly as the
+          |        # iterator itself is: the inline envelope shape never changes.
+          |        _flat = []
+          |        for _item in result:
+          |            _bk = None if isinstance(_item, dict) else _batch_kind(_item)
+          |            if _bk is None:
+          |                _flat.append(_item)
+          |                continue
+          |            _batches_seen += 1
+          |            if _bk == "frame":
+          |                _flat.extend(_item.to_dict("records"))
+          |            elif _bk == "arrow":
+          |                _flat.extend(_item.to_pylist())
+          |            else:
+          |                _flat.extend(_item)
+          |        result = _flat[:_remaining] if _remaining is not None else _flat
           |        _records = result
           |        _elapsed = time.time() - _t0
           |    if _dict_lane:
@@ -261,6 +887,10 @@ object TapScriptRunner {
           |        print(f"[wrapper] fetch() returned {_count} {data_type} record(s) in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |    else:
           |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
+          |    if _batches_seen:
+          |        # No arrow-column counters here: the inline path flattens a batch with
+          |        # to_dict("records") / to_pylist() and never reaches _normalise_frame.
+          |        print(f"[wrapper] batch lane: {_batches_seen} batch(es)", file=sys.stderr, flush=True)
           |    envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
           |# Incremental-sync state: a script that wants the platform to remember its
           |# position sets a module-global dict DATRIS_STATE inside fetch(). Absent or
@@ -289,13 +919,14 @@ object TapScriptRunner {
         tapConfig: TapConfig,
         testLimit: Int = 0,
         params: Map[String, String] = Map.empty,
-        previousState: String = null
+        previousState: String = null,
+        mode: String = "run"
     ): TapScriptResult = {
         // HTTP taps run zero code on the platform: the "script" is a user-hosted
         // endpoint speaking the same envelope contract, so the entire Python lane
         // (storage read, wrapper, venv/pip, sidecar, secret-field inference) is
         // skipped and everything downstream of the envelope is shared.
-        if (tapConfig.isHttp) return runHttp(tapConfig, testLimit, params, previousState)
+        if (tapConfig.isHttp) return runHttp(tapConfig, testLimit, params, previousState, mode)
 
         logger.info("TapScriptRunner: executing tap: " + tapConfig.name)
 
@@ -308,7 +939,7 @@ object TapScriptRunner {
                     ". Open Edit Tap and regenerate the script, or paste a new one."
             )
         )
-        runScript(tapConfig, scriptContent, testLimit, params, previousState)
+        runScript(tapConfig, scriptContent, testLimit, params, previousState, mode)
     }
 
     /** Element-at-a-time re-serialization must not alter the data (same
@@ -334,10 +965,11 @@ object TapScriptRunner {
         scriptContent: String,
         testLimit: Int = 0,
         params: Map[String, String] = Map.empty,
-        previousState: String = null
+        previousState: String = null,
+        mode: String = "run"
     ): TapScriptResult = {
         val tapToken = "tap-" + java.util.UUID.randomUUID().toString
-        val result = StagingArea.withToken(tapToken)(runScriptStaged(tapConfig, scriptContent, testLimit, params, previousState))
+        val result = StagingArea.withToken(tapToken)(runScriptStaged(tapConfig, scriptContent, testLimit, params, previousState, mode))
         if (result.error != null) StagingArea.delete(tapToken)
         result
     }
@@ -347,8 +979,11 @@ object TapScriptRunner {
         scriptContent: String,
         testLimit: Int,
         params: Map[String, String],
-        previousState: String
+        previousState: String,
+        mode: String
     ): TapScriptResult = {
+        // Which ceiling this execution runs under, and the knob that raises it.
+        val timeout = timeoutFor(mode)
         // Step 2: Write script and wrapper to temp files
         val scriptFile: Path = Files.createTempFile("tap_script_", ".py")
         val wrapperFile: Path = Files.createTempFile("tap_wrapper_", ".py")
@@ -433,7 +1068,7 @@ object TapScriptRunner {
             platformToken = ai.datris.auth.TapRunTokens.issue(
                 tapConfig.name,
                 if (DatrisEnvironment.current.multiTenant) Some(DatrisEnvironment.current.environment) else None,
-                scriptTimeoutSeconds + 60
+                timeout.seconds + 60
             )
             val platformEnvVars = Seq(
                 "DATRIS_POSTGRES_DATABASE" -> DatrisEnvironment.current.postgresDatabase,
@@ -479,7 +1114,7 @@ object TapScriptRunner {
             secretValuesForMasking = secretValues
             val (rawOutput, rawLogs) =
                 if (useTapRunner) {
-                    executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, scriptTimeoutSeconds, secretValues, outputPath)
+                    executeViaRunner(scriptContent, allEnvVars, tapConfig.packages, timeout, secretValues, outputPath)
                 } else {
                     warnInProcess("tap " + tapConfig.name)
                     // In-process path: materialize the script/wrapper, install any extra
@@ -492,7 +1127,7 @@ object TapScriptRunner {
                         python,
                         wrapperFile.toString,
                         scriptFile.toString,
-                        scriptTimeoutSeconds,
+                        timeout,
                         allEnvVars :+ ("DATRIS_TAP_OUTPUT" -> outputPath.toString),
                         secretValues,
                         outputPath
@@ -580,6 +1215,17 @@ object TapScriptRunner {
                 newState = newStateJson
             )
         } catch {
+            case e: TapTimeoutException =>
+                // A timeout keeps what the script produced: the masked logs a successful
+                // run would have reported, and the records that reached the staging file
+                // before the kill (partial — nothing landed, TapRunner leaves
+                // lastRunRecordCount at 0). Must come before the generic DatrisException
+                // case below, which drops both.
+                val masked = if (secretValuesForMasking.nonEmpty) maskSecrets(e.getMessage, secretValuesForMasking) else e.getMessage
+                val maskedLogs = if (secretValuesForMasking.nonEmpty) maskSecrets(e.logs, secretValuesForMasking) else e.logs
+                logger.error("TapScriptRunner failed: " + masked)
+                if (maskedLogs != null && maskedLogs.nonEmpty) logger.info("TapScriptRunner: script logs:\n" + maskedLogs)
+                TapScriptResult(null, e.partialRecords.toInt, masked, if (maskedLogs != null && maskedLogs.nonEmpty) maskedLogs else null)
             case e: DatrisException =>
                 // DatrisException messages constructed inside this method are already
                 // masked at throw time (executeWithTimeout). Re-mask defensively in case a
@@ -719,11 +1365,12 @@ object TapScriptRunner {
         tapConfig: TapConfig,
         testLimit: Int,
         params: Map[String, String],
-        previousState: String
+        previousState: String,
+        mode: String
     ): TapScriptResult = {
         // Own staging token, like runScript: a failed call leaves nothing on disk.
         val tapToken = "tap-" + java.util.UUID.randomUUID().toString
-        val result = StagingArea.withToken(tapToken)(runHttpStaged(tapConfig, testLimit, params, previousState))
+        val result = StagingArea.withToken(tapToken)(runHttpStaged(tapConfig, testLimit, params, previousState, mode))
         if (result.error != null) StagingArea.delete(tapToken)
         result
     }
@@ -769,8 +1416,12 @@ object TapScriptRunner {
         tapConfig: TapConfig,
         testLimit: Int,
         params: Map[String, String],
-        previousState: String
+        previousState: String,
+        mode: String
     ): TapScriptResult = {
+        // Same two ceilings as the script lane: a test fails fast, a real run
+        // gets the hour.
+        val timeout = timeoutFor(mode)
         logger.info("TapScriptRunner: executing HTTP tap: " + tapConfig.name + " → " + tapConfig.endpointUrl)
         // The endpoint auth token is the only secret in play; used for masking below.
         var tokenForMasking: Seq[String] = Seq.empty
@@ -838,7 +1489,7 @@ object TapScriptRunner {
                 .build()
             val requestBuilder = java.net.http.HttpRequest.newBuilder()
                 .uri(java.net.URI.create(tapConfig.endpointUrl))
-                .timeout(java.time.Duration.ofSeconds(scriptTimeoutSeconds.toLong))
+                .timeout(java.time.Duration.ofSeconds(timeout.seconds.toLong))
                 .header("Content-Type", "application/json")
                 .header("X-Datris-Tap", tapConfig.name)
                 .header("User-Agent", "datris-tap/1")
@@ -850,7 +1501,8 @@ object TapScriptRunner {
                 catch {
                     case _: java.net.http.HttpTimeoutException =>
                         throw new DatrisException(
-                            "Tap endpoint did not respond within " + scriptTimeoutSeconds + " seconds. " +
+                            "Tap endpoint did not respond within " + timeout.seconds + " seconds (" +
+                                timeout.label + " mode; raise " + timeout.envVar + "). " +
                                 "Long fetches should be chunked: return one page plus a state cursor and let " +
                                 "the next run continue. " + ContractPointer
                         )
@@ -1271,10 +1923,11 @@ object TapScriptRunner {
         script: String,
         envVars: Seq[(String, String)],
         packages: java.util.List[String],
-        timeoutSec: Int,
+        timeout: TapTimeout,
         secretValues: Seq[String],
         outputPath: Path
     ): (String, String) = {
+        val timeoutSec = timeout.seconds
         val payload = new JsonObject()
         payload.addProperty("script", script)
         payload.addProperty("wrapper", WRAPPER_TEMPLATE)
@@ -1343,10 +1996,13 @@ object TapScriptRunner {
                         }
                         JsonParser.parseString(new String(trailer.toByteArray, StandardCharsets.UTF_8).trim).getAsJsonObject
                     }
-                if (obj.has("timedOut") && obj.get("timedOut").getAsBoolean)
-                    throw new DatrisException("Tap script timed out after " + timeoutSec + " seconds")
-                val exitCode = if (obj.has("exitCode")) obj.get("exitCode").getAsInt else -1
                 def str(k: String) = if (obj.has(k) && !obj.get(k).isJsonNull) obj.get(k).getAsString else ""
+                // Read the partial stdout/stderr the runner returns in its trailer BEFORE
+                // throwing: they are what the script managed to print before the kill, and
+                // without them a timed-out run's log entry is an error and nothing else.
+                if (obj.has("timedOut") && obj.get("timedOut").getAsBoolean)
+                    throw timeoutFailure(timeout, str("stdout"), str("stderr"), stagedLineCount(outputPath), secretValues)
+                val exitCode = if (obj.has("exitCode")) obj.get("exitCode").getAsInt else -1
                 val stdout = str("stdout")
                 val stderr = str("stderr")
                 if (exitCode != 0) {
@@ -1394,11 +2050,12 @@ object TapScriptRunner {
         python: String,
         wrapperPath: String,
         scriptPath: String,
-        timeoutSec: Int,
+        timeout: TapTimeout,
         envVars: Seq[(String, String)] = Seq.empty,
         secretValues: Seq[String] = Seq.empty,
         outputPath: Path = null
     ): (String, String) = {
+        val timeoutSec = timeout.seconds
         val stdout = new StringBuilder
         val stderr = new StringBuilder
 
@@ -1457,7 +2114,12 @@ object TapScriptRunner {
                 if (process.waitFor(250, java.util.concurrent.TimeUnit.MILLISECONDS)) exitCode = Some(process.exitValue())
                 else if (System.currentTimeMillis() > deadline) {
                     process.destroyForcibly()
-                    throw new DatrisException("Tap script timed out after " + timeoutSec + " seconds")
+                    // Join the pumps first: everything the script printed before the kill
+                    // is still in flight on those threads, and it is exactly what makes a
+                    // timeout diagnosable.
+                    outThread.join(5000)
+                    errThread.join(5000)
+                    throw timeoutFailure(timeout, stdout.toString, stderr.toString, stagedLineCount(outputPath), secretValues)
                 } else if (outputPath != null && Files.exists(outputPath)) {
                     val written = Files.size(outputPath)
                     if (StagingArea.overBudget(written)) {

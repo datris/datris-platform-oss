@@ -103,6 +103,9 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         pgvectorSecretName = null,
         multiTenant = false,
         tapScriptTimeoutSeconds = 2,
+        // Two ceilings (plans/stories/tap-run-timeout.md): a test is bounded by
+        // tapScriptTimeoutSeconds, a real run by tapRunTimeoutSeconds.
+        tapRunTimeoutSeconds = 10,
         // Phase 4: the output cap is the per-run disk budget (PIPELINE_MAX_PAYLOAD_MB);
         // a single-document `data` string is still read whole, under the
         // materialization cap.
@@ -246,12 +249,20 @@ class TapHttpEndpointSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(result.error.contains("405"))
     }
 
-    test("timeout produces a failed run mentioning chunked runs") {
+    test("timeout is per mode: a 4 s endpoint fails a test naming TAP_SCRIPT_TIMEOUT_SECONDS and succeeds as a run") {
+        // tapScriptTimeoutSeconds = 2, tapRunTimeoutSeconds = 10 in testEnv.
         install(200, """{"type": "json", "data": []}""", delayMs = 4000L)
-        val result = TapScriptRunner.run(httpTap())
-        assert(result.error != null)
-        assert(result.error.contains("did not respond within 2 seconds"))
-        assert(result.error.toLowerCase.contains("chunk"))
+        val testResult = TapScriptRunner.run(httpTap(), mode = "test")
+        assert(testResult.error != null)
+        assert(testResult.error.contains("did not respond within 2 seconds"), testResult.error)
+        assert(testResult.error.contains("test mode"), testResult.error)
+        assert(testResult.error.contains("TAP_SCRIPT_TIMEOUT_SECONDS"), testResult.error)
+        assert(testResult.error.toLowerCase.contains("chunk"), testResult.error)
+
+        install(200, """{"type": "json", "data": []}""", delayMs = 4000L)
+        val runResult = TapScriptRunner.run(httpTap(), mode = "run")
+        assert(runResult.error == null, "a real run gets the 10 s run ceiling: " + String.valueOf(runResult.error))
+        assert(runResult.recordCount == 0)
     }
 
     test("connection refused produces a failed run with the container-localhost hint") {

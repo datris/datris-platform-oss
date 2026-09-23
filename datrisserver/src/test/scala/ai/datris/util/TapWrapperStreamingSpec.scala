@@ -494,4 +494,79 @@ class TapWrapperStreamingSpec extends AnyFunSuite with BeforeAndAfterAll {
             assert(lines.size == 3 && lines.forall(l => JsonParser.parseString(l).isJsonArray), lines.toString)
         } finally dropStaged(result)
     }
+
+    // ================================================================
+    // Story: tap timeouts keep the script's logs, report progress and a
+    // partial record count (plans/stories/tap-timeout-diagnostics.md),
+    // Acceptance "TapWrapperStreamingSpec".
+    //
+    // The iterator lane prints `[wrapper] streamed N records (M s)` to stderr
+    // every 100,000 records or every 30 s, so an operator reading a timed-out
+    // run's logs can tell a healthy-but-slow script from a stuck one. The list
+    // lane prints none, and the envelope is untouched.
+    // ================================================================
+
+    private def progressLines(stderr: String): List[String] =
+        stderr.linesIterator.filter(_.contains("[wrapper] streamed")).toList
+
+    test("a generator of 250,000 rows prints exactly two progress lines, before the final fetch() line") {
+        assume(pythonAvailable, "python3 not available")
+        val (code, out, err, file) = runWrapper(
+            """def fetch():
+              |    for i in range(250000):
+              |        yield {"id": i}
+              |""".stripMargin
+        )
+        try {
+            assert(code == 0, out + "\n" + err)
+            val progress = progressLines(err)
+            assert(progress.size == 2, "one line per 100,000 records (the 30 s gate cannot have fired in this run): " + progress)
+            assert(progress.head.contains("[wrapper] streamed 100000 records"), progress.head)
+            assert(progress(1).contains("[wrapper] streamed 200000 records"), progress(1))
+            assert(
+                progress.forall(_.matches(""".*streamed \d+ records \(\d+(\.\d+)? s\).*""")),
+                "each progress line reports the elapsed seconds too: " + progress
+            )
+
+            val finalIdx = err.indexOf("[wrapper] fetch() returned 250000 json record(s)")
+            assert(finalIdx >= 0, "the closing line must still be printed: " + err)
+            assert(err.indexOf("streamed 200000 records") < finalIdx, "progress lines come DURING the stream, not after it: " + err)
+
+            // The envelope is byte-identical to what it was without progress lines.
+            val e = envelope(out)
+            assert(e.get("type").getAsString == "json" && e.get("count").getAsLong == 250000L, out)
+            assert(columnsOf(out) == List("id"), out)
+            assert(!e.has("data"), out)
+        } finally Files.deleteIfExists(file)
+    }
+
+    test("a generator of 10 rows prints no progress line") {
+        assume(pythonAvailable, "python3 not available")
+        val (code, out, err, file) = runWrapper(
+            """def fetch():
+              |    for i in range(10):
+              |        yield {"id": i}
+              |""".stripMargin
+        )
+        try {
+            assert(code == 0, out + "\n" + err)
+            assert(progressLines(err).isEmpty, "a short run must stay as quiet as today: " + err)
+            assert(envelope(out).get("count").getAsLong == 10L, out)
+        } finally Files.deleteIfExists(file)
+    }
+
+    test("a list of 250,000 rows prints no progress line") {
+        assume(pythonAvailable, "python3 not available")
+        val (code, out, err, file) = runWrapper(
+            """def fetch():
+              |    return [{"id": i} for i in range(250000)]
+              |""".stripMargin
+        )
+        try {
+            assert(code == 0, out + "\n" + err)
+            assert(progressLines(err).isEmpty, "the list lane is untouched by progress reporting: " + err)
+            assert(envelope(out).get("count").getAsLong == 250000L, out)
+            assert(columnsOf(out) == List("id"), out)
+        } finally Files.deleteIfExists(file)
+    }
 }

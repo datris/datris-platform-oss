@@ -38,6 +38,14 @@ export class TapsComponent implements OnInit, OnDestroy {
   onDocumentClick(): void {
     if (this.moveMenuOpen) this.moveMenuOpen = '';
   }
+
+  /** A refused save (400 malformed cron, 409 test-before-cron gate) comes back
+   *  as a JSON body {"error": "..."}, which Angular parses into an object —
+   *  concatenating it renders "[object Object]" and hides the message,
+   *  including the corrected cron to resend. Unwrap it first. */
+  errText(err: any): string {
+    return (err && err.error && err.error.error) || (err && err.error) || (err && err.message) || 'unknown error';
+  }
   private refreshInterval: any;
 
   deleteTarget = '';
@@ -444,7 +452,7 @@ export class TapsComponent implements OnInit, OnDestroy {
               });
             },
             error: (err) => {
-              alert('Failed to rename: ' + (err.error || err.message));
+              alert('Failed to rename: ' + this.errText(err));
               this.loadTaps();
             }
           });
@@ -457,7 +465,7 @@ export class TapsComponent implements OnInit, OnDestroy {
           this.tapService.storeScript(newName, script, undefined).subscribe({
             next: (res) => finishRename((res && res.scriptPath) || null),
             error: (err) => {
-              alert('Failed to copy script to new name: ' + (err.error || err.message));
+              alert('Failed to copy script to new name: ' + this.errText(err));
               this.loadTaps();
             }
           });
@@ -468,7 +476,7 @@ export class TapsComponent implements OnInit, OnDestroy {
         }
       },
       error: (err) => {
-        alert('Failed to load tap for rename: ' + (err.error || err.message));
+        alert('Failed to load tap for rename: ' + this.errText(err));
         this.loadTaps();
       }
     });
@@ -509,7 +517,7 @@ export class TapsComponent implements OnInit, OnDestroy {
     const updated = { ...tap, catalog: catalogValue };
     this.tapService.createOrUpdateTap(updated).subscribe({
       next: () => this.loadTaps(),
-      error: (err) => alert('Failed to move: ' + (err.error || err.message))
+      error: (err) => alert('Failed to move: ' + this.errText(err))
     });
   }
 
@@ -524,7 +532,7 @@ export class TapsComponent implements OnInit, OnDestroy {
     this.editingPipeline = '';
     this.tapService.createOrUpdateTap(tap).subscribe({
       next: () => this.loadTaps(),
-      error: (err) => alert('Failed to update pipeline: ' + (err.error || err.message))
+      error: (err) => alert('Failed to update pipeline: ' + this.errText(err))
     });
   }
 
@@ -551,7 +559,7 @@ export class TapsComponent implements OnInit, OnDestroy {
     this.deleting = name;
     this.tapService.deleteTap(name).subscribe({
       next: () => { this.deleting = ''; this.deleteTarget = ''; this.loadTaps(); },
-      error: (err) => { alert('Failed to delete: ' + (err.error || err.message)); this.deleting = ''; this.deleteTarget = ''; }
+      error: (err) => { alert('Failed to delete: ' + this.errText(err)); this.deleting = ''; this.deleteTarget = ''; }
     });
   }
 
@@ -770,7 +778,11 @@ export class TapsComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         this.savingCron = false;
-        this.cronEditError = 'Failed to save: ' + (err.error || err.message);
+        // A refused save (400 malformed cron, 409 test-before-cron gate) comes
+        // back as a JSON body {"error": "..."}, which Angular parses into an
+        // object — concatenating it renders "[object Object]" and hides the
+        // message (including the 6-field cron to resend). Unwrap it first.
+        this.cronEditError = 'Failed to save: ' + this.errText(err);
       }
     });
   }

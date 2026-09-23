@@ -473,4 +473,21 @@ class DoctorServiceSpec extends AnyFunSuite {
         assert(json.contains("\"summary\":{\"ok\":"))
         assert(!json.contains("sk-ant"), "secret values must never appear in the report")
     }
+
+    // env.seen — plans/stories/tap-run-timeout.md: both tap timeout knobs are
+    // .env-settable, so doctor has to show whether they reached the container.
+    test("env.seen: both tap timeout variables are probed and reported as seen when set") {
+        val probes = new FakeProbes() {
+            override def envSeen(names: Seq[String]): Map[String, Boolean] =
+                names.map(n => n -> (n == "DATRIS_ENV" || n.startsWith("TAP_"))).toMap
+        }
+        val check = new EnvSeenCheck(probes)
+        assert(check.names.contains("TAP_SCRIPT_TIMEOUT_SECONDS"), "doctor must probe the test ceiling variable")
+        assert(check.names.contains("TAP_RUN_TIMEOUT_SECONDS"), "doctor must probe the run ceiling variable")
+        val r = check.run()
+        assert(r.status == "ok")
+        assert(r.detail.contains("TAP_SCRIPT_TIMEOUT_SECONDS"), r.detail)
+        assert(r.detail.contains("TAP_RUN_TIMEOUT_SECONDS"), r.detail)
+        assert(!r.detail.contains("unset: TAP_"), "both were set: " + r.detail)
+    }
 }

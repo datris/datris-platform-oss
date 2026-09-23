@@ -1,0 +1,1180 @@
+package ai.datris.util
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+ */
+
+import ai.datris.model._
+import com.google.gson.JsonParser
+import org.scalatest.BeforeAndAfterAll
+import org.scalatest.funsuite.AnyFunSuite
+
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path, Paths}
+import scala.collection.JavaConverters._
+
+/** Story: taps may yield batches (plans/stories/tap-batch-yield.md) — the batch
+  *  lane of the REAL `WRAPPER_TEMPLATE`, executed under python3 exactly as
+  *  TapWrapperStreamingSpec does (the harness below is that spec's, copied).
+  *
+  *  Contract pinned here (story Steps 1-6):
+  *
+  *  {{{
+  *  // fetch() may `yield` a BATCH as well as a row: a pandas DataFrame, a
+  *  // pyarrow RecordBatch / Table, or a list whose first element is a dict
+  *  // (rows) or a list/tuple (cells).
+  *  //   - the envelope is unchanged: `count` is ROWS, `columns` is the
+  *  //     first-seen union of column names (only batches with >= 1 row
+  *  //     contribute), `type` is sniffed from the FIRST ROW of the first item;
+  *  //   - the staged NDJSON is value-identical to yielding the same rows one
+  *  //     at a time (df.to_dict("records") / batch.to_pylist());
+  *  //   - rows and batches may be mixed in one run;
+  *  //   - DATRIS_TAP_TEST_LIMIT counts ROWS: a 10,000-row batch under limit 20
+  *  //     writes 20 rows, pulls ONE item and close()s the generator;
+  *  //   - a tuple, a list of scalars and a yielded [] are NOT batches — they
+  *  //     keep today's meaning exactly;
+  *  //   - the inline path (no DATRIS_TAP_OUTPUT) flattens batches into today's
+  *  //     {type, data} envelope.
+  *  }}}
+  *
+  *  Today a yielded DataFrame / RecordBatch is written as one line holding its
+  *  repr (`default=str`), so count counts BATCHES and columns is []; a yielded
+  *  list of dicts is one JSON array line in the csv lane. Every batch test
+  *  below fails for one of those reasons. The two backward-compat tests (tuple
+  *  / list of scalars, yielded []) pin today's behaviour and must stay green
+  *  through the change.
+  *
+  *  pandas / pyarrow are `assume`d, not required: the spec skips where they are
+  *  absent (CI installs both).
+  */
+class TapWrapperBatchSpec extends AnyFunSuite with BeforeAndAfterAll {
+
+    private val root: Path = Files.createTempDirectory("tap-wrapper-batch-spec")
+
+    private lazy val pythonAvailable: Boolean =
+        try new ProcessBuilder("python3", "--version").start().waitFor() == 0
+        catch { case _: Exception => false }
+
+    private def moduleAvailable(name: String): Boolean =
+        try new ProcessBuilder("python3", "-c", s"import $name").start().waitFor() == 0
+        catch { case _: Exception => false }
+
+    private lazy val pandasAvailable: Boolean = pythonAvailable && moduleAvailable("pandas")
+    private lazy val pyarrowAvailable: Boolean = pythonAvailable && moduleAvailable("pyarrow")
+
+    /** The arrow *_view types need pyarrow 16+ (and a pandas that maps them). */
+    private lazy val viewTypesAvailable: Boolean = pyarrowAvailable && moduleAvailable("pandas") && {
+        val probe = "import pyarrow as pa, pandas as pd; " +
+            "pa.table({'a': pa.array(['x', None], type=pa.string_view()), 'b': pa.array([b'y', None], type=pa.binary_view())})" +
+            ".to_pandas(types_mapper=pd.ArrowDtype)"
+        try new ProcessBuilder("python3", "-c", probe).start().waitFor() == 0
+        catch { case _: Exception => false }
+    }
+
+    private def env(): DatrisEnvironment = DatrisEnvironment(
+        initialized = true,
+        environment = "test",
+        fileNotifierQueue = null,
+        ttlFileNotifierQueueMessages = 0,
+        pipelineTopic = null,
+        pipelineTableName = null,
+        archivedMetadataTableName = null,
+        pipelineStatusTableName = null,
+        fileNotifierMessageTableName = null,
+        dataPullTableName = null,
+        useApiKeys = false,
+        apiKeysSecretName = null,
+        postgresSecretName = null,
+        mongoDbSecretName = null,
+        kafkaProducerSecretName = null,
+        kafkaConsumerConfig = null,
+        mongoDbConfig = MongoDBConfig("mongodb://unused", "datris", "datris"),
+        minIOConfig = null,
+        activeMQConfig = null,
+        aiConfig = null,
+        aiEnabled = false,
+        embeddingSecretName = null,
+        qdrantSecretName = null,
+        weaviateSecretName = null,
+        milvusSecretName = null,
+        chromaSecretName = null,
+        pgvectorSecretName = null,
+        multiTenant = false,
+        tapScriptTimeoutSeconds = 300,
+        tempDir = root.toString
+    )
+
+    private def withEnv[T](e: DatrisEnvironment)(body: => T): T = {
+        TenantContext.set(e)
+        try body
+        finally TenantContext.clear()
+    }
+
+    override def afterAll(): Unit = TenantContext.clear()
+
+    // ---- wrapper harness (real WRAPPER_TEMPLATE, real python3) --------------
+
+    private def runWrapper(
+        scriptBody: String,
+        extraEnv: Map[String, String] = Map.empty,
+        filePath: Boolean = true
+    ): (Int, String, String, Path) = {
+        val scriptFile = Files.createTempFile("tap_batch_script_", ".py")
+        val wrapperFile = Files.createTempFile("tap_batch_wrapper_", ".py")
+        val outputFile = Files.createTempFile("tap_batch_out_", ".ndjson")
+        Files.deleteIfExists(outputFile) // the wrapper creates it
+        try {
+            Files.write(scriptFile, scriptBody.getBytes(StandardCharsets.UTF_8))
+            Files.write(wrapperFile, TapScriptRunner.WRAPPER_TEMPLATE.getBytes(StandardCharsets.UTF_8))
+            val pb = new ProcessBuilder("python3", wrapperFile.toString, scriptFile.toString)
+            pb.environment().remove("DATRIS_TAP_OUTPUT")
+            pb.environment().remove("DATRIS_TAP_TEST_LIMIT")
+            if (filePath) pb.environment().put("DATRIS_TAP_OUTPUT", outputFile.toString)
+            extraEnv.foreach { case (k, v) => pb.environment().put(k, v) }
+            val proc = pb.start()
+            proc.getOutputStream.close()
+            val errBuf = new java.io.ByteArrayOutputStream()
+            val errThread = new Thread(() => proc.getErrorStream.transferTo(errBuf))
+            errThread.start()
+            val out = new String(proc.getInputStream.readAllBytes(), StandardCharsets.UTF_8)
+            val code = proc.waitFor()
+            errThread.join(5000)
+            (code, out.trim, new String(errBuf.toByteArray, StandardCharsets.UTF_8), outputFile)
+        } finally {
+            Files.deleteIfExists(scriptFile)
+            Files.deleteIfExists(wrapperFile)
+        }
+    }
+
+    private def envelope(stdout: String) = JsonParser.parseString(stdout).getAsJsonObject
+
+    private def fileLines(p: Path): List[String] = Files.readAllLines(p, StandardCharsets.UTF_8).asScala.toList
+
+    private def fileBytes(p: Path): Array[Byte] = Files.readAllBytes(p)
+
+    private def columnsOf(stdout: String): List[String] =
+        envelope(stdout).getAsJsonArray("columns").asScala.map(_.getAsString).toList
+
+    private def dropStaged(result: TapScriptResult): Unit =
+        if (result != null && result.staged != null && result.staged.path != null) {
+            val p = Paths.get(result.staged.path)
+            Files.deleteIfExists(p)
+            StagingArea.delete(p.getParent.getFileName.toString)
+        }
+
+    private def scriptTap(name: String = "spec-batch-tap"): TapConfig =
+        TapConfig(name = name, description = "spec", targetPipeline = null, scriptPath = "tap-scripts/unused.py")
+
+    // The fixture frame: int, string, naive / microsecond / tz-aware
+    // timestamps, None, Decimal, nested dict. The per-row baseline yields
+    // EXACTLY the rows this frame materialises (`to_dict("records")`), so any
+    // difference is the batch lane's.
+    private val FrameFixture =
+        """import datetime, decimal
+          |import pandas as pd
+          |TZ = datetime.timezone(datetime.timedelta(hours=2))
+          |def records():
+          |    return [
+          |        {"id": 1, "name": "a",
+          |         "ts": datetime.datetime(2026, 9, 20, 12, 0, 0),
+          |         "ts_us": datetime.datetime(2026, 9, 20, 12, 0, 0, 123456),
+          |         "ts_tz": datetime.datetime(2026, 9, 20, 12, 0, 0, tzinfo=TZ),
+          |         "amount": decimal.Decimal("1.50"),
+          |         "nested": {"k": 1}, "note": None},
+          |        {"id": 2, "name": "b",
+          |         "ts": datetime.datetime(2026, 1, 2, 3, 4, 5),
+          |         "ts_us": datetime.datetime(2026, 1, 2, 3, 4, 5),
+          |         "ts_tz": datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=TZ),
+          |         "amount": decimal.Decimal("0.00"),
+          |         "nested": {"k": [1, 2]}, "note": "x"},
+          |        {"id": 3, "name": "c",
+          |         "ts": datetime.datetime(2026, 3, 4, 5, 6, 7),
+          |         "ts_us": datetime.datetime(2026, 3, 4, 5, 6, 7, 1),
+          |         "ts_tz": datetime.datetime(2026, 3, 4, 5, 6, 7, tzinfo=TZ),
+          |         "amount": None,
+          |         "nested": None, "note": None},
+          |    ]
+          |def frame():
+          |    df = pd.DataFrame(records())
+          |    # Object columns the batch lane must not re-infer: Python ints beside a
+          |    # None (a naive map() brings these back as float64 — 1 becomes 1.0), and
+          |    # ints beside a float in the same column.
+          |    df["qty"] = pd.Series([1, None, 3], dtype=object)
+          |    df["mixed"] = pd.Series([1, 2.5, 3], dtype=object)
+          |    # A dtype the fast to_json path does NOT handle: raw, it writes integer
+          |    # milliseconds where the row path writes "0 days 01:00:00".
+          |    df["dur"] = pd.to_timedelta(["1h", None, "2m"])
+          |    return df
+          |""".stripMargin
+
+    private val FixtureColumns =
+        List("id", "name", "ts", "ts_us", "ts_tz", "amount", "nested", "note", "qty", "mixed", "dur")
+
+    // ================================================================
+    // Acceptance 1 — a generator of DataFrames == the same rows one at a time
+    // ================================================================
+
+    test("a generator of DataFrames streams with the same envelope and NDJSON as the same rows yielded one at a time") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            FrameFixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            FrameFixture +
+                """def fetch():
+                  |    df = frame()
+                  |    yield df.iloc[0:2]
+                  |    yield df.iloc[2:3]
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "a yielded DataFrame must not fail the wrapper: " + batchOut + "\n" + batchErr)
+
+            val rowEnv = envelope(rowOut)
+            assert(rowEnv.get("type").getAsString == "json" && rowEnv.get("count").getAsLong == 3L, "row baseline: " + rowOut)
+            assert(columnsOf(rowOut) == FixtureColumns, "row baseline columns: " + rowOut)
+
+            val e = envelope(batchOut)
+            assert(e.get("type").getAsString == "json", "the type is sniffed from the first ROW of the first batch: " + batchOut)
+            assert(e.get("count").getAsLong == 3L, "count is ROWS, not batches: " + batchOut)
+            assert(!e.has("data"), "records must not ride on stdout: " + batchOut)
+            assert(columnsOf(batchOut) == FixtureColumns, "columns is the frame's columns, in order: " + batchOut)
+
+            assert(fileLines(batchFile).size == 3, "one NDJSON line per ROW: " + fileLines(batchFile))
+            assert(
+                fileLines(batchFile) == fileLines(rowFile),
+                "batch NDJSON must equal the per-row NDJSON:\nbatch: " + fileLines(batchFile) + "\nrows:  " + fileLines(rowFile)
+            )
+            assert(
+                java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)),
+                "the staged bytes must be identical (no float in this fixture needs the documented 15-digit divergence)"
+            )
+            val first = JsonParser.parseString(fileLines(batchFile).head).getAsJsonObject
+            assert(first.get("ts").getAsString == "2026-09-20 12:00:00", "naive timestamp form is unchanged: " + first)
+            assert(first.get("ts_us").getAsString == "2026-09-20 12:00:00.123456", "microseconds only where present: " + first)
+            assert(first.get("ts_tz").getAsString == "2026-09-20 12:00:00+02:00", "tz offset keeps its colon: " + first)
+            assert(first.get("amount").getAsString == "1.50", "Decimal keeps default=str semantics: " + first)
+            assert(first.getAsJsonObject("nested").get("k").getAsInt == 1, "a nested dict stays a nested object: " + first)
+            assert(
+                first.get("qty").getAsJsonPrimitive.isNumber && first.get("qty").getAsString == "1",
+                "an object column of Python ints must not be re-inferred to float (1, not 1.0): " + first
+            )
+            assert(first.get("mixed").getAsString == "1", "ints beside a float in one object column stay ints: " + first)
+            assert(first.get("dur").getAsString == "0 days 01:00:00", "a timedelta keeps the row path's string form: " + first)
+            assert(fileLines(batchFile).forall(!_.contains("DataFrame")), "no repr of the frame may reach the file")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    // ================================================================
+    // Acceptance 2 — arrow batches, list[dict] batches, mixed rows+batches
+    // ================================================================
+
+    test("a generator of RecordBatches (and one Table) matches the per-row equivalent") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        val fixture =
+            """import datetime
+              |import pyarrow as pa
+              |def table():
+              |    return pa.table({
+              |        "id": pa.array([1, 2, 3, 4], type=pa.int64()),
+              |        "name": pa.array(["a", "b", None, "d"], type=pa.string()),
+              |        "ts": pa.array([datetime.datetime(2026, 9, 20, 12, 0, 0)] * 4, type=pa.timestamp("us")),
+              |        # An arrow NULL in a numeric column is a true null: to_pandas()
+              |        # folds it into NaN (and promotes the int column to float), so
+              |        # without care a batch would write 1.0 / NaN where the rows
+              |        # write 1 / null. The last float cell is a real NaN, which MUST
+              |        # stay the NaN token.
+              |        "qty": pa.array([1, None, 3, 4], type=pa.int64()),
+              |        "score": pa.array([1.5, None, float("nan"), 2.5], type=pa.float64()),
+              |        # Types to_pandas() does NOT round-trip: a list cell comes back
+              |        # as a numpy array (str() of which is "[1 2]") and a duration as
+              |        # timedelta64 (which to_json writes as integer milliseconds).
+              |        "tags": pa.array([[1, 2], [3], None, [4, 5]], type=pa.list_(pa.int64())),
+              |        "took": pa.array([1000, 2000, None, 3000], type=pa.duration("ms")),
+              |    })
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _b in table().to_batches(max_chunksize=2):
+                  |        for _r in _b.to_pylist():
+                  |            yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    _batches = table().to_batches(max_chunksize=2)
+                  |    yield _batches[0]
+                  |    yield table().slice(2, 2)
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "a yielded RecordBatch / Table must not fail the wrapper: " + batchOut + "\n" + batchErr)
+            val e = envelope(batchOut)
+            assert(e.get("type").getAsString == "json", batchOut)
+            assert(e.get("count").getAsLong == 4L, "count is rows across a RecordBatch and a Table: " + batchOut)
+            assert(columnsOf(batchOut) == List("id", "name", "ts", "qty", "score", "tags", "took"), batchOut)
+            assert(
+                fileLines(batchFile).head.contains("\"tags\":[1,2]"),
+                "an arrow list column stays a JSON array, not the str() of a numpy array: " + fileLines(batchFile).head
+            )
+            assert(
+                fileLines(batchFile).head.contains("\"took\":\"0:00:01\""),
+                "an arrow duration keeps to_pylist()'s string form, not integer milliseconds: " + fileLines(batchFile).head
+            )
+            val third = JsonParser.parseString(fileLines(batchFile)(2)).getAsJsonObject
+            assert(fileLines(batchFile).head.contains("\"qty\":1,"), "an int column with nulls stays int: " + fileLines(batchFile).head)
+            assert(third.get("score").getAsString == "NaN", "a real NaN keeps its token: " + third)
+            assert(
+                fileLines(batchFile) == fileLines(rowFile),
+                "arrow batches must stage the same NDJSON as their to_pylist() rows:\nbatch: " + fileLines(batchFile) + "\nrows:  " + fileLines(rowFile)
+            )
+            assert(fileLines(batchFile).forall(l => !l.contains("pyarrow")), "no repr of the arrow object may reach the file")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("a generator of list[dict] batches is byte-identical to per-row yield") {
+        assume(pythonAvailable, "python3 not available")
+        val rows =
+            """def records():
+              |    return [{"id": 1, "name": "a"}, {"id": 2, "extra": True}, {"id": 3, "name": "c"}, {"id": 4}]
+              |""".stripMargin
+        val (rowCode, rowOut, _, rowFile) = runWrapper(
+            rows +
+                """def fetch():
+                  |    for _r in records():
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            rows +
+                """def fetch():
+                  |    _r = records()
+                  |    yield _r[0:2]
+                  |    yield _r[2:4]
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, rowOut)
+            assert(batchCode == 0, batchOut + "\n" + batchErr)
+            val e = envelope(batchOut)
+            assert(e.get("type").getAsString == "json", "a list whose first element is a dict is a BATCH of rows, not a csv row: " + batchOut)
+            assert(e.get("count").getAsLong == 4L, "count is rows: " + batchOut)
+            assert(columnsOf(batchOut) == List("id", "name", "extra"), "union of row keys in first-seen order: " + batchOut)
+            assert(
+                java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)),
+                "a list[dict] batch is written through the per-row encoder — byte-identical:\nbatch: " + fileLines(batchFile) + "\nrows:  " + fileLines(rowFile)
+            )
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("rows and batches mixed in one run count every row and union columns in first-seen order") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (code, out, err, file) = runWrapper(
+            """import pandas as pd
+              |def fetch():
+              |    yield {"id": 1, "name": "a"}
+              |    yield pd.DataFrame([{"id": 2, "name": "b", "extra": 7}])
+              |    yield [{"id": 3, "late": "z"}]
+              |    yield {"id": 4, "extra": 9}
+              |""".stripMargin
+        )
+        try {
+            assert(code == 0, out + "\n" + err)
+            val e = envelope(out)
+            assert(e.get("type").getAsString == "json", "the first item is a plain row: type json: " + out)
+            assert(e.get("count").getAsLong == 4L, "two rows and two one-row batches = 4 records: " + out)
+            assert(columnsOf(out) == List("id", "name", "extra", "late"), "first-seen union across rows AND batches: " + out)
+            val ids = fileLines(file).map(l => JsonParser.parseString(l).getAsJsonObject.get("id").getAsInt)
+            assert(ids == List(1, 2, 3, 4), "rows stay in yield order: " + fileLines(file))
+        } finally Files.deleteIfExists(file)
+    }
+
+    // ================================================================
+    // Acceptance 3 — the csv lane, and what is NOT a batch
+    // ================================================================
+
+    test("a list-of-lists batch in the csv lane writes one array line per inner list, and a later yielded list of cells is still one row") {
+        assume(pythonAvailable, "python3 not available")
+        val (code, out, err, file) = runWrapper(
+            """def fetch():
+              |    yield [["h1", "h2"], [1, 2]]
+              |    yield [3, 4]
+              |""".stripMargin
+        )
+        try {
+            assert(code == 0, out + "\n" + err)
+            val e = envelope(out)
+            assert(e.get("type").getAsString == "csv", "a list whose first element is a list is a batch of CELL rows: " + out)
+            assert(e.get("count").getAsLong == 3L, "two rows from the batch plus one yielded cell row: " + out)
+            assert(e.getAsJsonArray("columns").size() == 0, "columns stays [] for array rows: " + out)
+            val lines = fileLines(file)
+            assert(lines.size == 3, lines.toString)
+            assert(lines.forall(l => JsonParser.parseString(l).isJsonArray), "one JSON array per line: " + lines)
+            assert(JsonParser.parseString(lines.head).getAsJsonArray.get(0).getAsString == "h1", lines.head)
+            assert(JsonParser.parseString(lines(2)).getAsJsonArray.get(1).getAsInt == 4, "the later list of scalars is ONE row: " + lines(2))
+        } finally Files.deleteIfExists(file)
+    }
+
+    test("a tuple and a list of scalars are single csv rows, never batches") {
+        assume(pythonAvailable, "python3 not available")
+        val (code, out, err, file) = runWrapper(
+            """def fetch():
+              |    yield ("a", "b")
+              |    yield [1, 2]
+              |    yield ({"k": 1}, {"k": 2})
+              |""".stripMargin
+        )
+        try {
+            assert(code == 0, out + "\n" + err)
+            val e = envelope(out)
+            assert(e.get("type").getAsString == "csv", out)
+            assert(e.get("count").getAsLong == 3L, "each yielded tuple / list of scalars is exactly ONE row: " + out)
+            val lines = fileLines(file)
+            assert(lines.size == 3 && lines.forall(l => JsonParser.parseString(l).isJsonArray), lines.toString)
+            assert(JsonParser.parseString(lines(2)).getAsJsonArray.size() == 2, "a TUPLE is never a batch, even of dicts: " + lines(2))
+        } finally Files.deleteIfExists(file)
+    }
+
+    test("a yielded [] keeps today's semantics in both lanes") {
+        assume(pythonAvailable, "python3 not available")
+        // dict lane: a non-dict row is dropped, as today.
+        val (c1, o1, e1, f1) = runWrapper(
+            """def fetch():
+              |    yield {"id": 1}
+              |    yield []
+              |    yield {"id": 2}
+              |""".stripMargin
+        )
+        try {
+            assert(c1 == 0, o1 + "\n" + e1)
+            assert(envelope(o1).get("type").getAsString == "json", o1)
+            assert(envelope(o1).get("count").getAsLong == 2L, "[] is dropped in the dict lane, as today: " + o1)
+            assert(fileLines(f1).size == 2, fileLines(f1).toString)
+        } finally Files.deleteIfExists(f1)
+
+        // csv lane: [] is an empty csv row, as today.
+        val (c2, o2, e2, f2) = runWrapper(
+            """def fetch():
+              |    yield ["a"]
+              |    yield []
+              |    yield ["b"]
+              |""".stripMargin
+        )
+        try {
+            assert(c2 == 0, o2 + "\n" + e2)
+            assert(envelope(o2).get("type").getAsString == "csv", o2)
+            assert(envelope(o2).get("count").getAsLong == 3L, "[] is an empty csv row, as today: " + o2)
+            assert(fileLines(f2)(1) == "[]", "the empty row is written verbatim: " + fileLines(f2))
+        } finally Files.deleteIfExists(f2)
+    }
+
+    // ================================================================
+    // Acceptance 4 — the test limit counts rows; empty batches
+    // ================================================================
+
+    test("DATRIS_TAP_TEST_LIMIT=20 over 10,000-row batches writes 20 rows, count 20, pulls one batch, closes the generator") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val script =
+            """import sys
+              |import pandas as pd
+              |def fetch():
+              |    pulled = 0
+              |    try:
+              |        for _b in range(50):
+              |            pulled += 1
+              |            yield pd.DataFrame({"id": range(_b * 10000, (_b + 1) * 10000)})
+              |    finally:
+              |        print("[script] generator closed pulled=%d" % pulled, file=sys.stderr, flush=True)
+              |""".stripMargin
+        val (code, out, err, file) = runWrapper(script, Map("DATRIS_TAP_TEST_LIMIT" -> "20"))
+        try {
+            assert(code == 0, out + "\n" + err)
+            val e = envelope(out)
+            assert(e.get("count").getAsLong == 20L, "the limit counts ROWS, so a 10,000-row batch is sliced to 20: " + out)
+            assert(fileLines(file).size == 20, "20 NDJSON lines: " + fileLines(file).size)
+            assert(columnsOf(out) == List("id"), out)
+            val ids = fileLines(file).map(l => JsonParser.parseString(l).getAsJsonObject.get("id").getAsInt)
+            assert(ids == (0 until 20).toList, "the first 20 rows of the first batch: " + ids)
+            assert(err.contains("generator closed"), "the wrapper must close() the generator so its finally runs: " + err)
+            assert(err.contains("pulled=1"), "exactly ONE batch is pulled once the limit is filled: " + err)
+        } finally Files.deleteIfExists(file)
+    }
+
+    test("an empty batch adds no rows and no columns; a generator of only empty batches is json, count 0, columns []") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (c1, o1, e1, f1) = runWrapper(
+            """import pandas as pd
+              |def fetch():
+              |    yield pd.DataFrame(columns=["ghost"])
+              |    yield pd.DataFrame([{"id": 1, "name": "a"}])
+              |""".stripMargin
+        )
+        try {
+            assert(c1 == 0, o1 + "\n" + e1)
+            val e = envelope(o1)
+            assert(e.get("type").getAsString == "json", "an empty first batch still types json and keeps pulling: " + o1)
+            assert(e.get("count").getAsLong == 1L, "an empty batch adds no rows: " + o1)
+            assert(columnsOf(o1) == List("id", "name"), "only batches with >= 1 row contribute columns: " + o1)
+            assert(fileLines(f1).size == 1, fileLines(f1).toString)
+        } finally Files.deleteIfExists(f1)
+
+        val (c2, o2, e2, f2) = runWrapper(
+            """import pandas as pd
+              |def fetch():
+              |    for _ in range(3):
+              |        yield pd.DataFrame(columns=["ghost"])
+              |""".stripMargin
+        )
+        try {
+            assert(c2 == 0, o2 + "\n" + e2)
+            val e = envelope(o2)
+            assert(e.get("type").getAsString == "json", o2)
+            assert(e.get("count").getAsLong == 0L, "only empty batches → 0 records: " + o2)
+            assert(e.get("columns").isJsonArray && e.getAsJsonArray("columns").size() == 0, "columns must be [], not null: " + o2)
+            assert(Files.exists(f2) && Files.size(f2) == 0L, "0 records → an empty file, as for an empty generator")
+        } finally Files.deleteIfExists(f2)
+    }
+
+    // ================================================================
+    // Acceptance 5 — the parity table
+    // ================================================================
+
+    // Each case: the python expression, and whether pyarrow can carry it.
+    private val ParityCases: List[(String, String)] = List(
+        "naive datetime" -> "datetime.datetime(2026, 9, 20, 12, 0, 0)",
+        "microsecond datetime" -> "datetime.datetime(2026, 9, 20, 12, 0, 0, 123456)",
+        "tz-aware datetime" -> "datetime.datetime(2026, 9, 20, 12, 0, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))",
+        "date" -> "datetime.date(2026, 9, 20)",
+        "pd.Timestamp" -> "pd.Timestamp(\"2026-09-20 12:00:00\")",
+        "NaT" -> "pd.NaT",
+        "Decimal" -> "decimal.Decimal(\"1.50\")",
+        "NaN" -> "float(\"nan\")",
+        "Infinity" -> "float(\"inf\")",
+        "-Infinity" -> "float(\"-inf\")",
+        "None" -> "None",
+        "bytes" -> "b\"hi\"",
+        // The row equivalent of a frame's bool column is what df.to_dict("records")
+        // yields: a PYTHON bool (pandas boxes numpy bools on the way out). A batch must
+        // keep a boolean column boolean, or switching a script from rows to batches
+        // would silently turn it into a string column at the destination. The raw
+        // numpy.bool_ row case — still "True", because the per-row encoder is
+        // untouched — is pinned by its own test below.
+        "bool (numpy, boxed as pandas boxes it)" -> "bool(numpy.bool_(True))",
+        "nested dict with datetime" -> "{\"k\": datetime.datetime(2026, 9, 20, 12, 0, 0)}",
+        "period" -> "pd.Period(\"2026-01\", freq=\"M\")",
+        "interval" -> "pd.Interval(0, 1)",
+        "year 1 timestamp (strftime does not zero-pad it)" -> "pd.Timestamp(\"0001-01-01\")"
+    )
+
+    private val ParityPreamble =
+        """import datetime, decimal
+          |import numpy
+          |import pandas as pd
+          |""".stripMargin
+
+    private def parityLine(valueExpr: String, mode: String): (Int, String, String, String) = {
+        val body = mode match {
+            case "row" => s"""def fetch():\n    yield {"v": $valueExpr}\n"""
+            case "frame" => s"""def fetch():\n    yield pd.DataFrame([{"v": $valueExpr}])\n"""
+            case "arrow" => s"""import pyarrow as pa\ndef fetch():\n    yield pa.RecordBatch.from_pylist([{"v": $valueExpr}])\n"""
+        }
+        val (code, out, err, file) = runWrapper(ParityPreamble + body)
+        try {
+            val line = if (Files.exists(file)) fileLines(file).headOption.getOrElse("") else ""
+            (code, out, err, line)
+        } finally Files.deleteIfExists(file)
+    }
+
+    test("every parity-table value yields an identical NDJSON line as a row and as a one-row DataFrame") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val failures = ParityCases.flatMap { case (label, expr) =>
+            val (rowCode, rowOut, rowErr, rowLine) = parityLine(expr, "row")
+            val (frameCode, frameOut, frameErr, frameLine) = parityLine(expr, "frame")
+            if (rowCode != 0) Some(s"$label: the per-row baseline itself failed: $rowOut $rowErr")
+            else if (frameCode != 0) Some(s"$label: the one-row DataFrame failed: $frameOut $frameErr")
+            else if (rowLine != frameLine) Some(s"$label: row wrote $rowLine but the DataFrame wrote $frameLine")
+            else None
+        }
+        assert(failures.isEmpty, "batch/row NDJSON divergence:\n" + failures.mkString("\n"))
+    }
+
+    /** True when pyarrow can BUILD a one-row batch holding this value at all —
+      * probed outside the wrapper, so a value arrow itself refuses (NaT) is
+      * skipped rather than blamed on the wrapper. */
+    private def arrowCanCarry(expr: String): Boolean =
+        try {
+            val probe = ParityPreamble + "import pyarrow as pa\npa.RecordBatch.from_pylist([{\"v\": " + expr + "}])\n"
+            val pb = new ProcessBuilder("python3", "-c", probe)
+            pb.redirectErrorStream(true)
+            val p = pb.start()
+            p.getInputStream.readAllBytes()
+            p.waitFor() == 0
+        } catch { case _: Exception => false }
+
+    test("every parity-table value pyarrow can carry yields an identical NDJSON line as a row and as a one-row RecordBatch") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        // Values arrow cannot represent at all are covered by the DataFrame
+        // table above.
+        val carried = ParityCases.filter { case (_, expr) => arrowCanCarry(expr) }
+        assert(carried.size >= 8, "the arrow parity table lost most of its cases: " + carried.map(_._1))
+        val failures = carried.flatMap { case (label, expr) =>
+            val (rowCode, _, rowErr, rowLine) = parityLine(expr, "row")
+            val (arrowCode, arrowOut, arrowErr, arrowLine) = parityLine(expr, "arrow")
+            if (rowCode != 0) Some(s"$label: the per-row baseline itself failed: $rowErr")
+            else if (arrowCode != 0) Some(s"$label: the one-row RecordBatch failed: $arrowOut $arrowErr")
+            else if (rowLine != arrowLine) Some(s"$label: row wrote $rowLine but the RecordBatch wrote $arrowLine")
+            else None
+        }
+        assert(failures.isEmpty, "batch/row NDJSON divergence (arrow):\n" + failures.mkString("\n"))
+    }
+
+    test("a raw numpy bool yielded as a row still writes \"True\", and a frame's bool column writes true") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (rowCode, _, rowErr, rowLine) = parityLine("numpy.bool_(True)", "row")
+        assert(rowCode == 0, rowErr)
+        assert(
+            JsonParser.parseString(rowLine).getAsJsonObject.get("v").getAsJsonPrimitive.isString,
+            "the per-row encoder is untouched: json.dumps cannot encode numpy.bool_, so default=str writes the STRING \"True\": " + rowLine
+        )
+        val (frameCode, _, frameErr, frameLine) = parityLine("numpy.bool_(True)", "frame")
+        assert(frameCode == 0, frameErr)
+        val frameVal = JsonParser.parseString(frameLine).getAsJsonObject.get("v").getAsJsonPrimitive
+        assert(frameVal.isBoolean && frameVal.getAsBoolean, "a frame's bool column stays a JSON boolean: " + frameLine)
+    }
+
+    /** Not in ParityCases: pyarrow's from_pylist() truncates a nanosecond
+      *  Timestamp to microseconds before the wrapper ever sees it (its own
+      *  to_pylist() reads back 00:00:00), so the arrow table cannot carry this
+      *  case faithfully. The pandas lane can, and must. */
+    test("a sub-microsecond timestamp keeps its nanoseconds in a batch, as it does in a row") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val values = List(
+            "pd.Timestamp(\"2026-01-01 00:00:00.000000001\")",
+            "pd.Timestamp(\"2026-01-01 00:00:00.5\")",
+            "pd.Timestamp(\"2026-01-01\")"
+        )
+        val failures = values.flatMap { expr =>
+            val (rowCode, _, rowErr, rowLine) = parityLine(expr, "row")
+            val (frameCode, _, frameErr, frameLine) = parityLine(expr, "frame")
+            if (rowCode != 0) Some(s"$expr: the per-row baseline failed: $rowErr")
+            else if (frameCode != 0) Some(s"$expr: the one-row DataFrame failed: $frameErr")
+            else if (rowLine != frameLine) Some(s"$expr: row wrote $rowLine but the DataFrame wrote $frameLine")
+            else None
+        }
+        assert(failures.isEmpty, "sub-microsecond divergence:\n" + failures.mkString("\n"))
+        val (_, _, _, nsLine) = parityLine(values.head, "frame")
+        assert(nsLine.contains("2026-01-01 00:00:00.000000001"), "the nanosecond fraction must survive: " + nsLine)
+    }
+
+    test("a float needing 17 digits parses within 1e-15 relative and keeps the same json type") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val expr = "0.1 + 0.2"
+        val (rowCode, _, rowErr, rowLine) = parityLine(expr, "row")
+        val (frameCode, _, frameErr, frameLine) = parityLine(expr, "frame")
+        assert(rowCode == 0, rowErr)
+        assert(frameCode == 0, frameErr)
+        val rowJson = JsonParser.parseString(rowLine)
+        val frameJson = JsonParser.parseString(frameLine)
+        assert(rowJson.isJsonObject, "the per-row baseline must write a record: " + rowLine)
+        assert(frameJson.isJsonObject, "a one-row DataFrame must write a RECORD, not its repr: " + frameLine)
+        val rowVal = rowJson.getAsJsonObject.get("v")
+        val frameVal = frameJson.getAsJsonObject.get("v")
+        assert(rowVal.getAsJsonPrimitive.isNumber && frameVal.getAsJsonPrimitive.isNumber, s"same json type: $rowLine vs $frameLine")
+        val a = rowVal.getAsDouble
+        val b = frameVal.getAsDouble
+        assert(math.abs(a - b) <= 1e-15 * math.abs(a), s"the documented 15-digit divergence must stay within 1e-15 relative: $rowLine vs $frameLine")
+    }
+
+    // ================================================================
+    // The dtype sweep — one column of every family, rows vs batch
+    // ================================================================
+
+    /** Every pandas dtype family in one frame. The batch lane's fast path is
+      *  only trusted for bool / int / float / string / datetime / object;
+      *  everything else (timedelta, period, interval, categorical, and anything
+      *  pandas adds next) must fall back to the per-value encoding the row path
+      *  uses, so a new dtype is slower but never wrong. This is the test that
+      *  catches a whole class of drift at once. */
+    private val SweepFixture =
+        """import datetime, decimal
+          |import numpy as np
+          |import pandas as pd
+          |def frame():
+          |    df = pd.DataFrame(index=range(3))
+          |    df["b"] = pd.Series([True, False, True])
+          |    df["i"] = pd.Series([1, 2, 3], dtype="int64")
+          |    df["f"] = pd.Series([1.5, float("nan"), float("inf")])
+          |    df["I"] = pd.Series([1, None, 3], dtype="Int64")
+          |    df["B"] = pd.Series([True, None, False], dtype="boolean")
+          |    df["s"] = pd.Series(["a", None, "c"], dtype="str")
+          |    df["o"] = pd.Series([1, None, 2.5], dtype=object)
+          |    df["dt"] = pd.to_datetime(["2026-09-20 12:00:00", None, "2026-09-20 12:00:00.123456"], format="mixed")
+          |    df["dtz"] = pd.to_datetime(["2026-09-20 12:00:00", None, "2026-09-20 12:00:00.123456"], format="mixed", utc=True)
+          |    df["td"] = pd.to_timedelta(["1h", None, "2m"])
+          |    df["per"] = pd.Series(pd.period_range("2026-01", periods=3, freq="M"))
+          |    df["iv"] = pd.Series(pd.interval_range(0, periods=3))
+          |    df["cat"] = pd.Series(["x", "y", "x"], dtype="category")
+          |    df["lst"] = pd.Series([[1, 2], None, [3]], dtype=object)
+          |    df["dct"] = pd.Series([{"k": 1}, None, {"k": [1, 2]}], dtype=object)
+          |    df["dec"] = pd.Series([decimal.Decimal("1.50"), None, decimal.Decimal("0.00")], dtype=object)
+          |    df["dte"] = pd.Series([datetime.date(2026, 9, 20), None, datetime.date(2026, 1, 1)], dtype=object)
+          |    df["byt"] = pd.Series([b"hi", None, b"yo"], dtype=object)
+          |    df["nd"] = pd.Series([np.array([1, 2]), None, np.array([3])], dtype=object)
+          |    # Object cells the row path BOXES before encoding: pandas NA is a
+          |    # missing value (null, not "<NA>") and a numpy scalar is boxed to its
+          |    # Python equivalent (true / 1.5 / 3, not "True" / "1.5" / "3").
+          |    df["na"] = pd.Series([pd.NA, 1, "x"], dtype=object)
+          |    df["npb"] = pd.Series([np.bool_(True), np.float32(1.5), np.int64(3)], dtype=object)
+          |    df["npd"] = pd.Series([np.datetime64("2026-01-01T00:00:00.5"), np.timedelta64(1000, "ms"), None], dtype=object)
+          |    return df
+          |""".stripMargin
+
+    test("a frame with one column of every pandas dtype family stages exactly as its to_dict(\"records\") rows") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            SweepFixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            SweepFixture +
+                """def fetch():
+                  |    yield frame()
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "the batch run failed: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            assert(columnsOf(batchOut) == columnsOf(rowOut), "same columns: " + batchOut + " vs " + rowOut)
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "every dtype must encode as it does on the row path:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    private val ArrowSweepFixture =
+        """import datetime, decimal
+          |import pyarrow as pa
+          |def table():
+          |    return pa.table({
+          |        "b": pa.array([True, None, False]),
+          |        "i": pa.array([1, None, 3], type=pa.int64()),
+          |        "u": pa.array([1, None, 3], type=pa.uint32()),
+          |        "f": pa.array([1.5, None, float("nan")], type=pa.float64()),
+          |        "f32": pa.array([1.5, None, 2.5], type=pa.float32()),
+          |        "s": pa.array(["a", None, "c"]),
+          |        "ts": pa.array([datetime.datetime(2026, 9, 20, 12, 0, 0), None, datetime.datetime(2026, 1, 2, 3, 4, 5, 123456)], type=pa.timestamp("us")),
+          |        "tstz": pa.array([datetime.datetime(2026, 9, 20, 12, 0, 0), None, datetime.datetime(2026, 1, 2, 3, 4, 5)], type=pa.timestamp("us", tz="+02:00")),
+          |        "d32": pa.array([datetime.date(2026, 9, 20), None, datetime.date(2026, 1, 1)], type=pa.date32()),
+          |        "t64": pa.array([datetime.time(1, 2, 3), None, datetime.time(4, 5, 6)], type=pa.time64("us")),
+          |        "dur": pa.array([1000, None, 2000], type=pa.duration("ms")),
+          |        "dec": pa.array([decimal.Decimal("1.50"), None, decimal.Decimal("0.25")], type=pa.decimal128(9, 2)),
+          |        "bin": pa.array([b"hi", None, b"yo"], type=pa.binary()),
+          |        "lst": pa.array([[1, 2], None, [3]], type=pa.list_(pa.int64())),
+          |        "st": pa.array([{"k": 1}, None, {"k": 2}], type=pa.struct([("k", pa.int64())])),
+          |        "dic": pa.array(["x", "y", "x"]).dictionary_encode(),
+          |        "nul": pa.array([None, None, None], type=pa.null()),
+          |        "mp": pa.array([[("a", 1)], None, [("b", 2)]], type=pa.map_(pa.string(), pa.int64())),
+          |    })
+          |""".stripMargin
+
+    test("a Table with one column of every arrow type stages exactly as its to_pylist() rows") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            ArrowSweepFixture +
+                """def fetch():
+                  |    for _r in table().to_pylist():
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            ArrowSweepFixture +
+                """def fetch():
+                  |    yield table()
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "the batch run failed: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            assert(columnsOf(batchOut) == columnsOf(rowOut), "same columns: " + batchOut + " vs " + rowOut)
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "every arrow type must encode as its to_pylist() row does:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("an arrow-BACKED pandas frame (dtype_backend=\"pyarrow\") stages exactly as its to_dict(\"records\") rows") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        // What pd.read_parquet(..., dtype_backend="pyarrow") and
+        // pd.read_csv(engine="pyarrow", dtype_backend="pyarrow") hand a script:
+        // ArrowDtype columns, which answer is_datetime64_any_dtype for timestamp
+        // AND date32 but cannot take the vectorised .dt path at all.
+        val fixture = ArrowSweepFixture +
+            """import pandas as pd
+              |def frame():
+              |    return table().to_pandas(types_mapper=pd.ArrowDtype)
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    yield frame()
+                  |""".stripMargin
+        )
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "an ArrowDtype frame must not fail the wrapper: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "an arrow-backed dtype must encode as the row path does:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    // ================================================================
+    // Story: batch lane fast path for arrow-BACKED (ArrowDtype) columns
+    // (plans/stories/tap-batch-arrow-backend-fast-path.md). The sweep above
+    // stays the byte-equality oracle; these pin the counters, the speed and
+    // the null/int boxing the fast path must not change.
+    // ================================================================
+
+    // The plain-type frame an agent gets from pd.read_parquet(dtype_backend="pyarrow"):
+    // int64 / double / bool / string / naive timestamp, no nulls. Built once as an
+    // arrow table so the two backends see identical values.
+    private val ArrowFastFixture =
+        """import datetime
+          |import pyarrow as pa
+          |N = 100000
+          |_BASE = datetime.datetime(2026, 1, 1, 0, 0, 0)
+          |def table():
+          |    return pa.table({
+          |        "i": pa.array(list(range(N)), type=pa.int64()),
+          |        "f": pa.array([x + 0.5 for x in range(N)], type=pa.float64()),
+          |        "b": pa.array([x % 2 == 0 for x in range(N)]),
+          |        "s": pa.array(["row-%d" % x for x in range(N)]),
+          |        "ts": pa.array([_BASE + datetime.timedelta(seconds=x) for x in range(N)], type=pa.timestamp("us")),
+          |    })
+          |""".stripMargin
+
+    /** Median wall time of `runs` wrapper executions, after one warm-up run.
+      *  The staged files of the timed runs are deleted; the warm-up's result is
+      *  returned so the caller can diff its bytes.
+      */
+    private def timeWrapper(script: String, runs: Int = 3): (Long, (Int, String, String, Path)) = {
+        val warm = runWrapper(script)
+        val times = (1 to runs).map { _ =>
+            val t0 = System.nanoTime()
+            val (code, out, err, file) = runWrapper(script)
+            val ms = (System.nanoTime() - t0) / 1000000L
+            Files.deleteIfExists(file)
+            assert(code == 0, "timed run failed: " + out + "\n" + err)
+            ms
+        }.sorted
+        (times(times.length / 2), warm)
+    }
+
+    test("a 100,000-row ArrowDtype frame of int64 / double / bool / string / timestamp takes the fast path") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        // The frame is built and converted ONCE, outside fetch(), and yielded 5
+        // times: the timing below then measures the wrapper's per-batch encoding
+        // rather than the fixture's pyarrow import and table build.
+        val yieldFive =
+            """def fetch():
+              |    for _ in range(5):
+              |        yield _F
+              |""".stripMargin
+        val arrowScript = ArrowFastFixture +
+            "import pandas as pd\n_F = table().to_pandas(types_mapper=pd.ArrowDtype)\n" + yieldFive
+        val numpyScript = ArrowFastFixture + "_F = table().to_pandas()\n" + yieldFive
+        val (numpyMs, (numpyCode, numpyOut, numpyErr, numpyFile)) = timeWrapper(numpyScript)
+        val (arrowMs, (arrowCode, arrowOut, arrowErr, arrowFile)) = timeWrapper(arrowScript)
+        try {
+            assert(numpyCode == 0, "the numpy-backed baseline failed: " + numpyOut + "\n" + numpyErr)
+            assert(arrowCode == 0, "the ArrowDtype run failed: " + arrowOut + "\n" + arrowErr)
+            assert(envelope(arrowOut).get("count").getAsLong == 500000L, arrowOut)
+            // 5 batches x (100,000 rows = 10 write chunks of 10,000) x 5 plain columns.
+            assert(
+                arrowErr.contains("arrow-backed columns: 250 fast / 0 per-value"),
+                "every plain ArrowDtype column of every write chunk must take the fast path: " + arrowErr
+            )
+            assert(
+                java.util.Arrays.equals(fileBytes(arrowFile), fileBytes(numpyFile)),
+                "the ArrowDtype backend must stage byte-identical NDJSON to the numpy-backed one"
+            )
+            // Medians of 3 warm runs; the bound is the story's 1.5x plus a flat
+            // 250ms of process noise so a loaded machine does not flake it.
+            assert(
+                arrowMs <= (numpyMs * 3) / 2 + 250,
+                s"an ArrowDtype frame must land within 1.5x of the numpy-backed one: arrow ${arrowMs}ms vs numpy ${numpyMs}ms"
+            )
+        } finally Seq(arrowFile, numpyFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("nullable ArrowDtype int / bool / string / double columns land as null with the row path's values") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        val fixture =
+            """import pandas as pd
+              |import pyarrow as pa
+              |def frame():
+              |    return pa.table({
+              |        "i": pa.array([1, None, 3], type=pa.int64()),
+              |        "b": pa.array([True, None, False]),
+              |        "s": pa.array(["a", None, "c"]),
+              |        "f": pa.array([1.5, None, float("nan")], type=pa.float64()),
+              |    }).to_pandas(types_mapper=pd.ArrowDtype)
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(fixture + "def fetch():\n    yield frame()\n")
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "the batch run failed: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            assert(
+                batchErr.contains("arrow-backed columns: 4 fast / 0 per-value"),
+                "a nullable plain ArrowDtype column still takes the fast path: " + batchErr
+            )
+            val lines = fileLines(batchFile)
+            assert(lines.size == 3, lines.toString)
+            assert(lines.head.contains("\"i\":1") && !lines.head.contains("\"i\":1.0"), "an int stays an int: " + lines.head)
+            assert(lines(1).contains("\"i\":null"), "an arrow null is null, never \"<NA>\": " + lines(1))
+            assert(lines(1).contains("\"b\":null"), "a nullable bool null is null: " + lines(1))
+            assert(lines(1).contains("\"s\":null"), "a nullable string null is null: " + lines(1))
+            assert(lines(1).contains("\"f\":null"), "a nullable double null is null, not NaN: " + lines(1))
+            assert(!lines.exists(_.contains("<NA>")), "nothing may box as \"<NA>\": " + lines.mkString("\n"))
+            assert(lines(2).contains("\"f\":NaN"), "a real NaN value keeps its NaN token: " + lines(2))
+            assert(
+                java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)),
+                "and byte-for-byte what the row path writes:\n  rows:  " + fileLines(rowFile).mkString("\n         ") +
+                    "\n  batch: " + lines.mkString("\n         ")
+            )
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("tz-aware and date32 ArrowDtype columns still go per value and stay correct") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        val fixture =
+            """import datetime, decimal
+              |import pandas as pd
+              |import pyarrow as pa
+              |def frame():
+              |    return pa.table({
+              |        "tstz": pa.array([datetime.datetime(2026, 9, 20, 12, 0, 0), None, datetime.datetime(2026, 1, 2, 3, 4, 5)], type=pa.timestamp("us", tz="+02:00")),
+              |        "d32": pa.array([datetime.date(2026, 9, 20), None, datetime.date(2026, 1, 1)], type=pa.date32()),
+              |        "t64": pa.array([datetime.time(1, 2, 3), None, datetime.time(4, 5, 6)], type=pa.time64("us")),
+              |        "dec": pa.array([decimal.Decimal("1.50"), None, decimal.Decimal("0.00")], type=pa.decimal128(9, 2)),
+              |    }).to_pandas(types_mapper=pd.ArrowDtype)
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(fixture + "def fetch():\n    yield frame()\n")
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "the batch run failed: " + batchOut + "\n" + batchErr)
+            assert(
+                batchErr.contains("arrow-backed columns: 0 fast / 4 per-value"),
+                "tz-aware timestamp, date32, time64 and decimal128 must stay on the per-value path: " + batchErr
+            )
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "the per-value path stays byte-equal to the row path:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("a string_view / binary_view ArrowDtype column with a null stages byte-equal to its rows") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        assume(pyarrowAvailable, "pyarrow not available")
+        assume(viewTypesAvailable, "this pyarrow cannot build string_view / binary_view arrays")
+        // string_view answers the "string" prefix of _ARROW_PLAIN but arrow has no
+        // filter kernel for it, so to_numpy(na_value=...) raises on a null column.
+        // Both *_view types must stay on the per-value tolist() route.
+        val fixture =
+            """import pandas as pd
+              |import pyarrow as pa
+              |def frame():
+              |    return pa.table({
+              |        "sv": pa.array(["a", None, "c"], type=pa.string_view()),
+              |        "bv": pa.array([b"hi", None, b"yo"], type=pa.binary_view()),
+              |    }).to_pandas(types_mapper=pd.ArrowDtype)
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(fixture + "def fetch():\n    yield frame()\n")
+        try {
+            assert(rowCode == 0, "the per-row baseline failed: " + rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "a *_view column with a null must not crash the batch run: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 3L, batchOut)
+            assert(
+                batchErr.contains("arrow-backed columns: 0 fast / 2 per-value"),
+                "string_view and binary_view must stay on the per-value path: " + batchErr
+            )
+            val rows = fileLines(rowFile)
+            val batch = fileLines(batchFile)
+            val diffs = rows.zip(batch).zipWithIndex.collect { case ((r, b), i) if r != b => s"line $i:\n  rows:  $r\n  batch: $b" }
+            assert(diffs.isEmpty, "a *_view column must encode as the row path does:\n" + diffs.mkString("\n"))
+            assert(java.util.Arrays.equals(fileBytes(batchFile), fileBytes(rowFile)), "and byte-for-byte")
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("a numpy-backed batch run prints today's batch lane line with no arrow-column suffix") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (code, out, err, file) = runWrapper(
+            """import pandas as pd
+              |def fetch():
+              |    yield pd.DataFrame({"i": [1, 2, 3], "s": ["a", "b", "c"]})
+              |    yield pd.DataFrame({"i": [4], "s": ["d"]})
+              |""".stripMargin
+        )
+        try {
+            assert(code == 0, out + "\n" + err)
+            val line = err.linesIterator.find(_.contains("[wrapper] batch lane:")).getOrElse("")
+            assert(line == "[wrapper] batch lane: 2 batch(es)", "a numpy-only run keeps today's exact line: [" + line + "]")
+        } finally Files.deleteIfExists(file)
+    }
+
+    test("a frame with a duplicated index (pd.concat) and a sub-microsecond timestamp still stages") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val fixture =
+            """import pandas as pd
+              |def frame():
+              |    a = pd.DataFrame({"v": [pd.Timestamp("2026-01-01 00:00:00.000000001")], "i": [1]})
+              |    b = pd.DataFrame({"v": [pd.Timestamp("2026-01-02")], "i": [2]})
+              |    return pd.concat([a, b])
+              |""".stripMargin
+        val (rowCode, rowOut, rowErr, rowFile) = runWrapper(
+            fixture +
+                """def fetch():
+                  |    for _r in frame().to_dict("records"):
+                  |        yield _r
+                  |""".stripMargin
+        )
+        val (batchCode, batchOut, batchErr, batchFile) = runWrapper(fixture + "def fetch():\n    yield frame()\n")
+        try {
+            assert(rowCode == 0, rowOut + "\n" + rowErr)
+            assert(batchCode == 0, "a duplicated index must not crash the batch lane: " + batchOut + "\n" + batchErr)
+            assert(envelope(batchOut).get("count").getAsLong == 2L, batchOut)
+            assert(
+                fileLines(batchFile) == fileLines(rowFile),
+                "batch: " + fileLines(batchFile) + "\nrows:  " + fileLines(rowFile)
+            )
+            assert(fileLines(batchFile).head.contains("2026-01-01 00:00:00.000000001"), fileLines(batchFile).head)
+        } finally Seq(rowFile, batchFile).foreach(Files.deleteIfExists(_))
+    }
+
+    test("a batch with duplicate column names fails the run with a clear message") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (code, out, err, file) = runWrapper(
+            """import pandas as pd
+              |def fetch():
+              |    yield pd.DataFrame([[1, 2]], columns=["a", "a"])
+              |""".stripMargin
+        )
+        try {
+            assert(code != 0, "a duplicate-named batch must fail the script, not stage half a row: " + out)
+            assert(
+                err.contains("duplicate column names: a"),
+                "the failure must name the duplicate rather than pandas' \"truth value of a Series is ambiguous\": " + err
+            )
+        } finally Files.deleteIfExists(file)
+    }
+
+    // ================================================================
+    // Acceptance 6 — inline path, and staging through runScript
+    // ================================================================
+
+    test("the inline path materialises batches into today's {type, data} envelope") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val (code, out, err, _) = runWrapper(
+            """import pandas as pd
+              |def fetch():
+              |    yield pd.DataFrame([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}])
+              |    yield {"id": 3, "name": "c"}
+              |""".stripMargin,
+            filePath = false
+        )
+        assert(code == 0, "the inline path must not die on a batch: " + out + "\n" + err)
+        val e = envelope(out)
+        assert(e.get("type").getAsString == "json", out)
+        assert(e.has("data") && e.get("data").isJsonArray, "today's inline envelope carries the records as `data`: " + out)
+        val data = e.getAsJsonArray("data")
+        assert(data.size() == 3, "a batch is flattened into its rows inline too: " + out)
+        assert(data.asScala.map(_.getAsJsonObject.get("id").getAsInt).toList == List(1, 2, 3), out)
+        assert(!e.has("count") && !e.has("columns"), "inline envelope shape is unchanged: " + out)
+        assert(err.contains("DATRIS_TAP_OUTPUT"), "the stderr note naming DATRIS_TAP_OUTPUT is unchanged: " + err)
+    }
+
+    test("a generator of 50 DataFrames of 10,000 rows stages through runScript with recordCount == 500000") {
+        assume(pandasAvailable, "python3 with pandas not available")
+        val script =
+            """import pandas as pd
+              |def fetch():
+              |    for b in range(50):
+              |        base = b * 10000
+              |        yield pd.DataFrame({"id": range(base, base + 10000), "pad": ["p" * 40] * 10000})
+              |""".stripMargin
+        val result = withEnv(env())(TapScriptRunner.runScript(scriptTap(), script))
+        try {
+            assert(result.error == null, String.valueOf(result.error))
+            assert(result.dataType == "json", "got " + result.dataType)
+            assert(result.recordCount == 500000, "every ROW of every batch is counted, got " + result.recordCount)
+            assert(result.staged != null && !result.staged.isEmpty)
+            assert(result.staged.format == StagedFormat.NdJson)
+            assert(result.staged.arraySource, "a streamed batch list keeps arraySource so JSON pipelines see the array shape")
+            assert(result.staged.rowCount == 500000L, "got " + result.staged.rowCount)
+            val it = StagedRows.lines(result.staged.path)
+            var n = 0L
+            try while (it.hasNext) { it.next(); n += 1 }
+            finally it.close()
+            assert(n == 500000L, "one NDJSON line per row, got " + n)
+        } finally dropStaged(result)
+    }
+}

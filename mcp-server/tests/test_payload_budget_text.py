@@ -106,7 +106,17 @@ def test_env_example_documents_the_new_var_and_the_alias():
 def test_compose_forwards_the_new_var_with_default_4096_and_keeps_the_alias():
     for path in (COMPOSE, COMPOSE_STANDALONE):
         text = _read(path)
-        assert re.search(r"\$\{PIPELINE_MAX_PAYLOAD_MB:-(\$\{TAP_MAX_OUTPUT_MB:-)?4096\}?\}", text), f"{os.path.basename(path)} must forward {NEW_VAR} defaulting to 4096"
+        # Forwarded WITHOUT a default (amended by
+        # plans/stories/tap-sizing-effective-budgets.md, same shape as
+        # TAP_RUN_TIMEOUT_SECONDS): compose baking 4096 in here handed the JVM a
+        # concrete value on every install, so the server could not tell "the
+        # operator set 4096" from "nobody set anything" and GET /api/v1/version
+        # reported the source as `env` for everyone. The 4096 default, the
+        # deprecated-alias precedence and the source label all live in the
+        # server now.
+        assert re.search(r"\$\{PIPELINE_MAX_PAYLOAD_MB:-\}", text), (
+            f"{os.path.basename(path)} must forward {NEW_VAR} without a default (the server defaults it to 4096)"
+        )
         assert OLD_VAR in text, f"{os.path.basename(path)} must keep forwarding the alias for one release"
         # The alias must no longer default to 100: that would make the alias
         # always "set" and pin every install at 100 MB.

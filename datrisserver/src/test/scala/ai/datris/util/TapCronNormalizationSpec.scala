@@ -172,6 +172,10 @@ class TapCronNormalizationSpec extends AnyFunSuite with BeforeAndAfterAll {
         capture.start()
         try {
             // Sanity: the capture sees the scheduler's error line for a bad cron.
+            // The scheduler now logs a given bad value once per tap (story
+            // plans/stories/tap-cron-validation.md), so clear the dedup state
+            // first — spec ordering must not be able to suppress this line.
+            TapScheduler.resetInvalidCronWarnings()
             TapScheduler.checkSchedules(Seq(tap("broken", "not a cron")), new Date())
             val sanity = capture.lines.synchronized(capture.lines.toList)
             assert(

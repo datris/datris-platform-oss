@@ -236,7 +236,7 @@ Executes the tap script without sending data to a pipeline. Returns results, log
 
 | Name | Type | Description |
 |------|------|-------------|
-| `testLimit` | integer (optional) | When `> 0`, the runner injects `DATRIS_TAP_TEST_LIMIT=<N>` into the script process. Well-written tap scripts honor this env var to cap their source reads and iteration loops, making tests faster and lower-cost. Cron and manual runs (via `/tap/run`) never set this — production runs always read every row. The UI's "Limit test sample to 20 records" checkbox in Create Tap → step 2 sends `testLimit=20`. |
+| `testLimit` | integer (optional) | When `> 0`, the runner injects `DATRIS_TAP_TEST_LIMIT=<N>` into the script process. Well-written tap scripts honor this env var to cap their source reads and iteration loops, making tests faster and lower-cost. Cron runs and `mode=run` runs never set this — production runs always read every row. (A `/tap/run` call with `mode=test` caps at 20 records by default; see [Run Tap](#run-tap).) The UI's "Limit test sample to 20 records" checkbox in Create Tap → step 2 sends `testLimit=20`. |
 
 **Body:** A TapConfig JSON object (same as Create).
 
@@ -396,6 +396,7 @@ Executes a saved tap. Optionally sends data to the configured pipeline.
 |---|---|---|---|
 | `name` | string | (required) | Tap name |
 | `mode` | string | `"test"` | `"run"` feeds records into `targetPipeline`; `"test"` executes the script and returns sample results without persisting. A successful `mode=test` also records `lastTestRunStatus: "success"` and `lastTestRunScriptId` (the identity of the tested script or endpoint) on the tap, which is what allows a `cronExpression` to be saved — see the test-before-cron rule under Create or Update Tap |
+| `testLimit` | integer (optional) | `20` when `mode=test` | Max records a test pulls before the runner stops the script. Applies to `mode=test` only: the runner injects `DATRIS_TAP_TEST_LIMIT=<N>` and stops pulling from a generator `fetch()` after `N` records. `0` (or a negative value) disables the cap and streams the whole source. Ignored for `mode=run`, which always reads every row |
 | `params` | object | `{}` | Optional per-run parameters exposed to the script as environment variables (nested values JSON-encoded) |
 
 **Response:**
@@ -419,7 +420,7 @@ Executes a saved tap. Optionally sends data to the configured pipeline.
 
 `columns` lists the column names the script produced (normalized for `dataType: "csv"`, see [Test Tap](#test-tap)); it is `null` when the run produced no records.
 
-**`mode=run` does not return the records themselves** — the data is in transit to `targetPipeline`, and the agent / caller should verify completion via `get_pipeline_status`, not read from the response body. `recordCount` summarizes how many records were submitted. To preview what a script produces, call the same endpoint with `mode=test`, which returns up to 20 sample rows in a `records` array (with `recordsTruncated: true` set when the script produced more than that).
+**`mode=run` does not return the records themselves** — the data is in transit to `targetPipeline`, and the agent / caller should verify completion via `get_pipeline_status`, not read from the response body. `recordCount` summarizes how many records were submitted. To preview what a script produces, call the same endpoint with `mode=test`, which pulls only the first 20 records by default (raise or remove the cap with `testLimit`) and returns up to 20 sample rows in a `records` array (with `recordsTruncated: true` set when the script produced more than that). Because of the cap, a test’s `recordCount` is the preview size, not what a `mode=run` call will produce.
 
 `persisted: true` means the records were submitted to `targetPipeline`. When `persisted: false`, a `persistedReason` field names the cause — one of `test_mode`, `run_error`, `no_records`, `no_target_pipeline`, or `debounced`. On persisted runs, `publisherToken` groups every ingestion job this run submitted; `pipelineTokens` lists each. Document taps fan out to many `pipelineTokens` but share one `publisherToken`.
 

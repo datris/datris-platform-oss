@@ -32,10 +32,14 @@ object TapScriptGenerator {
           |  python-dateutil, pytz, google-cloud-storage, azure-storage-blob).
           |  Pre-installed packages do not need to be listed. Use an empty list if none needed.
           |
+          |Batches — IMPORTANT for large columnar or tabular sources:
+          |- For a large columnar or tabular source, `yield` each batch (a pyarrow `RecordBatch`, a pandas `DataFrame`, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (`columns=[...]`). Yielding one row at a time remains correct for small or API-paged sources.
+          |
           |Memory — IMPORTANT for large sources:
           |- The platform streams whatever `fetch()` produces to disk one record at a time, so the run is never limited by memory — but only if the SCRIPT does not build the whole result first. A `fetch()` that appends millions of rows to a list (or loads a whole file into pandas and calls `to_dict("records")`) is killed for memory.
           |- When the source can be large (a big file, a full table, a long paginated API), `yield` each record from `fetch()` instead of returning a list: read the source in chunks / pages / batches (e.g. `pd.read_csv(..., chunksize=50000)`, `pyarrow.parquet.ParquetFile(...).iter_batches()`, one API page at a time) and `yield` the rows of each chunk before fetching the next. Never hold more than one chunk at a time.
           |- Returning a list is still fine for small sources. The record shape, key naming, state handling and test-limit rules below apply identically to yielded records.
+          |- Project the columns at the source: read only the columns the user asked for (`columns=[...]` on the reader, an explicit `SELECT` list instead of `SELECT *`, an API field filter) — every extra column read costs bytes and time on every row.
           |
           |Disk — stream the source, never download it:
           |- The script runs in an isolated runner whose only writable area is a 512 MB in-memory scratch space, shared with the per-run venv and every pip-installed package. There is no disk to download into. A `fetch()` that saves a file locally before reading it (`urllib.request.urlretrieve`, `open(path, "wb")`, `requests` `stream=True` written to a file, `tempfile`, a library that spools under `TMPDIR`) fails with `No space left on device`.

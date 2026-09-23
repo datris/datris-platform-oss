@@ -96,9 +96,15 @@ class EntityVersionAPIController {
                         )
                     else snap
                 )
+                // Cron validation: a snapshot minted with an unparseable cron is
+                // refused (400) rather than restored as a never-running schedule.
+                // `handle` maps exceptions to 500, so answer the 400 explicitly.
+                val cronError = TapCronValidation.check(restored.name, restored.cronExpression)
                 // Test-before-cron gate: restoring a snapshot whose script bytes differ
                 // from the tested stamp while a cron is set is refused, same as a save.
-                TapCronGate.check(live, restored) match {
+                if (cronError.isDefined)
+                    ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](TapCronValidation.errorBody(cronError.get))
+                else TapCronGate.check(live, restored) match {
                     case Some(msg) =>
                         ResponseEntity.status(HttpStatus.CONFLICT).body[String]("{\"error\": \"" + msg.replace("\"", "'") + "\"}")
                     case None =>

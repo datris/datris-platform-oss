@@ -16,6 +16,16 @@ import java.util.{Date, TimeZone}
 object TapScheduler {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
+    /** tap name -> the last unparseable cron value already logged for it. Taps
+      * stored with a bad cron before save-time validation (story
+      * plans/stories/tap-cron-validation.md) would otherwise log an ERROR on
+      * every 30 s tick forever. A changed bad value is news again; an entry is
+      * dropped when the tap's cron parses or the tap leaves the tick. */
+    private val invalidCronWarned = new java.util.concurrent.ConcurrentHashMap[String, String]()
+
+    /** Test seam: forget which bad crons have already been logged. */
+    private[util] def resetInvalidCronWarnings(): Unit = invalidCronWarned.clear()
+
     def checkSchedules(): Unit =
         checkSchedules(TapConfigIO.readAll(DatrisEnvironment.current.tapTableName), new Date())
 
@@ -28,6 +38,9 @@ object TapScheduler {
             if (scheduled && tap.enabled && tap.lastRunStatus != "running") {
                 try {
                     val cron = new CronExpression(tap.cronExpression)
+                    // Parsed: any earlier complaint about this tap is stale, so a
+                    // later breakage logs again.
+                    invalidCronWarned.remove(tap.name)
                     cron.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
                     val sdf = new SimpleDateFormat(DatrisEnvironment.current.dateFormat)
                     sdf.setTimeZone(TimeZone.getTimeZone(DatrisEnvironment.current.dateTimezone))
@@ -65,10 +78,16 @@ object TapScheduler {
                     }
                 } catch {
                     case e: Exception =>
-                        logger.error("TapScheduler: invalid cron expression for tap: " + tap.name + ", cron: " + tap.cronExpression, e)
+                        // Once per tap per distinct bad value, not once per tick.
+                        if (invalidCronWarned.put(tap.name, tap.cronExpression) != tap.cronExpression)
+                            logger.error("TapScheduler: invalid cron expression for tap: " + tap.name + ", cron: " + tap.cronExpression, e)
                 }
             }
         })
+        // Taps absent from this tick (deleted, renamed) drop their dedup entry.
+        val present = taps.map(_.name).toSet
+        val names = invalidCronWarned.keySet().iterator()
+        while (names.hasNext) if (!present.contains(names.next())) names.remove()
     }
 
     /** Run a tap on a background thread with trigger = "cron"; after the run

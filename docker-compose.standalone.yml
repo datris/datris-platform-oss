@@ -347,12 +347,28 @@ services:
       # Comma-separated MinIO buckets a pipeline's destinationBucketOverride may target (unset = any).
       DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST: "${DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST:-}"
       # Per-run payload disk budget (MB): the most a tap run may stage on the
-      # datris-staging volume before it is stopped; 0 = unlimited. An explicit
-      # value wins; else the deprecated TAP_MAX_OUTPUT_MB from .env; else 4096.
-      PIPELINE_MAX_PAYLOAD_MB: "${PIPELINE_MAX_PAYLOAD_MB:-${TAP_MAX_OUTPUT_MB:-4096}}"
+      # datris-staging volume before it is stopped; 0 = unlimited. Forwarded
+      # without a default so an unset value reaches the server as "unset": the
+      # server applies its own precedence (this variable, else the deprecated
+      # TAP_MAX_OUTPUT_MB below, else 4096) and reports which one was in force
+      # on GET /api/v1/version. Defaulting it here would make every install
+      # look as though the operator had set it.
+      PIPELINE_MAX_PAYLOAD_MB: "${PIPELINE_MAX_PAYLOAD_MB:-}"
       # Deprecated alias (removed next release), forwarded without a default so it
       # only counts as set when it is in .env; the server logs a warning when it is.
       TAPMAXOUTPUTMB: "${TAP_MAX_OUTPUT_MB:-}"
+      # Wall-clock ceiling for a tap TEST, in seconds: a test fails fast so a
+      # broken script is caught in seconds, not minutes. Forwarded without a
+      # default so an unset value reaches the server as "unset": the server
+      # defaults it to 300 and reports whether the ceiling came from the
+      # environment or from that default on GET /api/v1/version.
+      TAP_SCRIPT_TIMEOUT_SECONDS: "${TAP_SCRIPT_TIMEOUT_SECONDS:-}"
+      # Wall-clock ceiling for a real or cron tap RUN, in seconds: long enough
+      # for a large streaming source to finish landing in one run. Forwarded
+      # without a default so an unset value reaches the server as "unset" and
+      # resolves to max(3600, tapScriptTimeoutSeconds) — an install that raised
+      # the old single ceiling never gets a shorter one.
+      TAP_RUN_TIMEOUT_SECONDS: "${TAP_RUN_TIMEOUT_SECONDS:-}"
       # Pipeline payload staging: a run's payload is written once to
       # DATRIS_TEMP_DIR (the datris-staging volume) and read from there by
       # every stage. PIPELINE_MATERIALIZE_MAX_MB caps what a stage that still

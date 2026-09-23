@@ -381,6 +381,7 @@ How to find a "relevant pipeline" in the list response: the response begins with
 SCHEDULING RULE (read this before suggesting any recurring/timely workflow):
 If the user mentions ANY recurrence cue — "nightly", "daily", "hourly", "every morning", "weekly", "at market open", "on a schedule", "recurring", "on a timely basis", "keep this up to date", "refresh this every X" — set a `cron_expression` on the relevant tap via `create_tap` (when first creating) or `update_tap` (when wiring an existing tap). The Datris platform runs the scheduler — once you set `cron_expression`, the tap fires automatically on that cadence, with the same publisherToken + get_tap_logs verification path as manual runs.
 DO NOT respond with shell snippets, cron jobs, Airflow DAGs, or any other external scheduler that just invokes the CLI or the API on a timer. That defeats the platform: the user delegated both "what data" and "when it refreshes" to Datris. Handing back a "run this every night at 9pm" command pushes operational burden the user already chose to offload. The schedule lives on the tap.
+A Datris cron is Quartz: 6 fields — seconds minutes hours day-of-month month day-of-week, plus an optional year (`0 0 * * * ?` = hourly). The 5-field Unix cron every online cron reference shows (`*/1 * * * *`) is refused with HTTP 400 whose `error` quotes the 6-field equivalent — resend that exact expression, do not invent another one.
 After setting the schedule, tell the user what you set — name the tap, give the cron expression, and translate it to plain English (e.g. "runs daily at 5:30am") — then offer to adjust the cadence or chain related taps.
 
 VALIDATION RULE (read this before the first run of any new or updated tap):
@@ -442,14 +443,17 @@ Tap workflow (for step 3 Option B):
   Two ways to create a tap:
     - With instruction: provide a plain-English instruction and the platform's AI generates the script. This is slower (1-2 minutes) because the platform must generate and store the script.
     - With your own script: write the Python fetch() function yourself and pass it as the script parameter. This is faster and gives you full control. The script must define a fetch() function that takes no arguments and returns a list of dictionaries — or, for a large source, yields them one at a time (a generator / iterator); the platform streams yielded records to disk, so a run is never limited by memory unless the script builds the whole result first.
+  Batches beat rows for a large columnar or tabular source: For a large columnar or tabular source, yield each batch (a pyarrow RecordBatch, a pandas DataFrame, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (columns=[...]). Yielding one row at a time remains correct for small or API-paged sources.
   Writing the script yourself is often quicker and more reliable — you control the logic directly instead of waiting for AI generation and hoping it gets the implementation right on the first try.
   Reading platform data from inside a tap script: the script is NOT cut off from Datris. Every run (test, manual, cron) auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE — read them with no fallback defaults. The script queries platform data through the platform's own API, which runs the query with the platform's own credentials: POST http://{host}:{port}/api/v1/query/postgres with {"sql": "SELECT ... FROM public.table_name", "database": <pg_db>, "limit": -1} → {results, count}, or POST /api/v1/query/mongodb with {"query": ..., "database": <mongo_db>, "collection": ..., "limit": -1}. Always pass "limit": -1 — omitting it applies a tiny preview default. Use this whenever a tap's fetch logic is driven by data a pipeline maintains (e.g. an id/key list read fresh on every run); the tap needs NO database credentials in its secret for this, ever — the platform authenticates the callback per run by itself (a run-scoped DATRIS_PLATFORM_TOKEN the wrapper attaches to requests/urllib calls aimed at DATRIS_PLATFORM_HOST), so never add an x-api-key to these calls or ask the user for one. This lane is PYTHON-ONLY: HTTP taps run outside the platform and cannot reach the callback — never recommend or convert a platform-data-reading tap to HTTP kind. Full contract in datris://tap-workflow-reference.
   1. Create a tap: call create_tap with an instruction (AI generates the script) or with your own script
-  2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
+  2. Test (MANDATORY for new or updated scripts): call test_tap to validate the script without pushing data. A test previews the first 20 records and returns in seconds (pass `limit` to change it, 0 for no cap), so a test's `recordCount` is the preview size, not what a real run will produce — judge the script by "records came back with the right columns", never by the count. See the VALIDATION RULE — skipping this step means a scheduled cron could ship a guaranteed-bad nightly run, or a manual `run_tap` could push broken data into the destination.
      The platform refuses a save with a `cron_expression` on an untested script (HTTP 409): create without the cron, test_tap, then update_tap with the cron.
   3. If test fails: read the error, fix the script, and call create_tap again with a corrected script or updated instruction to regenerate. Repeat test until it succeeds.
      A test killed with exit code -9 (or 137, "killed") ran out of memory: the script built its whole result in memory. Rewrite fetch() to yield records one at a time (read the source in chunks / pages and yield each row) — do not cap the rows or split the source.
+     Size a large source BEFORE building: disk ≈ 26 bytes × column count × rows against `PIPELINE_MAX_PAYLOAD_MB` (the value in force is `pipelineMaxPayloadMB` from `get_version`; default 4096 MB, 0 = unlimited), time ≈ rows ÷ 15,000 per second when fetch() emits one record at a time or rows ÷ 90,000 per second when it emits batches, against `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s) — read both with `get_version` before you size, show the user a rows, bytes/record, GB staged, minutes table and ask before creating anything; over either budget the choices are raise the variable, narrow the window, or chunk the range via run_tap params. Full rule in datris://tap-workflow-reference.
      A test failing with "No space left on device" downloaded the source to local disk: the runner's only writable area is a 512 MB in-memory scratch space shared with installed packages, so never save a file first. Rewrite fetch() to read the remote file directly and stream it (HTTP range reads via pyarrow + fsspec, pd.read_csv(url, chunksize=...), requests stream=True iter_lines()) and yield records as they arrive.
+     A run that timed out returns the script's logs, its `[wrapper] streamed N records` progress lines and a partial record count. Read them first: a script that reached the source and was still streaming records when the timeout hit is healthy and too long, not wrong — do not rewrite it; tell the user how far it got and offer a smaller window via `params` or the operator's timeout setting.
      After two consecutive failed tests, STOP and report the exact error text to the user with what you tried; let the user decide the next step.
      Never probe the runner environment or read the wrapper to diagnose a failure — the error text, the logs and the script are the whole diagnosis; datris://tap-workflow-reference is the complete contract.
   4. Run: call run_tap to execute and push data to the pipeline.
@@ -1122,7 +1126,7 @@ If the user already has the file in hand, prefer `upload_data` against an existi
 1. **Check existing.** Call `list_taps`. If a tap with the right purpose exists, prefer running it (or updating its config) over creating a new one.
 2. **Create.** Call `create_tap` with either `instruction` (AI generates the Python `fetch()` function) or `script` (you provide it directly). Writing the script yourself is usually faster and more reliable than AI generation. Pass `target_pipeline` so the tap actually persists to a destination — without it, runs come back with `persistedReason: no_target_pipeline`.
    - **HTTP taps** (`kind: "http"` + `endpoint_url`): the tap is a service the USER hosts, in any language; Datris POSTs `{tap, params, state, testLimit}` to the endpoint each run and the endpoint responds with the same envelope a script produces (`{"type": ..., "data": [...], "state": {...}}`). Auth: if the tap's secret has an `endpoint_token` field it is sent as `Authorization: Bearer` — no other secret fields are ever forwarded. Everything else in this reference (params, state, scheduling, run flow, polling, verification) applies identically. What does NOT apply: `instruction`/`script`/`packages`, AI codegen actions, and the platform-data callback below — an HTTP tap cannot read platform data, so keep platform-data-driven taps as Python taps. Only suggest HTTP kind when the user says they want to implement the tap themselves outside the platform (existing service, non-Python language).
-3. **Test.** Call `test_tap` to validate the script without persisting. **MANDATORY for any newly-created or just-updated script** — see the VALIDATION RULE below. If the script errors, fix it by calling `create_tap` again with the same name and a corrected `instruction` or revised `script` (create_tap upserts and replaces the existing script), and re-test until it succeeds.
+3. **Test.** Call `test_tap` to validate the script without persisting. A test previews the first 20 records by default (`limit` raises it, `limit: 0` streams the whole source), so the `recordCount` a test returns is the preview size, not what `run_tap` will produce — never quote it to the user as the size of the source. **MANDATORY for any newly-created or just-updated script** — see the VALIDATION RULE below. If the script errors, fix it by calling `create_tap` again with the same name and a corrected `instruction` or revised `script` (create_tap upserts and replaces the existing script), and re-test until it succeeds.
    The platform enforces this order: a save carrying `cron_expression` for a script that has not passed `test_tap` is refused with HTTP 409 — create without the cron, `test_tap`, then `update_tap` with the cron.
 4. **Schedule (if recurring).** If the user mentioned any recurrence cue, set `cron_expression` — see the SCHEDULING RULE below.
 5. **Run.** Call `run_tap` with `name` and optional `params`. Read the response — see the run-flow section below.
@@ -1141,7 +1145,7 @@ After setting `cron_expression`, tell the user the cadence you set in plain Engl
 
 ### Quartz CRON expression cookbook
 
-Datris uses Quartz CRON syntax: `seconds minutes hours day-of-month month day-of-week [year]`. Note the leading SECONDS field — many cron resources online only show 5 fields.
+Datris uses Quartz CRON syntax: `seconds minutes hours day-of-month month day-of-week [year]`. Note the leading SECONDS field — many cron resources online only show 5 fields. That means 6 fields (7 with the year), not 5. A 5-field Unix cron is refused on save with HTTP 400 whose `error` quotes the 6-field equivalent — resend that expression rather than guessing again.
 
 | Cadence | Expression |
 |---|---|
@@ -1176,7 +1180,15 @@ Killed for memory: an `error` reporting exit code -9 (or 137, or the word "kille
 
 Out of disk — stream the source, never download it: an `error` containing `No space left on device` (or ENOSPC) means the script saved the source to local disk before reading it. The isolated runner has no disk of its own: its only writable area is a 512 MB in-memory scratch space, shared with the per-run venv and every pip-installed package. `urlretrieve`, `open(path, "wb")`, `requests` `stream=True` written to a file, `tempfile`, and libraries that spool under `TMPDIR` all fail there on anything large. Rewrite `fetch()` to read the remote file directly and stream it — `pyarrow.parquet.ParquetFile(fsspec.open(url).open())` with `iter_batches()` (HTTP range reads; add `fsspec` to the packages), `pd.read_csv(url, chunksize=50000)`, `requests.get(url, stream=True).iter_lines()` — and `yield` records as they arrive. Never save the file first, and never ask the operator for more scratch space as the first remedy.
 
-Payload-budget sanity check BEFORE building: yielded records stream to the platform's staging disk, and one run may stage at most `PIPELINE_MAX_PAYLOAD_MB` (default 4096 MB, 0 = unlimited). When the user names a source you know to be large (a full month of a high-volume feed, a whole table, a multi-GB file), estimate the run up front — rows × bytes per JSON record (a 20-column numeric record is roughly 250–400 bytes) — and compare it with the budget. If the estimate exceeds the budget, say so and let the user choose BEFORE you create anything: raise `PIPELINE_MAX_PAYLOAD_MB` (operator action, needs matching free disk on the staging volume), pick a smaller feed or window, or chunk the range via `run_tap` `params`. Do not build the tap, stream for minutes, and then hit the budget error.
+Timeouts: a test is killed after `TAP_SCRIPT_TIMEOUT_SECONDS` (`tapScriptTimeoutSeconds` from `get_version`; default 300 s) and a real or scheduled run after `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s). A test is also capped at 20 records, so a passing test says nothing about how long a real run takes — only the estimate below does. Never cap the rows to fit the clock.
+
+Size the run BEFORE building: for any source the user describes as large, estimate both budgets from measured numbers and show the user those numbers first.
+- Read the budgets first: call `get_version` and use its `pipelineMaxPayloadMB` and `tapRunTimeoutSeconds` (each carries a `...Source` of `env`, `deprecated-alias`, `derived` or `default`). Those are the values in force; the documented defaults below are only what an unset install runs with, so compare estimates with the readback, never with the defaults.
+- Disk: records are staged as JSON with the keys repeated on every row, so bytes per record ≈ 26 bytes × column count for numeric / timestamp / short-string data (long text or nested fields add their own length). rows × that is the staged size, capped per run by `PIPELINE_MAX_PAYLOAD_MB` (the value in force is `pipelineMaxPayloadMB` from `get_version`; default 4096 MB, 0 = unlimited).
+- Time: a `fetch()` that emits one record at a time moves about 15,000 rows per second, one that emits batches about 90,000 rows per second — always name which rate the estimate used, and recommend batches for any source over about one million rows. Compare the minutes with `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s).
+- Show the estimate as a four-line table — rows, bytes/record, GB staged, minutes — before proposing anything, so the user can correct the row count, the input you are least sure of (e.g. 20,000,000 rows × 25 columns → ~650 bytes/record → ~13 GB staged → ~4 minutes at the batch rate).
+- If either estimate exceeds its budget, stop and offer exactly three choices: raise the variable (operator action — disk needs matching free space on the staging volume, time holds a runner slot for that long), narrow the requested window, or chunk the range via `run_tap` `params` (several runs land in the same pipeline). Chunking is the one size-driven exception to one run per requested range: never chunk for size unless the estimate exceeds a budget and the user has picked chunking.
+- Reading only the columns the destination needs cuts both numbers linearly. Do not build the tap, stream for minutes, and then hit a budget error.
 
 Never probe the runner environment or read the wrapper to diagnose a failure (no printing `os.environ`, no listing installed packages, no introspecting the platform's own code): this reference is the complete contract, and the error text plus the logs and the script are all the diagnosis needs.
 
@@ -1272,7 +1284,7 @@ The platform persists a small JSON state object per tap between runs, so a sched
 - The last committed state is injected into the script as the `DATRIS_TAP_STATE` env var (absent on the very first run). Scripts read it with `state = json.loads(os.environ.get("DATRIS_TAP_STATE") or "{}")`.
 - The script saves new state by assigning a dict to the module-global `DATRIS_STATE` inside `fetch()` (with `global DATRIS_STATE`).
 - The platform commits the new state ONLY after a successful run (`success` or `no_records`). A failed run leaves the old bookmark, so the automatic retry re-fetches the same window — no data holes. Destinations with upsert absorb any overlap.
-- Test runs (`test_tap`) read state but never commit it.
+- Test runs (`test_tap`) read state but never commit it, and they stop after the first 20 records by default — a test's record count is a preview, not the run's count.
 - State must stay under 64 KB — it's a cursor (timestamp, id watermark, page token, content hash), never a place to store records or credentials. It is stored and displayed unmasked.
 
 ### What to track (in order of preference, by what the source supports)
@@ -1307,7 +1319,9 @@ The script MUST define `fetch()` taking no arguments and returning one of:
 - A list of `{uri, filename, content}` dicts where `content` is base64-encoded bytes (document tap — for vector destinations) — or a generator yielding them
 - A string (raw JSON, XML, or text)
 
-Large sources: read the source in chunks / pages / batches (e.g. `pd.read_csv(..., chunksize=50000)`, `pyarrow.parquet.ParquetFile(...).iter_batches()`, one API page at a time) and `yield` each row before fetching the next chunk. Never hold more than one chunk. A tap run handles the whole requested range in ONE run — do not cap the rows or split the source for size. In test mode (`DATRIS_TAP_TEST_LIMIT`) the platform stops pulling a generator after N records; a returned list is never truncated, so the script must still cap its own reads.
+Large sources: read the source in chunks / pages / batches (e.g. `pd.read_csv(..., chunksize=50000)`, `pyarrow.parquet.ParquetFile(...).iter_batches()`, one API page at a time) and `yield` each row before fetching the next chunk. Never hold more than one chunk. A tap run handles the whole requested range in ONE run — do not cap the rows or split the source for size unless the sizing estimate below exceeds a budget and the user has chosen chunking. In test mode (`DATRIS_TAP_TEST_LIMIT`) the platform stops pulling a generator after N records; a returned list is never truncated, so the script must still cap its own reads.
+
+Batches: For a large columnar or tabular source, `yield` each batch (a pyarrow `RecordBatch`, a pandas `DataFrame`, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (`columns=[...]`). Yielding one row at a time remains correct for small or API-paged sources. A batch is written as its rows: the envelope's `count` is rows, `columns` is the union of the batch's column names, and the staged records are identical to yielding the batch's own rows (`df.to_dict("records")` / `batch.to_pylist()`) one at a time.
 
 ### Pre-installed packages
 
@@ -1382,10 +1396,10 @@ Do not query the destination or report completion to the user before polling com
 
 ### Common `run_error` causes
 
-- **Payload exceeded the disk budget** — the run staged more than `PIPELINE_MAX_PAYLOAD_MB` (default 4096 MB, 0 = unlimited) on the platform's staging disk; records stream to disk, never through heap, so this is a disk ceiling. The error names the variable — the operator can raise it. Durable fix for a RECURRING tap: make it incremental (see "Incremental sync — persistent state" above) so every run fetches only what's new and stays small forever. One-off fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
+- **Payload exceeded the disk budget** — the run staged more than `PIPELINE_MAX_PAYLOAD_MB` (the value in force is `pipelineMaxPayloadMB` from `get_version`; default 4096 MB, 0 = unlimited) on the platform's staging disk; records stream to disk, never through heap, so this is a disk ceiling. The error names the variable — the operator can raise it. Durable fix for a RECURRING tap: make it incremental (see "Incremental sync — persistent state" above) so every run fetches only what's new and stays small forever. One-off fix: reduce the source range via `params` (shorter date window, smaller page, per-id chunks). Multiple smaller runs all land in the same destination pipeline.
 - **Killed (exit code -9 / 137, no traceback)** — out of memory: `fetch()` built its whole result in memory. Rewrite it to `yield` records per chunk / page (see "Creating a tap") — the platform streams yielded records to disk. Do not cap or split the source.
 - **Script raised an exception** — read the `logs` field for the Python traceback. Common: 403/404 from the source API (auth, entitlements), timeout, JSON parse error on malformed response.
-- **Subprocess timed out** — script ran longer than `tapScriptTimeoutSeconds` (default 300). Either the source is genuinely slow (chunk smaller via params) or the script has a bug (infinite loop, missing pagination break).
+- **Subprocess timed out** — the script ran past the wall-clock ceiling for its mode: a test gets `TAP_SCRIPT_TIMEOUT_SECONDS` (`tapScriptTimeoutSeconds` from `get_version`; default 300 s), a real or scheduled run gets `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s). The error names the mode and the variable. A test that times out while a run would have finished is expected on a large source — run it instead of shrinking it. For a real run: either the source is genuinely slower than the ceiling (the operator can raise `TAP_RUN_TIMEOUT_SECONDS`, or chunk the range via params) or the script has a bug (infinite loop, missing pagination break). A run that timed out returns the script's logs, its `[wrapper] streamed N records` progress lines and a partial record count. Read them first: a script that reached the source and was still streaming records when the timeout hit is healthy and too long, not wrong — do not rewrite it; tell the user how far it got and offer a smaller window via `params` or the operator's timeout setting.
 
 ---
 
@@ -1423,7 +1437,7 @@ The platform maintains a per-tap ledger of processed documents (URI + content ha
 | `create_tap` | Create or replace a tap (upserts by name). Pass `cron_expression` here when recurrence is known up-front. |
 | `update_tap` | Change `enabled`, `cron_expression`, `target_pipeline`, or `description` without touching the script. |
 | `create_tap` (upsert) | Replacing an existing tap's script: call `create_tap` again with the same `name` and the new `script` or `instruction`. It upserts by name. There is no separate script-only update tool. |
-| `test_tap` | Validate the script without persisting. Always run before the first real `run_tap`. |
+| `test_tap` | Validate the script without persisting. Previews the first 20 records (`limit` to change, 0 = no cap); the count is a preview, not the run's. Always run before the first real `run_tap`. |
 | `run_tap` | Execute now. Pass `params` for per-call values. |
 | `get_tap_logs` | Run history for a tap (manual + scheduled). Use to recover `publisherToken` for any past run. |
 | `get_tap_ledger` | Document-tap-only: see/clear the dedupe ledger. |
@@ -1891,7 +1905,13 @@ def _base_tools():
         ),
         Tool(
             name="get_version",
-            description="Get the Datris server version.",
+            description=(
+                "Get the Datris server version and the tap budgets in force on this install: `pipelineMaxPayloadMB` (MB, 0 = unlimited), "
+                "`tapScriptTimeoutSeconds` and `tapRunTimeoutSeconds`, each with a `...Source` field (`env`, `deprecated-alias`, `derived` "
+                "or `default`). Cheap to call: call it before sizing a large source and compare the estimates with these values, not with "
+                "the documented defaults (the budget fields are absent on a server older than this feature; then the documented defaults "
+                "apply)."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -2401,14 +2421,15 @@ def _base_tools():
             name="create_tap",
             description=(
                 "Create a tap — a fetcher that pulls data from an external source and pushes it into a pipeline. Two kinds: a Python script the platform executes (default — provide a plain-English `instruction` to have AI generate the script, or supply your own `script` directly), or `kind: \"http\"` — a user-hosted HTTP endpoint (any language) that Datris POSTs the run context to on each run and which responds with the tap envelope; pass `endpoint_url` and see the tap-http-contract doc. HTTP taps run no code on the platform; AI script generation and the DATRIS_PLATFORM_* platform-data callback do NOT apply to them, so keep any tap whose fetch logic reads platform data as a Python tap. "
+                "For a large columnar or tabular source, `yield` each batch (a pyarrow `RecordBatch`, a pandas `DataFrame`, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (`columns=[...]`). Yielding one row at a time remains correct for small or API-paged sources. "
                 "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. For a fetch-only tap (the user wants the rows back, not landed), target a pipeline whose destination is scratch — see the KEEP-OR-SCRATCH RULE in the server instructions. "
                 "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
                 "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen. "
                 "The platform enforces this: passing `cron_expression` for a script (or endpoint) that has not passed `test_tap` returns HTTP 409 with the remedy — create the tap without `cron_expression`, call `test_tap` until it succeeds, then `update_tap` with the cron. Replacing the script of a scheduled tap is refused the same way until re-tested — to replace the script of a SCHEDULED tap, clear the cron via `update_tap` (empty `cron_expression`) first, then call `create_tap` with the new script, `test_tap`, then `update_tap` with the cron. "
                 "Scripts can read data already stored in Datris WITHOUT credentials: every run auto-injects DATRIS_PLATFORM_HOST, DATRIS_PLATFORM_PORT, DATRIS_POSTGRES_DATABASE, and DATRIS_MONGODB_DATABASE, and the script queries via POST http://{host}:{port}/api/v1/query/postgres with {\"sql\": ..., \"database\": <pg_db>, \"limit\": -1} (or /query/mongodb with query/database/collection/limit) — the platform executes it with its own credentials and returns {results, count}. NEVER request the platform's own DB credentials in a tap secret and NEVER hardcode a snapshot of platform data into the script — read it live. The tap secret carries only the external source's credentials. "
-                "Large sources: `fetch()` may `yield` records (a generator / iterator) instead of returning a list — the platform streams yielded records to disk one at a time, so the run is not limited by memory; a script that builds millions of rows into a list is killed for memory (exit code -9). Read the source in chunks / pages and yield each row; never cap the rows or split the source for size. "
+                "Large sources: `fetch()` may `yield` records (a generator / iterator) instead of returning a list — the platform streams yielded records to disk one at a time, so the run is not limited by memory; a script that builds millions of rows into a list is killed for memory (exit code -9). Read the source in chunks / pages and yield each row; never cap the rows or split the source for size unless the estimate below exceeds a budget and the user has chosen chunking. "
                 "Stream the source, never download it: the runner's only writable area is a 512 MB in-memory scratch space shared with installed packages, so a script that saves a large file locally fails with `No space left on device` — read remote files directly (HTTP range reads via pyarrow + fsspec, `pd.read_csv(url, chunksize=...)`, `requests` `stream=True`) and yield as you go. "
-                "Before building for a source you know to be large, estimate rows × bytes per record against the per-run payload budget `PIPELINE_MAX_PAYLOAD_MB` (default 4096 MB) and, if it exceeds the budget, ask the user to choose (raise the budget, smaller feed or window, or chunk via `run_tap` `params`) before creating anything."
+                "Size a large source BEFORE creating anything: staged bytes per record ≈ 26 bytes × column count (JSON keys repeat on every row) against `PIPELINE_MAX_PAYLOAD_MB` (the value in force is `pipelineMaxPayloadMB` from `get_version`; default 4096 MB, 0 = unlimited), and script time ≈ rows ÷ 15,000 per second emitting one record at a time or rows ÷ 90,000 per second emitting batches against `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s) — call `get_version` for both values in force before you size, name the rate you used, show the user a rows, bytes/record, GB staged, minutes table, and if either estimate is over its budget let the user choose first: raise the variable, narrow the window, or chunk the range via `run_tap` `params`. Reading only the columns the destination needs cuts both numbers linearly."
             ),
             inputSchema={
                 "type": "object",
@@ -2431,7 +2452,7 @@ def _base_tools():
                     },
                     "cron_expression": {
                         "type": "string",
-                        "description": "Quartz CRON expression for recurring runs (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
+                        "description": "Quartz CRON expression for recurring runs: 6 fields — seconds minutes hours day-of-month month day-of-week, plus an optional year (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). A 5-field Unix cron such as '*/1 * * * *' is NOT a Datris schedule: the save is refused with HTTP 400 whose `error` quotes the 6-field equivalent to resend. SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
                     },
                     "secret_name": {
                         "type": "string",
@@ -2492,8 +2513,9 @@ def _base_tools():
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
-                "      - `run_error`: show the `error` string. If the error says the payload exceeded the disk budget (it names PIPELINE_MAX_PAYLOAD_MB), tell the user the operator can raise that variable; as a one-off alternative, reduce the source range via `params` and call run_tap again — multiple runs all land in the same destination pipeline. For a recurring tap, the durable fix is making the script incremental via DATRIS_TAP_STATE (see the tap-workflow-reference resource).\n"
-                "VOLUME RULE: one run handles multi-GB payloads — records stream to disk, never through memory. Do NOT split a source into several runs, cap a run at N rows, or build resume-from-destination logic because you think the output is too big. Fetch the whole requested range in one run. Chunk only when the source API pages natively, when a single fetch would exceed the script timeout, or when the user explicitly asks for a bounded window.\n"
+                "      - `run_error`: show the `error` string. If the error says the payload exceeded the disk budget (it names PIPELINE_MAX_PAYLOAD_MB), tell the user the operator can raise that variable; as a one-off alternative, reduce the source range via `params` and call run_tap again — multiple runs all land in the same destination pipeline. If the error says the run timed out (it names TAP_RUN_TIMEOUT_SECONDS), tell the user the operator can raise that variable; as a one-off alternative, chunk the source range via `params`. A run that timed out returns the script's logs, its [wrapper] streamed N records progress lines and a partial record count. Read them first: a script that reached the source and was still streaming records when the timeout hit is healthy and too long, not wrong — do not rewrite it; tell the user how far it got and offer a smaller window via params or the operator's timeout setting. For a recurring tap, the durable fix is making the script incremental via DATRIS_TAP_STATE (see the tap-workflow-reference resource).\n"
+                "VOLUME RULE: one run handles multi-GB payloads — records stream to disk, never through memory. Do NOT split a source into several runs, cap a run at N rows, or build resume-from-destination logic because you think the output is too big. Fetch the whole requested range in one run, unless the estimate below exceeds a budget and the user has chosen chunking — that is the one size-driven exception. Chunk otherwise only when the source API pages natively or when the user explicitly asks for a bounded window.\n"
+                "SIZING RULE: before a first run on a large source, call `get_version` for the budgets in force, then estimate staged disk as ≈ 26 bytes × column count per record × rows against `PIPELINE_MAX_PAYLOAD_MB` (the value in force is `pipelineMaxPayloadMB` from `get_version`; default 4096 MB, 0 = unlimited), and script time as rows ÷ 15,000 per second when `fetch()` emits one record at a time or rows ÷ 90,000 per second when it emits batches against `TAP_RUN_TIMEOUT_SECONDS` (`tapRunTimeoutSeconds` from `get_version`; default 3600 s). Name the rate used, recommend batches above about a million rows, show the user the rows, bytes/record, GB staged, minutes table, and ask before running when either estimate is over budget.\n"
                 "      - `no_records`: source returned nothing.\n"
                 "      - `debounced`: this tap was triggered server-side within the last 5 seconds. Do NOT retry — your previous call is still running. Use `get_tap_logs` to find the live run's `publisherToken`, then poll `get_pipeline_status`.\n"
                 "      - `already_running` (response `status: skipped`): another run_tap for this tap is already in flight in this agent session. Same handling as `debounced`: wait, then look up the live run in `get_tap_logs`.\n"
@@ -2711,7 +2733,11 @@ def _base_tools():
             name="test_tap",
             description=(
                 "Test-run a tap without pushing data to the pipeline. Executes the tap's script and returns results, record count, and any errors. Use this to validate a script before running it for real. "
+                "By default a test pulls the first 20 records and returns; `recordCount` from a test is the preview size, not what `run_tap` will produce. "
                 "If the error reports exit code -9 (or 137, or \"killed\") with no traceback, the script ran out of memory because fetch() built its whole result in memory: rewrite fetch() to yield records one at a time (read the source in chunks / pages) instead of returning a list, then test again. "
+                "For a large columnar or tabular source, `yield` each batch (a pyarrow `RecordBatch`, a pandas `DataFrame`, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (`columns=[...]`). Yielding one row at a time remains correct for small or API-paged sources. "
+                "A test is bounded by `TAP_SCRIPT_TIMEOUT_SECONDS` (default 300 s), which is deliberately shorter than the ceiling a real run gets — a test that times out on a large source does not mean `run_tap` will. "
+                "A run that timed out returns the script's logs, its `[wrapper] streamed N records` progress lines and a partial record count. Read them first: a script that reached the source and was still streaming records when the timeout hit is healthy and too long, not wrong — do not rewrite it; tell the user how far it got and offer a smaller window via `params` or the operator's timeout setting. "
                 "After two consecutive failed tests, stop and report the exact error text to the user instead of iterating further; never probe the runner environment or read the wrapper to diagnose."
             ),
             inputSchema={
@@ -2720,6 +2746,11 @@ def _base_tools():
                     "name": {
                         "type": "string",
                         "description": "Name of the tap to test"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Max records to pull for the preview (default 20). 0 = no cap: streams the whole source — only when the user explicitly asks for a full test."
                     },
                 },
                 "required": ["name"]
@@ -2748,7 +2779,7 @@ def _base_tools():
                     },
                     "cron_expression": {
                         "type": "string",
-                        "description": "Quartz CRON expression for recurring runs (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
+                        "description": "Quartz CRON expression for recurring runs: 6 fields — seconds minutes hours day-of-month month day-of-week, plus an optional year (e.g., '0 0 * * * ?' for hourly, '0 30 5 ? * MON-FRI' for weekdays 5:30am). A 5-field Unix cron such as '*/1 * * * *' is NOT a Datris schedule: the save is refused with HTTP 400 whose `error` quotes the 6-field equivalent to resend. SET THIS whenever the user describes a recurrence — nightly, daily, hourly, market open, etc. The platform's scheduler fires the tap on this cadence automatically; do not propose external schedulers or shell cron for the user to run themselves."
                     },
                     "target_pipeline": {
                         "type": "string",
@@ -3120,6 +3151,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         latency_ms = int((time.time() - started) * 1000)
         _activity_record(session_id, name, status, latency_ms, api_key,
                          arguments, result_text, error_msg)
+
+
+def _test_limit(value) -> int:
+    """Preview size for `test_tap`. Absent/null = the 20-record default; 0 (or a
+    negative value) is the deliberate unlimited opt-out the server honours.
+
+    A non-integer `limit` is an error, never a silent fall back to 20: an agent
+    that sends `limit: "all"` meaning "full source" must hear about it instead of
+    getting a 20-record preview it reports as the whole run. This mirrors the
+    server's own TapAPIController.resolveTestLimit, which rejects the same input.
+    """
+    if value is None:
+        return 20
+    if isinstance(value, bool):
+        raise ValueError(f"limit must be an integer, got {value!r}")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"limit must be an integer, got {value!r}")
 
 
 def _dispatch(name: str, args: dict) -> str:
@@ -3977,7 +4027,11 @@ def _dispatch(name: str, args: dict) -> str:
         return _call("post", "/api/v1/tap/state", json={"name": args["name"], "state": state})
 
     elif name == "test_tap":
-        return _call("post", "/api/v1/tap/run", json={"name": args["name"], "mode": "test"})
+        return _call(
+            "post",
+            "/api/v1/tap/run",
+            json={"name": args["name"], "mode": "test", "testLimit": _test_limit(args.get("limit"))},
+        )
 
     elif name == "set_catalog":
         # Read-modify-write: there is no PATCH endpoint for either entity. The

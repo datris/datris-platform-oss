@@ -31,6 +31,54 @@ object TapAPIController {
     private val runDebounceWindowMs: Long = 5000L
     private val recentRunStarts: java.util.concurrent.ConcurrentHashMap[String, java.lang.Long] =
         new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
+
+    /** Effective `testLimit` for a `/tap/run` request.
+      *
+      *  `bodyTestLimit` is `body.get("testLimit")` straight off the Jackson-parsed
+      *  `@RequestBody` map: null when absent, Integer for `20`, Double for `20.0`,
+      *  String for `"20"`.
+      *
+      *  Only `mode=test` caps at all — a `testLimit` sent with `mode=run` is ignored,
+      *  not an error, because production runs must read every row. Absent/null means
+      *  the default preview size (`testRecordSampleSize`); an explicit 0 or negative
+      *  value is the deliberate unlimited opt-out.
+      */
+    private[api] def resolveTestLimit(mode: String, bodyTestLimit: Any): Int = {
+        if (mode == null || mode.toLowerCase != "test") return 0
+
+        val requested: Option[Int] = bodyTestLimit match {
+            case null => None
+            case n: java.lang.Number =>
+                val d = n.doubleValue()
+                if (d.isNaN || d.isInfinite)
+                    throw new DatrisException("testLimit must be an integer, got: " + n)
+                Some(n.intValue())
+            case s: String =>
+                val t = s.trim
+                if (t.isEmpty) None
+                else {
+                    val d =
+                        try java.lang.Double.parseDouble(t)
+                        catch {
+                            case _: NumberFormatException =>
+                                throw new DatrisException("testLimit must be an integer, got: " + s)
+                        }
+                    // "NaN" / "Infinity" parse as doubles but are not limits:
+                    // NaN.toInt is 0 (= unlimited) and Infinity.toInt is Int.MaxValue.
+                    if (d.isNaN || d.isInfinite)
+                        throw new DatrisException("testLimit must be an integer, got: " + s)
+                    Some(d.toInt)
+                }
+            case b: java.lang.Boolean => throw new DatrisException("testLimit must be an integer, got: " + b)
+            case other => throw new DatrisException("testLimit must be an integer, got: " + other)
+        }
+
+        requested match {
+            case None => testRecordSampleSize
+            case Some(v) if v > 0 => v
+            case Some(_) => 0
+        }
+    }
 }
 
 @RestController
@@ -411,6 +459,16 @@ class TapAPIController {
                     lastTestRunStatus = null,
                     lastTestRunScriptId = null
                 ))
+
+            // Cron validation: a schedule the scheduler cannot parse is refused
+            // here (400) rather than stored to log an error on every tick. Runs
+            // after blank normalisation (blank = unscheduled, never validated)
+            // and before the test-before-cron gate, whose 409 text is unchanged.
+            TapCronValidation.check(configToSave.name, configToSave.cronExpression) match {
+                case Some(msg) =>
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](TapCronValidation.errorBody(msg))
+                case None =>
+            }
 
             // Test-before-cron gate: a schedule may only be set on a script (or
             // endpoint) that has passed a mode=test run. Reads test state from
@@ -997,8 +1055,14 @@ class TapAPIController {
     ): ResponseEntity[String] = {
         try {
             val name = Option(body.get("name")).map(_.toString).orNull
-            logger.info("API endpoint POST /tap/run called for tap: " + name)
+            val requestedMode = Option(body.get("mode")).map(_.toString.toLowerCase).getOrElse("test")
+            logger.info("API endpoint POST /tap/run called for tap: " + name + s" (mode=$requestedMode)")
             APIKeyValidator.validate(apiKey)
+
+            // mode=test previews the first `testLimit` records (default 20, like the UI's
+            // Test button); mode=run always reads every row.
+            val effectiveTestLimit = TapAPIController.resolveTestLimit(requestedMode, body.get("testLimit"))
+            logger.info("POST /tap/run for tap: " + name + s" (mode=$requestedMode, testLimit=$effectiveTestLimit)")
 
             if (name == null || name.isEmpty)
                 throw new DatrisException("Tap name is required")
@@ -1012,7 +1076,7 @@ class TapAPIController {
             // is matched against the caller's label.
             CapabilityCheck.assertOwnerScope(request, "tap", "run", tapConfig.createdByKeyLabel)
 
-            val mode = Option(body.get("mode")).map(_.toString.toLowerCase).getOrElse("test")
+            val mode = requestedMode
 
             // Optional per-run params. Stringify each value so the script sees
             // env vars regardless of whether the agent sent {start_date: "2026-05-01"}
@@ -1065,7 +1129,7 @@ class TapAPIController {
                 new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
             } else {
 
-                val result = TapRunner.run(tapConfig, mode = mode, params = params)
+                val result = TapRunner.run(tapConfig, mode = mode, testLimit = effectiveTestLimit, params = params)
 
                 // Save test run status when not pushing to pipeline
                 if (mode != "run") {

@@ -185,8 +185,13 @@ with open(out, "w") as f:
 
 
 def test_timeout_produces_a_trailer_with_timedout_true(runner):
+    # Story: tap timeouts keep the script's logs (plans/stories/
+    # tap-timeout-diagnostics.md) — the platform now reads trailer["stderr"] on a
+    # timeout and puts it in the run log, so the runner half of the contract is
+    # pinned here: whatever the child printed before the kill is in the trailer.
     wrapper = """
-import json, os, time
+import json, os, sys, time
+print("before sleep", file=sys.stderr, flush=True)
 out = os.environ["DATRIS_TAP_OUTPUT"]
 with open(out, "w") as f:
     f.write(json.dumps({"id": 1}) + "\\n"); f.flush()
@@ -203,6 +208,10 @@ with open(out, "w") as f:
     assert records.decode("utf-8").splitlines() == ['{"id": 1}']
     assert trailer["timedOut"] is True
     assert trailer["exitCode"] == -1
+    assert "before sleep" in trailer["stderr"], (
+        "a timed-out run must still carry the child's stderr: the platform turns it "
+        "into the tap run log's `logs`"
+    )
 
 
 def test_child_env_is_still_allowlist_plus_handed_vars_on_the_streaming_path(runner):
