@@ -39,7 +39,7 @@ const postgresPipeline = {
   }
 };
 
-describe('PipelinesComponent — Scratch badge', () => {
+describe('PipelinesComponent — Live Read badge', () => {
   let fixture: ComponentFixture<PipelinesComponent>;
   let component: PipelinesComponent;
   let el: HTMLElement;
@@ -74,32 +74,32 @@ describe('PipelinesComponent — Scratch badge', () => {
     return row!;
   }
 
-  it('getDestinations lists Scratch', () => {
-    expect(component.getDestinations(scratchPipeline)).toBe('Scratch');
+  it('getDestinations lists Live Read', () => {
+    expect(component.getDestinations(scratchPipeline)).toBe('Live Read');
     expect(component.getDestinations(postgresPipeline)).toBe('PostgreSQL');
     const c = component as any;
     expect(c.isScratch(scratchPipeline)).toBeTrue();
     expect(c.isScratch(postgresPipeline)).toBeFalse();
   });
 
-  it('a pipeline with destination.scratch shows the Scratch badge (embedded catalog table)', () => {
+  it('a pipeline with destination.scratch shows the Live Read badge (embedded catalog table)', () => {
     component.embedCatalog = 'demo';
     fixture.detectChanges();
     const badge = rowFor('answer-now').querySelector('.scratch-badge');
     expect(badge).withContext('span.scratch-badge in the embedded destination cell').not.toBeNull();
-    expect((badge!.textContent || '').trim()).toBe('Scratch');
+    expect((badge!.textContent || '').trim()).toBe('Live Read');
   });
 
-  it('a pipeline with destination.scratch shows the Scratch badge (full table)', () => {
+  it('a pipeline with destination.scratch shows the Live Read badge (full table)', () => {
     fixture.detectChanges();
     component.catalogGroups.forEach(g => g.expanded = true);
     fixture.detectChanges();
     const badge = rowFor('answer-now').querySelector('.scratch-badge');
     expect(badge).withContext('span.scratch-badge in the full-table destination cell').not.toBeNull();
-    expect((badge!.textContent || '').trim()).toBe('Scratch');
+    expect((badge!.textContent || '').trim()).toBe('Live Read');
   });
 
-  it('a postgres pipeline shows no Scratch badge', () => {
+  it('a postgres pipeline shows no Live Read badge', () => {
     component.embedCatalog = 'demo';
     fixture.detectChanges();
     expect(rowFor('orders').querySelector('.scratch-badge')).toBeNull();

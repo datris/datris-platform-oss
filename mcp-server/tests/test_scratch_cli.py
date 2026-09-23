@@ -108,25 +108,48 @@ def test_pipeline_result_out_pages_until_not_truncated(monkeypatch, tmp_path):
 
 
 def test_pipeline_result_404_and_410_are_explained(monkeypatch, tmp_path):
-    # The endpoint's own 404 body (QueryAPIController.errorBody of ScratchResultException).
+    new_msg = "error: only live read (scratch) pipelines have a result (or this server predates live read results)"
+
+    # The endpoint's own 404 body from a Live Read-era server.
     monkeypatch.setattr(cli, "mcp", _Mcp(single={
-        "error": "Only scratch pipelines have a result; job 'TOK' did not write one"}))
+        "error": "Only Live Read (scratch) pipelines have a result; job 'TOK' did not write one"}))
     res = _run(["pipeline", "result", "TOK"])
-    assert "only scratch pipelines have a result" in res.output.lower(), res.output
+    assert new_msg in res.output.lower(), res.output
 
     # Spring's default 404 body from a server that predates the route (version mismatch).
     monkeypatch.setattr(cli, "mcp", _Mcp(single={
         "timestamp": "2026-09-18T14:00:00.000+00:00", "status": 404, "error": "Not Found",
         "path": "/api/v1/pipeline/result"}))
     res = _run(["pipeline", "result", "TOK"])
-    assert "only scratch pipelines have a result" in res.output.lower(), res.output
-    assert "predates scratch results" in res.output.lower(), res.output
+    assert new_msg in res.output.lower(), res.output
 
-    # The endpoint's own 410 body.
+    # The endpoint's own 410 body (Live Read wording).
+    monkeypatch.setattr(cli, "mcp", _Mcp(single={
+        "error": "Live Read results expire after 24 hour(s); this one is gone — run the pipeline again"}))
+    res = _run(["pipeline", "result", "TOK"])
+    assert "expired" in res.output.lower() and "run the pipeline again" in res.output.lower(), res.output
+
+    # The old 410 body still reads as expired.
     monkeypatch.setattr(cli, "mcp", _Mcp(single={
         "error": "Scratch results expire after 24 hour(s); this one is gone — run the pipeline again"}))
     res = _run(["pipeline", "result", "TOK"])
     assert "expired" in res.output.lower() and "run the pipeline again" in res.output.lower(), res.output
+
+
+def test_pipeline_result_old_server_scratch_prefix_prints_new_message(monkeypatch, tmp_path):
+    # A pre-rename server still says "Only scratch pipelines have a result; ...":
+    # the new CLI must recognise the old prefix and print the new message.
+    monkeypatch.setattr(cli, "mcp", _Mcp(single={
+        "error": "Only scratch pipelines have a result; job 'TOK' did not write one"}))
+    res = _run(["pipeline", "result", "TOK"])
+    assert ("error: only live read (scratch) pipelines have a result "
+            "(or this server predates live read results)") in res.output.lower(), res.output
+
+
+def test_pipeline_group_and_result_help_say_live_read():
+    assert "Live Read" in (cli.pipeline_group.help or ""), cli.pipeline_group.help
+    res = _run(["pipeline", "result", "--help"])
+    assert "Live Read" in res.output, res.output
 
 
 def test_existing_flat_commands_unchanged():

@@ -224,13 +224,13 @@ describe('PipelineDetailComponent — scratch View result panel', () => {
     expect(el.querySelectorAll('.table-container > table:not(.results-table) tbody tr').length).toBe(2);
   });
 
-  it('a 404 says only scratch pipelines return rows', () => {
+  it('a 404 says only Live Read pipelines return rows', () => {
     init(scratchJob);
     button(/view\s*result/i)!.click();
     const req = expectResultRequest();
     req.flush({ error: 'only scratch pipelines have a result' }, { status: 404, statusText: 'Not Found' });
     fixture.detectChanges();
     const text = (el.textContent || '').replace(/\s+/g, ' ');
-    expect(text).toContain('This pipeline has no result — only scratch pipelines return rows.');
+    expect(text).toContain('Only Live Read pipelines return rows.');
   });
 });
