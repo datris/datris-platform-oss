@@ -46,6 +46,9 @@ def _next_id():
     return _msg_id
 
 
+_REJECTED_KEY_MSG = "MCP server rejected DATRIS_API_KEY (Configuration → API-Keys → Issue new key)"
+
+
 def _auth_headers():
     """x-api-key header from DATRIS_API_KEY, read at call time (not import)."""
     key = os.getenv("DATRIS_API_KEY", "")
@@ -86,8 +89,7 @@ async def _connect():
         await _close_clients()
         _sse_client = _post_client = None
         if status == 401 and headers:
-            raise click.ClickException(
-                "MCP server rejected DATRIS_API_KEY (Configuration → API-Keys → Issue new key)")
+            raise click.ClickException(_REJECTED_KEY_MSG)
         if status == 401:
             raise click.ClickException(
                 "MCP server requires an API key: export DATRIS_API_KEY=<key> "
@@ -146,10 +148,17 @@ async def _call_tool(name, arguments=None):
             break
 
     if "error" in resp:
-        return {"error": resp["error"].get("message", str(resp["error"]))}
+        message = resp["error"].get("message", str(resp["error"]))
+        if "Invalid x-api-key" in message:
+            raise click.ClickException(_REJECTED_KEY_MSG)
+        return {"error": message}
 
     content = resp.get("result", {}).get("content", [])
     text = "\n".join(b["text"] for b in content if b.get("type") == "text")
+    # The MCP server only checks that a key is present; the Datris API
+    # rejects a wrong one inside the tool call. Never echo the key back.
+    if "Invalid x-api-key" in text:
+        raise click.ClickException(_REJECTED_KEY_MSG)
     try:
         return json.loads(text)
     except (json.JSONDecodeError, TypeError):
@@ -157,26 +166,43 @@ async def _call_tool(name, arguments=None):
 
 
 async def _disconnect():
+    """Tear down the SSE session inside the loop that opened it: cancel and
+    await the reader first so aiter_sse() is no longer running when the
+    aconnect_sse context exits (otherwise contextlib raises "generator didn't
+    stop after athrow()" at loop shutdown), then close the clients and reset
+    the globals so the next call reconnects."""
+    global _endpoint, _post_client, _sse_client, _responses, _reader_task, _sse_cm
     if _reader_task:
         _reader_task.cancel()
+        try:
+            await _reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
     if _sse_cm:
         try:
             await _sse_cm.__aexit__(None, None, None)
         except Exception:
             pass
-    if _sse_client:
-        await _sse_client.aclose()
-    if _post_client:
-        await _post_client.aclose()
+    await _close_clients()
+    _endpoint = _post_client = _sse_client = _responses = _reader_task = _sse_cm = None
+
+
+async def _call_tool_once(name, arguments=None):
+    try:
+        return await _call_tool(name, arguments)
+    finally:
+        await _disconnect()
 
 
 def mcp(name, args=None):
     """Synchronous wrapper for MCP tool calls.
 
     asyncio.run creates a fresh loop per call; get_event_loop() raised
-    "There is no current event loop" on Python 3.14 for every command.
+    "There is no current event loop" on Python 3.14 for every command. The
+    SSE session is bound to that loop, so each call connects and disconnects
+    within it.
     """
-    return asyncio.run(_call_tool(name, args))
+    return asyncio.run(_call_tool_once(name, args))
 
 
 def b64_file(path):

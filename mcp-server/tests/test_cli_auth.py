@@ -35,8 +35,9 @@ class _Resp:
 class _Transport:
     """Shared record of every SSE GET and POST the CLI makes."""
 
-    def __init__(self, sse_status=200):
+    def __init__(self, sse_status=200, tool_text="[]"):
         self.sse_status = sse_status
+        self.tool_text = tool_text
         self.sse_calls = []   # (method, url, headers)
         self.posts = []       # (url, headers, body)
 
@@ -74,7 +75,7 @@ def _install(monkeypatch, transport):
             if isinstance(body, dict) and "id" in body:
                 if body.get("method") == "tools/call":
                     reply = {"jsonrpc": "2.0", "id": body["id"],
-                             "result": {"content": [{"type": "text", "text": "[]"}]}}
+                             "result": {"content": [{"type": "text", "text": transport.tool_text}]}}
                 else:
                     reply = {"jsonrpc": "2.0", "id": body["id"], "result": {}}
                 await cli._responses.put(reply)
@@ -181,3 +182,19 @@ def test_connect_401_with_key_set_says_rejected(monkeypatch):
     assert "export DATRIS_API_KEY" not in result.output
     assert "Traceback" not in result.output
     assert t.posts == []
+
+
+def test_tool_result_invalid_key_exits_with_rejected_hint(monkeypatch):
+    # The MCP server accepts any non-empty key at /sse; the Datris API
+    # rejects a wrong one inside the tool call.
+    monkeypatch.setenv("DATRIS_API_KEY", "abc")
+    t = _Transport(tool_text=json.dumps({"error": "Invalid x-api-key: abc"}))
+    _install(monkeypatch, t)
+
+    result = CliRunner().invoke(cli.cli, ["pipelines"])
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, SystemExit), repr(result.exception)
+    assert "rejected DATRIS_API_KEY" in result.output
+    assert "abc" not in result.output
+    assert "Traceback" not in result.output
