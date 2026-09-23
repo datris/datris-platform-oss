@@ -166,3 +166,18 @@ def test_connect_401_prints_one_line_hint(monkeypatch):
     assert "Traceback" not in result.output
     assert "No endpoint from MCP server" not in result.output
     assert t.posts == [], "no POST should be attempted after a 401 on the SSE GET"
+
+
+def test_connect_401_with_key_set_says_rejected(monkeypatch):
+    monkeypatch.setenv("DATRIS_API_KEY", "wrong")
+    t = _Transport(sse_status=401)
+    _install(monkeypatch, t)
+
+    result = CliRunner().invoke(cli.cli, ["pipelines"])
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, SystemExit), repr(result.exception)
+    assert "rejected DATRIS_API_KEY" in result.output
+    assert "export DATRIS_API_KEY" not in result.output
+    assert "Traceback" not in result.output
+    assert t.posts == []

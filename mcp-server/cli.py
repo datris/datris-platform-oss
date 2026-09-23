@@ -69,7 +69,8 @@ async def _connect():
     _responses = asyncio.Queue()
 
     headers = _auth_headers()
-    _sse_cm = aconnect_sse(_sse_client, "GET", MCP_URL, headers=headers)
+    # copy: aconnect_sse mutates its headers dict (adds Accept/Cache-Control)
+    _sse_cm = aconnect_sse(_sse_client, "GET", MCP_URL, headers=dict(headers))
     sse = await _sse_cm.__aenter__()
 
     # aconnect_sse does not raise on a non-200; without this check a 401 only
@@ -84,6 +85,9 @@ async def _connect():
             pass
         await _close_clients()
         _sse_client = _post_client = None
+        if status == 401 and headers:
+            raise click.ClickException(
+                "MCP server rejected DATRIS_API_KEY (Configuration → API-Keys → Issue new key)")
         if status == 401:
             raise click.ClickException(
                 "MCP server requires an API key: export DATRIS_API_KEY=<key> "
