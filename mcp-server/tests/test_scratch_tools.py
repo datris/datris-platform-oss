@@ -286,7 +286,7 @@ def test_live_read_offer_has_no_domain_bias_or_cron():
 
 
 def test_scratch_reference_section_is_headed_live_read():
-    assert "### scratch (Live Read)" in server._INSTRUCTIONS_TEMPLATE
+    assert "### scratch (Live Read)" in server.PIPELINE_CONFIG_REFERENCE
 
 
 def test_create_pipeline_destination_enum_description_names_live_read():
