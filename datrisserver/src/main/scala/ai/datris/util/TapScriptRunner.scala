@@ -245,6 +245,11 @@ object TapScriptRunner {
           |# Arrow types to_pandas() round-trips faithfully; everything else is taken
           |# from to_pylist() (see _write_batch).
           |_ARROW_PLAIN = ("int", "uint", "float", "double", "half", "bool", "string", "large_string", "timestamp")
+          |# Arrow-BACKED (pd.ArrowDtype) columns seen this run: how many took the
+          |# vectorised fast path and how many stayed on the per-value encoder.
+          |# Counted per column PER WRITE CHUNK; stderr diagnostics only.
+          |_ARROW_FAST = [0]
+          |_ARROW_SLOW = [0]
           |_NAN_SENT = "\x00DTNaN\x00"
           |_INF_SENT = "\x00DTInf\x00"
           |_NINF_SENT = "\x00DT-Inf\x00"
@@ -387,23 +392,70 @@ object TapScriptRunner {
           |    _arrow_dtype = getattr(_pd, "ArrowDtype", None)
           |    for _c in _df.columns:
           |        _s = _df[_c]
+          |        # True when this column came from an arrow-BACKED dtype: like a
+          |        # RecordBatch column, its missing value is a TRUE null (the row path,
+          |        # to_dict("records"), boxes an ArrowDtype null as None), never what
+          |        # _boxed_na would report for the numpy/extension dtype it was cast to.
+          |        _from_arrow = False
+          |        # Cells that were arrow nulls in a float column cast below: after the
+          |        # NaN / Infinity sentinel step they become None, so an arrow null
+          |        # writes null while a real NaN value keeps its NaN token.
+          |        _fast_null = None
           |        if _arrow_dtype is not None and isinstance(_s.dtype, _arrow_dtype):
           |            # An arrow-BACKED pandas column (pd.read_parquet/read_csv with
           |            # dtype_backend="pyarrow", or to_pandas(types_mapper=pd.ArrowDtype)).
-          |            # It answers is_datetime64_any_dtype for timestamp AND date32, but
-          |            # the vectorised .dt path writes garbage on it, so take the values
-          |            # the row path sees and encode them per value.
-          |            _MASK_HIT[0] = False
-          |            _cols[_c] = _pd.Series(
-          |                [
-          |                    _json_native(_x.tolist() if isinstance(_x, _np.ndarray) else _x)
-          |                    for _x in _s.to_numpy(dtype=object, na_value=None)
-          |                ],
-          |                index=_df.index,
-          |                dtype=object,
-          |            )
-          |            _masked = _masked or _MASK_HIT[0]
-          |            continue
+          |            # The plain types that make up almost every columnar file — int /
+          |            # uint / float / bool / string / NAIVE timestamp — are cast to
+          |            # their numpy equivalent here and take the vectorised paths below
+          |            # (plans/stories/tap-batch-arrow-backend-fast-path.md). Every other
+          |            # arrow type (tz-aware timestamp, date32, time, duration, decimal,
+          |            # binary, list, struct, map, dictionary, null) answers pandas' dtype
+          |            # predicates but writes garbage through the vectorised .dt / to_json
+          |            # paths, so it keeps the per-value encoding, which is correct by
+          |            # construction. pyarrow is never imported: the type is read as text.
+          |            _at = str(_s.dtype.pyarrow_dtype)
+          |            _plain = _at.startswith(_ARROW_PLAIN) and not (_at.startswith("timestamp") and "tz=" in _at)
+          |            if not _plain:
+          |                _ARROW_SLOW[0] += 1
+          |                _MASK_HIT[0] = False
+          |                _cols[_c] = _pd.Series(
+          |                    [
+          |                        _json_native(_x.tolist() if isinstance(_x, _np.ndarray) else _x)
+          |                        for _x in _s.to_numpy(dtype=object, na_value=None)
+          |                    ],
+          |                    index=_df.index,
+          |                    dtype=object,
+          |                )
+          |                _masked = _masked or _MASK_HIT[0]
+          |                continue
+          |            _ARROW_FAST[0] += 1
+          |            _from_arrow = True
+          |            # ArrowExtensionArray.isna() is arrow-null only: a NaN VALUE in a
+          |            # double column is not marked, which is what keeps the two apart.
+          |            _anull = _s.isna()
+          |            _has_null = bool(_anull.any())
+          |            if _at.startswith("timestamp"):
+          |                # datetime64[s|ms|us|ns], NaT for null; _fmt_datetimes writes
+          |                # NaT as null below because _from_arrow is set.
+          |                _s = _s.astype(_s.dtype.numpy_dtype)
+          |            elif _at.startswith(("float", "double", "half")):
+          |                # Plain float64: nulls fold into NaN and are restored as None
+          |                # after the sentinel step (the RecordBatch _nulls treatment).
+          |                _s = _pd.Series(_s.to_numpy(dtype="float64", na_value=_np.nan), index=_df.index)
+          |                if _has_null:
+          |                    _fast_null = _anull.to_numpy()
+          |            elif _has_null or _at.startswith(("string", "large_string")):
+          |                # Python int / bool / str / None are all JSON-native, so this
+          |                # object Series serialises exactly as the row path does: an int
+          |                # stays an int (never 1.0) and a null stays null (never "<NA>",
+          |                # which is what a nullable EXTENSION dtype would box it as).
+          |                # Strings always take this route: numpy_dtype is "<U0" and
+          |                # astype(object) would box the null as pd.NA.
+          |                _cols[_c] = _pd.Series(_s.to_numpy(dtype=object, na_value=None), index=_df.index, dtype=object)
+          |                continue
+          |            else:
+          |                # int / uint / bool with no nulls -> plain numpy dtype.
+          |                _s = _s.astype(_s.dtype.numpy_dtype)
           |        if _nulls and _c in _nulls and _t.is_float_dtype(_s) and isinstance(_s.dtype, _np.dtype):
           |            # An arrow null in a numeric column is a true null, but
           |            # to_pandas() has already folded it into NaN (and promoted an
@@ -413,7 +465,7 @@ object TapScriptRunner {
           |            _s[_nulls[_c]] = None
           |        if _t.is_datetime64_any_dtype(_s):
           |            # NaT is handled inside _fmt_datetimes (str(NaT) == "NaT").
-          |            _cols[_c] = _fmt_datetimes(_s, None if _arrow else "NaT")
+          |            _cols[_c] = _fmt_datetimes(_s, None if (_arrow or _from_arrow) else "NaT")
           |            continue
           |        if _t.is_object_dtype(_s):
           |            # Per value, like the row encoder. The all-strings fast path is
@@ -475,8 +527,12 @@ object TapScriptRunner {
           |                _v = _s
           |        else:
           |            _v = _s
+          |        if _fast_null is not None:
+          |            # An arrow null in a cast float column is a true null, not NaN.
+          |            _v = _v.astype(object)
+          |            _v[_fast_null] = None
           |        if _any_na and not _na_done:
-          |            _mv = None if _arrow else _boxed_na(_s, _na)
+          |            _mv = None if (_arrow or _from_arrow) else _boxed_na(_s, _na)
           |            if _mv is None:
           |                pass
           |            elif isinstance(_mv, float) and _mv != _mv:
@@ -767,7 +823,12 @@ object TapScriptRunner {
           |    else:
           |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |    if _batches_seen:
-          |        print(f"[wrapper] batch lane: {_batches_seen} batch(es)", file=sys.stderr, flush=True)
+          |        _bl = f"[wrapper] batch lane: {_batches_seen} batch(es)"
+          |        if _ARROW_FAST[0] or _ARROW_SLOW[0]:
+          |            # Diagnostics only (never parsed): how many arrow-BACKED columns
+          |            # took the vectorised path, counted per column per write chunk.
+          |            _bl += f"; arrow-backed columns: {_ARROW_FAST[0]} fast / {_ARROW_SLOW[0]} per-value"
+          |        print(_bl, file=sys.stderr, flush=True)
           |    envelope = {"type": data_type, "count": _count, "columns": _columns}
           |else:
           |    # Inline path (no DATRIS_TAP_OUTPUT): the whole payload rides on stdout as
@@ -816,7 +877,12 @@ object TapScriptRunner {
           |    else:
           |        print(f"[wrapper] fetch() returned 1 {data_type} payload in {_elapsed:.2f}s", file=sys.stderr, flush=True)
           |    if _batches_seen:
-          |        print(f"[wrapper] batch lane: {_batches_seen} batch(es)", file=sys.stderr, flush=True)
+          |        _bl = f"[wrapper] batch lane: {_batches_seen} batch(es)"
+          |        if _ARROW_FAST[0] or _ARROW_SLOW[0]:
+          |            # Diagnostics only (never parsed): how many arrow-BACKED columns
+          |            # took the vectorised path, counted per column per write chunk.
+          |            _bl += f"; arrow-backed columns: {_ARROW_FAST[0]} fast / {_ARROW_SLOW[0]} per-value"
+          |        print(_bl, file=sys.stderr, flush=True)
           |    envelope = {"type": data_type, "data": json.loads(data) if data_type in ("json", "csv", "document") else data}
           |# Incremental-sync state: a script that wants the platform to remember its
           |# position sets a module-global dict DATRIS_STATE inside fetch(). Absent or
