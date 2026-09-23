@@ -20,6 +20,7 @@ class AIProvidersSpec extends AnyFunSuite {
             "claude-opus-4-7",
             "claude-opus-4-8",
             "claude-opus-5",
+            "claude-opus-5-5",
             "claude-sonnet-5"
         )
         rejecting.foreach { m =>
@@ -108,6 +109,7 @@ class AIProvidersSpec extends AnyFunSuite {
     test("rejectsSamplingParams fires on bedrock-prefixed and inference-profile model ids") {
         val rejecting = List(
             "anthropic.claude-opus-5",
+            "anthropic.claude-opus-5-5",
             "anthropic.claude-sonnet-5",
             "anthropic.claude-fable-5",
             "us.anthropic.claude-opus-5",
@@ -174,7 +176,7 @@ class AIProvidersSpec extends AnyFunSuite {
     // ---- grok (xAI) ----
 
     test("addTokenLimit: grok always uses max_tokens") {
-        val models = List("grok-4.6", "grok-4.1-fast", "grok-code-fast-1")
+        val models = List("grok-4.7", "grok-4.6", "grok-4.1-fast", "grok-code-fast-1")
         models.foreach { m =>
             val obj = new com.google.gson.JsonObject()
             AIProviders.addTokenLimit(obj, "grok", m, 4096)
@@ -217,6 +219,7 @@ class AIProvidersSpec extends AnyFunSuite {
 
     test("rejectsSamplingParams is false for grok models") {
         assert(!AIProviders.rejectsSamplingParams("grok-4.6"))
+        assert(!AIProviders.rejectsSamplingParams("grok-4.7"))
         assert(!AIProviders.rejectsSamplingParams("grok-code-fast-1"))
     }
 

@@ -166,12 +166,12 @@ AWS_SECRET_ACCESS_KEY=...
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
 | `oss/ai-primary` | bedrock | *(blank — derived from region)* | `BEDROCK_MODEL` or `anthropic.claude-fable-5-1` |
-| `oss/codegen` | bedrock | *(blank — derived from region)* | `CODEGEN_MODEL` or `anthropic.claude-opus-5` |
+| `oss/codegen` | bedrock | *(blank — derived from region)* | `CODEGEN_MODEL` or `anthropic.claude-opus-5-5` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
 Notes:
 
-- **Model ids** are Bedrock's `anthropic.`-prefixed forms (e.g. `anthropic.claude-opus-5`). Models that aren't on-demand invokable in your region are addressed by their **cross-region inference profile** id (e.g. `us.anthropic.claude-...`). The Configuration UI discovers the invokable list live from your account when its IAM policy allows it.
+- **Model ids** are Bedrock's `anthropic.`-prefixed forms (e.g. `anthropic.claude-opus-5-5`). Models that aren't on-demand invokable in your region are addressed by their **cross-region inference profile** id (e.g. `us.anthropic.claude-...`). The Configuration UI discovers the invokable list live from your account when its IAM policy allows it.
 - **Enable model access first.** Models must be enabled for your account in the AWS Bedrock console — a model can appear in listings and still fail with `AccessDeniedException` on the first call until access is granted.
 - **Claude Fable 5 / 5.1 need a one-time data-retention opt-in.** Fable 5 and 5.1 (and Mythos 5 / 5.1) require Bedrock's `provider_data_share` retention mode — prompts/completions are shared with Anthropic and retained up to 30 days for trust and safety (not used for training; other Claude models are unaffected by the setting). Without it, calls fail with "data retention mode 'default' is not available for this model". Opt in once per account: `PUT /data-retention` with `{"mode": "provider_data_share"}` on the Bedrock control plane (IAM action `bedrock:PutAccountDataRetention`) — see AWS's Bedrock "Data retention" documentation. There is no console UI for this setting at the time of writing.
 - **Minimal IAM policy:** `bedrock:InvokeModel` on the models you use, plus `bedrock:ListFoundationModels` and `bedrock:ListInferenceProfiles` for the UI's live model dropdown (optional — without them the UI shows a standard list).
@@ -187,13 +187,13 @@ Run chat and CodeGen on Grok through xAI's OpenAI-compatible API. One key from [
 # .env
 XAI_API_KEY=...
 # Optional model override (default shown):
-# GROK_MODEL=grok-4.6
+# GROK_MODEL=grok-4.7
 ```
 
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
-| `oss/ai-primary` | grok | `https://api.x.ai/v1/chat/completions` | `GROK_MODEL` or `grok-4.6` |
-| `oss/codegen` | grok | `https://api.x.ai/v1/chat/completions` | `CODEGEN_MODEL` or `grok-4.6` |
+| `oss/ai-primary` | grok | `https://api.x.ai/v1/chat/completions` | `GROK_MODEL` or `grok-4.7` |
+| `oss/codegen` | grok | `https://api.x.ai/v1/chat/completions` | `CODEGEN_MODEL` or `grok-4.7` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
 Notes:
@@ -210,7 +210,7 @@ When `ANTHROPIC_API_KEY` is set, `aiPrimary` and `codegen` use Claude. Anthropic
 | Slot | Provider | Endpoint | Model |
 |------|----------|----------|-------|
 | `oss/ai-primary` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-fable-5-1` |
-| `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-5` |
+| `oss/codegen` | anthropic | `https://api.anthropic.com/v1/messages` | `claude-opus-5-5` |
 | `oss/embedding` | tei | `http://tei:80/v1/embeddings` | `BAAI/bge-m3` |
 
 The `tei` service (HuggingFace Text Embeddings Inference) is part of `docker-compose.yml`. On first start it downloads `bge-m3` (~2.2 GB ONNX weights) into a persistent volume; subsequent restarts use the cached model.
@@ -236,8 +236,8 @@ Override the seeded models by setting these in `.env`:
 ```bash
 ANTHROPIC_MODEL=claude-fable-5-1
 OPENAI_MODEL=gpt-5.6-sol
-GROK_MODEL=grok-4.6
-CODEGEN_MODEL=claude-opus-5   # or gpt-5.6-sol if using OpenAI, grok-4.6 for Grok
+GROK_MODEL=grok-4.7
+CODEGEN_MODEL=claude-opus-5-5   # or gpt-5.6-sol if using OpenAI, grok-4.7 for Grok
 ANTHROPIC_OVERLOAD_FALLBACK_MODEL=claude-sonnet-5   # used for the current request when an Anthropic Opus call stays overloaded after retries
 ```
 
@@ -375,7 +375,7 @@ OpenAI web search requires the **Responses API**. When the configured endpoint i
 **Highly recommended: Anthropic with the latest coding model for CodeGen.** Tap script generation, AI data quality rules, AI transformations, and NL→SQL all depend heavily on the model's coding ability — Claude produces dramatically better results than smaller or cheaper models. The same recommendation appears in the Configuration UI's CodeGen section and in `.env.example`.
 </Tip>
 
-CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot so they can run a different model than the general default. On a fresh install the slot seeds the strongest code-generation model — `gpt-5.6-sol` with OpenAI, `claude-opus-5` with Anthropic — so code generation is at full quality out of the box, while `aiPrimary` seeds the recommended chat model (`claude-fable-5-1` / `gpt-5.6-sol`). The separate slot is your cost-tuning lever: point `aiPrimary` at a cheaper model (e.g. `claude-sonnet-5`) for the chatty paths and keep the stronger model only on the calls that benefit from it.
+CodeGen tasks (tap scripts, `aiRule`, `aiTransformation`, JSON Schema / XSD generation, natural-language → SQL) have their own slot so they can run a different model than the general default. On a fresh install the slot seeds the strongest code-generation model — `gpt-5.6-sol` with OpenAI, `claude-opus-5-5` with Anthropic — so code generation is at full quality out of the box, while `aiPrimary` seeds the recommended chat model (`claude-fable-5-1` / `gpt-5.6-sol`). The separate slot is your cost-tuning lever: point `aiPrimary` at a cheaper model (e.g. `claude-sonnet-5`) for the chatty paths and keep the stronger model only on the calls that benefit from it.
 
 | Feature | Uses codegen slot? |
 |---|---|

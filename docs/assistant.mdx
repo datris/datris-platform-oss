@@ -120,7 +120,7 @@ seems to be "hanging" mid-run, it's waiting between polls on purpose.
 
 | Provider | Streaming text | Tool cards | Reasoning block |
 |----------|---------------|------------|-----------------|
-| Anthropic Claude (Opus 5, Fable 5.1) | ✅ | ✅ | Full chain-of-thought (extended thinking) |
+| Anthropic Claude (Opus 5.5, Fable 5.1) | ✅ | ✅ | Full chain-of-thought (extended thinking) |
 | OpenAI GPT-5.x / GPT-6 Astra | ✅ | ✅ | Reasoning summary |
 | Azure OpenAI | ✅ | ✅ | None (reasoning happens server-side but isn't surfaced) |
 | Claude via Amazon Bedrock | ✅ | ✅ | Full thinking blocks (same as direct Anthropic; responses arrive at the end of each turn rather than streaming) |
@@ -136,8 +136,8 @@ on an agent that's writing production-bound config.
 
 The Assistant uses your tenant's **AI primary** config (the chat slot). Tap
 script generation, AI data quality, and AI transformations use the separate
-**codegen** slot. On a fresh install the Anthropic default is Claude Opus 5
-(`claude-opus-5`) for both slots; the OpenAI default is `gpt-5.5`.
+**codegen** slot. On a fresh install the Anthropic default is Claude Opus 5.5
+(`claude-opus-5-5`) for both slots; the OpenAI default is `gpt-5.5`.
 
 There is no per-tenant Assistant configuration to manage beyond what you
 already have for AI primary. See [AI Configuration](/ai-configuration) for the

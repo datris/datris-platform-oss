@@ -137,7 +137,7 @@
             <input class="form-input" type="text" [(ngModel)]="codegenModel"
                    placeholder="your Azure deployment name" *ngIf="codegenProvider === 'azure'" />
             <input class="form-input" type="text" [(ngModel)]="codegenModel"
-                   placeholder="e.g. us.anthropic.claude-opus-5" *ngIf="codegenProvider === 'bedrock' && bedrockCustomModelCodegen" />
+                   placeholder="e.g. us.anthropic.claude-opus-5-5" *ngIf="codegenProvider === 'bedrock' && bedrockCustomModelCodegen" />
             <ng-container *ngIf="codegenProvider === 'bedrock'">
               <a class="advanced-toggle" (click)="bedrockCustomModelCodegen = !bedrockCustomModelCodegen" style="margin-top: 6px;">
                 {{ bedrockCustomModelCodegen ? 'Choose from the list' : 'Enter a custom model id…' }}
