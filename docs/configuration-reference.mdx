@@ -244,7 +244,7 @@ AI configuration is split into four independent slots (three seeded at first boo
 |----------|---------|-------------|
 | `ai.enabled` | `true` | Enable AI features (required for the platform to start) |
 | `ai.aiPrimary.secretName` | `oss/ai-primary` | Vault secret for the main AI model used for general reasoning (NL→SQL, search answers, etc.). Seeded with the recommended chat model — Anthropic gets `claude-fable-5-1`, OpenAI gets `gpt-5.6-sol`. |
-| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest code-generation model — Anthropic gets `claude-opus-5`, OpenAI gets `gpt-5.6-sol`. |
+| `ai.codegen.secretName` | `oss/codegen` | Vault secret for the code-generation model (tap scripts, AI DQ, AI transformations, schema generation). Seeded with the strongest code-generation model — Anthropic gets `claude-opus-5-5`, OpenAI gets `gpt-5.6-sol`. |
 | `ai.embedding.secretName` | `oss/embedding` | Vault secret for the embedding model used by vector destinations (Chroma, Qdrant, Milvus, Weaviate, pgvector) and search. For Anthropic-only deployments this is seeded to point at the bundled TEI sidecar serving `BAAI/bge-m3` (1024-dim), so vector destinations work out of the box without an OpenAI key. |
 | `ai.webSearch.secretName` | `oss/web-search` | Vault secret for the optional live web-search provider used during tap script generation and diagnosis. Not seeded at first boot — configure it from the Configuration tab. |
 | `ai.extendedThinking` | `true` | Enable extended thinking on the Assistant tab's agent loop (Anthropic models only); the model's reasoning is shown above the visible response. Set to `false` to disable platform-wide. |
@@ -276,8 +276,8 @@ These `.env` variables tune what gets seeded. They apply on the **first boot onl
 | `AWS_REGION` | — | AWS region for the Bedrock path (e.g. `us-east-1`). |
 | `BEDROCK_MODEL` | `anthropic.claude-fable-5-1` | Invokable Bedrock model id seeded into `oss/ai-primary` on the Bedrock path. |
 | `XAI_API_KEY` | — | Grok (xAI) API key from console.x.ai, for the Grok path (`AI_PROVIDER=grok`, or auto-picked when it's the sole key). |
-| `GROK_MODEL` | `grok-4.6` | Grok model seeded into `oss/ai-primary` on the Grok path. |
-| `CODEGEN_MODEL` | `claude-opus-5` or `gpt-5.6-sol` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5`; the Grok path defaults to `grok-4.6`). |
+| `GROK_MODEL` | `grok-4.7` | Grok model seeded into `oss/ai-primary` on the Grok path. |
+| `CODEGEN_MODEL` | `claude-opus-5-5` or `gpt-5.6-sol` | Model seeded into `oss/codegen` (Anthropic and OpenAI defaults; the Azure path defaults to `AZURE_OPENAI_MODEL`; the Bedrock path defaults to `anthropic.claude-opus-5-5`; the Grok path defaults to `grok-4.7`). |
 | `EMBEDDING_PROVIDER` | follows provider | `openai`, `azure`, `tei`, or `ollama`. When unset: `openai` when the AI provider is OpenAI, otherwise the bundled TEI sidecar (Azure embeddings are opt-in only). |
 | `EMBEDDING_MODEL` | provider default | `text-embedding-3-small` (openai; also the azure default deployment name), `BAAI/bge-m3` (tei), `bge-m3` (ollama). |
 | `EMBEDDING_ENDPOINT` | provider default | Endpoint override for the `tei`, `ollama`, and `azure` providers — useful when the service runs on a separate host or a non-standard path. |

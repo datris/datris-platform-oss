@@ -29,7 +29,7 @@
 #                       role / default credential chain) and BEDROCK_MODEL
 #                       (default: anthropic.claude-sonnet-5)
 #   XAI_API_KEY         pre-set Grok (xAI) key       (skips the prompt;
-#                       optionally with GROK_MODEL, default grok-4.6)
+#                       optionally with GROK_MODEL, default grok-4.7)
 #   DATRIS_POSTGRES     bundled|external|none        (default: bundled)
 #                       external also reads POSTGRES_JDBC_URL/POSTGRES_USER/POSTGRES_PASSWORD
 #   DATRIS_EMBEDDING    openai|tei|none              (default: openai if OpenAI key present, else tei)

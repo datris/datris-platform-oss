@@ -28,6 +28,7 @@ const FALLBACK: ModelCatalog = {
     anthropic: [
       { value: 'claude-fable-5-1', label: 'Claude Fable 5.1 (recommended)', recommended: true },
       { value: 'claude-fable-5', label: 'Claude Fable 5' },
+      { value: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
       { value: 'claude-opus-5', label: 'Claude Opus 5' },
       { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
@@ -50,6 +51,7 @@ const FALLBACK: ModelCatalog = {
     bedrock: [
       { value: 'anthropic.claude-fable-5-1', label: 'Claude Fable 5.1 (recommended)', recommended: true },
       { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5' },
+      { value: 'anthropic.claude-opus-5-5', label: 'Claude Opus 5.5' },
       { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5' },
       { value: 'anthropic.claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'anthropic.claude-opus-4-8', label: 'Claude Opus 4.8' },
@@ -57,14 +59,16 @@ const FALLBACK: ModelCatalog = {
       { value: 'anthropic.claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
     grok: [
-      { value: 'grok-4.6', label: 'Grok 4.6 (recommended)', recommended: true },
+      { value: 'grok-4.7', label: 'Grok 4.7 (recommended)', recommended: true },
+      { value: 'grok-4.6', label: 'Grok 4.6' },
       { value: 'grok-4.5', label: 'Grok 4.5' },
       { value: 'grok-4.1-fast', label: 'Grok 4.1 Fast' },
     ],
   },
   codegen: {
     anthropic: [
-      { value: 'claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'claude-opus-5-5', label: 'Claude Opus 5.5 (recommended)', recommended: true },
+      { value: 'claude-opus-5', label: 'Claude Opus 5' },
       { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
       { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
       { value: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
@@ -85,7 +89,8 @@ const FALLBACK: ModelCatalog = {
       { value: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
     ],
     bedrock: [
-      { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5 (recommended)', recommended: true },
+      { value: 'anthropic.claude-opus-5-5', label: 'Claude Opus 5.5 (recommended)', recommended: true },
+      { value: 'anthropic.claude-opus-5', label: 'Claude Opus 5' },
       { value: 'anthropic.claude-fable-5-1', label: 'Claude Fable 5.1' },
       { value: 'anthropic.claude-fable-5', label: 'Claude Fable 5' },
       { value: 'anthropic.claude-opus-4-8', label: 'Claude Opus 4.8' },
@@ -94,7 +99,8 @@ const FALLBACK: ModelCatalog = {
       { value: 'anthropic.claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     ],
     grok: [
-      { value: 'grok-4.6', label: 'Grok 4.6 (recommended)', recommended: true },
+      { value: 'grok-4.7', label: 'Grok 4.7 (recommended)', recommended: true },
+      { value: 'grok-4.6', label: 'Grok 4.6' },
       { value: 'grok-code-fast-1', label: 'Grok Code Fast 1' },
       { value: 'grok-4.1-fast', label: 'Grok 4.1 Fast' },
     ],

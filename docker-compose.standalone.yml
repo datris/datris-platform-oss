@@ -1010,7 +1010,7 @@ configs:
           seed_if_absent secret/oss/codegen \
             provider="bedrock" \
             endpoint="" \
-            model="$${CODEGEN_MODEL:-anthropic.claude-opus-5}" \
+            model="$${CODEGEN_MODEL:-anthropic.claude-opus-5-5}" \
             apiKey=""
         elif [ "$$PROVIDER" = "azure" ]; then
           # Keyless (Entra ID) azure is allowed with an explicit AI_PROVIDER=azure:
@@ -1075,12 +1075,12 @@ configs:
           seed_if_absent secret/oss/ai-primary \
             provider="grok" \
             endpoint="https://api.x.ai/v1/chat/completions" \
-            model="$${GROK_MODEL:-grok-4.6}" \
+            model="$${GROK_MODEL:-grok-4.7}" \
             apiKey="$${XAI_API_KEY}"
           seed_if_absent secret/oss/codegen \
             provider="grok" \
             endpoint="https://api.x.ai/v1/chat/completions" \
-            model="$${CODEGEN_MODEL:-grok-4.6}" \
+            model="$${CODEGEN_MODEL:-grok-4.7}" \
             apiKey="$${XAI_API_KEY}"
         elif [ "$$PROVIDER" = "anthropic" ]; then
           if [ -z "$${ANTHROPIC_API_KEY:-}" ]; then
@@ -1101,7 +1101,7 @@ configs:
           seed_if_absent secret/oss/codegen \
             provider="anthropic" \
             endpoint="https://api.anthropic.com/v1/messages" \
-            model="$${CODEGEN_MODEL:-claude-opus-5}" \
+            model="$${CODEGEN_MODEL:-claude-opus-5-5}" \
             apiKey="$${ANTHROPIC_API_KEY}" \
             version="2023-06-01"
         else
