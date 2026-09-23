@@ -194,7 +194,7 @@ Client-side setup for Claude Desktop and Claude Code — including recommended a
 |----------|---------|-------------|
 | `DATRIS_API_URL` | `http://localhost:8080` | Datris REST API server URL |
 | `REQUIRE_API_KEY` | `false` | Reject SSE/HTTP sessions that connect without `x-api-key` (and stdio sessions started without `DATRIS_API_KEY`) |
-| `DATRIS_API_KEY` | — | stdio transport only: the API key forwarded as `x-api-key` on every tool call (stdio has no request headers) |
+| `DATRIS_API_KEY` | — | Server side, stdio transport only: the API key forwarded as `x-api-key` on every tool call (stdio has no request headers). The `datris` CLI also reads this variable and sends it as the `x-api-key` header on its SSE connection. |
 
 All database connections, vector search, and embedding are handled by the pipeline server. The MCP server only needs the pipeline URL.
 

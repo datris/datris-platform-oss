@@ -8,6 +8,11 @@ Usage:
     datris ingest data.csv --pipeline my_data --dest postgres
     datris query "SELECT * FROM my_data LIMIT 10"
     datris delete my_data
+
+Environment:
+    MCP_SERVER_URL   MCP SSE endpoint (default http://localhost:3000/sse).
+    DATRIS_API_KEY   API key sent as the x-api-key header on every MCP request;
+                     required when the platform has API keys turned on.
 """
 
 import asyncio
@@ -41,6 +46,21 @@ def _next_id():
     return _msg_id
 
 
+def _auth_headers():
+    """x-api-key header from DATRIS_API_KEY, read at call time (not import)."""
+    key = os.getenv("DATRIS_API_KEY", "")
+    return {"x-api-key": key} if key else {}
+
+
+async def _close_clients():
+    for c in (_sse_client, _post_client):
+        if c:
+            try:
+                await c.aclose()
+            except Exception:
+                pass
+
+
 async def _connect():
     global _endpoint, _post_client, _sse_client, _responses, _reader_task, _sse_cm
 
@@ -48,8 +68,27 @@ async def _connect():
     _post_client = httpx.AsyncClient(timeout=30, limits=httpx.Limits(max_keepalive_connections=0))
     _responses = asyncio.Queue()
 
-    _sse_cm = aconnect_sse(_sse_client, "GET", MCP_URL)
+    headers = _auth_headers()
+    _sse_cm = aconnect_sse(_sse_client, "GET", MCP_URL, headers=headers)
     sse = await _sse_cm.__aenter__()
+
+    # aconnect_sse does not raise on a non-200; without this check a 401 only
+    # surfaces as a generic "No endpoint" error after the wait below.
+    status = sse.response.status_code
+    if status != 200:
+        cm = _sse_cm
+        _sse_cm = None
+        try:
+            await cm.__aexit__(None, None, None)
+        except Exception:
+            pass
+        await _close_clients()
+        _sse_client = _post_client = None
+        if status == 401:
+            raise click.ClickException(
+                "MCP server requires an API key: export DATRIS_API_KEY=<key> "
+                "(Configuration → API-Keys → Issue new key)")
+        raise click.ClickException(f"MCP server returned HTTP {status} from {MCP_URL}")
 
     async def _read():
         global _endpoint
@@ -74,13 +113,13 @@ async def _connect():
 
     # Initialize
     init_id = _next_id()
-    await _post_client.post(_endpoint, json={
+    await _post_client.post(_endpoint, headers=headers, json={
         "jsonrpc": "2.0", "id": init_id,
         "method": "initialize",
         "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": CLI_VERSION}},
     })
     await asyncio.wait_for(_responses.get(), 10)
-    await _post_client.post(_endpoint, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+    await _post_client.post(_endpoint, headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
 
 
 async def _call_tool(name, arguments=None):
@@ -88,7 +127,7 @@ async def _call_tool(name, arguments=None):
         await _connect()
 
     call_id = _next_id()
-    await _post_client.post(_endpoint, json={
+    await _post_client.post(_endpoint, headers=_auth_headers(), json={
         "jsonrpc": "2.0", "id": call_id,
         "method": "tools/call",
         "params": {"name": name, "arguments": arguments or {}},
@@ -146,7 +185,13 @@ def b64_file(path):
 @click.group()
 @click.version_option(version=CLI_VERSION)
 def cli():
-    """Datris CLI — The Data Control Plane for AI Agents"""
+    """Datris CLI — The Data Control Plane for AI Agents
+
+    \b
+    Environment:
+      MCP_SERVER_URL  MCP SSE endpoint (default http://localhost:3000/sse)
+      DATRIS_API_KEY  API key, sent as x-api-key (needed when API keys are on)
+    """
     pass
 
 

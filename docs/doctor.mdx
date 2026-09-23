@@ -54,7 +54,7 @@ datris doctor --probes ai          # also send a minimal request through each AI
 datris doctor --pre-upgrade        # host checks only; safe with the server stopped
 ```
 
-Run it from the directory that holds `docker-compose.yml` and `.env`, or point it there with `--project-dir` (and `--compose-file` for the standalone file). Unlike the other CLI commands, `doctor` talks to the server directly rather than through the MCP server — a dead MCP server is itself a finding. Set `DATRIS_URL` if the server is not on `http://localhost:8080`, and `DATRIS_API_KEY` when API keys are on.
+Run it from the directory that holds `docker-compose.yml` and `.env`, or point it there with `--project-dir` (and `--compose-file` for the standalone file). Unlike the other CLI commands, `doctor` talks to the server directly rather than through the MCP server — a dead MCP server is itself a finding. Set `DATRIS_URL` if the server is not on `http://localhost:8080`. When API keys are on, set `DATRIS_API_KEY` — the same variable every other CLI command reads.
 
 Exit codes make it scriptable:
 

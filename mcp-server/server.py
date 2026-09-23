@@ -487,13 +487,36 @@ Do NOT call check_service_health as part of the normal workflow — it is slow. 
 Do NOT call update_secret unless you need to configure AI provider keys and they are not already set.
 """
 
+def _mcp_server_version():
+    """datris-mcp-server version: the installed package (pip / Homebrew), else
+    the pyproject.toml beside this file (the Docker image copies the tree
+    rather than installing it), else 'unknown'."""
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("datris-mcp-server")
+    except Exception:
+        pass
+    try:
+        import re as _re
+        pyproject = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml")
+        with open(pyproject, encoding="utf-8") as f:
+            m = _re.search(r'^version\s*=\s*"([^"]+)"', f.read(), _re.M)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "unknown"
+
+
 # Instructions are delivered per session via create_initialization_options(),
 # which reads server.instructions at session start. The import-time value uses
 # the fail-open full set (no network call during import); every transport
 # entry point (stdio, /sse, /mcp) refreshes server.instructions from the
 # cached availability fetch just before the session initializes, so a cache
 # refresh reaches new sessions.
-server = Server("datris", instructions=_render_destination_templates(
+# version= makes initialize report serverInfo.version as the datris-mcp-server
+# version; without it the SDK falls back to the `mcp` package version.
+server = Server("datris", version=_mcp_server_version(), instructions=_render_destination_templates(
     _INSTRUCTIONS_TEMPLATE, list(ALL_STRUCTURED_DESTINATIONS)))
 
 
@@ -536,27 +559,6 @@ def _headers():
     h = {"Content-Type": "application/json"}
     h.update(_identity_headers())
     return h
-
-
-def _mcp_server_version():
-    """datris-mcp-server version: the installed package (pip / Homebrew), else
-    the pyproject.toml beside this file (the Docker image copies the tree
-    rather than installing it), else 'unknown'."""
-    try:
-        from importlib.metadata import version as _pkg_version
-        return _pkg_version("datris-mcp-server")
-    except Exception:
-        pass
-    try:
-        import re as _re
-        pyproject = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml")
-        with open(pyproject, encoding="utf-8") as f:
-            m = _re.search(r'^version\s*=\s*"([^"]+)"', f.read(), _re.M)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return "unknown"
 
 
 def _call(method, path, timeout=300, **kwargs):
