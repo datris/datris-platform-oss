@@ -19,6 +19,7 @@ import { of } from 'rxjs';
 import { ConfigurationComponent } from './configuration.component';
 import { ModelCatalogService } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
+import { ConfigChatContextService } from '../config-chat/config-chat-context.service';
 
 describe('ConfigurationComponent — Azure Entra mode omits the slot apiKey', () => {
   let component: ConfigurationComponent;
@@ -80,5 +81,96 @@ describe('ConfigurationComponent — Azure Entra mode omits the slot apiKey', ()
 
     const body = aiPrimaryPutBody();
     expect(body['apiKey']).toBe('••••••••');
+  });
+});
+
+/**
+ * Story: Configuration chat, UI: panel, transport, state, context, host wiring
+ * (plans/stories/config-chat-ui-panel.md), Acceptance bullet 2.
+ *
+ * The Configuration page hosts the "Ask" side panel for admins only (or
+ * everyone when user auth is off), never on trial; every sub-tab change is
+ * published to ConfigChatContextService; ?tab=code-repo deep-links work.
+ */
+describe('ConfigurationComponent — configuration chat panel host', () => {
+  let httpMock: HttpTestingController;
+
+  function setup(opts: { role?: string; tab?: string } = {}) {
+    TestBed.configureTestingModule({
+      declarations: [ConfigurationComponent],
+      imports: [FormsModule],
+      schemas: [NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ActivatedRoute,
+          useValue: { queryParamMap: of(convertToParamMap(opts.tab ? { tab: opts.tab } : {})) }
+        },
+        { provide: ModelCatalogService, useValue: { fetch: () => new Promise(() => { /* never resolves */ }) } },
+        { provide: AuthService, useValue: { current: () => ({ role: opts.role ?? 'admin' }) } }
+      ]
+    });
+    const fixture = TestBed.createComponent(ConfigurationComponent);
+    httpMock = TestBed.inject(HttpTestingController);
+    return fixture;
+  }
+
+  /** Run ngOnInit and answer the /api/v1/version probe that sets
+   *  environment / useUserAuth, then re-render. */
+  function init(fixture: any, version: Record<string, string>) {
+    fixture.detectChanges();
+    httpMock.expectOne('/api/v1/version').flush(version);
+    fixture.detectChanges();
+  }
+
+  function panel(fixture: any): Element | null {
+    return (fixture.nativeElement as HTMLElement).querySelector('app-config-chat-panel');
+  }
+
+  it('panel hidden when useUserAuth and role editor', () => {
+    const fixture = setup({ role: 'editor' });
+    init(fixture, { environment: 'dev', useUserAuth: 'true' });
+
+    expect((fixture.componentInstance as any).canSeeChat).toBeFalse();
+    expect(panel(fixture)).toBeNull();
+  });
+
+  it('panel hidden on trial environment', () => {
+    const fixture = setup({ role: 'admin' });
+    init(fixture, { environment: 'trial-abc123', useUserAuth: 'false' });
+
+    expect((fixture.componentInstance as any).canSeeChat).toBeFalse();
+    expect(panel(fixture)).toBeNull();
+  });
+
+  it('panel shown for admin', () => {
+    const fixture = setup({ role: 'admin' });
+    init(fixture, { environment: 'dev', useUserAuth: 'true' });
+
+    expect((fixture.componentInstance as any).canSeeChat).toBeTrue();
+    expect(panel(fixture)).not.toBeNull();
+  });
+
+  it('setting activeTab publishes {tab} to ConfigChatContextService', () => {
+    const fixture = setup({ role: 'admin' });
+    const ctx = TestBed.inject(ConfigChatContextService);
+    const publish = spyOn(ctx, 'publish').and.callThrough();
+
+    fixture.componentInstance.activeTab = 'users';
+
+    expect(publish).toHaveBeenCalledWith({ tab: 'users' });
+    expect(ctx.snapshot()).toEqual({ tab: 'users' });
+
+    fixture.componentInstance.activeTab = 'secrets';
+    expect(ctx.snapshot()).toEqual({ tab: 'secrets' });
+  });
+
+  it('?tab=code-repo selects code-repo', () => {
+    const fixture = setup({ role: 'admin', tab: 'code-repo' });
+    init(fixture, { environment: 'dev', useUserAuth: 'false' });
+
+    expect(fixture.componentInstance.activeTab).toBe('code-repo');
+    expect(TestBed.inject(ConfigChatContextService).snapshot()).toEqual({ tab: 'code-repo' });
   });
 });

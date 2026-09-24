@@ -48,4 +48,18 @@ class ConfigChatAPIControllerSpec extends AnyFunSuite {
     test("scopeFor with no session id falls back to <username>:user") {
         assert(ConfigChatAPIController.scopeFor("alice", None) == "alice:user")
     }
+
+    // Story: config-chat-ui-panel.md, Step 8. With user auth on, the chat
+    // endpoint needs a signed-in user; API-key callers get no actor (403).
+    test("actorFor without user auth is admin") {
+        assert(ConfigChatAPIController.actorFor(false, None) == Some("admin"))
+    }
+
+    test("actorFor with user auth and a session user is that user") {
+        assert(ConfigChatAPIController.actorFor(true, Some("todd")) == Some("todd"))
+    }
+
+    test("actorFor with user auth and no session user is None") {
+        assert(ConfigChatAPIController.actorFor(true, None) == None)
+    }
 }
