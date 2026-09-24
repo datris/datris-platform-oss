@@ -87,14 +87,14 @@ object ConfigAgentTools {
     private def mutating(name: String, description: String, params: P*): JsonObject =
         tool(name, description, (params :+ confirmationToken): _*)
 
-    val Slots: Seq[String] = Seq("ai-primary", "ai-secondary", "codegen", "embedding")
+    val Slots: Seq[String] = Seq("ai-primary", "codegen", "embedding", "web-search")
     val Providers: Seq[String] = Seq("anthropic", "openai", "azure", "bedrock", "grok", "ollama")
     val Roles: Seq[String] = Seq("admin", "editor", "viewer")
 
     val readTools: List[JsonObject] = List(
         tool(
             "get_ai_providers",
-            "Show the AI provider slots (primary, secondary, code generation, embedding) and which provider credentials are set. Credential values are masked."
+            "Show the AI provider slots (primary, code generation, embedding, web search) and which provider credentials are set. Credential values are masked."
         ),
         tool("list_secrets", "List stored secrets by name and type. Values are never returned.", str("type", "Only list secrets of this type.")),
         tool("get_secret_fields", "Show the field names of one secret. Values are masked.", str("name", "Secret name.", required = true)),
@@ -262,7 +262,7 @@ class ConfigToolExecutor(
     private def run(name: String, input: JsonObject): String = {
         if (ConfigAgentTools.readToolNames.contains(name)) readBody(name, input)
         else if (ConfigAgentTools.mutatingToolNames.contains(name)) {
-            if (name == "delete_user" && stringArg(input, "username").exists(_.trim == "admin"))
+            if (name == "delete_user" && stringArg(input, "username").exists(_.trim.toLowerCase == "admin"))
                 return error("The 'admin' user cannot be deleted")
             stringArg(input, ConfirmationRegistry.TokenKey).filter(_.nonEmpty) match {
                 case None =>

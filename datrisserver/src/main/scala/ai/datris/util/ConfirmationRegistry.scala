@@ -64,8 +64,22 @@ object ConfirmationRegistry {
     private[util] def hashInput(input: JsonObject): String = {
         val copy = if (input == null) new JsonObject() else input.deepCopy()
         copy.remove(TokenKey)
-        hex(MessageDigest.getInstance("SHA-256").digest(copy.toString.getBytes(StandardCharsets.UTF_8)))
+        hex(MessageDigest.getInstance("SHA-256").digest(canonical(copy).toString.getBytes(StandardCharsets.UTF_8)))
     }
+
+    /** Rebuild objects with keys sorted, recursively, so the hash does not
+      * depend on the order the model emitted the arguments in. */
+    private def canonical(el: com.google.gson.JsonElement): com.google.gson.JsonElement =
+        if (el == null) el
+        else if (el.isJsonObject) {
+            val out = new JsonObject()
+            el.getAsJsonObject.entrySet().asScala.toList.sortBy(_.getKey).foreach(e => out.add(e.getKey, canonical(e.getValue)))
+            out
+        } else if (el.isJsonArray) {
+            val out = new com.google.gson.JsonArray()
+            el.getAsJsonArray.asScala.foreach(e => out.add(canonical(e)))
+            out
+        } else el
 
     private def hex(bytes: Array[Byte]): String = bytes.map(b => f"${b & 0xff}%02x").mkString
 }

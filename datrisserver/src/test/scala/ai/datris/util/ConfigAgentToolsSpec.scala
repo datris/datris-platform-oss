@@ -152,6 +152,9 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
         val e = schemaOf(t).getAsJsonObject("properties").getAsJsonObject("provider").getAsJsonArray("enum")
             .asScala.map(_.getAsString).toList
         assert(e == List("anthropic", "openai", "azure", "bedrock", "grok", "ollama"))
+        val slots = schemaOf(t).getAsJsonObject("properties").getAsJsonObject("slot").getAsJsonArray("enum")
+            .asScala.map(_.getAsString).toList
+        assert(slots == List("ai-primary", "codegen", "embedding", "web-search"))
     }
 
     // Same list as AssistantPromptBudgetsSpec / AssistantPromptScratchSpec
@@ -249,6 +252,11 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
         val r = parse(executor().execute("delete_user", obj("""{"username":"admin"}""")))
         assert(r == obj("""{"error":"The 'admin' user cannot be deleted"}"""))
         assert(!r.has("token"))
+    }
+
+    test("delete_user(Admin) is refused regardless of case or padding, with no token") {
+        val r = parse(executor().execute("delete_user", obj("""{"username":" Admin "}""")))
+        assert(r == obj("""{"error":"The 'admin' user cannot be deleted"}"""))
     }
 
     test("delete_user(admin) is refused even when a confirmation_token is supplied") {

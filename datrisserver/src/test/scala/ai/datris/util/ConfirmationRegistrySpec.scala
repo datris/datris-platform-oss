@@ -103,6 +103,14 @@ class ConfirmationRegistrySpec extends AnyFunSuite {
         assert(reg.consume("session-a", "delete_user", input, other) == Right(()))
     }
 
+    test("reordered keys still match") {
+        val (reg, _) = fresh()
+        val token = reg.issue("s1", "set_user_role", obj("""{"username":"bob","role":"editor","opts":{"a":1,"b":2}}"""))
+        val confirmed = obj("""{"opts":{"b":2,"a":1},"role":"editor","username":"bob"}""")
+        confirmed.addProperty("confirmation_token", token)
+        assert(reg.consume("s1", "set_user_role", confirmed, token) == Right(()))
+    }
+
     test("an unknown token is unknown") {
         val (reg, _) = fresh()
         assert(reg.consume("s1", "delete_user", obj("""{"username":"bob"}"""), "not-a-token") == Left(Unknown))
