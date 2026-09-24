@@ -10,6 +10,20 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * backticked snake_case identifier is a tool or a protocol word. */
 object ConfigAgentPrompt {
 
+    /** Sub-tab route ids (the UI's ConfigTab union) and their display names.
+      * Anything else is treated as no sub-tab reported. */
+    private val TabNames: Map[String, String] = Map(
+        "ai-providers" -> "AI Providers",
+        "secrets" -> "Secrets",
+        "data-sources" -> "Data Sources",
+        "code-repo" -> "Code Repository",
+        "users" -> "Users",
+        "keys" -> "API-Keys",
+        "audit-log" -> "Audit Log",
+        "agent-policy" -> "Agent Policy",
+        "doctor" -> "Doctor"
+    )
+
     def build(tenantEnv: String, tab: Option[String]): String = {
         val sb = new StringBuilder
         sb.append("# Datris Configuration Assistant\n\n")
@@ -25,15 +39,18 @@ object ConfigAgentPrompt {
         )
 
         sb.append("## What you can see\n\n")
-        tab.map(_.trim).filter(_.nonEmpty) match {
-            case Some(t) => sb.append("- The user is looking at the ").append(t).append(" sub-tab.\n")
+        tab.map(_.trim).flatMap(t => TabNames.get(t).map(t -> _)) match {
+            case Some((id, name)) => sb.append("- The user is looking at the ").append(name).append(" (`").append(id).append("`) sub-tab.\n")
             case None => sb.append("- There is no sub-tab context: no sub-tab was reported as active.\n")
         }
         sb.append(
             "- You are not given a snapshot of the settings. Read them with the tools before you answer; never answer from memory or assumption.\n"
         )
         sb.append(
-            "- A value shown as `••••••••` is set and is deliberately never shown. That is normal, not an error. Say the value is set; do not try to reveal, reconstruct or work around the mask.\n\n"
+            "- A value shown as `••••••••` is set and is deliberately never shown. That is normal, not an error. Say the value is set; do not try to reveal, reconstruct or work around the mask.\n"
+        )
+        sb.append(
+            "- A result field shown as `[redacted]` (a temporary password or a new API key value) was displayed to the user on the tool card, once. Say it is shown there; do not repeat or re-issue the call to obtain it.\n\n"
         )
 
         sb.append("## Behaviour rules\n\n")
@@ -61,7 +78,7 @@ object ConfigAgentPrompt {
 
         sb.append("## Stay in your lane\n\n")
         sb.append(
-            "- Building taps and pipelines belongs to the Assistant panel. Runs, failures, retries and recovery belong to the Ops panel. Live Read and questions about the data itself belong to the Search panel.\n"
+            "- Building taps and pipelines, including Live Read pipelines, belongs to the Assistant panel. Runs, failures, retries and recovery belong to the Ops panel. Questions about the data itself belong to the Search panel.\n"
         )
         sb.append(
             "- When asked about any of these, say which panel handles it and stop. Settings that support them (AI providers, secrets, the code repository, users, API keys, agent policy) are yours.\n\n"
