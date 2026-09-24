@@ -14,12 +14,13 @@ import { FormsModule } from '@angular/forms';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ActivatedRoute, convertToParamMap } from '@angular/router';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 
 import { ConfigurationComponent } from './configuration.component';
 import { ModelCatalogService } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
 import { ConfigChatContextService } from '../config-chat/config-chat-context.service';
+import { ConfigAssistantStateService } from '../config-chat/config-assistant-state.service';
 
 describe('ConfigurationComponent — Azure Entra mode omits the slot apiKey', () => {
   let component: ConfigurationComponent;
@@ -172,5 +173,81 @@ describe('ConfigurationComponent — configuration chat panel host', () => {
 
     expect(fixture.componentInstance.activeTab).toBe('code-repo');
     expect(TestBed.inject(ConfigChatContextService).snapshot()).toEqual({ tab: 'code-repo' });
+  });
+});
+
+/**
+ * Story: Configuration chat, UI: confirm cards, secret form, show-once values,
+ * sub-tab refresh (plans/stories/config-chat-ui-cards.md), Acceptance bullet 2.
+ *
+ * The host page listens to the chat state: a "Show me" click (showMe$) switches
+ * the sub-tab, and a completed change to the AI Providers sub-tab
+ * (changed$ {tab:'ai-providers'}) reloads the form via loadConfig() instead of
+ * a page refresh. The state service is faked with plain Subjects so these
+ * cases exercise only the host's subscriptions.
+ */
+describe('ConfigurationComponent — configuration chat show me and refresh', () => {
+  let httpMock: HttpTestingController;
+  let showMe: Subject<string>;
+  let changed: Subject<{ tab: string }>;
+
+  function setup() {
+    showMe = new Subject<string>();
+    changed = new Subject<{ tab: string }>();
+    TestBed.configureTestingModule({
+      declarations: [ConfigurationComponent],
+      imports: [FormsModule],
+      schemas: [NO_ERRORS_SCHEMA],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: ActivatedRoute, useValue: { queryParamMap: of(convertToParamMap({})) } },
+        { provide: ModelCatalogService, useValue: { fetch: () => new Promise(() => { /* never resolves */ }) } },
+        { provide: AuthService, useValue: { current: () => ({ role: 'admin' }) } },
+        {
+          provide: ConfigAssistantStateService,
+          useValue: {
+            showMe$: showMe.asObservable(),
+            changed$: changed.asObservable(),
+            openRequested$: new Subject<void>().asObservable()
+          }
+        }
+      ]
+    });
+    const fixture = TestBed.createComponent(ConfigurationComponent);
+    httpMock = TestBed.inject(HttpTestingController);
+    return fixture;
+  }
+
+  function init(fixture: any) {
+    fixture.detectChanges();
+    httpMock.expectOne('/api/v1/version').flush({ environment: 'dev', useUserAuth: 'true', useApiKeys: 'true' });
+    fixture.detectChanges();
+  }
+
+  it('showMe$ sets activeTab', () => {
+    const fixture = setup();
+    init(fixture);
+    const ctx = TestBed.inject(ConfigChatContextService);
+    expect(fixture.componentInstance.activeTab).toBe('ai-providers');
+
+    showMe.next('secrets');
+
+    expect(fixture.componentInstance.activeTab).toBe('secrets');
+    // Through the setter, so the chat context follows.
+    expect(ctx.snapshot()).toEqual({ tab: 'secrets' });
+  });
+
+  it("changed$ {tab:'ai-providers'} calls loadConfig", () => {
+    const fixture = setup();
+    const loadConfig = spyOn(fixture.componentInstance, 'loadConfig');
+    init(fixture);
+    loadConfig.calls.reset();
+
+    changed.next({ tab: 'users' });
+    expect(loadConfig).not.toHaveBeenCalled();
+
+    changed.next({ tab: 'ai-providers' });
+    expect(loadConfig).toHaveBeenCalledTimes(1);
   });
 });
