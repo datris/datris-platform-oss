@@ -81,7 +81,7 @@ To record reads as well — every query, search, and listing an agent runs — s
 
 ### What is never recorded
 
-Passwords, password hashes, API-key values, session cookies, secret values, and credentials embedded in connection strings. Request bodies are not stored. Where an entry does carry extra detail (a role change records `from` and `to`, for example), every field whose name looks like a credential is masked before it is written. Entries made through the [Configuration assistant](/configuration-assistant) carry `via: config-chat` in their detail and are attributed to the signed-in admin.
+Passwords, password hashes, API-key values, session cookies, secret values, and credentials embedded in connection strings. Request bodies are not stored. Where an entry does carry extra detail (a role change records `from` and `to`, for example), every field whose name looks like a credential is masked before it is written. With user authentication on, entries made through the [Configuration assistant](/configuration-assistant) carry `via: config-chat` in their detail and are attributed to the signed-in admin.
 
 ## Reading it
 

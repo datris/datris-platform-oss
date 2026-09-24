@@ -10,7 +10,7 @@ description: "Release history for Datris"
   - **Ask the audit log.** Ask the assistant who changed what and when in plain language, and it answers from the audit entries themselves.
   - **Doctor from chat.** Ask the assistant to run the health checks, optionally with a test request to each AI provider, and it summarizes what needs attention.
   - **Deep links to Code Repository.** A link that opens Configuration on the Code Repository sub-tab now lands there instead of on the default sub-tab.
-  - **Changes made through the assistant are marked in the audit log.** They are attributed to the signed-in admin, exactly as if made in the sub-tab, and carry `via: config-chat` in their detail. See [Audit Log](/audit-log).
+  - **Changes made through the assistant are marked in the audit log.** With user auth on, changes made through the assistant are attributed to the signed-in admin and marked `via: config-chat` in the audit log. See [Audit Log](/audit-log).
   - Upgrade: `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. Update all images together, including the UI. No configuration changes. With API keys and user auth on, the assistant is available in the UI only.
 </Update>
 

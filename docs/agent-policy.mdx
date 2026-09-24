@@ -41,7 +41,8 @@ The policy applies within a few seconds of saving; no restart.
 | Caller | Gated? |
 |--------|--------|
 | A person clicking in the Datris UI | No |
-| The in-platform Assistant, Ops or Catalog chat, or the Configuration assistant, acting for a logged-in user | **Yes** — attributed to the user, but it is still the agent proposing |
+| The in-platform Assistant, Ops or Catalog chat acting for a logged-in user | **Yes** — attributed to the user, but it is still the agent proposing |
+| The Configuration assistant, after you click Confirm | No — you are the approver |
 | An external MCP client (Claude Desktop, Cursor, Claude Code, …) or a script with an API key | **Yes** |
 | A scheduled tap run, Kafka or object-store trigger | No — these are the platform's own work |
 | A tap script reading platform data during a run | No |

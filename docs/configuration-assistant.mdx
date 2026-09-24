@@ -48,7 +48,7 @@ The assistant proposes one change at a time. Each proposal appears in the panel 
 
 Before it proposes removing a user, an API key, a secret or a repository token, the assistant reads the current list and names the exact one it will remove. If your request could mean more than one, it asks which.
 
-When [Agent Policy](/agent-policy) is on, the assistant is treated as an agent acting for you. If the policy queues the action for approval, the panel says so and the change waits in the Agent Policy approvals queue like any other agent action. If the policy refuses it, the panel says that and stops.
+Changes you confirm here are carried out as your own actions. The [Agent Policy](/agent-policy) gates agents and API-key clients, not the Configuration assistant, so a confirmed change is not queued for approval: your Confirm is the approval.
 
 ## Secrets never go in the chat
 
@@ -75,7 +75,7 @@ With user authentication on, the assistant needs a signed-in admin session. A cl
 
 ## Audited as you
 
-Every change the assistant makes lands in the [audit log](/audit-log#who-is-recorded) attributed to the signed-in admin, exactly as if you had made it in the sub-tab, with `via: config-chat` in the entry detail so you can tell which changes came through the panel.
+With user authentication on, every change the assistant makes lands in the [audit log](/audit-log#who-is-recorded) attributed to the signed-in admin, exactly as if you had made it in the sub-tab, with `via: config-chat` in the entry detail so you can tell which changes came through the panel. With user authentication off there is no signed-in user, and the entry is recorded like any other UI action.
 
 ## Refresh and Show me
 

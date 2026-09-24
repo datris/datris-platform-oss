@@ -176,7 +176,11 @@ object ConfigAgentTools {
             bool("generate_password", "Generate a temporary password for the user.")
         ),
         mutating("set_user_role", "Change a user's role.", str("username", "Username.", required = true), enumStr("role", "New role.", Roles, required = true)),
-        mutating("reset_user_password", "Reset a user's password to a new temporary password.", str("username", "Username.", required = true)),
+        mutating(
+            "reset_user_password",
+            "Force a user to set a new password at next login; no value is produced.",
+            str("username", "Username.", required = true)
+        ),
         mutating("delete_user", "Delete a user. The admin user cannot be deleted.", str("username", "Username.", required = true)),
         mutating(
             "issue_api_key",
