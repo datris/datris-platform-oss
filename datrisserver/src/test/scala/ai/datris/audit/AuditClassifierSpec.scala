@@ -61,6 +61,7 @@ class AuditClassifierSpec extends AnyFunSuite {
         assert(c("GET", "/api/v1/mcp/activity").isEmpty)
         assert(c("POST", "/api/v1/assistant/chat").isEmpty)
         assert(c("POST", "/api/v1/ops-chat/chat").isEmpty)
+        assert(c("POST", "/api/v1/config-chat/chat").isEmpty)
     }
 
     test("HEAD and OPTIONS are never audited") {

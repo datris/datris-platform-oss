@@ -68,4 +68,11 @@ class AuditCoverageSpec extends AnyFunSuite {
         }
         assert(stale.isEmpty, "Stale entries in AuditClassifier.neverAudited: " + stale.map(e => e._1 + " " + e._2).mkString(", "))
     }
+
+    // Story: plans/stories/config-chat-server-seam.md, Step 9 — the config chat
+    // stream is on both skip lists, so its route passes the coverage check.
+    test("config-chat stream is deliberately skipped by audit and capability routing") {
+        assert(AuditClassifier.isDeliberatelySkipped("POST", "/api/v1/config-chat/chat"))
+        assert(ai.datris.auth.CapabilityRoutes.lookup("POST", "/api/v1/config-chat/chat") == ai.datris.auth.RouteCheck.Skip)
+    }
 }

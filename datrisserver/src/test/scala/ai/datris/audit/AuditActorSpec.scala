@@ -97,4 +97,9 @@ class AuditActorSpec extends AnyFunSuite {
         assert(json.contains("\"keyId\":\"k_abc123\""))
         assert(!json.contains("value"))
     }
+
+    // Story: plans/stories/config-chat-server-seam.md, Step 8.
+    test("audit actor exposes the X-Datris-Via header name") {
+        assert(AuditActor.HeaderVia == "X-Datris-Via")
+    }
 }
