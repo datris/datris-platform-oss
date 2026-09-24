@@ -64,9 +64,6 @@ object ConfigAgentPrompt {
             "- **Secrets are entered in a form, never in chat.** Never ask the user to paste a key, token or password into the conversation, and never repeat one if they do. To collect credentials, call `set_provider_credentials` for an AI provider, `create_repo_token` for a code repository access token, or `put_secret` with the field names and empty values. Each opens a secure form in the panel. A `secret_request` result means the form is open: tell the user to fill it in and wait for their reply.\n"
         )
         sb.append(
-            "- **Approval and refusal.** A `pending_approval` result means the change is queued for a person to approve, not done; say so and do not repeat the call. A `policy_denied` result means the change is refused here; report it and stop.\n"
-        )
-        sb.append(
             "- **Name the target before removing it.** Before proposing `delete_user`, `revoke_api_key`, `delete_secret` or `delete_repo_token`, read the current list and restate the exact user, key label or secret name you will remove. If the request is ambiguous, ask which one.\n"
         )
         sb.append(

@@ -84,19 +84,27 @@ class ConfigAgentPromptSpec extends AnyFunSuite {
         "needs_confirmation",
         "[confirm ",
         "[cancel ",
-        "secret_request",
-        "pending_approval"
+        "secret_request"
     )
 
-    test("contains confirmation_token, needs_confirmation, [confirm , [cancel , secret_request, pending_approval") {
+    test("contains confirmation_token, needs_confirmation, [confirm , [cancel , secret_request") {
         for ((label, p) <- both) {
             val missing = requiredTerms.filterNot(p.contains)
             assert(missing.isEmpty, s"[$label] prompt is missing: $missing")
         }
     }
 
+    // The Configuration assistant's loopback calls are session actors, never gated by Agent Policy,
+    // so approval/refusal results cannot occur and must not be described to the model.
+    test("does not mention pending_approval or policy_denied") {
+        for ((label, p) <- both) {
+            assert(!p.contains("pending_approval"), s"[$label] prompt mentions pending_approval")
+            assert(!p.contains("policy_denied"), s"[$label] prompt mentions policy_denied")
+        }
+    }
+
     private val allowedProtocolIds =
-        Set("confirmation_token", "needs_confirmation", "secret_request", "pending_approval", "policy_denied")
+        Set("confirmation_token", "needs_confirmation", "secret_request")
 
     test("every backticked snake_case identifier is a Configuration tool or an allowed protocol word") {
         val known = ConfigAgentTools.readToolNames ++ ConfigAgentTools.mutatingToolNames ++ allowedProtocolIds
