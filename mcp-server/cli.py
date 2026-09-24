@@ -155,14 +155,19 @@ async def _call_tool(name, arguments=None):
 
     content = resp.get("result", {}).get("content", [])
     text = "\n".join(b["text"] for b in content if b.get("type") == "text")
-    # The MCP server only checks that a key is present; the Datris API
-    # rejects a wrong one inside the tool call. Never echo the key back.
-    if "Invalid x-api-key" in text:
-        raise click.ClickException(_REJECTED_KEY_MSG)
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return {"text": text}
+    # The MCP server only checks that a key is present; the Datris API rejects
+    # a wrong one inside the tool call and server.py relays its error body as a
+    # top-level {"error": "Invalid x-api-key..."}. Match only that shape so
+    # tool data that merely contains the phrase is not misreported. Never echo
+    # the key back.
+    if isinstance(parsed, dict) and isinstance(parsed.get("error"), str) \
+            and parsed["error"].startswith("Invalid x-api-key"):
+        raise click.ClickException(_REJECTED_KEY_MSG)
+    return parsed
 
 
 async def _disconnect():
@@ -1038,13 +1043,7 @@ def version(json_output):
 
 
 def main():
-    try:
-        cli()
-    finally:
-        try:
-            asyncio.get_event_loop().run_until_complete(_disconnect())
-        except Exception:
-            pass
+    cli()
 
 
 if __name__ == "__main__":

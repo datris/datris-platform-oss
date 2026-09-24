@@ -198,3 +198,16 @@ def test_tool_result_invalid_key_exits_with_rejected_hint(monkeypatch):
     assert "rejected DATRIS_API_KEY" in result.output
     assert "abc" not in result.output
     assert "Traceback" not in result.output
+
+
+def test_tool_data_mentioning_invalid_key_is_not_a_rejection(monkeypatch):
+    # e.g. tap logs from a vendor API that also uses x-api-key
+    monkeypatch.setenv("DATRIS_API_KEY", "abc")
+    t = _Transport(tool_text=json.dumps([{"error": "vendor: Invalid x-api-key"}]))
+    _install(monkeypatch, t)
+
+    result = CliRunner().invoke(cli.cli, ["pipelines", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert "rejected DATRIS_API_KEY" not in result.output
+    assert "vendor: Invalid x-api-key" in result.output
