@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
 echo "Waiting for MinIO to be ready..."
@@ -13,7 +13,8 @@ mc mb --ignore-existing myminio/${ENVIRONMENT}-data
 mc mb --ignore-existing myminio/${ENVIRONMENT}-temp
 
 echo "Waiting for Datris server to be reachable..."
-until wget -q --spider http://datris:8080/api/v1/version 2>/dev/null; do
+# bash /dev/tcp: the MinIO image ships no curl or wget.
+until bash -c 'echo > /dev/tcp/datris/8080' 2>/dev/null; do
   sleep 3
 done
 
