@@ -117,6 +117,7 @@
             "group": "Configuration",
             "pages": [
               "configuration-reference",
+              "configuration-assistant",
               "incidents",
               "monitoring",
               "doctor",

@@ -40,7 +40,7 @@ Every entry names an actor. The type tells you which kind of identity it was:
 |---|---|---|
 | `user` | The logged-in session (requires [User Authentication](/user-auth)) | `tfearn`, role `admin` |
 | `api-key` | The API key's **label** plus a stable **key id** | `claude-desktop`, `k_7f3a9c1b2d4e` |
-| `assistant` | The in-platform Assistant (or Ops / Catalog chat) acting **on behalf of** the logged-in user | `tfearn via Assistant` |
+| `assistant` | The in-platform Assistant (or Ops / Catalog chat, or the Configuration assistant) acting **on behalf of** the logged-in user | `tfearn via Assistant` |
 | `tap` | A tap script reading platform data during a run, via its per-run token | `crypto-prices` |
 | `system` | No request behind it: scheduled runs, Kafka / object-store triggers, server start | — |
 
@@ -81,7 +81,7 @@ To record reads as well — every query, search, and listing an agent runs — s
 
 ### What is never recorded
 
-Passwords, password hashes, API-key values, session cookies, secret values, and credentials embedded in connection strings. Request bodies are not stored. Where an entry does carry extra detail (a role change records `from` and `to`, for example), every field whose name looks like a credential is masked before it is written.
+Passwords, password hashes, API-key values, session cookies, secret values, and credentials embedded in connection strings. Request bodies are not stored. Where an entry does carry extra detail (a role change records `from` and `to`, for example), every field whose name looks like a credential is masked before it is written. Entries made through the [Configuration assistant](/configuration-assistant) carry `via: config-chat` in their detail and are attributed to the signed-in admin.
 
 ## Reading it
 

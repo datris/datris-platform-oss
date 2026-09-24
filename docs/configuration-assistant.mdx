@@ -1,0 +1,94 @@
+---
+title: "Configuration Assistant"
+description: "Read and change AI providers, secrets, users, API keys and agent policy from a chat panel on the Configuration tab. Every change waits for your confirmation; secrets go in a form, never in chat."
+---
+
+The Configuration assistant is a chat panel on the **Configuration** tab. Ask it what a setting is, or tell it what to change, and it reads the same settings the sub-tabs show and proposes the change for you to confirm.
+
+## What it is
+
+A narrow **Ask** rail sits at the right edge of the Configuration tab. Click it, or press `Cmd+\`, to open a panel titled **Configuration assistant**. Press `Cmd+\` again, or use the collapse arrow, to close it.
+
+The panel stays open while you move between sub-tabs, and it knows which sub-tab you are looking at, so "what is set here?" means the sub-tab in front of you. The conversation is kept when you leave Configuration and come back; the **+** button in the header starts a new one.
+
+An empty panel offers four starting points:
+
+| Button | What it asks |
+|---|---|
+| What is each AI slot using? | List each AI slot with the provider and model it is using right now. |
+| Add a secret for a new tap | Help me add a secret for a new tap and tell me which fields it needs. |
+| Who has admin? | Which users have the admin role? |
+| Run doctor | Run doctor and summarize anything that needs attention. |
+
+## What it can read and change
+
+It covers the same ground as the sub-tabs, one row per sub-tab:
+
+| Sub-tab | Reads | Changes |
+|---|---|---|
+| AI Providers | Each AI slot (primary, code generation, embedding, web search) with its provider and model, and which provider credentials are set | Point a slot at a provider and model; enter a provider's credentials in a masked form. Not offered on trial or hosted installs, matching the sub-tab |
+| Secrets | Secret names and types, and the field names of one secret. Values are never returned | Create or replace a secret; delete a secret |
+| Data Sources | The data-sources prompt fragment and whether it is on | Replace the fragment and turn it on or off |
+| Code Repository | The repository settings used to store generated scripts; a connection test | Update the settings; store an access token through a masked form; delete a stored token |
+| Users | Users and their roles. Only when the Users sub-tab is shown (`USE_USER_AUTH=true`) | Create a user, change a role, reset a password, delete a user. The `admin` user cannot be deleted, matching the sub-tab |
+| API-Keys | Keys by label with their capabilities, the capability templates and the full capability list. Only when the API-Keys sub-tab is shown (`USE_API_KEYS=true`). Key values are never returned | Issue a key from a template or a capability list; rotate a key; revoke a key |
+| Agent Policy | Whether the policy is on, the current policy, the recommended policy and the known actions | Change actions, overrides or limits; switch to the recommended policy |
+| Audit Log | Read-only: search entries by time, category, action, actor, outcome or resource, and list the values present for each filter | Nothing |
+| Doctor | Read-only: run the platform health checks, optionally with a small test request to each configured AI provider | Nothing |
+
+So you can ask the audit log a question in plain language ("what changed yesterday?", "who rotated a key this week?") and get an answer from the entries themselves, and you can run [Doctor](/doctor) from the chat and get a summary of what needs attention.
+
+## Every change is confirmed
+
+The assistant proposes one change at a time. Each proposal appears in the panel as a card with a short summary of what will happen and two buttons, **Confirm** and **Cancel**.
+
+- Nothing is written until you click **Confirm**.
+- **Cancel** does nothing, and the assistant says the change was cancelled.
+- A confirmation works once. It also expires after ten minutes, so an old card left in the conversation cannot be confirmed later; ask again for a fresh one.
+
+Before it proposes removing a user, an API key, a secret or a repository token, the assistant reads the current list and names the exact one it will remove. If your request could mean more than one, it asks which.
+
+When [Agent Policy](/agent-policy) is on, the assistant is treated as an agent acting for you. If the policy queues the action for approval, the panel says so and the change waits in the Agent Policy approvals queue like any other agent action. If the policy refuses it, the panel says that and stops.
+
+## Secrets never go in the chat
+
+For AI provider credentials, code repository access tokens and secret values, the panel opens a masked form on the card. The value goes from your browser straight to the platform; the assistant only learns that it was provided.
+
+The assistant will not ask you to paste a key, token or password into the conversation. If an answer shows a value as `••••••••`, the value is set, not missing: masked values are never revealed.
+
+## Shown once
+
+Two kinds of value are shown once, on the card, with a **Copy** button:
+
+- the temporary password for a new user;
+- the value of a newly issued or rotated API key.
+
+They appear on that card and nowhere else, and the assistant does not repeat them in later answers. Copy the value before you move on. Resetting a password does not produce a value; the user sets a new one at next login, as described in [User Authentication](/user-auth).
+
+## Who can use it
+
+- With user authentication on, the panel is shown to admins only.
+- With user authentication off, it is shown to everyone who can open Configuration.
+- On a trial install it is not shown.
+
+With user authentication on, the assistant needs a signed-in admin session. A client that authenticates with an API key, including the CLI and MCP agents, cannot use it, and the MCP tool catalog does not gain any of these abilities: agents still see Platform-tab secrets as read-only (see [the Assistant](/assistant#platform-tab-secrets-are-visible-but-read-only)) and still need a scoped key for everything else (see [API Keys](/api-keys)).
+
+## Audited as you
+
+Every change the assistant makes lands in the [audit log](/audit-log#who-is-recorded) attributed to the signed-in admin, exactly as if you had made it in the sub-tab, with `via: config-chat` in the entry detail so you can tell which changes came through the panel.
+
+## Refresh and Show me
+
+When a change succeeds, the sub-tab that owns the setting reloads on its own, so what you see matches what was saved. A **Show me** link on the card switches to that sub-tab.
+
+Links that open Configuration on a given sub-tab now work for Code Repository too (`?tab=code-repo`).
+
+## What it leaves to other panels
+
+The Configuration assistant handles settings. Other questions go elsewhere, and it will say which panel to use:
+
+- building taps and pipelines, including Live Read, belongs to the [Assistant](/assistant);
+- runs, failures, retries and recovery belong to the Ops panel (see [Incidents](/incidents));
+- questions about the data itself belong to the Search panel.
+
+The settings those rely on (AI providers, secrets, the code repository, users, API keys and agent policy) are the Configuration assistant's.

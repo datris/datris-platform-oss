@@ -648,6 +648,22 @@ components:
           type: object
           description: Optional endpoint-specific context object (see each chat endpoint's description)
 
+    ConfigChatRequest:
+      allOf:
+        - $ref: '#/components/schemas/ChatRequest'
+        - type: object
+          properties:
+            sessionId:
+              type: string
+              description: Per-panel id that scopes confirmations; a change proposed in one session can only be confirmed from the same session by the same admin
+            context:
+              type: object
+              properties:
+                tab:
+                  type: string
+                  enum: [ai-providers, secrets, data-sources, code-repo, users, keys, agent-policy, audit-log, doctor]
+                  description: The Configuration sub-tab the user is looking at
+
     EntityVersionSummary:
       type: object
       properties:
@@ -4117,6 +4133,38 @@ paths:
             text/event-stream:
               schema:
                 type: string
+
+  /api/v1/config-chat/chat:
+    post:
+      tags: [Chat]
+      summary: Configuration chat (SSE)
+      description: >-
+        Admin-only agent chat over the Configuration sub-tabs (AI providers,
+        secrets, data sources, code repository, users, API keys, agent policy,
+        audit log, doctor). Uses Datris-defined configuration tools, not the
+        MCP tool catalog; user and API-key tools are present only when the
+        matching sub-tab is shown. Mutating tools perform nothing on the first
+        call: they answer `needs_confirmation` and the stream emits a
+        `confirm_request` event; the change runs only after the user confirms
+        it in the panel. Secret values are never passed through the model;
+        they are collected through a `secret_request` form event. The optional
+        `context` object is `{tab}`, the active sub-tab. Streams the same SSE
+        event format as `/assistant/chat`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigChatRequest'
+      responses:
+        '200':
+          description: Server-Sent Events stream of agent-loop events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '403':
+          description: Admin session required when user auth is on (API-key callers are refused)
 
   # ── MCP Activity ───────────────────────────────────────────
 
