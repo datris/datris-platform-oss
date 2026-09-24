@@ -1,16 +1,17 @@
 # Release Notes
 
-## v1.36.0 — September 23, 2026
+## v1.37.0 — September 24, 2026
 
-**Taps handle sources of tens of millions of rows: faster batches, honest timeouts, and an estimate before anything is built.**
+**Agents get live, validated reads from any source, and only land what's worth keeping.**
 
-- **A tap can yield batches.** `fetch()` may yield DataFrames or Arrow record batches as well as single records. Batches are written natively, roughly ten times faster than one record at a time, and land exactly what yielding the same rows one by one would land: integers stay integers, nulls stay null, timestamps keep their precision. Frames read with the pyarrow backend are the fastest of all. Scripts that yield or return records are unchanged.
-- **Tests preview, runs run.** A tap test started from the Assistant, an MCP client or the CLI now stops after 20 records, exactly like the UI's Test button, instead of streaming the whole source and timing out. The tools say plainly that a test's record count is not what a run will produce. Pass a limit of 0 to test the whole source.
-- **Real runs get their own timeout.** Tests still stop at five minutes; real and scheduled runs now get an hour by default. Both are settable, and a timed-out run says which mode it ran in and which setting to raise. A mistyped value warns at startup and falls back instead of stopping the server.
-- **A timed-out run keeps its logs.** The error now ends with how many records were streamed before the kill and the last lines the script printed, and the run log holds the script's full output. A script that yields prints progress every 100,000 records, so a slow-but-healthy run reads as slow, not broken.
-- **Agents estimate before they build.** For a large source the Assistant and the MCP tools show rows, bytes per record, disk and minutes, compare them against the budgets actually set on your install rather than the documented defaults, and when one is exceeded stop and offer three choices: raise it, narrow the window, or chunk the range. Column projection is named as the lever that cuts both numbers.
-- **Malformed schedules are refused at save.** A 5-field Unix cron is rejected with the 6-field equivalent to use, with weekday numbers translated. Taps already stored with a bad schedule log once instead of every 30 seconds.
+- **The scratch destination is now called Live Read.** Same behaviour, same configuration; only the name changed in the wizard, the Pipelines list, the run detail page, the docs, the Assistant and the CLI. The first mention on each surface still says which JSON key it maps to, so nothing you have written needs to change.
+- **The Assistant offers Live Read.** When it asks where data should go, it now names Live Read alongside the structured destinations, with a one-line description, and still never picks it unless you do. It leaves Live Read out when you have asked for a schedule.
+- **The docs page moved.** Live Read has its own page under Destinations; the old address redirects.
+- **The CLI signs in to the MCP server.** On installs with API keys turned on, every CLI command now sends the key you already export for `datris doctor`. A missing key gives a one-line message instead of a connection error, and a rejected key gives a one-line message and a non-zero exit instead of raw output and success. The query-string form still works.
+- **A clean exit on every command.** The CLI no longer prints a stray traceback after a successful command, and commands that make several calls no longer reuse a stale connection.
+- **MCP clients see the real version.** The MCP server now reports its own version instead of the library it is built on.
+- **Claude Opus 5.5 and Grok 4.7.** Both are in the model catalog. Opus 5.5 is the recommended and first-boot default for code generation on Anthropic and Bedrock; Grok 4.7 is the recommended and first-boot default for Grok. The chat default is unchanged.
 
 **Upgrading**
 
-Run `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. Update all images together, including the UI and the MCP server. Two new optional settings in `.env`: `TAP_SCRIPT_TIMEOUT_SECONDS` (default 300, tests) and `TAP_RUN_TIMEOUT_SECONDS` (default 3600, real and scheduled runs). If you had raised the old single timeout in your own configuration, real runs keep at least that value. The version endpoint now reports the budgets in force and where each came from; a value you never set now reads as "default" rather than as set, with no change to the value itself.
+Run `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. Update all images together, including the UI and the MCP server. Existing installs keep the models they already have; the new defaults apply only on first boot. If you use API keys and run the CLI, export `DATRIS_API_KEY` once and drop any `?api_key=` you had put on the MCP server address.
