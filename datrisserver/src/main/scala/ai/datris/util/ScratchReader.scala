@@ -50,7 +50,10 @@ object ScratchReader {
             if (jobs.isEmpty)
                 throw new ScratchResultException(404, "No pipeline run found for publishertoken '" + publishertoken + "'")
             if (scratchJobs.isEmpty)
-                throw new ScratchResultException(404, "Only scratch pipelines have a result; publishertoken '" + publishertoken + "' has no scratch result")
+                throw new ScratchResultException(
+                    404,
+                    "Only Live Read (scratch) pipelines have a result; publishertoken '" + publishertoken + "' has no Live Read result"
+                )
             if (scratchJobs.size > 1)
                 throw new ScratchResultException(
                     400,
@@ -73,7 +76,7 @@ object ScratchReader {
       */
     def read(settings: ScratchLoader.Settings, job: PipelineJobRollup, offset: Option[Long], limit: Option[Int]): ScratchResultPage = {
         if (job.resultUri == null)
-            throw new ScratchResultException(404, "Only scratch pipelines have a result; job '" + job.pipelineToken + "' did not write one")
+            throw new ScratchResultException(404, "Only Live Read (scratch) pipelines have a result; job '" + job.pipelineToken + "' did not write one")
 
         val effectiveOffset = math.max(0L, offset.getOrElse(0L))
         val effectiveLimit = {
@@ -89,7 +92,7 @@ object ScratchReader {
         if (!fs.exists(path))
             throw new ScratchResultException(
                 410,
-                "Scratch results expire after " + settings.retentionHours + " hour(s); this one is gone — run the pipeline again"
+                "Live Read results expire after " + settings.retentionHours + " hour(s); this one is gone — run the pipeline again"
             )
 
         val records = new JsonArray()

@@ -49,8 +49,67 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
         assert(rule.toLowerCase.contains("promot"))
     }
 
-    test("rule does not join the destination offering list") {
-        assert(!rule.contains("DESTINATION OFFERING RULE"))
+    // --- Story: live-read-naming (plans/stories/live-read-naming.md) ----------------
+    //
+    // The rule is renamed KEEP-OR-READ-LIVE and names Live Read; the
+    // destination-defaults block is lifted into a seam
+    //
+    //   object AssistantAPIController {
+    //       private[datris] def destinationDefaultsRule(structuredDests: Seq[String]): String
+    //   }
+    //
+    // which names Live Read only when objectstore is available (mirrors the UI's
+    // isDestAvailable('scratch')). scratch is never a structured destination,
+    // never the default.
+
+    test("rule is headed KEEP-OR-READ-LIVE and names Live Read") {
+        assert(rule.contains("KEEP-OR-READ-LIVE"), "heading must be KEEP-OR-READ-LIVE")
+        assert(!rule.contains("KEEP-OR-SCRATCH"), "old heading must be gone")
+        assert(rule.contains("Live Read"))
+        // The JSON key is still what the model must emit.
+        assert(rule.contains("destination: {\"scratch\": {}}"))
+    }
+
+    private val allFive = Seq("mongodb", "postgres", "objectstore", "snowflake", "databricks")
+    private val withObjectStore = Seq("mongodb", "postgres", "objectstore")
+    private val withoutObjectStore = Seq("mongodb", "postgres")
+
+    test("destinationDefaultsRule names Live Read when objectstore is available") {
+        val text = AssistantAPIController.destinationDefaultsRule(withObjectStore)
+        assert(text.contains("Live Read"), s"Live Read missing with objectstore present:\n$text")
+        assert(
+            text.contains("or Live Read if you only need the rows back now and nothing kept. Which do you prefer?"),
+            s"literal example must end with the Live Read option:\n$text"
+        )
+        assert(
+            text.contains("Do not offer Live Read when the user has asked for a schedule."),
+            s"schedule exclusion missing:\n$text"
+        )
+        assert(AssistantAPIController.destinationDefaultsRule(allFive).contains("Live Read"))
+    }
+
+    test("destinationDefaultsRule does not name Live Read without objectstore") {
+        val text = AssistantAPIController.destinationDefaultsRule(withoutObjectStore)
+        assert(text.nonEmpty)
+        assert(!text.contains("Live Read"), s"Live Read offered without objectstore:\n$text")
+        assert(!text.toLowerCase.contains("scratch"), s"scratch leaked into the block without objectstore:\n$text")
+    }
+
+    test("Live Read never becomes the default destination") {
+        val text = AssistantAPIController.destinationDefaultsRule(withObjectStore)
+        // MongoDB stays the structured default when available.
+        assert(text.contains("**MongoDB** (flexible schema, tolerates shape drift across runs) by default."), text)
+        assert(
+            !text.contains(
+                "**Live Read** (hands the rows back once through data quality and transformation; nothing is landed or catalogued, the result expires; promote to a real destination later without touching the tap or its schedule) by default"
+            ),
+            text
+        )
+        assert(!text.contains("Live Read by default"), text)
+        // Only objectstore available: object store is the default, Live Read is the extra option.
+        val osOnly = AssistantAPIController.destinationDefaultsRule(Seq("objectstore"))
+        assert(osOnly.contains("**object store** (Parquet, ORC, or an Iceberg table) by default."), osOnly)
+        assert(osOnly.contains("Live Read"), osOnly)
     }
 
     private val vendorOrDomain =
@@ -61,5 +120,15 @@ class AssistantPromptScratchSpec extends AnyFunSuite {
         val hits = vendorOrDomain.findAllIn(rule).toList
         assert(hits.isEmpty, s"domain bias in KeepOrScratchRule: $hits")
         assert(cron.findFirstIn(rule).isEmpty, "cron expression in KeepOrScratchRule")
+    }
+
+    test("destinationDefaultsRule carries no vendor/domain proper noun or cron expression") {
+        // Snowflake / Databricks are real destination names, so sweep sets without them.
+        for (dests <- Seq(withObjectStore, withoutObjectStore, Seq("objectstore"))) {
+            val text = AssistantAPIController.destinationDefaultsRule(dests)
+            val hits = vendorOrDomain.findAllIn(text).toList
+            assert(hits.isEmpty, s"domain bias in destinationDefaultsRule($dests): $hits")
+            assert(cron.findFirstIn(text).isEmpty, s"cron expression in destinationDefaultsRule($dests)")
+        }
     }
 }

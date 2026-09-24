@@ -86,7 +86,7 @@
               "destinations/weaviate",
               "destinations/activemq",
               "destinations/rest-endpoint",
-              "destinations/scratch"
+              "destinations/live-read"
             ]
           },
           {
@@ -216,5 +216,11 @@
         ]
       }
     ]
-  }
+  },
+  "redirects": [
+    {
+      "source": "/destinations/scratch",
+      "destination": "/destinations/live-read"
+    }
+  ]
 }

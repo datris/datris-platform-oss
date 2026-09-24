@@ -211,7 +211,7 @@ describe('PipelineCreateComponent — Iceberg object-store format', () => {
  * `database` nor `objectStore`; a postgres config round-trips unchanged; a
  * saved `{ destination: { scratch: {} } }` reopens with destType 'scratch'.
  */
-describe('PipelineCreateComponent — Scratch destination', () => {
+describe('PipelineCreateComponent — Live Read destination', () => {
   let fixture: ComponentFixture<PipelineCreateComponent>;
   let component: PipelineCreateComponent;
   let el: HTMLElement;
@@ -265,19 +265,19 @@ describe('PipelineCreateComponent — Scratch destination', () => {
       .filter(t => t && !/destination\s*type/i.test(t));
   }
 
-  it('the destination select offers Scratch', () => {
+  it('the destination select offers Live Read', () => {
     onDestinationStep('postgres');
     const select = destTypeSelect();
     expect(select).withContext('Destination Type select').not.toBeNull();
     const scratch = Array.from(select!.querySelectorAll('option'))
       .find(o => (o as HTMLOptionElement).value === 'scratch') as HTMLOptionElement | undefined;
     expect(scratch).withContext('option[value=scratch]').toBeDefined();
-    expect((scratch!.textContent || '').trim()).toMatch(/^Scratch/);
+    expect((scratch!.textContent || '').trim()).toMatch(/^Live Read/);
     expect(scratch!.disabled).withContext('enabled when the instance advertises scratch').toBeFalse();
     expect(component.isDestAvailable('scratch')).toBeTrue();
   });
 
-  it('Scratch is disabled when the instance does not advertise objectstore', () => {
+  it('Live Read is disabled when the instance does not advertise objectstore', () => {
     component.availableDestinations = ['postgres'];
     expect(component.isDestAvailable('scratch')).toBeFalse();
     onDestinationStep('postgres');
@@ -288,7 +288,7 @@ describe('PipelineCreateComponent — Scratch destination', () => {
     expect((scratch!.textContent || '')).toContain('Not installed');
   });
 
-  it('choosing Scratch shows no destination fields', () => {
+  it('choosing Live Read shows no destination fields', () => {
     onDestinationStep('postgres');
     expect(fieldLabelsBesidesDestType().length).withContext('postgres renders field rows').toBeGreaterThan(0);
 
@@ -296,7 +296,8 @@ describe('PipelineCreateComponent — Scratch destination', () => {
     expect(fieldLabelsBesidesDestType()).withContext('scratch renders no field rows').toEqual([]);
     expect(el.querySelectorAll('select[multiple]').length).withContext('no key-field multi-select').toBe(0);
     const step = el.textContent || '';
-    expect(step).toContain('Nothing is landed; results expire.');
+    expect(step).toContain('Nothing is landed.');
+    expect(step).toContain('Live Read runs the pipeline and hands the rows back');
   });
 
   it('buildConfig emits destination.scratch = {} and no database or objectStore key', () => {

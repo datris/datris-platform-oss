@@ -350,6 +350,19 @@ def _structured_offer_destinations_text(names: list[str]) -> str:
     return ", ".join(subset or ALL_STRUCTURED_DESTINATIONS)
 
 
+_LIVE_READ_OFFER = (
+    " Also name Live Read (the `scratch` destination) in the same question, with one line: "
+    "it hands the rows back once and lands nothing; skip it when the user asked for a schedule."
+)
+
+
+def _live_read_offer_text(names: list[str]) -> str:
+    """The Live Read sentence for the DESTINATION OFFERING RULE. Live Read
+    (scratch) writes its result to the object store, so it is only offered
+    when objectstore is available (mirrors the UI's isDestAvailable('scratch'))."""
+    return _LIVE_READ_OFFER if "objectstore" in names else ""
+
+
 def _render_destination_templates(text: str, names: list[str] | None = None) -> str:
     """Substitute the destination-list placeholders in an instruction text.
     With names=None, resolves availability (cached, fail-open)."""
@@ -359,6 +372,7 @@ def _render_destination_templates(text: str, names: list[str] | None = None) -> 
         text
         .replace("{{STRUCTURED_DB_DESTINATIONS}}", _structured_db_destinations_text(names))
         .replace("{{STRUCTURED_OFFER_DESTINATIONS}}", _structured_offer_destinations_text(names))
+        .replace("{{LIVE_READ_OFFER}}", _live_read_offer_text(names))
     )
 
 
@@ -392,8 +406,8 @@ If `test_tap` fails, fix the script (call `create_tap` again with a corrected `i
 The platform ENFORCES this: saving a tap with a `cron_expression` whose current script (or HTTP endpoint) has not passed `test_tap` is refused with HTTP 409 and an `error` naming the tap. Remedy, in order: save the tap without `cron_expression` (`create_tap` with no cron), call `test_tap` until it succeeds, then `update_tap` with the `cron_expression`. Changing the script under an existing cron is refused the same way until the new script is re-tested. To replace the script of a SCHEDULED tap, clear the cron via `update_tap` (empty `cron_expression`) FIRST, then `create_tap` with the new script, `test_tap`, then `update_tap` with the cron — re-calling `create_tap` without a cron does not help, because the STORED tap still has its cron.
 Existing taps that have run successfully do NOT need a fresh `test_tap` for cadence-only changes (`cron_expression`, `target_pipeline`, `enabled` toggle) — only when the script itself just changed.
 
-KEEP-OR-SCRATCH RULE (read this before choosing a destination):
-If the user wants the data kept, observed, queried later, or refreshed on a schedule, use a real destination — exactly as today, offering the structured set the way the destination-offering rule below describes. If the user (or you, on your own initiative) wants an answer now, a validation result, or a transformed view and has no reason to keep the rows, create the pipeline with `destination: {"scratch": {}}` instead: run it, poll `get_pipeline_status` until `rollup.allDone` is true, then read the rows straight off the rollup's `resultPreview`; call `get_pipeline_result` only when `resultTruncated` is true and you need the rest. NEVER create a table just to read rows back once. Scratch results are never catalogued or queryable later and expire after the retention window, so read them promptly. If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from scratch to a real one) — the tap, its schedule, and its incremental cursor do not move.
+KEEP-OR-READ-LIVE RULE (read this before choosing a destination):
+Live Read (`destination: {"scratch": {}}`) hands the rows back without landing them: the run goes through data quality and transformation, and the rows come back to you instead of being written anywhere. If the user wants the data kept, observed, queried later, or refreshed on a schedule, use a real destination — exactly as today, offering the structured set the way the destination-offering rule below describes. If the user (or you, on your own initiative) wants an answer now, a validation result, or a transformed view and has no reason to keep the rows, create a Live Read pipeline (`destination: {"scratch": {}}`) instead: run it, poll `get_pipeline_status` until `rollup.allDone` is true, then read the rows straight off the rollup's `resultPreview`; call `get_pipeline_result` only when `resultTruncated` is true and you need the rest. NEVER create a table just to read rows back once. Live Read results are never catalogued or queryable later and expire after the retention window, so read them promptly. If the rows turn out to be worth keeping, promote the pipeline later with `update_pipeline` (change the destination from `scratch` to a real one) — the tap, its schedule, and its incremental cursor do not move.
 
 EVIDENCE RULE (read this before summarizing what you did):
 NEVER narrate a create / update / delete / run operation as completed unless the corresponding tool call appears in THIS turn. The collapsed tool-call blocks in your message are the ONLY evidence that work actually happened — your prose must match them. Specifically:
@@ -409,7 +423,7 @@ APPROVAL RULE (agent policy):
 Some actions on this instance may be gated by the platform's agent policy. When a mutating tool returns `status: pending_approval`, the action was NOT performed — it is queued for a person to approve. Tell the user plainly that it is waiting for approval in Datris (Activity → Approvals), quote the `approvalId`, and either poll `get_approval` (with `wait_seconds` between polls) or offer to check back later. Never re-issue the action to "retry" it (you get the same id back), never describe it as done, and never ask the user for an API key or credential to get around the gate. `status: 403` with `errorKind: policy_denied` means the action is refused for agents on this instance — report that and stop. Call `get_agent_policy` before a delete or destination-schema change if you want to know in advance whether it will queue.
 
 DESTINATION OFFERING RULE (structured data):
-The structured destinations available in this deployment are: {{STRUCTURED_OFFER_DESTINATIONS}}. When the user wants to ingest structured/tabular data and has not named a destination, offer exactly this set — name every one of them in your question, with no silent defaults and no destinations outside this list. This list was resolved by the platform and baked into this text at session start — do NOT probe or re-check availability before offering, and do NOT drop an option just because you haven't seen it used yet. (If the user explicitly asks about a destination that is not in the list, you may still explain how it works and what configuring it requires.)
+The structured destinations available in this deployment are: {{STRUCTURED_OFFER_DESTINATIONS}}. When the user wants to ingest structured/tabular data and has not named a destination, offer exactly this set — name every one of them in your question, with no silent defaults and no destinations outside this list. This list was resolved by the platform and baked into this text at session start — do NOT probe or re-check availability before offering, and do NOT drop an option just because you haven't seen it used yet. (If the user explicitly asks about a destination that is not in the list, you may still explain how it works and what configuring it requires.){{LIVE_READ_OFFER}}
 
 A pipeline config has two required sections: source and destination. Keep configs simple: source + destination only.
 
@@ -473,13 +487,36 @@ Do NOT call check_service_health as part of the normal workflow — it is slow. 
 Do NOT call update_secret unless you need to configure AI provider keys and they are not already set.
 """
 
+def _mcp_server_version():
+    """datris-mcp-server version: the installed package (pip / Homebrew), else
+    the pyproject.toml beside this file (the Docker image copies the tree
+    rather than installing it), else 'unknown'."""
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("datris-mcp-server")
+    except Exception:
+        pass
+    try:
+        import re as _re
+        pyproject = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml")
+        with open(pyproject, encoding="utf-8") as f:
+            m = _re.search(r'^version\s*=\s*"([^"]+)"', f.read(), _re.M)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "unknown"
+
+
 # Instructions are delivered per session via create_initialization_options(),
 # which reads server.instructions at session start. The import-time value uses
 # the fail-open full set (no network call during import); every transport
 # entry point (stdio, /sse, /mcp) refreshes server.instructions from the
 # cached availability fetch just before the session initializes, so a cache
 # refresh reaches new sessions.
-server = Server("datris", instructions=_render_destination_templates(
+# version= makes initialize report serverInfo.version as the datris-mcp-server
+# version; without it the SDK falls back to the `mcp` package version.
+server = Server("datris", version=_mcp_server_version(), instructions=_render_destination_templates(
     _INSTRUCTIONS_TEMPLATE, list(ALL_STRUCTURED_DESTINATIONS)))
 
 
@@ -522,27 +559,6 @@ def _headers():
     h = {"Content-Type": "application/json"}
     h.update(_identity_headers())
     return h
-
-
-def _mcp_server_version():
-    """datris-mcp-server version: the installed package (pip / Homebrew), else
-    the pyproject.toml beside this file (the Docker image copies the tree
-    rather than installing it), else 'unknown'."""
-    try:
-        from importlib.metadata import version as _pkg_version
-        return _pkg_version("datris-mcp-server")
-    except Exception:
-        pass
-    try:
-        import re as _re
-        pyproject = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pyproject.toml")
-        with open(pyproject, encoding="utf-8") as f:
-            m = _re.search(r'^version\s*=\s*"([^"]+)"', f.read(), _re.M)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return "unknown"
 
 
 def _call(method, path, timeout=300, **kwargs):
@@ -907,7 +923,7 @@ The credentials secret is human-owned (not `_type=tap`), so the agent does NOT c
 Storage formats: `parquet`, `orc` (loose columnar files), `iceberg` (a table at the prefix with snapshots and schema evolution)
 Write modes: `overwrite`, `append`, `ignore`, `errorifexists`, and `merge` (iceberg only — requires `keyFields`)
 
-### scratch — run the pipeline and hand the rows back, without landing them
+### scratch (Live Read) — run the pipeline and hand the rows back, without landing them
 
 ```json
 "destination": {
@@ -915,7 +931,7 @@ Write modes: `overwrite`, `append`, `ignore`, `errorifexists`, and `merge` (iceb
 }
 ```
 
-Same source shape as the structured destinations (a sample is still required for schema detection); nothing is written anywhere. `scratch` cannot be combined with any other destination block in the same config. The run's rows come back on the `get_pipeline_status` rollup as `resultPreview` (first page) with `resultTruncated`, `resultRowCount` and `resultExpiresAt`; page past the preview with `get_pipeline_result`. Results expire after the retention window and are never catalogued or queryable later — promote the pipeline with `update_pipeline` if the rows turn out to be worth keeping.
+Live Read uses the same source shape as the structured destinations (a sample is still required for schema detection); nothing is written anywhere. `scratch` cannot be combined with any other destination block in the same config. The run's rows come back on the `get_pipeline_status` rollup as `resultPreview` (first page) with `resultTruncated`, `resultRowCount` and `resultExpiresAt`; page past the preview with `get_pipeline_result`. Results expire after the retention window and are never catalogued or queryable later — promote the pipeline with `update_pipeline` if the rows turn out to be worth keeping.
 
 ### kafka
 
@@ -1586,7 +1602,7 @@ def _base_tools():
         ),
         Tool(
             name="create_pipeline",
-            description="Create a pipeline. FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token), warehouse (the SQL warehouse ID), and database (the Unity Catalog name). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. SCRATCH (scratch) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-SCRATCH RULE). SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
+            description="Create a pipeline. FOUR destination categories: STRUCTURED (postgres, mongodb, snowflake, databricks) — send a TINY sample (via content_text) and the schema is auto-detected; snowflake additionally REQUIRES credentialsSecret (a Platform secret with account/user/privateKey or password — discover via list_platform_secrets), warehouse, and database; databricks additionally REQUIRES credentialsSecret (a Platform secret with host plus clientId/clientSecret or token), warehouse (the SQL warehouse ID), and database (the Unity Catalog name). OBJECTSTORE (objectstore — writes Parquet files, ORC files, or an Iceberg table to MinIO or AWS S3) — same shape as structured (CSV-only, sample required for schema detection), plus objectStore-specific knobs (bucket, prefix, fileFormat, partitionBy, writeMode; keyFields for iceberg+merge; provider+credentialsSecret for S3). VECTOR (pgvector, qdrant, weaviate, milvus, chroma) — no schema; pass ONLY pipeline + destination (and optionally filename for the file-extension hint), no sample at all. LIVE READ (a Live Read pipeline, destination `scratch`) — same sample-required shape as structured, nothing is landed; the run's rows come back on the status rollup (`resultPreview`) and via get_pipeline_result; results expire — use it when the user wants an answer now, a validation result, or a transformed view with no reason to keep the rows (see the KEEP-OR-READ-LIVE RULE). SAMPLE-SIZE RULE: the sample exists ONLY for schema detection — send the header row plus 3-5 representative rows, NEVER a full dataset. Composing hundreds of rows here wastes minutes of generation time; the real data arrives later via the tap or upload_data. Prefer content_text (plain text) over content (base64) — the server encodes it for you.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -1609,7 +1625,7 @@ def _base_tools():
                     "destination": {
                         "type": "string",
                         "enum": ["postgres", "mongodb", "snowflake", "databricks", "objectstore", "qdrant", "weaviate", "milvus", "chroma", "pgvector", "scratch"],
-                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). Use 'scratch' when nothing should be landed and the rows should come back to the caller (status rollup resultPreview + get_pipeline_result); table/database/keyFields are ignored for it. Use 'objectstore' for Parquet files, ORC files, or an Iceberg table (fileFormat=iceberg) in MinIO (default provider) or AWS S3 (set provider=s3). Use 'snowflake' to load the user's Snowflake account — requires credentialsSecret, warehouse, and database. Use 'databricks' to load a Unity Catalog managed Delta table in the user's Databricks workspace — requires credentialsSecret, warehouse (SQL warehouse ID), and database (Unity Catalog name)."
+                        "description": "Destination type (default: postgres for CSV, mongodb for JSON/XML). 'scratch' = Live Read: hand the rows back, land nothing. Use it when nothing should be landed and the rows should come back to the caller (status rollup resultPreview + get_pipeline_result); table/database/keyFields are ignored for it. Use 'objectstore' for Parquet files, ORC files, or an Iceberg table (fileFormat=iceberg) in MinIO (default provider) or AWS S3 (set provider=s3). Use 'snowflake' to load the user's Snowflake account — requires credentialsSecret, warehouse, and database. Use 'databricks' to load a Unity Catalog managed Delta table in the user's Databricks workspace — requires credentialsSecret, warehouse (SQL warehouse ID), and database (Unity Catalog name)."
                     },
                     "table": {
                         "type": "string",
@@ -1769,7 +1785,7 @@ def _base_tools():
         ),
         Tool(
             name="upload_data",
-            description="Upload data to a registered pipeline for processing. Send the ENTIRE file content as a single base64-encoded string in ONE call — do not pre-split or chunk the content client-side. Vector destinations (pgvector, qdrant, weaviate, milvus, chroma) apply recursive chunking server-side using the pipeline's configured chunkSize/chunkOverlap; for those, one upload_data call yields many embedded chunks automatically. The pipeline's rules are applied: schema validation, data quality checks, transformations, then routing to the configured destination. A pipeline whose destination is scratch validates or transforms the file and hands the rows back (status rollup `resultPreview`, then get_pipeline_result) instead of landing them. Returns a pipelineToken for tracking job status via get_job_status.",
+            description="Upload data to a registered pipeline for processing. Send the ENTIRE file content as a single base64-encoded string in ONE call — do not pre-split or chunk the content client-side. Vector destinations (pgvector, qdrant, weaviate, milvus, chroma) apply recursive chunking server-side using the pipeline's configured chunkSize/chunkOverlap; for those, one upload_data call yields many embedded chunks automatically. The pipeline's rules are applied: schema validation, data quality checks, transformations, then routing to the configured destination. A Live Read (`scratch`) pipeline validates or transforms the file and hands the rows back (status rollup `resultPreview`, then get_pipeline_result) instead of landing them. Returns a pipelineToken for tracking job status via get_job_status.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2422,7 +2438,7 @@ def _base_tools():
             description=(
                 "Create a tap — a fetcher that pulls data from an external source and pushes it into a pipeline. Two kinds: a Python script the platform executes (default — provide a plain-English `instruction` to have AI generate the script, or supply your own `script` directly), or `kind: \"http\"` — a user-hosted HTTP endpoint (any language) that Datris POSTs the run context to on each run and which responds with the tap envelope; pass `endpoint_url` and see the tap-http-contract doc. HTTP taps run no code on the platform; AI script generation and the DATRIS_PLATFORM_* platform-data callback do NOT apply to them, so keep any tap whose fetch logic reads platform data as a Python tap. "
                 "For a large columnar or tabular source, `yield` each batch (a pyarrow `RecordBatch`, a pandas `DataFrame`, or a list of dicts) instead of each row — the platform serialises a batch natively, several times faster — and read only the columns the pipeline needs (`columns=[...]`). Yielding one row at a time remains correct for small or API-paged sources. "
-                "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. For a fetch-only tap (the user wants the rows back, not landed), target a pipeline whose destination is scratch — see the KEEP-OR-SCRATCH RULE in the server instructions. "
+                "If the user wants the tap to feed a pipeline, pass `target_pipeline` now. Without it, `run_tap` will fetch but not persist (response will show `persisted: false, persistedReason: \"no_target_pipeline\"`) — you'd then need to call update_tap to wire a pipeline. For a fetch-only tap (the user wants the rows back, not landed), target a Live Read (`scratch`) pipeline — see the KEEP-OR-READ-LIVE RULE in the server instructions. "
                 "If the user mentioned ANY recurrence (nightly, daily, hourly, every morning, market open, etc.), pass `cron_expression` NOW — the platform's scheduler will run the tap on that cadence automatically. This is the canonical way to make a tap recurring; do NOT respond with shell commands or external schedulers for the user to run themselves. See the SCHEDULING RULE in the server instructions. "
                 "AFTER creating, call `test_tap` to validate the script BEFORE any `run_tap` or before relying on a scheduled cron run — see the VALIDATION RULE. Setting a cron on a never-tested script is a guaranteed-bad nightly run waiting to happen. "
                 "The platform enforces this: passing `cron_expression` for a script (or endpoint) that has not passed `test_tap` returns HTTP 409 with the remedy — create the tap without `cron_expression`, call `test_tap` until it succeeds, then `update_tap` with the cron. Replacing the script of a scheduled tap is refused the same way until re-tested — to replace the script of a SCHEDULED tap, clear the cron via `update_tap` (empty `cron_expression`) first, then call `create_tap` with the new script, `test_tap`, then `update_tap` with the cron. "
@@ -2509,7 +2525,7 @@ def _base_tools():
                 "If the tap script doesn't yet read a particular param, update the script by calling `create_tap` again with the same `name` and a revised `script` (create_tap upserts and replaces the existing script). That's the right shape for parameterized runs.\n"
                 "\n"
                 "REQUIRED next steps based on the response:\n"
-                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true. Then read `rollup.status` (`success`/`warning`/`error`) and `rollup.jobs[].lastError`. Do not report completion or query the destination before that. For a scratch pipeline (nothing landed), read the rows off the rollup's `resultPreview` and `resultTruncated`; call `get_pipeline_result` only when `resultTruncated` is true.\n"
+                "  • `persisted: true` → load is still running. Call `get_pipeline_status(publisher_token=response.publisherToken)` and poll until `rollup.allDone` is true. Then read `rollup.status` (`success`/`warning`/`error`) and `rollup.jobs[].lastError`. Do not report completion or query the destination before that. For a Live Read (`scratch`) pipeline (nothing landed), read the rows off the rollup's `resultPreview` and `resultTruncated`; call `get_pipeline_result` only when `resultTruncated` is true.\n"
                 "  • `persisted: false` → the destination was NOT written. Read `persistedReason`:\n"
                 "      - `no_target_pipeline`: tap has no pipeline wired. Tell the user; offer to call update_tap.\n"
                 "      - `test_mode`: ran in test mode (or mcp-server/datris version mismatch). Flag it; do not report data as stored.\n"
@@ -2573,8 +2589,8 @@ def _base_tools():
         Tool(
             name="get_pipeline_result",
             description=(
-                "Read the rows a scratch pipeline produced. Only pipelines whose destination is scratch have a result — anything else is a 404 "
-                "(an error body of `Not Found` / `status: 404` — rather than the endpoint's own `Only scratch pipelines have a result` message — for a pipeline you know is scratch means the server predates scratch results: report the version mismatch and stop, do not retry). "
+                "Read the rows a Live Read (`scratch`) pipeline produced. Only Live Read pipelines (destination scratch) have a result — anything else is a 404 "
+                "(an error body of `Not Found` / `status: 404` — rather than the endpoint's own `Only Live Read (scratch) pipelines have a result` message, or `Only scratch pipelines have a result` on older servers — for a pipeline you know is Live Read means the server predates Live Read results: report the version mismatch and stop, do not retry). "
                 "The first rows are already on the `get_pipeline_status` rollup as `resultPreview`, so call this ONLY when the rollup's `resultTruncated` is true and you need the rest. "
                 "Paging with `offset`/`limit` never re-runs the source — it reads the stored result. `limit` is clamped server-side, so the next offset is always `offset + returnedCount`, never `offset + limit`. "
                 "Results expire after the retention window, so read them promptly; a 410 means the result is gone and the pipeline must be run again. "
@@ -2586,7 +2602,7 @@ def _base_tools():
                 "properties": {
                     "publisher_token": {
                         "type": "string",
-                        "description": "UUID returned from run_tap. Reads the result of the scratch pipeline job that run submitted."
+                        "description": "UUID returned from run_tap. Reads the result of the Live Read (`scratch`) pipeline job that run submitted."
                     },
                     "pipeline_token": {
                         "type": "string",

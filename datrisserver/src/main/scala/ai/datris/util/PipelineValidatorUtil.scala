@@ -67,7 +67,7 @@ object PipelineValidatorUtil {
         // PDF or an image, so unstructured sources cannot land in scratch.
         if (config.destination.scratch != null)
             throw new DatrisException(
-                "For unstructured files, a 'scratch' destination is not supported (structured and semi-structured sources only); use a vector database or object store destination"
+                "For unstructured files, Live Read (the 'scratch' destination) is not supported (structured and semi-structured sources only); use a vector database or object store destination"
             )
         // Unstructured files can go to objectStore or qdrant
         if (
@@ -109,7 +109,7 @@ object PipelineValidatorUtil {
                 config.destination.chroma
             )
             if (others.exists(_ != null))
-                throw new DatrisException("A 'scratch' destination cannot be combined with any other destination")
+                throw new DatrisException("A Live Read (scratch) destination cannot be combined with any other destination")
         }
 
         // Used to determine if keyFields exist in the schema properties

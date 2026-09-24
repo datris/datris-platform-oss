@@ -161,7 +161,7 @@ Add `&withrollup=true` to a `publishertoken` or `pipelinetoken` query and the re
 
 `rollup.allDone` flips to `true` when every job has reached a terminal state. `rollup.status` is the aggregate outcome — `success`, `warning`, `error`, or `processing`. Per-job `status` values are `success`, `warning`, `error`, `processing`, or `timed_out` (no terminal event within 8 hours of the first event). When a job's `status` is `error`, `lastError` carries the failing process and its message.
 
-**Scratch result fields.** A job whose pipeline has a [scratch](/destinations/scratch) destination carries its result on the rollup once the run finishes. These fields are absent on every other job:
+**Live Read result fields.** A job whose pipeline is a [Live Read](/destinations/live-read) pipeline (the `scratch` destination) carries its result on the rollup once the run finishes. These fields are absent on every other job:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -169,7 +169,7 @@ Add `&withrollup=true` to a `publishertoken` or `pipelinetoken` query and the re
 | `resultRowCount` | integer | Total rows in the result. |
 | `resultExpiresAt` | string | When the result is deleted; reads after this return `410`. |
 | `resultPreview` | array | The first rows, inline — up to the configured inline cap (`scratchInlineRows`). |
-| `resultTruncated` | boolean | `true` when the result has more rows than `resultPreview` holds — page the rest with [Get a Scratch Pipeline's Result](#get-a-scratch-pipelines-result). |
+| `resultTruncated` | boolean | `true` when the result has more rows than `resultPreview` holds — page the rest with [Get a Live Read Pipeline's Result](#get-a-live-read-pipelines-result). |
 
 Polling pattern (agents and clients):
 
@@ -185,19 +185,19 @@ Without `withrollup=true`, all three queries return their original array shapes 
 
 ---
 
-## Get a Scratch Pipeline's Result
+## Get a Live Read Pipeline's Result
 
 ```
 GET /api/v1/pipeline/result?pipelinetoken={token}&offset={offset}&limit={limit}
 ```
 
-Page through the rows a [scratch](/destinations/scratch) pipeline run produced. Paging reads the stored result — it never re-runs the source. Only scratch pipelines have a result.
+Page through the rows a [Live Read](/destinations/live-read) pipeline run produced. Paging reads the stored result — it never re-runs the source. Only Live Read pipelines have a result.
 
 **Parameters:**
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `pipelinetoken` | query | Yes* | Pipeline token of one ingestion job |
-| `publishertoken` | query | Yes* | Publisher token from `/tap/run` — resolves to the scratch job that run submitted |
+| `publishertoken` | query | Yes* | Publisher token from `/tap/run` — resolves to the Live Read job that run submitted |
 | `offset` | query | No | Row offset to start from (default `0`) |
 | `limit` | query | No | Rows requested for this page. Clamped server-side to the inline cap (`scratchInlineRows`), so advance by the page's `returnedCount`, never by `limit`. |
 
@@ -239,7 +239,7 @@ curl "http://localhost:8080/api/v1/pipeline/result?pipelinetoken=pt-abc12345-...
 | Status | Meaning |
 |--------|---------|
 | `400` | `offset` or `limit` is not an integer |
-| `404` | No run matched the token, or the pipeline is not a scratch pipeline — only scratch pipelines have a result |
+| `404` | No run matched the token, or the pipeline is not a Live Read pipeline — only Live Read pipelines have a result |
 | `410` | The result has expired; run the pipeline again |
 
 ---

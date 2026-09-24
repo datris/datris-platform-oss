@@ -464,8 +464,8 @@
             <!-- [selected]: ngModel writes destType in a microtask, and until then Chrome
                  default-selects the first statically rendered option (ActiveMQ) — the
                  *ngIf options above are inserted afterwards. Binding selected makes a
-                 reopened scratch pipeline show Scratch in the same change-detection pass. -->
-            <option value="scratch" [selected]="destType === 'scratch'" [disabled]="!isDestAvailable('scratch')">Scratch (nothing landed){{ isDestAvailable('scratch') ? '' : ' — Not installed' }}</option>
+                 reopened scratch pipeline show Live Read in the same change-detection pass. -->
+            <option value="scratch" [selected]="destType === 'scratch'" [disabled]="!isDestAvailable('scratch')">Live Read (nothing landed){{ isDestAvailable('scratch') ? '' : ' — Not installed' }}</option>
           </optgroup>
           <optgroup label="Vector Databases">
             <option value="qdrant" *ngIf="healthService.isAvailable('qdrant')">Qdrant</option>
@@ -484,10 +484,10 @@
         </p>
       </div>
 
-      <!-- Scratch: no fields. The run's rows come back on the run status and
+      <!-- Live Read (scratch): no fields. The run's rows come back on the run status and
            can be read from the run detail page; nothing is landed. -->
       <p class="form-hint scratch-hint" *ngIf="destType === 'scratch'">
-        Nothing is landed; results expire. Run the pipeline and read the rows back from the run's detail page, the CLI, or an agent.
+        Live Read runs the pipeline and hands the rows back: the agent, the CLI or the run's detail page reads them, then they expire. Nothing is landed. Switch the destination later if the rows turn out to be worth keeping.
       </p>
 
       <!-- PostgreSQL -->

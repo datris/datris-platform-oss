@@ -400,6 +400,9 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val withKafka = scratchConfig(csvSource, csvSchema, extraDestination = ""","kafka":{"topic":"events"}""")
         val err2 = validationError(withKafka)
         assert(err2.exists(m => m.contains("scratch") && m.toLowerCase.contains("combined")), s"expected the scratch-alone rule, got: $err2")
+        // Story live-read-naming: the message names Live Read and keeps "scratch".
+        assert(err.exists(_.contains("Live Read (scratch)")), s"combined-destination message must say Live Read (scratch), got: $err")
+        assert(err2.exists(_.contains("Live Read (scratch)")), s"combined-destination message must say Live Read (scratch), got: $err2")
     }
 
     test("scratch with an unstructured source is rejected") {

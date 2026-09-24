@@ -226,18 +226,20 @@ def test_vector_config_unchanged_and_skips_generate(captured):
 # ------------------------------------------------------ Acceptance bullet 4 ---
 # wording sweep.
 
-def test_instructions_template_contains_keep_or_scratch_rule():
+def test_instructions_template_contains_keep_or_read_live_rule():
     tpl = server._INSTRUCTIONS_TEMPLATE
-    assert "KEEP-OR-SCRATCH" in tpl
-    rule = tpl[tpl.find("KEEP-OR-SCRATCH"):]
+    assert "KEEP-OR-READ-LIVE" in tpl
+    assert "KEEP-OR-SCRATCH" not in tpl, "old rule heading must be gone"
+    rule = tpl[tpl.find("KEEP-OR-READ-LIVE"):]
+    assert "Live Read" in rule
     assert "scratch" in rule
     assert "get_pipeline_result" in rule
     assert "resultPreview" in rule
     assert "update_pipeline" in rule
 
 
-def test_rendered_instructions_contain_keep_or_scratch_rule():
-    assert "KEEP-OR-SCRATCH" in server._render_destination_templates(
+def test_rendered_instructions_contain_keep_or_read_live_rule():
+    assert "KEEP-OR-READ-LIVE" in server._render_destination_templates(
         server._INSTRUCTIONS_TEMPLATE, list(server.ALL_STRUCTURED_DESTINATIONS))
 
 
@@ -255,8 +257,49 @@ def _offering_rule_text():
     return tpl[start:end if end > 0 else len(tpl)]
 
 
-def test_destination_offering_rule_does_not_mention_scratch():
-    assert "scratch" not in _offering_rule_text().lower()
+def _rendered_offering_rule(names):
+    text = server._render_destination_templates(server._INSTRUCTIONS_TEMPLATE, list(names))
+    start = text.find("DESTINATION OFFERING RULE")
+    assert start >= 0
+    end = text.find("\n\n", start)
+    return text[start:end if end > 0 else len(text)]
+
+
+def test_destination_offering_rule_names_live_read_when_objectstore_available():
+    # Story live-read-naming: the template carries {{LIVE_READ_OFFER}} and the
+    # renderer fills it only when objectstore is available.
+    assert "{{LIVE_READ_OFFER}}" in _offering_rule_text()
+    with_os = _rendered_offering_rule(server.ALL_STRUCTURED_DESTINATIONS)
+    assert "Live Read" in with_os, with_os
+    assert "{{LIVE_READ_OFFER}}" not in with_os
+    assert "schedule" in with_os[with_os.find("Live Read"):].lower(), \
+        "the Live Read offer must say to skip it when the user asked for a schedule"
+    without_os = _rendered_offering_rule(["postgres", "mongodb"])
+    assert "Live Read" not in without_os, without_os
+    assert "{{LIVE_READ_OFFER}}" not in without_os
+
+
+def test_live_read_offer_has_no_domain_bias_or_cron():
+    rule = _rendered_offering_rule(["postgres", "mongodb", "objectstore"])
+    assert _VENDOR_OR_DOMAIN.findall(rule) == [], _VENDOR_OR_DOMAIN.findall(rule)
+    assert _CRON.search(rule) is None, rule
+
+
+def test_scratch_reference_section_is_headed_live_read():
+    assert "### scratch (Live Read)" in server.PIPELINE_CONFIG_REFERENCE
+
+
+def test_create_pipeline_destination_enum_description_names_live_read():
+    dest = _props(_tool("create_pipeline"))["destination"]
+    assert "scratch" in dest["enum"]
+    assert "'scratch' = Live Read: hand the rows back, land nothing" in dest["description"], dest["description"]
+    assert "Live Read" in _tool("create_pipeline").description
+
+
+def test_get_pipeline_result_names_live_read():
+    t = _tool("get_pipeline_result")
+    assert "Live Read" in t.description, t.description
+    assert "Live Read" in _props(t)["publisher_token"]["description"]
 
 
 def test_create_tap_no_longer_says_only_skip_target_pipeline():
@@ -282,8 +325,8 @@ _CRON = re.compile(r"(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)\s+(\d+|\*)")
 
 def test_keep_or_scratch_rule_has_no_domain_bias_or_cron():
     tpl = server._INSTRUCTIONS_TEMPLATE
-    start = tpl.find("KEEP-OR-SCRATCH")
-    assert start >= 0, "KEEP-OR-SCRATCH rule missing from _INSTRUCTIONS_TEMPLATE"
+    start = tpl.find("KEEP-OR-READ-LIVE")
+    assert start >= 0, "KEEP-OR-READ-LIVE rule missing from _INSTRUCTIONS_TEMPLATE"
     end = tpl.find("\n\n", start)
     rule = tpl[start:end if end > 0 else len(tpl)]
     assert _VENDOR_OR_DOMAIN.findall(rule) == [], _VENDOR_OR_DOMAIN.findall(rule)

@@ -322,11 +322,11 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     if (dataset.destination.milvus) dests.push('Milvus');
     if (dataset.destination.chroma) dests.push('Chroma');
     if (dataset.destination.pgvector) dests.push('pgvector');
-    if (this.isScratch(dataset)) dests.push('Scratch');
+    if (this.isScratch(dataset)) dests.push('Live Read');
     return dests.join(', ');
   }
 
-  /** "Scratch" badge condition: the pipeline lands nothing — its runs hand the
+  /** "Live Read" badge condition: the pipeline lands nothing — its runs hand the
    *  rows back and the result expires. Field-gated on `destination.scratch`
    *  so a config from an older server never shows it. */
   isScratch(dataset: any): boolean {

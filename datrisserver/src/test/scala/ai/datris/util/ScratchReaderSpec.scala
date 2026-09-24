@@ -197,6 +197,12 @@ class ScratchReaderSpec extends AnyFunSuite {
             e.getMessage != null && e.getMessage.toLowerCase.contains("scratch"),
             s"message must say only scratch pipelines have a result, got: ${e.getMessage}"
         )
+        // Story live-read-naming: the body names Live Read but keeps "scratch"
+        // so an old CLI matching on the word still explains it.
+        assert(
+            e.getMessage.toLowerCase.contains("live read"),
+            s"404 message must name Live Read, got: ${e.getMessage}"
+        )
     }
 
     test("a missing object is a 410") {
@@ -209,6 +215,10 @@ class ScratchReaderSpec extends AnyFunSuite {
         assert(
             e.getMessage != null && e.getMessage.toLowerCase.contains("run the pipeline again"),
             s"message must tell the caller to run it again, got: ${e.getMessage}"
+        )
+        assert(
+            e.getMessage.contains("Live Read results expire after"),
+            s"410 message must name Live Read, got: ${e.getMessage}"
         )
     }
 

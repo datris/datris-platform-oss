@@ -8,6 +8,11 @@ Usage:
     datris ingest data.csv --pipeline my_data --dest postgres
     datris query "SELECT * FROM my_data LIMIT 10"
     datris delete my_data
+
+Environment:
+    MCP_SERVER_URL   MCP SSE endpoint (default http://localhost:3000/sse).
+    DATRIS_API_KEY   API key sent as the x-api-key header on every MCP request;
+                     required when the platform has API keys turned on.
 """
 
 import asyncio
@@ -41,6 +46,24 @@ def _next_id():
     return _msg_id
 
 
+_REJECTED_KEY_MSG = "MCP server rejected DATRIS_API_KEY (Configuration → API-Keys → Issue new key)"
+
+
+def _auth_headers():
+    """x-api-key header from DATRIS_API_KEY, read at call time (not import)."""
+    key = os.getenv("DATRIS_API_KEY", "")
+    return {"x-api-key": key} if key else {}
+
+
+async def _close_clients():
+    for c in (_sse_client, _post_client):
+        if c:
+            try:
+                await c.aclose()
+            except Exception:
+                pass
+
+
 async def _connect():
     global _endpoint, _post_client, _sse_client, _responses, _reader_task, _sse_cm
 
@@ -48,8 +71,30 @@ async def _connect():
     _post_client = httpx.AsyncClient(timeout=30, limits=httpx.Limits(max_keepalive_connections=0))
     _responses = asyncio.Queue()
 
-    _sse_cm = aconnect_sse(_sse_client, "GET", MCP_URL)
+    headers = _auth_headers()
+    # copy: aconnect_sse mutates its headers dict (adds Accept/Cache-Control)
+    _sse_cm = aconnect_sse(_sse_client, "GET", MCP_URL, headers=dict(headers))
     sse = await _sse_cm.__aenter__()
+
+    # aconnect_sse does not raise on a non-200; without this check a 401 only
+    # surfaces as a generic "No endpoint" error after the wait below.
+    status = sse.response.status_code
+    if status != 200:
+        cm = _sse_cm
+        _sse_cm = None
+        try:
+            await cm.__aexit__(None, None, None)
+        except Exception:
+            pass
+        await _close_clients()
+        _sse_client = _post_client = None
+        if status == 401 and headers:
+            raise click.ClickException(_REJECTED_KEY_MSG)
+        if status == 401:
+            raise click.ClickException(
+                "MCP server requires an API key: export DATRIS_API_KEY=<key> "
+                "(Configuration → API-Keys → Issue new key)")
+        raise click.ClickException(f"MCP server returned HTTP {status} from {MCP_URL}")
 
     async def _read():
         global _endpoint
@@ -74,13 +119,13 @@ async def _connect():
 
     # Initialize
     init_id = _next_id()
-    await _post_client.post(_endpoint, json={
+    await _post_client.post(_endpoint, headers=headers, json={
         "jsonrpc": "2.0", "id": init_id,
         "method": "initialize",
         "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "datris-cli", "version": CLI_VERSION}},
     })
     await asyncio.wait_for(_responses.get(), 10)
-    await _post_client.post(_endpoint, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
+    await _post_client.post(_endpoint, headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"})
 
 
 async def _call_tool(name, arguments=None):
@@ -88,7 +133,7 @@ async def _call_tool(name, arguments=None):
         await _connect()
 
     call_id = _next_id()
-    await _post_client.post(_endpoint, json={
+    await _post_client.post(_endpoint, headers=_auth_headers(), json={
         "jsonrpc": "2.0", "id": call_id,
         "method": "tools/call",
         "params": {"name": name, "arguments": arguments or {}},
@@ -103,37 +148,66 @@ async def _call_tool(name, arguments=None):
             break
 
     if "error" in resp:
-        return {"error": resp["error"].get("message", str(resp["error"]))}
+        message = resp["error"].get("message", str(resp["error"]))
+        if "Invalid x-api-key" in message:
+            raise click.ClickException(_REJECTED_KEY_MSG)
+        return {"error": message}
 
     content = resp.get("result", {}).get("content", [])
     text = "\n".join(b["text"] for b in content if b.get("type") == "text")
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return {"text": text}
+    # The MCP server only checks that a key is present; the Datris API rejects
+    # a wrong one inside the tool call and server.py relays its error body as a
+    # top-level {"error": "Invalid x-api-key..."}. Match only that shape so
+    # tool data that merely contains the phrase is not misreported. Never echo
+    # the key back.
+    if isinstance(parsed, dict) and isinstance(parsed.get("error"), str) \
+            and parsed["error"].startswith("Invalid x-api-key"):
+        raise click.ClickException(_REJECTED_KEY_MSG)
+    return parsed
 
 
 async def _disconnect():
+    """Tear down the SSE session inside the loop that opened it: cancel and
+    await the reader first so aiter_sse() is no longer running when the
+    aconnect_sse context exits (otherwise contextlib raises "generator didn't
+    stop after athrow()" at loop shutdown), then close the clients and reset
+    the globals so the next call reconnects."""
+    global _endpoint, _post_client, _sse_client, _responses, _reader_task, _sse_cm
     if _reader_task:
         _reader_task.cancel()
+        try:
+            await _reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
     if _sse_cm:
         try:
             await _sse_cm.__aexit__(None, None, None)
         except Exception:
             pass
-    if _sse_client:
-        await _sse_client.aclose()
-    if _post_client:
-        await _post_client.aclose()
+    await _close_clients()
+    _endpoint = _post_client = _sse_client = _responses = _reader_task = _sse_cm = None
+
+
+async def _call_tool_once(name, arguments=None):
+    try:
+        return await _call_tool(name, arguments)
+    finally:
+        await _disconnect()
 
 
 def mcp(name, args=None):
     """Synchronous wrapper for MCP tool calls.
 
     asyncio.run creates a fresh loop per call; get_event_loop() raised
-    "There is no current event loop" on Python 3.14 for every command.
+    "There is no current event loop" on Python 3.14 for every command. The
+    SSE session is bound to that loop, so each call connects and disconnects
+    within it.
     """
-    return asyncio.run(_call_tool(name, args))
+    return asyncio.run(_call_tool_once(name, args))
 
 
 def b64_file(path):
@@ -146,7 +220,13 @@ def b64_file(path):
 @click.group()
 @click.version_option(version=CLI_VERSION)
 def cli():
-    """Datris CLI — The Data Control Plane for AI Agents"""
+    """Datris CLI — The Data Control Plane for AI Agents
+
+    \b
+    Environment:
+      MCP_SERVER_URL  MCP SSE endpoint (default http://localhost:3000/sse)
+      DATRIS_API_KEY  API key, sent as x-api-key (needed when API keys are on)
+    """
     pass
 
 
@@ -182,7 +262,7 @@ def pipelines(json_output):
 
 @cli.group("pipeline")
 def pipeline_group():
-    """Commands on a single pipeline run (e.g. read a scratch pipeline's result)."""
+    """Commands on a single pipeline run (e.g. read a Live Read pipeline's result)."""
     pass
 
 
@@ -190,9 +270,10 @@ def _explain_result_error(result):
     """Translate a get_pipeline_result error into the two cases a human hits.
 
     The MCP tool relays the server body verbatim, so there are three shapes:
-    the endpoint's own `{"error": "Only scratch pipelines have a result; ..."}`
-    / `{"error": "Scratch results expire after N hour(s); ... run the pipeline
-    again"}`, Spring's default `{"status": 404, "error": "Not Found", ...}`
+    the endpoint's own `{"error": "Only Live Read (scratch) pipelines have a
+    result; ..."}` / `{"error": "Live Read results expire after N hour(s); ...
+    run the pipeline again"}` (pre-rename servers say "Only scratch pipelines"
+    / "Scratch results expire"; both are matched), Spring's default `{"status": 404, "error": "Not Found", ...}`
     from a server that predates the route, and a bare string.
     """
     status = result.get("status") if isinstance(result, dict) else None
@@ -200,8 +281,9 @@ def _explain_result_error(result):
     text = str(err)
     low = text.strip().lower()
     if (status == 404 or low == "not found" or low.startswith("404")
-            or low.startswith("only scratch pipelines") or low.startswith("no pipeline run found")):
-        return "Error: only scratch pipelines have a result (or this server predates scratch results)"
+            or low.startswith("only live read") or low.startswith("only scratch pipelines")
+            or low.startswith("no pipeline run found")):
+        return "Error: only Live Read (scratch) pipelines have a result (or this server predates Live Read results)"
     if status == 410 or low == "gone" or low.startswith("410") or ("expire" in low and "run the pipeline again" in low):
         return "Error: the result expired — run the pipeline again"
     return f"Error: {text[:200]}"
@@ -218,7 +300,7 @@ def _is_result_error(result):
 @click.option("--out", type=click.Path(dir_okay=False), default=None, help="Write every row as one JSON object per line to this file, paging until the result is exhausted")
 @click.option("--json", "json_output", is_flag=True, default=False, help="Return raw JSON")
 def pipeline_result(token, offset, limit, out, json_output):
-    """Read the rows a scratch pipeline produced (TOKEN is the pipeline token)."""
+    """Read the rows a Live Read pipeline produced (TOKEN is the pipeline token)."""
     def page(off, lim):
         args = {"pipeline_token": token}
         if off is not None:
@@ -961,13 +1043,7 @@ def version(json_output):
 
 
 def main():
-    try:
-        cli()
-    finally:
-        try:
-            asyncio.get_event_loop().run_until_complete(_disconnect())
-        except Exception:
-            pass
+    cli()
 
 
 if __name__ == "__main__":

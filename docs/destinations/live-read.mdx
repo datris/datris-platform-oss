@@ -1,22 +1,26 @@
 ---
-title: "Run a pipeline and get the rows back without landing them"
-sidebarTitle: "Scratch"
-description: "Use the scratch destination to validate, transform, or fetch data through a pipeline and read the result back — nothing is landed, results expire."
+title: "Live Read: run a pipeline and get the rows back without landing them"
+sidebarTitle: "Live Read"
+description: "Use Live Read (the scratch destination) to validate, transform, or fetch data through a pipeline and read the result back — nothing is landed, results expire."
 ---
 
-Use this destination when you (or an agent) want an answer now — what a source returns for these ids, whether today's file is clean, what a transformation produces — and have no reason to keep the rows. The run goes through the same chain as any other pipeline (preprocessor, data quality, transformation), and instead of a loader writing to a table, the rows are held for a short time so the caller can read them back.
+<Note>
+Agents get live, validated reads from any source, and only land what's worth keeping.
+</Note>
 
-Scratch is a second lane beside ingestion, not a shortcut around it. Ingestion lands validated data beside your lake where it is observed, catalogued and queryable; scratch hands rows back once. Scratch results are **not observed**, **not catalogued**, **not queryable later**, and **expire**. If the rows turn out to be worth keeping, switch the pipeline's destination to a real one — the tap, its schedule and its incremental cursor do not move.
+Use Live Read (the `scratch` destination) when you (or an agent) want an answer now — what a source returns for these ids, whether today's file is clean, what a transformation produces — and have no reason to keep the rows. The run goes through the same chain as any other pipeline (preprocessor, data quality, transformation), and instead of a loader writing to a table, the rows are held for a short time so the caller can read them back.
+
+Live Read is a second lane beside ingestion, not a shortcut around it. Ingestion lands validated data beside your lake where it is observed, catalogued and queryable; Live Read hands rows back once. Live Read results are **not observed**, **not catalogued**, **not queryable later**, and **expire**. If the rows turn out to be worth keeping, switch the pipeline's destination to a real one — the tap, its schedule and its incremental cursor do not move.
 
 ## Keep it, or answer now?
 
 | You want to… | Use |
 |---|---|
 | Keep the data, observe it over time, query it later, or refresh it on a schedule | A real destination — [PostgreSQL](/destinations/postgres), [MongoDB](/destinations/mongodb), [Object Store](/destinations/object-store), [Snowflake](/destinations/snowflake), [Databricks](/destinations/databricks) |
-| See what a source returns for some inputs, check a file against its data quality rules, or preview a transformation — and then move on | **Scratch** |
+| See what a source returns for some inputs, check a file against its data quality rules, or preview a transformation — and then move on | **Live Read** |
 | Preview what a tap script produces before wiring it to anything | The tap test run (20-row sample; see [Taps](/taps)) |
 
-Never create a table just to read rows back once; never use scratch for data you will want again.
+Never create a table just to read rows back once; never use Live Read for data you will want again.
 
 ## Configuration
 
@@ -29,10 +33,10 @@ Never create a table just to read rows back once; never use scratch for data you
 There is nothing to configure per pipeline beyond its presence. Three rules apply:
 
 - **Structured sources only.** CSV, JSON and XML sources; unstructured (document) sources and vector destinations are not accepted.
-- **A sample is required at create time.** Like the object store destination, scratch needs the typed header so data quality rules and transformations can run — send the header row plus a few representative rows, exactly as for a structured destination.
-- **Exclusive.** A scratch pipeline lands nothing anywhere; it cannot be combined with another destination in the same pipeline.
+- **A sample is required at create time.** Like the object store destination, Live Read needs the typed header so data quality rules and transformations can run — send the header row plus a few representative rows, exactly as for a structured destination.
+- **Exclusive.** A Live Read pipeline lands nothing anywhere; it cannot be combined with another destination in the same pipeline.
 
-In the pipeline wizard, choose **Scratch** under Destination. It shows no fields.
+In the pipeline wizard, choose **Live Read** under Destination. It shows no fields.
 
 ## What a run produces
 
@@ -42,7 +46,7 @@ When the run finishes, its entry in the status rollup (`GET /api/v1/pipeline/sta
 
 | Field | Description |
 |---|---|
-| `resultUri` | Where the result is held. Present only on scratch runs that produced a result. |
+| `resultUri` | Where the result is held. Present only on Live Read runs that produced a result. |
 | `resultRowCount` | Total rows in the result. |
 | `resultExpiresAt` | When the result is deleted. |
 | `resultPreview` | The first rows, inline — up to the configured inline cap. |
@@ -78,10 +82,10 @@ Pass `pipelinetoken` (one job) or `publishertoken` (the job a tap run submitted)
 
 | Status | Meaning |
 |---|---|
-| `404` | The pipeline has no result — only scratch pipelines return rows (or no run matched the token). |
+| `404` | The pipeline has no result — only Live Read pipelines return rows (or no run matched the token). |
 | `410` | The result has expired. Run the pipeline again. |
 
-See the [Pipeline Status API](/api-reference/status-api#get-a-scratch-pipelines-result) for the full reference.
+See the [Pipeline Status API](/api-reference/status-api#get-a-live-read-pipelines-result) for the full reference.
 
 ### CLI
 
@@ -102,10 +106,10 @@ Agents read the first rows straight off the `get_pipeline_status` rollup (`resul
 
 ## Retention and sensitive data
 
-A scratch result holds whatever the source returned, after transformation, in the platform's built-in object store alongside staged documents. It is deleted by an hourly sweep once its retention window passes; reads after that return `410`. Retention is the mitigation: keep it short, especially on shared hosts, and shorten it rather than lengthen it when sources carry personal or otherwise sensitive data. `0` expires results immediately.
+A Live Read result holds whatever the source returned, after transformation, in the platform's built-in object store alongside staged documents. It is deleted by an hourly sweep once its retention window passes; reads after that return `410`. Retention is the mitigation: keep it short, especially on shared hosts, and shorten it rather than lengthen it when sources carry personal or otherwise sensitive data. `0` expires results immediately.
 
 The inline preview cap and the retention window are deployment settings — see `SCRATCH_INLINE_ROWS` and `SCRATCH_RETENTION_HOURS` in the [Configuration Reference](/configuration-reference).
 
 <Note>
-A scratch pipeline still records its run history and data quality outcomes like any other pipeline. The rows are transient, and no dataset is registered in the catalog or the lineage graph.
+A Live Read pipeline still records its run history and data quality outcomes like any other pipeline. The rows are transient, and no dataset is registered in the catalog or the lineage graph.
 </Note>
