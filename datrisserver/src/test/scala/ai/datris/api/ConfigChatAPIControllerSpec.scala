@@ -33,4 +33,19 @@ class ConfigChatAPIControllerSpec extends AnyFunSuite {
         }
         assert(paths.contains("/config-chat/chat"), s"POST paths: $paths")
     }
+
+    // Story: config-chat-tools-and-prompt.md, Step 5. A confirmation token is
+    // bound to the admin who proposed it, not only to the chat session.
+    test("scopeFor binds the username and the session id") {
+        assert(ConfigChatAPIController.scopeFor("alice", Some("s1")) == "alice:s1")
+    }
+
+    test("scopeFor differs for a different user in the same session") {
+        assert(ConfigChatAPIController.scopeFor("bob", Some("s1")) != ConfigChatAPIController.scopeFor("alice", Some("s1")))
+        assert(ConfigChatAPIController.scopeFor("bob", Some("s1")) == "bob:s1")
+    }
+
+    test("scopeFor with no session id falls back to <username>:user") {
+        assert(ConfigChatAPIController.scopeFor("alice", None) == "alice:user")
+    }
 }
