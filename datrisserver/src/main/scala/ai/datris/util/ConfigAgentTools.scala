@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.audit.AuditActor
-import com.google.gson.{JsonArray, JsonElement, JsonObject, JsonParser, JsonPrimitive}
+import com.google.gson.{JsonArray, JsonElement, JsonNull, JsonObject, JsonParser, JsonPrimitive}
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.JavaConverters._
@@ -18,9 +18,9 @@ import scala.collection.JavaConverters._
   * (`{name, description, inputSchema}`); AgentLoop renames `inputSchema` to
   * Anthropic's `input_schema` in `mcpToAnthropicTool`.
   *
-  * Every mutating tool carries an optional `confirmation_token`. Called
-  * without one, the executor performs nothing and answers
-  * `needs_confirmation` (see [[ConfigToolExecutor]]). */
+  * Every mutating tool except the [[FormTools]] carries an optional
+  * `confirmation_token`. Called without one, the executor performs nothing
+  * and answers `needs_confirmation` (see [[ConfigToolExecutor]]). */
 object ConfigAgentTools {
 
     private case class P(name: String, schema: JsonObject, required: Boolean)
@@ -138,7 +138,7 @@ object ConfigAgentTools {
             bool("enabled", "Whether the slot is enabled."),
             int("max_uses", "Maximum web-search uses per request, where the provider supports it.")
         ),
-        mutating(
+        tool(
             "set_provider_credentials",
             "Ask the user to enter a provider's credentials in a secure form. Credential values are never passed as arguments.",
             enumStr("provider", "Provider whose credentials to set.", Providers, required = true)
@@ -162,7 +162,7 @@ object ConfigAgentTools {
             "Update the code repository settings used to store generated scripts.",
             obj("config", "Repository settings to save.", required = true)
         ),
-        mutating(
+        tool(
             "create_repo_token",
             "Ask the user to enter a code repository access token in a secure form and store it under a name.",
             str("name", "Name to store the token under.", required = true)
@@ -203,6 +203,11 @@ object ConfigAgentTools {
     val UserTools: Set[String] = Set("list_users", "create_user", "set_user_role", "reset_user_password", "delete_user")
     val KeyTools: Set[String] = Set("list_api_keys", "issue_api_key", "rotate_api_key", "revoke_api_key", "list_key_templates", "get_capability_catalog")
     val ProviderEditTools: Set[String] = Set("set_ai_provider_slot", "set_provider_credentials")
+
+    /** Mutating tools that only open the inline secret form: they perform
+      * nothing server-side, so they carry no `confirmation_token` and issue
+      * none. The submitted form is the confirmation. */
+    val FormTools: Set[String] = Set("set_provider_credentials", "create_repo_token")
 }
 
 /** Show only the tools whose Configuration sub-tab the UI would show. */
@@ -226,15 +231,22 @@ object ConfigToolFilter {
   * Mutating tools require a one-shot confirmation token (see
   * [[ConfirmationRegistry]]); without one the call is not performed and the
   * answer is `{"status":"needs_confirmation","summary":…,"token":…}`, which
-  * AgentLoop turns into a `confirm_request` SSE event.
+  * AgentLoop turns into a `confirm_request` SSE event. A confirmed mutation
+  * makes one loopback REST call as the signed-in admin (the policy tools and
+  * `issue_api_key` with a template read first, then write once).
+  *
+  * The [[ConfigAgentTools.FormTools]], and `put_secret` with an empty field
+  * value, answer `{"status":"secret_request",…}` instead: the UI shows the
+  * inline secret form and the user's submission is the confirmation.
   *
   * `execute` returns the text for the model: mutating-tool results pass
   * through [[redactForModel]] so show-once values never reach it. The full
   * text of the most recent call is kept in [[lastFullResult]]; the controller
   * puts that on the `tool_result` SSE event for the UI.
   *
-  * `restCall(method, path, body)` is the loopback REST hop the tool bodies
-  * will use. No tool body calls it yet. */
+  * `restCall(method, path, body)` is the loopback REST hop; it answers the
+  * server body on 2xx and an `{"error":…}` object otherwise (see
+  * [[ConfigToolExecutor.loopbackText]]). */
 class ConfigToolExecutor(
     scope: String,
     username: String,
@@ -245,7 +257,12 @@ class ConfigToolExecutor(
     import ConfigToolExecutor._
 
     private val rest: (String, String, Option[String]) => String =
-        if (restCall != null) restCall else (m: String, p: String, b: Option[String]) => loopback(m, p, b, uiKey, username)
+        if (restCall != null) restCall
+        else
+            (m: String, p: String, b: Option[String]) => {
+                val (status, body) = loopback(m, p, b, uiKey, username)
+                loopbackText(status, body)
+            }
 
     @volatile private var _lastFullResult: String = ""
 
@@ -264,6 +281,10 @@ class ConfigToolExecutor(
         else if (ConfigAgentTools.mutatingToolNames.contains(name)) {
             if (name == "delete_user" && stringArg(input, "username").exists(_.trim.toLowerCase == "admin"))
                 return error("The 'admin' user cannot be deleted")
+            secretForm(name, input) match {
+                case Some(answer) => return answer
+                case None =>
+            }
             stringArg(input, ConfirmationRegistry.TokenKey).filter(_.nonEmpty) match {
                 case None =>
                     val token = registry.issue(scope, name, input)
@@ -281,13 +302,283 @@ class ConfigToolExecutor(
         } else error("unknown tool")
     }
 
-    /** Read tool bodies. Stubs until Story 2 maps each to its REST call. */
-    private def readBody(name: String, input: JsonObject): String = NotImplemented
+    // ------------------------------------------------------------ secret forms ---
 
-    /** Mutating tool bodies, reached only after a confirmed token. Stubs until
-      * Story 2. The policy tools will surface the server's disabled error when
-      * the agent policy is off. */
-    private def mutatingBody(name: String, input: JsonObject): String = NotImplemented
+    /** The inline secret form for the form tools and for `put_secret` with an
+      * empty field value; None for every other call. */
+    private def secretForm(name: String, input: JsonObject): Option[String] = name match {
+        case "set_provider_credentials" =>
+            val provider = stringArg(input, "provider").map(_.trim.toLowerCase).getOrElse("")
+            Some(ProviderCredentialFields.get(provider) match {
+                case Some(Nil) => error("needs no credentials")
+                case Some(fields) =>
+                    secretRequest("ai-keys", fields, "Enter the " + provider + " credentials. They are stored in the shared AI provider key store.")
+                case None => error("unknown provider: " + provider)
+            })
+        case "create_repo_token" =>
+            Some(stringArg(input, "name").map(_.trim).filter(_.nonEmpty) match {
+                case Some(n) => secretRequest(n, List("token"), "Enter the code repository access token to store as " + n + ".")
+                case None => error("name is required")
+            })
+        case "put_secret" =>
+            val fields = objArg(input, "fields")
+            val hasEmpty = fields.exists(_.entrySet().asScala.exists { e =>
+                e.getValue.isJsonPrimitive && e.getValue.getAsString.isEmpty
+            })
+            val secretName = stringArg(input, "name").map(_.trim).filter(_.nonEmpty)
+            if (hasEmpty && secretName.isDefined)
+                Some(secretRequest(secretName.get, fields.get.keySet().asScala.toList, "Enter the values for secret " + secretName.get + "."))
+            else None
+        case _ => None
+    }
+
+    private def secretRequest(secretName: String, fieldNames: List[String], reason: String): String = {
+        val o = new JsonObject()
+        o.addProperty("status", "secret_request")
+        o.addProperty("secretName", secretName)
+        val arr = new JsonArray()
+        fieldNames.foreach(f => arr.add(f))
+        o.add("fieldNames", arr)
+        o.addProperty("reason", reason)
+        o.toString
+    }
+
+    // ------------------------------------------------------------------ reads ---
+
+    private def get(path: String): String = rest("GET", path, None)
+
+    private def readBody(name: String, input: JsonObject): String = name match {
+        case "get_ai_providers" => aiProviders()
+        case "list_secrets" =>
+            get(Api + "/secrets" + stringArg(input, "type").map(_.trim).filter(_.nonEmpty).map(t => "?type=" + query(t)).getOrElse(""))
+        case "get_secret_fields" =>
+            stringArg(input, "name").map(_.trim).filter(_.nonEmpty) match {
+                case Some(n) => get(Api + "/secrets/" + seg(n))
+                case None =>
+                    // No name: answer with the names the model can pick from.
+                    val o = new JsonObject()
+                    o.addProperty("error", "name is required")
+                    val names = get(Api + "/secrets")
+                    try o.add("secrets", JsonParser.parseString(names))
+                    catch { case _: Exception => }
+                    o.toString
+            }
+        case "get_data_sources_fragment" =>
+            val r = get(Api + "/tap-prompts/" + DataSourcesKey)
+            if (isNotFound(r)) {
+                val o = new JsonObject()
+                o.addProperty("key", DataSourcesKey)
+                o.addProperty("content", "")
+                o.addProperty("enabled", false)
+                o.addProperty("exists", false)
+                o.toString
+            } else r
+        case "get_code_repo" => get(Api + "/code-repo")
+        case "test_code_repo_connection" =>
+            val doc = get(Api + "/code-repo")
+            parseObj(doc) match {
+                case Some(o) if !o.has("error") => rest("POST", Api + "/code-repo/test", Some(o.toString))
+                case Some(_) => doc
+                case None => error("could not read the code repository settings")
+            }
+        case "list_users" => get(Api + "/auth/users")
+        case "list_api_keys" => get(Api + "/keys")
+        case "list_key_templates" => get(Api + "/keys/templates")
+        case "get_capability_catalog" => get(Api + "/keys/capabilities/catalog")
+        case "get_agent_policy" => get(Api + "/policy")
+        case "get_audit_facets" => get(Api + "/audit-log/facets")
+        case "query_audit_log" =>
+            val filters = AuditFilters.flatMap(k => stringArg(input, k).map(_.trim).filter(_.nonEmpty).map(v => k + "=" + query(v)))
+            val limit = intArg(input, "limit").map(l => math.max(1, math.min(l, AuditLimitCap))).getOrElse(AuditLimitDefault)
+            get(Api + "/audit-log?" + (filters :+ ("limit=" + limit)).mkString("&"))
+        case "run_doctor" =>
+            val probes = boolArg(input, "include_ai_probes").contains(true)
+            get(Api + "/doctor?mode=full" + (if (probes) "&probes=ai" else ""))
+        case _ => error("unknown tool")
+    }
+
+    /** The four slots (provider, model, endpoint and the web-search settings;
+      * never an apiKey) and which provider credentials are stored. */
+    private def aiProviders(): String = {
+        val slots = new JsonObject()
+        ConfigAgentTools.Slots.foreach { s =>
+            secretFields(get(Api + "/secrets/" + s)) match {
+                case Some(f) =>
+                    val v = new JsonObject()
+                    SlotViewKeys.foreach(k => if (f.has(k) && f.get(k).isJsonPrimitive) v.add(k, f.get(k)))
+                    slots.add(s, v)
+                case None => slots.add(s, JsonNull.INSTANCE)
+            }
+        }
+        val keys = secretFields(get(Api + "/secrets/ai-keys")).getOrElse(new JsonObject())
+        val credentials = new JsonObject()
+        CredentialFlagFields.foreach { case (provider, field) =>
+            credentials.addProperty(provider, keys.has(field) && keys.get(field).isJsonPrimitive && keys.get(field).getAsString.nonEmpty)
+        }
+        val o = new JsonObject()
+        o.add("slots", slots)
+        o.add("credentials", credentials)
+        o.toString
+    }
+
+    /** A secret's field map from `GET /secrets/{name}` (`{"name","fields"}`,
+      * or a flat field map); None when the secret is absent or unreadable. */
+    private def secretFields(raw: String): Option[JsonObject] =
+        parseObj(raw).filterNot(_.has("error")).map { o =>
+            if (o.has("fields") && o.get("fields").isJsonObject) o.getAsJsonObject("fields") else o
+        }
+
+    // --------------------------------------------------------------- mutations ---
+
+    /** Mutating tool bodies, reached only after a confirmed token. */
+    private def mutatingBody(name: String, input: JsonObject): String = name match {
+        case "set_ai_provider_slot" =>
+            val slot = stringArg(input, "slot").map(_.trim).getOrElse("")
+            if (!ConfigAgentTools.Slots.contains(slot)) return error("slot must be one of " + ConfigAgentTools.Slots.mkString(", "))
+            val provider = stringArg(input, "provider").map(_.trim.toLowerCase).getOrElse("")
+            if (!ConfigAgentTools.Providers.contains(provider))
+                return error("provider must be one of " + ConfigAgentTools.Providers.mkString(", "))
+            AiProviderSlotBody.build(
+                slot,
+                provider,
+                stringArg(input, "model"),
+                stringArg(input, "endpoint"),
+                boolArg(input, "enabled"),
+                intArg(input, "max_uses")
+            ) match {
+                case Left(msg) => error(msg)
+                case Right(body) => rest("PUT", Api + "/secrets/" + seg(slot), Some(body.toString))
+            }
+        case "put_secret" =>
+            withArg(input, "name") { n =>
+                objArg(input, "fields") match {
+                    case None => error("fields is required")
+                    case Some(fields) =>
+                        val body = fields.deepCopy()
+                        stringArg(input, "type").map(_.trim).filter(_.nonEmpty).foreach(t => body.addProperty("_type", t))
+                        rest("PUT", Api + "/secrets/" + seg(n), Some(body.toString))
+                }
+            }
+        case "delete_secret" | "delete_repo_token" => withArg(input, "name")(n => rest("DELETE", Api + "/secrets/" + seg(n), None))
+        case "set_data_sources_fragment" =>
+            val body = new JsonObject()
+            body.addProperty("key", DataSourcesKey)
+            body.add("aliases", new JsonArray())
+            body.addProperty("content", stringArg(input, "content").getOrElse(""))
+            body.addProperty("enabled", boolArg(input, "enabled").getOrElse(false))
+            rest("POST", Api + "/tap-prompts", Some(body.toString))
+        case "set_code_repo" =>
+            objArg(input, "config") match {
+                case Some(c) => rest("PUT", Api + "/code-repo", Some(c.toString))
+                case None => error("config is required")
+            }
+        case "create_user" =>
+            withArg(input, "username") { u =>
+                val body = new JsonObject()
+                body.addProperty("username", u)
+                body.addProperty("role", stringArg(input, "role").getOrElse(""))
+                rest("POST", Api + "/auth/users", Some(body.toString))
+            }
+        case "set_user_role" =>
+            withArg(input, "username") { u =>
+                val body = new JsonObject()
+                body.addProperty("role", stringArg(input, "role").getOrElse(""))
+                rest("PATCH", Api + "/auth/users/" + seg(u), Some(body.toString))
+            }
+        case "reset_user_password" =>
+            withArg(input, "username") { u =>
+                val body = new JsonObject()
+                body.addProperty("resetPassword", true)
+                rest("PATCH", Api + "/auth/users/" + seg(u), Some(body.toString))
+            }
+        case "delete_user" => withArg(input, "username")(u => rest("DELETE", Api + "/auth/users/" + seg(u), None))
+        case "issue_api_key" => withArg(input, "label")(issueApiKey(_, input))
+        case "rotate_api_key" => withArg(input, "label")(l => rest("POST", Api + "/keys/" + seg(l) + "/rotate", None))
+        case "revoke_api_key" => withArg(input, "label")(l => rest("DELETE", Api + "/keys/" + seg(l), None))
+        case "set_agent_policy" => withPolicy(doc => mergePolicy(doc, input))
+        case "use_recommended_policy" =>
+            withPolicy { doc =>
+                if (doc.has("recommended") && doc.get("recommended").isJsonObject) Right(doc.getAsJsonObject("recommended"))
+                else Left("the policy document has no recommended policy")
+            }
+        case _ => error("unknown tool")
+    }
+
+    private def issueApiKey(label: String, input: JsonObject): String = {
+        val template = stringArg(input, "template").map(_.trim).filter(_.nonEmpty)
+        val capabilities: Either[String, JsonArray] = template match {
+            case Some(t) =>
+                val raw = get(Api + "/keys/templates")
+                parseObj(raw) match {
+                    case Some(o) if o.has("error") => return raw
+                    case Some(o) if o.has("templates") && o.get("templates").isJsonArray =>
+                        o.getAsJsonArray("templates").asScala.collectFirst {
+                            case el if el.isJsonObject && stringArg(el.getAsJsonObject, "name").contains(t) =>
+                                val tpl = el.getAsJsonObject
+                                if (tpl.has("capabilities") && tpl.get("capabilities").isJsonArray) tpl.getAsJsonArray("capabilities")
+                                else new JsonArray()
+                        } match {
+                            case Some(caps) => Right(caps)
+                            case None => Left("unknown key template: " + t)
+                        }
+                    case _ => Left("could not read the key templates")
+                }
+            case None =>
+                if (input.has("capabilities") && input.get("capabilities").isJsonArray) Right(input.getAsJsonArray("capabilities"))
+                else Left("give a template or a capabilities list")
+        }
+        capabilities match {
+            case Left(msg) => error(msg)
+            case Right(caps) =>
+                val body = new JsonObject()
+                body.addProperty("label", label)
+                body.add("capabilities", caps.deepCopy())
+                rest("POST", Api + "/keys", Some(body.toString))
+        }
+    }
+
+    /** GET the policy document, build the PUT body from it, PUT it. A read
+      * error (or the server's disabled answer) is returned as is. */
+    private def withPolicy(build: JsonObject => Either[String, JsonObject]): String = {
+        val raw = get(Api + "/policy")
+        parseObj(raw) match {
+            case Some(o) if o.has("error") => raw
+            case Some(o) =>
+                build(o) match {
+                    case Left(msg) => error(msg)
+                    case Right(body) => rest("PUT", Api + "/policy", Some(body.toString))
+                }
+            case None => error("could not read the agent policy")
+        }
+    }
+
+    /** `actions` and `limits` merge key by key; each `overrides` entry replaces
+      * that resource's map (JSON null removes it). Every other key of the
+      * current policy (recovery, recovery overrides) is kept. */
+    private def mergePolicy(doc: JsonObject, input: JsonObject): Either[String, JsonObject] = {
+        if (!doc.has("policy") || !doc.get("policy").isJsonObject) return Left("the policy document has no current policy")
+        val policy = doc.getAsJsonObject("policy").deepCopy()
+        def section(k: String): JsonObject = {
+            if (!policy.has(k) || !policy.get(k).isJsonObject) policy.add(k, new JsonObject())
+            policy.getAsJsonObject(k)
+        }
+        Seq("actions", "limits").foreach { k =>
+            objArg(input, k).foreach { changes =>
+                val target = section(k)
+                changes.entrySet().asScala.foreach(e => target.add(e.getKey, e.getValue.deepCopy()))
+            }
+        }
+        objArg(input, "overrides").foreach { changes =>
+            val target = section("overrides")
+            changes.entrySet().asScala.foreach { e =>
+                if (e.getValue == null || e.getValue.isJsonNull) target.remove(e.getKey)
+                else target.add(e.getKey, e.getValue.deepCopy())
+            }
+        }
+        Right(policy)
+    }
+
+    // ---------------------------------------------------------------- redaction ---
 
     /** Replace show-once values (`key`, `value`, `temporaryPassword`,
       * `token`) anywhere in a JSON result with "[redacted]". The
@@ -317,7 +608,9 @@ class ConfigToolExecutor(
             }
         } else if (el.isJsonArray) el.getAsJsonArray.asScala.foreach(redact)
 
-    /** One sentence naming the tool and its non-secret arguments. Object
+    // ---------------------------------------------------------------- summaries ---
+
+    /** A per-tool phrase, then the tool's non-secret arguments. Object
       * arguments show their field names only; sensitive keys are omitted. */
     private def summarize(name: String, input: JsonObject): String = {
         val parts = input.entrySet().asScala.toList.flatMap { e =>
@@ -332,8 +625,40 @@ class ConfigToolExecutor(
                 else Some(k + " (" + items.size + " items)")
             } else None
         }
-        if (parts.isEmpty) "Run " + name + "."
-        else "Run " + name + " with " + parts.mkString(", ") + "."
+        val args = if (parts.isEmpty) "" else " with " + parts.mkString(", ")
+        describe(name, input) match {
+            case Some(phrase) => phrase + (if (parts.isEmpty) "" else " (" + name + args + ")") + "."
+            case None => "Run " + name + args + "."
+        }
+    }
+
+    /** A short phrase naming what a mutating tool will do; None falls back to
+      * `Run <tool> with …`. */
+    private def describe(name: String, input: JsonObject): Option[String] = {
+        def a(k: String): String = stringArg(input, k).map(s => clip(s.trim)).getOrElse("")
+        name match {
+            case "set_ai_provider_slot" =>
+                val model = a("model")
+                Some("Point " + a("slot") + " at " + a("provider") + (if (model.nonEmpty) " / " + model else ""))
+            case "put_secret" => Some("Save secret " + a("name"))
+            case "delete_secret" => Some("Delete secret " + a("name"))
+            case "delete_repo_token" => Some("Delete repository token " + a("name"))
+            case "set_data_sources_fragment" =>
+                Some("Replace the data-sources prompt fragment (" + (if (boolArg(input, "enabled").contains(true)) "enabled" else "disabled") + ")")
+            case "set_code_repo" => Some("Update the code repository settings")
+            case "create_user" => Some("Create user " + a("username") + " as " + a("role"))
+            case "set_user_role" => Some("Change user " + a("username") + " to " + a("role"))
+            case "reset_user_password" => Some("Reset the password of user " + a("username"))
+            case "delete_user" => Some("Delete user " + a("username"))
+            case "issue_api_key" =>
+                val t = a("template")
+                Some("Issue API key " + a("label") + (if (t.nonEmpty) " from template " + t else ""))
+            case "rotate_api_key" => Some("Rotate API key " + a("label"))
+            case "revoke_api_key" => Some("Revoke API key " + a("label"))
+            case "set_agent_policy" => Some("Change the agent policy")
+            case "use_recommended_policy" => Some("Replace the agent policy with the recommended policy")
+            case _ => None
+        }
     }
 
     private def clip(s: String): String = if (s.length <= 80) s else s.take(80) + "…"
@@ -343,9 +668,39 @@ object ConfigToolExecutor {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     val ViaConfigChat = "config-chat"
-    val NotImplemented = """{"error":"not implemented"}"""
     val Redacted = "[redacted]"
     val RedactedKeys: Set[String] = Set("key", "value", "temporaryPassword", "token")
+
+    private val Api = "/api/v1"
+    private val DataSourcesKey = "data-sources"
+    private val AuditFilters: Seq[String] = Seq("since", "until", "category", "action", "actor", "actorType", "outcome", "resource")
+    private val AuditLimitDefault = 50
+    private val AuditLimitCap = 200
+    private val ErrorClip = 300
+
+    /** Slot fields `get_ai_providers` passes through. Never `apiKey`. */
+    private val SlotViewKeys: Seq[String] = Seq("provider", "model", "endpoint", "enabled", "maxUses", "version")
+
+    /** Stored `ai-keys` field whose presence means the provider's credentials
+      * are set (AIProviders.providerKeyFromStore; bedrock: the access key id). */
+    private val CredentialFlagFields: Seq[(String, String)] = Seq(
+        "anthropic" -> "anthropicApiKey",
+        "openai" -> "openaiApiKey",
+        "azure" -> "azureApiKey",
+        "grok" -> "grokApiKey",
+        "bedrock" -> "awsAccessKeyId"
+    )
+
+    /** `set_provider_credentials` form fields in the shared `ai-keys` store;
+      * an empty list means the provider needs none. */
+    private val ProviderCredentialFields: Map[String, List[String]] = Map(
+        "anthropic" -> List("anthropicApiKey"),
+        "openai" -> List("openaiApiKey"),
+        "grok" -> List("grokApiKey"),
+        "azure" -> List("azureApiKey"),
+        "bedrock" -> List("awsAccessKeyId", "awsSecretAccessKey", "awsRegion"),
+        "ollama" -> Nil
+    )
 
     /** Argument names never echoed into a confirmation summary. */
     private val SensitiveArgKeys: Set[String] = Set("password", "secret", "key", "value", "token", "apikey", "temporarypassword")
@@ -353,15 +708,61 @@ object ConfigToolExecutor {
     private def stringArg(o: JsonObject, k: String): Option[String] =
         if (o.has(k) && o.get(k).isJsonPrimitive) Some(o.get(k).getAsString) else None
 
+    private def objArg(o: JsonObject, k: String): Option[JsonObject] =
+        if (o.has(k) && o.get(k).isJsonObject) Some(o.getAsJsonObject(k)) else None
+
+    private def boolArg(o: JsonObject, k: String): Option[Boolean] =
+        stringArg(o, k).map(_.trim.toLowerCase).collect { case "true" => true; case "false" => false }
+
+    private def intArg(o: JsonObject, k: String): Option[Int] =
+        stringArg(o, k).flatMap(s => scala.util.Try(BigDecimal(s.trim).toInt).toOption)
+
+    /** Run `f` with a required non-empty string argument, else an error. */
+    private def withArg(o: JsonObject, k: String)(f: String => String): String =
+        stringArg(o, k).map(_.trim).filter(_.nonEmpty) match {
+            case Some(v) => f(v)
+            case None => error(k + " is required")
+        }
+
+    private def parseObj(raw: String): Option[JsonObject] =
+        try {
+            val el = JsonParser.parseString(raw)
+            if (el != null && el.isJsonObject) Some(el.getAsJsonObject) else None
+        } catch { case _: Exception => None }
+
+    /** The server's 404 for a missing secret or fragment (`… not found: …`). */
+    private def isNotFound(raw: String): Boolean =
+        parseObj(raw).exists(o => stringArg(o, "error").exists(_.toLowerCase.contains("not found")))
+
+    /** One URL path segment. */
+    private def seg(s: String): String = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+
+    /** One URL query value. */
+    private def query(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")
+
     private def error(msg: String): String = {
         val o = new JsonObject()
         o.addProperty("error", msg)
         o.toString
     }
 
+    /** The rest seam's text for one loopback answer: a 2xx body as is; a
+      * non-2xx JSON object as is (the server's own `{"error":…}`); anything
+      * else `{"error":"HTTP <status>: <body clipped to 300 chars>"}`. */
+    private[util] def loopbackText(status: Int, body: String): String = {
+        val b = Option(body).getOrElse("")
+        if (status >= 200 && status < 300) b
+        else if (parseObj(b).isDefined) b
+        else {
+            val t = b.trim
+            error("HTTP " + status + ": " + (if (t.length <= ErrorClip) t else t.take(ErrorClip) + "…"))
+        }
+    }
+
     /** One direct platform call through the normal interceptor chain, on
-      * behalf of the admin whose chat this is (copied from IncidentRunner). */
-    private def loopback(method: String, path: String, body: Option[String], apiKey: String, onBehalfOf: String): String = {
+      * behalf of the admin whose chat this is (copied from IncidentRunner).
+      * Returns the HTTP status and the response body. */
+    private def loopback(method: String, path: String, body: Option[String], apiKey: String, onBehalfOf: String): (Int, String) = {
         val url = "http://127.0.0.1:" + ai.datris.policy.PolicyReplay.port + path
         def withBody(r: org.apache.http.client.methods.HttpEntityEnclosingRequestBase): org.apache.http.client.methods.HttpRequestBase = {
             body.foreach { b =>
@@ -384,7 +785,8 @@ object ConfigToolExecutor {
         val client = org.apache.http.impl.client.HttpClients.custom().setDefaultRequestConfig(config).build()
         try {
             val resp = client.execute(req)
-            Option(resp.getEntity).map(e => org.apache.http.util.EntityUtils.toString(e, java.nio.charset.StandardCharsets.UTF_8)).getOrElse("")
+            val text = Option(resp.getEntity).map(e => org.apache.http.util.EntityUtils.toString(e, java.nio.charset.StandardCharsets.UTF_8)).getOrElse("")
+            (resp.getStatusLine.getStatusCode, text)
         } catch {
             case e: Exception =>
                 logger.warn("Configuration chat loopback call failed: " + method + " " + path + ": " + e.getMessage)

@@ -458,7 +458,9 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
             """{"slot":"codegen","provider":"anthropic","model":"claude-opus-5-5"}""",
             "PUT",
             "/api/v1/secrets/codegen",
-            Some(s"""{"provider":"anthropic","model":"claude-opus-5-5","endpoint":"https://api.anthropic.com/v1/messages","apiKey":"$Mask","version":"2023-06-01"}""")
+            Some(
+                s"""{"provider":"anthropic","model":"claude-opus-5-5","endpoint":"https://api.anthropic.com/v1/messages","apiKey":"$Mask","version":"2023-06-01"}"""
+            )
         )
     }
 
@@ -468,7 +470,9 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
             """{"slot":"web-search","provider":"openai"}""",
             "PUT",
             "/api/v1/secrets/web-search",
-            Some(s"""{"provider":"openai","model":"gpt-5.5","endpoint":"https://api.openai.com/v1/responses","apiKey":"$Mask","enabled":"true","maxUses":"3"}""")
+            Some(
+                s"""{"provider":"openai","model":"gpt-5.5","endpoint":"https://api.openai.com/v1/responses","apiKey":"$Mask","enabled":"true","maxUses":"3"}"""
+            )
         )
         val b = bodyJson(rec.calls.head).getAsJsonObject
         assert(b.get("enabled").getAsJsonPrimitive.isString && b.get("maxUses").getAsJsonPrimitive.isString)
@@ -641,7 +645,8 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
 
     test("a token issued under alice:s1 is refused under bob:s1 and makes no call") {
         val reg = new ConfirmationRegistry()
-        val token = str(parse(executor(username = "alice", scope = "alice:s1", registry = reg).execute("delete_user", obj("""{"username":"carol"}"""))), "token").get
+        val token =
+            str(parse(executor(username = "alice", scope = "alice:s1", registry = reg).execute("delete_user", obj("""{"username":"carol"}"""))), "token").get
         val confirmed = obj("""{"username":"carol"}""")
         confirmed.addProperty("confirmation_token", token)
         val rec = new Recorder()
@@ -758,7 +763,8 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
     }
 
     test("get_ai_providers: slots and credential flags, never an apiKey") {
-        val slot = s"""{"provider":"anthropic","model":"claude-fable-5-1","endpoint":"https://api.anthropic.com/v1/messages","apiKey":"$Mask","version":"2023-06-01"}"""
+        val slot =
+            s"""{"provider":"anthropic","model":"claude-fable-5-1","endpoint":"https://api.anthropic.com/v1/messages","apiKey":"$Mask","version":"2023-06-01"}"""
         val keys = s"""{"anthropicApiKey":"$Mask","openaiApiKey":"","awsAccessKeyId":"$Mask"}"""
         val answers: Map[(String, String), String] =
             ConfigAgentTools.Slots.map(s => ("GET", "/api/v1/secrets/" + s) -> slot).toMap + (("GET", "/api/v1/secrets/ai-keys") -> keys)

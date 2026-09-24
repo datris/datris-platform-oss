@@ -31,8 +31,14 @@ class AiProviderSlotBodySpec extends AnyFunSuite {
 
     private def obj(json: String): JsonObject = JsonParser.parseString(json).getAsJsonObject
 
-    private def body(slot: String, provider: String, model: Option[String] = None, endpoint: Option[String] = None,
-                     enabled: Option[Boolean] = None, maxUses: Option[Int] = None): JsonObject =
+    private def body(
+        slot: String,
+        provider: String,
+        model: Option[String] = None,
+        endpoint: Option[String] = None,
+        enabled: Option[Boolean] = None,
+        maxUses: Option[Int] = None
+    ): JsonObject =
         AiProviderSlotBody.build(slot, provider, model, endpoint, enabled, maxUses) match {
             case Right(b) => b
             case Left(e) => fail(s"$slot/$provider unexpectedly failed: $e")
@@ -86,7 +92,9 @@ class AiProviderSlotBodySpec extends AnyFunSuite {
 
     test("codegen/anthropic: provider, model, endpoint, masked apiKey and version, nothing else") {
         assert(body("codegen", "anthropic", model = Some("claude-opus-5-5")) ==
-            obj(s"""{"provider":"anthropic","model":"claude-opus-5-5","endpoint":"https://api.anthropic.com/v1/messages","apiKey":"$Mask","version":"2023-06-01"}"""))
+            obj(
+                s"""{"provider":"anthropic","model":"claude-opus-5-5","endpoint":"https://api.anthropic.com/v1/messages","apiKey":"$Mask","version":"2023-06-01"}"""
+            ))
     }
 
     test("version is set only for anthropic") {
@@ -104,7 +112,9 @@ class AiProviderSlotBodySpec extends AnyFunSuite {
 
     test("web-search defaults: enabled \"true\", maxUses \"3\", the provider's default model") {
         val b = body("web-search", "openai")
-        assert(b == obj(s"""{"provider":"openai","model":"gpt-5.5","endpoint":"https://api.openai.com/v1/responses","apiKey":"$Mask","enabled":"true","maxUses":"3"}"""))
+        assert(b == obj(
+            s"""{"provider":"openai","model":"gpt-5.5","endpoint":"https://api.openai.com/v1/responses","apiKey":"$Mask","enabled":"true","maxUses":"3"}"""
+        ))
         assert(b.get("enabled").getAsJsonPrimitive.isString)
         assert(b.get("maxUses").getAsJsonPrimitive.isString)
         assert(body("web-search", "anthropic").get("model").getAsString == "claude-sonnet-4-6")

@@ -67,6 +67,11 @@ object AgentLoop {
       * Handled by AgentLoop directly — NOT dispatched to the MCP server. */
     val SyntheticSecretTool: String = "request_tap_secret_from_user"
 
+    /** What the model sees after a secret form is shown; the loop then ends so
+      * the user can act. */
+    private val SecretRequestWaitingText: String =
+        "Credentials request displayed to the user. The user's next message will tell you whether they provided a new secret, picked an existing one, or declined. Wait for their reply before continuing."
+
     /** Tools whose `content` (base64 file bytes) we resolve from a staged
       * attachment when the model passes an `attachmentId` instead. The model
       * can't emit a real file's bytes, so it references the staged handle and
@@ -212,11 +217,7 @@ object AgentLoop {
                                 } else Nil
                             sink(LoopEvent.SecretRequest(t.id, secretName, fieldNames, reason))
                             stopAfterBatch = true
-                            AIContentBlock.ToolResultBlock(
-                                t.id,
-                                "Credentials request displayed to the user. The user's next message will tell you whether they provided a new secret, picked an existing one, or declined. Wait for their reply before continuing.",
-                                isError = false
-                            )
+                            AIContentBlock.ToolResultBlock(t.id, SecretRequestWaitingText, isError = false)
                         } else {
                             try {
                                 // Substitute staged file bytes for an attachmentId before
@@ -227,10 +228,21 @@ object AgentLoop {
                                 val toolInput = resolveAttachment(t.name, t.input, attachments)
                                 val raw = dispatch(t.name, toolInput)
                                 // Only a caller-supplied executor issues confirmation
-                                // tokens; MCP results pass through unexamined.
-                                if (execute != null) confirmRequestOf(t.id, t.name, raw).foreach(sink)
-                                sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
-                                AIContentBlock.ToolResultBlock(t.id, truncate(raw), isError = false)
+                                // tokens or secret forms; MCP results pass through
+                                // unexamined.
+                                val secretRequest = if (execute != null) secretRequestOf(t.id, t.name, raw) else None
+                                secretRequest match {
+                                    case Some(req) =>
+                                        // Same as the synthetic secret tool: show the
+                                        // form and end the loop after this batch.
+                                        sink(req)
+                                        stopAfterBatch = true
+                                        AIContentBlock.ToolResultBlock(t.id, SecretRequestWaitingText, isError = false)
+                                    case None =>
+                                        if (execute != null) confirmRequestOf(t.id, t.name, raw).foreach(sink)
+                                        sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
+                                        AIContentBlock.ToolResultBlock(t.id, truncate(raw), isError = false)
+                                }
                             } catch {
                                 case e: Exception =>
                                     val msg = "Tool '" + t.name + "' failed: " + e.getMessage
@@ -264,6 +276,39 @@ object AgentLoop {
             case e: Exception =>
                 logger.warn("AgentLoop unexpected error: " + e.getClass.getSimpleName + ": " + e.getMessage)
                 sink(LoopEvent.Error(e.getClass.getSimpleName + ": " + e.getMessage))
+        }
+    }
+
+    /** A `{"status":"secret_request","secretName":…,"fieldNames":[…],"reason":…}`
+      * tool result becomes a SecretRequest event. Non-JSON and other results:
+      * None. */
+    private[util] def secretRequestOf(id: String, tool: String, raw: String): Option[LoopEvent.SecretRequest] = {
+        if (raw == null || !raw.trim.startsWith("{") || !raw.contains("secret_request")) return None
+        try {
+            val el = JsonParser.parseString(raw)
+            if (!el.isJsonObject) None
+            else {
+                val o = el.getAsJsonObject
+                def s(k: String): Option[String] =
+                    if (o.has(k) && o.get(k).isJsonPrimitive) Some(o.get(k).getAsString) else None
+                if (!s("status").contains("secret_request")) None
+                else
+                    s("secretName").map { name =>
+                        val fields: List[String] =
+                            if (o.has("fieldNames") && o.get("fieldNames").isJsonArray) {
+                                val buf = scala.collection.mutable.ListBuffer.empty[String]
+                                val it = o.getAsJsonArray("fieldNames").iterator()
+                                while (it.hasNext) {
+                                    val f = it.next()
+                                    if (f.isJsonPrimitive) buf += f.getAsString
+                                }
+                                buf.toList
+                            } else Nil
+                        LoopEvent.SecretRequest(id, name, fields, s("reason").getOrElse(""))
+                    }
+            }
+        } catch {
+            case _: Exception => None
         }
     }
 

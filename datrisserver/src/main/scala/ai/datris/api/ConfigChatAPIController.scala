@@ -32,8 +32,8 @@ import scala.collection.JavaConverters._
   *  - Tools run through `ConfigToolExecutor`: a mutating tool is performed
   *    only with a one-shot confirmation token the user approved. Tokens live
   *    in the process-wide `ConfirmationRegistry.shared`, scoped by the
-  *    request's `sessionId` (or the username), so a token issued in one POST
-  *    is consumed in the next.
+  *    username and the request's `sessionId` (`scopeFor`), so a token issued
+  *    in one POST is consumed in the next, and only by the same admin.
   *  - The model sees redacted mutating-tool results; the `tool_result` SSE
   *    event carries the full text for the UI.
   */
@@ -147,8 +147,8 @@ class ConfigChatAPIController {
             else UserContext.get().map(_.username).filter(u => u != null && u.nonEmpty).getOrElse("admin")
 
         // A token issued in one POST is consumed in the next, so the scope is
-        // the chat session (or the user), never the emitter.
-        val scope: String = strOpt(req, "sessionId").map(_.trim).filter(_.nonEmpty).getOrElse("user:" + username)
+        // the admin plus the chat session, never the emitter.
+        val scope: String = ConfigChatAPIController.scopeFor(username, strOpt(req, "sessionId").map(_.trim).filter(_.nonEmpty))
 
         val toolDefs = ConfigToolFilter(
             ConfigAgentTools.readTools ++ ConfigAgentTools.mutatingTools,
@@ -202,4 +202,12 @@ class ConfigChatAPIController {
 
     private def strOpt(o: JsonObject, key: String): Option[String] =
         if (o.has(key) && o.get(key).isJsonPrimitive) Some(o.get(key).getAsString) else None
+}
+
+object ConfigChatAPIController {
+
+    /** Confirmation-token scope: the admin who proposed the change plus the
+      * chat session, so another admin in the same session cannot confirm it. */
+    private[datris] def scopeFor(username: String, sessionId: Option[String]): String =
+        username + ":" + sessionId.getOrElse("user")
 }
