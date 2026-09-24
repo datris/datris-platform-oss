@@ -6,14 +6,14 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.{JsonObject, JsonParser}
+import jakarta.servlet.http.HttpServletResponse
 import ai.datris.config.RequiresRole
 import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserContext}
 import ai.datris.policy.PolicyIO
 import ai.datris.util.{AgentLoop, APIKeyValidator, ConfigAgentPrompt, ConfigAgentTools, ConfigToolExecutor, ConfigToolFilter, ConfirmationRegistry, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
-import org.springframework.http.{HttpStatus, MediaType}
+import org.springframework.http.MediaType
 import org.springframework.web.bind.annotation._
-import org.springframework.web.server.ResponseStatusException
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 
 import java.util.concurrent.{ConcurrentHashMap, Executors, TimeUnit}
@@ -68,14 +68,31 @@ class ConfigChatAPIController {
     }
 
     @PostMapping(path = Array("/config-chat/chat"), produces = Array(MediaType.TEXT_EVENT_STREAM_VALUE))
-    def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): SseEmitter = {
+    def chat(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @RequestBody body: String,
+        response: HttpServletResponse
+    ): SseEmitter = {
         // With user auth on, the chat needs a signed-in user: confirmation
         // tokens are scoped to that user and the audit log names them. An
         // API-key caller has no session user, so it is refused here, before
-        // the stream opens.
-        val actor: String = ConfigChatAPIController
-            .actorFor(DatrisEnvironment.values.useUserAuth, UserContext.get().map(_.username).filter(u => u != null && u.nonEmpty))
-            .getOrElse(throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Configuration chat requires a signed-in admin session"))
+        // the stream opens. The 403 is written directly (like
+        // RoleEnforcementInterceptor.reject): an exception would go through
+        // /error, whose JSON body cannot satisfy `Accept: text/event-stream`
+        // and would turn into a 406. A null emitter tells Spring the request
+        // is already handled.
+        val actor: String = ConfigChatAPIController.actorFor(
+            DatrisEnvironment.values.useUserAuth,
+            UserContext.get().map(_.username).filter(u => u != null && u.nonEmpty)
+        ) match {
+            case Some(a) => a
+            case None =>
+                response.setStatus(HttpServletResponse.SC_FORBIDDEN)
+                response.setContentType("application/json")
+                response.getWriter.write("""{"error":"Configuration chat requires a signed-in admin session"}""")
+                response.flushBuffer()
+                return null
+        }
 
         val emitter = new SseEmitter(TimeUnit.MINUTES.toMillis(30))
         val emitterId = System.identityHashCode(emitter).toLong
