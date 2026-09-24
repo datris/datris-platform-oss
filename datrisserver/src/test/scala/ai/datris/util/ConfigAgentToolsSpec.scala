@@ -32,22 +32,44 @@ import scala.collection.JavaConverters._
 class ConfigAgentToolsSpec extends AnyFunSuite {
 
     private val ExpectedRead: Set[String] = Set(
-        "get_ai_providers", "list_secrets", "get_secret_fields", "get_data_sources_fragment",
-        "get_code_repo", "test_code_repo_connection", "list_users", "list_api_keys",
-        "list_key_templates", "get_capability_catalog", "get_agent_policy", "query_audit_log",
-        "get_audit_facets", "run_doctor"
+        "get_ai_providers",
+        "list_secrets",
+        "get_secret_fields",
+        "get_data_sources_fragment",
+        "get_code_repo",
+        "test_code_repo_connection",
+        "list_users",
+        "list_api_keys",
+        "list_key_templates",
+        "get_capability_catalog",
+        "get_agent_policy",
+        "query_audit_log",
+        "get_audit_facets",
+        "run_doctor"
     )
 
     private val ExpectedMutating: Set[String] = Set(
-        "set_ai_provider_slot", "set_provider_credentials", "put_secret", "delete_secret",
-        "set_data_sources_fragment", "set_code_repo", "create_repo_token", "delete_repo_token",
-        "create_user", "set_user_role", "reset_user_password", "delete_user",
-        "issue_api_key", "rotate_api_key", "revoke_api_key", "set_agent_policy", "use_recommended_policy"
+        "set_ai_provider_slot",
+        "set_provider_credentials",
+        "put_secret",
+        "delete_secret",
+        "set_data_sources_fragment",
+        "set_code_repo",
+        "create_repo_token",
+        "delete_repo_token",
+        "create_user",
+        "set_user_role",
+        "reset_user_password",
+        "delete_user",
+        "issue_api_key",
+        "rotate_api_key",
+        "revoke_api_key",
+        "set_agent_policy",
+        "use_recommended_policy"
     )
 
     private val UserTools = Set("list_users", "create_user", "set_user_role", "reset_user_password", "delete_user")
-    private val KeyTools = Set("list_api_keys", "issue_api_key", "rotate_api_key", "revoke_api_key",
-        "list_key_templates", "get_capability_catalog")
+    private val KeyTools = Set("list_api_keys", "issue_api_key", "rotate_api_key", "revoke_api_key", "list_key_templates", "get_capability_catalog")
     private val PolicyTools = Set("get_agent_policy", "set_agent_policy", "use_recommended_policy")
 
     private def obj(json: String): JsonObject = JsonParser.parseString(json).getAsJsonObject
@@ -60,8 +82,13 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
 
     /** Executor whose loopback REST hop fails the test if anything reaches it. */
     private def executor(username: String = "admin", registry: ConfirmationRegistry = new ConfirmationRegistry()): ConfigToolExecutor =
-        new ConfigToolExecutor("user:" + username, username, "ui-key", registry,
-            restCall = (_, _, _) => fail("restCall must not be reachable from any tool in this story"))
+        new ConfigToolExecutor(
+            "user:" + username,
+            username,
+            "ui-key",
+            registry,
+            restCall = (_, _, _) => fail("restCall must not be reachable from any tool in this story")
+        )
 
     /** A plausible argument set per tool; nothing here is `admin`. */
     private def sampleInput(tool: String): JsonObject = tool match {
@@ -151,8 +178,7 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
 
     // --------------------------------------------------------------- filter ---
 
-    private def filtered(useUserAuth: Boolean = true, useApiKeys: Boolean = true,
-                         hostedOrTrial: Boolean = false, policyEnabled: Boolean = true): Set[String] =
+    private def filtered(useUserAuth: Boolean = true, useApiKeys: Boolean = true, hostedOrTrial: Boolean = false, policyEnabled: Boolean = true): Set[String] =
         names(ConfigToolFilter(all, useUserAuth, useApiKeys, hostedOrTrial, policyEnabled))
 
     test("all flags on: nothing is filtered") {
@@ -284,5 +310,23 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
     test("execute's needs_confirmation result still carries the token for the model") {
         val r = parse(executor().execute("rotate_api_key", obj("""{"label":"ci"}""")))
         assert(str(r, "token").exists(t => t.nonEmpty && t != "[redacted]"))
+    }
+
+    // Step 6 choice: the executor exposes lastFullResult; the controller puts it
+    // on the tool_result SSE event while the model gets execute's return value.
+    test("lastFullResult holds the full text of the most recent call") {
+        val ex = executor()
+        val r = ex.execute("delete_user", obj("""{"username":"bob"}"""))
+        assert(ex.lastFullResult == r)
+        val u = ex.execute("drop_everything", new JsonObject())
+        assert(ex.lastFullResult == u)
+    }
+
+    test("AgentLoop turns a needs_confirmation result into a ConfirmRequest; other results are ignored") {
+        val env = """{"status":"needs_confirmation","summary":"Run delete_user with username=bob.","token":"abc"}"""
+        assert(AgentLoop.confirmRequestOf("toolu_1", "delete_user", env) ==
+            Some(AgentLoop.LoopEvent.ConfirmRequest("toolu_1", "delete_user", "Run delete_user with username=bob.", "abc")))
+        assert(AgentLoop.confirmRequestOf("toolu_1", "list_users", """{"error":"not implemented"}""").isEmpty)
+        assert(AgentLoop.confirmRequestOf("toolu_1", "list_users", "plain text needs_confirmation").isEmpty)
     }
 }

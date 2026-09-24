@@ -25,8 +25,7 @@ class ConfigChatSseSpec extends AnyFunSuite {
 
     test("ConfirmRequest is emitted as a confirm_request SSE event with all fields") {
         val em = new CapturingEmitter
-        val ok = AssistantSseSupport.emitLoopEvent(em,
-            AgentLoop.LoopEvent.ConfirmRequest("toolu_1", "delete_user", "Delete user bob", "tok-123"))
+        val ok = AssistantSseSupport.emitLoopEvent(em, AgentLoop.LoopEvent.ConfirmRequest("toolu_1", "delete_user", "Delete user bob", "tok-123"))
         assert(ok)
         val frame = em.frames.mkString
         assert(frame.contains("event:confirm_request"), s"no confirm_request event name: $frame")

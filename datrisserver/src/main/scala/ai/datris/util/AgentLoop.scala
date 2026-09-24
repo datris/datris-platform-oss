@@ -53,6 +53,12 @@ object AgentLoop {
           * the user when the model was downgraded mid-request (e.g., Opus → Sonnet
           * after sustained `overloaded_error` from Anthropic). */
         case class Notice(message: String) extends LoopEvent
+
+        /** A mutating Configuration-chat tool was called without a confirmation
+          * token. The executor answered `needs_confirmation` with a one-shot
+          * token bound to the exact input; the UI renders Confirm / Cancel on
+          * the matching tool card. Emitted before that call's ToolResult. */
+        case class ConfirmRequest(id: String, tool: String, summary: String, token: String) extends LoopEvent
         case object Done extends LoopEvent
         case class Error(message: String) extends LoopEvent
     }
@@ -104,8 +110,14 @@ object AgentLoop {
         maxTokensPerCall: Int,
         cancelled: () => Boolean,
         sink: LoopEvent => Unit,
-        attachments: Map[String, (String, Array[Byte])] = Map.empty
+        attachments: Map[String, (String, Array[Byte])] = Map.empty,
+        execute: (String, JsonObject) => String = null
     ): Unit = {
+        // Tool dispatch. Defaults to the MCP catalog; the Configuration chat
+        // passes its own executor (Datris-defined tools, confirmation tokens).
+        val dispatch: (String, JsonObject) => String =
+            if (execute != null) execute else (n: String, i: JsonObject) => MCPClient.callTool(n, i, apiKey)
+
         // Materialize the initial message list as content-block messages. We
         // grow it as iterations produce assistant turns + tool_result user turns.
         var messages: List[(String, List[AIContentBlock])] = userMessages.toList.map {
@@ -213,7 +225,10 @@ object AgentLoop {
                                 // the model's original input (with attachmentId), so the
                                 // bytes never reach the UI transcript either.
                                 val toolInput = resolveAttachment(t.name, t.input, attachments)
-                                val raw = MCPClient.callTool(t.name, toolInput, apiKey)
+                                val raw = dispatch(t.name, toolInput)
+                                // Only a caller-supplied executor issues confirmation
+                                // tokens; MCP results pass through unexamined.
+                                if (execute != null) confirmRequestOf(t.id, t.name, raw).foreach(sink)
                                 sink(LoopEvent.ToolResult(t.id, t.name, raw, isError = false))
                                 AIContentBlock.ToolResultBlock(t.id, truncate(raw), isError = false)
                             } catch {
@@ -249,6 +264,26 @@ object AgentLoop {
             case e: Exception =>
                 logger.warn("AgentLoop unexpected error: " + e.getClass.getSimpleName + ": " + e.getMessage)
                 sink(LoopEvent.Error(e.getClass.getSimpleName + ": " + e.getMessage))
+        }
+    }
+
+    /** A `{"status":"needs_confirmation","summary":…,"token":…}` tool result
+      * becomes a ConfirmRequest event. Non-JSON and other results: None. */
+    private[util] def confirmRequestOf(id: String, tool: String, raw: String): Option[LoopEvent.ConfirmRequest] = {
+        if (raw == null || !raw.trim.startsWith("{") || !raw.contains("needs_confirmation")) return None
+        try {
+            val el = JsonParser.parseString(raw)
+            if (!el.isJsonObject) None
+            else {
+                val o = el.getAsJsonObject
+                def s(k: String): Option[String] =
+                    if (o.has(k) && o.get(k).isJsonPrimitive) Some(o.get(k).getAsString) else None
+                if (s("status").contains("needs_confirmation"))
+                    s("token").map(tok => LoopEvent.ConfirmRequest(id, tool, s("summary").getOrElse(tool), tok))
+                else None
+            }
+        } catch {
+            case _: Exception => None
         }
     }
 

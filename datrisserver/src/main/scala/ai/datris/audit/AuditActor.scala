@@ -34,6 +34,12 @@ object AuditActor {
       * pending approvals; never interpreted. */
     val HeaderReason = "X-Datris-Reason"
 
+    /** Which in-platform surface made a call on behalf of a user (the
+      * Configuration chat sends `config-chat` on its loopback REST hop).
+      * Recorded as `via` in audit metadata only when the on-behalf-of header
+      * was trusted; otherwise ignored. */
+    val HeaderVia = "X-Datris-Via"
+
     /** Request attribute (the approval id) PolicyInterceptor sets on the
       * replay of an approved agent action. The replay carries the ui key on
       * behalf of the approver; with this attribute present the approver is
