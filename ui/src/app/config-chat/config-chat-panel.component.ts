@@ -214,10 +214,9 @@ export class ConfigChatPanelComponent implements OnInit, OnDestroy, AfterViewChe
     } else if (card.name === 'create_repo_token') {
       call = this.secretsService.putSecret(sr.secretName, { ...fields, _type: 'repo_token' });
     } else {
-      const type = card.input?.type;
-      const body = (type === 'tap' || type === undefined || type === null || type === '')
-        ? { ...fields, _type: 'tap' }
-        : fields;
+      // Tag as a tap secret only when the agent asked for one, matching the
+      // server's own put_secret path; untagged secrets stay out of MCP reach.
+      const body = card.input?.type === 'tap' ? { ...fields, _type: 'tap' } : fields;
       call = this.secretsService.putSecret(sr.secretName, body);
     }
 
@@ -277,10 +276,12 @@ export class ConfigChatPanelComponent implements OnInit, OnDestroy, AfterViewChe
   copy(card: ToolCard): void {
     const v = this.state.showOnce(card);
     if (!v) return;
+    // Clipboard API is absent on plain-http non-localhost origins.
+    if (!navigator.clipboard) return;
     navigator.clipboard.writeText(v.value).then(() => {
       this.copiedIds.add(card.id);
       setTimeout(() => this.copiedIds.delete(card.id), 1500);
-    });
+    }).catch(() => { /* permission denied: leave the button as is */ });
   }
 
   isCopied(card: ToolCard): boolean {
