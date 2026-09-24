@@ -161,7 +161,7 @@ Add `&withrollup=true` to a `publishertoken` or `pipelinetoken` query and the re
 
 `rollup.allDone` flips to `true` when every job has reached a terminal state. `rollup.status` is the aggregate outcome — `success`, `warning`, `error`, or `processing`. Per-job `status` values are `success`, `warning`, `error`, `processing`, or `timed_out` (no terminal event within 8 hours of the first event). When a job's `status` is `error`, `lastError` carries the failing process and its message.
 
-**Live Read result fields.** A job whose pipeline is a [Live Read](/destinations/scratch) pipeline (the `scratch` destination) carries its result on the rollup once the run finishes. These fields are absent on every other job:
+**Live Read result fields.** A job whose pipeline is a [Live Read](/destinations/live-read) pipeline (the `scratch` destination) carries its result on the rollup once the run finishes. These fields are absent on every other job:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -191,7 +191,7 @@ Without `withrollup=true`, all three queries return their original array shapes 
 GET /api/v1/pipeline/result?pipelinetoken={token}&offset={offset}&limit={limit}
 ```
 
-Page through the rows a [Live Read](/destinations/scratch) pipeline run produced. Paging reads the stored result — it never re-runs the source. Only Live Read pipelines have a result.
+Page through the rows a [Live Read](/destinations/live-read) pipeline run produced. Paging reads the stored result — it never re-runs the source. Only Live Read pipelines have a result.
 
 **Parameters:**
 | Parameter | Type | Required | Description |
