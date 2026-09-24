@@ -132,4 +132,25 @@ class AIHttpSpec extends AnyFunSuite {
         val obj = JsonParser.parseString(body).getAsJsonObject
         assert(!obj.get("stream").getAsBoolean)
     }
+
+    // ------------------------------------------------ connection pool limits ---
+
+    test("poolLimits: defaults are 64 per route and 128 total when unset") {
+        assert(AIHttp.poolLimits(Map.empty) == ((64, 128)))
+    }
+
+    test("poolLimits: reads AI_HTTP_MAX_PER_ROUTE and AI_HTTP_MAX_TOTAL") {
+        assert(AIHttp.poolLimits(Map("AI_HTTP_MAX_PER_ROUTE" -> "32", "AI_HTTP_MAX_TOTAL" -> " 256 ")) == ((32, 256)))
+    }
+
+    test("poolLimits: blank, non-numeric, zero or negative values fall back to the defaults") {
+        for (bad <- Seq("", "  ", "abc", "0", "-5", "12.5")) {
+            assert(AIHttp.poolLimits(Map("AI_HTTP_MAX_PER_ROUTE" -> bad, "AI_HTTP_MAX_TOTAL" -> bad)) == ((64, 128)), s"value '$bad'")
+        }
+    }
+
+    test("poolLimits: total is never below the per-route limit") {
+        assert(AIHttp.poolLimits(Map("AI_HTTP_MAX_PER_ROUTE" -> "200")) == ((200, 200)))
+        assert(AIHttp.poolLimits(Map("AI_HTTP_MAX_PER_ROUTE" -> "10", "AI_HTTP_MAX_TOTAL" -> "4")) == ((10, 10)))
+    }
 }
