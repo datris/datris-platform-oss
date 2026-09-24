@@ -63,7 +63,8 @@ object AiProviderSlotBody {
         val givenModel = model.map(_.trim).filter(_.nonEmpty)
         val resolvedModel: String = givenModel match {
             case Some(m) => m
-            case None if webSearch => AIProviders.defaultModelFor(p)
+            case None if webSearch && AIProviders.defaultModelFor(p).nonEmpty => AIProviders.defaultModelFor(p)
+            case None if webSearch => return Left("a model is required for the web-search slot with provider " + p)
             case None => return Left("a model is required for the " + slot + " slot")
         }
         val resolvedEndpoint = explicitEndpoint.getOrElse {

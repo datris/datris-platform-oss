@@ -153,4 +153,11 @@ class AiProviderSlotBodySpec extends AnyFunSuite {
         }
         assert(AiProviderSlotBody.build("web-search", "openai", None, None, None, None).isRight)
     }
+
+    test("web-search with a provider that has no default model and no model given is an error") {
+        Seq("grok", "ollama", "bedrock").foreach { p =>
+            assert(AiProviderSlotBody.build("web-search", p, None, None, None, None).isLeft, p)
+        }
+        assert(AiProviderSlotBody.build("web-search", "grok", Some("m"), None, None, None).isRight)
+    }
 }

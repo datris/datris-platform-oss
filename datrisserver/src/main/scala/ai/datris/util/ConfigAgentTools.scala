@@ -351,18 +351,7 @@ class ConfigToolExecutor(
         case "get_ai_providers" => aiProviders()
         case "list_secrets" =>
             get(Api + "/secrets" + stringArg(input, "type").map(_.trim).filter(_.nonEmpty).map(t => "?type=" + query(t)).getOrElse(""))
-        case "get_secret_fields" =>
-            stringArg(input, "name").map(_.trim).filter(_.nonEmpty) match {
-                case Some(n) => get(Api + "/secrets/" + seg(n))
-                case None =>
-                    // No name: answer with the names the model can pick from.
-                    val o = new JsonObject()
-                    o.addProperty("error", "name is required")
-                    val names = get(Api + "/secrets")
-                    try o.add("secrets", JsonParser.parseString(names))
-                    catch { case _: Exception => }
-                    o.toString
-            }
+        case "get_secret_fields" => withArg(input, "name")(n => get(Api + "/secrets/" + seg(n)))
         case "get_data_sources_fragment" =>
             val r = get(Api + "/tap-prompts/" + DataSourcesKey)
             if (isNotFound(r)) {
@@ -572,7 +561,22 @@ class ConfigToolExecutor(
             val target = section("overrides")
             changes.entrySet().asScala.foreach { e =>
                 if (e.getValue == null || e.getValue.isJsonNull) target.remove(e.getKey)
-                else target.add(e.getKey, e.getValue.deepCopy())
+                else {
+                    val replacement = e.getValue.deepCopy()
+                    // Keep the resource's recovery override unless the new map
+                    // names one: a PUT carrying any recovery override replaces
+                    // them all (PolicyAPIController), so dropping it here would
+                    // reset this resource's recovery mode.
+                    if (
+                        replacement.isJsonObject && !replacement.getAsJsonObject.has(RecoveryKey) && target.has(e.getKey) &&
+                        target.get(e.getKey).isJsonObject
+                    ) {
+                        val old = target.getAsJsonObject(e.getKey)
+                        if (old.has(RecoveryKey) && old.get(RecoveryKey).isJsonPrimitive)
+                            replacement.getAsJsonObject.add(RecoveryKey, old.get(RecoveryKey).deepCopy())
+                    }
+                    target.add(e.getKey, replacement)
+                }
             }
         }
         Right(policy)
@@ -673,6 +677,7 @@ object ConfigToolExecutor {
 
     private val Api = "/api/v1"
     private val DataSourcesKey = "data-sources"
+    private val RecoveryKey = "recovery"
     private val AuditFilters: Seq[String] = Seq("since", "until", "category", "action", "actor", "actorType", "outcome", "resource")
     private val AuditLimitDefault = 50
     private val AuditLimitCap = 200

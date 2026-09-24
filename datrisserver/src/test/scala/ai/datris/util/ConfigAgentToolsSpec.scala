@@ -143,6 +143,7 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
         case "set_provider_credentials" => obj("""{"provider":"anthropic"}""")
         case "set_data_sources_fragment" => obj("""{"content":"some text","enabled":true}""")
         case "set_code_repo" => obj("""{"config":{"branch":"main"}}""")
+        case "get_secret_fields" => obj("""{"name":"x"}""")
         case _ => new JsonObject()
     }
 
@@ -594,6 +595,27 @@ class ConfigAgentToolsSpec extends AnyFunSuite {
         assert(put == expected, s"PUT body: $put")
         assert(put.getAsJsonObject("recovery") == obj(PolicyInner).getAsJsonObject("recovery"))
     }
+
+    test("set_agent_policy: replacing a resource's overrides keeps its recovery override") {
+        val rec = new Recorder(answers = Map(("GET", "/api/v1/policy") -> PolicyDoc2))
+        confirm(executor(rec = rec), rec, "set_agent_policy", obj("""{"overrides":{"p1":{"tap.run":"deny"}}}"""))
+        assert(rec.calls.map(c => (c._1, c._2)).toList == List(("GET", "/api/v1/policy"), ("PUT", "/api/v1/policy")))
+        val overrides = bodyJson(rec.calls(1)).getAsJsonObject.getAsJsonObject("overrides")
+        assert(overrides.getAsJsonObject("p1") == obj("""{"tap.run":"deny","recovery":"off"}"""), s"$overrides")
+        assert(overrides.getAsJsonObject("p2") == obj("""{"tap.run":"deny","recovery":"propose"}"""), s"$overrides")
+    }
+
+    test("set_agent_policy: an override map naming recovery replaces it") {
+        val rec = new Recorder(answers = Map(("GET", "/api/v1/policy") -> PolicyDoc2))
+        confirm(executor(rec = rec), rec, "set_agent_policy", obj("""{"overrides":{"p1":{"tap.run":"deny","recovery":"propose"}}}"""))
+        val overrides = bodyJson(rec.calls(1)).getAsJsonObject.getAsJsonObject("overrides")
+        assert(overrides.getAsJsonObject("p1") == obj("""{"tap.run":"deny","recovery":"propose"}"""), s"$overrides")
+    }
+
+    private val PolicyDoc2: String =
+        """{"enabled":true,"policy":{"version":4,"actions":{},"limits":{},
+          | "overrides":{"p1":{"pipeline.delete":"allow","recovery":"off"},"p2":{"tap.run":"deny","recovery":"propose"}},
+          | "recovery":{"mode":"propose"}},"recommended":{},"actions":[]}""".stripMargin
 
     test("use_recommended_policy: GET then PUT of the recommended policy") {
         val rec = new Recorder(answers = Map(("GET", "/api/v1/policy") -> PolicyDoc))
