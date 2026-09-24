@@ -85,6 +85,72 @@
                   <ng-container *ngIf="seg.status !== 'running'">{{ toolStatusIcon(seg) }}</ng-container>
                 </span>
               </button>
+              <!-- Proposal: nothing changes until the admin confirms. -->
+              <div class="cfg-confirm-note" *ngIf="seg.confirm as c">
+                <div class="cfg-confirm-summary">{{ c.summary }}</div>
+                <div class="cfg-confirm-actions" *ngIf="!c.decided">
+                  <button class="cfg-confirm-btn cfg-confirm-cancel"
+                          [disabled]="state.streaming"
+                          (click)="cancel(seg)">Cancel</button>
+                  <button class="cfg-confirm-btn cfg-confirm-ok"
+                          [disabled]="state.streaming"
+                          (click)="confirm(seg)">Confirm</button>
+                </div>
+                <div class="cfg-confirm-outcome" *ngIf="c.decided"
+                     [class.cfg-confirm-outcome-cancelled]="c.decision === 'cancelled'">
+                  {{ c.decision === 'confirmed' ? 'Confirmed, waiting…' : 'Cancelled' }}
+                </div>
+              </div>
+
+              <!-- Credentials form: values go from the browser to the secrets
+                   endpoint; the chat only ever says "provided". -->
+              <ng-container *ngIf="seg.secretRequest as sr">
+                <div class="cfg-secret-form" *ngIf="!sr.submitted && !sr.cancelled">
+                  <div class="cfg-secret-form-reason" *ngIf="sr.reason">{{ sr.reason }}</div>
+                  <div class="cfg-secret-form-name">Secret <code>{{ sr.secretName }}</code></div>
+                  <div class="cfg-secret-form-fields">
+                    <label class="cfg-secret-field" *ngFor="let fname of sr.fieldNames; trackBy: trackByIndex">
+                      <span class="cfg-secret-field-label">{{ fname }}</span>
+                      <input [type]="isSecretField(fname) ? 'password' : 'text'"
+                             class="cfg-secret-field-input"
+                             [(ngModel)]="sr.fieldValues[fname]"
+                             [disabled]="sr.submitting"
+                             autocomplete="off"
+                             spellcheck="false">
+                    </label>
+                  </div>
+                  <div class="cfg-secret-form-error" *ngIf="sr.errorMessage">{{ sr.errorMessage }}</div>
+                  <div class="cfg-secret-form-actions">
+                    <button class="cfg-secret-btn cfg-secret-btn-cancel"
+                            (click)="cancelSecretForm(seg)"
+                            [disabled]="sr.submitting || state.streaming">Cancel</button>
+                    <button class="cfg-secret-btn cfg-secret-btn-save"
+                            (click)="submitSecretForm(seg)"
+                            [disabled]="sr.submitting || state.streaming">
+                      {{ sr.submitting ? 'Saving…' : 'Save' }}
+                    </button>
+                  </div>
+                </div>
+                <div class="cfg-secret-form-result" *ngIf="sr.submitted">✓ Provided. Conversation resumed.</div>
+                <div class="cfg-secret-form-result cfg-secret-form-result-cancelled" *ngIf="sr.cancelled">
+                  Credentials request cancelled.
+                </div>
+              </ng-container>
+
+              <!-- Once-only value (temporary password, new API key). -->
+              <div class="cfg-showonce" *ngIf="showOnce(seg) as so">
+                <div class="cfg-showonce-label">{{ so.label }}</div>
+                <div class="cfg-showonce-row">
+                  <code class="cfg-showonce-value">{{ so.value }}</code>
+                  <button class="cfg-showonce-copy" (click)="copy(seg)">{{ isCopied(seg) ? 'Copied' : 'Copy' }}</button>
+                </div>
+                <div class="cfg-showonce-note">Shown once; it is not stored in the transcript.</div>
+              </div>
+
+              <div class="cfg-showme" *ngIf="showMeTab(seg) as tab">
+                <button class="cfg-showme-link" (click)="showMe(tab)">Show me → {{ tabLabel(tab) }}</button>
+              </div>
+
               <div class="cfg-tool-body" *ngIf="seg.expanded">
                 <div class="cfg-tool-body-label">Input</div>
                 <pre class="cfg-tool-body-pre">{{ formatJson(seg.input) }}</pre>

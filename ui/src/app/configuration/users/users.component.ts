@@ -1,4 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
+import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { AuthService, UserListItem } from '../../auth.service';
 
 @Component({
@@ -7,7 +10,9 @@ import { AuthService, UserListItem } from '../../auth.service';
     styleUrl: './users.component.css',
     standalone: false
 })
-export class UsersComponent implements OnInit {
+export class UsersComponent implements OnInit, OnDestroy {
+  private chatSub?: Subscription;
+
   users: UserListItem[] = [];
   loading = false;
   error = '';
@@ -19,10 +24,18 @@ export class UsersComponent implements OnInit {
   newPassword = '';
   showNewPassword = false;
 
-  constructor(private auth: AuthService) {}
+  constructor(private auth: AuthService, private chatState: ConfigAssistantStateService) {}
 
   ngOnInit(): void {
+    // Reload when the configuration chat changes this sub-tab's setting.
+    this.chatSub = this.chatState.changed$
+      .pipe(filter(e => e.tab === 'users'))
+      .subscribe(() => this.refresh());
     this.refresh();
+  }
+
+  ngOnDestroy(): void {
+    this.chatSub?.unsubscribe();
   }
 
   refresh(): void {

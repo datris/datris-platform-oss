@@ -1,4 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
+import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { TapPromptService, TapPromptFragment } from './tap-prompt.service';
 
 /** Reserved prompt-fragment key holding the approved data-sources registry.
@@ -13,7 +16,9 @@ const LENGTH_WARN_CHARS = 4000;
     styleUrls: ['./data-sources.component.css'],
     standalone: false
 })
-export class DataSourcesComponent implements OnInit {
+export class DataSourcesComponent implements OnInit, OnDestroy {
+  private chatSub?: Subscription;
+
   content = '';
   enabled = true;
   loading = true;
@@ -24,9 +29,21 @@ export class DataSourcesComponent implements OnInit {
   private savedContent = '';
   private savedEnabled = true;
 
-  constructor(private prompts: TapPromptService) {}
+  constructor(private prompts: TapPromptService, private chatState: ConfigAssistantStateService) {}
 
   ngOnInit(): void {
+    // Reload when the configuration chat changes this sub-tab's setting.
+    this.chatSub = this.chatState.changed$
+      .pipe(filter(e => e.tab === 'data-sources'))
+      .subscribe(() => this.load());
+    this.load();
+  }
+
+  ngOnDestroy(): void {
+    this.chatSub?.unsubscribe();
+  }
+
+  load(): void {
     this.prompts.get(REGISTRY_KEY).subscribe({
       next: (f) => {
         this.content = f.content || '';

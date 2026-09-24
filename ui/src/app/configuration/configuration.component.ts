@@ -1,11 +1,16 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
 import { HttpClient } from '@angular/common/http';
 import { ActivatedRoute } from '@angular/router';
 import { ModelCatalogService, ModelOption } from '../model-catalog.service';
 import { AuthService } from '../auth.service';
 import { ConfigChatContextService } from '../config-chat/config-chat-context.service';
+import { ConfigAssistantStateService } from '../config-chat/config-assistant-state.service';
 
 type ConfigTab = 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources' | 'code-repo' | 'audit-log' | 'agent-policy' | 'doctor';
+
+const CONFIG_TABS: readonly string[] = ['ai-providers', 'users', 'secrets', 'keys', 'data-sources', 'code-repo', 'audit-log', 'agent-policy', 'doctor'];
 
 @Component({
     selector: 'app-configuration',
@@ -13,7 +18,7 @@ type ConfigTab = 'ai-providers' | 'users' | 'secrets' | 'keys' | 'data-sources' 
     styleUrls: ['./configuration.component.css'],
     standalone: false
 })
-export class ConfigurationComponent implements OnInit {
+export class ConfigurationComponent implements OnInit, OnDestroy {
   private _activeTab: ConfigTab = 'ai-providers';
 
   /** The showing sub-tab. Every change is published so the configuration
@@ -144,8 +149,11 @@ export class ConfigurationComponent implements OnInit {
     private modelCatalog: ModelCatalogService,
     private route: ActivatedRoute,
     private auth: AuthService,
-    private chatContext: ConfigChatContextService
+    private chatContext: ConfigChatContextService,
+    private chatState: ConfigAssistantStateService
   ) {}
+
+  private chatSubs: Subscription[] = [];
 
   /** Trials share the same trial droplet infra as a hosted dedicated instance:
    *  bundled Ollama for embeddings, no local-Ollama chat option, no Advanced endpoint editing. */
@@ -210,6 +218,16 @@ export class ConfigurationComponent implements OnInit {
       }
     });
 
+    // Configuration chat: "Show me" switches the sub-tab (through the setter,
+    // so the chat context follows), and a completed AI Providers change
+    // reloads the form in place.
+    this.chatSubs.push(this.chatState.showMe$.subscribe(t => {
+      if (CONFIG_TABS.includes(t)) this.activeTab = t as ConfigTab;
+    }));
+    this.chatSubs.push(this.chatState.changed$
+      .pipe(filter(e => e.tab === 'ai-providers'))
+      .subscribe(() => this.loadConfig()));
+
 
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => {
@@ -253,6 +271,11 @@ export class ConfigurationComponent implements OnInit {
       },
       error: () => { this.loading = false; }
     });
+  }
+
+  ngOnDestroy(): void {
+    for (const sub of this.chatSubs) sub.unsubscribe();
+    this.chatSubs = [];
   }
 
   /** Merge predefined model options with any "extra" model loaded from a secret

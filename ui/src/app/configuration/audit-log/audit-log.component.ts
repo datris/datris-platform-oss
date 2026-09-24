@@ -1,6 +1,7 @@
 import { Component, OnDestroy, OnInit } from '@angular/core';
-import { Subject } from 'rxjs';
+import { Subject, Subscription } from 'rxjs';
 import { debounceTime } from 'rxjs/operators';
+import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { AuditEntry, AuditFacets, AuditFilter, AuditLogService, AuditStatus } from './audit-log.service';
 
 /** Admin-only Audit Log sub-tab inside Configuration.
@@ -37,9 +38,15 @@ export class AuditLogComponent implements OnInit, OnDestroy {
   private resourceInput$ = new Subject<string>();
   private sub = this.resourceInput$.pipe(debounceTime(300)).subscribe(() => this.reload());
 
-  constructor(private svc: AuditLogService) {}
+  private chatSub?: Subscription;
+
+  constructor(private svc: AuditLogService, private chatState: ConfigAssistantStateService) {}
 
   ngOnInit(): void {
+    // Every configuration-chat change writes an audit entry, so reload on any tab.
+    this.chatSub = this.chatState.changed$.subscribe(() => {
+      if (this.enabled) this.reload();
+    });
     this.svc.status().subscribe({
       next: (s) => {
         this.status = s;
@@ -54,6 +61,7 @@ export class AuditLogComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.sub.unsubscribe();
+    this.chatSub?.unsubscribe();
   }
 
   get enabled(): boolean {

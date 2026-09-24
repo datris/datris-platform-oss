@@ -1,4 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
+import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { Router } from '@angular/router';
 import { AgentPolicy, AgentPolicyService, PolicyMode, PolicyResponse } from './agent-policy.service';
 
@@ -35,7 +38,9 @@ interface OverrideRow {
     styleUrl: './agent-policy.component.css',
     standalone: false
 })
-export class AgentPolicyComponent implements OnInit {
+export class AgentPolicyComponent implements OnInit, OnDestroy {
+  private chatSub?: Subscription;
+
   status: PolicyResponse | null = null;
   loading = false;
   saving = false;
@@ -57,10 +62,18 @@ export class AgentPolicyComponent implements OnInit {
   updatedBy?: string;
   pendingCount = 0;
 
-  constructor(private svc: AgentPolicyService, private router: Router) {}
+  constructor(private svc: AgentPolicyService, private router: Router, private chatState: ConfigAssistantStateService) {}
 
   ngOnInit(): void {
+    // Reload when the configuration chat changes this sub-tab's setting.
+    this.chatSub = this.chatState.changed$
+      .pipe(filter(e => e.tab === 'agent-policy'))
+      .subscribe(() => this.reload());
     this.reload();
+  }
+
+  ngOnDestroy(): void {
+    this.chatSub?.unsubscribe();
   }
 
   get enabled(): boolean {

@@ -4,13 +4,22 @@ import { ChatMessage, AssistantEvent } from '../assistant.service';
 import { ConfigAssistantService } from './config-assistant.service';
 import { ConfigChatContextService } from './config-chat-context.service';
 
-/** A mutating tool the server wants the user to approve. Rendering (Confirm /
- *  Cancel) is the cards story; this story only stores the payload. */
+/** A mutating tool the server wants the user to approve. The card shows the
+ *  summary with Confirm / Cancel; `decide()` settles it exactly once. */
 export interface ConfirmRequest {
   tool: string;
   summary: string;
   token: string;
   decided: boolean;
+  decision?: 'confirmed' | 'cancelled';
+}
+
+/** A value the server returns once (new user's temporary password, new API
+ *  key). Shown on the card with a Copy button; never stored in the model's
+ *  transcript (the server redacts its own copy). */
+export interface ShowOnceValue {
+  label: string;
+  value: string;
 }
 
 /** Inline secret form the server asked for instead of taking values in chat.
@@ -91,6 +100,26 @@ export const TOOL_TAB: Readonly<Record<string, string>> = {
   use_recommended_policy: 'agent-policy'
 };
 
+/** Display names for the Configuration sub-tabs, used by "Show me" links. */
+export const TAB_LABEL: Readonly<Record<string, string>> = {
+  'ai-providers': 'AI Providers',
+  'users': 'Users',
+  'secrets': 'Secrets',
+  'keys': 'API-Keys',
+  'data-sources': 'Data Sources',
+  'code-repo': 'Code Repository',
+  'audit-log': 'Audit Log',
+  'agent-policy': 'Agent Policy',
+  'doctor': 'Doctor'
+};
+
+/** Tools whose ok result carries a value shown once, and where to find it. */
+const SHOW_ONCE: Readonly<Record<string, ShowOnceValue>> = {
+  create_user: { label: 'Temporary password', value: 'temporaryPassword' },
+  issue_api_key: { label: 'API key', value: 'value' },
+  rotate_api_key: { label: 'API key', value: 'value' }
+};
+
 /** Result statuses that mean the tool did not change anything yet. */
 const NOT_DONE_STATUSES = new Set(['needs_confirmation', 'secret_request', 'pending_approval', 'policy_denied']);
 
@@ -120,6 +149,11 @@ export class ConfigAssistantStateService {
    *  can reload without a page refresh. */
   private changedSubject = new Subject<{ tab: string }>();
   changed$: Observable<{ tab: string }> = this.changedSubject.asObservable();
+
+  /** Emits a sub-tab id when a card's "Show me" link is clicked; the
+   *  Configuration page switches to it. */
+  private showMeSubject = new Subject<string>();
+  showMe$: Observable<string> = this.showMeSubject.asObservable();
 
   constructor(
     private api: ConfigAssistantService,
@@ -212,6 +246,49 @@ export class ConfigAssistantStateService {
     this.openRequestedSubject.next();
   }
 
+  /** Settle a confirmation card: Confirm sends the confirm token, Cancel the
+   *  cancel token, as the next user message in this session. Only once per
+   *  card; ignored while a reply is streaming (the buttons are disabled then). */
+  decide(card: ToolCard, ok: boolean): void {
+    const c = card.confirm;
+    if (!c || c.decided || this.streaming) return;
+    c.decided = true;
+    c.decision = ok ? 'confirmed' : 'cancelled';
+    // Keep whatever the user was typing; send() clears the draft.
+    const draft = this.draft;
+    this.send((ok ? '[confirm ' : '[cancel ') + c.token + ']');
+    this.draft = draft;
+  }
+
+  /** Tell the sub-tab that owns `tab` to reload (used after the browser
+   *  stores a secret itself, which produces no tool_result). */
+  notifyChanged(tab: string): void {
+    this.changedSubject.next({ tab });
+  }
+
+  /** Ask the Configuration page to switch to `tab`. */
+  requestShow(tab: string): void {
+    this.showMeSubject.next(tab);
+  }
+
+  /** The once-only value on an ok create_user / issue_api_key /
+   *  rotate_api_key card, or null. */
+  showOnce(card: ToolCard): ShowOnceValue | null {
+    if (card.status !== 'ok' || card.isError) return null;
+    const spec = SHOW_ONCE[card.name];
+    if (!spec) return null;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(card.result);
+    } catch {
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const value = parsed[spec.value];
+    if (typeof value !== 'string' || value.length === 0) return null;
+    return { label: spec.label, value };
+  }
+
   private handleEvent(evt: AssistantEvent, turn: AssistantTurn): void {
     switch (evt.type) {
       case 'iteration_start':
@@ -295,13 +372,19 @@ export class ConfigAssistantStateService {
     return { kind: 'tool', id, name, input, result: '', isError: false, status, expanded: false };
   }
 
-  /** Emit `{tab}` when a mutating tool actually changed something: ok status,
-   *  a mapped tool, and a result that is not a proposal / form / denial.
-   *  Unparseable results count as done. */
+  /** Emit `{tab}` when a mutating tool actually changed something. */
   private maybeNotifyChanged(card: ToolCard): void {
-    if (card.status !== 'ok') return;
+    const tab = this.changedTab(card);
+    if (tab) this.notifyChanged(tab);
+  }
+
+  /** The sub-tab a settled card changed: ok status, a mapped tool, and a
+   *  result that is not a proposal / form / denial. Unparseable results count
+   *  as done. Null otherwise. */
+  changedTab(card: ToolCard): string | null {
+    if (card.status !== 'ok' || card.isError) return null;
     const tab = TOOL_TAB[card.name];
-    if (!tab) return;
+    if (!tab) return null;
     let status: unknown;
     try {
       const parsed = JSON.parse(card.result);
@@ -309,8 +392,8 @@ export class ConfigAssistantStateService {
     } catch {
       status = undefined;
     }
-    if (typeof status === 'string' && NOT_DONE_STATUSES.has(status)) return;
-    this.changedSubject.next({ tab });
+    if (typeof status === 'string' && NOT_DONE_STATUSES.has(status)) return null;
+    return tab;
   }
 
   private findToolCard(turn: AssistantTurn, id: string): ToolCard | undefined {

@@ -1,6 +1,10 @@
 import { Component, ElementRef, HostListener, OnDestroy, OnInit, ViewChild, AfterViewChecked } from '@angular/core';
-import { Subscription } from 'rxjs';
-import { ConfigAssistantStateService, ToolCard, AssistantTurn } from './config-assistant-state.service';
+import { HttpClient } from '@angular/common/http';
+import { Observable, Subscription } from 'rxjs';
+import {
+  ConfigAssistantStateService, ToolCard, AssistantTurn, ShowOnceValue, TOOL_TAB, TAB_LABEL
+} from './config-assistant-state.service';
+import { SecretsService } from '../secrets.service';
 
 interface StarterPrompt {
   label: string;
@@ -38,7 +42,14 @@ export class ConfigChatPanelComponent implements OnInit, OnDestroy, AfterViewChe
   private scrollPending = false;
   private openSub?: Subscription;
 
-  constructor(public state: ConfigAssistantStateService) {}
+  /** Card ids whose show-once value was just copied (1.5 s "Copied"). */
+  private copiedIds = new Set<string>();
+
+  constructor(
+    public state: ConfigAssistantStateService,
+    private http: HttpClient,
+    private secretsService: SecretsService
+  ) {}
 
   ngOnInit(): void {
     const raw = localStorage.getItem(ConfigChatPanelComponent.STORAGE_KEY);
@@ -165,6 +176,135 @@ export class ConfigChatPanelComponent implements OnInit, OnDestroy, AfterViewChe
   newChat(): void {
     this.state.newChat();
     requestAnimationFrame(() => this.composerEl?.nativeElement.focus());
+  }
+
+  // ------- confirm cards -------
+
+  confirm(card: ToolCard): void {
+    this.state.decide(card, true);
+  }
+
+  cancel(card: ToolCard): void {
+    this.state.decide(card, false);
+  }
+
+  // ------- secret form -------
+
+  /** Store the requested secret straight from the browser (one REST call by
+   *  secret name), then tell the agent only "provided". Values never enter
+   *  the transcript or the composer draft. */
+  submitSecretForm(card: ToolCard): void {
+    const sr = card.secretRequest;
+    if (!sr || sr.submitting || sr.submitted || sr.cancelled) return;
+    sr.errorMessage = '';
+    const fields: Record<string, string> = {};
+    for (const key of sr.fieldNames) {
+      const value = (sr.fieldValues[key] || '').trim();
+      if (!value) {
+        sr.errorMessage = `Field \`${key}\` is required.`;
+        return;
+      }
+      fields[key] = value;
+    }
+
+    let call: Observable<unknown>;
+    if (sr.secretName === 'ai-keys') {
+      // Only the provided fields; the server merges and keeps the rest.
+      call = this.http.put('/api/v1/secrets/ai-keys', fields, { responseType: 'text' });
+    } else if (card.name === 'create_repo_token') {
+      call = this.secretsService.putSecret(sr.secretName, { ...fields, _type: 'repo_token' });
+    } else {
+      const type = card.input?.type;
+      const body = (type === 'tap' || type === undefined || type === null || type === '')
+        ? { ...fields, _type: 'tap' }
+        : fields;
+      call = this.secretsService.putSecret(sr.secretName, body);
+    }
+
+    sr.submitting = true;
+    call.subscribe({
+      next: () => {
+        sr.submitting = false;
+        sr.submitted = true;
+        this.wipe(sr.fieldValues);
+        const tab = TOOL_TAB[card.name];
+        if (tab) this.state.notifyChanged(tab);
+        this.state.send('provided');
+      },
+      error: (err) => {
+        sr.submitting = false;
+        sr.errorMessage = 'Save failed: ' + (typeof err?.error === 'string' ? err.error : (err?.error?.error || err?.message || 'unknown'));
+      }
+    });
+  }
+
+  cancelSecretForm(card: ToolCard): void {
+    const sr = card.secretRequest;
+    if (!sr || sr.submitting || sr.submitted || sr.cancelled) return;
+    this.wipe(sr.fieldValues);
+    sr.cancelled = true;
+    this.state.send("I'd rather not provide that now — stop here.");
+  }
+
+  private wipe(values: Record<string, string>): void {
+    for (const k of Object.keys(values)) values[k] = '';
+  }
+
+  /** Whether a credentials-form field is masked. Same allow-list as the
+   *  Assistant's form (assistant.component.ts isSecretField): only plainly
+   *  operational fields are shown; everything else is masked. */
+  isSecretField(name: string): boolean {
+    const n = (name || '').toLowerCase();
+    if (n === 'region' || n.endsWith('_region')) return false;
+    if (n === 'host' || n.endsWith('_host') || n === 'hostname' || n.endsWith('_hostname')) return false;
+    if (n === 'port' || n.endsWith('_port')) return false;
+    if (n.includes('endpoint') || n.includes('url')) return false;
+    if (n.includes('user_agent') || n.includes('useragent')) return false;
+    if (n === 'database' || n.endsWith('_database') || n === 'db_name' || n === 'dbname') return false;
+    if (n === 'schema' || n.endsWith('_schema')) return false;
+    if (n === 'bucket' || n.endsWith('_bucket')) return false;
+    if (n === 'project' || n.endsWith('_project') || n === 'project_id') return false;
+    if (n === 'account' || n.endsWith('_account_id')) return false;
+    return true;
+  }
+
+  // ------- show-once values -------
+
+  showOnce(card: ToolCard): ShowOnceValue | null {
+    return this.state.showOnce(card);
+  }
+
+  copy(card: ToolCard): void {
+    const v = this.state.showOnce(card);
+    if (!v) return;
+    navigator.clipboard.writeText(v.value).then(() => {
+      this.copiedIds.add(card.id);
+      setTimeout(() => this.copiedIds.delete(card.id), 1500);
+    });
+  }
+
+  isCopied(card: ToolCard): boolean {
+    return this.copiedIds.has(card.id);
+  }
+
+  // ------- "Show me" -------
+
+  /** The sub-tab a card links to: a completed mutation, or a secret form once
+   *  submitted. Null for reads, proposals and open forms. */
+  showMeTab(card: ToolCard): string | null {
+    if (card.secretRequest) {
+      return card.secretRequest.submitted ? (TOOL_TAB[card.name] || null) : null;
+    }
+    if (card.confirm) return null;
+    return this.state.changedTab(card);
+  }
+
+  tabLabel(tab: string): string {
+    return TAB_LABEL[tab] || tab;
+  }
+
+  showMe(tab: string): void {
+    this.state.requestShow(tab);
   }
 
   toggleToolCard(card: ToolCard): void {

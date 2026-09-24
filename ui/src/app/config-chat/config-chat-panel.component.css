@@ -446,3 +446,209 @@
 }
 
 .cfg-composer-stop:hover { background: #e25c5c; box-shadow: 0 0 8px rgba(211, 74, 74, 0.3); }
+
+/* --- Confirm card (styled like the Ops panel's policy note) --- */
+
+.cfg-confirm-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid #3a3f4a;
+  background: rgba(251, 191, 36, 0.06);
+  font-size: 12px;
+  color: #d0d2d8;
+}
+.cfg-confirm-summary { white-space: pre-wrap; }
+.cfg-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.cfg-confirm-btn {
+  border-radius: 4px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cfg-confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.cfg-confirm-ok {
+  border: none;
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  color: #0a0e1a;
+}
+.cfg-confirm-cancel {
+  background: transparent;
+  color: #c0c4cc;
+  border: 1px solid #3a3f4a;
+}
+.cfg-confirm-cancel:hover:not(:disabled) { border-color: #4a505c; color: #f0f1f5; }
+.cfg-confirm-outcome {
+  margin-top: 6px;
+  color: #fbbf24;
+  font-style: italic;
+}
+.cfg-confirm-outcome-cancelled { color: #8a8e96; }
+
+/* --- Secret form (copied from the Assistant's .secret-form rules) --- */
+
+.cfg-secret-form {
+  border-top: 1px solid #3a3f4a;
+  padding: 12px;
+  background: #1f2229;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cfg-secret-form-reason {
+  color: #c0c4cc;
+  font-size: 13.5px;
+  font-style: italic;
+}
+.cfg-secret-form-name { font-size: 12px; color: #8a8e96; }
+.cfg-secret-form-name code { color: #d8dae0; }
+.cfg-secret-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cfg-secret-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.cfg-secret-field-label {
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8a8e96;
+}
+.cfg-secret-field-input {
+  background: #16181d;
+  border: 1px solid #2c303a;
+  border-radius: 4px;
+  padding: 8px 10px;
+  color: #f0f1f5;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.cfg-secret-field-input:focus { border-color: var(--accent-cyan); }
+.cfg-secret-form-error {
+  color: #ff7373;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  background: rgba(255, 60, 60, 0.08);
+  border: 1px solid rgba(255, 60, 60, 0.25);
+  border-radius: 4px;
+}
+.cfg-secret-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.cfg-secret-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: box-shadow 0.2s, opacity 0.2s;
+}
+.cfg-secret-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.cfg-secret-btn-save {
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+  color: #0a0e1a;
+}
+.cfg-secret-btn-save:hover:not(:disabled) { box-shadow: 0 0 12px rgba(0, 180, 255, 0.3); }
+.cfg-secret-btn-cancel {
+  background: transparent;
+  color: #c0c4cc;
+  border: 1px solid #3a3f4a;
+}
+.cfg-secret-btn-cancel:hover:not(:disabled) {
+  border-color: #4a505c;
+  color: #f0f1f5;
+}
+.cfg-secret-form-result {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #6ad88a;
+  background: rgba(106, 216, 138, 0.08);
+  border-top: 1px solid rgba(106, 216, 138, 0.2);
+}
+.cfg-secret-form-result-cancelled {
+  color: #c0c4cc;
+  background: rgba(255, 255, 255, 0.04);
+  border-top-color: #3a3f4a;
+}
+
+/* --- Show-once value --- */
+
+.cfg-showonce {
+  padding: 8px 10px;
+  border-top: 1px solid #3a3f4a;
+  background: rgba(106, 216, 138, 0.06);
+  font-size: 12px;
+}
+.cfg-showonce-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8a8e96;
+}
+.cfg-showonce-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.cfg-showonce-value {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: #f0f1f5;
+  background: #16181d;
+  border: 1px solid #2c303a;
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.cfg-showonce-copy {
+  background: transparent;
+  border: 1px solid #3a3f4a;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #c0c4cc;
+  cursor: pointer;
+}
+.cfg-showonce-copy:hover { border-color: #4a505c; color: #f0f1f5; }
+.cfg-showonce-note {
+  margin-top: 4px;
+  color: #8a8e96;
+  font-style: italic;
+}
+
+/* --- "Show me" link --- */
+
+.cfg-showme {
+  padding: 6px 10px;
+  border-top: 1px solid #3a3f4a;
+}
+.cfg-showme-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--accent-cyan);
+  cursor: pointer;
+}
+.cfg-showme-link:hover { text-decoration: underline; }
