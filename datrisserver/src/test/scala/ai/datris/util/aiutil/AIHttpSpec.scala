@@ -135,8 +135,8 @@ class AIHttpSpec extends AnyFunSuite {
 
     // ------------------------------------------------ connection pool limits ---
 
-    test("poolLimits: defaults are 64 per route and 128 total when unset") {
-        assert(AIHttp.poolLimits(Map.empty) == ((64, 128)))
+    test("poolLimits: defaults are 96 per route and 192 total when unset") {
+        assert(AIHttp.poolLimits(Map.empty) == ((96, 192)))
     }
 
     test("poolLimits: reads AI_HTTP_MAX_PER_ROUTE and AI_HTTP_MAX_TOTAL") {
@@ -145,7 +145,7 @@ class AIHttpSpec extends AnyFunSuite {
 
     test("poolLimits: blank, non-numeric, zero or negative values fall back to the defaults") {
         for (bad <- Seq("", "  ", "abc", "0", "-5", "12.5")) {
-            assert(AIHttp.poolLimits(Map("AI_HTTP_MAX_PER_ROUTE" -> bad, "AI_HTTP_MAX_TOTAL" -> bad)) == ((64, 128)), s"value '$bad'")
+            assert(AIHttp.poolLimits(Map("AI_HTTP_MAX_PER_ROUTE" -> bad, "AI_HTTP_MAX_TOTAL" -> bad)) == ((96, 192)), s"value '$bad'")
         }
     }
 

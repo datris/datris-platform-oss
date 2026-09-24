@@ -45,16 +45,17 @@ object AIHttp {
         .setSocketTimeout(300000)
         .build()
 
-    val DefaultMaxConnPerRoute: Int = 64
-    val DefaultMaxConnTotal: Int = 128
+    val DefaultMaxConnPerRoute: Int = 96
+    val DefaultMaxConnTotal: Int = 192
 
     /** Connection-pool limits for the shared outbound AI and MCP clients, as
       * (maxPerRoute, maxTotal). Apache HttpClient's defaults (2 per route, 20
       * total) starve concurrent chat streams: every chat panel talks to the same
       * provider host, so the per-route cap of 2 made the third concurrent stream
       * wait and then fail with "Timeout waiting for connection from pool".
-      * Sized for the chat executors (16 threads each) plus CodeGen, tap and
-      * incident callers. Override with AI_HTTP_MAX_PER_ROUTE / AI_HTTP_MAX_TOTAL;
+      * The defaults cover the chat ceiling (five chat executors — Ops, Config,
+      * Search, Catalog, Assistant — at 16 threads each, 80 streams, usually all
+      * to one provider host) with headroom for CodeGen, tap and incident callers. Override with AI_HTTP_MAX_PER_ROUTE / AI_HTTP_MAX_TOTAL;
       * a missing, blank, non-numeric or non-positive value falls back to the
       * default. The total is never below the per-route limit. */
     def poolLimits(env: Map[String, String]): (Int, Int) = {

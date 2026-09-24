@@ -318,7 +318,7 @@ services:
       CAPABILITY_ENFORCEMENT: "${CAPABILITY_ENFORCEMENT:-enforce}"
       # Outbound AI-provider / MCP connection-pool limits (per host, total).
       # Forwarded without a default: empty means the server's own defaults
-      # (64 per host, 128 total). Raise if many concurrent chats hit
+      # (96 per host, 192 total). Raise if many concurrent chats hit
       # "Timeout waiting for connection from pool".
       AI_HTTP_MAX_PER_ROUTE: "${AI_HTTP_MAX_PER_ROUTE:-}"
       AI_HTTP_MAX_TOTAL: "${AI_HTTP_MAX_TOTAL:-}"
