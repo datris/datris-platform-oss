@@ -11,8 +11,9 @@ import ai.datris.model.{DatrisEnvironment, DatrisException, TenantContext, UserC
 import ai.datris.policy.PolicyIO
 import ai.datris.util.{AgentLoop, APIKeyValidator, ConfigAgentPrompt, ConfigAgentTools, ConfigToolExecutor, ConfigToolFilter, ConfirmationRegistry, SecretsUtil}
 import org.slf4j.{Logger, LoggerFactory}
-import org.springframework.http.MediaType
+import org.springframework.http.{HttpStatus, MediaType}
 import org.springframework.web.bind.annotation._
+import org.springframework.web.server.ResponseStatusException
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 
 import java.util.concurrent.{ConcurrentHashMap, Executors, TimeUnit}
@@ -68,6 +69,14 @@ class ConfigChatAPIController {
 
     @PostMapping(path = Array("/config-chat/chat"), produces = Array(MediaType.TEXT_EVENT_STREAM_VALUE))
     def chat(@RequestHeader(name = "x-api-key", required = false) apiKey: String, @RequestBody body: String): SseEmitter = {
+        // With user auth on, the chat needs a signed-in user: confirmation
+        // tokens are scoped to that user and the audit log names them. An
+        // API-key caller has no session user, so it is refused here, before
+        // the stream opens.
+        val actor: String = ConfigChatAPIController
+            .actorFor(DatrisEnvironment.values.useUserAuth, UserContext.get().map(_.username).filter(u => u != null && u.nonEmpty))
+            .getOrElse(throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Configuration chat requires a signed-in admin session"))
+
         val emitter = new SseEmitter(TimeUnit.MINUTES.toMillis(30))
         val emitterId = System.identityHashCode(emitter).toLong
         val cancelled = new java.util.concurrent.atomic.AtomicBoolean(false)
@@ -87,7 +96,7 @@ class ConfigChatAPIController {
                 capturedTenant.foreach(TenantContext.set)
                 try {
                     APIKeyValidator.validate(apiKey)
-                    runChat(apiKey, body, emitter, cancelled)
+                    runChat(actor, apiKey, body, emitter, cancelled)
                 } catch {
                     case e: Exception =>
                         try {
@@ -111,7 +120,7 @@ class ConfigChatAPIController {
         emitter
     }
 
-    private def runChat(apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
+    private def runChat(username: String, apiKey: String, body: String, emitter: SseEmitter, cancelled: java.util.concurrent.atomic.AtomicBoolean): Unit = {
         val req = JsonParser.parseString(body).getAsJsonObject
         val messagesArr = req.getAsJsonArray("messages")
         if (messagesArr == null || messagesArr.size() == 0)
@@ -140,11 +149,6 @@ class ConfigChatAPIController {
             throw new DatrisException("AI configuration is not initialized. Ensure ai.enabled: true and the AI primary secret is configured.")
 
         val uiKey = resolveUiApiKey(apiKey)
-
-        // Without user auth there is no session user; the admin is the actor.
-        val username: String =
-            if (!values.useUserAuth) "admin"
-            else UserContext.get().map(_.username).filter(u => u != null && u.nonEmpty).getOrElse("admin")
 
         // A token issued in one POST is consumed in the next, so the scope is
         // the admin plus the chat session, never the emitter.
@@ -210,4 +214,11 @@ object ConfigChatAPIController {
       * chat session, so another admin in the same session cannot confirm it. */
     private[datris] def scopeFor(username: String, sessionId: Option[String]): String =
         username + ":" + sessionId.getOrElse("user")
+
+    /** Who the chat acts as. Without user auth there is no session user and
+      * the admin is the actor; with user auth it is the session user, and
+      * None (the caller gets 403) when there is none, e.g. an API-key caller. */
+    private[datris] def actorFor(useUserAuth: Boolean, user: Option[String]): Option[String] =
+        if (!useUserAuth) Some("admin")
+        else user.filter(_.nonEmpty)
 }

@@ -51,6 +51,9 @@ export type AssistantEvent =
    *  an inline credentials form on the matching tool card. Values never enter
    *  the chat — they go straight to /api/v1/secrets on submit. */
   | { type: 'secret_request'; id: string; secretName: string; fieldNames: string[]; reason: string }
+  /** Configuration chat only: a mutating tool proposed a change. The UI shows
+   *  `summary` with Confirm / Cancel; Confirm re-posts with `token`. */
+  | { type: 'confirm_request'; id: string; tool: string; summary: string; token: string }
   /** Transient system message — surfaced inline as a small pill, not as part
    *  of the assistant's textual response. Currently used when the model is
    *  downgraded mid-request (e.g. Opus → Sonnet after sustained overload). */
