@@ -1,4 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
+import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import { CodeRepoService, CodeRepoConfig, CodeRepoTestResult } from './code-repo.service';
 import { SecretsService } from '../../secrets.service';
 
@@ -20,7 +23,9 @@ const DEFAULTS: CodeRepoConfig = {
     styleUrls: ['./code-repo.component.css'],
     standalone: false
 })
-export class CodeRepoComponent implements OnInit {
+export class CodeRepoComponent implements OnInit, OnDestroy {
+  private chatSub?: Subscription;
+
   config: CodeRepoConfig = { ...DEFAULTS };
   availableSecrets: string[] = [];
   loading = true;
@@ -38,9 +43,28 @@ export class CodeRepoComponent implements OnInit {
   newSecretToken = '';
   savingSecret = false;
 
-  constructor(private codeRepo: CodeRepoService, private secretsService: SecretsService) {}
+  constructor(private codeRepo: CodeRepoService, private secretsService: SecretsService, private chatState: ConfigAssistantStateService) {}
 
   ngOnInit(): void {
+    // Reload when the configuration chat changes this sub-tab's setting.
+    this.chatSub = this.chatState.changed$
+      .pipe(filter(e => e.tab === 'code-repo'))
+      .subscribe(() => this.reloadAll());
+    this.load();
+    this.loadSecrets();
+  }
+
+  ngOnDestroy(): void {
+    this.chatSub?.unsubscribe();
+  }
+
+  /** Settings and the repo-token list; both can change from the chat. */
+  private reloadAll(): void {
+    this.load();
+    this.loadSecrets();
+  }
+
+  load(): void {
     this.codeRepo.get().subscribe({
       next: (cfg) => {
         this.config = { ...DEFAULTS, ...cfg };
@@ -51,7 +75,6 @@ export class CodeRepoComponent implements OnInit {
         this.loading = false;
       }
     });
-    this.loadSecrets();
   }
 
   loadSecrets(): void {

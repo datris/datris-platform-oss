@@ -344,6 +344,12 @@ services:
       # on a new scope policy and you want a trial run before flipping on.
       # Legacy `*:*` keys are unaffected either way.
       CAPABILITY_ENFORCEMENT: "${CAPABILITY_ENFORCEMENT:-enforce}"
+      # Outbound AI-provider / MCP connection-pool limits (per host, total).
+      # Forwarded without a default: empty means the server's own defaults
+      # (96 per host, 192 total). Raise if many concurrent chats hit
+      # "Timeout waiting for connection from pool".
+      AI_HTTP_MAX_PER_ROUTE: "${AI_HTTP_MAX_PER_ROUTE:-}"
+      AI_HTTP_MAX_TOTAL: "${AI_HTTP_MAX_TOTAL:-}"
       # Hardening switches (see docs → Configuration Reference). DATRIS_ENV=production
       # requires TLS on external Postgres destinations; DATRIS_ALLOW_PLAINTEXT_DB
       # is the opt-out. DATRIS_ALLOW_PRIVATE_EGRESS lets HTTP taps / REST

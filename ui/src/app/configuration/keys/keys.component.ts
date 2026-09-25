@@ -1,4 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
+import { ConfigAssistantStateService } from '../../config-chat/config-assistant-state.service';
 import {
   KeysService,
   KeyRow,
@@ -20,7 +23,9 @@ import {
     styleUrl: './keys.component.css',
     standalone: false
 })
-export class KeysComponent implements OnInit {
+export class KeysComponent implements OnInit, OnDestroy {
+  private chatSub?: Subscription;
+
   keys: KeyRow[] = [];
   loading = false;
   error = '';
@@ -47,9 +52,13 @@ export class KeysComponent implements OnInit {
   revokeTarget: KeyRow | null = null;
   revokeBusy = false;
 
-  constructor(private keysService: KeysService) {}
+  constructor(private keysService: KeysService, private chatState: ConfigAssistantStateService) {}
 
   ngOnInit(): void {
+    // Reload when the configuration chat changes this sub-tab's setting.
+    this.chatSub = this.chatState.changed$
+      .pipe(filter(e => e.tab === 'keys'))
+      .subscribe(() => this.refresh());
     this.refresh();
     this.keysService.capabilities().subscribe({
       next: (resp) => { this.capabilityCatalog = resp.resources; },
@@ -59,6 +68,10 @@ export class KeysComponent implements OnInit {
       next: (resp) => { this.templates = resp.templates; },
       error: () => { /* non-fatal — blank template is still available */ }
     });
+  }
+
+  ngOnDestroy(): void {
+    this.chatSub?.unsubscribe();
   }
 
   // ------- list -------

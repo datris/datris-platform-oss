@@ -57,6 +57,7 @@ object AuditClassifier {
         ("POST", "/api/v1/assistant/chat", "SSE chat stream; its tool calls are audited on the MCP → REST hop"),
         ("POST", "/api/v1/ops-chat/chat", "SSE chat stream; its tool calls are audited on the MCP → REST hop"),
         ("POST", "/api/v1/catalog-chat/chat", "SSE chat stream; its tool calls are audited on the MCP → REST hop"),
+        ("POST", "/api/v1/config-chat/chat", "SSE chat stream; its tool calls are audited on the loopback REST hop"),
         ("POST", "/api/v1/search-chat/chat", "SSE chat stream; read-only tool catalog"),
         ("POST", "/api/v1/restendpoint/callback", "internal callback from the REST-endpoint runner, not a caller action")
     )

@@ -1,3 +1,21 @@
+/* Split layout: the configuration chat panel is position:fixed at viewport
+   top:80px so its bottom always aligns with the viewport bottom, regardless
+   of page scroll. The shell reserves matching horizontal space via a CSS
+   variable the panel keeps in sync (40px collapsed, 420px expanded). Same
+   approach as the Catalog shell. */
+.config-shell {
+  padding-right: var(--config-chat-width, 40px);
+  transition: padding-right 0.18s ease;
+}
+
+.config-shell-chat {
+  position: fixed;
+  top: 80px;
+  right: 0;
+  height: calc(100vh - 80px);
+  z-index: 5;
+}
+
 .container {
   max-width: 1000px;
   padding: 0 24px;

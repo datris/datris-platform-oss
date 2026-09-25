@@ -83,6 +83,16 @@ class AuditInterceptor extends HandlerInterceptor {
                     if (!o.has("incidentId")) o.addProperty("incidentId", iid.take(64))
                     o
                 }.orElse(withReason)
+                // Surface that made an on-behalf-of call (e.g. the Configuration
+                // chat). Only honored when TenantInterceptor trusted the
+                // on-behalf-of header, so a plain caller cannot set it.
+                val withVia =
+                    if (request.getAttribute(AuditActor.OnBehalfOfAttr) == null) withIncident
+                    else Option(request.getHeader(AuditActor.HeaderVia)).map(_.trim).filter(_.nonEmpty).map { v =>
+                        val o = withIncident.getOrElse(new JsonObject())
+                        if (!o.has("via")) o.addProperty("via", v.take(32))
+                        o
+                    }.orElse(withIncident)
 
                 AuditLog.submit(AuditEntry(
                     ts = Instant.now(),
@@ -96,7 +106,7 @@ class AuditInterceptor extends HandlerInterceptor {
                     durationMs = durationMs,
                     errorMessage = errorMessage,
                     request = Some(AuditLog.requestInfo(request)),
-                    metadata = withIncident
+                    metadata = withVia
                 ))
             }
         } catch {

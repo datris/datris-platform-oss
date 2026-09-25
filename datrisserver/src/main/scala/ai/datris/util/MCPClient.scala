@@ -8,6 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import com.google.gson.{JsonArray, JsonObject, JsonParser}
 import ai.datris.audit.AuditActor
 import ai.datris.model.{DatrisException, UserContext}
+import ai.datris.util.aiutil.AIHttp
 import org.apache.http.HttpHeaders
 import org.apache.http.client.methods.HttpPost
 import org.apache.http.entity.StringEntity
@@ -46,7 +47,14 @@ object MCPClient {
         .filter(_.nonEmpty)
         .getOrElse("http://mcp-server:3000")
 
-    private lazy val httpClient: CloseableHttpClient = HttpClients.createDefault()
+    // Explicit pool limits (shared with the AI clients): createDefault() allows
+    // only 2 connections per route, and every chat's tool calls hit the same
+    // mcp-server host.
+    private lazy val httpClient: CloseableHttpClient = HttpClients
+        .custom()
+        .setMaxConnPerRoute(AIHttp.maxConnPerRoute)
+        .setMaxConnTotal(AIHttp.maxConnTotal)
+        .build()
 
     // Tool / resource catalogs change only when mcp-server redeploys. Cache for 60s
     // so the Assistant /init endpoint is effectively free after the first hit.

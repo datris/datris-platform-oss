@@ -173,7 +173,7 @@ object AIProviders {
         }
     }
 
-    private[aiutil] def defaultEndpointFor(provider: String): String = provider.toLowerCase match {
+    private[datris] def defaultEndpointFor(provider: String): String = provider.toLowerCase match {
         case "anthropic" => "https://api.anthropic.com/v1/messages"
         case "openai" => "https://api.openai.com/v1/responses"
         case "grok" => "https://api.x.ai/v1/chat/completions"
@@ -189,7 +189,7 @@ object AIProviders {
       * write a useful research note." Codex / reasoning models add 30-60s with
       * no quality lift for this. Override via the Web Search section's Advanced
       * model field if you want a different one. */
-    private[aiutil] def defaultModelFor(provider: String): String = provider.toLowerCase match {
+    private[datris] def defaultModelFor(provider: String): String = provider.toLowerCase match {
         case "anthropic" => "claude-sonnet-4-6"
         case "openai" => "gpt-5.5"
         case _ => ""

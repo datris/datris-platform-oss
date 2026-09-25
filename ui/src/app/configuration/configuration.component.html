@@ -1,3 +1,4 @@
+<div class="config-shell">
 <div class="container">
   <h1 class="page-title">Configuration</h1>
 
@@ -415,4 +416,7 @@
   </div>
 
   <div class="loading" *ngIf="loading && activeTab !== 'secrets'">Loading configuration...</div>
+</div>
+
+<app-config-chat-panel *ngIf="canSeeChat" class="config-shell-chat"></app-config-chat-panel>
 </div>

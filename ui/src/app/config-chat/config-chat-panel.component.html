@@ -1,0 +1,200 @@
+<div class="cfg-panel" [class.cfg-collapsed]="!expanded" [class.cfg-expanded]="expanded">
+  <!-- Collapsed rail: just a vertical "Ask" toggle. Clicking expands. -->
+  <button class="cfg-rail"
+          *ngIf="!expanded"
+          (click)="toggle()"
+          title="Open configuration assistant (Cmd+\)">
+    <mat-icon class="cfg-rail-icon">smart_toy</mat-icon>
+    <span class="cfg-rail-label">Ask</span>
+  </button>
+
+  <!-- Expanded panel: header + scroll area + composer. -->
+  <ng-container *ngIf="expanded">
+    <div class="cfg-header">
+      <div class="cfg-title">
+        <mat-icon class="cfg-title-icon">smart_toy</mat-icon>
+        <span>Configuration assistant</span>
+      </div>
+      <div class="cfg-header-actions">
+        <button class="cfg-header-btn"
+                *ngIf="state.turns.length > 0"
+                [disabled]="state.streaming"
+                (click)="newChat()"
+                title="Clear conversation">
+          <mat-icon>add</mat-icon>
+        </button>
+        <button class="cfg-header-btn"
+                (click)="toggle()"
+                title="Collapse (Cmd+\)">
+          <mat-icon>chevron_right</mat-icon>
+        </button>
+      </div>
+    </div>
+
+    <div class="cfg-scroll" #scrollContainer>
+      <!-- Empty state with starter prompts. -->
+      <div class="cfg-empty" *ngIf="isEmptyState">
+        <p class="cfg-empty-sub">
+          I read and change what is on the Configuration tab: AI providers,
+          secrets, data sources, code repository, users, API keys and agent
+          policy. Every change waits for your Confirm; secrets are entered in a
+          form, never in chat.
+        </p>
+        <div class="cfg-starters">
+          <button class="cfg-starter" *ngFor="let p of starterPrompts" (click)="fillFromStarter(p)">
+            {{ p.label }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Turns. -->
+      <ng-container *ngFor="let turn of state.turns; trackBy: trackByIndex">
+        <div class="cfg-user-turn" *ngIf="turn.role === 'user'">
+          <div class="cfg-user-bubble">{{ turn.text }}</div>
+        </div>
+
+        <div class="cfg-assistant-turn" *ngIf="turn.role === 'assistant'">
+          <div class="cfg-thinking-block" *ngIf="turn.thinking">
+            <button class="cfg-thinking-toggle" (click)="toggleThinking(turn)">
+              <span>💭 Thinking</span>
+              <span>{{ turn.thinkingExpanded ? '▾' : '▸' }}</span>
+              <span class="cfg-thinking-spinner" *ngIf="!turn.done">…</span>
+            </button>
+            <div class="cfg-thinking-content" *ngIf="turn.thinkingExpanded">{{ turn.thinking }}</div>
+          </div>
+
+          <ng-container *ngFor="let seg of turn.segments; trackBy: trackByIndex">
+            <div class="cfg-prose" *ngIf="seg.kind === 'text'">{{ seg.text }}</div>
+
+            <div class="cfg-notice" *ngIf="seg.kind === 'notice'">
+              <span class="cfg-notice-icon">ⓘ</span>
+              <span>{{ seg.message }}</span>
+            </div>
+
+            <div class="cfg-tool-card" *ngIf="seg.kind === 'tool'" [class.cfg-tool-error]="seg.isError">
+              <button class="cfg-tool-header" (click)="toggleToolCard(seg)">
+                <span class="cfg-tool-caret">{{ seg.expanded ? '▾' : '▸' }}</span>
+                <span class="cfg-tool-icon">{{ toolLabel(seg).icon }}</span>
+                <span class="cfg-tool-label">{{ toolLabel(seg).label }}</span>
+                <span class="cfg-tool-status"
+                      [class.cfg-tool-status-ok]="seg.status === 'ok'"
+                      [class.cfg-tool-status-error]="seg.status === 'error'">
+                  <span class="cfg-dots" *ngIf="seg.status === 'running'">
+                    <span></span><span></span><span></span>
+                  </span>
+                  <ng-container *ngIf="seg.status !== 'running'">{{ toolStatusIcon(seg) }}</ng-container>
+                </span>
+              </button>
+              <!-- Proposal: nothing changes until the admin confirms. -->
+              <div class="cfg-confirm-note" *ngIf="seg.confirm as c">
+                <div class="cfg-confirm-summary">{{ c.summary }}</div>
+                <div class="cfg-confirm-actions" *ngIf="!c.decided">
+                  <button class="cfg-confirm-btn cfg-confirm-cancel"
+                          [disabled]="state.streaming"
+                          (click)="cancel(seg)">Cancel</button>
+                  <button class="cfg-confirm-btn cfg-confirm-ok"
+                          [disabled]="state.streaming"
+                          (click)="confirm(seg)">Confirm</button>
+                </div>
+                <div class="cfg-confirm-outcome" *ngIf="c.decided"
+                     [class.cfg-confirm-outcome-cancelled]="c.decision === 'cancelled'">
+                  {{ c.decision === 'confirmed' ? 'Confirmed, waiting…' : 'Cancelled' }}
+                </div>
+              </div>
+
+              <!-- Credentials form: values go from the browser to the secrets
+                   endpoint; the chat only ever says "provided". -->
+              <ng-container *ngIf="seg.secretRequest as sr">
+                <div class="cfg-secret-form" *ngIf="!sr.submitted && !sr.cancelled">
+                  <div class="cfg-secret-form-reason" *ngIf="sr.reason">{{ sr.reason }}</div>
+                  <div class="cfg-secret-form-name">Secret <code>{{ sr.secretName }}</code></div>
+                  <div class="cfg-secret-form-fields">
+                    <label class="cfg-secret-field" *ngFor="let fname of sr.fieldNames; trackBy: trackByIndex">
+                      <span class="cfg-secret-field-label">{{ fname }}</span>
+                      <input [type]="isSecretField(fname) ? 'password' : 'text'"
+                             class="cfg-secret-field-input"
+                             [(ngModel)]="sr.fieldValues[fname]"
+                             [disabled]="sr.submitting"
+                             autocomplete="off"
+                             spellcheck="false">
+                    </label>
+                  </div>
+                  <div class="cfg-secret-form-error" *ngIf="sr.errorMessage">{{ sr.errorMessage }}</div>
+                  <div class="cfg-secret-form-actions">
+                    <button class="cfg-secret-btn cfg-secret-btn-cancel"
+                            (click)="cancelSecretForm(seg)"
+                            [disabled]="sr.submitting || state.streaming">Cancel</button>
+                    <button class="cfg-secret-btn cfg-secret-btn-save"
+                            (click)="submitSecretForm(seg)"
+                            [disabled]="sr.submitting || state.streaming">
+                      {{ sr.submitting ? 'Saving…' : 'Save' }}
+                    </button>
+                  </div>
+                </div>
+                <div class="cfg-secret-form-result" *ngIf="sr.submitted">✓ Provided. Conversation resumed.</div>
+                <div class="cfg-secret-form-result cfg-secret-form-result-cancelled" *ngIf="sr.cancelled">
+                  Credentials request cancelled.
+                </div>
+              </ng-container>
+
+              <!-- Once-only value (temporary password, new API key). -->
+              <div class="cfg-showonce" *ngIf="showOnce(seg) as so">
+                <div class="cfg-showonce-label">{{ so.label }}</div>
+                <div class="cfg-showonce-row">
+                  <code class="cfg-showonce-value">{{ so.value }}</code>
+                  <button class="cfg-showonce-copy" (click)="copy(seg)">{{ isCopied(seg) ? 'Copied' : 'Copy' }}</button>
+                </div>
+                <div class="cfg-showonce-note">Shown once; it is not stored in the transcript.</div>
+              </div>
+
+              <div class="cfg-showme" *ngIf="showMeTab(seg) as tab">
+                <button class="cfg-showme-link" (click)="showMe(tab)">Show me → {{ tabLabel(tab) }}</button>
+              </div>
+
+              <div class="cfg-tool-body" *ngIf="seg.expanded">
+                <div class="cfg-tool-body-label">Input</div>
+                <pre class="cfg-tool-body-pre">{{ formatJson(seg.input) }}</pre>
+                <ng-container *ngIf="seg.status !== 'running'">
+                  <div class="cfg-tool-body-label">{{ seg.isError ? 'Error' : 'Result' }}</div>
+                  <pre class="cfg-tool-body-pre">{{ formatJson(seg.result) }}</pre>
+                </ng-container>
+              </div>
+            </div>
+          </ng-container>
+
+          <div class="cfg-streaming-indicator"
+               *ngIf="!turn.done && state.streaming && turn.segments.length === 0 && !turn.thinking">
+            <span class="cfg-dots-big"><span></span><span></span><span></span></span>
+          </div>
+
+          <div class="cfg-error" *ngIf="turn.errorMessage">{{ turn.errorMessage }}</div>
+        </div>
+      </ng-container>
+    </div>
+
+    <div class="cfg-composer-wrap">
+      <div class="cfg-composer">
+        <textarea
+          #composerEl
+          class="cfg-composer-input"
+          [(ngModel)]="state.draft"
+          (keydown)="onComposerKeydown($event)"
+          (input)="autoGrowComposer()"
+          placeholder="Ask about a setting, or tell me what to change…"
+          rows="1"
+          [readonly]="state.streaming"></textarea>
+        <button class="cfg-composer-btn"
+                *ngIf="!state.streaming"
+                [disabled]="!state.draft.trim()"
+                (click)="send()">
+          Send
+        </button>
+        <button class="cfg-composer-btn cfg-composer-stop"
+                *ngIf="state.streaming"
+                (click)="stop()">
+          Stop
+        </button>
+      </div>
+    </div>
+  </ng-container>
+</div>

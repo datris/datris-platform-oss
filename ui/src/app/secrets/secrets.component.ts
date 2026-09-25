@@ -1,4 +1,7 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnDestroy, OnInit } from '@angular/core';
+import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
+import { ConfigAssistantStateService } from '../config-chat/config-assistant-state.service';
 import { HttpClient } from '@angular/common/http';
 import { SecretsService } from '../secrets.service';
 
@@ -13,7 +16,9 @@ interface SecretField {
     styleUrls: ['./secrets.component.css'],
     standalone: false
 })
-export class SecretsComponent implements OnInit {
+export class SecretsComponent implements OnInit, OnDestroy {
+  private chatSub?: Subscription;
+
   // List view
   allNames: string[] = [];
   tapNames: string[] = [];
@@ -56,13 +61,21 @@ export class SecretsComponent implements OnInit {
 
   isTrial = false;
 
-  constructor(private secretsService: SecretsService, private http: HttpClient) { }
+  constructor(private secretsService: SecretsService, private http: HttpClient, private chatState: ConfigAssistantStateService) { }
 
   ngOnInit(): void {
+    // Reload when the configuration chat changes this sub-tab's setting.
+    this.chatSub = this.chatState.changed$
+      .pipe(filter(e => e.tab === 'secrets'))
+      .subscribe(() => this.loadSecrets());
     this.http.get<any>('/api/v1/version').subscribe({
       next: (data) => { this.isTrial = data.multiTenant === 'true'; }
     });
     this.loadSecrets();
+  }
+
+  ngOnDestroy(): void {
+    this.chatSub?.unsubscribe();
   }
 
   loadSecrets(): void {

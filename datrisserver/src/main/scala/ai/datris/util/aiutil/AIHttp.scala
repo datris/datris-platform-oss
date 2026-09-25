@@ -45,9 +45,39 @@ object AIHttp {
         .setSocketTimeout(300000)
         .build()
 
+    val DefaultMaxConnPerRoute: Int = 96
+    val DefaultMaxConnTotal: Int = 192
+
+    /** Connection-pool limits for the shared outbound AI and MCP clients, as
+      * (maxPerRoute, maxTotal). Apache HttpClient's defaults (2 per route, 20
+      * total) starve concurrent chat streams: every chat panel talks to the same
+      * provider host, so the per-route cap of 2 made the third concurrent stream
+      * wait and then fail with "Timeout waiting for connection from pool".
+      * The defaults cover the chat ceiling (five chat executors — Ops, Config,
+      * Search, Catalog, Assistant — at 16 threads each, 80 streams, usually all
+      * to one provider host) with headroom for CodeGen, tap and incident callers. Override with AI_HTTP_MAX_PER_ROUTE / AI_HTTP_MAX_TOTAL;
+      * a missing, blank, non-numeric or non-positive value falls back to the
+      * default. The total is never below the per-route limit. */
+    def poolLimits(env: Map[String, String]): (Int, Int) = {
+        def read(name: String, default: Int): Int =
+            env.get(name).map(_.trim).flatMap(v => scala.util.Try(v.toInt).toOption).filter(_ > 0).getOrElse(default)
+        val perRoute = read("AI_HTTP_MAX_PER_ROUTE", DefaultMaxConnPerRoute)
+        val total = read("AI_HTTP_MAX_TOTAL", DefaultMaxConnTotal)
+        (perRoute, math.max(total, perRoute))
+    }
+
+    private lazy val envPoolLimits: (Int, Int) = poolLimits(sys.env)
+    def maxConnPerRoute: Int = envPoolLimits._1
+    def maxConnTotal: Int = envPoolLimits._2
+
     // Reusable HTTP clients — one lightweight client for Ollama (no SSL), one with SSL for cloud providers
     private lazy val ollamaClient: CloseableHttpClient =
-        HttpClients.custom().setDefaultRequestConfig(aiRequestConfig).build()
+        HttpClients
+            .custom()
+            .setMaxConnPerRoute(maxConnPerRoute)
+            .setMaxConnTotal(maxConnTotal)
+            .setDefaultRequestConfig(aiRequestConfig)
+            .build()
     private[aiutil] lazy val sslClient: CloseableHttpClient = {
         val sslsf = new SSLConnectionSocketFactory(
             SSLContext.getDefault,
@@ -55,7 +85,13 @@ object AIHttp {
             null,
             SSLConnectionSocketFactory.getDefaultHostnameVerifier
         )
-        HttpClients.custom().setSSLSocketFactory(sslsf).setDefaultRequestConfig(aiRequestConfig).build()
+        HttpClients
+            .custom()
+            .setSSLSocketFactory(sslsf)
+            .setMaxConnPerRoute(maxConnPerRoute)
+            .setMaxConnTotal(maxConnTotal)
+            .setDefaultRequestConfig(aiRequestConfig)
+            .build()
     }
 
     private def getClient(provider: String): CloseableHttpClient = {
