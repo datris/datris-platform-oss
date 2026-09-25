@@ -1,6 +1,6 @@
 # Release Notes
 
-## vNEXT — unreleased
+## v1.38.0 — September 25, 2026
 
 **Change your platform's settings by asking: every change waits for your Confirm, and secrets never touch the chat.**
 
@@ -10,16 +10,8 @@
 - **Deep links to Code Repository.** A link that opens Configuration on the Code Repository sub-tab now lands there instead of on the default sub-tab.
 - **Changes made through the assistant are marked in the audit log.** With user auth on, changes made through the assistant are attributed to the signed-in admin and marked `via: config-chat` in the audit log.
 
+- **More chats at once.** Several assistant, Ops, Catalog, Search or Configuration chats can stream at the same time without one of them failing on a connection-pool timeout. The connection limits are now configurable through two optional settings, documented in the configuration reference.
+
 **Upgrading**
 
 Run `datris doctor --pre-upgrade`, then `docker compose pull && docker compose up -d --force-recreate`. Both the server and the UI changed, so update all images together. No configuration changes are needed. With API keys and user auth on, the Configuration assistant is available in the UI only; API-key clients such as the CLI and MCP agents cannot use it.
-
-## v1.37.1 — September 24, 2026
-
-**Installs and upgrades work again after MinIO closed its public image registry.**
-
-- **MinIO images now come from Chainguard.** MinIO withdrew its images from Docker Hub earlier this month and, as of September 24, put its quay.io images behind a login, so every fresh install and every `docker compose pull` failed with "unauthorized: access to the requested resource is not authorized". The Compose files now pull a multi-arch MinIO build from Chainguard's public registry, pinned to a digest. Running deployments were never affected. The installer, the standalone Compose file and a fresh clone all pick this up automatically, and existing object-storage data is kept.
-
-**Upgrading**
-
-Run `docker compose pull && docker compose up -d --force-recreate`. Nothing else changes in this release; the server, UI, MCP server and tap runner images are rebuilt only so every image carries the same version.
