@@ -3,6 +3,13 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="Unreleased" description="">
+  **Installs no longer depend on a third-party registry staying public.**
+
+  - **MinIO ships from the same place as the rest of the platform.** The object store image is now published alongside the other Datris images, so a fresh install or `docker compose pull` no longer depends on a third-party registry staying public. Existing object-storage data is kept.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. The `minio` and `minio-init` containers are recreated because the image changed; object-storage data is kept.
+</Update>
+
 <Update label="v1.38.0" description="September 25, 2026">
   **Change your platform's settings by asking: every change waits for your Confirm, and secrets never touch the chat.**
 

@@ -46,11 +46,14 @@ services:
         max-file: "3"
 
   minio:
-    # MinIO withdrew its public images from Docker Hub (2026-09-12) and put
-    # quay.io/minio/* behind a login (2026-09-24). Chainguard's build pulls
-    # anonymously and is multi-arch; pinned by digest because the free tier
-    # only guarantees the :latest tag. Bump the digest to upgrade MinIO.
-    image: cgr.dev/chainguard/minio:latest@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
+    # MinIO's own registries have twice gone private (Docker Hub 2026-09-12,
+    # quay.io 2026-09-24). This is an unmodified mirror of Chainguard's
+    # multi-arch build, published by the Datris org so installs depend on one
+    # registry. The tag is the MinIO release inside the image; the digest is
+    # what Docker resolves. To bump MinIO: run the mirror-image workflow, then
+    # update the tag and digest here, in minio-init below, and in
+    # docker-compose.yml (then regenerate docker-compose.standalone.yml).
+    image: datrisai/minio:RELEASE.2026-09-22@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
     container_name: minio
     # The image runs as uid 65532; existing installs' data dir is root-owned
     # (the previous image ran as root), so keep root to stay writable.
@@ -334,7 +337,7 @@ services:
   minio-init:
     # Same image as the minio service: it bundles mc and bash. (Chainguard's
     # separate minio-client image has no shell, so it cannot run this script.)
-    image: cgr.dev/chainguard/minio:latest@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
+    image: datrisai/minio:RELEASE.2026-09-22@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
     container_name: minio-init
     depends_on:
       minio:

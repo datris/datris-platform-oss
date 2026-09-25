@@ -62,6 +62,16 @@ jobs:
       - name: MCP tool catalog drift check
         run: python3 scripts/check-mcp-tool-catalog.py
 
+      # MinIO is pulled from the Datris org's mirror (mirror-image.yml). This
+      # checks the workflow's shape and platform guard, the tag+digest pins in
+      # all three compose files, the security-scan matrix, and that no
+      # outside-registry MinIO reference is left. It regenerates
+      # docker-compose.standalone.yml in place and git-diffs it (clean checkout).
+      - name: MinIO mirror check
+        run: |
+          python3 -m pip install --quiet --user pyyaml
+          python3 scripts/check-minio-mirror.py
+
       # MCP server tool/config tests (mcp-server/tests import server.py, so
       # the server's declared deps must be installed) plus the host-side
       # `datris doctor` checks (mcp-server/doctor.py) against a faked
