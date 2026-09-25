@@ -1,5 +1,15 @@
 # Release Notes
 
+## vNEXT — unreleased
+
+**Installs no longer depend on a third-party registry staying public.**
+
+- **MinIO ships from the same place as the rest of the platform.** The object store image is now published alongside the other Datris images, so a fresh install or `docker compose pull` no longer depends on a third-party registry staying public. Existing object-storage data is kept.
+
+**Upgrading**
+
+Run `docker compose pull && docker compose up -d --force-recreate`. The `minio` and `minio-init` containers are recreated because the image changed; buckets, event notifications and existing object-storage data are kept. The installer, the standalone Compose file and a fresh clone all pick this up automatically.
+
 ## v1.38.0 — September 25, 2026
 
 **Change your platform's settings by asking: every change waits for your Confirm, and secrets never touch the chat.**
