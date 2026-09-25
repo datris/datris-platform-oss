@@ -48,9 +48,28 @@ COMPOSE_FILES = [
 CHANGELOG = ROOT / "docs" / "changelog.mdx"
 RELEASE_NOTES = ROOT / "release-notes.md"
 
-TAG = "RELEASE.2026-09-22"
-SOURCE_DIGEST = "sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1"
-IMAGE_RE = re.compile(r"^datrisai/minio:" + re.escape(TAG) + r"@sha256:[0-9a-f]{64}$")
+# The pinned mirror is read from docker-compose.yml's minio service, so a MinIO
+# bump (run mirror-image.yml, edit tag + digest in the compose files,
+# regenerate standalone) needs no edit here. The other two compose files and
+# both services must equal it.
+IMAGE_RE = re.compile(r"^datrisai/minio:(RELEASE\.[0-9A-Za-z.:-]+)@(sha256:[0-9a-f]{64})$")
+
+
+def _pinned_image():
+    try:
+        svcs = (yaml.safe_load(COMPOSE_FILES[0].read_text()) or {}).get("services") or {}
+        return str((svcs.get("minio") or {}).get("image", ""))
+    except Exception:
+        return ""
+
+
+PINNED_IMAGE = _pinned_image()
+_m = IMAGE_RE.match(PINNED_IMAGE)
+# Fallbacks only feed the fake docker; the compose check reports the bad pin.
+TAG = _m.group(1) if _m else "RELEASE.unknown"
+# Digest the fake docker reports for the mirrored index; any well-formed value works.
+SOURCE_DIGEST = _m.group(2) if _m else "sha256:" + "0" * 64
+SOURCE_RE = re.compile(r"^" + re.escape("cgr" + ".dev") + r"/chainguard/minio:latest@sha256:[0-9a-f]{64}$")
 
 # Built from parts so this file never matches the audit grep itself.
 CG_HOST = "cgr" + ".dev"
@@ -117,7 +136,7 @@ def _():
         p.append(f"triggers are {sorted(map(str, keys))}, want only workflow_dispatch (no schedule/push)")
     inputs = ((on or {}).get("workflow_dispatch") or {}).get("inputs") or {} if isinstance(on, dict) else {}
     src = inputs.get("source") or {}
-    if src.get("type") != "string" or src.get("default") != f"{CG_HOST}/chainguard/minio:latest@{SOURCE_DIGEST}":
+    if src.get("type") != "string" or not SOURCE_RE.match(str(src.get("default", ""))):
         p.append(f"input source: want string defaulting to the pinned Chainguard index, got {src}")
     repo = inputs.get("repository") or {}
     if repo.get("type") != "string" or repo.get("default") != "minio":
@@ -321,7 +340,9 @@ def _():
             img = (svcs.get(name) or {}).get("image", "")
             imgs[name] = img
             if not IMAGE_RE.match(img or ""):
-                p.append(f"{f.relative_to(ROOT)} {name}: image {img!r}, want datrisai/minio:{TAG}@sha256:<digest>")
+                p.append(f"{f.relative_to(ROOT)} {name}: image {img!r}, want datrisai/minio:RELEASE.<date>@sha256:<digest>")
+            elif img != PINNED_IMAGE:
+                p.append(f"{f.relative_to(ROOT)} {name}: image {img!r} differs from docker-compose.yml minio {PINNED_IMAGE!r}")
         if len(set(imgs.values())) != 1:
             p.append(f"{f.relative_to(ROOT)}: minio and minio-init use different images {imgs}")
     return p
