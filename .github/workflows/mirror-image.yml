@@ -1,0 +1,116 @@
+name: Mirror third-party image
+
+# Copies a third-party multi-arch image index, unmodified, to the Datris
+# Docker Hub org so installs pull every image from one registry. Dispatch only:
+# a mirror moves when a human decides to bump it, then the compose files are
+# updated with the tag and the digest printed in this run's summary.
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Source image reference to copy (tag@digest)'
+        type: string
+        required: true
+        default: 'cgr.dev/chainguard/minio:latest@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1'
+      repository:
+        description: 'Target repository under the Datris org'
+        type: string
+        required: true
+        default: 'minio'
+      tag:
+        description: 'e.g. RELEASE.2026-09-22'
+        type: string
+        required: true
+      also_latest:
+        description: 'Also tag the copy as :latest'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  DOCKERHUB_ORG: datrisai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Plain index copy: no annotations, so the mirrored index is byte-for-byte
+      # the source index and keeps the source digest.
+      - name: Copy image index
+        env:
+          SOURCE: ${{ inputs.source }}
+          REPOSITORY: ${{ inputs.repository }}
+          TAG: ${{ inputs.tag }}
+          ALSO_LATEST: ${{ inputs.also_latest }}
+        run: |
+          tags=(-t "$DOCKERHUB_ORG/$REPOSITORY:$TAG")
+          if [ "$ALSO_LATEST" = "true" ]; then
+            tags+=(-t "$DOCKERHUB_ORG/$REPOSITORY:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" "$SOURCE"
+
+      - name: Inspect mirrored image
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          image="$DOCKERHUB_ORG/$REPOSITORY:$TAG"
+          digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"[:space:]')"
+          raw="$(docker buildx imagetools inspect "$image" --raw)"
+          platforms="$(printf '%s' "$raw" | python3 -c '
+          import json, sys
+          index = json.load(sys.stdin)
+          seen = []
+          for m in index.get("manifests", []):
+              p = m.get("platform") or {}
+              if p.get("os") in (None, "unknown"):
+                  continue  # attestation manifests
+              name = p["os"] + "/" + p["architecture"] + ("/" + p["variant"] if p.get("variant") else "")
+              if name not in seen:
+                  seen.append(name)
+          print(", ".join(seen))
+          ')"
+          echo "Image:     $image"
+          echo "Digest:    $digest"
+          echo "Platforms: $platforms"
+          {
+            echo "| Image | Digest | Platforms |"
+            echo "| --- | --- | --- |"
+            echo "| \`$image\` | \`$digest\` | $platforms |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          missing=""
+          for want in linux/amd64 linux/arm64; do
+            case ", $platforms, " in
+              *", $want, "*) ;;
+              *) missing="$missing $want" ;;
+            esac
+          done
+          if [ -z "$digest" ] || [ -n "$missing" ]; then
+            echo "::error::$image is missing:${missing:- index digest}"
+            exit 1
+          fi
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ env.DOCKERHUB_ORG }}/${{ inputs.repository }}:${{ inputs.tag }}
+          format: cyclonedx-json
+          output-file: sbom-${{ inputs.repository }}-${{ inputs.tag }}.cdx.json
+          artifact-name: sbom-${{ inputs.repository }}-${{ inputs.tag }}.cdx.json
