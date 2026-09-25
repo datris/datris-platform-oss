@@ -235,7 +235,8 @@ object ScheduledBatchTasks {
                 val key = URLDecoder.decode(record.s3.`object`.key, StandardCharsets.UTF_8.name())
                 (record.s3.bucket.name, key)
             })
-            // De-duplicate as before (.toMap), keeping first-seen order.
+            // Collapse identical (bucket, key) pairs, keeping first-seen order. This replaces a .toMap that
+            // built Map[bucket, key] and so kept only one key per bucket, dropping files in multi-record messages.
             pairs.distinct
         }
     }

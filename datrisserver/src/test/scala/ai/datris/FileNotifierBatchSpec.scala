@@ -44,6 +44,16 @@ class FileNotifierBatchSpec extends AnyFunSuite {
         assert(ScheduledBatchTasks.recordsOf(msg) == Seq(("oss-raw", "a/b.pipeline.csv")))
     }
 
+    test("recordsOf: multiple records in one bucket are all kept, identical pairs collapsed, in order") {
+        def rec(key: String): String =
+            s"""{"eventVersion":"2.0","eventSource":"minio:s3","eventName":"s3:ObjectCreated:Put",""" +
+                s""""s3":{"s3SchemaVersion":"1.0","configurationId":"Config","bucket":{"name":"oss-raw","arn":"arn:aws:s3:::oss-raw"},""" +
+                s""""object":{"key":"$key","size":10,"eTag":"e","sequencer":"1"}}}"""
+        val body = "{\"Records\":[" + Seq("a.x.pipeline.csv", "b.x.pipeline.csv", "a.x.pipeline.csv").map(rec).mkString(",") + "]}"
+        val msg = QueueMessage("m3", body, "r3")
+        assert(ScheduledBatchTasks.recordsOf(msg) == Seq(("oss-raw", "a.x.pipeline.csv"), ("oss-raw", "b.x.pipeline.csv")))
+    }
+
     test("recordsOf: a null Records array returns empty") {
         val msg = QueueMessage("m2", """{"Records":null}""", "r2")
         assert(ScheduledBatchTasks.recordsOf(msg).isEmpty)
