@@ -27,7 +27,7 @@ import httpx
 from httpx_sse import aconnect_sse
 
 MCP_URL = os.getenv("MCP_SERVER_URL", "http://localhost:3000/sse")
-CLI_VERSION = "1.38.1"
+CLI_VERSION = "1.38.2"
 
 # ── MCP Client (lightweight, sync-wrapped) ────────────────────────────
 
