@@ -16,8 +16,10 @@ to the Datris Docker Hub org. This script checks, offline:
   - docker-compose.standalone.yml regenerates without a diff.
   - the security-scan image matrix includes minio (five entries).
   - no outside-registry MinIO reference is left outside history.
-  - the Unreleased changelog block and the vNEXT release-notes section exist and
-    name no hostname, digest or endpoint.
+
+The changelog / release-notes wording checks that shipped with the story were
+one-time acceptance for v1.38.1 and are not repeated here: once the release
+renamed the Unreleased block they could never pass again on main.
 
 Run from anywhere: `python3 scripts/check-minio-mirror.py`. Needs PyYAML and
 bash. Exits non-zero, naming every failed check.
@@ -429,62 +431,6 @@ def _():
         if path == ".github/workflows/mirror-image.yml" and "default:" in content:
             continue
         p.append(f"{path}:{lineno}: {content.strip()[:120]}")
-    return p
-
-
-# ---------------------------------------------------------------- changelog / notes
-
-FORBIDDEN = [
-    (r"https?://", "URL"),
-    (r"sha256:", "digest"),
-    (r"\b[0-9a-f]{32,}\b", "digest"),
-    (r"\b[a-z0-9-]+(\.[a-z0-9-]+)*\.(io|dev|com|ai|net|org)\b", "hostname"),
-    (r"\bdatrisai/", "registry path"),
-    (r"(?i)\b(quay|cgr|docker\.io)\b", "registry host"),
-    (r"(?:^|\s)/api/|/v\d+/", "endpoint"),
-]
-
-
-def forbidden_in(text):
-    hits = []
-    for pat, what in FORBIDDEN:
-        for m in re.finditer(pat, text):
-            hits.append(f"{what}: {m.group(0)!r}")
-    return hits
-
-
-@check("docs/changelog.mdx: Unreleased block above v1.38.0, public wording")
-def _():
-    text = CHANGELOG.read_text()
-    m = re.search(r'<Update label="Unreleased" description="">(.*?)</Update>', text, re.S)
-    if not m:
-        return ['no <Update label="Unreleased" description=""> block']
-    p = []
-    if text.find('label="Unreleased"') > text.find('label="v1.38.0"'):
-        p.append("Unreleased block must sit above the v1.38.0 block")
-    body = m.group(1)
-    if "**MinIO ships from the same place as the rest of the platform.**" not in body:
-        p.append("missing the 'MinIO ships from the same place as the rest of the platform.' bullet")
-    if not re.search(r"(?i)upgrad", body) or "data is kept" not in body:
-        p.append("missing an Upgrade line saying the minio containers are recreated and data is kept")
-    p += [f"Unreleased block names a {h}" for h in forbidden_in(body)]
-    return p
-
-
-@check("release-notes.md: vNEXT section above v1.38.0, public wording")
-def _():
-    text = RELEASE_NOTES.read_text()
-    sec = vnext_section(text)
-    if not sec or not sec.startswith("## vNEXT — unreleased"):
-        return ["no '## vNEXT — unreleased' section"]
-    p = []
-    if text.find("## vNEXT") > text.find("## v1.38.0"):
-        p.append("vNEXT section must sit above ## v1.38.0")
-    if "**MinIO ships from the same place as the rest of the platform.**" not in sec:
-        p.append("missing the 'MinIO ships from the same place as the rest of the platform.' bullet")
-    if "**Upgrading**" not in sec:
-        p.append("missing an **Upgrading** paragraph")
-    p += [f"vNEXT section names a {h}" for h in forbidden_in(sec)]
     return p
 
 
