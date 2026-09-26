@@ -91,20 +91,22 @@ class ScheduledBatchTasks {
             if (isAppInitialized) {
                 val messages = QueueUtil.receiveMessages(DatrisEnvironment.current.fileNotifierQueue, maxMessages = 10, longPolling = true)
 
-                val gson = new Gson
+                // Retry semantics (unchanged): receiveMessages acknowledges every message at receive time,
+                // deleteMessage is a no-op, and hasMessageBeenProcessed writes the dedupe row before dispatch.
+                // A file that fails is therefore not redelivered. The failure stays visible: FileNotifier.process
+                // writes an error to the pipeline status before rethrowing, and dispatch logs the bucket/key.
+                // Each message and each record is isolated so one bad file does not block the rest of the batch.
                 messages.asScala.foreach(message => {
-                    val eventMessage = gson.fromJson(message.body, classOf[ObjectStoreEventMessage])
-                    QueueUtil.deleteMessage(DatrisEnvironment.current.fileNotifierQueue, message.receiptHandle)
-
-                    if (eventMessage != null && eventMessage.Records != null) {
-                        if (!hasMessageBeenProcessed(message.messageId, eventMessage))
-                            eventMessage.Records.asScala.map(record => {
-                                val key = URLDecoder.decode(record.s3.`object`.key, StandardCharsets.UTF_8.name())
-                                (record.s3.bucket.name, key)
-                            }).toMap
-                                .foreach(record => {
-                                    newFileReceived(record._1, record._2)
-                                })
+                    try {
+                        QueueUtil.deleteMessage(DatrisEnvironment.current.fileNotifierQueue, message.receiptHandle)
+                        val records = ScheduledBatchTasks.recordsOf(message)
+                        if (records.nonEmpty && !hasMessageBeenProcessed(message.messageId))
+                            ScheduledBatchTasks.dispatch(records, newFileReceived)
+                    } catch {
+                        case e: Exception =>
+                            logger.error(
+                                "checkFileNotifierQueue: failed messageId=" + message.messageId + ": " + Throwables.getStackTraceAsString(e)
+                            )
                     }
                 })
             }
@@ -114,7 +116,7 @@ class ScheduledBatchTasks {
         }
     }
 
-    private def hasMessageBeenProcessed(messageID: String, eventMessageS3: ObjectStoreEventMessage): Boolean = {
+    private def hasMessageBeenProcessed(messageID: String): Boolean = {
         // Check the NoSQL table to determine if this message has already been processed
         val message = NoSQLDbUtil.getItemJSON(DatrisEnvironment.current.fileNotifierMessageTableName, "id", messageID, "value")
         if (message.isEmpty) {
@@ -218,5 +220,40 @@ class ScheduledBatchTasks {
 
     private def isAppInitialized: Boolean = {
         DatrisEnvironment != null && DatrisEnvironment.current != null && DatrisEnvironment.current.initialized
+    }
+}
+
+object ScheduledBatchTasks {
+    private val logger: Logger = LoggerFactory.getLogger(classOf[ScheduledBatchTasks])
+
+    /** Parse an object-store event message into (bucket, URL-decoded key) pairs, de-duplicated. Null-safe. */
+    private[datris] def recordsOf(message: QueueMessage): Seq[(String, String)] = {
+        val eventMessage = new Gson().fromJson(message.body, classOf[ObjectStoreEventMessage])
+        if (eventMessage == null || eventMessage.Records == null) Seq.empty
+        else {
+            val pairs = eventMessage.Records.asScala.toSeq.map(record => {
+                val key = URLDecoder.decode(record.s3.`object`.key, StandardCharsets.UTF_8.name())
+                (record.s3.bucket.name, key)
+            })
+            // Collapse identical (bucket, key) pairs, keeping first-seen order. This replaces a .toMap that
+            // built Map[bucket, key] and so kept only one key per bucket, dropping files in multi-record messages.
+            pairs.distinct
+        }
+    }
+
+    /** Call process for every record, isolating failures. Returns the number of records that failed. Never throws. */
+    private[datris] def dispatch(records: Seq[(String, String)], process: (String, String) => Unit): Int = {
+        var failures = 0
+        records.foreach { case (bucket, key) =>
+            try process(bucket, key)
+            catch {
+                case e: Exception =>
+                    failures += 1
+                    logger.error(
+                        "checkFileNotifierQueue: failed bucket=" + bucket + " key=" + key + ": " + Throwables.getStackTraceAsString(e)
+                    )
+            }
+        }
+        failures
     }
 }

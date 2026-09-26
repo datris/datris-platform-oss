@@ -44,8 +44,9 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
         } else {
             // Pull the metadata from the data filename.  [pipeline-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]
             try {
-                val filename = key.substring(key.lastIndexOf('/') + 1)
-                val filepath = "s3://" + bucket + "/" + key.substring(0, key.lastIndexOf('/')) + "/"
+                val (prefix, filename) = splitKey(key)
+                // A root-level key (no '/') has an empty prefix: the data lives at the bucket root.
+                val filepath = "s3://" + bucket + "/" + (if (prefix.isEmpty) "" else prefix + "/")
                 val (pipeline, publisherToken) = parsePipelinePublisherTokenFromKey(key)
                 PipelineMetadata(pipeline, filename, filepath, publisherToken, bulkUpload = false)
             } catch {
@@ -147,9 +148,15 @@ class PipelineMetadataUtil(statusUtil: StatusUtil) {
         byteArrayInputStream.close()
     }
 
+    /** Split an object key into (prefix, filename) on the last '/'. A key with no '/' is ("", key). */
+    private[util] def splitKey(key: String): (String, String) = {
+        val idx = key.lastIndexOf('/')
+        if (idx < 0) ("", key) else (key.substring(0, idx), key.substring(idx + 1))
+    }
+
     private def parsePipelinePublisherTokenFromKey(key: String): (String, String) = {
         // Pull the metadata from the data filename.  [pipeline-name].[publisher-token].[whatever].pipeline.[csv|json|xml|...]
-        val filename = key.substring(key.lastIndexOf('/') + 1)
+        val (_, filename) = splitKey(key)
         val tokens = filename.split("\\.")
         val pipeline = tokens(0)
 

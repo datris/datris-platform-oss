@@ -1,5 +1,10 @@
 # Release Notes
 
+## vNEXT — unreleased
+
+- Uploads dropped in the root of the raw bucket are now ingested
+- One bad file no longer stops the other files uploaded at the same time
+
 ## v1.38.1 — September 25, 2026
 
 **Installs no longer depend on a third-party registry staying public.**
