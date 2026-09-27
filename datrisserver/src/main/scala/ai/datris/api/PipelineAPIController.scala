@@ -198,18 +198,21 @@ class PipelineAPIController {
     /** Body of DELETE /pipeline once the config is loaded: owner-scope check,
       * pull-table entry, destination data, tap ledgers, config and versions.
       * Shared with the catalog cascade delete (`CatalogAPIController`), which
-      * deletes pipelines with their data as the UI does. Throws on failure. */
+      * deletes pipelines with their data as the UI does. Throws on failure.
+      * `checkScope=false` only when the caller has already run a fuller
+      * (owner + catalog) scope check on this config. */
     def deletePipelineInternal(
         config: PipelineConfig,
         request: HttpServletRequest,
         deleteData: String = "true",
-        deleteConfig: String = "true"
+        deleteConfig: String = "true",
+        checkScope: Boolean = true
     ): Unit = {
         val pipeline = config.name
         // Scope check: a key with `pipeline:delete:owner=self` may only
         // delete pipelines it created. Loaded resource provides the
         // `createdByKeyLabel` we compare against the caller's label.
-        CapabilityCheck.assertOwnerScope(request, "pipeline", "delete", config.createdByKeyLabel)
+        if (checkScope) CapabilityCheck.assertOwnerScope(request, "pipeline", "delete", config.createdByKeyLabel)
 
         // Deleting the config without also deleting the data is disallowed.
         // Leaving orphaned rows/collections/tables behind with no pipeline to

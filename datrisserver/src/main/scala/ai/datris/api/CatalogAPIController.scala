@@ -219,13 +219,20 @@ class CatalogAPIController {
                     (t, p)
                 } else {
                     // Taps first so nothing lands in a pipeline mid-delete.
-                    // Both helpers run their own owner-scope check.
+                    // Scope is checked here with owner AND catalog context (as
+                    // detach does), so the helpers skip their owner-only check.
                     val tapController = new TapAPIController
                     val pipelineController = new PipelineAPIController
                     val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
                         trackDenied(denied, n) {
-                            readTap(n)
-                            tapController.deleteTapInternal(n, request)
+                            val live = readTap(n)
+                            CapabilityCheck.assertScope(
+                                request,
+                                "tap",
+                                "delete",
+                                CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
+                            )
+                            tapController.deleteTapInternal(n, request, checkScope = false)
                         }
                     }
                     // A surviving tap must not be left pointing at a deleted
@@ -236,7 +243,14 @@ class CatalogAPIController {
                         else
                             CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                                 trackDenied(denied, n) {
-                                    pipelineController.deletePipelineInternal(readPipeline(n), request)
+                                    val live = readPipeline(n)
+                                    CapabilityCheck.assertScope(
+                                        request,
+                                        "pipeline",
+                                        "delete",
+                                        CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
+                                    )
+                                    pipelineController.deletePipelineInternal(live, request, checkScope = false)
                                 }
                             }
                     (t, p)
@@ -326,7 +340,8 @@ class CatalogAPIController {
                         None
                     } catch {
                         case e: CapabilityDeniedException =>
-                            Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](QueryAPIController.errorBody(e)))
+                            logger.info("capability scope denial: " + e.getMessage)
+                            Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](CatalogOps.capabilityDeniedBody(e.getMessage)))
                     }
                 }
             case _ => None

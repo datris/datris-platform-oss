@@ -168,4 +168,12 @@ class CatalogOpsSpec extends AnyFunSuite {
         assert(r.ok.isEmpty)
         assert(r.failed == Seq(("p1", "skipped: tap deletions in this catalog failed"), ("p2", "skipped: tap deletions in this catalog failed")))
     }
+
+    test("capabilityDeniedBody matches the interceptor's denial shape and escapes quotes") {
+        val body = CatalogOps.capabilityDeniedBody("capability denied: key 'k' says \"no\"")
+        val obj = com.google.gson.JsonParser.parseString(body).getAsJsonObject
+        assert(obj.get("error").getAsString == "capability denied")
+        assert(obj.get("errorKind").getAsString == "capability_denied")
+        assert(obj.get("message").getAsString == "capability denied: key 'k' says \"no\"")
+    }
 }

@@ -1787,8 +1787,8 @@ def _base_tools():
                 "Delete a catalog by moving every tap and pipeline in it to Uncataloged and removing the catalog. "
                 "No tap, pipeline or data is deleted. Call this ONLY when the user has explicitly asked to delete that catalog. "
                 "Uncataloged itself cannot be deleted. Items that could not be moved come back under `failed` (the rest still move); "
-                "report them to the user. Deleting a catalog together with its items and their data is only available in the "
-                "Datris UI, not through this tool."
+                "report them to the user. Deleting a catalog together with its items and their data is available via the API or UI, "
+                "not through this tool."
             ),
             inputSchema={
                 "type": "object",
@@ -4157,7 +4157,7 @@ def _dispatch(name: str, args: dict) -> str:
         return _call("put", f"/api/v1/catalog/{catalog}", json={"newName": args.get("new_name")})
 
     elif name == "delete_catalog":
-        # Detach only: cascade (delete items and data) is UI-only, so any
+        # Detach only: cascade (delete items and data) is not offered by this tool, so any
         # mode/confirm an agent passes is ignored.
         catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
         return _call("delete", f"/api/v1/catalog/{catalog}", params={"mode": "detach"})

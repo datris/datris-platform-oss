@@ -389,7 +389,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'delete_catalog',
-      description: 'Delete a catalog by moving its taps and pipelines to Uncataloged. No item or data is deleted (deleting items with their data is UI-only). Uncataloged cannot be deleted. ONLY call when the user has explicitly asked.',
+      description: 'Delete a catalog by moving its taps and pipelines to Uncataloged. No item or data is deleted (deleting items with their data is available via the API or UI, not this tool). Uncataloged cannot be deleted. ONLY call when the user has explicitly asked.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'catalog', type: 'string', description: 'Catalog name to delete.', required: true, inputType: 'text' }

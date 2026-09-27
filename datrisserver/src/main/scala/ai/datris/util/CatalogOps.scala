@@ -116,6 +116,17 @@ object CatalogOps {
 
     case class Result(ok: Seq[String], failed: Seq[(String, String)])
 
+    /** 403 body for a scope denial, in the same shape as CapabilityInterceptor
+      * and SecretsAPIController, so clients branching on `errorKind` see a
+      * permission boundary rather than a generic error. */
+    def capabilityDeniedBody(message: String): String = {
+        val o = new com.google.gson.JsonObject
+        o.addProperty("error", "capability denied")
+        o.addProperty("errorKind", "capability_denied")
+        o.addProperty("message", Option(message).getOrElse(""))
+        o.toString
+    }
+
     /** Report `names` as failed without attempting them (e.g. cascade skips
       * pipeline deletes when a tap delete in the same catalog failed, so no
       * surviving tap is left pointing at a deleted pipeline). */
