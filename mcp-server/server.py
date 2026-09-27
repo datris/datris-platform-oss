@@ -30,6 +30,7 @@ import os
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from collections import deque
 from typing import Any
@@ -1547,7 +1548,7 @@ async def list_tools():
 # never drifts from the catalog by accident: a new mutating tool that is not
 # listed here simply lacks the optional argument.
 _MUTATING_TOOLS = {
-    "create_pipeline", "set_catalog", "delete_pipeline", "upload_data", "kill_job",
+    "create_pipeline", "set_catalog", "rename_catalog", "delete_catalog", "delete_pipeline", "upload_data", "kill_job",
     "apply_dest_types", "upload_config", "update_secret", "create_tap_secret",
     "delete_tap_secret", "create_tap", "run_tap", "delete_tap", "set_tap_state",
     "test_tap", "update_tap", "restore_tap_version", "restore_pipeline_version",
@@ -1751,6 +1752,53 @@ def _base_tools():
                     },
                 },
                 "required": []
+            }
+        ),
+        Tool(
+            name="rename_catalog",
+            description=(
+                "Rename a catalog: every tap and pipeline labelled with `catalog` is relabelled to `new_name` in one server-side operation, "
+                "and the empty-catalog placeholder moves with it. Call this ONLY when the user has explicitly asked to rename that catalog — "
+                "never to emulate a rename by calling set_catalog on each item. "
+                "Renaming into a catalog that already exists merges the two; the call is refused with the list of clashing names if an item "
+                "with the same name already exists there. Uncataloged cannot be renamed, and `new_name` must use lowercase letters, digits, "
+                "'_' and '-' only. Items that could not be moved come back under `failed` (the rest still move); report them to the user. "
+                "API keys whose capabilities are scoped to the old catalog name are listed under `affectedKeys` — they keep the old scope and "
+                "no longer match the renamed items, so tell the user an administrator may need to update those keys."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "catalog": {
+                        "type": "string",
+                        "description": "Current catalog name."
+                    },
+                    "new_name": {
+                        "type": "string",
+                        "description": "New catalog name (lowercase letters, digits, '_' and '-')."
+                    },
+                },
+                "required": ["catalog", "new_name"]
+            }
+        ),
+        Tool(
+            name="delete_catalog",
+            description=(
+                "Delete a catalog by moving every tap and pipeline in it to Uncataloged and removing the catalog. "
+                "No tap, pipeline or data is deleted. Call this ONLY when the user has explicitly asked to delete that catalog. "
+                "Uncataloged itself cannot be deleted. Items that could not be moved come back under `failed` (the rest still move); "
+                "report them to the user. Deleting a catalog together with its items and their data is only available in the "
+                "Datris UI, not through this tool."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "catalog": {
+                        "type": "string",
+                        "description": "Catalog name to delete."
+                    },
+                },
+                "required": ["catalog"]
             }
         ),
         Tool(
@@ -4101,6 +4149,18 @@ def _dispatch(name: str, args: dict) -> str:
             "tap": tap_name,
             "catalog": new_catalog or None,
         })
+
+    elif name == "rename_catalog":
+        # Server-side rename; the body (including a 207 partial failure with
+        # `failed` and `affectedKeys`) is returned verbatim.
+        catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
+        return _call("put", f"/api/v1/catalog/{catalog}", json={"newName": args.get("new_name")})
+
+    elif name == "delete_catalog":
+        # Detach only: cascade (delete items and data) is UI-only, so any
+        # mode/confirm an agent passes is ignored.
+        catalog = urllib.parse.quote(str(args.get("catalog") or ""), safe="")
+        return _call("delete", f"/api/v1/catalog/{catalog}", params={"mode": "detach"})
 
     elif name == "update_tap":
         # Fetch existing config

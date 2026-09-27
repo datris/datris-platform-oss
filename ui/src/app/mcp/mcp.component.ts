@@ -378,6 +378,25 @@ export class McpComponent implements OnInit {
       playgroundEnabled: true
     },
     {
+      name: 'rename_catalog',
+      description: 'Rename a catalog: relabels every tap and pipeline in it and moves the empty-catalog placeholder. Renaming into an existing catalog merges them; refused with the clashing names if an item name already exists there. Uncataloged cannot be renamed. Returns failed items and API keys scoped to the old name. ONLY call when the user has explicitly asked.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'catalog', type: 'string', description: 'Current catalog name.', required: true, inputType: 'text' },
+        { name: 'new_name', type: 'string', description: 'New catalog name (lowercase letters, digits, _ and -).', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
+      name: 'delete_catalog',
+      description: 'Delete a catalog by moving its taps and pipelines to Uncataloged. No item or data is deleted (deleting items with their data is UI-only). Uncataloged cannot be deleted. ONLY call when the user has explicitly asked.',
+      category: 'Pipeline Management',
+      parameters: [
+        { name: 'catalog', type: 'string', description: 'Catalog name to delete.', required: true, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
+    {
       name: 'delete_pipeline',
       description: 'DESTRUCTIVE. Deletes BOTH the pipeline config AND the destination data (rows, collection contents, vector store entries). Also wipes document-tap ledgers and staged files for any tap targeting this pipeline. Config-only delete (orphaning the data) is not supported — the platform forces data delete to come along to prevent ghost state. Pass keep_config=true to reset: wipes data, keeps config.',
       category: 'Pipeline Management',
