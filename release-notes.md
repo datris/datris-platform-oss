@@ -1,5 +1,11 @@
 # Release Notes
 
+## vNEXT — unreleased
+
+**Clearer errors for files whose names cannot be parsed.**
+
+- When an uploaded file's name cannot be parsed, the error now says so instead of reporting an unrelated internal error.
+
 ## v1.38.2 — September 26, 2026
 
 **Object-store ingestion is more forgiving: a bad file no longer blocks its neighbours, and root-level uploads work.**

@@ -93,8 +93,9 @@ class ScheduledBatchTasks {
 
                 // Retry semantics (unchanged): receiveMessages acknowledges every message at receive time,
                 // deleteMessage is a no-op, and hasMessageBeenProcessed writes the dedupe row before dispatch.
-                // A file that fails is therefore not redelivered. The failure stays visible: FileNotifier.process
-                // writes an error to the pipeline status before rethrowing, and dispatch logs the bucket/key.
+                // A file that fails is therefore not redelivered. The failure stays visible: once the key has been
+                // attributed to a pipeline, FileNotifier.process writes an error to the pipeline status before
+                // rethrowing the original exception, and dispatch logs the bucket/key.
                 // Each message and each record is isolated so one bad file does not block the rest of the batch.
                 messages.asScala.foreach(message => {
                     try {
