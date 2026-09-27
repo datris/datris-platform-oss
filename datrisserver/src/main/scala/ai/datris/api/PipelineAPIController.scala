@@ -185,48 +185,62 @@ class PipelineAPIController {
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
-            // Scope check: a key with `pipeline:delete:owner=self` may only
-            // delete pipelines it created. Loaded resource provides the
-            // `createdByKeyLabel` we compare against the caller's label.
-            CapabilityCheck.assertOwnerScope(request, "pipeline", "delete", config.createdByKeyLabel)
-
-            // Deleting the config without also deleting the data is disallowed.
-            // Leaving orphaned rows/collections/tables behind with no pipeline to
-            // own them creates hard-to-debug ghost state; any caller asking for
-            // config-only gets data-delete folded in implicitly.
-            val deleteConfigBool = deleteConfig.equalsIgnoreCase("true")
-            val deleteDataBool = deleteData.equalsIgnoreCase("true") || deleteConfigBool
-
-            if (deleteConfigBool && config.source.databaseAttributes != null)
-                PipelinePullTableUtil.deleteEntryIfExists(config.name)
-
-            // Clean up destination data
-            if (deleteDataBool && config.destination != null) {
-                cleanupDestinationData(config)
-                // Wipe document-tap ledgers/staged files for any tap targeting this
-                // pipeline. The ledger records "already-processed URIs"; leaving it
-                // intact after the destination is emptied would cause the next tap
-                // run to skip every doc and land nothing in the now-empty pipeline.
-                cleanupDocumentTapLedgers(pipeline)
-            }
-
-            // Delete the json configuration
-            if (deleteConfigBool) {
-                NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
-                // Hard-delete all definition-version snapshots for this pipeline
-                // (pipelines pin no scripts, so nothing to GC in object storage).
-                try {
-                    EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.pipelineVersionTableName, pipeline)
-                } catch {
-                    case ex: Exception => logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
-                }
-            }
+            deletePipelineInternal(config, request, deleteData, deleteConfig)
 
             new ResponseEntity[String](HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    /** Body of DELETE /pipeline once the config is loaded: owner-scope check,
+      * pull-table entry, destination data, tap ledgers, config and versions.
+      * Shared with the catalog cascade delete (`CatalogAPIController`), which
+      * deletes pipelines with their data as the UI does. Throws on failure. */
+    def deletePipelineInternal(
+        config: PipelineConfig,
+        request: HttpServletRequest,
+        deleteData: String = "true",
+        deleteConfig: String = "true"
+    ): Unit = {
+        val pipeline = config.name
+        // Scope check: a key with `pipeline:delete:owner=self` may only
+        // delete pipelines it created. Loaded resource provides the
+        // `createdByKeyLabel` we compare against the caller's label.
+        CapabilityCheck.assertOwnerScope(request, "pipeline", "delete", config.createdByKeyLabel)
+
+        // Deleting the config without also deleting the data is disallowed.
+        // Leaving orphaned rows/collections/tables behind with no pipeline to
+        // own them creates hard-to-debug ghost state; any caller asking for
+        // config-only gets data-delete folded in implicitly.
+        val deleteConfigBool = deleteConfig.equalsIgnoreCase("true")
+        val deleteDataBool = deleteData.equalsIgnoreCase("true") || deleteConfigBool
+
+        if (deleteConfigBool && config.source.databaseAttributes != null)
+            PipelinePullTableUtil.deleteEntryIfExists(config.name)
+
+        // Clean up destination data
+        if (deleteDataBool && config.destination != null) {
+            cleanupDestinationData(config)
+            // Wipe document-tap ledgers/staged files for any tap targeting this
+            // pipeline. The ledger records "already-processed URIs"; leaving it
+            // intact after the destination is emptied would cause the next tap
+            // run to skip every doc and land nothing in the now-empty pipeline.
+            cleanupDocumentTapLedgers(pipeline)
+        }
+
+        // Delete the json configuration
+        if (deleteConfigBool) {
+            NoSQLDbUtil.deleteItemJSON(DatrisEnvironment.current.pipelineTableName, "name", pipeline)
+            // Hard-delete all definition-version snapshots for this pipeline
+            // (pipelines pin no scripts, so nothing to GC in object storage).
+            try {
+                EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.pipelineVersionTableName, pipeline)
+            } catch {
+                case ex: Exception => logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
+            }
         }
     }
 
