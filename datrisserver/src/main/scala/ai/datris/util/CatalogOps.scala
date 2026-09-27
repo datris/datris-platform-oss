@@ -81,7 +81,45 @@ object CatalogOps {
             if (hit) Some(label) else None
         }.distinct
 
+    /** Capability scope context for one member: its catalog and owner, as
+      * `CatalogFindAPIController` builds it, so keys scoped `catalog=<name>`
+      * as well as `owner=self` keys are evaluated correctly. Blank values
+      * are omitted (an absent key never satisfies a scoped grant). */
+    def scopeContext(catalog: String, owner: String): Map[String, String] = {
+        var ctx = Map.empty[String, String]
+        if (catalog != null && catalog.nonEmpty) ctx += ("catalog" -> catalog)
+        if (owner != null && owner.nonEmpty) ctx += ("owner" -> owner)
+        ctx
+    }
+
+    /** What to do with the `__catalog__` placeholder(s) after the member phase. */
+    sealed trait PlaceholderAction
+    object PlaceholderAction {
+
+        /** Members moved (or failed for non-scope reasons): proceed. */
+        case object Proceed extends PlaceholderAction
+
+        /** Placeholder-only catalog: the placeholder itself must pass the
+          * caller's scope check before it is touched. */
+        case object CheckPlaceholderScope extends PlaceholderAction
+
+        /** A member was refused by the caller's scope: leave placeholders
+          * alone so an owner-scoped key cannot rename/delete a catalog it
+          * does not own. */
+        case object Skip extends PlaceholderAction
+    }
+
+    def placeholderAction(membersEmpty: Boolean, denied: Seq[String]): PlaceholderAction =
+        if (membersEmpty) PlaceholderAction.CheckPlaceholderScope
+        else if (denied.nonEmpty) PlaceholderAction.Skip
+        else PlaceholderAction.Proceed
+
     case class Result(ok: Seq[String], failed: Seq[(String, String)])
+
+    /** Report `names` as failed without attempting them (e.g. cascade skips
+      * pipeline deletes when a tap delete in the same catalog failed, so no
+      * surviving tap is left pointing at a deleted pipeline). */
+    def skipped(names: Seq[String], reason: String): Result = Result(Nil, names.map(_ -> reason))
 
     /** Apply `write` to every name, continuing past failures. Not
       * transactional: the caller reports `failed` back to the user. */

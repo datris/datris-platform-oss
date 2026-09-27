@@ -5,7 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{PipelineConfig, TapConfig}
+import ai.datris.model.{Capability, PipelineConfig, TapConfig}
 import org.scalatest.funsuite.AnyFunSuite
 
 /** Story: Catalog rename and delete: server endpoints and MCP tools
@@ -137,5 +137,35 @@ class CatalogOpsSpec extends AnyFunSuite {
         val result = CatalogOps.execute(Seq("x", "y")) { n => throw new IllegalStateException("no " + n) }
         assert(result.ok.isEmpty)
         assert(result.failed == Seq(("x", "no x"), ("y", "no y")))
+    }
+
+    // ------------------------------------------------------ Review fixes (scope + placeholder + cascade)
+
+    test("scopeContext carries catalog and owner so catalog-scoped and owner=self keys both match") {
+        val ctx = CatalogOps.scopeContext("sales", "builder")
+        assert(ctx == Map("catalog" -> "sales", "owner" -> "builder"))
+        assert(Capability.parse("pipeline:update:catalog=sales").grants("pipeline", "update", ctx, "someone"))
+        assert(!Capability.parse("pipeline:update:catalog=other").grants("pipeline", "update", ctx, "someone"))
+        assert(Capability.parse("tap:update:owner=self").grants("tap", "update", ctx, "builder"))
+        assert(!Capability.parse("tap:update:owner=self").grants("tap", "update", ctx, "intruder"))
+    }
+
+    test("scopeContext omits blank values") {
+        assert(CatalogOps.scopeContext(null, null).isEmpty)
+        assert(CatalogOps.scopeContext("", "").isEmpty)
+        assert(CatalogOps.scopeContext("sales", null) == Map("catalog" -> "sales"))
+    }
+
+    test("placeholderAction: placeholder-only catalogs check the placeholder; any scope denial skips placeholders") {
+        import CatalogOps.PlaceholderAction._
+        assert(CatalogOps.placeholderAction(membersEmpty = true, denied = Nil) == CheckPlaceholderScope)
+        assert(CatalogOps.placeholderAction(membersEmpty = false, denied = Seq("p1")) == Skip)
+        assert(CatalogOps.placeholderAction(membersEmpty = false, denied = Nil) == Proceed)
+    }
+
+    test("skipped reports every name as failed with the reason and none ok") {
+        val r = CatalogOps.skipped(Seq("p1", "p2"), "skipped: tap deletions in this catalog failed")
+        assert(r.ok.isEmpty)
+        assert(r.failed == Seq(("p1", "skipped: tap deletions in this catalog failed"), ("p2", "skipped: tap deletions in this catalog failed")))
     }
 }

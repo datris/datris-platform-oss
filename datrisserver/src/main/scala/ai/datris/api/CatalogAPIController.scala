@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonArray, JsonObject, JsonParser}
-import ai.datris.auth.{CapabilityCheck, VersionActor}
+import ai.datris.auth.{CapabilityCheck, CapabilityDeniedException, ResolvedKeyAccess, VersionActor}
 import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig, TapConfig}
 import ai.datris.util.{APIKeyValidator, CatalogOps, NoSQLDbUtil, PipelineConfigIO, SecretsUtil, TapConfigIO}
 import jakarta.servlet.http.HttpServletRequest
@@ -16,6 +16,7 @@ import org.springframework.http.{HttpStatus, MediaType, ResponseEntity}
 import org.springframework.web.bind.annotation._
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 /** First-class catalog operations. A catalog is the `catalog` field on taps
   * and pipelines plus an optional hidden placeholder tap `__catalog__<name>`;
@@ -29,8 +30,11 @@ import scala.collection.JavaConverters._
   *     data (cascade, needs `confirm` equal to the name).
   *
   * Capability gate: `CapabilityRoutes` maps PUT to pipeline:update and DELETE
-  * to pipeline:delete; each member is additionally owner-scope checked with
-  * its own resource type, and refused members land in `failed`. */
+  * to pipeline:delete; each member is additionally scope-checked (owner and
+  * catalog) with its own resource type, and refused members land in
+  * `failed`. When any member is refused the `__catalog__` placeholders are
+  * left untouched; a placeholder-only catalog checks the placeholder itself
+  * (403 on denial). Cascade skips its pipeline phase if a tap delete failed. */
 @RestController
 @RequestMapping(Array("/api/v1"))
 class CatalogAPIController {
@@ -82,28 +86,42 @@ class CatalogAPIController {
 
             val actor = VersionActor.resolve(request)
             val note = "catalog renamed " + name + " → " + newName + " by " + actor
+            placeholderScopeDenial(request, "update", name, members, taps).foreach(r => return r)
+            val denied = mutable.ArrayBuffer.empty[String]
             val tapResult = CatalogOps.execute(members.taps.map(_.name)) { n =>
-                val live = readTap(n)
-                CapabilityCheck.assertOwnerScope(request, "tap", "update", live.createdByKeyLabel)
-                TapConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
+                trackDenied(denied, n) {
+                    val live = readTap(n)
+                    CapabilityCheck.assertScope(request, "tap", "update", CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel))
+                    TapConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
+                }
             }
             val pipelineResult = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
-                val live = readPipeline(n)
-                CapabilityCheck.assertOwnerScope(request, "pipeline", "update", live.createdByKeyLabel)
-                PipelineConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
+                trackDenied(denied, n) {
+                    val live = readPipeline(n)
+                    CapabilityCheck.assertScope(
+                        request,
+                        "pipeline",
+                        "update",
+                        CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
+                    )
+                    PipelineConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
+                }
             }
 
             val failed = Seq.newBuilder[(String, String)]
             failed ++= tapResult.failed
             failed ++= pipelineResult.failed
 
-            // Placeholders are catalog bookkeeping, not members: the request
-            // gate already authorised the catalog operation.
-            if (hasOldPlaceholder)
+            // Placeholders are catalog bookkeeping, not members. They are left
+            // alone when any member was refused by the caller's scope; a
+            // placeholder-only catalog was scope-checked above.
+            val touchPlaceholders = CatalogOps.placeholderAction(members.isEmpty, denied.toSeq) != CatalogOps.PlaceholderAction.Skip
+            if (touchPlaceholders && hasOldPlaceholder)
                 removePlaceholder(name, request).foreach(failed += _)
             val hasNewPlaceholder = taps.exists(_.name == CatalogOps.Placeholder.name(newName))
             val placeholder =
-                if (hasNewPlaceholder) "kept"
+                if (!touchPlaceholders) "skipped"
+                else if (hasNewPlaceholder) "kept"
                 else
                     try {
                         TapConfigIO.writeVersioned(
@@ -112,7 +130,8 @@ class CatalogAPIController {
                                 description = "Catalog placeholder",
                                 targetPipeline = null,
                                 catalog = newName,
-                                enabled = false
+                                enabled = false,
+                                createdByKeyLabel = ResolvedKeyAccess.keyLabel(request).orNull
                             ),
                             "catalog placeholder created by rename " + name + " → " + newName + " by " + actor,
                             actor
@@ -167,19 +186,35 @@ class CatalogAPIController {
             if (members.isEmpty && !hasPlaceholder)
                 return notFound(name)
 
+            placeholderScopeDenial(request, "delete", name, members, taps).foreach(r => return r)
             val actor = VersionActor.resolve(request)
+            val denied = mutable.ArrayBuffer.empty[String]
             val (tapResult, pipelineResult) =
                 if (m == "detach") {
                     val note = "catalog detached from " + name + " by " + actor
                     val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
-                        val live = readTap(n)
-                        CapabilityCheck.assertOwnerScope(request, "tap", "delete", live.createdByKeyLabel)
-                        TapConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
+                        trackDenied(denied, n) {
+                            val live = readTap(n)
+                            CapabilityCheck.assertScope(
+                                request,
+                                "tap",
+                                "delete",
+                                CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
+                            )
+                            TapConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
+                        }
                     }
                     val p = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
-                        val live = readPipeline(n)
-                        CapabilityCheck.assertOwnerScope(request, "pipeline", "delete", live.createdByKeyLabel)
-                        PipelineConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
+                        trackDenied(denied, n) {
+                            val live = readPipeline(n)
+                            CapabilityCheck.assertScope(
+                                request,
+                                "pipeline",
+                                "delete",
+                                CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel)
+                            )
+                            PipelineConfigIO.writeVersioned(live.copy(catalog = null), note, actor)
+                        }
                     }
                     (t, p)
                 } else {
@@ -188,19 +223,29 @@ class CatalogAPIController {
                     val tapController = new TapAPIController
                     val pipelineController = new PipelineAPIController
                     val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
-                        readTap(n)
-                        tapController.deleteTapInternal(n, request)
+                        trackDenied(denied, n) {
+                            readTap(n)
+                            tapController.deleteTapInternal(n, request)
+                        }
                     }
-                    val p = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
-                        pipelineController.deletePipelineInternal(readPipeline(n), request)
-                    }
+                    // A surviving tap must not be left pointing at a deleted
+                    // pipeline: if any tap delete failed, keep the pipelines.
+                    val p =
+                        if (t.failed.nonEmpty)
+                            CatalogOps.skipped(members.pipelines.map(_.name), "skipped: tap deletions in this catalog failed")
+                        else
+                            CatalogOps.execute(members.pipelines.map(_.name)) { n =>
+                                trackDenied(denied, n) {
+                                    pipelineController.deletePipelineInternal(readPipeline(n), request)
+                                }
+                            }
                     (t, p)
                 }
 
             val failed = Seq.newBuilder[(String, String)]
             failed ++= tapResult.failed
             failed ++= pipelineResult.failed
-            if (hasPlaceholder)
+            if (hasPlaceholder && CatalogOps.placeholderAction(members.isEmpty, denied.toSeq) != CatalogOps.PlaceholderAction.Skip)
                 removePlaceholder(name, request).foreach(failed += _)
 
             val failures = failed.result()
@@ -252,6 +297,40 @@ class CatalogAPIController {
         if (p == null) throw new DatrisException("Pipeline " + n + " no longer exists")
         p
     }
+
+    /** Record a member refused by the caller's capability scope, then rethrow
+      * so `CatalogOps.execute` lists it under `failed`. */
+    private def trackDenied(denied: mutable.ArrayBuffer[String], n: String)(f: => Unit): Unit =
+        try f
+        catch {
+            case e: CapabilityDeniedException =>
+                denied += n
+                throw e
+        }
+
+    /** For a placeholder-only catalog the placeholder is the only thing the
+      * operation touches, so it must pass the caller's tap scope (owner and
+      * catalog) before it is removed or replaced. Returns a 403 on denial. */
+    private def placeholderScopeDenial(
+        request: HttpServletRequest,
+        action: String,
+        catalog: String,
+        members: CatalogOps.Members,
+        taps: Seq[TapConfig]
+    ): Option[ResponseEntity[String]] =
+        CatalogOps.placeholderAction(members.isEmpty, Nil) match {
+            case CatalogOps.PlaceholderAction.CheckPlaceholderScope =>
+                taps.find(_.name == CatalogOps.Placeholder.name(catalog)).flatMap { ph =>
+                    try {
+                        CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(ph.catalog, ph.createdByKeyLabel))
+                        None
+                    } catch {
+                        case e: CapabilityDeniedException =>
+                            Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](QueryAPIController.errorBody(e)))
+                    }
+                }
+            case _ => None
+        }
 
     private def removePlaceholder(catalog: String, request: HttpServletRequest): Option[(String, String)] = {
         val placeholder = CatalogOps.Placeholder.name(catalog)
