@@ -15,15 +15,26 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import java.util.UUID
 
-class FileNotifier {
+class FileNotifier private[controller] (
+    statusUtil: StatusUtil,
+    archiveMetadata: (String, PipelineMetadata) => Unit,
+    readConfig: String => PipelineConfig
+) {
+    // Defaults are resolved per instance, so production still picks up the
+    // tenant's DatrisEnvironment.current set by newFileReceived.
+    def this() = this(FileNotifier.defaultStatusUtil, FileNotifier.archiveMetadata, FileNotifier.readConfig)
+
     private val logger: Logger = LoggerFactory.getLogger(classOf[FileNotifier])
-    private val statusUtil = new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, this.getClass.getSimpleName)
 
     def process(bucket: String, key: String): JobContext = {
         logger.info("Processing queue message, bucket: " + bucket + ", key: " + key)
         statusUtil.setFilename(bucket + "/" + key)
         // Generate a UUID to track the pipeline through the pipeline
         val pipelineToken = UUID.randomUUID().toString
+        // StatusUtil resolves the pipeline name of a key without ".pipeline." in it
+        // from the archived-metadata row, so no status event may be written before
+        // that row exists; otherwise the status write throws and masks the real error.
+        var metadataArchived = false
 
         try {
             statusUtil.setPipelineToken(pipelineToken)
@@ -33,13 +44,12 @@ class FileNotifier {
             statusUtil.setPublisherToken(metadata.publisherToken)
 
             // Save the metadata in NoSQL
-            val gson = new Gson
-            val jsonMetadata = gson.toJson(metadata)
-            NoSQLDbUtil.setItemNameValue(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", jsonMetadata)
+            archiveMetadata(pipelineToken, metadata)
+            metadataArchived = true
 
             statusUtil.info("begin", "Data received, bucket: " + bucket + ", key: " + key)
 
-            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, metadata.pipeline)
+            val config = readConfig(metadata.pipeline)
             if (config == null)
                 throw new DatrisException("Pipeline: " + metadata.pipeline + " is not configured in the NoSQL database")
 
@@ -56,8 +66,33 @@ class FileNotifier {
                 // No JobContext exists yet, so no JobRunner finally will reclaim
                 // whatever DataUtil.read staged before the failure.
                 StagingArea.delete(pipelineToken)
-                statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
-                throw new DatrisException("FileNotifier error: " + Throwables.getStackTraceAsString(e))
+                if (metadataArchived) {
+                    try statusUtil.error("end", "Process completed, error: " + Throwables.getStackTraceAsString(e))
+                    catch {
+                        case inner: Exception =>
+                            logger.warn("FileNotifier: could not write status event: " + inner.getMessage)
+                    }
+                } else {
+                    // dispatch logs the full stack with bucket/key; keep this to one line.
+                    logger.error(
+                        "FileNotifier: cannot attribute bucket=" + bucket + " key=" + key +
+                            " to a pipeline, no status event written: " + e.getMessage
+                    )
+                }
+                throw e
         }
     }
+}
+
+object FileNotifier {
+    private[controller] def defaultStatusUtil: StatusUtil =
+        new StatusUtil().init(DatrisEnvironment.current.pipelineStatusTableName, classOf[FileNotifier].getSimpleName)
+
+    private[controller] def archiveMetadata(pipelineToken: String, metadata: PipelineMetadata): Unit = {
+        val jsonMetadata = new Gson().toJson(metadata)
+        NoSQLDbUtil.setItemNameValue(DatrisEnvironment.current.archivedMetadataTableName, "pipeline_token", pipelineToken, "metadata", jsonMetadata)
+    }
+
+    private[controller] def readConfig(pipeline: String): PipelineConfig =
+        PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, pipeline)
 }
