@@ -150,6 +150,20 @@ object CatalogOps {
                     (if (itemCatalog == null || itemCatalog.isEmpty) " (now Uncataloged)" else " (now in " + itemCatalog + ")")
             )
 
+    /** One process-wide lock for every catalog operation (rename, detach,
+      * cascade). Held from the member snapshot through the placeholder step
+      * so a concurrent operation sees the finished result (and gets 404/207)
+      * instead of re-moving the same items. Catalog operations are rare admin
+      * actions on a single server instance; a single lock avoids the lock
+      * ordering a per-name scheme would need (rename touches two names). */
+    private val catalogLock = new java.util.concurrent.locks.ReentrantLock(true)
+
+    def withCatalogLock[T](body: => T): T = {
+        catalogLock.lock()
+        try body
+        finally catalogLock.unlock()
+    }
+
     case class Result(ok: Seq[String], failed: Seq[(String, String)])
 
     /** 403 body for a scope denial, in the same shape as CapabilityInterceptor

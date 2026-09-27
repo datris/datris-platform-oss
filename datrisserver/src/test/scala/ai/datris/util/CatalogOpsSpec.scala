@@ -238,4 +238,39 @@ class CatalogOpsSpec extends AnyFunSuite {
         assert(CatalogOps.placeholderAction(membersEmpty = false, denied = Nil, anyOk = true) == Proceed)
         assert(CatalogOps.placeholderAction(membersEmpty = true, denied = Nil, anyOk = false) == CheckPlaceholderScope)
     }
+
+    // ------------------------------------------------------ E2E fix: serialized catalog operations
+
+    test("withCatalogLock never lets two threads inside at once and returns the body's value") {
+        val inside = new java.util.concurrent.atomic.AtomicInteger(0)
+        val maxInside = new java.util.concurrent.atomic.AtomicInteger(0)
+        val start = new java.util.concurrent.CountDownLatch(1)
+        val threads = (1 to 8).map { _ =>
+            new Thread(() => {
+                start.await()
+                (1 to 20).foreach { _ =>
+                    CatalogOps.withCatalogLock {
+                        val now = inside.incrementAndGet()
+                        maxInside.accumulateAndGet(now, (a: Int, b: Int) => math.max(a, b))
+                        Thread.sleep(1)
+                        inside.decrementAndGet()
+                    }
+                }
+            })
+        }
+        threads.foreach(_.start())
+        start.countDown()
+        threads.foreach(_.join(30000))
+        assert(threads.forall(!_.isAlive))
+        assert(maxInside.get == 1)
+        assert(CatalogOps.withCatalogLock(42) == 42)
+    }
+
+    test("withCatalogLock releases the lock when the body throws") {
+        intercept[RuntimeException](CatalogOps.withCatalogLock[Unit](throw new RuntimeException("boom")))
+        val t = new Thread(() => CatalogOps.withCatalogLock(()))
+        t.start()
+        t.join(5000)
+        assert(!t.isAlive, "lock was not released after an exception")
+    }
 }
