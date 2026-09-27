@@ -75,4 +75,17 @@ class AuditCoverageSpec extends AnyFunSuite {
         assert(AuditClassifier.isDeliberatelySkipped("POST", "/api/v1/config-chat/chat"))
         assert(ai.datris.auth.CapabilityRoutes.lookup("POST", "/api/v1/config-chat/chat") == ai.datris.auth.RouteCheck.Skip)
     }
+
+    // Story: plans/stories/catalog-ops-server-mcp.md, Step 4 — the catalog
+    // rename/delete endpoints exist as controller routes and are classified by
+    // the new CapabilityRoutes rows (one audit entry per request).
+    test("catalog rename and delete routes exist and are audit-classified") {
+        val live = routes().map(r => (r.method, r.path))
+        assert(live.contains(("PUT", "/api/v1/catalog/{name}")), "PUT /api/v1/catalog/{name} route missing")
+        assert(live.contains(("DELETE", "/api/v1/catalog/{name}")), "DELETE /api/v1/catalog/{name} route missing")
+        assert(AuditClassifier.isKnown("PUT", "/api/v1/catalog/sample"))
+        assert(AuditClassifier.isKnown("DELETE", "/api/v1/catalog/sample"))
+        assert(!AuditClassifier.isDeliberatelySkipped("PUT", "/api/v1/catalog/sample"))
+        assert(!AuditClassifier.isDeliberatelySkipped("DELETE", "/api/v1/catalog/sample"))
+    }
 }
