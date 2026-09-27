@@ -176,4 +176,66 @@ class CatalogOpsSpec extends AnyFunSuite {
         assert(obj.get("errorKind").getAsString == "capability_denied")
         assert(obj.get("message").getAsString == "capability denied: key 'k' says \"no\"")
     }
+
+    // ------------------------------------------------------ E2E fixes (placeholder matching, concurrent moves)
+
+    test("placeholder belongs to the catalog in its catalog field") {
+        assert(CatalogOps.Placeholder.belongsTo(tap("__catalog__sales", "sales"), "sales"))
+        assert(!CatalogOps.Placeholder.belongsTo(tap("sales-tap", "sales"), "sales"), "not a placeholder")
+    }
+
+    test("placeholder falls back to its name suffix only when the catalog field is empty") {
+        assert(CatalogOps.Placeholder.belongsTo(tap("__catalog__sales"), "sales"))
+        assert(CatalogOps.Placeholder.belongsTo(tap("__catalog__sales", ""), "sales"))
+        assert(!CatalogOps.Placeholder.belongsTo(tap("__catalog__sales"), "hr"))
+    }
+
+    test("a legacy placeholder whose name differs from its catalog field belongs to the field's catalog only") {
+        val legacy = tap("__catalog__legacy_name", "fund")
+        assert(CatalogOps.Placeholder.belongsTo(legacy, "fund"))
+        assert(!CatalogOps.Placeholder.belongsTo(legacy, "legacy_name"))
+        assert(CatalogOps.Placeholder.of(Seq(legacy), "legacy_name").isEmpty)
+    }
+
+    test("Placeholder.of returns every placeholder of a catalog, and none are members") {
+        val taps = Seq(
+            tap("__catalog__g", "g"),
+            tap("__catalog__h", "g"),
+            tap("__catalog__other", "other"),
+            tap("__catalog__bare"),
+            tap("t1", "g")
+        )
+        assert(CatalogOps.Placeholder.of(taps, "g").map(_.name).toSet == Set("__catalog__g", "__catalog__h"))
+        assert(CatalogOps.Placeholder.of(taps, "bare").map(_.name) == Seq("__catalog__bare"))
+        assert(CatalogOps.members(taps, Nil, "g").taps.map(_.name) == Seq("t1"))
+    }
+
+    test("freshName uses __catalog__<name> unless a tap already has that name") {
+        assert(CatalogOps.Placeholder.freshName("x", Set("t1")) == "__catalog__x")
+        assert(CatalogOps.Placeholder.freshName("x", Set("__catalog__x")) == "__catalog__x-2")
+        assert(CatalogOps.Placeholder.freshName("x", Set("__catalog__x", "__catalog__x-2")) == "__catalog__x-3")
+    }
+
+    test("requireInCatalog refuses a member moved away concurrently") {
+        CatalogOps.requireInCatalog("t", "old", "old")
+        val moved = intercept[Exception](CatalogOps.requireInCatalog("t", "x2", "old"))
+        assert(moved.getMessage.contains("no longer in catalog old"))
+        assert(moved.getMessage.contains("x2"))
+        val cleared = intercept[Exception](CatalogOps.requireInCatalog("t", null, "old"))
+        assert(cleared.getMessage.contains("Uncataloged"))
+    }
+
+    test("a concurrent move surfaces in failed, not ok") {
+        val live = Map("a" -> "old", "b" -> "x2")
+        val r = CatalogOps.execute(Seq("a", "b"))(n => CatalogOps.requireInCatalog(n, live(n), "old"))
+        assert(r.ok == Seq("a"))
+        assert(r.failed.map(_._1) == Seq("b"))
+    }
+
+    test("placeholderAction skips placeholders when members existed but none moved") {
+        import CatalogOps.PlaceholderAction._
+        assert(CatalogOps.placeholderAction(membersEmpty = false, denied = Nil, anyOk = false) == Skip)
+        assert(CatalogOps.placeholderAction(membersEmpty = false, denied = Nil, anyOk = true) == Proceed)
+        assert(CatalogOps.placeholderAction(membersEmpty = true, denied = Nil, anyOk = false) == CheckPlaceholderScope)
+    }
 }

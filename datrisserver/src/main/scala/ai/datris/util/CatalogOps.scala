@@ -25,6 +25,28 @@ object CatalogOps {
         def name(catalog: String): String = prefix + catalog
 
         def is(itemName: String): Boolean = itemName != null && itemName.startsWith(prefix)
+
+        /** Does placeholder tap `t` keep `catalog` alive? The UI groups a
+          * placeholder by its `catalog` field, so that field wins; the name
+          * suffix is only a fallback when the field is empty. Legacy
+          * placeholders can carry a name that differs from their catalog. */
+        def belongsTo(t: TapConfig, catalog: String): Boolean =
+            t != null && is(t.name) && catalog != null && {
+                if (t.catalog != null && t.catalog.nonEmpty) t.catalog == catalog
+                else t.name.substring(prefix.length) == catalog
+            }
+
+        /** Every placeholder of `catalog` (there may be more than one). */
+        def of(taps: Seq[TapConfig], catalog: String): Seq[TapConfig] = taps.filter(belongsTo(_, catalog))
+
+        /** Name for a new placeholder of `catalog`: `__catalog__<catalog>`,
+          * or with a numeric suffix when that tap name is already taken (by a
+          * legacy placeholder of another catalog). */
+        def freshName(catalog: String, takenTapNames: Set[String]): String = {
+            val base = name(catalog)
+            if (!takenTapNames.contains(base)) base
+            else Iterator.from(2).map(i => base + "-" + i).find(n => !takenTapNames.contains(n)).get
+        }
     }
 
     /** The UI's label rule (`ui/src/app/shared/sanitize.ts` sanitizeLabel). */
@@ -109,10 +131,24 @@ object CatalogOps {
         case object Skip extends PlaceholderAction
     }
 
-    def placeholderAction(membersEmpty: Boolean, denied: Seq[String]): PlaceholderAction =
+    /** `anyOk` is false when the catalog had members and none of them was
+      * moved (e.g. all were moved away concurrently): placeholders are then
+      * left alone so no empty target catalog is conjured. */
+    def placeholderAction(membersEmpty: Boolean, denied: Seq[String], anyOk: Boolean = true): PlaceholderAction =
         if (membersEmpty) PlaceholderAction.CheckPlaceholderScope
-        else if (denied.nonEmpty) PlaceholderAction.Skip
+        else if (denied.nonEmpty || !anyOk) PlaceholderAction.Skip
         else PlaceholderAction.Proceed
+
+    /** Guard for the per-member write: the member is re-read just before
+      * writing, and must still be in the catalog being operated on. A
+      * concurrent rename or `set_catalog` may have moved it; it must not be
+      * moved again. Throws so `execute` lists it under `failed`. */
+    def requireInCatalog(itemName: String, itemCatalog: String, catalog: String): Unit =
+        if (itemCatalog != catalog)
+            throw new ai.datris.model.DatrisException(
+                "no longer in catalog " + catalog +
+                    (if (itemCatalog == null || itemCatalog.isEmpty) " (now Uncataloged)" else " (now in " + itemCatalog + ")")
+            )
 
     case class Result(ok: Seq[String], failed: Seq[(String, String)])
 

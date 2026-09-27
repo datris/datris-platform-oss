@@ -19,7 +19,9 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 /** First-class catalog operations. A catalog is the `catalog` field on taps
-  * and pipelines plus an optional hidden placeholder tap `__catalog__<name>`;
+  * and pipelines plus optional hidden placeholder taps `__catalog__*` (a
+  * placeholder belongs to the catalog in its `catalog` field, falling back to
+  * its name suffix when that field is empty);
   * these endpoints rewrite every member server-side instead of a client
   * fan-out, and report per-member failures (not transactional).
   *
@@ -67,8 +69,8 @@ class CatalogAPIController {
 
             val (taps, pipelines) = loadAll()
             val members = CatalogOps.members(taps, pipelines, name)
-            val hasOldPlaceholder = taps.exists(_.name == CatalogOps.Placeholder.name(name))
-            if (members.isEmpty && !hasOldPlaceholder)
+            val oldPlaceholders = CatalogOps.Placeholder.of(taps, name)
+            if (members.isEmpty && oldPlaceholders.isEmpty)
                 return notFound(name)
 
             val target = CatalogOps.members(taps, pipelines, newName)
@@ -86,18 +88,18 @@ class CatalogAPIController {
 
             val actor = VersionActor.resolve(request)
             val note = "catalog renamed " + name + " → " + newName + " by " + actor
-            placeholderScopeDenial(request, "update", name, members, taps).foreach(r => return r)
+            placeholderScopeDenial(request, "update", name, members, oldPlaceholders).foreach(r => return r)
             val denied = mutable.ArrayBuffer.empty[String]
             val tapResult = CatalogOps.execute(members.taps.map(_.name)) { n =>
                 trackDenied(denied, n) {
-                    val live = readTap(n)
+                    val live = readTap(n, name)
                     CapabilityCheck.assertScope(request, "tap", "update", CatalogOps.scopeContext(live.catalog, live.createdByKeyLabel))
                     TapConfigIO.writeVersioned(live.copy(catalog = newName), note, actor)
                 }
             }
             val pipelineResult = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                 trackDenied(denied, n) {
-                    val live = readPipeline(n)
+                    val live = readPipeline(n, name)
                     CapabilityCheck.assertScope(
                         request,
                         "pipeline",
@@ -113,12 +115,24 @@ class CatalogAPIController {
             failed ++= pipelineResult.failed
 
             // Placeholders are catalog bookkeeping, not members. They are left
-            // alone when any member was refused by the caller's scope; a
-            // placeholder-only catalog was scope-checked above.
-            val touchPlaceholders = CatalogOps.placeholderAction(members.isEmpty, denied.toSeq) != CatalogOps.PlaceholderAction.Skip
-            if (touchPlaceholders && hasOldPlaceholder)
-                removePlaceholder(name, request).foreach(failed += _)
-            val hasNewPlaceholder = taps.exists(_.name == CatalogOps.Placeholder.name(newName))
+            // alone when any member was refused by the caller's scope or when
+            // no member moved; a placeholder-only catalog was scope-checked
+            // above. Every placeholder of the old catalog is removed (legacy
+            // ones may be named after another catalog).
+            val okNames = tapResult.ok ++ pipelineResult.ok
+            val touchPlaceholders =
+                CatalogOps.placeholderAction(members.isEmpty, denied.toSeq, okNames.nonEmpty) != CatalogOps.PlaceholderAction.Skip
+            val removedPlaceholders =
+                if (!touchPlaceholders) Nil
+                else
+                    oldPlaceholders.flatMap { ph =>
+                        removePlaceholder(ph.name, name, request) match {
+                            case Some(err) => failed += err; None
+                            case None => Some(ph.name)
+                        }
+                    }
+            val hasNewPlaceholder = CatalogOps.Placeholder.of(taps, newName).nonEmpty
+            val newPlaceholderName = CatalogOps.Placeholder.freshName(newName, taps.map(_.name).toSet -- removedPlaceholders)
             val placeholder =
                 if (!touchPlaceholders) "skipped"
                 else if (hasNewPlaceholder) "kept"
@@ -126,7 +140,7 @@ class CatalogAPIController {
                     try {
                         TapConfigIO.writeVersioned(
                             TapConfig(
-                                name = CatalogOps.Placeholder.name(newName),
+                                name = newPlaceholderName,
                                 description = "Catalog placeholder",
                                 targetPipeline = null,
                                 catalog = newName,
@@ -139,13 +153,13 @@ class CatalogAPIController {
                         "created"
                     } catch {
                         case e: Exception =>
-                            failed += (CatalogOps.Placeholder.name(newName) -> Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
+                            failed += (newPlaceholderName -> Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
                             "failed"
                     }
 
             val failures = failed.result()
             val out = new JsonObject
-            out.add("renamed", toArray(tapResult.ok ++ pipelineResult.ok))
+            out.add("renamed", toArray(okNames))
             out.add("failed", failedArray(failures))
             out.add("affectedKeys", toArray(affectedKeys(name)))
             out.addProperty("placeholder", placeholder)
@@ -182,11 +196,11 @@ class CatalogAPIController {
 
             val (taps, pipelines) = loadAll()
             val members = CatalogOps.members(taps, pipelines, name)
-            val hasPlaceholder = taps.exists(_.name == CatalogOps.Placeholder.name(name))
-            if (members.isEmpty && !hasPlaceholder)
+            val placeholders = CatalogOps.Placeholder.of(taps, name)
+            if (members.isEmpty && placeholders.isEmpty)
                 return notFound(name)
 
-            placeholderScopeDenial(request, "delete", name, members, taps).foreach(r => return r)
+            placeholderScopeDenial(request, "delete", name, members, placeholders).foreach(r => return r)
             val actor = VersionActor.resolve(request)
             val denied = mutable.ArrayBuffer.empty[String]
             val (tapResult, pipelineResult) =
@@ -194,7 +208,7 @@ class CatalogAPIController {
                     val note = "catalog detached from " + name + " by " + actor
                     val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
                         trackDenied(denied, n) {
-                            val live = readTap(n)
+                            val live = readTap(n, name)
                             CapabilityCheck.assertScope(
                                 request,
                                 "tap",
@@ -206,7 +220,7 @@ class CatalogAPIController {
                     }
                     val p = CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                         trackDenied(denied, n) {
-                            val live = readPipeline(n)
+                            val live = readPipeline(n, name)
                             CapabilityCheck.assertScope(
                                 request,
                                 "pipeline",
@@ -225,7 +239,7 @@ class CatalogAPIController {
                     val pipelineController = new PipelineAPIController
                     val t = CatalogOps.execute(members.taps.map(_.name)) { n =>
                         trackDenied(denied, n) {
-                            val live = readTap(n)
+                            val live = readTap(n, name)
                             CapabilityCheck.assertScope(
                                 request,
                                 "tap",
@@ -243,7 +257,7 @@ class CatalogAPIController {
                         else
                             CatalogOps.execute(members.pipelines.map(_.name)) { n =>
                                 trackDenied(denied, n) {
-                                    val live = readPipeline(n)
+                                    val live = readPipeline(n, name)
                                     CapabilityCheck.assertScope(
                                         request,
                                         "pipeline",
@@ -259,12 +273,13 @@ class CatalogAPIController {
             val failed = Seq.newBuilder[(String, String)]
             failed ++= tapResult.failed
             failed ++= pipelineResult.failed
-            if (hasPlaceholder && CatalogOps.placeholderAction(members.isEmpty, denied.toSeq) != CatalogOps.PlaceholderAction.Skip)
-                removePlaceholder(name, request).foreach(failed += _)
+            val okNames = tapResult.ok ++ pipelineResult.ok
+            if (CatalogOps.placeholderAction(members.isEmpty, denied.toSeq, okNames.nonEmpty) != CatalogOps.PlaceholderAction.Skip)
+                placeholders.foreach(ph => removePlaceholder(ph.name, name, request).foreach(failed += _))
 
             val failures = failed.result()
             val out = new JsonObject
-            out.add(if (m == "detach") "detached" else "deleted", toArray(tapResult.ok ++ pipelineResult.ok))
+            out.add(if (m == "detach") "detached" else "deleted", toArray(okNames))
             out.add("failed", failedArray(failures))
             respond(out, failures)
         } catch {
@@ -299,16 +314,20 @@ class CatalogAPIController {
         (taps, pipelines)
     }
 
-    /** Re-read right before writing so a concurrent status update is not lost. */
-    private def readTap(n: String): TapConfig = {
+    /** Re-read right before writing so a concurrent status update is not
+      * lost, and refuse a member that a concurrent rename or `set_catalog`
+      * has already moved out of `catalog`. */
+    private def readTap(n: String, catalog: String): TapConfig = {
         val t = TapConfigIO.read(DatrisEnvironment.current.tapTableName, n)
         if (t == null) throw new DatrisException("Tap " + n + " no longer exists")
+        CatalogOps.requireInCatalog(n, t.catalog, catalog)
         t
     }
 
-    private def readPipeline(n: String): PipelineConfig = {
+    private def readPipeline(n: String, catalog: String): PipelineConfig = {
         val p = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, n)
         if (p == null) throw new DatrisException("Pipeline " + n + " no longer exists")
+        CatalogOps.requireInCatalog(n, p.catalog, catalog)
         p
     }
 
@@ -330,27 +349,30 @@ class CatalogAPIController {
         action: String,
         catalog: String,
         members: CatalogOps.Members,
-        taps: Seq[TapConfig]
+        placeholders: Seq[TapConfig]
     ): Option[ResponseEntity[String]] =
         CatalogOps.placeholderAction(members.isEmpty, Nil) match {
             case CatalogOps.PlaceholderAction.CheckPlaceholderScope =>
-                taps.find(_.name == CatalogOps.Placeholder.name(catalog)).flatMap { ph =>
+                placeholders.view.flatMap { ph =>
                     try {
-                        CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(ph.catalog, ph.createdByKeyLabel))
+                        CapabilityCheck.assertScope(request, "tap", action, CatalogOps.scopeContext(catalog, ph.createdByKeyLabel))
                         None
                     } catch {
                         case e: CapabilityDeniedException =>
                             logger.info("capability scope denial: " + e.getMessage)
                             Some(ResponseEntity.status(HttpStatus.FORBIDDEN).body[String](CatalogOps.capabilityDeniedBody(e.getMessage)))
                     }
-                }
+                }.headOption
             case _ => None
         }
 
-    private def removePlaceholder(catalog: String, request: HttpServletRequest): Option[(String, String)] = {
-        val placeholder = CatalogOps.Placeholder.name(catalog)
+    /** Delete placeholder tap `placeholder` of `catalog`, unless a concurrent
+      * request already removed it or re-pointed it at another catalog. */
+    private def removePlaceholder(placeholder: String, catalog: String, request: HttpServletRequest): Option[(String, String)] = {
         try {
-            new TapAPIController().deleteTapInternal(placeholder, request, checkScope = false)
+            val live = TapConfigIO.read(DatrisEnvironment.current.tapTableName, placeholder)
+            if (live != null && CatalogOps.Placeholder.belongsTo(live, catalog))
+                new TapAPIController().deleteTapInternal(placeholder, request, checkScope = false)
             None
         } catch {
             case e: Exception =>
