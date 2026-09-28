@@ -383,7 +383,7 @@ export class McpComponent implements OnInit {
       category: 'Pipeline Management',
       parameters: [
         { name: 'catalog', type: 'string', description: 'Current catalog name.', required: true, inputType: 'text' },
-        { name: 'new_name', type: 'string', description: 'New catalog name (lowercase letters, digits, _ and -).', required: true, inputType: 'text' }
+        { name: 'new_name', type: 'string', description: 'New catalog name (letters, digits, _ and -).', required: true, inputType: 'text' }
       ],
       playgroundEnabled: true
     },
