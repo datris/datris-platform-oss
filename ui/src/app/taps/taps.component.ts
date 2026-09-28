@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, ElementRef, ViewChildren, QueryList, Input, HostListener } from '@angular/core';
 import { Router } from '@angular/router';
 import { TapService } from '../tap.service';
+import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 import { isColumnDragActive } from '../shared/resizable-columns.directive';
@@ -54,6 +55,11 @@ export class TapsComponent implements OnInit, OnDestroy {
   // shows progress and locks instead of sitting idle.
   deleting = '';
   deleteCatalogTarget = '';
+  /** Two-mode group delete: 'detach' keeps the items (they move to
+   *  Uncataloged), 'cascade' deletes them and their data and requires the
+   *  catalog name typed into `deleteCatalogConfirm`. */
+  deleteCatalogMode: 'detach' | 'cascade' = 'detach';
+  deleteCatalogConfirm = '';
   runCatalogTarget = '';
   runningTap = '';
   pipelines: any[] = [];
@@ -70,7 +76,7 @@ export class TapsComponent implements OnInit, OnDestroy {
   /** Tap currently being migrated between storage backends, or '' for none. */
   migratingTap = '';
 
-  constructor(private tapService: TapService, private router: Router, public auth: AuthService, private codeRepoService: CodeRepoService) { }
+  constructor(private tapService: TapService, private pipelineService: PipelineService, private router: Router, public auth: AuthService, private codeRepoService: CodeRepoService) { }
 
   ngOnInit(): void {
     this.loadTaps();
@@ -84,7 +90,7 @@ export class TapsComponent implements OnInit, OnDestroy {
       // destroy: inline edits, an open move-to-catalog menu, a pending delete
       // confirmation, or an in-flight column-resize drag.
       if (!this.editingName && !this.editingPipeline && !this.editingCronTap &&
-          !this.moveMenuOpen && !this.deleteTarget && !isColumnDragActive()) this.loadTaps();
+          !this.moveMenuOpen && !this.deleteTarget && !this.deleteCatalogTarget && !isColumnDragActive()) this.loadTaps();
     }, 5000);
   }
 
@@ -579,20 +585,93 @@ export class TapsComponent implements OnInit, OnDestroy {
     }
   }
 
-  deleteCatalogTaps(group: {name: string, taps: any[], deleting?: boolean}): void {
-    group.deleting = true;
+  openCatalogDelete(name: string, event: Event): void {
+    event.stopPropagation();
+    this.deleteCatalogTarget = name;
+    this.deleteCatalogMode = 'detach';
+    this.deleteCatalogConfirm = '';
+  }
+
+  cancelCatalogDelete(event?: Event): void {
+    if (event) event.stopPropagation();
     this.deleteCatalogTarget = '';
+    this.deleteCatalogMode = 'detach';
+    this.deleteCatalogConfirm = '';
+  }
+
+  /** Cascade needs the exact (case-sensitive) catalog name typed. */
+  canConfirmCatalogDelete(group: {name: string, deleting?: boolean}): boolean {
+    if (group.deleting) return false;
+    return this.deleteCatalogMode === 'detach' || this.deleteCatalogConfirm === group.name;
+  }
+
+  /** Delete a whole catalog through the server: "Keep items" moves every tap
+   *  and pipeline in it to Uncataloged; "Delete items and their data"
+   *  deletes them. Uncataloged is not a catalog and has no group delete. */
+  deleteCatalogTaps(group: {name: string, taps: any[], deleting?: boolean}): void {
+    if (group.name === 'Uncataloged') return;
+    const mode = this.deleteCatalogMode;
+    if (mode === 'cascade' && this.deleteCatalogConfirm !== group.name) return;
+    const confirm = mode === 'cascade' ? this.deleteCatalogConfirm : undefined;
+    group.deleting = true;
+    const finish = () => { group.deleting = false; this.cancelCatalogDelete(); this.loadTaps(); };
+    this.pipelineService.deleteCatalog(group.name, mode, confirm).subscribe({
+      next: (res) => {
+        const failed: any[] = (res && Array.isArray(res.failed)) ? res.failed : [];
+        if (failed.length > 0) {
+          alert(`Deleting catalog '${group.name}': ${failed.length} item(s) could not be changed:\n` +
+            failed.map(f => `${f && f.name}: ${f && f.error}`).join('\n'));
+        }
+        finish();
+      },
+      error: (err) => {
+        if (err && err.status === 404) {
+          // Older server without the catalog endpoint.
+          this.cancelCatalogDelete();
+          if (mode === 'cascade') this.legacyDeleteCatalogTaps(group);
+          else this.legacyDetachCatalogTaps(group);
+          return;
+        }
+        alert('Failed to delete catalog: ' + ((err && err.error && err.error.error) || (err && err.message) || 'unknown error'));
+        finish();
+      }
+    });
+  }
+
+  /** Pre-endpoint cascade: per-tap delete plus the placeholder. Kept only for
+   *  servers older than the catalog endpoint; remove in the release after the
+   *  one that ships catalog rename/delete. */
+  private legacyDeleteCatalogTaps(group: {name: string, taps: any[], deleting?: boolean}): void {
     const names = group.taps.map(t => t.name);
-    // Also delete the catalog placeholder if it exists
-    if (group.name !== 'Uncataloged') {
-      names.push('__catalog__' + group.name);
-    }
+    names.push('__catalog__' + group.name);
     let completed = 0;
     for (const name of names) {
       this.tapService.deleteTap(name).subscribe({
         next: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadTaps(); } },
         error: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadTaps(); } }
       });
+    }
+  }
+
+  /** Pre-endpoint "Keep items": clear the catalog on each tap in this group.
+   *  Never deletes a tap. Remove with `legacyDeleteCatalogTaps`. */
+  private legacyDetachCatalogTaps(group: {name: string, taps: any[], deleting?: boolean}): void {
+    const taps = group.taps;
+    if (taps.length === 0) { group.deleting = false; this.loadTaps(); return; }
+    let completed = 0;
+    let failed = 0;
+    const finish = () => { group.deleting = false; this.loadTaps(); };
+    const done = (ok: boolean) => {
+      completed++;
+      if (!ok) failed++;
+      if (completed < taps.length) return;
+      // Old servers only create the exact-name placeholder; drop it once
+      // every item is out so no empty catalog is left behind.
+      if (failed === 0) this.tapService.deleteTap('__catalog__' + group.name).subscribe({ next: finish, error: finish });
+      else finish();
+    };
+    for (const tap of taps) {
+      this.tapService.createOrUpdateTap({ ...tap, catalog: null }).subscribe({ next: () => done(true), error: () => done(false) });
     }
   }
 

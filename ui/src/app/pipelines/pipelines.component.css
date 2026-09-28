@@ -839,3 +839,27 @@ tbody tr:last-child td {
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
+
+.catalog-delete-confirm {
+  flex-wrap: wrap;
+}
+
+.catalog-del-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+.catalog-del-confirm-input {
+  max-width: 200px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--bg-input, transparent);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+  border-radius: 4px;
+}

@@ -18,8 +18,21 @@ interface CatalogInfo {
   pipelinesExpanded?: boolean;
   taps: any[];
   pipelines: any[];
+  /** Names of the __catalog__ placeholder taps whose `catalog` FIELD is this
+   *  catalog. A legacy or suffixed placeholder can be named differently from
+   *  the catalog, so cleanup goes by field, never by '__catalog__' + name. */
+  placeholders?: string[];
   deleting?: boolean;
 }
+
+interface CatalogOpFailure {
+  name: string;
+  error: string;
+}
+
+/** Server message for a member that moved to another catalog while a catalog
+ *  rename/delete was running. The UI tells the user to refresh. */
+const CONCURRENT_MOVE_PHRASE = 'no longer in catalog';
 
 @Component({
     selector: 'app-data-catalog',
@@ -33,6 +46,24 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   showCreateModal = false;
   newCatalogName = '';
   deleteTarget = '';
+  /** Two-mode catalog delete: 'detach' keeps the items (they move to
+   *  Uncataloged), 'cascade' deletes them and their data and requires the
+   *  catalog name typed into `confirmText`. */
+  deleteMode: 'detach' | 'cascade' = 'detach';
+  confirmText = '';
+  // Inline catalog rename: the card being edited, the draft value, and the
+  // card whose rename request is in flight.
+  renameTarget = '';
+  renameValue = '';
+  renamingCatalog = '';
+  /** Per-item failures from the last catalog rename/delete (a 207 body's
+   *  `failed[]`). Persistent until dismissed or the next catalog operation. */
+  opFailures: CatalogOpFailure[] = [];
+  opFailuresLabel = '';
+  /** API keys whose catalog scope still names a catalog that was just renamed.
+   *  Persistent until dismissed: the user has to update them by hand. */
+  affectedKeys: string[] = [];
+  affectedKeysCatalog = '';
   // Per-item delete confirm. Key format: "tap:<name>" or "pipeline:<name>".
   deleteItemTarget = '';
   deletingItem = '';
@@ -67,7 +98,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       // Pause auto-refresh during interactions a re-render would destroy: an
       // open move-contents menu, a pending delete confirmation, or a
       // column-resize drag in one of the embedded tables.
-      if (this.moveCatalogMenuOpen || this.deleteTarget || isColumnDragActive()) return;
+      if (this.moveCatalogMenuOpen || this.deleteTarget || this.renameTarget || isColumnDragActive()) return;
       this.loadCatalogs();
     }, 10000);
     // The curation chat reloads the tree as soon as it moves an item, so the
@@ -147,6 +178,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
           const catName = tap.catalog || tap.name.replace('__catalog__', '');
           if (catName && !catalogMap.has(catName)) {
             catalogMap.set(catName, { name: catName, tapCount: 0, pipelineCount: 0, taps: [], pipelines: [] });
+          }
+          if (catName) {
+            const cat = catalogMap.get(catName)!;
+            (cat.placeholders = cat.placeholders || []).push(tap.name);
           }
           continue;
         }
@@ -264,20 +299,71 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     });
   }
 
-  deleteCatalog(catalog: CatalogInfo): void {
-    catalog.deleting = true;
+  openDelete(catalogName: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.deleteTarget = catalogName;
+    this.deleteMode = 'detach';
+    this.confirmText = '';
+  }
+
+  cancelDelete(): void {
     this.deleteTarget = '';
+    this.deleteMode = 'detach';
+    this.confirmText = '';
+  }
 
-    // Uncataloged is a pseudo-catalog; it has no placeholder tap to clean up.
-    const hasPlaceholder = catalog.name !== 'Uncataloged';
-    let remaining = catalog.taps.length + catalog.pipelines.length + (hasPlaceholder ? 1 : 0);
+  /** Delete button state: cascade needs the exact (case-sensitive) name typed. */
+  canConfirmDelete(catalog: CatalogInfo): boolean {
+    if (catalog.deleting) return false;
+    return this.deleteMode === 'detach' || this.confirmText === catalog.name;
+  }
 
-    if (remaining === 0) {
+  /** Delete a named catalog through the server. "Keep items" (detach) moves
+   *  every member to Uncataloged; "Delete items and their data" (cascade)
+   *  deletes them. Uncataloged is not a catalog and cannot be deleted here. */
+  deleteCatalog(catalog: CatalogInfo): void {
+    if (catalog.name === 'Uncataloged') return;
+    const mode = this.deleteMode;
+    if (mode === 'cascade' && this.confirmText !== catalog.name) return;
+    catalog.deleting = true;
+    this.clearOpBanners();
+    const finish = () => {
       catalog.deleting = false;
+      this.cancelDelete();
+      this.loadCatalogs();
+    };
+    this.pipelineService.deleteCatalog(catalog.name, mode, mode === 'cascade' ? this.confirmText : undefined).subscribe({
+      next: (res) => {
+        this.showOpFailures(`Deleting catalog '${catalog.name}'`, res && res.failed);
+        finish();
+      },
+      error: (err) => {
+        if (err && err.status === 404) {
+          // Older server without the catalog endpoint.
+          catalog.deleting = false;
+          this.cancelDelete();
+          if (mode === 'cascade') this.legacyDeleteCatalog(catalog);
+          else this.moveAll(catalog, 'Uncataloged');
+          return;
+        }
+        this.showMoveError(this.errText(err));
+        finish();
+      }
+    });
+  }
+
+  /** Pre-endpoint cascade delete: per-item fan-out plus every placeholder whose
+   *  catalog field matches. Kept only for servers older than the catalog
+   *  endpoint; remove in the release after the one that ships catalog
+   *  rename/delete. */
+  private legacyDeleteCatalog(catalog: CatalogInfo): void {
+    const placeholders = catalog.placeholders || [];
+    let remaining = catalog.taps.length + catalog.pipelines.length + placeholders.length;
+    if (remaining === 0) {
       this.loadCatalogs();
       return;
     }
-
+    catalog.deleting = true;
     const done = () => {
       remaining--;
       if (remaining <= 0) {
@@ -285,18 +371,110 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         this.loadCatalogs();
       }
     };
-
-    if (hasPlaceholder) {
-      const placeholderName = '__catalog__' + catalog.name;
-      this.tapService.deleteTap(placeholderName).subscribe({ next: done, error: done });
+    for (const name of placeholders) {
+      this.tapService.deleteTap(name).subscribe({ next: done, error: done });
     }
-
     for (const tap of catalog.taps) {
       this.tapService.deleteTap(tap.name).subscribe({ next: done, error: done });
     }
     for (const pipeline of catalog.pipelines) {
       this.pipelineService.deletePipeline(pipeline.name).subscribe({ next: done, error: done });
     }
+  }
+
+  // ── Catalog rename ─────────────────────────────────────────────────────
+
+  startRename(catalog: CatalogInfo, event?: MouseEvent): void {
+    if (event) event.stopPropagation();
+    if (catalog.name === 'Uncataloged') return;
+    this.renameTarget = catalog.name;
+    this.renameValue = catalog.name;
+    // Focus the editor once it renders so the user can type straight away.
+    setTimeout(() => {
+      const input = document.querySelector('input.rename-catalog-input') as HTMLInputElement | null;
+      if (input) { input.focus(); input.select(); }
+    });
+  }
+
+  cancelRename(): void {
+    this.renameTarget = '';
+    this.renameValue = '';
+  }
+
+  /** Blur applies the label rule so the user sees the name that will be sent. */
+  sanitizeRenameValue(): void {
+    if (this.renameTarget) this.renameValue = sanitizeLabel(this.renameValue || '');
+  }
+
+  commitRename(catalog: CatalogInfo): void {
+    const newName = sanitizeLabel(this.renameValue || '');
+    if (!newName) {
+      this.showMoveError('A catalog name needs at least one lowercase letter, digit, _ or -.');
+      return;
+    }
+    if (newName === catalog.name) {
+      this.cancelRename();
+      return;
+    }
+    const oldName = catalog.name;
+    this.cancelRename();
+    this.clearOpBanners();
+    this.renamingCatalog = oldName;
+    this.pendingAutoExpand = catalog.expanded ? newName : '';
+    this.pipelineService.renameCatalog(oldName, newName).subscribe({
+      next: (res) => {
+        this.renamingCatalog = '';
+        this.showOpFailures(`Renaming catalog '${oldName}' to '${newName}'`, res && res.failed);
+        const keys: string[] = (res && Array.isArray(res.affectedKeys)) ? res.affectedKeys : [];
+        if (keys.length > 0) {
+          this.affectedKeys = keys;
+          this.affectedKeysCatalog = oldName;
+        }
+        this.loadCatalogs();
+      },
+      error: (err) => {
+        this.renamingCatalog = '';
+        this.pendingAutoExpand = '';
+        if (err && err.status === 404) {
+          // Older server without the catalog endpoint: relabel item by item.
+          this.moveAll(catalog, newName);
+          return;
+        }
+        const clashes: string[] = (err && err.error && Array.isArray(err.error.clashes)) ? err.error.clashes : [];
+        if (err && err.status === 409 && clashes.length > 0) {
+          this.showMoveError(this.errText(err) + ' Clashing: ' + clashes.join(', ') + '. Rename one of them first.');
+        } else {
+          this.showMoveError(this.errText(err));
+        }
+      }
+    });
+  }
+
+  private clearOpBanners(): void {
+    this.opFailures = [];
+    this.opFailuresLabel = '';
+  }
+
+  private showOpFailures(label: string, failed: any): void {
+    const list: CatalogOpFailure[] = Array.isArray(failed)
+      ? failed.map((f: any) => ({ name: String(f && f.name || ''), error: String(f && f.error || 'unknown error') }))
+      : [];
+    this.opFailures = list;
+    this.opFailuresLabel = list.length > 0 ? label : '';
+  }
+
+  /** True when a failure says the item moved to another catalog mid-operation. */
+  get hasConcurrentMoveFailure(): boolean {
+    return this.opFailures.some(f => (f.error || '').toLowerCase().includes(CONCURRENT_MOVE_PHRASE));
+  }
+
+  dismissOpFailures(): void {
+    this.clearOpBanners();
+  }
+
+  dismissAffectedKeys(): void {
+    this.affectedKeys = [];
+    this.affectedKeysCatalog = '';
   }
 
   deleteTap(name: string): void {
@@ -424,7 +602,9 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   /** Error bodies are JSON ({"error": "..."}), which Angular parses into an
    *  object — concatenating it renders "[object Object]" and hides the remedy. */
   private errText(err: any): string {
-    return (err && err.error && err.error.error) || (err && err.error) || (err && err.message) || 'unknown error';
+    if (err && err.error && typeof err.error.error === 'string') return err.error.error;
+    if (err && typeof err.error === 'string' && err.error) return err.error;
+    return (err && err.message) || 'unknown error';
   }
 
   private showMoveError(msg: string): void {
@@ -491,10 +671,37 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   moveCatalogContents(source: CatalogInfo, targetCatalog: string, event: MouseEvent): void {
     event.stopPropagation();
     this.moveCatalogMenuOpen = '';
+    this.moveAll(source, targetCatalog);
+  }
 
+  /** Relabel every tap and pipeline in `source` into `targetCatalog`, one
+   *  save per item. When every save succeeds and the source is a named
+   *  catalog, its placeholder(s) are removed by catalog FIELD so no empty card
+   *  remains; on any failure the placeholder is left alone and the list
+   *  reloads. Also the older-server fallback for rename (new name as target)
+   *  and for "Keep items" delete (Uncataloged as target). */
+  private moveAll(source: CatalogInfo, targetCatalog: string): void {
     const realTaps = source.taps.filter(t => !(t.name || '').startsWith('__catalog__'));
     const total = realTaps.length + source.pipelines.length;
-    if (total === 0) return;
+    const removeSourcePlaceholders = () => {
+      const placeholders = source.name === 'Uncataloged' ? [] : (source.placeholders || []);
+      let left = placeholders.length;
+      if (left === 0) {
+        this.movingCatalog = '';
+        this.loadCatalogs();
+        return;
+      }
+      const one = () => {
+        left--;
+        if (left <= 0) {
+          this.movingCatalog = '';
+          this.loadCatalogs();
+        }
+      };
+      for (const name of placeholders) {
+        this.tapService.deleteTap(name).subscribe({ next: one, error: one });
+      }
+    };
 
     // Moving to the Uncataloged pseudo-catalog means clearing the catalog
     // assignment on each item; the server stores no literal "Uncataloged".
@@ -502,26 +709,37 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
     this.movingCatalog = source.name;
     this.pendingAutoExpand = targetCatalog;
+    if (total === 0) {
+      removeSourcePlaceholders();
+      return;
+    }
     let completed = 0;
-    const done = () => {
+    let failed = 0;
+    const done = (ok: boolean) => {
       completed++;
+      if (!ok) failed++;
       if (completed === total) {
-        this.movingCatalog = '';
-        this.loadCatalogs();
+        if (failed === 0) {
+          removeSourcePlaceholders();
+        } else {
+          this.movingCatalog = '';
+          this.loadCatalogs();
+        }
       }
     };
 
     for (const tap of realTaps) {
       this.tapService.createOrUpdateTap({ ...tap, catalog: catalogValue }).subscribe({
-        next: done,
+        next: () => done(true),
         // Same as the single-tap move: surface a refused save (e.g. the 400 on
         // an unparseable stored cron) rather than counting it as done silently.
-        error: (err) => { this.showMoveError(this.errText(err)); done(); }
+        error: (err) => { this.showMoveError(this.errText(err)); done(false); }
       });
     }
     for (const pipeline of source.pipelines) {
       this.pipelineService.createPipeline({ ...pipeline, catalog: catalogValue }).subscribe({
-        next: done, error: done
+        next: () => done(true),
+        error: (err) => { this.showMoveError(this.errText(err)); done(false); }
       });
     }
   }

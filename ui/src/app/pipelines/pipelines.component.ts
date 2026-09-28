@@ -45,6 +45,11 @@ export class PipelinesComponent implements OnInit, OnDestroy {
   private refreshInterval: any;
 
   deleteCatalogTarget = '';
+  /** Two-mode group delete: 'detach' keeps the items (they move to
+   *  Uncataloged), 'cascade' deletes them and their data and requires the
+   *  catalog name typed into `deleteCatalogConfirm`. */
+  deleteCatalogMode: 'detach' | 'cascade' = 'detach';
+  deleteCatalogConfirm = '';
 
   // Destination-typing dialog (the Catalog "text" badge). Holds the pipeline
   // name the dialog is open for, or '' when closed.
@@ -68,7 +73,7 @@ export class PipelinesComponent implements OnInit, OnDestroy {
       // Pause auto-refresh during any row-level interaction a re-render would
       // destroy: an inline name edit, an open move-to-catalog menu, a pending
       // or in-flight delete, or an in-flight column-resize drag.
-      if (this.editingName || this.moveMenuOpen || this.deleteTarget || isColumnDragActive()) return;
+      if (this.editingName || this.moveMenuOpen || this.deleteTarget || this.deleteCatalogTarget || isColumnDragActive()) return;
       this.loadPipelines();
       this.loadTaps();
     }, 5000);
@@ -262,16 +267,93 @@ export class PipelinesComponent implements OnInit, OnDestroy {
     this.deleteTarget = '';
   }
 
-  deleteCatalogPipelines(group: {name: string, pipelines: any[], deleting?: boolean}): void {
-    group.deleting = true;
+  openCatalogDelete(name: string, event: Event): void {
+    event.stopPropagation();
+    this.deleteCatalogTarget = name;
+    this.deleteCatalogMode = 'detach';
+    this.deleteCatalogConfirm = '';
+  }
+
+  cancelCatalogDelete(event?: Event): void {
+    if (event) event.stopPropagation();
     this.deleteCatalogTarget = '';
+    this.deleteCatalogMode = 'detach';
+    this.deleteCatalogConfirm = '';
+  }
+
+  /** Cascade needs the exact (case-sensitive) catalog name typed. */
+  canConfirmCatalogDelete(group: {name: string, deleting?: boolean}): boolean {
+    if (group.deleting) return false;
+    return this.deleteCatalogMode === 'detach' || this.deleteCatalogConfirm === group.name;
+  }
+
+  /** Delete a whole catalog through the server: "Keep items" moves every tap
+   *  and pipeline in it to Uncataloged; "Delete items and their data"
+   *  deletes them. Uncataloged is not a catalog and has no group delete. */
+  deleteCatalogPipelines(group: {name: string, pipelines: any[], deleting?: boolean}): void {
+    if (group.name === 'Uncataloged') return;
+    const mode = this.deleteCatalogMode;
+    if (mode === 'cascade' && this.deleteCatalogConfirm !== group.name) return;
+    const confirm = mode === 'cascade' ? this.deleteCatalogConfirm : undefined;
+    group.deleting = true;
+    const finish = () => { group.deleting = false; this.cancelCatalogDelete(); this.loadPipelines(); };
+    this.pipelineService.deleteCatalog(group.name, mode, confirm).subscribe({
+      next: (res) => {
+        const failed: any[] = (res && Array.isArray(res.failed)) ? res.failed : [];
+        if (failed.length > 0) {
+          alert(`Deleting catalog '${group.name}': ${failed.length} item(s) could not be changed:\n` +
+            failed.map(f => `${f && f.name}: ${f && f.error}`).join('\n'));
+        }
+        finish();
+      },
+      error: (err) => {
+        if (err && err.status === 404) {
+          // Older server without the catalog endpoint.
+          this.cancelCatalogDelete();
+          if (mode === 'cascade') this.legacyDeleteCatalogPipelines(group);
+          else this.legacyDetachCatalogPipelines(group);
+          return;
+        }
+        alert('Failed to delete catalog: ' + ((err && err.error && err.error.error) || (err && err.message) || 'unknown error'));
+        finish();
+      }
+    });
+  }
+
+  /** Pre-endpoint cascade: per-pipeline delete. Kept only for servers older
+   *  than the catalog endpoint; remove in the release after the one that
+   *  ships catalog rename/delete. */
+  private legacyDeleteCatalogPipelines(group: {name: string, pipelines: any[], deleting?: boolean}): void {
     const names = group.pipelines.map(p => p.name);
+    if (names.length === 0) { group.deleting = false; this.loadPipelines(); return; }
     let completed = 0;
     for (const name of names) {
       this.pipelineService.deletePipeline(name).subscribe({
         next: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadPipelines(); } },
         error: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadPipelines(); } }
       });
+    }
+  }
+
+  /** Pre-endpoint "Keep items": clear the catalog on each pipeline in this
+   *  group. Never deletes a pipeline. Remove with `legacyDeleteCatalogPipelines`. */
+  private legacyDetachCatalogPipelines(group: {name: string, pipelines: any[], deleting?: boolean}): void {
+    const pipelines = group.pipelines;
+    if (pipelines.length === 0) { group.deleting = false; this.loadPipelines(); return; }
+    let completed = 0;
+    let failed = 0;
+    const finish = () => { group.deleting = false; this.loadPipelines(); };
+    const done = (ok: boolean) => {
+      completed++;
+      if (!ok) failed++;
+      if (completed < pipelines.length) return;
+      // Old servers only create the exact-name placeholder; drop it once
+      // every item is out so no empty catalog is left behind.
+      if (failed === 0) this.tapService.deleteTap('__catalog__' + group.name).subscribe({ next: finish, error: finish });
+      else finish();
+    };
+    for (const pipeline of pipelines) {
+      this.pipelineService.createPipeline({ ...pipeline, catalog: null }).subscribe({ next: () => done(true), error: () => done(false) });
     }
   }
 

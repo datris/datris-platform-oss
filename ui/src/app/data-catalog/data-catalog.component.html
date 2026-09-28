@@ -29,6 +29,30 @@
     </button>
   </div>
 
+  <div class="affected-keys-banner" *ngIf="affectedKeys.length > 0">
+    <span class="material-icons">vpn_key</span>
+    <span>API keys scoped to '{{ affectedKeysCatalog }}' no longer match: {{ affectedKeys.join(', ') }}. Update them in Configuration &rarr; Keys.</span>
+    <button class="move-error-close" (click)="dismissAffectedKeys()" title="Dismiss">
+      <span class="material-icons">close</span>
+    </button>
+  </div>
+
+  <div class="op-failures-banner" *ngIf="opFailures.length > 0">
+    <div class="op-failures-head">
+      <span class="material-icons">warning</span>
+      <span>{{ opFailuresLabel }}: {{ opFailures.length }} item{{ opFailures.length !== 1 ? 's' : '' }} could not be changed.</span>
+      <button class="move-error-close" (click)="dismissOpFailures()" title="Dismiss">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <ul class="op-failures-list">
+      <li *ngFor="let f of opFailures"><strong>{{ f.name }}</strong>: {{ f.error }}</li>
+    </ul>
+    <div class="op-failures-hint" *ngIf="hasConcurrentMoveFailure">
+      Some items were moved to another catalog while this ran. Refresh the page to see where they are now.
+    </div>
+  </div>
+
   <div class="empty-state" *ngIf="!loading && catalogs.length === 0">
     <span class="material-icons empty-icon">folder_open</span>
     <p>No catalogs yet. Use <strong>Create Catalog</strong> above, or assign a tap or pipeline to a new catalog when creating it.</p>
@@ -39,7 +63,29 @@
       <div class="catalog-card-header" (click)="cat.expanded = !cat.expanded">
         <span class="material-icons expand-icon">{{ cat.expanded ? 'expand_more' : 'chevron_right' }}</span>
         <span class="material-icons catalog-icon">{{ cat.name === 'Uncataloged' ? 'folder_off' : 'folder' }}</span>
-        <span class="catalog-name">{{ cat.name }}</span>
+        <span class="catalog-name" [hidden]="renameTarget === cat.name">{{ cat.name }}</span>
+        <span class="rename-editor" *ngIf="renameTarget === cat.name" (click)="$event.stopPropagation()">
+          <input class="form-input rename-catalog-input" type="text"
+                 [(ngModel)]="renameValue"
+                 (keydown.enter)="commitRename(cat)"
+                 (keydown.escape)="cancelRename()"
+                 (blur)="sanitizeRenameValue()"
+                 aria-label="New catalog name">
+          <button class="rename-ok" (click)="commitRename(cat)" title="Rename">
+            <span class="material-icons">check</span>
+          </button>
+          <button class="rename-cancel" (click)="cancelRename()" title="Cancel">
+            <span class="material-icons">close</span>
+          </button>
+          <span class="rename-rule">Lowercase letters, digits, _ and - only</span>
+        </span>
+        <button class="rename-catalog-btn"
+                *ngIf="auth.canWrite() && cat.name !== 'Uncataloged' && renameTarget !== cat.name && deleteTarget !== cat.name"
+                (click)="startRename(cat, $event)"
+                [disabled]="renamingCatalog === cat.name || movingCatalog === cat.name"
+                title="Rename catalog">
+          <span class="material-icons">{{ renamingCatalog === cat.name ? 'hourglass_empty' : 'edit' }}</span>
+        </button>
         <div class="catalog-counts">
           <span class="catalog-count">{{ cat.tapCount }} tap{{ cat.tapCount !== 1 ? 's' : '' }}</span>
           <span class="catalog-count-sep">&middot;</span>
@@ -61,17 +107,28 @@
             </button>
           </div>
         </span>
-        <button class="delete-catalog-btn" *ngIf="auth.canWrite() && deleteTarget !== cat.name"
-                (click)="deleteTarget = cat.name; $event.stopPropagation()"
-                [title]="cat.name === 'Uncataloged' ? 'Delete all uncataloged taps and pipelines' : 'Delete catalog'">
+        <button class="delete-catalog-btn"
+                *ngIf="auth.canWrite() && cat.name !== 'Uncataloged' && deleteTarget !== cat.name && renameTarget !== cat.name"
+                (click)="openDelete(cat.name, $event)"
+                title="Delete catalog">
           <span class="material-icons">delete</span>
         </button>
         <div class="delete-confirm" *ngIf="deleteTarget === cat.name" (click)="$event.stopPropagation()">
-          <span class="del-confirm-label" *ngIf="cat.name === 'Uncataloged'">Delete ALL uncataloged items?</span>
-          <button class="del-opt del-yes" (click)="deleteCatalog(cat)" [disabled]="cat.deleting">
+          <label class="del-mode">
+            <input type="radio" [name]="'del-mode-' + cat.name" value="detach" [(ngModel)]="deleteMode">
+            Keep items (move to Uncataloged)
+          </label>
+          <label class="del-mode">
+            <input type="radio" [name]="'del-mode-' + cat.name" value="cascade" [(ngModel)]="deleteMode">
+            Delete items and their data
+          </label>
+          <input *ngIf="deleteMode === 'cascade'" type="text" class="form-input del-confirm-input"
+                 [(ngModel)]="confirmText" [placeholder]="'Type ' + cat.name + ' to confirm'"
+                 aria-label="Type the catalog name to confirm">
+          <button class="del-opt del-yes" (click)="deleteCatalog(cat)" [disabled]="!canConfirmDelete(cat)">
             <span class="material-icons">{{ cat.deleting ? 'hourglass_empty' : 'delete_forever' }}</span> {{ cat.deleting ? '...' : 'Delete' }}
           </button>
-          <button class="del-opt del-cancel" (click)="deleteTarget = ''">
+          <button class="del-opt del-cancel" (click)="cancelDelete()">
             <span class="material-icons">close</span>
           </button>
         </div>
