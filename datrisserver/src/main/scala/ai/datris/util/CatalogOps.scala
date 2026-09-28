@@ -49,8 +49,11 @@ object CatalogOps {
         }
     }
 
-    /** The UI's label rule (`ui/src/app/shared/sanitize.ts` sanitizeLabel). */
-    val LabelRule: Regex = "^[a-z0-9_-]+$".r
+    /** Catalog name rule, matching the UI's `sanitizeCatalogName`
+      * (`ui/src/app/shared/sanitize.ts`): letters of either case, digits, `_`
+      * and `-`. Catalog names are display groupings, so case is kept; all
+      * matching stays case-sensitive. */
+    val LabelRule: Regex = "^[A-Za-z0-9_-]+$".r
 
     val Uncataloged: String = "Uncataloged"
 

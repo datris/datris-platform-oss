@@ -10,7 +10,7 @@
  *   - `button.rename-catalog-btn` (pencil). Click -> `startRename(cat)` turns
  *     the name into `input.rename-catalog-input` pre-filled with the name.
  *     Enter commits via `commitRename(cat)`, Escape cancels. Commit runs
- *     `sanitizeLabel` and refuses empty/unchanged values, then calls
+ *     `sanitizeCatalogName` (case kept) and refuses empty/unchanged values, then calls
  *     `PipelineService.renameCatalog(old, sanitized)`.
  *   - `button.delete-catalog-btn` opens `.delete-confirm` with two radios
  *     `input[type=radio][value=detach]` (default, "Keep items") and
@@ -198,13 +198,29 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
 
   // ── Acceptance 2 ────────────────────────────────────────────────────────
 
-  it('rename input is corrected by sanitizeLabel before submit', fa(() => {
+  it('rename input is corrected by sanitizeCatalogName before submit', fa(() => {
     settle();
     const input = openRename('e2e_a');
     if (!input) return;
     submitRename(input, '  My New--Cat!! ');
     expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
-    expect(pipeSvc.renameCatalog.calls.mostRecent().args.slice(0, 2)).toEqual(['e2e_a', 'my_new-cat']);
+    expect(pipeSvc.renameCatalog.calls.mostRecent().args.slice(0, 2)).toEqual(['e2e_a', 'My_New-Cat']);
+  }));
+
+  it('a mixed-case rename such as Sales_Q3 is sent unchanged', fa(() => {
+    settle();
+    const input = openRename('e2e_a');
+    if (!input) return;
+    submitRename(input, 'Sales_Q3');
+    expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    expect(pipeSvc.renameCatalog.calls.mostRecent().args.slice(0, 2)).toEqual(['e2e_a', 'Sales_Q3']);
+  }));
+
+  it('the rename editor shows the name rule', fa(() => {
+    settle();
+    const input = openRename('e2e_a');
+    if (!input) return;
+    expect(card('e2e_a').querySelector('.rename-rule')?.textContent || '').toContain('Letters, digits, _ and - only');
   }));
 
   it('rename refuses an unchanged or empty-after-sanitize value without calling the server', fa(() => {
@@ -518,15 +534,15 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     settle();
     const input = openRename('e2e_a');
     if (!input) return;
-    submitRename(input, 'DatrisFund');
+    submitRename(input, 'datrisfund');
     expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
     expect(el.querySelector('.move-error-banner')?.textContent || '')
-      .toContain("'DatrisFund' already exists with different capitalisation");
+      .toContain("'DatrisFund' already exists with different capitalisation. Catalog names are case-sensitive, so this would create a second catalog.");
     const still = el.querySelector('input.rename-catalog-input') as HTMLInputElement | null;
     expect(still).withContext('editor stays open').not.toBeNull();
   }));
 
-  it('a legacy mixed-case catalog can still be renamed to its own lowercase form', fa(() => {
+  it('a mixed-case catalog can be renamed to its own different-case form', fa(() => {
     tapsData.push({ name: '__catalog__DatrisFund', catalog: 'DatrisFund' });
     settle();
     const input = openRename('DatrisFund');
@@ -564,7 +580,7 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     settle();
     const input = openRename('e2e_a');
     if (!input) return;
-    submitRename(input, 'DatrisFund');
+    submitRename(input, 'datrisfund');
     expect(el.querySelector('.move-error-banner')).withContext('refusal shown').not.toBeNull();
     const again = el.querySelector('input.rename-catalog-input') as HTMLInputElement;
     submitRename(again, 'e2e_c');
@@ -603,5 +619,15 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     openDelete('e2e_a');
     expect(el.querySelector('.move-error-banner')).withContext('cleared by opening delete').toBeNull();
     expect(el.querySelector('.affected-keys-banner')).withContext('affected-keys banner persists').not.toBeNull();
+  }));
+
+  it('Create Catalog keeps case (sanitizeCatalogName)', fa(() => {
+    settle();
+    component.newCatalogName = '  Sales Q3! ';
+    component.createCatalog();
+    settle();
+    const sent = tapSvc.createOrUpdateTap.calls.mostRecent().args[0];
+    expect(sent.name).toBe('__catalog__Sales_Q3');
+    expect(sent.catalog).toBe('Sales_Q3');
   }));
 });

@@ -1761,7 +1761,7 @@ def _base_tools():
                 "and the empty-catalog placeholder moves with it. Call this ONLY when the user has explicitly asked to rename that catalog — "
                 "never to emulate a rename by calling set_catalog on each item. "
                 "Renaming into a catalog that already exists merges the two; the call is refused with the list of clashing names if an item "
-                "with the same name already exists there. Uncataloged cannot be renamed, and `new_name` must use lowercase letters, digits, "
+                "with the same name already exists there. Uncataloged cannot be renamed, and `new_name` must use letters, digits, "
                 "'_' and '-' only. Items that could not be moved come back under `failed` (the rest still move); report them to the user. "
                 "API keys whose capabilities are scoped to the old catalog name are listed under `affectedKeys` — they keep the old scope and "
                 "no longer match the renamed items, so tell the user an administrator may need to update those keys."
@@ -1775,7 +1775,7 @@ def _base_tools():
                     },
                     "new_name": {
                         "type": "string",
-                        "description": "New catalog name (lowercase letters, digits, '_' and '-')."
+                        "description": "New catalog name (letters, digits, '_' and '-')."
                     },
                 },
                 "required": ["catalog", "new_name"]

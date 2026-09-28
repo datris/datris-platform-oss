@@ -77,7 +77,7 @@
           <button class="rename-cancel" (click)="cancelRename()" title="Cancel">
             <span class="material-icons">close</span>
           </button>
-          <span class="rename-rule">Lowercase letters, digits, _ and - only</span>
+          <span class="rename-rule">Letters, digits, _ and - only</span>
         </span>
         <button class="rename-catalog-btn"
                 *ngIf="auth.canWrite() && cat.name !== 'Uncataloged' && renameTarget !== cat.name && deleteTarget !== cat.name"

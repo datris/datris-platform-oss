@@ -903,8 +903,8 @@ paths:
               properties:
                 newName:
                   type: string
-                  pattern: '^[a-z0-9_-]+$'
-                  description: New catalog name (lowercase letters, digits, `_` and `-`).
+                  pattern: '^[A-Za-z0-9_-]+$'
+                  description: New catalog name (letters, digits, `_` and `-`; mixed case allowed). Catalog names are matched case-sensitively.
       responses:
         '200':
           description: Every member renamed

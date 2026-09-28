@@ -14,7 +14,7 @@ import org.scalatest.funsuite.AnyFunSuite
   * API this spec pins (pure, no Mongo):
   *   - `CatalogOps.Placeholder.prefix == "__catalog__"`
   *   - `CatalogOps.isReserved(name: String): Boolean`
-  *   - `CatalogOps.LabelRule` — the pattern `^[a-z0-9_-]+$`
+  *   - `CatalogOps.LabelRule` — the pattern `^[A-Za-z0-9_-]+$` (mixed case allowed)
   *   - `CatalogOps.members(taps: Seq[TapConfig], pipelines: Seq[PipelineConfig], catalog: String)`
   *     returns a value with `.taps: Seq[TapConfig]` and `.pipelines: Seq[PipelineConfig]`
   *   - `CatalogOps.clashes(members, targetTaps: Seq[TapConfig], targetPipelines: Seq[PipelineConfig]): Seq[String]`
@@ -55,11 +55,13 @@ class CatalogOpsSpec extends AnyFunSuite {
         assert(!CatalogOps.isReserved("uncataloged_archive"))
     }
 
-    test("label rule rejects 'Sales Data' and accepts 'sales_data-2'") {
-        assert(CatalogOps.LabelRule.toString == "^[a-z0-9_-]+$")
+    test("label rule rejects 'Sales Data' and '' and accepts 'Sales' and 'sales_data-2'") {
+        assert(CatalogOps.LabelRule.toString == "^[A-Za-z0-9_-]+$")
         assert(!label("Sales Data"))
-        assert(!label("Sales"))
         assert(!label(""))
+        assert(!label("sales.data"))
+        assert(label("Sales"))
+        assert(label("Sales_Q3"))
         assert(label("sales_data-2"))
     }
 

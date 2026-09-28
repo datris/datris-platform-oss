@@ -4,7 +4,7 @@ import { Subscription } from 'rxjs';
 import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
-import { sanitizeLabel } from '../shared/sanitize';
+import { sanitizeCatalogName } from '../shared/sanitize';
 import { AuthService } from '../auth.service';
 import { CatalogChatContextService, CatalogSnapshot } from '../catalog-chat/catalog-chat-context.service';
 import { CatalogAssistantStateService } from '../catalog-chat/catalog-assistant-state.service';
@@ -277,7 +277,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   }
 
   createCatalog(): void {
-    const name = sanitizeLabel(this.newCatalogName);
+    const name = sanitizeCatalogName(this.newCatalogName);
     if (!name) return;
     // Check if catalog already exists
     if (this.catalogs.some(c => c.name === name)) {
@@ -383,30 +383,30 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
   /** Blur applies the label rule so the user sees the name that will be sent. */
   sanitizeRenameValue(): void {
-    if (this.renameTarget) this.renameValue = sanitizeLabel(this.renameValue || '');
+    if (this.renameTarget) this.renameValue = sanitizeCatalogName(this.renameValue || '');
   }
 
   commitRename(catalog: CatalogInfo): void {
     // One request per catalog at a time; Enter and the check mark both land here.
     if (this.renamingCatalog === catalog.name) return;
-    const newName = sanitizeLabel(this.renameValue || '');
+    const newName = sanitizeCatalogName(this.renameValue || '');
     if (!newName) {
-      this.showMoveError('A catalog name needs at least one lowercase letter, digit, _ or -.');
+      this.showMoveError('A catalog name needs at least one letter, digit, _ or -.');
       return;
     }
     if (newName === catalog.name) {
       this.cancelRename();
       return;
     }
-    // Catalog names compare case-sensitively on the server and new names must
-    // be lowercase, so a rename "into" a legacy mixed-case catalog would create
-    // a second catalog next to it instead of merging. Refuse it here.
+    // Catalog names compare case-sensitively on the server, so a rename to a
+    // name that differs from another catalog only by case would create a
+    // second catalog next to it instead of merging. Refuse it here.
     const caseTwin = this.catalogs.find(c =>
       c.name !== 'Uncataloged' && c.name !== catalog.name &&
       c.name !== newName && c.name.toLowerCase() === newName.toLowerCase());
     if (caseTwin) {
       this.renameValue = newName;
-      this.showMoveError(`'${caseTwin.name}' already exists with different capitalisation. Catalog names are case-sensitive and new names must be lowercase, so this would create a second catalog.`);
+      this.showMoveError(`'${caseTwin.name}' already exists with different capitalisation. Catalog names are case-sensitive, so this would create a second catalog.`);
       return;
     }
     const oldName = catalog.name;

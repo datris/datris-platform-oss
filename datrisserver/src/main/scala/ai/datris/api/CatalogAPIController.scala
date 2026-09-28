@@ -62,7 +62,7 @@ class CatalogAPIController {
                 return badRequest("Cannot rename a catalog to '" + newName + "': Uncataloged is reserved")
             if (!CatalogOps.isValidLabel(newName))
                 return badRequest(
-                    "Invalid catalog name '" + newName + "': use lowercase letters, digits, '_' and '-' only"
+                    "Invalid catalog name '" + newName + "': use letters, digits, '_' and '-' only"
                 )
             if (newName == name)
                 return badRequest("New name is the same as the current name")
