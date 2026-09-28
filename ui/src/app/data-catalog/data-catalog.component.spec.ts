@@ -27,8 +27,8 @@
  *  match: <labels>", persistent (survives the 6 s move-error timeout) with a
  *  close button.
  *  404 on either endpoint (catalog renamed or deleted elsewhere, card is
- *  stale): the not-found message is shown and NOTHING is written: no
- *  per-item fan-out, no retry. "Keep items" never deletes members.
+ *  stale): the not-found message is shown, the list is reloaded so the stale
+ *  card disappears, and NOTHING is written: no per-item fan-out, no retry. "Keep items" never deletes members.
  *  Rename into a name that differs from an existing catalog only by case is
  *  refused client-side (server names are case-sensitive).
  *  "Move all contents": after every move succeeds, the source catalog's
@@ -459,11 +459,12 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
       pipeSvc.deletePipeline.calls.count() + pipeSvc.createPipeline.calls.count();
   }
 
-  const NOT_FOUND = 'Catalog not found. It may have been renamed or deleted elsewhere; refresh the page.';
+  const NOT_FOUND = 'Catalog not found. It may have been renamed or deleted elsewhere; the list has been refreshed.';
 
   it('cascade delete 404 shows the not-found message and performs NO writes', fa(() => {
     pipeSvc.deleteCatalog.and.returnValue(httpError(404, { error: "Catalog 'e2e_a' not found" }));
     settle();
+    const loadsBefore = tapSvc.getTaps.calls.count();
     const cat = component.catalogs.find((c: any) => c.name === 'e2e_a');
     component.deleteTarget = 'e2e_a';
     component.deleteMode = 'cascade';
@@ -473,12 +474,14 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(pipeSvc.deleteCatalog).toHaveBeenCalledTimes(1);
     expect(writeCalls()).withContext('no deleteTap/deletePipeline/tap or pipeline updates').toBe(0);
     expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
+    expect(tapSvc.getTaps.calls.count()).withContext('list reloaded after 404').toBeGreaterThan(loadsBefore);
     expect(el.querySelector('.move-error-banner')?.textContent || '').toContain(NOT_FOUND);
   }));
 
   it('"Keep items" 404 shows the not-found message, never deletes members and performs NO writes', fa(() => {
     pipeSvc.deleteCatalog.and.returnValue(httpError(404, { error: "Catalog 'e2e_a' not found" }));
     settle();
+    const loadsBefore = tapSvc.getTaps.calls.count();
     const cat = component.catalogs.find((c: any) => c.name === 'e2e_a');
     component.deleteTarget = 'e2e_a';
     component.deleteMode = 'detach';
@@ -489,18 +492,21 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(tapSvc.deleteTap.calls.allArgs().map((a: any[]) => a[0])).not.toContain('t_a');
     expect(pipeSvc.deletePipeline).not.toHaveBeenCalled();
     expect(writeCalls()).withContext('no writes at all').toBe(0);
+    expect(tapSvc.getTaps.calls.count()).withContext('list reloaded after 404').toBeGreaterThan(loadsBefore);
     expect(el.querySelector('.move-error-banner')?.textContent || '').toContain(NOT_FOUND);
   }));
 
   it('rename 404 shows the not-found message and performs NO writes', fa(() => {
     pipeSvc.renameCatalog.and.returnValue(httpError(404, { error: "Catalog 'e2e_a' not found" }));
     settle();
+    const loadsBefore = tapSvc.getTaps.calls.count();
     const input = openRename('e2e_a');
     if (!input) return;
     submitRename(input, 'e2e_c');
     expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
     expect(writeCalls()).withContext('no per-item moves').toBe(0);
     expect(pipeSvc.deleteCatalog).not.toHaveBeenCalled();
+    expect(tapSvc.getTaps.calls.count()).withContext('list reloaded after 404').toBeGreaterThan(loadsBefore);
     expect(el.querySelector('.move-error-banner')?.textContent || '').toContain(NOT_FOUND);
     expect(el.querySelector('input.rename-catalog-input')).withContext('editor closed on 404').toBeNull();
   }));
@@ -528,5 +534,74 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     submitRename(input, 'datrisfund');
     expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
     expect(pipeSvc.renameCatalog.calls.mostRecent().args.slice(0, 2)).toEqual(['DatrisFund', 'datrisfund']);
+  }));
+
+  it('after a 404 the reloaded list drops the stale card', fa(() => {
+    pipeSvc.deleteCatalog.and.callFake(() => {
+      // Another client renamed e2e_a to e2e_moved before this delete.
+      tapsData = [
+        { name: '__catalog__e2e_moved', catalog: 'e2e_moved' },
+        { name: 't_a', catalog: 'e2e_moved' }, { name: 't_u' }
+      ];
+      pipelinesData = [{ name: 'p_a', catalog: 'e2e_moved' }, { name: 'p_u' }];
+      return httpError(404, { error: "Catalog 'e2e_a' not found" });
+    });
+    settle();
+    const confirm = openDelete('e2e_a');
+    if (!confirm) return;
+    (confirm.querySelector('.del-yes') as HTMLButtonElement).click();
+    settle();
+    const names = cards().map(c => (c.querySelector('.catalog-name')?.textContent || '').trim());
+    expect(names).not.toContain('e2e_a');
+    expect(names).toContain('e2e_moved');
+    expect(writeCalls()).toBe(0);
+  }));
+
+  // ── Stale error banner ──────────────────────────────────────────────────
+
+  it('a successful rename clears an earlier refusal banner', fa(() => {
+    tapsData.push({ name: '__catalog__DatrisFund', catalog: 'DatrisFund' });
+    settle();
+    const input = openRename('e2e_a');
+    if (!input) return;
+    submitRename(input, 'DatrisFund');
+    expect(el.querySelector('.move-error-banner')).withContext('refusal shown').not.toBeNull();
+    const again = el.querySelector('input.rename-catalog-input') as HTMLInputElement;
+    submitRename(again, 'e2e_c');
+    expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    expect(el.querySelector('.move-error-banner')).withContext('cleared by the successful rename').toBeNull();
+  }));
+
+  it('a successful catalog delete clears an earlier error banner', fa(() => {
+    settle();
+    component.moveError = 'earlier failure';
+    const cat = component.catalogs.find((c: any) => c.name === 'e2e_a');
+    component.deleteTarget = 'e2e_a';
+    component.deleteMode = 'detach';
+    component.deleteCatalog(cat);
+    settle();
+    expect(el.querySelector('.move-error-banner')).toBeNull();
+  }));
+
+  it('opening the rename editor or the delete dialog clears the error banner but not the affected-keys banner', fa(() => {
+    pipeSvc.renameCatalog.and.returnValue(of({ renamed: ['t_a'], failed: [], affectedKeys: ['ops-key'] }));
+    settle();
+    const input = openRename('e2e_a');
+    if (!input) return;
+    // The stubbed list does not change, so the card is still e2e_a after reload.
+    submitRename(input, 'e2e_c');
+    expect(el.querySelector('.affected-keys-banner')).not.toBeNull();
+    component.moveError = 'earlier failure';
+    settle();
+    expect(el.querySelector('.move-error-banner')).not.toBeNull();
+    openRename('e2e_a');
+    expect(el.querySelector('.move-error-banner')).withContext('cleared by opening rename').toBeNull();
+    (card('e2e_a').querySelector('.rename-cancel') as HTMLButtonElement).click();
+    settle();
+    component.moveError = 'earlier failure';
+    settle();
+    openDelete('e2e_a');
+    expect(el.querySelector('.move-error-banner')).withContext('cleared by opening delete').toBeNull();
+    expect(el.querySelector('.affected-keys-banner')).withContext('affected-keys banner persists').not.toBeNull();
   }));
 });

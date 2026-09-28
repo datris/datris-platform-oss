@@ -35,9 +35,10 @@ interface CatalogOpFailure {
 const CONCURRENT_MOVE_PHRASE = 'no longer in catalog';
 
 /** Shown when the server has no catalog by the card's name: another client
- *  renamed or deleted it after this page loaded. Nothing is written. */
+ *  renamed or deleted it after this page loaded. Nothing is written; the
+ *  list is reloaded so the stale card disappears. */
 const CATALOG_NOT_FOUND_MESSAGE =
-  'Catalog not found. It may have been renamed or deleted elsewhere; refresh the page.';
+  'Catalog not found. It may have been renamed or deleted elsewhere; the list has been refreshed.';
 
 @Component({
     selector: 'app-data-catalog',
@@ -306,6 +307,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
 
   openDelete(catalogName: string, event: MouseEvent): void {
     event.stopPropagation();
+    this.clearMoveError();
     this.deleteTarget = catalogName;
     this.deleteMode = 'detach';
     this.confirmText = '';
@@ -339,6 +341,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     };
     this.pipelineService.deleteCatalog(catalog.name, mode, mode === 'cascade' ? this.confirmText : undefined).subscribe({
       next: (res) => {
+        this.clearMoveError();
         this.showOpFailures(`Deleting catalog '${catalog.name}'`, res && res.failed);
         finish();
       },
@@ -349,6 +352,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
           catalog.deleting = false;
           this.cancelDelete();
           this.showMoveError(CATALOG_NOT_FOUND_MESSAGE);
+          this.loadCatalogs();
           return;
         }
         this.showMoveError(this.errText(err));
@@ -362,6 +366,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   startRename(catalog: CatalogInfo, event?: MouseEvent): void {
     if (event) event.stopPropagation();
     if (catalog.name === 'Uncataloged') return;
+    this.clearMoveError();
     this.renameTarget = catalog.name;
     this.renameValue = catalog.name;
     // Focus the editor once it renders so the user can type straight away.
@@ -414,6 +419,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.pendingAutoExpand = catalog.expanded ? newName : '';
     this.pipelineService.renameCatalog(oldName, newName).subscribe({
       next: (res) => {
+        this.clearMoveError();
         if (this.renamingCatalog === oldName) this.renamingCatalog = '';
         // The user may have moved on to another card's editor meanwhile.
         if (this.renameTarget === oldName) this.cancelRename();
@@ -433,6 +439,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
           // This card's item list is stale, so nothing is written from it.
           if (this.renameTarget === oldName) this.cancelRename();
           this.showMoveError(CATALOG_NOT_FOUND_MESSAGE);
+          this.loadCatalogs();
           return;
         }
         const clashes: string[] = (err && err.error && Array.isArray(err.error.clashes)) ? err.error.clashes : [];
@@ -478,7 +485,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.deletingItem = key;
     this.deleteItemTarget = '';
     this.tapService.deleteTap(name).subscribe({
-      next: () => { this.deletingItem = ''; this.loadCatalogs(); },
+      next: () => { this.deletingItem = ''; this.clearMoveError(); this.loadCatalogs(); },
       error: () => { this.deletingItem = ''; this.loadCatalogs(); }
     });
   }
@@ -603,6 +610,17 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     return (err && err.message) || 'unknown error';
   }
 
+  /** Clear the transient error banner and its auto-dismiss timer. Called when
+   *  an action succeeds or a new rename/delete starts, so an earlier refusal
+   *  is not left on screen. The affected-keys banner is separate and stays. */
+  private clearMoveError(): void {
+    this.moveError = '';
+    if (this.moveErrorTimeout) {
+      clearTimeout(this.moveErrorTimeout);
+      this.moveErrorTimeout = null;
+    }
+  }
+
   private showMoveError(msg: string): void {
     this.moveError = msg;
     if (this.moveErrorTimeout) clearTimeout(this.moveErrorTimeout);
@@ -622,7 +640,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.movingItem = key;
     const updated = { ...tap, catalog: targetCatalog };
     this.tapService.createOrUpdateTap(updated).subscribe({
-      next: () => { this.movingItem = ''; this.loadCatalogs(); },
+      next: () => { this.movingItem = ''; this.clearMoveError(); this.loadCatalogs(); },
       // A refused save (e.g. HTTP 400 on a tap whose stored cron is not a valid
       // 6-field Quartz expression) must show its remedy, not vanish into a
       // silent reload. The body is {"error": "..."}, parsed into an object.
@@ -643,7 +661,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.movingItem = key;
     const updated = { ...pipeline, catalog: targetCatalog };
     this.pipelineService.createPipeline(updated).subscribe({
-      next: () => { this.movingItem = ''; this.loadCatalogs(); },
+      next: () => { this.movingItem = ''; this.clearMoveError(); this.loadCatalogs(); },
       error: () => { this.movingItem = ''; this.loadCatalogs(); }
     });
   }
@@ -715,6 +733,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       if (!ok) failed++;
       if (completed === total) {
         if (failed === 0) {
+          this.clearMoveError();
           removeSourcePlaceholders();
         } else {
           this.movingCatalog = '';
@@ -744,7 +763,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.deletingItem = key;
     this.deleteItemTarget = '';
     this.pipelineService.deletePipeline(name).subscribe({
-      next: () => { this.deletingItem = ''; this.loadCatalogs(); },
+      next: () => { this.deletingItem = ''; this.clearMoveError(); this.loadCatalogs(); },
       error: () => { this.deletingItem = ''; this.loadCatalogs(); }
     });
   }
