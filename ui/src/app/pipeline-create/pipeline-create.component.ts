@@ -5,7 +5,7 @@ import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
 import { TapService } from '../tap.service';
-import { sanitizeCatalogName, sanitizeIdentifier } from '../shared/sanitize';
+import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, sanitizeIdentifier } from '../shared/sanitize';
 
 interface SchemaField {
   name: string;
@@ -35,6 +35,7 @@ export class PipelineCreateComponent implements OnInit {
   availableCatalogs: string[] = [];
   showNewCatalog = false;
   newCatalogName = '';
+  newCatalogError = '';
   pipelineSource = 'file';  // 'file' | 'tap' | 'manual'
   sampleFile: File | null = null;
   sourceType = 'csv';
@@ -576,15 +577,26 @@ export class PipelineCreateComponent implements OnInit {
     if (value === '__new__') {
       this.showNewCatalog = true;
       this.newCatalogName = '';
+      this.newCatalogError = '';
       this.catalog = '';
     } else {
       this.showNewCatalog = false;
+      this.newCatalogError = '';
     }
   }
 
   confirmNewCatalog(): void {
     const name = sanitizeCatalogName(this.newCatalogName);
     if (!name) return;
+    // A case-only twin of an existing catalog would create a second catalog
+    // (names are case-sensitive). An exact match just selects the existing one.
+    const caseTwin = findCaseTwin(name, this.availableCatalogs);
+    if (caseTwin) {
+      this.newCatalogName = name;
+      this.newCatalogError = caseTwinMessage(caseTwin);
+      return;
+    }
+    this.newCatalogError = '';
     this.catalog = name;
     if (!this.availableCatalogs.includes(name)) {
       this.availableCatalogs.push(name);

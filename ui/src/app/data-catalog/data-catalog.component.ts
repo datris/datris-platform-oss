@@ -4,7 +4,7 @@ import { Subscription } from 'rxjs';
 import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
-import { sanitizeCatalogName } from '../shared/sanitize';
+import { caseTwinMessage, findCaseTwin, sanitizeCatalogName } from '../shared/sanitize';
 import { AuthService } from '../auth.service';
 import { CatalogChatContextService, CatalogSnapshot } from '../catalog-chat/catalog-chat-context.service';
 import { CatalogAssistantStateService } from '../catalog-chat/catalog-assistant-state.service';
@@ -279,7 +279,18 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   createCatalog(): void {
     const name = sanitizeCatalogName(this.newCatalogName);
     if (!name) return;
-    // Check if catalog already exists
+    // A name that differs from an existing catalog only by case would create
+    // a second catalog next to it (names are case-sensitive). Refuse it and
+    // keep the typed value so the user can fix it in place.
+    const caseTwin = findCaseTwin(name, this.catalogs
+      .map(c => c.name)
+      .filter(n => n !== 'Uncataloged'));
+    if (caseTwin) {
+      this.newCatalogName = name;
+      this.showMoveError(caseTwinMessage(caseTwin));
+      return;
+    }
+    // Exact match: the catalog already exists, nothing to create.
     if (this.catalogs.some(c => c.name === name)) {
       this.showCreateModal = false;
       this.newCatalogName = '';
@@ -401,12 +412,12 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     // Catalog names compare case-sensitively on the server, so a rename to a
     // name that differs from another catalog only by case would create a
     // second catalog next to it instead of merging. Refuse it here.
-    const caseTwin = this.catalogs.find(c =>
-      c.name !== 'Uncataloged' && c.name !== catalog.name &&
-      c.name !== newName && c.name.toLowerCase() === newName.toLowerCase());
+    const caseTwin = findCaseTwin(newName, this.catalogs
+      .map(c => c.name)
+      .filter(n => n !== 'Uncataloged' && n !== catalog.name));
     if (caseTwin) {
       this.renameValue = newName;
-      this.showMoveError(`'${caseTwin.name}' already exists with different capitalisation. Catalog names are case-sensitive, so this would create a second catalog.`);
+      this.showMoveError(caseTwinMessage(caseTwin));
       return;
     }
     const oldName = catalog.name;

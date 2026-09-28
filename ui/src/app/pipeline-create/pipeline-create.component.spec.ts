@@ -367,4 +367,32 @@ describe('PipelineCreateComponent — Live Read destination', () => {
     expect(c.catalog).toBe('Sales_Q3');
     expect(c.availableCatalogs).toContain('Sales_Q3');
   });
+  it('inline new catalog refuses a case-only twin and shows the message under the field', () => {
+    const c: any = component;
+    c.availableCatalogs = ['DatrisFund', 'e2e_a'];
+    c.onCatalogChange('__new__');
+    c.catalog = '__new__';
+    c.newCatalogName = 'datrisfund';
+    c.confirmNewCatalog();
+    fixture.detectChanges();
+    expect(c.catalog).not.toBe('datrisfund');
+    expect(c.availableCatalogs).toEqual(['DatrisFund', 'e2e_a']);
+    expect(c.showNewCatalog).toBeTrue();
+    expect(c.newCatalogName).toBe('datrisfund');
+    const msg = "'DatrisFund' already exists with different capitalisation. Catalog names are case-sensitive, so this would create a second catalog.";
+    expect(c.newCatalogError).toBe(msg);
+    expect(el.querySelector('.error-hint')?.textContent || '').toContain(msg);
+  });
+
+  it('inline new catalog with an exact existing name selects it', () => {
+    const c: any = component;
+    c.availableCatalogs = ['DatrisFund', 'e2e_a'];
+    c.onCatalogChange('__new__');
+    c.newCatalogName = 'DatrisFund';
+    c.confirmNewCatalog();
+    expect(c.catalog).toBe('DatrisFund');
+    expect(c.availableCatalogs).toEqual(['DatrisFund', 'e2e_a']);
+    expect(c.showNewCatalog).toBeFalse();
+    expect(c.newCatalogError).toBe('');
+  });
 });

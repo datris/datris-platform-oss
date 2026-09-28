@@ -7,7 +7,7 @@ import { SecretsService } from '../secrets.service';
 import { SearchService } from '../search.service';
 import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
-import { sanitizeCatalogName } from '../shared/sanitize';
+import { caseTwinMessage, findCaseTwin, sanitizeCatalogName } from '../shared/sanitize';
 
 @Component({
     selector: 'app-tap-create',
@@ -31,6 +31,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   availableCatalogs: string[] = [];
   showNewCatalog = false;
   newCatalogName = '';
+  newCatalogError = '';
   availableSecrets: string[] = [];
   existingTapNames: string[] = [];
   showCreateSecret = false;
@@ -901,15 +902,26 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     if (value === '__new__') {
       this.showNewCatalog = true;
       this.newCatalogName = '';
+      this.newCatalogError = '';
       this.catalog = '';
     } else {
       this.showNewCatalog = false;
+      this.newCatalogError = '';
     }
   }
 
   confirmNewCatalog(): void {
     const name = sanitizeCatalogName(this.newCatalogName);
     if (!name) return;
+    // A case-only twin of an existing catalog would create a second catalog
+    // (names are case-sensitive). An exact match just selects the existing one.
+    const caseTwin = findCaseTwin(name, this.availableCatalogs);
+    if (caseTwin) {
+      this.newCatalogName = name;
+      this.newCatalogError = caseTwinMessage(caseTwin);
+      return;
+    }
+    this.newCatalogError = '';
     this.catalog = name;
     if (!this.availableCatalogs.includes(name)) {
       this.availableCatalogs.push(name);

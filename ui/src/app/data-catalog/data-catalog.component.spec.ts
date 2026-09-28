@@ -630,4 +630,56 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(sent.name).toBe('__catalog__Sales_Q3');
     expect(sent.catalog).toBe('Sales_Q3');
   }));
+  // ── Create guard: case-only twin (shared findCaseTwin helper) ───────────
+
+  it('Create Catalog refuses a name differing from an existing catalog only by case', fa(() => {
+    tapsData.push({ name: '__catalog__DatrisFund', catalog: 'DatrisFund' });
+    settle();
+    component.showCreateModal = true;
+    component.newCatalogName = 'datrisfund';
+    component.createCatalog();
+    settle();
+    expect(tapSvc.createOrUpdateTap).not.toHaveBeenCalled();
+    expect(el.querySelector('.move-error-banner')?.textContent || '')
+      .toContain("'DatrisFund' already exists with different capitalisation. Catalog names are case-sensitive, so this would create a second catalog.");
+    expect(component.showCreateModal).withContext('create row stays open').toBeTrue();
+    expect(component.newCatalogName).withContext('typed value kept').toBe('datrisfund');
+  }));
+
+  it('Create Catalog with an exact existing name creates nothing and closes quietly', fa(() => {
+    settle();
+    component.showCreateModal = true;
+    component.newCatalogName = 'e2e_a';
+    component.createCatalog();
+    settle();
+    expect(tapSvc.createOrUpdateTap).not.toHaveBeenCalled();
+    expect(component.showCreateModal).toBeFalse();
+    expect(el.querySelector('.move-error-banner')).toBeNull();
+  }));
+
+  it('Create Catalog ignores Uncataloged when checking for a case twin', fa(() => {
+    settle();
+    component.newCatalogName = 'uncataloged';
+    component.createCatalog();
+    settle();
+    expect(tapSvc.createOrUpdateTap).toHaveBeenCalledTimes(1);
+    expect(tapSvc.createOrUpdateTap.calls.mostRecent().args[0].catalog).toBe('uncataloged');
+  }));
+
+  it('rename guard is unchanged after moving to the shared helper', fa(() => {
+    tapsData.push({ name: '__catalog__DatrisFund', catalog: 'DatrisFund' });
+    settle();
+    const cat = component.catalogs.find((c: any) => c.name === 'e2e_a');
+    component.renameTarget = 'e2e_a';
+    component.renameValue = 'DATRISFUND';
+    component.commitRename(cat);
+    settle();
+    expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
+    expect(component.moveError).toContain("'DatrisFund' already exists with different capitalisation.");
+    // Exact match still goes to the server (it merges there).
+    component.renameValue = 'DatrisFund';
+    component.commitRename(cat);
+    expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    expect(pipeSvc.renameCatalog.calls.mostRecent().args.slice(0, 2)).toEqual(['e2e_a', 'DatrisFund']);
+  }));
 });

@@ -37,7 +37,7 @@ The **Catalog** tab in the UI shows one card per catalog plus an **Uncataloged**
 - Click a card to expand it. Inside you'll see:
   - Each tap with its enabled/disabled status, last-run outcome, and record count.
   - Each pipeline with a quick-jump link to its config.
-- **+ Create Catalog** — make a new empty catalog. The name is sanitized to letters, digits, `_` and `-` (spaces become `_`); capitalisation is kept.
+- **+ Create Catalog** — make a new empty catalog. The name is sanitized to letters, digits, `_` and `-` (spaces become `_`); capitalisation is kept. A name that differs from an existing catalog only by capitalisation is refused, here and in the new-catalog field of the tap and pipeline forms; typing an existing name exactly in those forms selects that catalog.
 - **Delete catalog, keep items** — the delete icon on a named catalog's card opens a confirm with two choices. **Keep items (move to Uncataloged)** is the default: the catalog is removed and every tap and pipeline in it moves to Uncataloged. Nothing is deleted.
 - **Delete catalog, delete items and their data** — the second choice deletes the catalog **plus every tap and pipeline inside it, including the data already written to their destinations**. This is destructive and not reversible, so **Delete** stays disabled until you type the catalog name exactly (case-sensitive). If some items could not be deleted, the page lists each one with the reason.
 - **Uncataloged is not a catalog** — its card has no rename or delete control. Delete uncataloged items one at a time (below).
