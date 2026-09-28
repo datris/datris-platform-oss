@@ -7,7 +7,7 @@ import { SecretsService } from '../secrets.service';
 import { SearchService } from '../search.service';
 import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
-import { sanitizeLabel } from '../shared/sanitize';
+import { sanitizeCatalogName } from '../shared/sanitize';
 
 @Component({
     selector: 'app-tap-create',
@@ -908,7 +908,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
   }
 
   confirmNewCatalog(): void {
-    const name = sanitizeLabel(this.newCatalogName);
+    const name = sanitizeCatalogName(this.newCatalogName);
     if (!name) return;
     this.catalog = name;
     if (!this.availableCatalogs.includes(name)) {

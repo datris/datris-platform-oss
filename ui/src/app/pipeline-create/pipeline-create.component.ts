@@ -5,7 +5,7 @@ import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
 import { TapService } from '../tap.service';
-import { sanitizeLabel, sanitizeIdentifier } from '../shared/sanitize';
+import { sanitizeCatalogName, sanitizeIdentifier } from '../shared/sanitize';
 
 interface SchemaField {
   name: string;
@@ -583,7 +583,7 @@ export class PipelineCreateComponent implements OnInit {
   }
 
   confirmNewCatalog(): void {
-    const name = sanitizeLabel(this.newCatalogName);
+    const name = sanitizeCatalogName(this.newCatalogName);
     if (!name) return;
     this.catalog = name;
     if (!this.availableCatalogs.includes(name)) {

@@ -356,4 +356,15 @@ describe('PipelineCreateComponent — Live Read destination', () => {
     expect(dest.scratch).toEqual({});
     expect(dest.database).toBeUndefined();
   });
+
+  // Catalog rename and delete story: catalog names keep their case everywhere
+  // in the UI (sanitizeCatalogName), including the wizard's inline "new catalog".
+  it('inline new catalog keeps case (sanitizeCatalogName)', () => {
+    const c: any = component;
+    c.availableCatalogs = [];
+    c.newCatalogName = '  Sales Q3! ';
+    c.confirmNewCatalog();
+    expect(c.catalog).toBe('Sales_Q3');
+    expect(c.availableCatalogs).toContain('Sales_Q3');
+  });
 });
