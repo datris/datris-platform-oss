@@ -231,6 +231,9 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(banner).withContext('move-error-banner on 409').not.toBeNull();
     expect(banner?.textContent || '').toContain('shared_tap');
     expect(mutatingCalls()).withContext('no per-item writes on a refused rename').toBe(0);
+    const still = el.querySelector('input.rename-catalog-input') as HTMLInputElement | null;
+    expect(still).withContext('editor stays open after a 409').not.toBeNull();
+    expect(still?.value).withContext('draft kept after a 409').toBe('e2e_b');
   }));
 
   it('rename 400 (label rule / reserved name) shows the server message', fa(() => {
@@ -241,6 +244,23 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     submitRename(input, 'e2e_b');
     expect(el.querySelector('.move-error-banner')?.textContent || '').toContain('newName must match [a-z0-9_-]+');
     expect(mutatingCalls()).toBe(0);
+    const still = el.querySelector('input.rename-catalog-input') as HTMLInputElement | null;
+    expect(still).withContext('editor stays open after a 400').not.toBeNull();
+    expect(still?.value).withContext('draft kept after a 400').toBe('e2e_b');
+  }));
+
+  it('a pending rename ignores a second Enter and disables the check button', fa(() => {
+    pipeSvc.renameCatalog.and.returnValue(new Observable<any>(() => {}));
+    settle();
+    const input = openRename('e2e_a');
+    if (!input) return;
+    submitRename(input, 'e2e_c');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    settle();
+    expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    const ok = el.querySelector('.rename-ok') as HTMLButtonElement | null;
+    expect(ok).withContext('check button while pending').not.toBeNull();
+    expect(ok?.disabled).withContext('check button disabled while pending').toBeTrue();
   }));
 
   // ── Acceptance 3 ────────────────────────────────────────────────────────
@@ -267,6 +287,7 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(names).not.toContain('e2e_a');
     expect(names).toContain('e2e_b');
     expect(mutatingCalls()).withContext('no client-side fan-out or placeholder writes').toBe(0);
+    expect(el.querySelector('input.rename-catalog-input')).withContext('editor closed on success').toBeNull();
   }));
 
   it('"move all contents" removes the source placeholder by its catalog field after a full move', fa(() => {
@@ -470,5 +491,6 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     const pipeMoves = pipeSvc.createPipeline.calls.allArgs().map((a: any[]) => a[0]);
     expect(tapMoves.some((t: any) => t.name === 't_a' && t.catalog === 'e2e_c')).withContext('t_a moved to e2e_c').toBeTrue();
     expect(pipeMoves.some((p: any) => p.name === 'p_a' && p.catalog === 'e2e_c')).withContext('p_a moved to e2e_c').toBeTrue();
+    expect(el.querySelector('input.rename-catalog-input')).withContext('editor closed on the 404 fallback').toBeNull();
   }));
 });

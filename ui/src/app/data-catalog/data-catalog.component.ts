@@ -407,8 +407,8 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   }
 
   commitRename(catalog: CatalogInfo): void {
-    // One request at a time; Enter and the check mark both land here.
-    if (this.renamingCatalog) return;
+    // One request per catalog at a time; Enter and the check mark both land here.
+    if (this.renamingCatalog === catalog.name) return;
     const newName = sanitizeLabel(this.renameValue || '');
     if (!newName) {
       this.showMoveError('A catalog name needs at least one lowercase letter, digit, _ or -.');
@@ -428,8 +428,9 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
     this.pendingAutoExpand = catalog.expanded ? newName : '';
     this.pipelineService.renameCatalog(oldName, newName).subscribe({
       next: (res) => {
-        this.renamingCatalog = '';
-        this.cancelRename();
+        if (this.renamingCatalog === oldName) this.renamingCatalog = '';
+        // The user may have moved on to another card's editor meanwhile.
+        if (this.renameTarget === oldName) this.cancelRename();
         this.showOpFailures(`Renaming catalog '${oldName}' to '${newName}'`, res && res.failed);
         const keys: string[] = (res && Array.isArray(res.affectedKeys)) ? res.affectedKeys : [];
         if (keys.length > 0) {
@@ -439,11 +440,11 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         this.loadCatalogs();
       },
       error: (err) => {
-        this.renamingCatalog = '';
+        if (this.renamingCatalog === oldName) this.renamingCatalog = '';
         this.pendingAutoExpand = '';
         if (err && err.status === 404) {
           // Older server without the catalog endpoint: relabel item by item.
-          this.cancelRename();
+          if (this.renameTarget === oldName) this.cancelRename();
           this.moveAll(catalog, newName);
           return;
         }
