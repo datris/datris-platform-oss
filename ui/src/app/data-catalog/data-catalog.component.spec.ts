@@ -26,9 +26,11 @@
  *  `.affected-keys-banner` reading "API keys scoped to '<old>' no longer
  *  match: <labels>", persistent (survives the 6 s move-error timeout) with a
  *  close button.
- *  Older server (404 on either endpoint): cascade falls back to the per-item
- *  delete fan-out; rename falls back to "move all contents"; "Keep items"
- *  never deletes members.
+ *  404 on either endpoint (catalog renamed or deleted elsewhere, card is
+ *  stale): the not-found message is shown and NOTHING is written: no
+ *  per-item fan-out, no retry. "Keep items" never deletes members.
+ *  Rename into a name that differs from an existing catalog only by case is
+ *  refused client-side (server names are case-sensitive).
  *  "Move all contents": after every move succeeds, the source catalog's
  *  placeholder is removed by its `catalog` FIELD (a legacy placeholder may be
  *  named differently) — either `tapService.deleteTap(<that placeholder>)` or
@@ -450,10 +452,17 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(el.querySelector('.affected-keys-banner')).toBeNull();
   }));
 
-  // ── Step 4: older-server fallback (one release) ─────────────────────────
+  // ── 404: catalog gone on the server (no fallback) ───────────────────────
 
-  it('cascade delete falls back to the per-item fan-out when the endpoint 404s', fa(() => {
-    pipeSvc.deleteCatalog.and.returnValue(httpError(404, { error: 'Not Found' }));
+  function writeCalls(): number {
+    return tapSvc.deleteTap.calls.count() + tapSvc.createOrUpdateTap.calls.count() +
+      pipeSvc.deletePipeline.calls.count() + pipeSvc.createPipeline.calls.count();
+  }
+
+  const NOT_FOUND = 'Catalog not found. It may have been renamed or deleted elsewhere; refresh the page.';
+
+  it('cascade delete 404 shows the not-found message and performs NO writes', fa(() => {
+    pipeSvc.deleteCatalog.and.returnValue(httpError(404, { error: "Catalog 'e2e_a' not found" }));
     settle();
     const cat = component.catalogs.find((c: any) => c.name === 'e2e_a');
     component.deleteTarget = 'e2e_a';
@@ -461,13 +470,14 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     component.confirmText = 'e2e_a';
     component.deleteCatalog(cat);
     settle();
-    expect(pipeSvc.deleteCatalog).toHaveBeenCalled();
-    expect(tapSvc.deleteTap.calls.allArgs().map((a: any[]) => a[0])).toContain('t_a');
-    expect(pipeSvc.deletePipeline.calls.allArgs().map((a: any[]) => a[0])).toContain('p_a');
+    expect(pipeSvc.deleteCatalog).toHaveBeenCalledTimes(1);
+    expect(writeCalls()).withContext('no deleteTap/deletePipeline/tap or pipeline updates').toBe(0);
+    expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
+    expect(el.querySelector('.move-error-banner')?.textContent || '').toContain(NOT_FOUND);
   }));
 
-  it('"Keep items" never deletes members, even on the 404 fallback', fa(() => {
-    pipeSvc.deleteCatalog.and.returnValue(httpError(404, { error: 'Not Found' }));
+  it('"Keep items" 404 shows the not-found message, never deletes members and performs NO writes', fa(() => {
+    pipeSvc.deleteCatalog.and.returnValue(httpError(404, { error: "Catalog 'e2e_a' not found" }));
     settle();
     const cat = component.catalogs.find((c: any) => c.name === 'e2e_a');
     component.deleteTarget = 'e2e_a';
@@ -475,22 +485,48 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     component.confirmText = '';
     component.deleteCatalog(cat);
     settle();
-    expect(pipeSvc.deleteCatalog).toHaveBeenCalled();
+    expect(pipeSvc.deleteCatalog).toHaveBeenCalledTimes(1);
     expect(tapSvc.deleteTap.calls.allArgs().map((a: any[]) => a[0])).not.toContain('t_a');
     expect(pipeSvc.deletePipeline).not.toHaveBeenCalled();
+    expect(writeCalls()).withContext('no writes at all').toBe(0);
+    expect(el.querySelector('.move-error-banner')?.textContent || '').toContain(NOT_FOUND);
   }));
 
-  it('rename falls back to moving all contents when the endpoint 404s', fa(() => {
-    pipeSvc.renameCatalog.and.returnValue(httpError(404, { error: 'Not Found' }));
+  it('rename 404 shows the not-found message and performs NO writes', fa(() => {
+    pipeSvc.renameCatalog.and.returnValue(httpError(404, { error: "Catalog 'e2e_a' not found" }));
     settle();
     const input = openRename('e2e_a');
     if (!input) return;
     submitRename(input, 'e2e_c');
     expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
-    const tapMoves = tapSvc.createOrUpdateTap.calls.allArgs().map((a: any[]) => a[0]);
-    const pipeMoves = pipeSvc.createPipeline.calls.allArgs().map((a: any[]) => a[0]);
-    expect(tapMoves.some((t: any) => t.name === 't_a' && t.catalog === 'e2e_c')).withContext('t_a moved to e2e_c').toBeTrue();
-    expect(pipeMoves.some((p: any) => p.name === 'p_a' && p.catalog === 'e2e_c')).withContext('p_a moved to e2e_c').toBeTrue();
-    expect(el.querySelector('input.rename-catalog-input')).withContext('editor closed on the 404 fallback').toBeNull();
+    expect(writeCalls()).withContext('no per-item moves').toBe(0);
+    expect(pipeSvc.deleteCatalog).not.toHaveBeenCalled();
+    expect(el.querySelector('.move-error-banner')?.textContent || '').toContain(NOT_FOUND);
+    expect(el.querySelector('input.rename-catalog-input')).withContext('editor closed on 404').toBeNull();
+  }));
+
+  // ── Case-only clash with a legacy mixed-case catalog ────────────────────
+
+  it('rename into a name differing from an existing catalog only by case is refused client-side', fa(() => {
+    tapsData.push({ name: '__catalog__DatrisFund', catalog: 'DatrisFund' });
+    settle();
+    const input = openRename('e2e_a');
+    if (!input) return;
+    submitRename(input, 'DatrisFund');
+    expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
+    expect(el.querySelector('.move-error-banner')?.textContent || '')
+      .toContain("'DatrisFund' already exists with different capitalisation");
+    const still = el.querySelector('input.rename-catalog-input') as HTMLInputElement | null;
+    expect(still).withContext('editor stays open').not.toBeNull();
+  }));
+
+  it('a legacy mixed-case catalog can still be renamed to its own lowercase form', fa(() => {
+    tapsData.push({ name: '__catalog__DatrisFund', catalog: 'DatrisFund' });
+    settle();
+    const input = openRename('DatrisFund');
+    if (!input) return;
+    submitRename(input, 'datrisfund');
+    expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    expect(pipeSvc.renameCatalog.calls.mostRecent().args.slice(0, 2)).toEqual(['DatrisFund', 'datrisfund']);
   }));
 });

@@ -23,8 +23,9 @@ export class PipelineService {
   // --- Catalog-level operations ---------------------------------------------
   // Server-side rename/delete of a whole catalog. Both resolve with the parsed
   // body on 200 and on 207 (per-item failures in `failed`); 400/404/409 come
-  // through `error` with the server's JSON body intact. A 404 means an older
-  // server without these endpoints; callers fall back to per-item calls.
+  // through `error` with the server's JSON body intact. A 404 means the catalog
+  // no longer exists (renamed or deleted elsewhere); callers show a
+  // refresh message and write nothing.
   renameCatalog(name: string, newName: string): Observable<any> {
     return this.http.put<any>('/api/v1/catalog/' + encodeURIComponent(name), { newName });
   }

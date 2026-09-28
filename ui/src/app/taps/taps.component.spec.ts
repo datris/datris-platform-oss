@@ -18,7 +18,8 @@ import { ComponentFixture, TestBed, fakeAsync, tick, flush, discardPeriodicTasks
 import { CUSTOM_ELEMENTS_SCHEMA, NO_ERRORS_SCHEMA } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
 
 import { TapsComponent } from './taps.component';
 import { TapService } from '../tap.service';
@@ -130,5 +131,25 @@ describe('TapsComponent — catalog group delete', () => {
     settle();
     expect(pipeSvc.deleteCatalog.calls.mostRecent()?.args).toEqual(['grp', 'cascade', 'grp']);
     expect(tapSvc.deleteTap).withContext('no per-tap fan-out').not.toHaveBeenCalled();
+  }));
+
+  it('a 404 (catalog renamed or deleted elsewhere) alerts not-found and performs NO per-item writes', fa(() => {
+    pipeSvc.deleteCatalog.and.returnValue(throwError(() => new HttpErrorResponse({ status: 404, error: { error: "Catalog 'grp' not found" } })));
+    const alertSpy = spyOn(window, 'alert');
+    settle();
+    for (const mode of ['detach', 'cascade']) {
+      const h = openDelete('grp');
+      if (mode === 'cascade') {
+        (h.querySelector('input[type=radio][value=cascade]') as HTMLInputElement).click();
+        settle();
+        const text = header('grp').querySelector('input[type=text]') as HTMLInputElement;
+        text.value = 'grp'; text.dispatchEvent(new Event('input')); settle();
+      }
+      (header('grp').querySelector('.confirm-delete') as HTMLButtonElement).click();
+      settle();
+    }
+    expect(pipeSvc.deleteCatalog).toHaveBeenCalledTimes(2);
+    expect(tapSvc.deleteTap).withContext('no per-item fan-out on 404').not.toHaveBeenCalled();
+    expect(alertSpy).toHaveBeenCalledWith('Catalog not found. It may have been renamed or deleted elsewhere; refresh the page.');
   }));
 });

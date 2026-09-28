@@ -308,53 +308,17 @@ export class PipelinesComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         if (err && err.status === 404) {
-          // Older server without the catalog endpoint.
+          // The catalog is gone on the server (renamed or deleted elsewhere).
+          // The cached group is stale, so nothing is written from it.
+          group.deleting = false;
           this.cancelCatalogDelete();
-          if (mode === 'cascade') this.legacyDeleteCatalogPipelines(group);
-          else this.legacyDetachCatalogPipelines(group);
+          alert('Catalog not found. It may have been renamed or deleted elsewhere; refresh the page.');
           return;
         }
         alert('Failed to delete catalog: ' + ((err && err.error && err.error.error) || (err && err.message) || 'unknown error'));
         finish();
       }
     });
-  }
-
-  /** Pre-endpoint cascade: per-pipeline delete. Kept only for servers older
-   *  than the catalog endpoint; remove in the release after the one that
-   *  ships catalog rename/delete. */
-  private legacyDeleteCatalogPipelines(group: {name: string, pipelines: any[], deleting?: boolean}): void {
-    const names = group.pipelines.map(p => p.name);
-    if (names.length === 0) { group.deleting = false; this.loadPipelines(); return; }
-    let completed = 0;
-    for (const name of names) {
-      this.pipelineService.deletePipeline(name).subscribe({
-        next: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadPipelines(); } },
-        error: () => { completed++; if (completed === names.length) { group.deleting = false; this.loadPipelines(); } }
-      });
-    }
-  }
-
-  /** Pre-endpoint "Keep items": clear the catalog on each pipeline in this
-   *  group. Never deletes a pipeline. Remove with `legacyDeleteCatalogPipelines`. */
-  private legacyDetachCatalogPipelines(group: {name: string, pipelines: any[], deleting?: boolean}): void {
-    const pipelines = group.pipelines;
-    if (pipelines.length === 0) { group.deleting = false; this.loadPipelines(); return; }
-    let completed = 0;
-    let failed = 0;
-    const finish = () => { group.deleting = false; this.loadPipelines(); };
-    const done = (ok: boolean) => {
-      completed++;
-      if (!ok) failed++;
-      if (completed < pipelines.length) return;
-      // Old servers only create the exact-name placeholder; drop it once
-      // every item is out so no empty catalog is left behind.
-      if (failed === 0) this.tapService.deleteTap('__catalog__' + group.name).subscribe({ next: finish, error: finish });
-      else finish();
-    };
-    for (const pipeline of pipelines) {
-      this.pipelineService.createPipeline({ ...pipeline, catalog: null }).subscribe({ next: () => done(true), error: () => done(false) });
-    }
   }
 
   confirmDelete(event: Event, deleteConfig: boolean): void {

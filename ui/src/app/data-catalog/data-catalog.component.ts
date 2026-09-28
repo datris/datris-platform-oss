@@ -34,6 +34,11 @@ interface CatalogOpFailure {
  *  rename/delete was running. The UI tells the user to refresh. */
 const CONCURRENT_MOVE_PHRASE = 'no longer in catalog';
 
+/** Shown when the server has no catalog by the card's name: another client
+ *  renamed or deleted it after this page loaded. Nothing is written. */
+const CATALOG_NOT_FOUND_MESSAGE =
+  'Catalog not found. It may have been renamed or deleted elsewhere; refresh the page.';
+
 @Component({
     selector: 'app-data-catalog',
     templateUrl: './data-catalog.component.html',
@@ -339,47 +344,17 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         if (err && err.status === 404) {
-          // Older server without the catalog endpoint.
+          // The catalog is gone on the server (renamed or deleted elsewhere).
+          // This card's item list is stale, so nothing is written from it.
           catalog.deleting = false;
           this.cancelDelete();
-          if (mode === 'cascade') this.legacyDeleteCatalog(catalog);
-          else this.moveAll(catalog, 'Uncataloged');
+          this.showMoveError(CATALOG_NOT_FOUND_MESSAGE);
           return;
         }
         this.showMoveError(this.errText(err));
         finish();
       }
     });
-  }
-
-  /** Pre-endpoint cascade delete: per-item fan-out plus every placeholder whose
-   *  catalog field matches. Kept only for servers older than the catalog
-   *  endpoint; remove in the release after the one that ships catalog
-   *  rename/delete. */
-  private legacyDeleteCatalog(catalog: CatalogInfo): void {
-    const placeholders = catalog.placeholders || [];
-    let remaining = catalog.taps.length + catalog.pipelines.length + placeholders.length;
-    if (remaining === 0) {
-      this.loadCatalogs();
-      return;
-    }
-    catalog.deleting = true;
-    const done = () => {
-      remaining--;
-      if (remaining <= 0) {
-        catalog.deleting = false;
-        this.loadCatalogs();
-      }
-    };
-    for (const name of placeholders) {
-      this.tapService.deleteTap(name).subscribe({ next: done, error: done });
-    }
-    for (const tap of catalog.taps) {
-      this.tapService.deleteTap(tap.name).subscribe({ next: done, error: done });
-    }
-    for (const pipeline of catalog.pipelines) {
-      this.pipelineService.deletePipeline(pipeline.name).subscribe({ next: done, error: done });
-    }
   }
 
   // ── Catalog rename ─────────────────────────────────────────────────────
@@ -418,6 +393,17 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       this.cancelRename();
       return;
     }
+    // Catalog names compare case-sensitively on the server and new names must
+    // be lowercase, so a rename "into" a legacy mixed-case catalog would create
+    // a second catalog next to it instead of merging. Refuse it here.
+    const caseTwin = this.catalogs.find(c =>
+      c.name !== 'Uncataloged' && c.name !== catalog.name &&
+      c.name !== newName && c.name.toLowerCase() === newName.toLowerCase());
+    if (caseTwin) {
+      this.renameValue = newName;
+      this.showMoveError(`'${caseTwin.name}' already exists with different capitalisation. Catalog names are case-sensitive and new names must be lowercase, so this would create a second catalog.`);
+      return;
+    }
     const oldName = catalog.name;
     // Keep the editor and the draft open until the server answers: on a
     // refused rename (400/409) the user fixes the name in place instead of
@@ -443,14 +429,16 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         if (this.renamingCatalog === oldName) this.renamingCatalog = '';
         this.pendingAutoExpand = '';
         if (err && err.status === 404) {
-          // Older server without the catalog endpoint: relabel item by item.
+          // The catalog is gone on the server (renamed or deleted elsewhere).
+          // This card's item list is stale, so nothing is written from it.
           if (this.renameTarget === oldName) this.cancelRename();
-          this.moveAll(catalog, newName);
+          this.showMoveError(CATALOG_NOT_FOUND_MESSAGE);
           return;
         }
         const clashes: string[] = (err && err.error && Array.isArray(err.error.clashes)) ? err.error.clashes : [];
         if (err && err.status === 409 && clashes.length > 0) {
-          this.showMoveError(this.errText(err) + ' Clashing: ' + clashes.join(', ') + '. Rename one of them first.');
+          const msg = this.errText(err).replace(/[.\s]+$/, '');
+          this.showMoveError(msg + '. Clashing: ' + clashes.join(', ') + '. Rename one of them first.');
         } else {
           this.showMoveError(this.errText(err));
         }
@@ -686,8 +674,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
    *  save per item. When every save succeeds and the source is a named
    *  catalog, its placeholder(s) are removed by catalog FIELD so no empty card
    *  remains; on any failure the placeholder is left alone and the list
-   *  reloads. Also the older-server fallback for rename (new name as target)
-   *  and for "Keep items" delete (Uncataloged as target). */
+   *  reloads. */
   private moveAll(source: CatalogInfo, targetCatalog: string): void {
     const realTaps = source.taps.filter(t => !(t.name || '').startsWith('__catalog__'));
     const total = realTaps.length + source.pipelines.length;
