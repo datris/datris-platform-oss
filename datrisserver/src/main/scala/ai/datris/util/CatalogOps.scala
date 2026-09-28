@@ -78,15 +78,11 @@ object CatalogOps {
             pipelines = pipelines.filter(p => p != null && p.catalog == catalog)
         )
 
-    /** Member names that would collide with an item already in the target
-      * catalog — tap-vs-tap, pipeline-vs-pipeline and cross-type, as the UI's
-      * per-item move check does. The target's placeholder never clashes. */
-    def clashes(members: Members, targetTaps: Seq[TapConfig], targetPipelines: Seq[PipelineConfig]): Seq[String] = {
-        val taken: Set[String] =
-            targetTaps.filter(t => t != null && !Placeholder.is(t.name)).map(_.name).toSet ++
-                targetPipelines.filter(_ != null).map(_.name).toSet
-        members.names.filter(taken.contains).distinct
-    }
+    /** Does `catalog` exist: any member tap/pipeline with exactly this
+      * `catalog` value, or any placeholder of it. Case-sensitive, like the
+      * UI's grouping: a different-case name is a different catalog. */
+    def catalogExists(taps: Seq[TapConfig], pipelines: Seq[PipelineConfig], catalog: String): Boolean =
+        !members(taps, pipelines, catalog).isEmpty || Placeholder.of(taps, catalog).nonEmpty
 
     /** Labels of non-revoked API keys holding any capability scoped
       * `catalog=<old>`. `metadata` is the `{env}/api-key-metadata` map

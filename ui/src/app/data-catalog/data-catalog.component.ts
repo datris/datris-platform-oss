@@ -4,7 +4,7 @@ import { Subscription } from 'rxjs';
 import { isColumnDragActive } from '../shared/resizable-columns.directive';
 import { TapService } from '../tap.service';
 import { PipelineService } from '../pipeline.service';
-import { sanitizeCatalogName } from '../shared/sanitize';
+import { caseTwinMessage, findCaseTwin, sanitizeCatalogName } from '../shared/sanitize';
 import { AuthService } from '../auth.service';
 import { CatalogChatContextService, CatalogSnapshot } from '../catalog-chat/catalog-chat-context.service';
 import { CatalogAssistantStateService } from '../catalog-chat/catalog-assistant-state.service';
@@ -279,7 +279,18 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   createCatalog(): void {
     const name = sanitizeCatalogName(this.newCatalogName);
     if (!name) return;
-    // Check if catalog already exists
+    // A name that differs from an existing catalog only by case would create
+    // a second catalog next to it (names are case-sensitive). Refuse it and
+    // keep the typed value so the user can fix it in place.
+    const caseTwin = findCaseTwin(name, this.catalogs
+      .map(c => c.name)
+      .filter(n => n !== 'Uncataloged'));
+    if (caseTwin) {
+      this.newCatalogName = name;
+      this.showMoveError(caseTwinMessage(caseTwin));
+      return;
+    }
+    // Exact match: the catalog already exists, nothing to create.
     if (this.catalogs.some(c => c.name === name)) {
       this.showCreateModal = false;
       this.newCatalogName = '';
@@ -398,15 +409,24 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       this.cancelRename();
       return;
     }
+    const others = this.catalogs
+      .map(c => c.name)
+      .filter(n => n !== 'Uncataloged' && n !== catalog.name);
+    // A rename never merges: combining catalogs is what "Move all contents"
+    // is for. The server refuses an existing target too (409); this saves the
+    // round trip.
+    if (others.includes(newName)) {
+      this.renameValue = newName;
+      this.showMoveError(`'${newName}' already exists. To combine catalogs, use "Move all contents" instead.`);
+      return;
+    }
     // Catalog names compare case-sensitively on the server, so a rename to a
     // name that differs from another catalog only by case would create a
-    // second catalog next to it instead of merging. Refuse it here.
-    const caseTwin = this.catalogs.find(c =>
-      c.name !== 'Uncataloged' && c.name !== catalog.name &&
-      c.name !== newName && c.name.toLowerCase() === newName.toLowerCase());
+    // second catalog next to it. Refuse it here.
+    const caseTwin = findCaseTwin(newName, others);
     if (caseTwin) {
       this.renameValue = newName;
-      this.showMoveError(`'${caseTwin.name}' already exists with different capitalisation. Catalog names are case-sensitive, so this would create a second catalog.`);
+      this.showMoveError(caseTwinMessage(caseTwin));
       return;
     }
     const oldName = catalog.name;
@@ -442,13 +462,12 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
           this.loadCatalogs();
           return;
         }
-        const clashes: string[] = (err && err.error && Array.isArray(err.error.clashes)) ? err.error.clashes : [];
-        if (err && err.status === 409 && clashes.length > 0) {
-          const msg = this.errText(err).replace(/[.\s]+$/, '');
-          this.showMoveError(msg + '. Clashing: ' + clashes.join(', ') + '. Rename one of them first.');
-        } else {
-          this.showMoveError(this.errText(err));
-        }
+        // 400 (name rule) and 409 (target already exists, e.g. created
+        // elsewhere since the page loaded): show the server message and keep
+        // the editor open with the draft. On 409 reload so the list shows the
+        // catalog that now exists.
+        this.showMoveError(this.errText(err));
+        if (err && err.status === 409) this.loadCatalogs();
       }
     });
   }

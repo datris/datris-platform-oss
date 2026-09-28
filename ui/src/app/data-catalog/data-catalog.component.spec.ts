@@ -20,7 +20,7 @@
  *     Confirm calls `PipelineService.deleteCatalog(name, mode, confirm?)`
  *     (component state: `deleteMode`, `confirmText`).
  *  Uncataloged card: neither `.rename-catalog-btn` nor `.delete-catalog-btn`.
- *  Responses: 409 -> server `clashes` in `.move-error-banner`; 400 -> server
+ *  Responses: 409 (target exists) and 400 -> server
  *  message in `.move-error-banner`; 200/207 -> each `failed[]` name and error
  *  rendered on the page, list reloaded; non-empty `affectedKeys` ->
  *  `.affected-keys-banner` reading "API keys scoped to '<old>' no longer
@@ -235,19 +235,24 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
   }));
 
-  it('rename 409 shows the server clashes in the move-error banner and changes nothing client-side', fa(() => {
-    pipeSvc.renameCatalog.and.returnValue(httpError(409, {
-      error: "Cannot rename 'e2e_a' to 'e2e_b': 1 item name(s) already exist in the target catalog",
-      clashes: ['shared_tap']
-    }));
+  it('rename 409 "already exists" (race) shows the server message with the editor open and reloads the list', fa(() => {
+    pipeSvc.renameCatalog.and.callFake(() => {
+      // Another client created e2e_b after this page loaded.
+      tapsData.push({ name: '__catalog__e2e_b', catalog: 'e2e_b' });
+      return httpError(409, { error: "Catalog 'e2e_b' already exists. Use move to merge catalogs." });
+    });
     settle();
+    const loadsBefore = tapSvc.getTaps.calls.count();
     const input = openRename('e2e_a');
     if (!input) return;
     submitRename(input, 'e2e_b');
     expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    expect(tapSvc.getTaps.calls.count()).withContext('list reloaded after 409').toBeGreaterThan(loadsBefore);
+    const names = cards().map(c => (c.querySelector('.catalog-name')?.textContent || '').trim());
+    expect(names).withContext('new catalog shown after reload').toContain('e2e_b');
     const banner = el.querySelector('.move-error-banner');
     expect(banner).withContext('move-error-banner on 409').not.toBeNull();
-    expect(banner?.textContent || '').toContain('shared_tap');
+    expect(banner?.textContent || '').toContain("Catalog 'e2e_b' already exists. Use move to merge catalogs.");
     expect(mutatingCalls()).withContext('no per-item writes on a refused rename').toBe(0);
     const still = el.querySelector('input.rename-catalog-input') as HTMLInputElement | null;
     expect(still).withContext('editor stays open after a 409').not.toBeNull();
@@ -283,29 +288,19 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
 
   // ── Acceptance 3 ────────────────────────────────────────────────────────
 
-  it('rename-merge with no clash goes through the endpoint, reloads, and the old card disappears', fa(() => {
+  it('rename to an exact existing catalog name is refused client-side with zero requests', fa(() => {
     tapsData.push({ name: '__catalog__e2e_b', catalog: 'e2e_b' }, { name: 't_b', catalog: 'e2e_b' });
-    pipeSvc.renameCatalog.and.callFake(() => {
-      // Server-side result of the merge: members relabelled, old placeholder gone.
-      tapsData = [
-        { name: '__catalog__e2e_b', catalog: 'e2e_b' },
-        { name: 't_a', catalog: 'e2e_b' }, { name: 't_b', catalog: 'e2e_b' }, { name: 't_u' }
-      ];
-      pipelinesData = [{ name: 'p_a', catalog: 'e2e_b' }, { name: 'p_u' }];
-      return of({ renamed: ['t_a', 'p_a'], failed: [], affectedKeys: [], placeholder: 'kept' });
-    });
     settle();
-    const loadsBefore = tapSvc.getTaps.calls.count();
     const input = openRename('e2e_a');
     if (!input) return;
     submitRename(input, 'e2e_b');
-    expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
-    expect(tapSvc.getTaps.calls.count()).withContext('list reloads after rename').toBeGreaterThan(loadsBefore);
-    const names = cards().map(c => (c.querySelector('.catalog-name')?.textContent || '').trim());
-    expect(names).not.toContain('e2e_a');
-    expect(names).toContain('e2e_b');
-    expect(mutatingCalls()).withContext('no client-side fan-out or placeholder writes').toBe(0);
-    expect(el.querySelector('input.rename-catalog-input')).withContext('editor closed on success').toBeNull();
+    expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
+    expect(mutatingCalls()).toBe(0);
+    expect(el.querySelector('.move-error-banner')?.textContent || '')
+      .toContain(`'e2e_b' already exists. To combine catalogs, use "Move all contents" instead.`);
+    const still = el.querySelector('input.rename-catalog-input') as HTMLInputElement | null;
+    expect(still).withContext('editor stays open').not.toBeNull();
+    expect(still?.value).withContext('draft kept').toBe('e2e_b');
   }));
 
   it('"move all contents" removes the source placeholder by its catalog field after a full move', fa(() => {
@@ -629,5 +624,59 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     const sent = tapSvc.createOrUpdateTap.calls.mostRecent().args[0];
     expect(sent.name).toBe('__catalog__Sales_Q3');
     expect(sent.catalog).toBe('Sales_Q3');
+  }));
+  // ── Create guard: case-only twin (shared findCaseTwin helper) ───────────
+
+  it('Create Catalog refuses a name differing from an existing catalog only by case', fa(() => {
+    tapsData.push({ name: '__catalog__DatrisFund', catalog: 'DatrisFund' });
+    settle();
+    component.showCreateModal = true;
+    component.newCatalogName = 'datrisfund';
+    component.createCatalog();
+    settle();
+    expect(tapSvc.createOrUpdateTap).not.toHaveBeenCalled();
+    expect(el.querySelector('.move-error-banner')?.textContent || '')
+      .toContain("'DatrisFund' already exists with different capitalisation. Catalog names are case-sensitive, so this would create a second catalog.");
+    expect(component.showCreateModal).withContext('create row stays open').toBeTrue();
+    expect(component.newCatalogName).withContext('typed value kept').toBe('datrisfund');
+  }));
+
+  it('Create Catalog with an exact existing name creates nothing and closes quietly', fa(() => {
+    settle();
+    component.showCreateModal = true;
+    component.newCatalogName = 'e2e_a';
+    component.createCatalog();
+    settle();
+    expect(tapSvc.createOrUpdateTap).not.toHaveBeenCalled();
+    expect(component.showCreateModal).toBeFalse();
+    expect(el.querySelector('.move-error-banner')).toBeNull();
+  }));
+
+  it('Create Catalog ignores Uncataloged when checking for a case twin', fa(() => {
+    settle();
+    component.newCatalogName = 'uncataloged';
+    component.createCatalog();
+    settle();
+    expect(tapSvc.createOrUpdateTap).toHaveBeenCalledTimes(1);
+    expect(tapSvc.createOrUpdateTap.calls.mostRecent().args[0].catalog).toBe('uncataloged');
+  }));
+
+  it('rename guard is unchanged after moving to the shared helper', fa(() => {
+    tapsData.push({ name: '__catalog__DatrisFund', catalog: 'DatrisFund' });
+    settle();
+    const cat = component.catalogs.find((c: any) => c.name === 'e2e_a');
+    component.renameTarget = 'e2e_a';
+    component.renameValue = 'DATRISFUND';
+    component.commitRename(cat);
+    settle();
+    expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
+    expect(component.moveError).toContain("'DatrisFund' already exists with different capitalisation.");
+    // Own different-case form is still allowed.
+    const own = component.catalogs.find((c: any) => c.name === 'DatrisFund');
+    component.renameTarget = 'DatrisFund';
+    component.renameValue = 'DATRISFUND';
+    component.commitRename(own);
+    expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    expect(pipeSvc.renameCatalog.calls.mostRecent().args.slice(0, 2)).toEqual(['DatrisFund', 'DATRISFUND']);
   }));
 });

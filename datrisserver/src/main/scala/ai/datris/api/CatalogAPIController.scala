@@ -25,8 +25,9 @@ import scala.collection.mutable
   * these endpoints rewrite every member server-side instead of a client
   * fan-out, and report per-member failures (not transactional).
   *
-  *   - `PUT /api/v1/catalog/{name}` body `{"newName": "..."}` renames (a merge
-  *     when the target exists, refused with 409 on any member-name clash).
+  *   - `PUT /api/v1/catalog/{name}` body `{"newName": "..."}` renames;
+  *     refused with 409 when `newName` already exists (never a merge; moving
+  *     items is how catalogs are combined).
   *   - `DELETE /api/v1/catalog/{name}?mode=detach|cascade&confirm=<name>`
   *     detaches members to Uncataloged (default) or deletes them with their
   *     data (cascade, needs `confirm` equal to the name).
@@ -77,16 +78,11 @@ class CatalogAPIController {
                 if (members.isEmpty && oldPlaceholders.isEmpty)
                     return notFound(name)
 
-                val target = CatalogOps.members(taps, pipelines, newName)
-                val clashes = CatalogOps.clashes(members, target.taps, target.pipelines)
-                if (clashes.nonEmpty) {
+                // A rename never merges: combining catalogs is done by moving
+                // their items. An existing target is refused and nothing changes.
+                if (CatalogOps.catalogExists(taps, pipelines, newName)) {
                     val out = new JsonObject
-                    out.addProperty(
-                        "error",
-                        "Cannot rename '" + name + "' to '" + newName + "': " + clashes.size +
-                            " item name(s) already exist in the target catalog"
-                    )
-                    out.add("clashes", toArray(clashes))
+                    out.addProperty("error", "Catalog '" + newName + "' already exists. Use move to merge catalogs.")
                     return ResponseEntity.status(HttpStatus.CONFLICT).body[String](out.toString)
                 }
 
@@ -135,11 +131,9 @@ class CatalogAPIController {
                                 case None => Some(ph.name)
                             }
                         }
-                val hasNewPlaceholder = CatalogOps.Placeholder.of(taps, newName).nonEmpty
                 val newPlaceholderName = CatalogOps.Placeholder.freshName(newName, taps.map(_.name).toSet -- removedPlaceholders)
                 val placeholder =
                     if (!touchPlaceholders) "skipped"
-                    else if (hasNewPlaceholder) "kept"
                     else
                         try {
                             TapConfigIO.writeVersioned(

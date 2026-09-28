@@ -54,7 +54,7 @@ components:
             type: string
         placeholder:
           type: string
-          enum: [created, kept, skipped, failed]
+          enum: [created, skipped, failed]
     CatalogDeleteResult:
       type: object
       description: Carries `detached` (mode=detach) or `deleted` (mode=cascade), plus `failed`.
@@ -885,7 +885,7 @@ paths:
       tags: [Pipelines]
       summary: Rename a catalog
       description: |
-        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName` unless the target already has a placeholder. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. Renaming into an existing catalog is a merge, refused with 409 when any member name matches an item already in the target (tap or pipeline). Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes. If any member is refused by scope, placeholders are left untouched (`placeholder: skipped`); for a catalog with only a placeholder, the placeholder is scope-checked (403 on denial).
+        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName`. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. A rename never merges: if `newName` already exists (any tap or pipeline carries it, or it has a placeholder; matched case-sensitively) the request is refused with 409 and nothing changes. To combine catalogs, move their items. Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes. If any member is refused by scope, placeholders are left untouched (`placeholder: skipped`); for a catalog with only a placeholder, the placeholder is scope-checked (403 on denial).
       parameters:
         - name: name
           in: path
@@ -925,7 +925,7 @@ paths:
         '404':
           description: No tap, pipeline or placeholder carries this catalog
         '409':
-          description: Member names clash with items already in the target catalog
+          description: target catalog already exists
           content:
             application/json:
               schema:
@@ -933,10 +933,7 @@ paths:
                 properties:
                   error:
                     type: string
-                  clashes:
-                    type: array
-                    items:
-                      type: string
+                    example: "Catalog 'sales' already exists. Use move to merge catalogs."
         '500':
           description: Error
 

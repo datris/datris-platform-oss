@@ -319,7 +319,7 @@ class CatalogChatAPIController {
             "- **Watch for name clashes.** A catalog the user browses shouldn't contain two items with the same name. If a proposed move would collide with an existing item in the target catalog, call it out and suggest a rename instead of moving blindly.\n"
         )
         sb.append(
-            "- **Renaming a catalog.** To rename catalog A to B call `rename_catalog`; it refuses Uncataloged and reports clashes; never mass-`set_catalog` to emulate a rename. Renaming into an existing catalog merges them. Report any `failed` items and any `affectedKeys` (API keys scoped to the old name) it returns. `delete_catalog` moves a catalog's items to Uncataloged and removes the catalog; it never deletes items or data. Call either only when the user has explicitly asked for that catalog operation.\n"
+            "- **Renaming a catalog.** To rename catalog A to B call `rename_catalog`; it refuses Uncataloged and a `new_name` that already exists; never mass-`set_catalog` to emulate a rename. A rename never merges catalogs: to combine two, move the items with `set_catalog` when the user asks for that. Report any `failed` items and any `affectedKeys` (API keys scoped to the old name) it returns. `delete_catalog` moves a catalog's items to Uncataloged and removes the catalog; it never deletes items or data. Call either only when the user has explicitly asked for that catalog operation.\n"
         )
         sb.append(
             "- **Be brief.** This is a side-panel chat with limited width. Short paragraphs. When proposing a grouping, a compact bulleted plan beats prose.\n\n"

@@ -53,10 +53,11 @@
           <option value="__new__">+ Create New Catalog</option>
         </select>
         <div *ngIf="showNewCatalog" class="new-catalog-row">
-          <input class="form-input" [(ngModel)]="newCatalogName" placeholder="New catalog name">
+          <input class="form-input" [class.input-error]="!!newCatalogError" [(ngModel)]="newCatalogName" (ngModelChange)="newCatalogError = ''" placeholder="New catalog name">
           <button class="secondary-btn" (click)="confirmNewCatalog()" [disabled]="!newCatalogName.trim()">Create</button>
-          <button class="secondary-btn" (click)="showNewCatalog = false; catalog = ''">Cancel</button>
+          <button class="secondary-btn" (click)="showNewCatalog = false; newCatalogError = ''; catalog = ''">Cancel</button>
         </div>
+        <div class="error-hint" *ngIf="showNewCatalog && newCatalogError">{{ newCatalogError }}</div>
       </div>
 
       <div class="form-row">

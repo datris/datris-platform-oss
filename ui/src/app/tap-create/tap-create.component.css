@@ -969,6 +969,16 @@
   color: #c0392b;
 }
 
+.input-error {
+  border-color: var(--accent-red) !important;
+}
+
+.error-hint {
+  color: var(--accent-red);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
 .cron-validation-ok {
   margin-top: 6px;
   font-size: 13px;
