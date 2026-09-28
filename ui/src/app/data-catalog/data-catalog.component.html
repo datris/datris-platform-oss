@@ -71,8 +71,8 @@
                  (keydown.escape)="cancelRename()"
                  (blur)="sanitizeRenameValue()"
                  aria-label="New catalog name">
-          <button class="rename-ok" (click)="commitRename(cat)" title="Rename">
-            <span class="material-icons">check</span>
+          <button class="rename-ok" (click)="commitRename(cat)" [disabled]="renamingCatalog === cat.name" title="Rename">
+            <span class="material-icons">{{ renamingCatalog === cat.name ? 'hourglass_empty' : 'check' }}</span>
           </button>
           <button class="rename-cancel" (click)="cancelRename()" title="Cancel">
             <span class="material-icons">close</span>

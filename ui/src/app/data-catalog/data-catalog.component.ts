@@ -407,6 +407,8 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   }
 
   commitRename(catalog: CatalogInfo): void {
+    // One request at a time; Enter and the check mark both land here.
+    if (this.renamingCatalog) return;
     const newName = sanitizeLabel(this.renameValue || '');
     if (!newName) {
       this.showMoveError('A catalog name needs at least one lowercase letter, digit, _ or -.');
@@ -417,13 +419,17 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       return;
     }
     const oldName = catalog.name;
-    this.cancelRename();
+    // Keep the editor and the draft open until the server answers: on a
+    // refused rename (400/409) the user fixes the name in place instead of
+    // reopening and retyping it.
+    this.renameValue = newName;
     this.clearOpBanners();
     this.renamingCatalog = oldName;
     this.pendingAutoExpand = catalog.expanded ? newName : '';
     this.pipelineService.renameCatalog(oldName, newName).subscribe({
       next: (res) => {
         this.renamingCatalog = '';
+        this.cancelRename();
         this.showOpFailures(`Renaming catalog '${oldName}' to '${newName}'`, res && res.failed);
         const keys: string[] = (res && Array.isArray(res.affectedKeys)) ? res.affectedKeys : [];
         if (keys.length > 0) {
@@ -437,6 +443,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         this.pendingAutoExpand = '';
         if (err && err.status === 404) {
           // Older server without the catalog endpoint: relabel item by item.
+          this.cancelRename();
           this.moveAll(catalog, newName);
           return;
         }

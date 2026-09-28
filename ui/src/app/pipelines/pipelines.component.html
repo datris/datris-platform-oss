@@ -28,17 +28,17 @@
         <button class="catalog-delete-btn"
                 *ngIf="group.name !== 'Uncataloged' && deleteCatalogTarget !== group.name && auth.canWrite()"
                 (click)="openCatalogDelete(group.name, $event)"
-                title="Delete this catalog">
+                title="Delete this catalog (taps and pipelines)">
           <span class="material-icons">delete</span>
         </button>
         <div class="catalog-delete-confirm" *ngIf="deleteCatalogTarget === group.name && auth.canWrite()" (click)="$event.stopPropagation()">
           <label class="catalog-del-mode">
             <input type="radio" [name]="'pipe-del-mode-' + group.name" value="detach" [(ngModel)]="deleteCatalogMode">
-            Keep items (move to Uncataloged)
+            Keep taps and pipelines (move to Uncataloged)
           </label>
           <label class="catalog-del-mode">
             <input type="radio" [name]="'pipe-del-mode-' + group.name" value="cascade" [(ngModel)]="deleteCatalogMode">
-            Delete items and their data
+            Delete all taps and pipelines in this catalog, and their data
           </label>
           <input *ngIf="deleteCatalogMode === 'cascade'" type="text" class="catalog-del-confirm-input"
                  [(ngModel)]="deleteCatalogConfirm" [placeholder]="'Type ' + group.name + ' to confirm'"
