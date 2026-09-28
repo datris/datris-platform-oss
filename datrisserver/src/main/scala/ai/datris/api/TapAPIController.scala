@@ -504,75 +504,85 @@ class TapAPIController {
             logger.info("API endpoint DELETE /tap called with name: " + name)
             APIKeyValidator.validate(apiKey)
 
-            // Delete script from MinIO if it exists
-            val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
-            if (existing != null) {
-                // Scope check: `tap:delete:owner=self` keys may only delete
-                // taps they created. Loaded resource carries createdByKeyLabel.
-                CapabilityCheck.assertOwnerScope(request, "tap", "delete", existing.createdByKeyLabel)
-                // For repo-backed taps this commits a file removal (history is
-                // preserved — that's the point of the repo). Non-fatal: a dead
-                // repo connection must not block deleting the tap itself.
-                try TapCodeStore.forTap(existing).deleteScript(existing)
-                catch { case e: Exception => logger.warn("Tap script cleanup failed for '" + name + "': " + e.getMessage) }
-            }
-
-            // Document taps: also clean up staged files and ledger entries
-            if (existing != null && existing.tapType == "document") {
-                try {
-                    val ledgerTable = DatrisEnvironment.current.tapLedgerTableName
-                    val bucket = DatrisEnvironment.current.environment + "-config"
-                    val entries = TapDocumentLedgerIO.readByTap(ledgerTable, name)
-                    entries.foreach { e =>
-                        if (e.stagedPath != null && e.stagedPath.nonEmpty) {
-                            try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
-                            catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
-                        }
-                    }
-                    TapDocumentLedgerIO.deleteByTap(ledgerTable, name)
-                } catch {
-                    case ex: Exception => logger.warn("Tap ledger cleanup failed for " + name + ": " + ex.getMessage)
-                }
-            }
-
-            // Run history: every TapRunner.writeRunLog inserts a row keyed by
-            // "<tapName>|<runTime>" into {env}-tap-log. Without this cleanup, deleting
-            // and recreating a tap with the same name would silently surface the old
-            // tap's run history under the new tap.
-            try {
-                val tapLogTable = DatrisEnvironment.current.tapLogTableName
-                val prefix = name + "|"
-                val allKeys = NoSQLDbUtil.getItemsKeysByKeyName(tapLogTable, "key")
-                allKeys.filter(_.startsWith(prefix)).foreach { k =>
-                    NoSQLDbUtil.deleteItemJSON(tapLogTable, "key", k)
-                }
-            } catch {
-                case ex: Exception => logger.warn("Tap run-log cleanup failed for " + name + ": " + ex.getMessage)
-            }
-
-            // Definition versions: hard-delete every snapshot for this tap AND
-            // GC the script objects they pinned (now that we have the index to
-            // do it cleanly). deleteScript is idempotent, so re-deleting the
-            // current scriptPath removed above is harmless.
-            try {
-                EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.tapVersionTableName, name)
-                    .foreach(TapScriptGenerator.deleteScript)
-            } catch {
-                case ex: Exception => logger.warn("Tap version cleanup failed for " + name + ": " + ex.getMessage)
-            }
-
-            // Incremental-sync state: a recreated tap with the same name must start
-            // from scratch, not inherit the old tap's cursor.
-            try TapStateIO.delete(name)
-            catch { case ex: Exception => logger.warn("Tap state cleanup failed for " + name + ": " + ex.getMessage) }
-
-            TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)
+            deleteTapInternal(name, request)
             new ResponseEntity[String]("{\"message\": \"Tap deleted: " + name + "\"}", HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
         }
+    }
+
+    /** Body of DELETE /tap after key validation: owner-scope check, script,
+      * document ledger + staged files, run log, versions, sync state, config.
+      * Shared with the catalog cascade delete and placeholder cleanup
+      * (`CatalogAPIController`). Throws on a scope denial. `checkScope=false`
+      * is only for `__catalog__` placeholders, which are catalog bookkeeping
+      * already authorised by the catalog route's capability gate. */
+    def deleteTapInternal(name: String, request: HttpServletRequest, checkScope: Boolean = true): Unit = {
+        // Delete script from MinIO if it exists
+        val existing = TapConfigIO.read(DatrisEnvironment.current.tapTableName, name)
+        if (existing != null) {
+            // Scope check: `tap:delete:owner=self` keys may only delete
+            // taps they created. Loaded resource carries createdByKeyLabel.
+            if (checkScope) CapabilityCheck.assertOwnerScope(request, "tap", "delete", existing.createdByKeyLabel)
+            // For repo-backed taps this commits a file removal (history is
+            // preserved — that's the point of the repo). Non-fatal: a dead
+            // repo connection must not block deleting the tap itself.
+            try TapCodeStore.forTap(existing).deleteScript(existing)
+            catch { case e: Exception => logger.warn("Tap script cleanup failed for '" + name + "': " + e.getMessage) }
+        }
+
+        // Document taps: also clean up staged files and ledger entries
+        if (existing != null && existing.tapType == "document") {
+            try {
+                val ledgerTable = DatrisEnvironment.current.tapLedgerTableName
+                val bucket = DatrisEnvironment.current.environment + "-config"
+                val entries = TapDocumentLedgerIO.readByTap(ledgerTable, name)
+                entries.foreach { e =>
+                    if (e.stagedPath != null && e.stagedPath.nonEmpty) {
+                        try { ObjectStoreUtil.deleteBucketObject(bucket, e.stagedPath) }
+                        catch { case ex: Exception => logger.warn("Failed to delete staged doc " + e.stagedPath + ": " + ex.getMessage) }
+                    }
+                }
+                TapDocumentLedgerIO.deleteByTap(ledgerTable, name)
+            } catch {
+                case ex: Exception => logger.warn("Tap ledger cleanup failed for " + name + ": " + ex.getMessage)
+            }
+        }
+
+        // Run history: every TapRunner.writeRunLog inserts a row keyed by
+        // "<tapName>|<runTime>" into {env}-tap-log. Without this cleanup, deleting
+        // and recreating a tap with the same name would silently surface the old
+        // tap's run history under the new tap.
+        try {
+            val tapLogTable = DatrisEnvironment.current.tapLogTableName
+            val prefix = name + "|"
+            val allKeys = NoSQLDbUtil.getItemsKeysByKeyName(tapLogTable, "key")
+            allKeys.filter(_.startsWith(prefix)).foreach { k =>
+                NoSQLDbUtil.deleteItemJSON(tapLogTable, "key", k)
+            }
+        } catch {
+            case ex: Exception => logger.warn("Tap run-log cleanup failed for " + name + ": " + ex.getMessage)
+        }
+
+        // Definition versions: hard-delete every snapshot for this tap AND
+        // GC the script objects they pinned (now that we have the index to
+        // do it cleanly). deleteScript is idempotent, so re-deleting the
+        // current scriptPath removed above is harmless.
+        try {
+            EntityVersionIO.deleteAllForEntity(DatrisEnvironment.current.tapVersionTableName, name)
+                .foreach(TapScriptGenerator.deleteScript)
+        } catch {
+            case ex: Exception => logger.warn("Tap version cleanup failed for " + name + ": " + ex.getMessage)
+        }
+
+        // Incremental-sync state: a recreated tap with the same name must start
+        // from scratch, not inherit the old tap's cursor.
+        try TapStateIO.delete(name)
+        catch { case ex: Exception => logger.warn("Tap state cleanup failed for " + name + ": " + ex.getMessage) }
+
+        TapConfigIO.delete(DatrisEnvironment.current.tapTableName, name)
     }
 
     /** Repoint an existing tap at freshly written MinIO bytes unless the

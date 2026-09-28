@@ -37,17 +37,29 @@
             <span class="material-icons">close</span>
           </button>
         </div>
-        <!-- Delete all taps in catalog -->
-        <button class="catalog-action-btn catalog-delete-btn" *ngIf="auth.canWrite() && deleteCatalogTarget !== group.name && runCatalogTarget !== group.name"
-                (click)="deleteCatalogTarget = group.name; $event.stopPropagation()"
-                title="Delete all taps in this catalog">
+        <!-- Delete the catalog (named groups only): keep or delete its items -->
+        <button class="catalog-action-btn catalog-delete-btn"
+                *ngIf="auth.canWrite() && group.name !== 'Uncataloged' && deleteCatalogTarget !== group.name && runCatalogTarget !== group.name"
+                (click)="openCatalogDelete(group.name, $event)"
+                title="Delete this catalog (taps and pipelines)">
           <span class="material-icons">delete</span>
         </button>
         <div class="catalog-action-confirm" *ngIf="auth.canWrite() && deleteCatalogTarget === group.name" (click)="$event.stopPropagation()">
-          <button class="confirm-opt confirm-delete" (click)="deleteCatalogTaps(group); $event.stopPropagation()" [disabled]="group.deleting">
+          <label class="catalog-del-mode">
+            <input type="radio" [name]="'tap-del-mode-' + group.name" value="detach" [(ngModel)]="deleteCatalogMode">
+            Keep taps and pipelines (move to Uncataloged)
+          </label>
+          <label class="catalog-del-mode">
+            <input type="radio" [name]="'tap-del-mode-' + group.name" value="cascade" [(ngModel)]="deleteCatalogMode">
+            Delete all taps and pipelines in this catalog, and their data
+          </label>
+          <input *ngIf="deleteCatalogMode === 'cascade'" type="text" class="catalog-del-confirm-input"
+                 [(ngModel)]="deleteCatalogConfirm" [placeholder]="'Type ' + group.name + ' to confirm'"
+                 aria-label="Type the catalog name to confirm">
+          <button class="confirm-opt confirm-delete" (click)="deleteCatalogTaps(group); $event.stopPropagation()" [disabled]="!canConfirmCatalogDelete(group)">
             <span class="material-icons">{{ group.deleting ? 'hourglass_empty' : 'delete_forever' }}</span> {{ group.deleting ? '...' : 'Delete' }}
           </button>
-          <button class="confirm-opt confirm-cancel" (click)="deleteCatalogTarget = ''; $event.stopPropagation()">
+          <button class="confirm-opt confirm-cancel" (click)="cancelCatalogDelete($event)">
             <span class="material-icons">close</span>
           </button>
         </div>

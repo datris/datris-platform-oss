@@ -640,3 +640,127 @@
 .menu-item-chevron {
   margin-left: auto;
 }
+
+/* ── Catalog rename / two-mode delete ─────────────────────────────── */
+
+.rename-catalog-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  opacity: 0.5;
+  transition: all 0.2s;
+}
+
+.rename-catalog-btn:hover:not(:disabled) {
+  color: var(--accent-cyan, #00b4ff);
+  opacity: 1;
+}
+
+.rename-catalog-btn:disabled {
+  cursor: not-allowed;
+}
+
+.rename-catalog-btn .material-icons {
+  font-size: 18px;
+}
+
+.rename-editor {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.rename-catalog-input {
+  max-width: 260px;
+  padding: 4px 8px;
+  font-size: 14px;
+}
+
+.rename-ok,
+.rename-cancel {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.rename-ok:hover {
+  color: var(--accent-cyan, #00b4ff);
+}
+
+.rename-cancel:hover {
+  color: var(--text-primary);
+}
+
+.rename-ok .material-icons,
+.rename-cancel .material-icons {
+  font-size: 18px;
+}
+
+.rename-rule {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.delete-confirm {
+  flex-wrap: wrap;
+}
+
+.del-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary, var(--text-muted));
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+.del-confirm-input {
+  max-width: 200px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.affected-keys-banner,
+.op-failures-banner {
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+}
+
+.affected-keys-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.affected-keys-banner .material-icons,
+.op-failures-head .material-icons {
+  font-size: 18px;
+}
+
+.op-failures-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.op-failures-list {
+  margin: 6px 0 0 26px;
+  padding: 0;
+}
+
+.op-failures-hint {
+  margin: 6px 0 0 26px;
+  font-style: italic;
+}

@@ -80,6 +80,10 @@ object CapabilityRoutes {
         // changes the pipeline definition (and may migrate the dest table).
         Route("GET", "/api/v1/pipeline/dest-types", "pipeline", "read"),
         Route("POST", "/api/v1/pipeline/dest-types", "pipeline", "update"),
+        // Catalog operations (rename / detach-or-cascade delete). One route
+        // row per method; members are owner-scope checked in the controller.
+        Route("PUT", "/api/v1/catalog/**", "pipeline", "update"),
+        Route("DELETE", "/api/v1/catalog/**", "pipeline", "delete"),
 
         // Taps
         Route("GET", "/api/v1/tap", "tap", "read"),

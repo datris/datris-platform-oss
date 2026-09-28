@@ -33,7 +33,7 @@ class MCPToolRoutesSpec extends AnyFunSuite {
     )
 
     test("catalog has one row per MCP tool, no duplicates") {
-        assert(MCPToolRoutes.allToolNames.size == 75)
+        assert(MCPToolRoutes.allToolNames.size == 77)
         assert(MCPToolRoutes.allToolNames.distinct.size == MCPToolRoutes.allToolNames.size)
     }
 
@@ -59,6 +59,27 @@ class MCPToolRoutesSpec extends AnyFunSuite {
         assert(MCPToolRoutes.allowedTools(ragBuilder).contains("get_pipeline_result"))
         assert(!MCPToolRoutes.allowedTools(key("nonexistent:nothing")).contains("get_pipeline_result"))
         assert(!MCPToolRoutes.allowedTools(key("pipeline:read")).contains("get_pipeline_result"))
+    }
+
+    // Story: Catalog rename and delete (plans/stories/catalog-ops-server-mcp.md).
+    test("rename_catalog and delete_catalog are mapped to the catalog PUT/DELETE routes, not Unmapped") {
+        val rows = MCPToolRoutes.tools.toMap
+        assert(rows.get("rename_catalog") == Some(MCPToolRoutes.Mapped("PUT", "/api/v1/catalog/example")))
+        assert(rows.get("delete_catalog") == Some(MCPToolRoutes.Mapped("DELETE", "/api/v1/catalog/example")))
+        assert(CapabilityRoutes.lookup("PUT", "/api/v1/catalog/example") == RouteCheck.Require("pipeline", "update"))
+        assert(CapabilityRoutes.lookup("DELETE", "/api/v1/catalog/example") == RouteCheck.Require("pipeline", "delete"))
+        // The existing discovery read is untouched.
+        assert(CapabilityRoutes.lookup("GET", "/api/v1/catalog/find") == RouteCheck.Require("metadata", "read"))
+    }
+
+    test("catalog tools are visible only with the mapped capability (fail-closed)") {
+        assert(MCPToolRoutes.allowedTools(key("pipeline:update")).contains("rename_catalog"))
+        assert(!MCPToolRoutes.allowedTools(key("pipeline:update")).contains("delete_catalog"))
+        assert(MCPToolRoutes.allowedTools(key("pipeline:delete")).contains("delete_catalog"))
+        assert(!MCPToolRoutes.allowedTools(key("pipeline:read")).contains("rename_catalog"))
+        assert(!MCPToolRoutes.allowedTools(ragBuilder).contains("rename_catalog"))
+        assert(!MCPToolRoutes.allowedTools(ragBuilder).contains("delete_catalog"))
+        assert(Set("rename_catalog", "delete_catalog").subsetOf(MCPToolRoutes.allowedTools(legacyKey).toSet))
     }
 
     test("drift guard: every Mapped row resolves in CapabilityRoutes") {

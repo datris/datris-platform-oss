@@ -206,6 +206,8 @@ class CatalogChatAPIController {
     private def reorderToolsCatalogFirst(tools: List[JsonObject]): List[JsonObject] = {
         val catalogToolNames = Set(
             "set_catalog",
+            "rename_catalog",
+            "delete_catalog",
             "list_taps",
             "list_pipelines",
             "get_tap",
@@ -317,7 +319,7 @@ class CatalogChatAPIController {
             "- **Watch for name clashes.** A catalog the user browses shouldn't contain two items with the same name. If a proposed move would collide with an existing item in the target catalog, call it out and suggest a rename instead of moving blindly.\n"
         )
         sb.append(
-            "- **Renaming a catalog = moving every item into the new name.** There's no first-class rename; to rename catalog A to B, `set_catalog` each of A's items to B. Confirm the full list with the user before doing a batch like this, and report progress.\n"
+            "- **Renaming a catalog.** To rename catalog A to B call `rename_catalog`; it refuses Uncataloged and reports clashes; never mass-`set_catalog` to emulate a rename. Renaming into an existing catalog merges them. Report any `failed` items and any `affectedKeys` (API keys scoped to the old name) it returns. `delete_catalog` moves a catalog's items to Uncataloged and removes the catalog; it never deletes items or data. Call either only when the user has explicitly asked for that catalog operation.\n"
         )
         sb.append(
             "- **Be brief.** This is a side-panel chat with limited width. Short paragraphs. When proposing a grouping, a compact bulleted plan beats prose.\n\n"

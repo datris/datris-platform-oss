@@ -20,6 +20,22 @@ export class PipelineService {
     return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name));
   }
 
+  // --- Catalog-level operations ---------------------------------------------
+  // Server-side rename/delete of a whole catalog. Both resolve with the parsed
+  // body on 200 and on 207 (per-item failures in `failed`); 400/404/409 come
+  // through `error` with the server's JSON body intact. A 404 means the catalog
+  // no longer exists (renamed or deleted elsewhere); callers show a
+  // refresh message and write nothing.
+  renameCatalog(name: string, newName: string): Observable<any> {
+    return this.http.put<any>('/api/v1/catalog/' + encodeURIComponent(name), { newName });
+  }
+
+  deleteCatalog(name: string, mode: 'detach' | 'cascade', confirm?: string): Observable<any> {
+    let url = '/api/v1/catalog/' + encodeURIComponent(name) + '?mode=' + encodeURIComponent(mode);
+    if (mode === 'cascade' && confirm != null) url += '&confirm=' + encodeURIComponent(confirm);
+    return this.http.delete<any>(url);
+  }
+
   deletePipelineData(name: string): Observable<any> {
     return this.http.delete<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name) + '&deleteData=true&deleteConfig=false', { responseType: 'text' as 'json' });
   }

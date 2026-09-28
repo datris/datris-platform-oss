@@ -38,6 +38,8 @@ The MCP server exposes resources that agents can read on demand for detailed doc
 | `upload_data` | Upload data (base64-encoded) to a pipeline for processing. New CSV columns are auto-added to the schema ([schema evolution](/schemas#schema-evolution)). Returns pipeline token. |
 | `get_job_status` | Get job status. Pass `pipeline_token` for a `{rollup, events}` response — poll `rollup.allDone`, then read `rollup.status` (`success` / `warning` / `error`) and per-job `lastError`. Pass `pipeline_name` for a paginated summary across recent jobs. |
 | `set_catalog` | Set or clear the catalog grouping label on an existing pipeline or tap. Pass exactly one of `pipeline` or `tap`. |
+| `rename_catalog` | Rename a whole catalog: every tap and pipeline in it moves to `new_name` in one call. Renaming into an existing catalog merges the two unless an item name clashes (then nothing changes and the clashing names are returned). Returns per-item `failed` entries and `affectedKeys` (API keys still scoped to the old name). Uncataloged cannot be renamed |
+| `delete_catalog` | Delete a catalog by moving every tap and pipeline in it to Uncataloged. No tap, pipeline or data is deleted; per-item failures come back under `failed`. Uncataloged cannot be deleted |
 | `kill_job` | Kill a running job by pipeline token |
 | `profile_data` | AI-profile data (base64-encoded) with summary stats and suggested DQ rules |
 | `get_dest_types` | Propose real column types for a pipeline whose destination columns are all stored as text: samples up to 1000 landed rows, infers types deterministically and returns per-column evidence. Postgres, Snowflake and Databricks destinations only; nothing is changed by this call |

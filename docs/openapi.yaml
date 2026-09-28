@@ -28,6 +28,49 @@ components:
       description: Optional API key for authentication (enabled via application.yaml)
 
   schemas:
+    CatalogFailure:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Member (or `__catalog__` placeholder) name
+        error:
+          type: string
+    CatalogRenameResult:
+      type: object
+      properties:
+        renamed:
+          type: array
+          items:
+            type: string
+        failed:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogFailure'
+        affectedKeys:
+          type: array
+          description: Labels of non-revoked API keys holding a capability scoped `catalog=<old name>`
+          items:
+            type: string
+        placeholder:
+          type: string
+          enum: [created, kept, skipped, failed]
+    CatalogDeleteResult:
+      type: object
+      description: Carries `detached` (mode=detach) or `deleted` (mode=cascade), plus `failed`.
+      properties:
+        detached:
+          type: array
+          items:
+            type: string
+        deleted:
+          type: array
+          items:
+            type: string
+        failed:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogFailure'
     Incident:
       type: object
       properties:
@@ -833,6 +876,114 @@ paths:
       responses:
         '200':
           description: Pipeline deleted
+        '500':
+          description: Error
+
+
+  /api/v1/catalog/{name}:
+    put:
+      tags: [Pipelines]
+      summary: Rename a catalog
+      description: |
+        Relabels every tap and pipeline whose `catalog` equals `name` to `newName`, each through a versioned write (one new definition version per member, with a change note naming the rename and the actor). Every hidden placeholder of the catalog (a `__catalog__*` tap whose `catalog` field is `name`, or whose name suffix is `name` when that field is empty) is removed, and `__catalog__<newName>` is created with `catalog=newName` unless the target already has a placeholder. A member already moved out of `name` by a concurrent change is listed under `failed` ("no longer in catalog"), and placeholders are left untouched when no member moved. Renaming into an existing catalog is a merge, refused with 409 when any member name matches an item already in the target (tap or pipeline). Not transactional: members that fail are listed under `failed` and the rest still move (207). API keys whose capabilities are scoped `catalog=<name>` are listed under `affectedKeys`; their scopes are not rewritten. Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:update`; each member is also checked against the key's owner and catalog scopes. If any member is refused by scope, placeholders are left untouched (`placeholder: skipped`); for a catalog with only a placeholder, the placeholder is scope-checked (403 on denial).
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Current catalog name. `Uncataloged` (any case) is refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newName]
+              properties:
+                newName:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]+$'
+                  description: New catalog name (letters, digits, `_` and `-`; mixed case allowed). Catalog names are matched case-sensitively.
+      responses:
+        '200':
+          description: Every member renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogRenameResult'
+        '207':
+          description: Some members could not be renamed; see `failed`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogRenameResult'
+        '400':
+          description: Reserved or blank catalog name, missing or invalid `newName`, or `newName` equal to `name`
+        '403':
+          description: 'The catalog holds only its placeholder and the key''s scope does not cover it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+        '404':
+          description: No tap, pipeline or placeholder carries this catalog
+        '409':
+          description: Member names clash with items already in the target catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  clashes:
+                    type: array
+                    items:
+                      type: string
+        '500':
+          description: Error
+
+    delete:
+      tags: [Pipelines]
+      summary: Delete a catalog (detach or cascade)
+      description: |
+        `mode=detach` (default) clears `catalog` on every member so it appears under Uncataloged, through a versioned write per member. `mode=cascade` deletes every member tap and pipeline, including each pipeline's destination data, and requires `confirm` equal to `name`. Both remove every placeholder of the catalog (matched by its `catalog` field, or by name suffix when that field is empty). A member already moved out of `name` by a concurrent change is listed under `failed`. Not transactional: failed members are listed under `failed` (207). Catalog operations (rename, detach, cascade) are serialized server-side, so concurrent requests run one after another and the later one sees the earlier one's result. Requires `pipeline:delete`; each member is also checked against the key's owner and catalog scopes, and the placeholder is left untouched if any member is refused. In cascade mode, if any tap delete fails, the catalog's pipelines are not deleted and are reported under `failed`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Catalog name. `Uncataloged` (any case) is refused.
+        - name: mode
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [detach, cascade]
+            default: detach
+        - name: confirm
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Required for `mode=cascade`; must equal the catalog name.
+      responses:
+        '200':
+          description: Every member detached or deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogDeleteResult'
+        '207':
+          description: Some members failed; see `failed`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogDeleteResult'
+        '400':
+          description: Reserved or blank catalog name, unknown mode, or cascade without a matching `confirm`
+        '403':
+          description: 'The catalog holds only its placeholder and the key''s scope does not cover it. Body: `{"error": "capability denied", "errorKind": "capability_denied", "message": ...}`'
+        '404':
+          description: No tap, pipeline or placeholder carries this catalog
         '500':
           description: Error
 

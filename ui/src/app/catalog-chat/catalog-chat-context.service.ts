@@ -4,7 +4,9 @@ import { Injectable } from '@angular/core';
  *  against. DataCatalogComponent publishes this on every loadCatalogs(); the
  *  chat panel re-injects it as a leading user message on every turn (same
  *  ship-the-simple-version cadence as the Ops chat). The names let the agent
- *  move/rename specific taps and pipelines without re-listing them. */
+ *  move/rename specific taps and pipelines without re-listing them, and
+ *  rename a whole catalog in one rename_catalog call (the tool guidance lives
+ *  in the server-side assistant prompt). */
 export interface CatalogChatContext {
   catalogs: CatalogSnapshot[];
   /** Set when the user clicked "Describe to Assistant" on a specific catalog

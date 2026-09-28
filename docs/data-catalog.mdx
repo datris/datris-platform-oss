@@ -20,7 +20,7 @@ You don't have to use catalogs. Anything you create outside a catalog falls into
 Catalogs aren't a separate table or external system. Each tap and pipeline carries a nullable `catalog` string field; the platform groups by that field. Two consequences:
 
 - A catalog "exists" as soon as anything is assigned to it. There's no separate create step required to *use* a name.
-- Renaming a catalog means updating the `catalog` field on every tap and pipeline in it. The Data Catalog UI handles this for you.
+- Renaming a catalog means updating the `catalog` field on every tap and pipeline in it. The Catalog tab's rename control does this in one step, or call `rename_catalog` over MCP.
 
 When you create a catalog explicitly via the UI, Datris persists the name by writing a placeholder tap named `__catalog__<name>` (description "Catalog placeholder", `enabled=false`). This makes empty catalogs survive across UI reloads. The placeholder is hidden from the Taps list and ignored by the runtime.
 
@@ -29,12 +29,18 @@ When you create a catalog explicitly via the UI, Datris persists the name by wri
 The **Catalog** tab in the UI shows one card per catalog plus an **Uncataloged** card.
 
 - Each card shows the catalog name and counts of taps + pipelines.
+- **Rename catalog** — the pencil icon on a named catalog's card turns the name into an editable field. Press Enter (or the check mark) to save, Escape to cancel. The new name may use letters (upper or lower case), digits, `_` and `-` only; anything else is converted when you leave the field (spaces become `_`, other characters are dropped). Capitalisation is kept. Every tap and pipeline in the catalog moves to the new name in one step.
+  - Renaming into a catalog that already exists merges the two. If an item with the same name already exists in the target catalog, the rename is refused, both catalogs stay as they were, and the banner lists the clashing names so you can rename one of them first.
+  - If some items could not be moved, the page lists each one with the reason; the rest are renamed. If the catalog was renamed or deleted from somewhere else after the page loaded, the rename or delete changes nothing, says the catalog was not found, and refreshes the list. An item that someone moved to another catalog while the rename ran is reported as no longer in the catalog; refresh the page to see where it is now.
+  - API keys whose capabilities are scoped to the old catalog name keep that scope and no longer match the renamed items. After such a rename a banner names those keys; update them under **Configuration → Keys**.
+  - Catalog names may be mixed case (for example `DatrisFund` or `Sales_Q3`), and they are matched case-sensitively. A rename to a name that differs from another existing catalog only by case (for example `datrisfund` when `DatrisFund` exists) is refused with a message that the catalog already exists with different capitalisation, because it would create a second catalog next to it rather than merging. Rename to the exact existing name to merge. A catalog can still be renamed to a different capitalisation of its own name.
 - Click a card to expand it. Inside you'll see:
   - Each tap with its enabled/disabled status, last-run outcome, and record count.
   - Each pipeline with a quick-jump link to its config.
-- **+ Create Catalog** — make a new empty catalog. The name is sanitized (lowercase, alphanumerics + underscores).
-- **Delete catalog** — confirms, then deletes the catalog's placeholder **plus every tap and pipeline inside it**. This is destructive and not reversible. If you want to keep the items, re-tag them to a different catalog first (or to Uncataloged by clearing the field on each).
-- **Delete Uncataloged** — same delete icon on the Uncataloged group removes every tap and pipeline that isn't in a named catalog. Confirm prompt reads *"Delete ALL uncataloged items?"* to make the scope obvious.
+- **+ Create Catalog** — make a new empty catalog. The name is sanitized to letters, digits, `_` and `-` (spaces become `_`); capitalisation is kept.
+- **Delete catalog, keep items** — the delete icon on a named catalog's card opens a confirm with two choices. **Keep items (move to Uncataloged)** is the default: the catalog is removed and every tap and pipeline in it moves to Uncataloged. Nothing is deleted.
+- **Delete catalog, delete items and their data** — the second choice deletes the catalog **plus every tap and pipeline inside it, including the data already written to their destinations**. This is destructive and not reversible, so **Delete** stays disabled until you type the catalog name exactly (case-sensitive). If some items could not be deleted, the page lists each one with the reason.
+- **Uncataloged is not a catalog** — its card has no rename or delete control. Delete uncataloged items one at a time (below).
 - **Delete individual tap or pipeline** — expand any catalog (including Uncataloged) and use the trash icon on a specific row to delete just that item. Clicking the trash icon swaps the row's action icons for an inline confirm: **Delete** / **×** for a tap; **Config & Data** / **Data Only** / **×** for a pipeline (Data Only wipes the rows but keeps the pipeline config so the next ingest fills it again).
 - **Row actions menu (Uncataloged)** — each item in the Uncataloged group has a ⋮ kebab menu after the trash icon with three actions:
   - **Edit** — opens the tap or pipeline editor.
@@ -54,12 +60,23 @@ Leave the field blank to keep the item Uncataloged.
 
 ## API and MCP
 
-There are no dedicated `/catalogs` REST endpoints — catalogs are just a field on the Tap and Pipeline configs. You read and write them through the existing endpoints:
+Catalogs are a field on the Tap and Pipeline configs. You read and write single items through the existing endpoints:
 
 - `GET /api/v1/taps` and `GET /api/v1/pipelines` return the `catalog` field on each item.
 - `POST` / `PUT` to those endpoints accept a `catalog` field. To move an item, send a request with the new value.
 
-From an MCP agent, the `set_catalog` tool wraps the read-modify-write for you on either a pipeline or a tap, so you don't have to round-trip the full config yourself. For browsing, list taps or pipelines and group client-side by `catalog`.
+Two endpoints act on a whole catalog:
+
+- `PUT /api/v1/catalog/{name}` with body `{"newName": "<label>"}` renames the catalog (merging into an existing one when there is no name clash). The response lists the items `renamed`, any `failed` items with their error, and `affectedKeys`: API keys still scoped to the old name.
+- `DELETE /api/v1/catalog/{name}?mode=detach` removes the catalog and moves its items to Uncataloged. `mode=cascade&confirm=<name>` deletes the items and their data as well; `confirm` must equal the catalog name. Uncataloged cannot be renamed or deleted.
+
+From an MCP agent:
+
+- `set_catalog` wraps the read-modify-write on a single pipeline or tap, so you don't have to round-trip the full config yourself.
+- `rename_catalog` renames a whole catalog in one call, with the same merge, clash and affected-keys behaviour as the Catalog tab.
+- `delete_catalog` removes a catalog and moves its items to Uncataloged. It never deletes items or data; deleting a catalog together with its items is available from the UI or the API only.
+
+For browsing, list taps or pipelines and group client-side by `catalog`.
 
 ## What catalogs don't do
 
