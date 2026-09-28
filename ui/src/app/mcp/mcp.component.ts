@@ -379,7 +379,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'rename_catalog',
-      description: 'Rename a catalog: relabels every tap and pipeline in it and moves the empty-catalog placeholder. Renaming into an existing catalog merges them; refused with the clashing names if an item name already exists there. Uncataloged cannot be renamed. Returns failed items and API keys scoped to the old name. ONLY call when the user has explicitly asked.',
+      description: 'Rename a catalog: relabels every tap and pipeline in it and moves the empty-catalog placeholder. The new name must not already exist (a rename never merges; move items with set_catalog to combine catalogs). Uncataloged cannot be renamed. Returns failed items and API keys scoped to the old name. ONLY call when the user has explicitly asked.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'catalog', type: 'string', description: 'Current catalog name.', required: true, inputType: 'text' },

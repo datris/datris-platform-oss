@@ -409,12 +409,21 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       this.cancelRename();
       return;
     }
+    const others = this.catalogs
+      .map(c => c.name)
+      .filter(n => n !== 'Uncataloged' && n !== catalog.name);
+    // A rename never merges: combining catalogs is what "Move all contents"
+    // is for. The server refuses an existing target too (409); this saves the
+    // round trip.
+    if (others.includes(newName)) {
+      this.renameValue = newName;
+      this.showMoveError(`'${newName}' already exists. To combine catalogs, use "Move all contents" instead.`);
+      return;
+    }
     // Catalog names compare case-sensitively on the server, so a rename to a
     // name that differs from another catalog only by case would create a
-    // second catalog next to it instead of merging. Refuse it here.
-    const caseTwin = findCaseTwin(newName, this.catalogs
-      .map(c => c.name)
-      .filter(n => n !== 'Uncataloged' && n !== catalog.name));
+    // second catalog next to it. Refuse it here.
+    const caseTwin = findCaseTwin(newName, others);
     if (caseTwin) {
       this.renameValue = newName;
       this.showMoveError(caseTwinMessage(caseTwin));
@@ -453,13 +462,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
           this.loadCatalogs();
           return;
         }
-        const clashes: string[] = (err && err.error && Array.isArray(err.error.clashes)) ? err.error.clashes : [];
-        if (err && err.status === 409 && clashes.length > 0) {
-          const msg = this.errText(err).replace(/[.\s]+$/, '');
-          this.showMoveError(msg + '. Clashing: ' + clashes.join(', ') + '. Rename one of them first.');
-        } else {
-          this.showMoveError(this.errText(err));
-        }
+        // 400 (name rule) and 409 (target already exists, e.g. created
+        // elsewhere since the page loaded): show the server message and keep
+        // the editor open with the draft.
+        this.showMoveError(this.errText(err));
       }
     });
   }

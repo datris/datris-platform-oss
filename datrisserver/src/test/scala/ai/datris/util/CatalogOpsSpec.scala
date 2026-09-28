@@ -17,8 +17,7 @@ import org.scalatest.funsuite.AnyFunSuite
   *   - `CatalogOps.LabelRule` — the pattern `^[A-Za-z0-9_-]+$` (mixed case allowed)
   *   - `CatalogOps.members(taps: Seq[TapConfig], pipelines: Seq[PipelineConfig], catalog: String)`
   *     returns a value with `.taps: Seq[TapConfig]` and `.pipelines: Seq[PipelineConfig]`
-  *   - `CatalogOps.clashes(members, targetTaps: Seq[TapConfig], targetPipelines: Seq[PipelineConfig]): Seq[String]`
-  *     (clashing member names)
+  *   - `CatalogOps.catalogExists(taps, pipelines, name): Boolean` (rename target check)
   *   - `CatalogOps.affectedKeys(metadata: Map[String, String], old: String): Seq[String]`
   *     (metadata = label -> metadata JSON, as in `{env}/api-key-metadata`)
   *   - `CatalogOps.Result(ok: Seq[String], failed: Seq[(String, String)])`
@@ -75,22 +74,27 @@ class CatalogOpsSpec extends AnyFunSuite {
         assert(m.pipelines.map(_.name) == Seq("orders"))
     }
 
-    test("clashes reports a tap in the source whose name matches a pipeline in the target (cross-type)") {
-        val m = CatalogOps.members(Seq(tap("orders", "old")), Seq(pipeline("events", "old")), "old")
-        val clashes = CatalogOps.clashes(m, Seq(tap("unrelated", "new")), Seq(pipeline("orders", "new")))
-        assert(clashes == Seq("orders"))
+    test("catalogExists is true when a member tap or pipeline carries the name") {
+        assert(CatalogOps.catalogExists(Seq(tap("t1", "sales")), Nil, "sales"))
+        assert(CatalogOps.catalogExists(Nil, Seq(pipeline("p1", "sales")), "sales"))
     }
 
-    test("clashes reports tap-vs-tap and pipeline-vs-pipeline name matches") {
-        val m = CatalogOps.members(Seq(tap("t1", "old")), Seq(pipeline("p1", "old")), "old")
-        val clashes = CatalogOps.clashes(m, Seq(tap("t1", "new")), Seq(pipeline("p1", "new")))
-        assert(clashes.toSet == Set("t1", "p1"))
+    test("catalogExists is true for a placeholder-only catalog") {
+        assert(CatalogOps.catalogExists(Seq(tap("__catalog__empty", "empty")), Nil, "empty"))
+        assert(CatalogOps.catalogExists(Seq(tap("__catalog__bare")), Nil, "bare"))
     }
 
-    test("clashes is empty when no names overlap, and the target's placeholder never clashes") {
-        val m = CatalogOps.members(Seq(tap("__catalog__old", "old"), tap("t1", "old")), Seq(pipeline("p1", "old")), "old")
-        val clashes = CatalogOps.clashes(m, Seq(tap("__catalog__new", "new"), tap("t2", "new")), Seq(pipeline("p2", "new")))
-        assert(clashes.isEmpty)
+    test("catalogExists is false when nothing carries the name") {
+        val taps = Seq(tap("__catalog__hr", "hr"), tap("t1", "hr"), tap("loose"))
+        assert(!CatalogOps.catalogExists(taps, Seq(pipeline("p1", "hr"), pipeline("p2")), "sales"))
+        assert(!CatalogOps.catalogExists(Nil, Nil, "sales"))
+    }
+
+    test("catalogExists is case-sensitive") {
+        val taps = Seq(tap("__catalog__DatrisFund", "DatrisFund"), tap("t1", "Sales"))
+        assert(!CatalogOps.catalogExists(taps, Seq(pipeline("p1", "Sales")), "datrisfund"))
+        assert(!CatalogOps.catalogExists(taps, Nil, "sales"))
+        assert(CatalogOps.catalogExists(taps, Nil, "DatrisFund"))
     }
 
     // ------------------------------------------------------ Acceptance bullet 3

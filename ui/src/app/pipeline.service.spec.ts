@@ -81,16 +81,16 @@ describe('PipelineService — catalog rename/delete', () => {
     expect(body.affectedKeys).toEqual(['ops-key']);
   });
 
-  it('renameCatalog surfaces a 409 with the server clashes body through error', () => {
+  it('renameCatalog surfaces a 409 "already exists" body through error', () => {
     expect(typeof service.renameCatalog).withContext('PipelineService.renameCatalog').toBe('function');
     let err: any;
     service.renameCatalog('e2e_c', 'e2e_b').subscribe({ next: () => fail('409 must not resolve'), error: (e: any) => err = e });
     http.expectOne(r => path(r.urlWithParams) === '/api/v1/catalog/e2e_c').flush(
-      { error: "Cannot rename 'e2e_c' to 'e2e_b': 1 item name(s) already exist in the target catalog", clashes: ['shared_tap'] },
+      { error: "Catalog 'e2e_b' already exists. Use move to merge catalogs." },
       { status: 409, statusText: 'Conflict' }
     );
     expect(err.status).toBe(409);
-    expect(err.error.clashes).toEqual(['shared_tap']);
+    expect(err.error.error).toContain('already exists');
   });
 
   it('deleteCatalog(name, "detach") sends DELETE with mode=detach and no confirm', () => {
