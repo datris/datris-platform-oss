@@ -235,15 +235,21 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(pipeSvc.renameCatalog).not.toHaveBeenCalled();
   }));
 
-  it('rename 409 "already exists" (race) shows the server message with the editor open', fa(() => {
-    pipeSvc.renameCatalog.and.returnValue(httpError(409, {
-      error: "Catalog 'e2e_b' already exists. Use move to merge catalogs."
-    }));
+  it('rename 409 "already exists" (race) shows the server message with the editor open and reloads the list', fa(() => {
+    pipeSvc.renameCatalog.and.callFake(() => {
+      // Another client created e2e_b after this page loaded.
+      tapsData.push({ name: '__catalog__e2e_b', catalog: 'e2e_b' });
+      return httpError(409, { error: "Catalog 'e2e_b' already exists. Use move to merge catalogs." });
+    });
     settle();
+    const loadsBefore = tapSvc.getTaps.calls.count();
     const input = openRename('e2e_a');
     if (!input) return;
     submitRename(input, 'e2e_b');
     expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
+    expect(tapSvc.getTaps.calls.count()).withContext('list reloaded after 409').toBeGreaterThan(loadsBefore);
+    const names = cards().map(c => (c.querySelector('.catalog-name')?.textContent || '').trim());
+    expect(names).withContext('new catalog shown after reload').toContain('e2e_b');
     const banner = el.querySelector('.move-error-banner');
     expect(banner).withContext('move-error-banner on 409').not.toBeNull();
     expect(banner?.textContent || '').toContain("Catalog 'e2e_b' already exists. Use move to merge catalogs.");

@@ -28,6 +28,16 @@ export function findCaseTwin(name: string, existing: string[]): string | null {
   return existing.find(e => e !== name && e.toLowerCase() === lower) ?? null;
 }
 
+/** Catalog a tap contributes to the catalog list: its `catalog` field, or for
+ *  a `__catalog__` placeholder with an empty field (legacy), the name suffix.
+ *  Same rule the Catalog tab uses to group placeholders. Empty when none. */
+export function tapCatalogName(t: { name?: string; catalog?: string } | null | undefined): string {
+  if (!t) return '';
+  if (t.catalog) return t.catalog;
+  const name = t.name || '';
+  return name.startsWith('__catalog__') ? name.substring('__catalog__'.length) : '';
+}
+
 /** Message shown when a catalog create or rename hits a case-only twin. */
 export function caseTwinMessage(twin: string): string {
   return `'${twin}' already exists with different capitalisation. Catalog names are case-sensitive, so this would create a second catalog.`;

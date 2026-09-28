@@ -395,4 +395,22 @@ describe('PipelineCreateComponent — Live Read destination', () => {
     expect(c.showNewCatalog).toBeFalse();
     expect(c.newCatalogError).toBe('');
   });
+  it('a placeholder-only legacy catalog (empty catalog field) is listed and its case twin is refused', () => {
+    const c: any = component;
+    const tapSvc: any = TestBed.inject(TapService);
+    tapSvc.getTaps = () => of([
+      { name: '__catalog__e2e_nm_e' },
+      { name: '__catalog__DatrisFund', catalog: 'DatrisFund' },
+      { name: 'real_tap', catalog: 'e2e_a' }
+    ]);
+    component.ngOnInit();
+    expect(c.availableCatalogs).toEqual(['DatrisFund', 'e2e_a', 'e2e_nm_e']);
+    expect(c.availableCatalogs.some((n: string) => n.startsWith('__catalog__'))).toBeFalse();
+    c.onCatalogChange('__new__');
+    c.newCatalogName = 'E2E_NM_E';
+    c.confirmNewCatalog();
+    expect(c.catalog).not.toBe('E2E_NM_E');
+    expect(c.newCatalogError).toContain("'e2e_nm_e' already exists with different capitalisation.");
+    expect(c.availableCatalogs).toEqual(['DatrisFund', 'e2e_a', 'e2e_nm_e']);
+  });
 });

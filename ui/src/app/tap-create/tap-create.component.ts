@@ -7,7 +7,7 @@ import { SecretsService } from '../secrets.service';
 import { SearchService } from '../search.service';
 import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
-import { caseTwinMessage, findCaseTwin, sanitizeCatalogName } from '../shared/sanitize';
+import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName } from '../shared/sanitize';
 
 @Component({
     selector: 'app-tap-create',
@@ -299,7 +299,10 @@ export class TapCreateComponent implements OnInit, OnDestroy {
     };
     this.tapService.getTaps().subscribe({
       next: (taps) => {
-        (taps || []).forEach((t: any) => { if (t.catalog) collectedCatalogs.add(t.catalog); });
+        // Placeholder taps count too, including legacy ones with an empty
+        // catalog field, so a placeholder-only catalog is listed (and its
+        // case twin is caught by confirmNewCatalog).
+        (taps || []).forEach((t: any) => { const c = tapCatalogName(t); if (c) collectedCatalogs.add(c); });
         finalizeCatalogs();
         this.existingTapNames = (taps || []).map((t: any) => (t.name || '')).filter((n: string) => n.length > 0);
       },

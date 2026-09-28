@@ -464,8 +464,10 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
         }
         // 400 (name rule) and 409 (target already exists, e.g. created
         // elsewhere since the page loaded): show the server message and keep
-        // the editor open with the draft.
+        // the editor open with the draft. On 409 reload so the list shows the
+        // catalog that now exists.
         this.showMoveError(this.errText(err));
+        if (err && err.status === 409) this.loadCatalogs();
       }
     });
   }

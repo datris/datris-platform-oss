@@ -5,7 +5,7 @@ import { PipelineService } from '../pipeline.service';
 import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
 import { TapService } from '../tap.service';
-import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, sanitizeIdentifier } from '../shared/sanitize';
+import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName, sanitizeIdentifier } from '../shared/sanitize';
 
 interface SchemaField {
   name: string;
@@ -195,8 +195,10 @@ export class PipelineCreateComponent implements OnInit {
         this.taps = allTaps.filter((t: any) => t.lastTestRunDataType || t.lastRunDataType)
                         .sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
         allTaps.forEach((t: any) => {
-          // Real tap with a catalog assignment, OR a placeholder for an empty catalog.
-          if (t.catalog) collectedCatalogs.add(t.catalog);
+          // Real tap with a catalog assignment, OR a placeholder for an empty
+          // catalog (legacy placeholders may have an empty catalog field).
+          const c = tapCatalogName(t);
+          if (c) collectedCatalogs.add(c);
         });
         finalizeCatalogs();
       },
