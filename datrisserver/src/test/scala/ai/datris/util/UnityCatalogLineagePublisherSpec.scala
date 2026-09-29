@@ -481,4 +481,58 @@ class UnityCatalogLineagePublisherSpec extends AnyFunSuite {
         assert(s.lineageHash == null, s"a failed publish must not record the hash: $s")
         assert(status.messages.forall(_._1 != "error"), s"a lineage failure is never an error line: ${status.messages}")
     }
+
+    // Review follow-ups.
+
+    test("missing column lineage skips the publish with no REST calls and keeps the published mappings") {
+        val ws = new FakeWorkspace()
+        val s1 = publish(ws, previous = null)
+        ws.reset()
+        val status = new RecordingStatusUtil
+        val s2 = P.publish(
+            client = ws.client,
+            config = config,
+            md = tapMd,
+            columnLineage = null,
+            previous = s1,
+            tableCreated = false,
+            runId = "run-0002",
+            recordCount = 1,
+            dqStatus = "pass",
+            statusUtil = status,
+            tap = scriptTap
+        )
+        assert(ws.calls.isEmpty, s"no REST calls without column lineage:\n${ws.calls.mkString("\n")}")
+        assert(s2.lastError != null && s2.lastError.startsWith("uc-lineage:") && s2.lastError.contains("column lineage"), s"$s2")
+        assert(s2.lineageHash == null, s"$s2")
+        assert(s2.lastLineageAt == s1.lastLineageAt, s"$s2")
+        assert(s2.lineageRelationshipIds != null && s2.lineageRelationshipIds.asScala == s1.lineageRelationshipIds.asScala, s"$s2")
+        assert(status.messages.exists(m => m._1 == "warning" && m._3.startsWith("uc-lineage:")), status.messages)
+    }
+
+    test("a deleted relationship (cached-id PATCH 404) falls through to list and re-create") {
+        val ws0 = new FakeWorkspace()
+        val gone = new java.util.HashMap[String, String]()
+        gone.put("source", "rel-gone-1")
+        gone.put("table", "rel-gone-2")
+        val s1 = publish(ws0, previous = null).copy(lineageRelationshipIds = gone)
+        val staleIds = Set("rel-gone-1", "rel-gone-2")
+        // Same workspace state minus the relationships (an admin deleted them).
+        val ws = new FakeWorkspace(
+            existingObjects = Set(TAP_NODE, PIPE_NODE),
+            failWhen = c =>
+                if (c.method == "PATCH" && c.path == LINEAGE && staleIds.contains(str(c.body, "id")))
+                    Some(404 -> """{"error_code":"RESOURCE_DOES_NOT_EXIST","message":"relationship not found"}""")
+                else None
+        )
+        val status = new RecordingStatusUtil
+        val s2 = publish(ws, previous = s1, runId = "run-0002", status = status)
+        assert(s2.lastError == null, s"$s2")
+        assert(ws.calls.exists(c => c.method == "GET" && c.path == LINEAGE), ws.calls.mkString("\n"))
+        assert(ws.lineagePosts.size == 2, ws.calls.mkString("\n"))
+        val ids = s2.lineageRelationshipIds.asScala.toMap
+        assert(ids.keySet == Set("source", "table") && ids.values.toSet.intersect(staleIds).isEmpty, ids)
+        assert(s2.lineageHash == s1.lineageHash && s2.lastLineageAt != null, s"$s2")
+        assert(!status.messages.exists(_._1 == "warning"), status.messages)
+    }
 }

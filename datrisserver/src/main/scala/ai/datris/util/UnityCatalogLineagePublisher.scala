@@ -290,6 +290,13 @@ object UnityCatalogLineagePublisher {
         val ids = scala.collection.mutable.Map[String, String]() ++= cachedIds
 
         try {
+            // No column lineage (read failed, or the pipeline vanished): a
+            // full republish would send empty column mappings and erase the
+            // published ones, so skip this run and keep what UC has.
+            if (columnLineage == null)
+                throw new DatrisException(
+                    "column lineage for pipeline " + pipeline + " could not be read; publish skipped (Unity Catalog keeps the last published column mappings)"
+                )
             val scriptSha = if (md != null) md.tapScriptSha else null
             val tapFed = md != null && md.tapName != null
             val sourceObj =
@@ -314,11 +321,23 @@ object UnityCatalogLineagePublisher {
             val steady = previous != null && !tableCreated && previous.lastLineageAt != null &&
                 hash == previous.lineageHash && cachedIds.contains(SourceKey) && cachedIds.contains(TableKey)
 
-            if (steady) {
-                patchRelationship(client, cachedIds(SourceKey), srcRel, PropsRelMask)
-                patchRelationship(client, cachedIds(TableKey), tblRel, PropsRelMask)
-                statusUtil.info("processing", "uc-lineage: lineage unchanged; run properties updated")
-            } else {
+            // A cached relationship id can go stale (an admin deleted the
+            // relationship): its PATCH 404s, and the run falls through to the
+            // full list-then-upsert path instead of failing.
+            val steadyDone = steady && {
+                try {
+                    patchRelationship(client, cachedIds(SourceKey), srcRel, PropsRelMask)
+                    patchRelationship(client, cachedIds(TableKey), tblRel, PropsRelMask)
+                    statusUtil.info("processing", "uc-lineage: lineage unchanged; run properties updated")
+                    true
+                } catch {
+                    case e: DatabricksHttpException if e.status == 404 =>
+                        statusUtil.info("processing", "uc-lineage: a cached lineage relationship no longer exists; republishing")
+                        false
+                }
+            }
+
+            if (!steadyDone) {
                 upsertObject(client, sourceObj)
                 upsertObject(client, pipeObj)
                 val srcId = upsertRelationship(

@@ -181,5 +181,11 @@ class DatabricksRestClientSpec extends AnyFunSuite {
         val fake2 = new FakeTransport()
         new DatabricksRestClient(pat(host = s"  $HOST/  "), fake2.transport, new ManualClock().fn).get(API)
         assert(fake2.apiCalls.head.url == s"https://$HOST$API", fake2.apiCalls.head.url)
+
+        // userinfo (user@ / user:pass@) is stripped too.
+        val fake3 = new FakeTransport()
+        new DatabricksRestClient(pat(host = s"https://someone:pw@$HOST/path"), fake3.transport, new ManualClock().fn).get(API)
+        assert(fake3.apiCalls.head.url == s"https://$HOST$API", fake3.apiCalls.head.url)
+        assert(DatabricksConnectionUtil.normalizeHost("a@b.example") == "b.example")
     }
 }

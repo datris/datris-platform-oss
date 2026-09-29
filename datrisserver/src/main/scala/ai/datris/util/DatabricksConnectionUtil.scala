@@ -115,10 +115,12 @@ object DatabricksConnectionUtil {
     /** The secret's `host` field should be a bare workspace hostname, but the
      *  natural paste is the full workspace URL (with protocol and often a path
      *  suffix like /sql/1.0/warehouses/...). Accept any of the shapes: strip
-     *  the protocol, anything after the first slash, and any :port. */
+     *  the protocol, any user@ prefix, anything after the first slash, and
+     *  any :port. */
     def normalizeHost(raw: String): String =
         raw.trim
             .replaceFirst("(?i)^[a-z]+://", "")
+            .replaceFirst("^[^/@]*@", "")
             .replaceFirst("[/?#].*$", "")
             .replaceFirst(":\\d+$", "")
 
