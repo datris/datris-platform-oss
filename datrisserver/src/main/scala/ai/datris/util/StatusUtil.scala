@@ -75,6 +75,9 @@ class StatusUtil {
         send(state, "warning", description)
     }
 
+    /** True once any warning has been recorded on this run (e.g. a DQ warn). */
+    def hasWarning: Boolean = hadWarning
+
     def error(state: String, description: String): Unit = {
         hadError = true
         send(state, "error", description)

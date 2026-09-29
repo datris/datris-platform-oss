@@ -360,6 +360,8 @@ services:
       DATRIS_ENV: "${DATRIS_ENV:-}"
       DATRIS_ALLOW_PLAINTEXT_DB: "${DATRIS_ALLOW_PLAINTEXT_DB:-false}"
       DATRIS_ALLOW_PRIVATE_EGRESS: "${DATRIS_ALLOW_PRIVATE_EGRESS:-false}"
+      # Unity Catalog metadata push for Databricks pipelines that opt in (unityCatalog.enabled).
+      DATRIS_UNITY_CATALOG_SYNC: "${DATRIS_UNITY_CATALOG_SYNC:-true}"
       # Comma-separated MinIO buckets a pipeline's destinationBucketOverride may target (unset = any).
       DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST: "${DATRIS_OBJECTSTORE_BUCKET_ALLOWLIST:-}"
       # Per-run payload disk budget (MB): the most a tap run may stage on the

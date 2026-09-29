@@ -66,6 +66,10 @@ GRANT USE SCHEMA, CREATE TABLE, CREATE VOLUME, SELECT, MODIFY
 -- Optional: lets Datris auto-create additional schemas beyond `default`
 GRANT CREATE SCHEMA ON CATALOG datris TO `<sp-application-id>`;
 
+-- Optional: needed only for Unity Catalog metadata (`unityCatalog.enabled`);
+-- without it, tagging is reported as a warning on each run
+GRANT APPLY TAG ON SCHEMA datris.default TO `<sp-application-id>`;
+
 -- Recommended: let your own users read what Datris loads. Tables are OWNED
 -- by the service principal that created them, and Unity Catalog gives no
 -- implicit access to anyone else — not even workspace admins — so without
@@ -122,7 +126,8 @@ For a quick evaluation you can skip the service principal: generate a PAT (**Set
       "table": "orders",
       "keyFields": ["order_id"]
     }
-  }
+  },
+  "unityCatalog": { "enabled": true }
 }
 ```
 
@@ -143,6 +148,23 @@ For a quick evaluation you can skip the service principal: generate a PAT (**Set
 Note that `dbName` names the Unity Catalog **catalog** — Databricks uses three-level names (`catalog.schema.table`), and `dbName`/`schema`/`table` map onto them in order.
 
 Identifiers follow Unity Catalog's normal resolution rules: names are case-insensitive and stored lowercase, so `Orders` and `orders` are the same table. Names containing characters beyond letters, digits, and underscores are backtick-quoted automatically; prefer simple underscore names.
+
+### Unity Catalog metadata
+
+Set the top-level `"unityCatalog": { "enabled": true }` and every successful load also annotates the table in Unity Catalog, so warehouse users can see in Catalog Explorer which Datris pipeline loaded a table and how to trace it:
+
+- **Comments:** a table comment naming the Datris pipeline and its source (tap name or uploaded file), plus a fixed comment on each `_datris_*` provenance column the load carries (see [provenance stamping](/provenance)).
+- **Tags:** `datris_pipeline`, `datris_catalog` (only when the pipeline belongs to a catalog), `datris_dq_status` (`pass` or `warn`) and `managed_by = datris`.
+- **Table properties:** `datris.pipeline`, `datris.configVersion`, `datris.lastRunId`, `datris.lastRunAt`, `datris.environment` and `datris.lineagePath` (the Datris lineage API path for the pipeline).
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Turn the metadata push on. Databricks destinations only; any other destination is rejected on save |
+| `comments` | `true` | Write the table and provenance column comments |
+| `tags` | `true` | Write the four tags |
+| `properties` | `true` | Write the table properties |
+
+Comments and tags are only re-issued when they change; properties are written on every run. Tagging needs the `GRANT APPLY TAG ON SCHEMA` line from the setup script. A metadata failure (a missing grant, a warehouse hiccup) is recorded as a warning on the run and in the audit log; the load itself still succeeds, and the next run retries the failed part. The pipeline detail page shows the last sync or the last error, also available from `GET /api/v1/pipelines/{name}/unity-catalog`. Set `DATRIS_UNITY_CATALOG_SYNC=false` to switch the push off for the whole install.
 
 `useTransaction` has no effect on Databricks — Delta has no multi-statement transactions. It doesn't need one: every load path here is a single atomic Delta commit, which is a stronger guarantee than a transaction around a multi-statement load.
 

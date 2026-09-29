@@ -148,6 +148,10 @@ object DatabricksConnectionUtil {
     def effectiveName(s: String): String = s.toLowerCase
     def quote(identifier: String): String = "`" + identifier.replace("`", "``") + "`"
 
+    /** Escape a value for a single-quoted SQL string literal (quotes doubled).
+      * Shared by the loader and UnityCatalogMetadataSync. */
+    def sqlLiteral(value: String): String = value.replace("'", "''")
+
     def qualifiedTable(db: Database): String =
         ident(db.dbName) + "." + ident(db.schema) + "." + ident(db.table)
 }

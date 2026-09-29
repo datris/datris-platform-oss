@@ -52,10 +52,25 @@ object PipelineValidatorUtil {
         if (config.source.fileAttributes == null && config.source.databaseAttributes == null)
             throw new DatrisException("Either 'source.fileAttributes' or 'source.databaseAttributes must be defined")
 
+        validateUnityCatalog(config)
+
         if (config.source.fileAttributes != null && config.source.fileAttributes.unstructuredAttributes != null)
             validateUnstructured(config)
         else
             validateStructuredAndSemiStructured(config)
+    }
+
+    /** `unityCatalog.enabled` pushes metadata over the Databricks SQL
+      * connection, so it is only meaningful for a Databricks destination.
+      * `enabled:false` is accepted anywhere (a harmless leftover). */
+    private def validateUnityCatalog(config: PipelineConfig): Unit = {
+        if (config.unityCatalog == null || !config.unityCatalog.enabled) return
+        val databricks = config.destination != null && config.destination.database != null &&
+            config.destination.database.useDatabricks
+        if (!databricks)
+            throw new DatrisException(
+                "'unityCatalog.enabled' is only supported for a Databricks destination (destination.database.useDatabricks=true); object-store Iceberg support is planned"
+            )
     }
 
     private def validateUnstructured(config: PipelineConfig): Unit = {

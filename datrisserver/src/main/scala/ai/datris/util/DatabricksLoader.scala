@@ -59,6 +59,13 @@ class DatabricksLoader(jobContext: JobContext) {
                     stagedPath = volumeFilePath()
                     putFile(statement, dataFile, stagedPath)
                     loadData(statement, stagedPath)
+                    // Unity Catalog metadata push (opt-in). Never throws: a
+                    // failure is a warning on the run, not a failed load.
+                    UnityCatalogMetadataSync.sync(
+                        conn,
+                        jobContext,
+                        copyFields().map(_.name).filter(_.toLowerCase.startsWith(ProvenanceStamper.Prefix))
+                    )
                 } finally {
                     if (stagedPath != null)
                         Try(statement.execute("REMOVE '" + sqlLiteral(stagedPath) + "'"))
@@ -340,7 +347,7 @@ class DatabricksLoader(jobContext: JobContext) {
     // DatabricksConnectionUtil, shared with the query path.
     private def ident(identifier: String): String = DatabricksConnectionUtil.ident(identifier)
     private def effectiveName(s: String): String = DatabricksConnectionUtil.effectiveName(s)
-    private def sqlLiteral(value: String): String = value.replace("'", "''")
+    private def sqlLiteral(value: String): String = DatabricksConnectionUtil.sqlLiteral(value)
     private def schemaRef(): String = ident(db.dbName) + "." + ident(db.schema)
     private def qualifiedTable(): String = DatabricksConnectionUtil.qualifiedTable(db)
 

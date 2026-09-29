@@ -76,6 +76,23 @@
     </div>
   </div>
 
+  <!-- Unity Catalog metadata push (Databricks, opt-in via unityCatalog.enabled). -->
+  <div class="uc-panel" *ngIf="showUnityCatalog()">
+    <div class="lineage-row">
+      <span class="lineage-label">Unity Catalog</span>
+      <span class="fresh-chip" [class.fresh]="unityCatalog.state === 'synced'" [class.stale]="unityCatalog.state === 'error'">{{ unityCatalog.state === 'never' ? 'never synced' : unityCatalog.state }}</span>
+      <span class="lineage-detail" *ngIf="unityCatalog.coordinates?.qualified">{{ unityCatalog.coordinates.qualified }}</span>
+    </div>
+    <div class="lineage-row" *ngIf="unityCatalog.state !== 'never'">
+      <span class="lineage-label">Last sync</span>
+      <span class="lineage-detail">{{ unityCatalog.lastSyncAt }}<ng-container *ngIf="unityCatalog.lastRunId"> · run {{ unityCatalog.lastRunId }}</ng-container></span>
+    </div>
+    <div class="lineage-row" *ngIf="unityCatalog.state === 'never'">
+      <span class="lineage-detail">Comments, tags and table properties are pushed after the next successful load.</span>
+    </div>
+    <pre class="uc-error" *ngIf="unityCatalog.state === 'error' && unityCatalog.lastError">{{ unityCatalog.lastError }}</pre>
+  </div>
+
   <div class="config-container" *ngIf="configJson">
     <pre class="config-json" [innerText]="configJson"></pre>
   </div>

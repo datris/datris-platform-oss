@@ -21,6 +21,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
   deleteLoading = false;
   showDestTypes = false;
   lineage: LineageNeighborhood | null = null;
+  unityCatalog: any = null;
   private refreshInterval: any = null;
 
   constructor(private route: ActivatedRoute, private router: Router, private pipelineService: PipelineService,
@@ -30,6 +31,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
     this.name = this.route.snapshot.paramMap.get('name') || '';
     this.loadPipeline();
     this.loadLineage();
+    this.loadUnityCatalog();
     this.refreshInterval = setInterval(() => this.loadPipeline(), 3000);
   }
 
@@ -40,6 +42,20 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
       next: (n) => this.lineage = n,
       error: () => this.lineage = null
     });
+  }
+
+  /** Unity Catalog sync state, loaded once. Fail-soft: no card when the
+   *  endpoint is unavailable (older server) or errors. */
+  private loadUnityCatalog(): void {
+    this.pipelineService.getUnityCatalog(this.name).subscribe({
+      next: (s) => this.unityCatalog = s,
+      error: () => this.unityCatalog = null
+    });
+  }
+
+  /** The card shows only for pipelines that opted in (unityCatalog.enabled). */
+  showUnityCatalog(): boolean {
+    return !!this.unityCatalog && !!this.config?.unityCatalog?.enabled;
   }
 
   upstreamNodes(): any[] {

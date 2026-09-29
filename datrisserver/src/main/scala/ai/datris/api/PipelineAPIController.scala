@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.common.base.Throwables
-import com.google.gson.Gson
+import com.google.gson.{Gson, JsonObject}
 import ai.datris.auth.{CapabilityCheck, ResolvedKeyAccess, VersionActor}
 import ai.datris.model.{PipelineConfig, DatrisEnvironment, DatrisException, EntityVersion}
 import ai.datris.util.{PipelineConfigIO, NoSQLDbUtil}
@@ -37,6 +37,57 @@ class PipelineAPIController {
             val gson = new Gson
             val json = gson.toJson(config)
             new ResponseEntity[String](json, HttpStatus.OK)
+        } catch {
+            case e: Exception =>
+                logger.error("Error: " + Throwables.getStackTraceAsString(e))
+                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+        }
+    }
+
+    /** Unity Catalog metadata sync state for one pipeline: the last sync doc
+      * (or `state: "never"`), whether the pipeline opted in, and the
+      * three-level table coordinates. 404 for an unknown pipeline. */
+    @GetMapping(path = Array("/pipelines/{name}/unity-catalog"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
+    def getUnityCatalogState(
+        @RequestHeader(name = "x-api-key", required = false) apiKey: String,
+        @PathVariable("name") name: String
+    ): ResponseEntity[String] = {
+        try {
+            logger.info("API endpoint GET /pipelines/" + name + "/unity-catalog called")
+            APIKeyValidator.validate(apiKey)
+
+            val config = PipelineConfigIO.read(DatrisEnvironment.current.pipelineTableName, name)
+            if (config == null)
+                return ResponseEntity
+                    .status(HttpStatus.NOT_FOUND)
+                    .body[String](QueryAPIController.errorBody(new DatrisException("Pipeline: " + name + " is not configured")))
+
+            val out = new JsonObject
+            out.addProperty("pipeline", config.name)
+            out.addProperty("enabled", config.unityCatalog != null && config.unityCatalog.enabled)
+
+            val db = if (config.destination != null) config.destination.database else null
+            if (db != null && db.useDatabricks) {
+                val coords = new JsonObject
+                coords.addProperty("catalog", db.dbName)
+                coords.addProperty("schema", db.schema)
+                coords.addProperty("table", db.table)
+                coords.addProperty("qualified", DatabricksConnectionUtil.qualifiedTable(db))
+                out.add("coordinates", coords)
+            }
+
+            val state = UnityCatalogSyncIO.read(config.name)
+            if (state == null) out.addProperty("state", "never")
+            else {
+                out.addProperty("state", if (state.lastError != null) "error" else "synced")
+                out.addProperty("lastSyncAt", state.lastSyncAt)
+                out.addProperty("lastRunId", state.lastRunId)
+                out.addProperty("commentsHash", state.commentsHash)
+                out.addProperty("tagsHash", state.tagsHash)
+                out.addProperty("propertiesHash", state.propertiesHash)
+                out.addProperty("lastError", state.lastError)
+            }
+            new ResponseEntity[String](new Gson().toJson(out), HttpStatus.OK)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

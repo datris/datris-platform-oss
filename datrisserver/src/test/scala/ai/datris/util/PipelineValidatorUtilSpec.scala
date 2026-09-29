@@ -456,4 +456,82 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val xml = scratchConfig(""""xmlAttributes":{}""", """{"name":"_xml","type":"string"}""")
         assert(validationError(xml).isEmpty, s"XML + scratch must validate, got: ${validationError(xml)}")
     }
+
+    // --- Unity Catalog opt-in (story: unity-catalog-1-metadata-push) ----------
+    // `unityCatalog.enabled` is Databricks-only in this story: any other
+    // destination (postgres, mongo, snowflake, objectStore, scratch, vector)
+    // is rejected with the Databricks-only message. The database branch of
+    // validate never reaches the existing-pipeline lookup, so a Databricks
+    // config with credentialsSecret + warehouse validates cleanly offline.
+    // The fixture asserts parse the new field so the rule, not Gson dropping
+    // an unknown key, is what these cases exercise.
+
+    private val ucDatabricksOnly = "'unityCatalog.enabled' is only supported for a Databricks destination (destination.database.useDatabricks=true)"
+
+    private def ucConfig(database: String, unityCatalog: String = """{"enabled":true}"""): PipelineConfig =
+        parse(
+            s"""{"name":"p",
+               |"source":{"fileAttributes":{"csvAttributes":{}},"schemaProperties":{"fields":[{"name":"id","type":"string"}]}},
+               |"destination":{"database":{"dbName":"datris","schema":"default","table":"t",$database}},
+               |"unityCatalog":$unityCatalog}""".stripMargin
+        )
+
+    private val databricksDb = """"useDatabricks":true,"credentialsSecret":"dbx","warehouse":"abc123""""
+
+    test("unityCatalog.enabled on a non-Databricks destination is rejected with the Databricks-only message") {
+        val pg = ucConfig(""""usePostgres":true""")
+        assert(pg.unityCatalog != null && pg.unityCatalog.enabled, "fixture must parse unityCatalog.enabled=true")
+        val err = validationError(pg)
+        assert(err.exists(_.contains(ucDatabricksOnly)), s"postgres + unityCatalog must be rejected with the Databricks-only message, got: $err")
+
+        val sf = ucConfig(""""useSnowflake":true,"credentialsSecret":"sf","warehouse":"WH"""")
+        val err2 = validationError(sf)
+        assert(err2.exists(_.contains(ucDatabricksOnly)), s"snowflake + unityCatalog must be rejected, got: $err2")
+
+        val scratch = parse(
+            """{"name":"p",
+              |"source":{"fileAttributes":{"csvAttributes":{}},"schemaProperties":{"fields":[{"name":"id","type":"string"}]}},
+              |"destination":{"scratch":{}},
+              |"unityCatalog":{"enabled":true}}""".stripMargin
+        )
+        val err3 = validationError(scratch)
+        assert(err3.exists(_.contains(ucDatabricksOnly)), s"scratch + unityCatalog must be rejected, got: $err3")
+    }
+
+    test("unityCatalog.enabled on an unstructured (vector) pipeline is rejected with the Databricks-only message") {
+        val cfg = parse(
+            """{"name":"p",
+              |"source":{"fileAttributes":{"unstructuredAttributes":{"fileExtension":"pdf"}}},
+              |"destination":{"pgvector":{"tableName":"t"}},
+              |"unityCatalog":{"enabled":true}}""".stripMargin
+        )
+        val err = validationError(cfg)
+        assert(err.exists(_.contains(ucDatabricksOnly)), s"unstructured + unityCatalog must be rejected, got: $err")
+    }
+
+    test("unityCatalog.enabled on useDatabricks passes") {
+        val cfg = ucConfig(databricksDb)
+        assert(cfg.unityCatalog != null && cfg.unityCatalog.enabled, "fixture must parse unityCatalog.enabled=true")
+        assert(validationError(cfg).isEmpty, s"databricks + unityCatalog must validate, got: ${validationError(cfg)}")
+    }
+
+    test("unityCatalog.enabled=false on a non-Databricks destination passes") {
+        val cfg = ucConfig(""""usePostgres":true""", unityCatalog = """{"enabled":false}""")
+        assert(cfg.unityCatalog != null && !cfg.unityCatalog.enabled)
+        assert(validationError(cfg).isEmpty, s"enabled=false must not trip the rule, got: ${validationError(cfg)}")
+    }
+
+    test("unityCatalog knobs default to true when only enabled is sent (Gson and Jackson)") {
+        val g = ucConfig(databricksDb).unityCatalog
+        assert(g.enabled && g.comments && g.tags && g.properties, s"Gson: $g")
+        val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+            .registerModule(com.fasterxml.jackson.module.scala.DefaultScalaModule)
+            .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        val j = mapper.readValue("""{"enabled":true}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(j.enabled && j.comments && j.tags && j.properties, s"Jackson: $j")
+    }
+
+    test("absent unityCatalog parses as null") {
+        assert(parse("""{"name":"p"}""").unityCatalog == null)
+    }
 }

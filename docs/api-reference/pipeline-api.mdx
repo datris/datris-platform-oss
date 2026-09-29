@@ -25,6 +25,34 @@ curl "http://localhost:8080/api/v1/pipeline?pipeline=sales_data"
 
 ---
 
+## Unity Catalog sync state
+
+```
+GET /api/v1/pipelines/{name}/unity-catalog
+```
+
+The last Unity Catalog metadata push for a Databricks pipeline that sets `unityCatalog.enabled` (see [Databricks](/destinations/databricks#unity-catalog-metadata)).
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/pipelines/orders_pipeline/unity-catalog
+```
+
+**Response:** `200 OK`. `enabled` says whether the pipeline opted in and `coordinates` gives the Unity Catalog table (Databricks destinations only). `state` is `never` (no sync yet), `synced`, or `error` (with `lastError` holding the warehouse's message). `lastSyncAt` and `lastRunId` identify the last sync. `404` if the pipeline does not exist.
+
+```json
+{
+  "pipeline": "orders_pipeline",
+  "enabled": true,
+  "coordinates": { "catalog": "datris", "schema": "default", "table": "orders", "qualified": "datris.default.orders" },
+  "state": "synced",
+  "lastSyncAt": "2026-09-29T12:00:00Z",
+  "lastRunId": "..."
+}
+```
+
+---
+
 ## List All Pipelines
 
 ```

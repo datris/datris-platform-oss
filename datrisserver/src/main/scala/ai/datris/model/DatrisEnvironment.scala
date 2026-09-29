@@ -305,6 +305,10 @@ case class DatrisEnvironment(
     def columnLineageTableName: String = environment + "-column-lineage"
     def codegenScriptTableName: String = environment + "-codegen-scripts"
 
+    /** One doc per pipeline: last Unity Catalog metadata sync (hashes per
+      * statement group, last run id, last error). See UnityCatalogSyncIO. */
+    def ucSyncTableName: String = environment + "-uc-sync"
+
     /** True for trial-droplet tenants. Trials have AI configuration locked at the
       * server level — see SecretsAPIController.rejectIfTrialAiSecret. The convention
       * is enforced by the website's provision-trial.ts which always assigns

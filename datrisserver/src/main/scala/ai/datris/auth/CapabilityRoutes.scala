@@ -63,6 +63,7 @@ object CapabilityRoutes {
         // Pipelines
         Route("GET", "/api/v1/pipeline", "pipeline", "read"),
         Route("GET", "/api/v1/pipelines", "pipeline", "read"),
+        Route("GET", "/api/v1/pipelines/*/unity-catalog", "pipeline", "read"),
         Route("POST", "/api/v1/pipeline", "pipeline", "create"),
         Route("DELETE", "/api/v1/pipeline", "pipeline", "delete"),
         Route("POST", "/api/v1/pipeline/generate", "pipeline", "create"),

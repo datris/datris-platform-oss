@@ -29,8 +29,27 @@ case class PipelineConfig(
     // default; several need Destination.authoritative to pick one). false ⇒
     // every dataset this pipeline lands is a derived copy (a rollup, a replica,
     // a vector index built from a table). Boxed so "unset" survives Gson.
-    authoritative: java.lang.Boolean = null
+    authoritative: java.lang.Boolean = null,
+    // Opt-in Unity Catalog metadata push (absent/null ⇒ off). Databricks
+    // destinations only (PipelineValidatorUtil). See UnityCatalogMetadataSync.
+    unityCatalog: UnityCatalogSync = null
 )
+
+/** `unityCatalog: {"enabled": true}` — after each successful Databricks load,
+  * push a table comment, `_datris_*` column comments, four stable tags and
+  * run-level TBLPROPERTIES to Unity Catalog. Each knob drops its group.
+  *
+  * The no-arg constructor matters: Gson (config DB reads) skips Scala default
+  * arguments and would leave the knobs `false`; with a no-arg constructor it
+  * starts from the defaults and only overwrites the keys present. */
+case class UnityCatalogSync @JsonCreator() (
+    @JsonProperty("enabled") enabled: Boolean = false,
+    @JsonProperty("comments") comments: Boolean = true,
+    @JsonProperty("tags") tags: Boolean = true,
+    @JsonProperty("properties") properties: Boolean = true
+) {
+    def this() = this(false, true, true, true)
+}
 
 case class ProvenanceConfig @JsonCreator() (
     @JsonProperty("stamp") stamp: Boolean = false,

@@ -876,6 +876,8 @@ Snowflake is an EXTERNAL destination: credentials come from a human-owned Platfo
 
 Databricks is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `host` — the workspace hostname — plus `clientId`/`clientSecret` for service-principal OAuth, or `token` for a personal access token). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields`; the agent cannot create it. `dbName` is the Unity Catalog CATALOG (not a database) and `warehouse` is the SQL warehouse ID (from the warehouse's Connection details — the trailing segment of the HTTP path, not the warehouse name); neither has a default — ask the user. `schema` defaults to `default`. Identifiers resolve case-insensitively (Unity Catalog stores names lowercase); names with hyphens or spaces are backtick-quoted, so prefer underscore table names. `keyFields` upserts via `MERGE`; `truncateBeforeWrite` replaces the table contents atomically each run. Data stages through an auto-created `datris_staging` volume in the target schema. Read back / verify loads with `query_databricks` (pipeline-scoped; SELECT plus SHOW/DESCRIBE for metadata discovery).
 
+Unity Catalog metadata (Databricks only, opt-in): a top-level `"unityCatalog": {"enabled": true}` makes every successful load annotate the table in Unity Catalog — a table comment naming the pipeline and source, fixed comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog` (when the pipeline has a catalog), `datris_dq_status` and `managed_by=datris`, and `TBLPROPERTIES` (`datris.lastRunId`, `datris.configVersion`, `datris.lastRunAt`, `datris.lineagePath`, ...). Optional knobs `comments`, `tags`, `properties` (all default true) drop a group. Omit the block unless the user asks for it; the server rejects it on any non-Databricks destination. Tagging needs `GRANT APPLY TAG ON SCHEMA <catalog>.<schema> TO <service principal>`; without it the tag statement fails and is reported as a warning on the run — the load itself still succeeds. Last sync / last error: `GET /api/v1/pipelines/<name>/unity-catalog`.
+
 ### objectStore — MinIO (default) or AWS S3
 
 **MinIO** (the platform's built-in object store — used unless you explicitly say S3):
@@ -1720,6 +1722,10 @@ def _base_tools():
                     "authoritative": {
                         "type": "boolean",
                         "description": "OMIT BY DEFAULT. Pass false only when the user says this pipeline lands a derived copy (a rollup, a replica, an index built from another dataset) rather than the system of record. A pipeline's single destination is the authoritative copy by default; lineage and find_data mark derived copies so agents cite the right one."
+                    },
+                    "unity_catalog": {
+                        "type": "boolean",
+                        "description": "OMIT BY DEFAULT. Pass true only when the user asks for Unity Catalog metadata. Databricks destinations only (destination=databricks); the server rejects it elsewhere. After each successful load, pushes a table comment, provenance column comments, tags (datris_pipeline, datris_catalog, datris_dq_status, managed_by) and table properties (last run id, config version, lineage path) to Unity Catalog. The service principal needs GRANT APPLY TAG ON SCHEMA on the target schema, or tagging is reported as a warning on the run (the load still succeeds)."
                     }
                 },
                 "required": ["pipeline"]
@@ -3476,6 +3482,9 @@ def _dispatch(name: str, args: dict) -> str:
         # Step 2e: Source-of-authority declaration (only when explicitly given)
         if "authoritative" in args and args["authoritative"] is not None:
             config["authoritative"] = bool(args["authoritative"])
+        # Step 2f: Unity Catalog metadata push (Databricks only; key absent unless true)
+        if args.get("unity_catalog") is True:
+            config["unityCatalog"] = {"enabled": True}
 
         # Step 3: Register the pipeline
         create_result = _call("post", "/api/v1/pipeline", json=config)
