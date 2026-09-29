@@ -3,6 +3,13 @@ title: "Changelog"
 description: "Release history for Datris"
 ---
 
+<Update label="v1.39.1" description="September 29, 2026">
+  **Security maintenance release.**
+
+  - **Security update.** The JSON processing library used by the server is updated to close three recently disclosed advisories, one rated high. No functional changes.
+  - Upgrade: `docker compose pull && docker compose up -d --force-recreate`. Only the server image changed. No configuration changes required.
+</Update>
+
 <Update label="v1.39.0" description="September 28, 2026">
   **Catalogs can now be renamed, and deleting one asks whether to keep or delete its items.**
 
