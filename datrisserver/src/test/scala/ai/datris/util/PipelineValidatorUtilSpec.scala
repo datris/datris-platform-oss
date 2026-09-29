@@ -523,12 +523,19 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
 
     test("unityCatalog knobs default to true when only enabled is sent (Gson and Jackson)") {
         val g = ucConfig(databricksDb).unityCatalog
-        assert(g.enabled && g.comments && g.tags && g.properties, s"Gson: $g")
+        assert(g.enabled && g.commentsOn && g.tagsOn && g.propertiesOn, s"Gson: $g")
+        // Spring Boot's @RequestBody mapper: ParameterNamesModule, no
+        // DefaultScalaModule, so Scala default arguments are NOT applied.
         val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
-            .registerModule(com.fasterxml.jackson.module.scala.DefaultScalaModule)
+            .registerModule(new com.fasterxml.jackson.module.paramnames.ParameterNamesModule())
             .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
         val j = mapper.readValue("""{"enabled":true}""", classOf[ai.datris.model.UnityCatalogSync])
-        assert(j.enabled && j.comments && j.tags && j.properties, s"Jackson: $j")
+        assert(j.enabled && j.commentsOn && j.tagsOn && j.propertiesOn, s"Jackson: $j")
+        val off = mapper.readValue("""{"enabled":true,"tags":false}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(off.commentsOn && !off.tagsOn && off.propertiesOn, s"Jackson explicit false: $off")
+        // A full PipelineConfig body through the same mapper keeps the knobs on.
+        val cfg = mapper.readValue("""{"name":"p","unityCatalog":{"enabled":true}}""", classOf[PipelineConfig])
+        assert(cfg.unityCatalog.enabled && cfg.unityCatalog.commentsOn && cfg.unityCatalog.tagsOn && cfg.unityCatalog.propertiesOn, s"$cfg")
     }
 
     test("absent unityCatalog parses as null") {

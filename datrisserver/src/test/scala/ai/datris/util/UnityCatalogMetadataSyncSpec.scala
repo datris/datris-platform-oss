@@ -167,7 +167,8 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
         statements: List[(String, String)],
         previous: UnityCatalogSyncState,
         status: RecordingStatusUtil,
-        runId: String = RUN_ID
+        runId: String = RUN_ID,
+        tableCreated: Boolean = false
     ): UnityCatalogSyncState =
         UnityCatalogMetadataSync.execute(
             conn = wh.connection,
@@ -175,7 +176,8 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
             runId = runId,
             statements = statements,
             previous = previous,
-            statusUtil = status
+            statusUtil = status,
+            tableCreated = tableCreated
         )
 
     // --- rendering ---------------------------------------------------------------
@@ -300,6 +302,22 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
         assert(DatabricksConnectionUtil.sqlLiteral("it's") == "it''s")
     }
 
+    test("backslash in pipeline name and source is escaped") {
+        val stmts = render(pipeline = "orders\\", source = "c:\\in\\it\\'s.csv")
+        val tc = tableComments(stmts).head
+        // Databricks processes backslash escapes in literals: each \ is doubled
+        // before quotes are doubled, so neither can terminate the literal.
+        assert(tc.contains("orders\\\\"), tc)
+        assert(tc.contains("c:\\\\in\\\\it\\\\''s.csv"), tc)
+        assert(tagStatements(stmts).head.contains("'datris_pipeline' = 'orders\\\\'"), tagStatements(stmts).head)
+        assert(propertyStatements(stmts).head.contains("'datris.pipeline' = 'orders\\\\'"), propertyStatements(stmts).head)
+    }
+
+    test("knobs left unset (null, as Spring's Jackson leaves them) keep every group") {
+        val stmts = render(knobs = UnityCatalogSync(enabled = true))
+        assert(stmts.map(_._1).toSet == Set("comments", "tags", "properties"), stmts.map(_._1))
+    }
+
     // --- hash-skip and execution ------------------------------------------------
 
     test("unchanged comment and tag groups are skipped on the second render with the same state doc") {
@@ -347,5 +365,14 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
         // Tags failed, so their hash must not be recorded: the next run retries them.
         assert(state.tagsHash == null, s"a failed group must not record its hash: $state")
         assert(state.commentsHash != null && state.propertiesHash != null, s"$state")
+    }
+
+    test("a recreated table ignores stored hashes and re-applies every group") {
+        val state1 = runSync(new FakeWarehouse(), render(), previous = null, status = new RecordingStatusUtil)
+        val second = new FakeWarehouse()
+        val stmts = render()
+        val state2 = runSync(second, stmts, previous = state1, status = new RecordingStatusUtil, tableCreated = true)
+        assert(second.executed.toList == sqls(stmts), s"every group must be re-issued on a new table:\n${second.executed.mkString("\n")}")
+        assert(state2.commentsHash == state1.commentsHash && state2.tagsHash == state1.tagsHash)
     }
 }

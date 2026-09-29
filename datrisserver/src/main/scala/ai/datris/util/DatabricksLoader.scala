@@ -54,8 +54,9 @@ class DatabricksLoader(jobContext: JobContext) {
                 var stagedPath: String = null
                 try {
                     dataFile = createStagingFile()
+                    var tableCreated = false
                     if (!db.manageTableManually)
-                        createTableIfUndefined(statement)
+                        tableCreated = createTableIfUndefined(statement)
                     stagedPath = volumeFilePath()
                     putFile(statement, dataFile, stagedPath)
                     loadData(statement, stagedPath)
@@ -64,7 +65,8 @@ class DatabricksLoader(jobContext: JobContext) {
                     UnityCatalogMetadataSync.sync(
                         conn,
                         jobContext,
-                        copyFields().map(_.name).filter(_.toLowerCase.startsWith(ProvenanceStamper.Prefix))
+                        copyFields().map(_.name).filter(_.toLowerCase.startsWith(ProvenanceStamper.Prefix)),
+                        tableCreated
                     )
                 } finally {
                     if (stagedPath != null)
@@ -261,7 +263,11 @@ class DatabricksLoader(jobContext: JobContext) {
         } else destFields.toSeq
     }
 
-    private def createTableIfUndefined(statement: Statement): Unit = {
+    /** Returns true when this call created the table (known only for pipelines
+     *  that opted into the Unity Catalog push — the existence probe is skipped
+     *  otherwise, so their DDL path is unchanged). A freshly created table has
+     *  none of the metadata a previous sync applied, so the sync re-applies it. */
+    private def createTableIfUndefined(statement: Statement): Boolean = {
         if (db.schema != null && db.schema.nonEmpty)
             statement.execute("CREATE SCHEMA IF NOT EXISTS " + schemaRef())
 
@@ -272,6 +278,9 @@ class DatabricksLoader(jobContext: JobContext) {
 
         val keySet: Set[String] =
             if (db.keyFields != null) db.keyFields.asScala.map(_.toLowerCase).toSet else Set.empty
+
+        val ucSync = config.unityCatalog != null && config.unityCatalog.enabled
+        val tableExisted = !ucSync || tableExists(statement)
 
         val sql = new StringBuilder()
         sql.append("CREATE TABLE IF NOT EXISTS " + qualifiedTable() + " (")
@@ -316,6 +325,16 @@ class DatabricksLoader(jobContext: JobContext) {
                 statement.execute(alter)
             }
         })
+        !tableExisted
+    }
+
+    private def tableExists(statement: Statement): Boolean = {
+        val rs = statement.executeQuery(
+            s"""SELECT 1 FROM ${ident(db.dbName)}.information_schema.tables
+               |WHERE lower(table_schema) = '${sqlLiteral(effectiveName(db.schema))}' AND lower(table_name) = '${sqlLiteral(effectiveName(db.table))}'""".stripMargin
+        )
+        try rs.next()
+        finally rs.close()
     }
 
     /** Platform type -> Delta SQL DDL type. Mirrors SnowflakeLoader.snowflakeType;

@@ -39,16 +39,27 @@ case class PipelineConfig(
   * push a table comment, `_datris_*` column comments, four stable tags and
   * run-level TBLPROPERTIES to Unity Catalog. Each knob drops its group.
   *
-  * The no-arg constructor matters: Gson (config DB reads) skips Scala default
-  * arguments and would leave the knobs `false`; with a no-arg constructor it
-  * starts from the defaults and only overwrites the keys present. */
+  * The knobs are boxed and null means on: Spring's `@RequestBody` Jackson
+  * mapper does not apply Scala default arguments (an absent Boolean arrives
+  * as `false`), and Gson skips constructors on config DB reads. Read them
+  * through `commentsOn` / `tagsOn` / `propertiesOn`. */
 case class UnityCatalogSync @JsonCreator() (
     @JsonProperty("enabled") enabled: Boolean = false,
-    @JsonProperty("comments") comments: Boolean = true,
-    @JsonProperty("tags") tags: Boolean = true,
-    @JsonProperty("properties") properties: Boolean = true
+    @JsonProperty("comments") comments: java.lang.Boolean = null,
+    @JsonProperty("tags") tags: java.lang.Boolean = null,
+    @JsonProperty("properties") properties: java.lang.Boolean = null
 ) {
-    def this() = this(false, true, true, true)
+    def this() = this(false, null, null, null)
+
+    def commentsOn: Boolean = UnityCatalogSync.on(comments)
+    def tagsOn: Boolean = UnityCatalogSync.on(tags)
+    def propertiesOn: Boolean = UnityCatalogSync.on(properties)
+}
+
+object UnityCatalogSync {
+
+    /** Unset (null) ⇒ on; only an explicit `false` drops a group. */
+    def on(b: java.lang.Boolean): Boolean = b == null || b.booleanValue
 }
 
 case class ProvenanceConfig @JsonCreator() (

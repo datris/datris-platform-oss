@@ -55,7 +55,11 @@ object UnityCatalogMetadataSync {
         !sys.props.get("datris.unityCatalogSync").orElse(sys.env.get("DATRIS_UNITY_CATALOG_SYNC"))
             .exists(_.trim.equalsIgnoreCase("false"))
 
-    private def lit(value: String): String = "'" + DatabricksConnectionUtil.sqlLiteral(Option(value).getOrElse("")) + "'"
+    /** Single-quoted Databricks string literal. Databricks SQL processes
+      * backslash escapes inside literals, so backslashes are doubled before
+      * quotes; otherwise a trailing `\` would un-terminate the literal. */
+    private[util] def lit(value: String): String =
+        "'" + Option(value).getOrElse("").replace("\\", "\\\\").replace("'", "''") + "'"
 
     private def pairs(kv: Seq[(String, String)]): String =
         kv.map { case (k, v) => lit(k) + " = " + lit(v) }.mkString(", ")
@@ -78,7 +82,7 @@ object UnityCatalogMetadataSync {
         val q = DatabricksConnectionUtil.qualifiedTable(db)
         val out = List.newBuilder[(String, String)]
 
-        if (knobs == null || knobs.comments) {
+        if (knobs == null || knobs.commentsOn) {
             val src = Option(source).filter(_.trim.nonEmpty).getOrElse("unknown")
             val tableComment = s"Loaded by Datris pipeline $pipeline (source: $src). " +
                 "The last run id and lineage path are in the table properties datris.lastRunId and datris.lineagePath."
@@ -89,14 +93,14 @@ object UnityCatalogMetadataSync {
             }
         }
 
-        if (knobs == null || knobs.tags) {
+        if (knobs == null || knobs.tagsOn) {
             val tags = Seq("datris_pipeline" -> pipeline) ++
                 Option(datrisCatalog).filter(_.nonEmpty).map("datris_catalog" -> _).toSeq ++
                 Seq("datris_dq_status" -> dqStatus, "managed_by" -> "datris")
             out += Tags -> s"ALTER TABLE $q SET TAGS (${pairs(tags)})"
         }
 
-        if (knobs == null || knobs.properties) {
+        if (knobs == null || knobs.propertiesOn) {
             val props = Seq(
                 "datris.pipeline" -> pipeline,
                 "datris.configVersion" -> configVersion.toString,
@@ -119,17 +123,20 @@ object UnityCatalogMetadataSync {
       * `previous` (null = never synced) is skipped; every other statement
       * runs in its own `execute` with its own try/catch. A group records its
       * hash only when all of its statements succeeded, so a failed group is
-      * retried on the next run. Never throws. */
+      * retried on the next run. `tableCreated` (the loader just issued
+      * CREATE TABLE, e.g. after a drop) ignores the stored hashes so every
+      * group is re-applied to the new table. Never throws. */
     def execute(
         conn: Connection,
         pipeline: String,
         runId: String,
         statements: List[(String, String)],
         previous: UnityCatalogSyncState,
-        statusUtil: StatusUtil
+        statusUtil: StatusUtil,
+        tableCreated: Boolean = false
     ): UnityCatalogSyncState = {
         val prevHash: Map[String, String] =
-            if (previous == null) Map.empty
+            if (previous == null || tableCreated) Map.empty
             else Map(Comments -> previous.commentsHash, Tags -> previous.tagsHash, Properties -> previous.propertiesHash)
         // Groups not rendered this run (knob off) keep whatever was stored.
         val hashes = scala.collection.mutable.Map[String, String]() ++= prevHash
@@ -180,7 +187,7 @@ object UnityCatalogMetadataSync {
     /** Loader hook: runs after a successful Databricks load on the same
       * connection. No-op unless the pipeline opted in; one info line when the
       * kill switch is off. Never throws. */
-    def sync(conn: Connection, jobContext: JobContext, presentProvenanceColumns: Seq[String]): Unit = {
+    def sync(conn: Connection, jobContext: JobContext, presentProvenanceColumns: Seq[String], tableCreated: Boolean = false): Unit = {
         val config = jobContext.config
         if (config == null || config.unityCatalog == null || !config.unityCatalog.enabled) return
         val statusUtil = jobContext.statusUtil
@@ -216,7 +223,7 @@ object UnityCatalogMetadataSync {
                 knobs = config.unityCatalog,
                 source = source
             )
-            val state = execute(conn, config.name, jobContext.pipelineToken, statements, previous, statusUtil)
+            val state = execute(conn, config.name, jobContext.pipelineToken, statements, previous, statusUtil, tableCreated)
             try UnityCatalogSyncIO.write(state)
             catch { case NonFatal(e) => logger.warn("uc-sync state write failed for " + config.name + ": " + e.getMessage) }
             if (state.lastError != null)
