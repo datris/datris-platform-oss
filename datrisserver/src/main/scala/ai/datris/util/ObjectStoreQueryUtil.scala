@@ -102,8 +102,11 @@ object ObjectStoreQueryUtil {
         // safety net for that bug class.
         // An Iceberg table committed through the Unity Catalog REST catalog is
         // read at the catalog's current metadata file, not the version hint.
-        val metadataLocation = if (format == "iceberg") IcebergTableResolver.forPipeline(pipelineConfig, path) else None
-        val readFuture: Future[QueryResult] = Future(readPath(spark, path, format, cappedLimit, metadataLocation))(queryEC)
+        // Resolved inside the future so the catalog calls share the timeout.
+        val readFuture: Future[QueryResult] = Future {
+            val metadataLocation = if (format == "iceberg") IcebergTableResolver.forPipeline(pipelineConfig, path) else None
+            readPath(spark, path, format, cappedLimit, metadataLocation)
+        }(queryEC)
 
         try Await.result(readFuture, queryTimeoutSec.seconds)
         catch {

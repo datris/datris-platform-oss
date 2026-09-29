@@ -109,6 +109,14 @@ class IcebergRestCatalogConfigSpec extends AnyFunSuite {
         Seq(m2mProps, patProps, fixtureProps).foreach(p => assert(!p.contains("warehouse"), p))
     }
 
+    // Round-3 review: every catalog call is bounded (connection 10 s, socket 30 s).
+    test("REST client connection and socket timeouts are set for every shape") {
+        Seq(m2mProps, patProps, fixtureProps).foreach { p =>
+            assert(p.get("rest.client.connection-timeout-ms").contains("10000"), p)
+            assert(p.get("rest.client.socket-timeout-ms").contains("30000"), p)
+        }
+    }
+
     test("io-impl is HadoopFileIO for every shape") {
         Seq(m2mProps, patProps, fixtureProps).foreach(p => assert(p.get("io-impl").contains(HadoopFileIO), p))
     }

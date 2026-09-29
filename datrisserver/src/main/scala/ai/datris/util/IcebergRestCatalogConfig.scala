@@ -21,16 +21,23 @@ object IcebergRestCatalogConfig {
     val SparkCatalogClass = "org.apache.iceberg.spark.SparkCatalog"
     val HadoopFileIO = "org.apache.iceberg.hadoop.HadoopFileIO"
     val SparkCatalogPrefix = "datris_uc_"
+    val ConnectionTimeoutKey = "rest.client.connection-timeout-ms"
+    val SocketTimeoutKey = "rest.client.socket-timeout-ms"
 
     /** RESTCatalog properties: `uri`, optional `prefix`, `io-impl`,
-      * `cache-enabled=false`, plus auth by secret shape (M2M: OAuth2
+      * `cache-enabled=false`, HTTP connection/socket timeouts (10 s / 30 s),
+      * plus auth by secret shape (M2M: OAuth2
       * client credentials; PAT: `token`; neither: none). */
     def catalogProperties(creds: ResolvedDatabricksCredentials, fields: Map[String, String], catalog: String): Map[String, String] = {
         val base = DatabricksRestClient.baseUrl(Option(creds.host).getOrElse(""))
         val core = Map(
             "uri" -> (base + IcebergCatalogRegistrar.restBase(fields)),
             "io-impl" -> HadoopFileIO,
-            "cache-enabled" -> "false"
+            "cache-enabled" -> "false",
+            // Bound every catalog call (config, token exchange, load, commit):
+            // a hung endpoint must not pin a run or a query thread.
+            ConnectionTimeoutKey -> "10000",
+            SocketTimeoutKey -> "30000"
         ) ++ IcebergCatalogRegistrar.prefix(fields, catalog).map(p => "prefix" -> p)
         val id = creds.clientId.filter(_.nonEmpty)
         val secret = creds.clientSecret.filter(_.nonEmpty)
