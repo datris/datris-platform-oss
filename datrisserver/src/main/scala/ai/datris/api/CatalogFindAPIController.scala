@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.auth.CapabilityCheck
 import ai.datris.model.{DatrisEnvironment, PipelineConfig, TapConfig}
-import ai.datris.util.{CatalogFind, PipelineConfigIO, TapConfigIO}
+import ai.datris.util.{CatalogFind, PipelineConfigIO, TapConfigIO, UnityCatalogDiscovery, UnityCatalogResults, UcHit}
 import com.google.common.base.Throwables
 import com.google.gson.Gson
 import jakarta.servlet.http.HttpServletRequest
@@ -31,6 +31,7 @@ class CatalogFindAPIController {
         @RequestParam(name = "query") query: String,
         @RequestParam(name = "limit", required = false) limit: java.lang.Integer,
         @RequestParam(name = "ai", required = false) ai: java.lang.Boolean,
+        @RequestParam(name = "includeUnityCatalog", required = false) includeUnityCatalog: java.lang.Boolean,
         request: HttpServletRequest
     ): ResponseEntity[String] = {
         try {
@@ -49,12 +50,17 @@ class CatalogFindAPIController {
             // could read that pipeline (catalog/owner scopes included).
             val visible = pipelines.filter(p => p != null && CapabilityCheck.grants(request, "pipeline", "read", scopeContext(p)))
 
+            val unityCatalog =
+                if (includeUnityCatalog != null && includeUnityCatalog.booleanValue()) Some(searchUnityCatalog(query.trim, pipelines, request))
+                else None
+
             val result = CatalogFind.find(
                 query.trim,
                 if (limit != null) limit.intValue() else CatalogFind.DefaultLimit,
                 ai != null && ai.booleanValue(),
                 visible,
-                taps.filter(t => t != null && CapabilityCheck.grants(request, "tap", "read", tapScopeContext(t)))
+                taps.filter(t => t != null && CapabilityCheck.grants(request, "tap", "read", tapScopeContext(t))),
+                unityCatalog
             )
             new ResponseEntity[String](gson.toJson(result), HttpStatus.OK)
         } catch {
@@ -63,6 +69,39 @@ class CatalogFindAPIController {
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body[String]("{\"error\":\"" + Option(e.getMessage).getOrElse("").replace("\"", "'") + "\"}")
         }
+    }
+
+    /** Federated Unity Catalog search over every Databricks Platform secret
+      * this caller could read. Each secret is independent: an unresolvable
+      * warehouse or a connection/SQL failure lands in `skipped` with the
+      * reason — never an error for the whole call. */
+    private def searchUnityCatalog(query: String, pipelines: List[PipelineConfig], request: HttpServletRequest): UnityCatalogResults = {
+        val secrets =
+            try UnityCatalogAPIController.visibleDatabricksSecrets(request)
+            catch {
+                case e: Exception =>
+                    logger.warn("find_data: could not list Platform secrets for Unity Catalog search: " + e.getMessage)
+                    Nil
+            }
+        val tokens = CatalogFind.tokenize(query)
+        val searched = List.newBuilder[String]
+        val skipped = List.newBuilder[(String, String)]
+        val hits = List.newBuilder[UcHit]
+        secrets.foreach { case (name, fields) =>
+            UnityCatalogDiscovery.resolveWarehouse(name, fields, None, pipelines) match {
+                case Left(reason) => skipped += (name -> reason)
+                case Right(warehouse) =>
+                    try {
+                        hits ++= UnityCatalogDiscovery.search(name, warehouse, tokens, CatalogFind.MaxLimit)
+                        searched += name
+                    } catch {
+                        case e: Exception =>
+                            logger.info("find_data: Unity Catalog search skipped for secret '" + name + "': " + e.getMessage)
+                            skipped += (name -> Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
+                    }
+            }
+        }
+        UnityCatalogResults(searched.result(), skipped.result(), hits.result())
     }
 
     private def scopeContext(p: PipelineConfig): Map[String, String] = {

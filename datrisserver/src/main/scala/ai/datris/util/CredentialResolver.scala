@@ -44,7 +44,7 @@ object CredentialResolver {
      *  resolver: the UI's Secrets form leaves naming to the operator, so a
      *  credential pasted in as AWS_ACCESS_KEY shouldn't fail just because the
      *  resolver expects accessKey. */
-    private def secretField(secret: java.util.Map[String, String], canonical: String, aliases: String*): Option[String] = {
+    private[datris] def secretField(secret: java.util.Map[String, String], canonical: String, aliases: String*): Option[String] = {
         val candidates = (canonical +: aliases).flatMap(n => Seq(n, n.toLowerCase, n.toUpperCase))
         candidates.iterator.map(secret.get).find(_ != null)
     }

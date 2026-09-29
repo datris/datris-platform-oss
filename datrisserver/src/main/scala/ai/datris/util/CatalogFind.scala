@@ -116,8 +116,17 @@ object CatalogFind {
     }
 
     /** Rank + render. `visible` has already been capability-filtered by the
-      * controller. */
-    def find(query: String, limit: Int, ai: Boolean, visible: List[PipelineConfig], taps: List[TapConfig]): JsonObject = {
+      * controller. `unityCatalog`, when present, appends federated Unity
+      * Catalog tables after the Datris hits (and tags every hit with its
+      * `source`); when absent the output is exactly the Datris-only shape. */
+    def find(
+        query: String,
+        limit: Int,
+        ai: Boolean,
+        visible: List[PipelineConfig],
+        taps: List[TapConfig],
+        unityCatalog: Option[UnityCatalogResults] = None
+    ): JsonObject = {
         val cappedLimit = math.max(1, math.min(if (limit <= 0) DefaultLimit else limit, MaxLimit))
         val queryTokens = tokenize(query)
         val tapForPipeline: Map[String, TapConfig] =
@@ -150,17 +159,102 @@ object CatalogFind {
 
         val out = new JsonObject()
         val results = new JsonArray()
-        ordered.take(cappedLimit).foreach(c => results.add(renderHit(c, taps)))
-        out.add("results", results)
-        out.addProperty("count", math.min(ordered.size, cappedLimit))
-        out.addProperty("totalMatches", ordered.size)
+        val shown = ordered.take(cappedLimit)
+        val withSource = unityCatalog.isDefined
+        shown.foreach(c => results.add(renderHit(c, taps, withSource)))
+        unityCatalog match {
+            case None =>
+                out.add("results", results)
+                out.addProperty("count", math.min(ordered.size, cappedLimit))
+                out.addProperty("totalMatches", ordered.size)
+            case Some(uc) =>
+                val ucRanked = rankUnityCatalog(uc.hits, visible, shown.map(_.pipeline.name).toSet)
+                ucRanked.take(cappedLimit).foreach { case (h, owner) => results.add(renderUcHit(h, owner)) }
+                out.add("results", results)
+                out.addProperty("count", results.size())
+                out.addProperty("totalMatches", ordered.size + ucRanked.size)
+                val block = new JsonObject()
+                val searched = new JsonArray()
+                uc.searched.foreach(searched.add)
+                block.add("searched", searched)
+                val skipped = new JsonArray()
+                uc.skipped.foreach { case (secret, reason) =>
+                    val sk = new JsonObject()
+                    sk.addProperty("secret", secret)
+                    sk.addProperty("reason", reason)
+                    skipped.add(sk)
+                }
+                block.add("skipped", skipped)
+                out.add("unityCatalog", block)
+        }
         out
     }
 
-    private def renderHit(c: Candidate, taps: List[TapConfig]): JsonObject = {
+    /** Owner of a UC table among the visible pipelines: a Databricks pipeline
+      * whose catalog/schema/table equal the table's (compared the way Unity
+      * Catalog stores names), else the pipeline the `datris_pipeline` tag
+      * names — only when the caller can see that pipeline. */
+    private[datris] def ucOwner(h: UcHit, visible: List[PipelineConfig]): Option[String] = {
+        def norm(s: String): String = Option(s).map(DatabricksConnectionUtil.effectiveName).getOrElse("")
+        val key = (norm(h.catalog), norm(h.schema), norm(h.table))
+        val byCoords = visible.find { p =>
+            p != null && p.destination != null && p.destination.database != null && p.destination.database.useDatabricks && {
+                val db = p.destination.database
+                (norm(db.dbName), norm(db.schema), norm(db.table)) == key
+            }
+        }.map(_.name)
+        byCoords.orElse(h.tags.get("datris_pipeline").filter(n => visible.exists(p => p != null && p.name == n)))
+    }
+
+    /** Owned hits first, then unowned; within each by descending column-match
+      * count (stable). Owned tables whose pipeline is already a Datris hit are
+      * dropped — the pipeline hit already covers them. */
+    private def rankUnityCatalog(hits: List[UcHit], visible: List[PipelineConfig], datrisHits: Set[String]): List[(UcHit, Option[String])] = {
+        val withOwner = hits.map(h => h -> ucOwner(h, visible)).filterNot { case (_, o) => o.exists(datrisHits.contains) }
+        val (owned, unowned) = withOwner.partition(_._2.isDefined)
+        owned.sortBy(-_._1.matchedColumns.size) ++ unowned.sortBy(-_._1.matchedColumns.size)
+    }
+
+    private def renderUcHit(h: UcHit, owner: Option[String]): JsonObject = {
+        val qualified = h.catalog + "." + h.schema + "." + h.table
+        val o = new JsonObject()
+        o.addProperty("name", qualified)
+        o.addProperty("source", "unity-catalog")
+        o.addProperty("secret", h.secret)
+        if (h.comment != null && h.comment.nonEmpty) o.addProperty("comment", h.comment)
+        val matched = new JsonArray()
+        h.matchedColumns.foreach(matched.add)
+        o.add("matchedColumns", matched)
+        val tags = new JsonObject()
+        h.tags.toList.sortBy(_._1).foreach { case (k, v) => tags.addProperty(k, v) }
+        o.add("tags", tags)
+        owner.foreach(o.addProperty("ownedByPipeline", _))
+        val loc = LineageService.DatasetRef("databricks", List("database" -> h.catalog, "schema" -> h.schema, "table" -> h.table)).toJson
+        o.add("location", loc)
+        val htq = new JsonObject()
+        val args = new JsonObject()
+        owner match {
+            case Some(p) =>
+                htq.addProperty("tool", "query_databricks")
+                args.addProperty("pipeline", p)
+                htq.add("args", args)
+            case None =>
+                val sqlName =
+                    DatabricksConnectionUtil.ident(h.catalog) + "." + DatabricksConnectionUtil.ident(h.schema) + "." + DatabricksConnectionUtil.ident(h.table)
+                htq.addProperty("tool", "sql")
+                args.addProperty("sql", "SELECT * FROM " + sqlName + " LIMIT 100")
+                htq.add("args", args)
+                htq.addProperty("note", "no Datris pipeline owns this table; run it in your warehouse")
+        }
+        o.add("howToQuery", htq)
+        o
+    }
+
+    private def renderHit(c: Candidate, taps: List[TapConfig], withSource: Boolean = false): JsonObject = {
         val p = c.pipeline
         val o = new JsonObject()
         o.addProperty("name", p.name)
+        if (withSource) o.addProperty("source", "datris")
         c.tap.flatMap(t => Option(t.description)).foreach(o.addProperty("description", _))
         val tags = new JsonArray()
         mergedTags(p, c.tap).foreach(tags.add)

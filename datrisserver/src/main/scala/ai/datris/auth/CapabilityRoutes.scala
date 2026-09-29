@@ -196,7 +196,11 @@ object CapabilityRoutes {
         Route("GET", "/api/v1/provenance", "metadata", "read"),
         Route("GET", "/api/v1/lineage", "metadata", "read"),
         Route("GET", "/api/v1/lineage/**", "metadata", "read"),
-        Route("GET", "/api/v1/catalog/find", "metadata", "read")
+        Route("GET", "/api/v1/catalog/find", "metadata", "read"),
+        // Unity Catalog browse — read-only warehouse metadata. The controller
+        // additionally requires that the caller could read the named secret
+        // (the list_platform_secrets predicate).
+        Route("GET", "/api/v1/unity-catalog/browse", "metadata", "read")
     )
 
     /** Every `resource:action` pair the table grants — the vocabulary the

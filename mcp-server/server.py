@@ -442,7 +442,7 @@ NEVER rules:
 
 Required workflow:
   1. Check existing pipelines and taps: call list_pipelines and list_taps. If a pipeline exists, data may already be in the destination — use metadata tools to discover and query it directly. If a tap exists, use run_tap or test_tap directly. Only create new pipelines or taps if needed.
-  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations ({{STRUCTURED_DB_DESTINATIONS}}) and OBJECTSTORE (columnar files or Iceberg tables in MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets. For databricks, credentialsSecret AND warehouse (SQL warehouse ID) AND database (Unity Catalog name) are required — same secret discovery via list_platform_secrets.
+  2. Create a pipeline: call create_pipeline. For STRUCTURED destinations ({{STRUCTURED_DB_DESTINATIONS}}) and OBJECTSTORE (columnar files or Iceberg tables in MinIO or AWS S3), pass a TINY plain-text sample via content_text (header + 3-5 rows, NEVER a full dataset — it exists only for schema auto-detection) + filename — objectstore uses the same CSV-typed-schema path as postgres/mongodb. For VECTOR destinations (pgvector, qdrant, weaviate, milvus, chroma), pass ONLY pipeline name + destination — there is no schema, and base64'ing the document here just to satisfy the call is wasted tokens (the document goes through upload_data instead). For objectstore + provider=s3, bucket AND credentialsSecret are required — discover the secret via list_platform_secrets first. For snowflake, credentialsSecret AND warehouse AND database are required — same secret discovery via list_platform_secrets. For databricks, credentialsSecret AND warehouse (SQL warehouse ID) AND database (Unity Catalog name) are required — same secret discovery via list_platform_secrets; before creating a Databricks pipeline, `browse_unity_catalog` shows what the secret can already see, and `find_data` with `include_unity_catalog` searches warehouse tables too.
      create_pipeline UPSERTS by name: if a pipeline with the same name already exists, the call REPLACES its config in place — the data already in the destination is NOT touched. To change a knob (keyFields, truncate, codegen_rule, etc.) on an existing pipeline, just call create_pipeline again with the same name and the new settings. You do NOT need to delete first.
      Common knobs: keyFields (list of column names that act as a natural key for dedupe/upsert on every run), truncate (wipe the destination before each run), codegen_rule (AI-powered data quality), codegen_transform (AI-powered transformation).
   3. Ingest data (choose one):
@@ -874,7 +874,7 @@ Snowflake is an EXTERNAL destination: credentials come from a human-owned Platfo
 }
 ```
 
-Databricks is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `host` — the workspace hostname — plus `clientId`/`clientSecret` for service-principal OAuth, or `token` for a personal access token). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields`; the agent cannot create it. `dbName` is the Unity Catalog CATALOG (not a database) and `warehouse` is the SQL warehouse ID (from the warehouse's Connection details — the trailing segment of the HTTP path, not the warehouse name); neither has a default — ask the user. `schema` defaults to `default`. Identifiers resolve case-insensitively (Unity Catalog stores names lowercase); names with hyphens or spaces are backtick-quoted, so prefer underscore table names. `keyFields` upserts via `MERGE`; `truncateBeforeWrite` replaces the table contents atomically each run. Data stages through an auto-created `datris_staging` volume in the target schema. Read back / verify loads with `query_databricks` (pipeline-scoped; SELECT plus SHOW/DESCRIBE for metadata discovery).
+Databricks is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `host` — the workspace hostname — plus `clientId`/`clientSecret` for service-principal OAuth, or `token` for a personal access token). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields`; the agent cannot create it. `dbName` is the Unity Catalog CATALOG (not a database) and `warehouse` is the SQL warehouse ID (from the warehouse's Connection details — the trailing segment of the HTTP path, not the warehouse name); neither has a default — ask the user. `schema` defaults to `default`. Identifiers resolve case-insensitively (Unity Catalog stores names lowercase); names with hyphens or spaces are backtick-quoted, so prefer underscore table names. `keyFields` upserts via `MERGE`; `truncateBeforeWrite` replaces the table contents atomically each run. Data stages through an auto-created `datris_staging` volume in the target schema. Read back / verify loads with `query_databricks` (pipeline-scoped; SELECT plus SHOW/DESCRIBE for metadata discovery). To see what a secret can already reach in Unity Catalog before creating a pipeline, use `browse_unity_catalog` (secret-scoped, no pipeline needed); its SQL warehouse comes from the `warehouse` argument, an optional `warehouse` field on the secret, or an existing Databricks pipeline using the secret.
 
 Unity Catalog metadata (Databricks only, opt-in): a top-level `"unityCatalog": {"enabled": true}` makes every successful load annotate the table in Unity Catalog — a table comment naming the pipeline and source, fixed comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog` (when the pipeline has a catalog), `datris_dq_status` and `managed_by=datris`, and `TBLPROPERTIES` (`datris.lastRunId`, `datris.configVersion`, `datris.lastRunAt`, `datris.lineagePath`, ...). Optional knobs `comments`, `tags`, `properties` (all default true) drop a group. Omit the block unless the user asks for it; the server rejects it on any non-Databricks destination. Tagging needs `GRANT APPLY TAG ON SCHEMA <catalog>.<schema> TO <service principal>`; without it the tag statement fails and is reported as a warning on the run — the load itself still succeeds. Last sync / last error: `GET /api/v1/pipelines/<name>/unity-catalog`.
 
@@ -3125,6 +3125,16 @@ def _base_tools():
                         "type": "boolean",
                         "description": "Rerank the top candidates with the platform's primary AI model (default: false — ranking is deterministic).",
                     },
+                    "include_unity_catalog": {
+                        "type": "boolean",
+                        "description": (
+                            "Also search the Unity Catalog tables visible to every Databricks Platform secret your key can read "
+                            "(default: false). Warehouse hits follow the Datris hits, marked `source: \"unity-catalog\"`; "
+                            "`howToQuery` points at query_databricks only when a Datris pipeline owns the table, otherwise it is "
+                            "a plain SQL hint to run in your warehouse. Secrets without a known SQL warehouse are listed under "
+                            "`unityCatalog.skipped`. A stopped warehouse auto-starts on first use, which can add 5-20 s."
+                        ),
+                    },
                 },
                 "required": ["query"],
             }
@@ -3182,6 +3192,33 @@ def _base_tools():
                     },
                 },
                 "required": ["node_type", "name"],
+            }
+        ),
+        Tool(
+            name="browse_unity_catalog",
+            description=(
+                "Browse what a Databricks Platform secret can already see in Unity Catalog, one level per call: "
+                "no `catalog` lists catalogs; `catalog` lists its schemas; `catalog` + `schema` lists tables; adding "
+                "`table` returns its columns (name, type, comment) and tags. Use it before creating a Databricks "
+                "pipeline to check whether the data already exists. Discover the secret name with "
+                "list_platform_secrets. Tables carrying the `datris_pipeline` tag were loaded by that Datris "
+                "pipeline (query them with query_databricks and that pipeline). If tag lookups are not permitted "
+                "for the secret, `tagsAvailable` is false and browsing still works. The SQL warehouse comes from "
+                "the `warehouse` argument, else the secret's optional `warehouse` field, else an existing Databricks "
+                "pipeline using the secret. A stopped SQL warehouse auto-starts on the first call, which can take "
+                "5-20 seconds (longer for classic warehouses). Read-only; catalog and schema listings are cached "
+                "for 5 minutes."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "secret": {"type": "string", "description": "Name of the Databricks Platform secret (from list_platform_secrets)."},
+                    "warehouse": {"type": "string", "description": "SQL warehouse ID to run the metadata queries on (optional; see description for the fallback order)."},
+                    "catalog": {"type": "string", "description": "Unity Catalog catalog to list schemas of (optional)."},
+                    "schema": {"type": "string", "description": "Schema within `catalog` to list tables of (optional; requires catalog)."},
+                    "table": {"type": "string", "description": "Table within `catalog`.`schema` to describe (optional; requires catalog and schema)."},
+                },
+                "required": ["secret"],
             }
         ),
     ]
@@ -4301,7 +4338,20 @@ def _dispatch(name: str, args: dict) -> str:
             params["limit"] = args["limit"]
         if args.get("ai"):
             params["ai"] = "true"
+        if args.get("include_unity_catalog"):
+            params["includeUnityCatalog"] = "true"
         return _call("get", "/api/v1/catalog/find", params=params)
+
+    elif name == "browse_unity_catalog":
+        secret = str(args.get("secret") or "").strip()
+        if not secret:
+            return json.dumps({"error": "secret is required — the name of a Databricks Platform secret (see list_platform_secrets)"})
+        params = {"secret": secret}
+        for arg in ("warehouse", "catalog", "schema", "table"):
+            value = str(args.get(arg) or "").strip()
+            if value:
+                params[arg] = value
+        return _call("get", "/api/v1/unity-catalog/browse", params=params)
 
     elif name == "get_provenance":
         run_id = str(args.get("run_id", "")).strip()

@@ -79,6 +79,8 @@ To rotate or correct the keys, update the secret in the Secrets tab. Fields you 
 
 These behave the same as the MinIO destination — see the [Object Store Destination](/destinations/object-store) page for the full reference, and the [Iceberg](/destinations/iceberg) page for table commits, `merge`, and schema evolution.
 
+Iceberg tables written to S3 are not registered in Databricks Unity Catalog yet; see [Unity Catalog](/destinations/unity-catalog) for what Datris does with Unity Catalog today.
+
 ## Multiple S3 destinations
 
 Per-bucket credential isolation means two pipelines can write to different S3 buckets using different IAM keys in the same deployment. Each pipeline references its own `credentialsSecret`; the credentials are applied to that specific bucket only.

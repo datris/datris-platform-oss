@@ -150,7 +150,8 @@ object MCPToolRoutes {
         // Discovery + provenance (read-only)
         "find_data" -> Mapped("GET", "/api/v1/catalog/find"),
         "get_provenance" -> Mapped("GET", "/api/v1/provenance"),
-        "get_lineage" -> Mapped("GET", "/api/v1/lineage/pipeline/example")
+        "get_lineage" -> Mapped("GET", "/api/v1/lineage/pipeline/example"),
+        "browse_unity_catalog" -> Mapped("GET", "/api/v1/unity-catalog/browse")
     )
 
     val allToolNames: Seq[String] = tools.map(_._1)

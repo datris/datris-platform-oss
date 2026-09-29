@@ -1,0 +1,81 @@
+---
+title: "Discover and annotate Databricks Unity Catalog tables from an AI agent"
+sidebarTitle: "Unity Catalog"
+description: "Browse the catalogs, schemas, tables and columns a Databricks secret can see, search warehouse tables from find_data, and mark the tables Datris loads with comments and tags."
+---
+
+Use this page when an agent works against a Databricks workspace. Datris does two things with Unity Catalog: it **annotates** the tables its [Databricks](/destinations/databricks) pipelines load (comments, tags and table properties), and it lets an agent **discover** what a Databricks secret can already see before it creates a pipeline. Both are read-only toward your data; the annotations are the only thing Datris writes to Unity Catalog.
+
+## Two meanings of "catalog"
+
+Datris and Unity Catalog both use the word *catalog*, and they mean different things:
+
+- A **Datris catalog** is a label on taps and pipelines that groups them in the Datris UI (see [Data Catalog](/data-catalog)). It lives only in Datris and never changes where data lands.
+- A **Unity Catalog catalog** is the top level of Databricks' three-level namespace, `catalog.schema.table`. On a Databricks pipeline, `destination.database.dbName` is the Unity Catalog catalog the table lands in.
+
+The two are independent. A pipeline in the Datris catalog `finance` can load into the Unity Catalog catalog `main`. When the metadata push is on, the Datris catalog travels with the table as the `datris_catalog` tag, so you can see it from Databricks too.
+
+## What Datris writes
+
+With `"unityCatalog": { "enabled": true }` on a Databricks pipeline, every successful load annotates the table: a table comment naming the pipeline and source, comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog`, `datris_dq_status` and `managed_by = datris`, and `datris.*` table properties. See [Unity Catalog metadata](/destinations/databricks#unity-catalog-metadata) for the fields, the grant it needs, and `GET /api/v1/pipelines/{name}/unity-catalog`.
+
+The `datris_pipeline` tag is what discovery uses to recognize a table Datris loaded.
+
+## Browse what a secret can see
+
+`browse_unity_catalog` (MCP) and `GET /api/v1/unity-catalog/browse` (REST) walk Unity Catalog one level per call, using a Databricks Platform secret. No pipeline is needed.
+
+| Parameters | Returns |
+|------------|---------|
+| `secret` | `catalogs`: the catalog names the secret can see |
+| `secret`, `catalog` | `schemas` in that catalog |
+| `secret`, `catalog`, `schema` | `tables` in that schema. A table with the `datris_pipeline` tag carries `datrisPipeline` |
+| `secret`, `catalog`, `schema`, `table` | `columns` (`name`, `type`, `comment`), `tags`, and `datrisPipeline` when present |
+
+```bash
+curl -s -H 'x-api-key: <your-api-key>' \
+  'http://localhost:8080/api/v1/unity-catalog/browse?secret=<secret>&catalog=<catalog>&schema=<schema>'
+```
+
+- Find the secret name with `list_platform_secrets`. The secret needs `host` and either `clientId`/`clientSecret` or `token`, the same fields the Databricks destination uses.
+- Catalog and schema listings are cached for 5 minutes per secret. Table and column listings are always live. Each level returns at most 1000 entries.
+- A stopped SQL warehouse starts on the first call. Serverless warehouses take about 5 to 20 seconds; classic warehouses can take several minutes.
+- When the secret cannot read the tag views, the response has `tagsAvailable: false` and no tags. Browsing still works.
+
+Responses: `400` when `secret` is missing, when `schema` or `table` is given without the levels above it, or when no warehouse can be found; `403` (`errorKind: capability_denied`) when your API key may not read that secret; `404` when no Databricks Platform secret has that name; `502` when the warehouse connection or a metadata query fails, with the same message the Databricks destination gives. Every call is recorded in the [audit log](/audit-log) as `unity-catalog` / `browse` with the secret name.
+
+Access: the route needs `metadata:read`, and your key must also be able to read the named secret, the same check `list_platform_secrets` applies. Keys without `metadata:read` do not see the MCP tool.
+
+### Which SQL warehouse is used
+
+The secret holds the workspace host and credentials, not a warehouse. Browse picks one in this order:
+
+1. the `warehouse` query parameter (MCP argument `warehouse`)
+2. an optional `warehouse` field on the secret (`httpPath`, `http_path` and `DATABRICKS_WAREHOUSE` also work). The value can be the warehouse ID, its HTTP path, or a JDBC URL
+3. the warehouse of the first Databricks pipeline whose `credentialsSecret` is this secret
+
+If none applies, the call returns `400` listing these three options. Existing Databricks secrets work unchanged; the `warehouse` field is optional.
+
+## Search warehouse tables from find_data
+
+`find_data` ranks Datris pipelines by default. With `include_unity_catalog: true` (REST: `includeUnityCatalog=true`) it also searches the Unity Catalog tables visible to every Databricks Platform secret your key can read. It matches table names, table comments and column names.
+
+- Datris hits come first and carry `source: "datris"`. Unity Catalog hits follow with `source: "unity-catalog"`, `name` as `catalog.schema.table`, the `secret` that found it, `matchedColumns`, `tags` and a `location` of kind `databricks`.
+- A table is **owned** when a Databricks pipeline you can see loads into those exact coordinates, or when its `datris_pipeline` tag names a pipeline you can see. Owned tables have `ownedByPipeline`, and their `howToQuery` points at `query_databricks` with that pipeline. Owned tables come before unowned ones. If the owning pipeline is already a Datris hit, the table is left out because the pipeline hit already covers it.
+- Unowned tables get a plain SQL hint (`SELECT * FROM catalog.schema.table LIMIT 100`) to run in your warehouse. `query_databricks` cannot run it, because that tool needs a pipeline.
+- The response adds `unityCatalog: { searched: [...], skipped: [{ secret, reason }] }`. A secret with no known warehouse (only options 2 and 3 above apply here) or a failed connection is listed under `skipped`; it never fails the call. With no Databricks secrets, `searched` is empty and you get the Datris hits only.
+- `count` and `totalMatches` include the Unity Catalog hits. The optional AI rerank orders Datris hits only.
+
+Without the flag, `find_data` output is unchanged: no `source` field and no `unityCatalog` block.
+
+## Grants for discovery
+
+Browse and search run as the secret's identity, so they see only what it is granted:
+
+- `USE CATALOG` and `USE SCHEMA` on what you want to browse, and `SELECT` (or `BROWSE`) to describe tables.
+- Search and tag lookups read `system.information_schema` (`columns`, `tables`, `table_tags`). Unity Catalog filters these views to the objects the identity can access, so a table the secret cannot use never shows up. If the identity cannot read the `system` catalog, tag lookups return `tagsAvailable: false` and `find_data` lists the secret under `skipped` with the warehouse's error. Ask a workspace admin to grant the identity access to `system.information_schema`.
+
+## Not covered yet
+
+- Iceberg tables written by the [object store](/destinations/object-store) and [S3](/destinations/s3) destinations are not registered in Unity Catalog.
+- There is no Unity Catalog browser in the Datris UI yet; use the API or MCP tool.

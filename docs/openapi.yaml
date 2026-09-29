@@ -1000,6 +1000,63 @@ paths:
         '500':
           description: Error
 
+  /api/v1/pipelines/{name}/unity-catalog:
+    get:
+      tags: [Pipelines]
+      summary: Unity Catalog metadata sync state for a pipeline
+      description: >-
+        Whether the pipeline opted into the Unity Catalog metadata push, its
+        three-level table coordinates (Databricks destinations), and the last
+        sync (`state` is `never`, `synced` or `error`).
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sync state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: string
+                  enabled:
+                    type: boolean
+                  coordinates:
+                    type: object
+                    properties:
+                      catalog:
+                        type: string
+                      schema:
+                        type: string
+                      table:
+                        type: string
+                      qualified:
+                        type: string
+                  state:
+                    type: string
+                    enum: [never, synced, error]
+                  lastSyncAt:
+                    type: string
+                  lastRunId:
+                    type: string
+                  commentsHash:
+                    type: string
+                  tagsHash:
+                    type: string
+                  propertiesHash:
+                    type: string
+                  lastError:
+                    type: string
+        '404':
+          description: Pipeline not configured
+        '500':
+          description: Error
+
   /api/v1/pipeline/dest-types:
     get:
       tags: [Pipelines]
@@ -4949,6 +5006,19 @@ paths:
             type: boolean
             default: false
           description: Rerank the top candidates with the primary AI model
+        - in: query
+          name: includeUnityCatalog
+          schema:
+            type: boolean
+            default: false
+          description: >-
+            Also search the Unity Catalog tables visible to every Databricks
+            Platform secret the key can read. Unity Catalog hits follow the
+            Datris hits with `source: unity-catalog`; every hit then carries
+            `source`, and the response adds a `unityCatalog` block. A secret
+            with no resolvable warehouse or a failed connection is listed under
+            `unityCatalog.skipped`, never an error. Without this flag the
+            response is unchanged.
       responses:
         '200':
           description: Ranked hits
@@ -4965,5 +5035,124 @@ paths:
                     type: integer
                   totalMatches:
                     type: integer
+                  unityCatalog:
+                    type: object
+                    description: Present only with includeUnityCatalog=true
+                    properties:
+                      searched:
+                        type: array
+                        items:
+                          type: string
+                      skipped:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            secret:
+                              type: string
+                            reason:
+                              type: string
         '400':
           description: query missing
+
+  /api/v1/unity-catalog/browse:
+    get:
+      tags: [Provenance]
+      summary: Browse Unity Catalog with a Databricks Platform secret
+      description: >-
+        Read-only walk of what a Databricks Platform secret can see, one level
+        per call: no `catalog` lists catalogs; `catalog` lists schemas;
+        `catalog` + `schema` lists tables (tables tagged `datris_pipeline`
+        carry `datrisPipeline`); adding `table` returns columns (name, type,
+        comment) and tags. Catalog and schema listings are cached for 5
+        minutes per secret. Requires `metadata:read` plus read access to the
+        named secret. Every call is audit-logged as `unity-catalog` / `browse`.
+        The SQL warehouse is the `warehouse` param, else the secret's optional
+        `warehouse` field (aliases `httpPath`, `http_path`,
+        `DATABRICKS_WAREHOUSE`), else the warehouse of the first Databricks
+        pipeline using the secret.
+      parameters:
+        - in: query
+          name: secret
+          required: true
+          schema:
+            type: string
+          description: Name of a Platform secret holding Databricks credentials
+        - in: query
+          name: warehouse
+          schema:
+            type: string
+          description: SQL warehouse ID, HTTP path, or JDBC URL
+        - in: query
+          name: catalog
+          schema:
+            type: string
+        - in: query
+          name: schema
+          schema:
+            type: string
+          description: Requires catalog
+        - in: query
+          name: table
+          schema:
+            type: string
+          description: Requires catalog and schema
+      responses:
+        '200':
+          description: One level of the Unity Catalog tree
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret:
+                    type: string
+                  level:
+                    type: string
+                    enum: [catalogs, schemas, tables, columns]
+                  catalogs:
+                    type: array
+                    items:
+                      type: string
+                  schemas:
+                    type: array
+                    items:
+                      type: string
+                  tables:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        datrisPipeline:
+                          type: string
+                  columns:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        type:
+                          type: string
+                        comment:
+                          type: string
+                  tags:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  tagsAvailable:
+                    type: boolean
+                  datrisPipeline:
+                    type: string
+        '400':
+          description: secret missing, schema/table without their parent level, or no resolvable warehouse (the message lists the three options)
+        '401':
+          description: Missing or invalid API key
+        '403':
+          description: The key may not read this secret (errorKind capability_denied)
+        '404':
+          description: No Databricks Platform secret with that name
+        '502':
+          description: Warehouse connection or metadata query failed
