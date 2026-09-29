@@ -1,7 +1,7 @@
 name := "datris-server"
 ThisBuild / organization := "ai.datris"
 ThisBuild / scalaVersion := "2.12.21"
-ThisBuild / version := "1.39.0"
+ThisBuild / version := "1.39.1"
 
 // Match the Docker runtime (eclipse-temurin:17-jre). Without this, javac uses the
 // build host's JDK (e.g. 25), producing class files the runtime can't load.
@@ -27,15 +27,15 @@ lazy val datrisserver = project
         // ExceptionInInitializerError the first time RDDOperationScope loads
         // (which is any time a destination uses SparkSession — objectStore
         // writes, in particular). Spark 3.5.x ships 2.15.2; overriding all four
-        // artifacts together to 2.18.9 keeps the pair consistent and clears the
-        // jackson-core/databind CVEs (2.18.9 patches the @JsonView bypasses and
-        // case-insensitive @JsonIgnoreProperties bypass on top of the 2.18.8
-        // high fixes). Bump all four together or none.
+        // artifacts together to 2.18.10 keeps the pair consistent and clears the
+        // jackson-core/databind CVEs (2.18.10 closes the three databind advisories
+        // published 2026-09-28 on top of the 2.18.9 @JsonView/@JsonIgnoreProperties
+        // fixes). Bump all four together or none.
         dependencyOverrides ++= Seq(
-            "com.fasterxml.jackson.core" % "jackson-core" % "2.18.9",
-            "com.fasterxml.jackson.core" % "jackson-annotations" % "2.18.9",
-            "com.fasterxml.jackson.core" % "jackson-databind" % "2.18.9",
-            "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.18.9",
+            "com.fasterxml.jackson.core" % "jackson-core" % "2.18.10",
+            "com.fasterxml.jackson.core" % "jackson-annotations" % "2.18.10",
+            "com.fasterxml.jackson.core" % "jackson-databind" % "2.18.10",
+            "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.18.10",
             // Lock the entire Hadoop family to 3.3.4 — what Spark 3.5.x ships.
             // S3A and the rest of the Hadoop FileSystem layer share private
             // interfaces (IOStatistics, DurationTracker, CallableRaisingIOE);
