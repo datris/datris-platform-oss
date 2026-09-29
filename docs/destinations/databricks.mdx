@@ -153,9 +153,9 @@ Identifiers follow Unity Catalog's normal resolution rules: names are case-insen
 
 Set the top-level `"unityCatalog": { "enabled": true }` and every successful load also annotates the table in Unity Catalog, so warehouse users can see in Catalog Explorer which Datris pipeline loaded a table and how to trace it:
 
-- **Comments:** a table comment naming the Datris pipeline and its source (tap name or uploaded file), plus a fixed comment on each `_datris_*` provenance column the load carries (see [provenance stamping](/provenance)).
+- **Comments:** a table comment naming the Datris pipeline and its source (the tap, or `file upload`), plus a fixed comment on each `_datris_*` provenance column the load carries (see [provenance stamping](/provenance)).
 - **Tags:** `datris_pipeline`, `datris_catalog` (only when the pipeline belongs to a catalog), `datris_dq_status` (`pass` or `warn`) and `managed_by = datris`.
-- **Table properties:** `datris.pipeline`, `datris.configVersion`, `datris.lastRunId`, `datris.lastRunAt`, `datris.environment` and `datris.lineagePath` (the Datris lineage API path for the pipeline).
+- **Table properties:** `datris.pipeline`, `datris.configVersion`, `datris.lastRunId`, `datris.lastRunAt`, `datris.environment`, `datris.lineagePath` (the Datris lineage API path for the pipeline) and `datris.lastSource` (the tap or the uploaded file name of the last run).
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -164,7 +164,7 @@ Set the top-level `"unityCatalog": { "enabled": true }` and every successful loa
 | `tags` | `true` | Write the four tags |
 | `properties` | `true` | Write the table properties |
 
-Comments and tags are only re-issued when they change; properties are written on every run. Tagging needs the `GRANT APPLY TAG ON SCHEMA` line from the setup script. A metadata failure (a missing grant, a warehouse hiccup) is recorded as a warning on the run and in the audit log; the load itself still succeeds, and the next run retries the failed part. The pipeline detail page shows the last sync or the last error, also available from `GET /api/v1/pipelines/{name}/unity-catalog`. Set `DATRIS_UNITY_CATALOG_SYNC=false` to switch the push off for the whole install.
+Comments and tags are only re-issued when they change; properties are written on every run. With `manageTableManually: true`, if you drop and recreate the table yourself, Datris re-applies comments and tags only when their content changes. Tagging needs the `GRANT APPLY TAG ON SCHEMA` line from the setup script. A metadata failure (a missing grant, a warehouse hiccup) is recorded as a warning on the run and in the audit log; the load itself still succeeds, and the next run retries the failed part. The pipeline detail page shows the last sync or the last error, also available from `GET /api/v1/pipelines/{name}/unity-catalog`. Set `DATRIS_UNITY_CATALOG_SYNC=false` to switch the push off for the whole install.
 
 `useTransaction` has no effect on Databricks — Delta has no multi-statement transactions. It doesn't need one: every load path here is a single atomic Delta commit, which is a stronger guarantee than a transaction around a multi-statement load.
 

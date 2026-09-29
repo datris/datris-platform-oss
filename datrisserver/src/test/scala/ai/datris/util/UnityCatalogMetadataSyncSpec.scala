@@ -375,4 +375,36 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
         assert(second.executed.toList == sqls(stmts), s"every group must be re-issued on a new table:\n${second.executed.mkString("\n")}")
         assert(state2.commentsHash == state1.commentsHash && state2.tagsHash == state1.tagsHash)
     }
+
+    test("upload runs get a stable 'file upload' comment label; the filename goes to datris.lastSource") {
+        val md1 = PipelineMetadata("orders_daily", "orders_20260929_0001.csv", "/tmp/a", "pub-1", bulkUpload = false)
+        val md2 = md1.copy(dataFileName = "orders_20260930_0002.csv")
+        val (c1, l1) = UnityCatalogMetadataSync.sourceLabels(md1)
+        val (c2, l2) = UnityCatalogMetadataSync.sourceLabels(md2)
+        assert(c1 == "file upload" && c2 == "file upload")
+        assert(l1 == "orders_20260929_0001.csv" && l2 == "orders_20260930_0002.csv")
+
+        val s1 = UnityCatalogMetadataSync.render(PIPELINE, "sales", db, ProvenanceStamper.AllFields, RUN_ID, RUN_AT, 3, "pass", "datris", allOn, c1, l1)
+        val s2 = UnityCatalogMetadataSync.render(PIPELINE, "sales", db, ProvenanceStamper.AllFields, RUN_ID, RUN_AT, 3, "pass", "datris", allOn, c2, l2)
+        assert(ofKind(s1, "comments") == ofKind(s2, "comments"), "per-run filenames must not change the comment group")
+        assert(!ofKind(s1, "comments").exists(_.contains("orders_2026")), ofKind(s1, "comments").mkString("\n"))
+        assert(propertyStatements(s1).head.contains("'datris.lastSource' = 'orders_20260929_0001.csv'"), propertyStatements(s1).head)
+        assert(propertyStatements(s2).head.contains("'datris.lastSource' = 'orders_20260930_0002.csv'"), propertyStatements(s2).head)
+
+        val tap = md1.copy(tapName = "orders_tap")
+        assert(UnityCatalogMetadataSync.sourceLabels(tap) == ("tap orders_tap", "tap orders_tap"))
+        assert(UnityCatalogMetadataSync.sourceLabels(null) == ("file upload", null))
+    }
+
+    test("a failing table-existence probe warns and assumes the table existed") {
+        val status = new RecordingStatusUtil
+        val existed = UnityCatalogMetadataSync.probeTableExisted(status)(throw new SQLException("[INSUFFICIENT_PERMISSIONS] information_schema"))
+        assert(existed, "probe failure must degrade to 'assume existed'")
+        assert(status.warnings.size == 1 && status.warnings.head.contains("uc-sync"), status.messages.mkString("\n"))
+        assert(status.messages.forall(_._1 != "error"))
+
+        val ok = new RecordingStatusUtil
+        assert(!UnityCatalogMetadataSync.probeTableExisted(ok)(false))
+        assert(ok.messages.isEmpty)
+    }
 }

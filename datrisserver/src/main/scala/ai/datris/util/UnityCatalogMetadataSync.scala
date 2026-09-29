@@ -77,7 +77,8 @@ object UnityCatalogMetadataSync {
         dqStatus: String,
         environment: String,
         knobs: UnityCatalogSync,
-        source: String
+        source: String,
+        lastSource: String = null
     ): List[(String, String)] = {
         val q = DatabricksConnectionUtil.qualifiedTable(db)
         val out = List.newBuilder[(String, String)]
@@ -108,11 +109,35 @@ object UnityCatalogMetadataSync {
                 "datris.lastRunAt" -> runAt,
                 "datris.environment" -> environment,
                 "datris.lineagePath" -> ("/api/v1/lineage/pipeline/" + pipeline)
-            )
+            ) ++ Option(lastSource).filter(_.nonEmpty).map("datris.lastSource" -> _).toSeq
             out += Properties -> s"ALTER TABLE $q SET TBLPROPERTIES (${pairs(props)})"
         }
         out.result()
     }
+
+    /** (table-comment source, `datris.lastSource`). The comment label must be
+      * stable across runs so the comment group hash-skips: tap-fed runs name
+      * the tap; every other run says "file upload", and the per-run filename
+      * goes to the `datris.lastSource` property (re-issued every run anyway). */
+    def sourceLabels(md: PipelineMetadata): (String, String) =
+        if (md != null && md.tapName != null) ("tap " + md.tapName, "tap " + md.tapName)
+        else ("file upload", if (md != null) md.dataFileName else null)
+
+    /** Did the table exist before this load's CREATE TABLE IF NOT EXISTS?
+      * A failing probe (warehouse hiccup, no visibility into
+      * information_schema) must never fail the load: it warns and assumes the
+      * table existed, i.e. hash-skip behaves as if nothing was recreated. */
+    def probeTableExisted(statusUtil: StatusUtil)(probe: => Boolean): Boolean =
+        try probe
+        catch {
+            case NonFatal(e) =>
+                statusUtil.warn(
+                    "processing",
+                    "uc-sync: could not check whether the table already existed; assuming it did: " +
+                        Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                )
+                true
+        }
 
     private[util] def sha256(sqls: Seq[String]): String = {
         val digest = MessageDigest.getInstance("SHA-256").digest(sqls.mkString("\n").getBytes(StandardCharsets.UTF_8))
@@ -197,11 +222,7 @@ object UnityCatalogMetadataSync {
         }
         try {
             val db = config.destination.database
-            val md = jobContext.metadata
-            val source =
-                if (md == null) null
-                else if (md.tapName != null) "tap " + md.tapName
-                else md.dataFileName
+            val (source, lastSource) = sourceLabels(jobContext.metadata)
             val env = Option(DatrisEnvironment.current).map(_.environment).orNull
             val previous =
                 try UnityCatalogSyncIO.read(config.name)
@@ -221,7 +242,8 @@ object UnityCatalogMetadataSync {
                 dqStatus = if (statusUtil.hasWarning) "warn" else "pass",
                 environment = env,
                 knobs = config.unityCatalog,
-                source = source
+                source = source,
+                lastSource = lastSource
             )
             val state = execute(conn, config.name, jobContext.pipelineToken, statements, previous, statusUtil, tableCreated)
             try UnityCatalogSyncIO.write(state)

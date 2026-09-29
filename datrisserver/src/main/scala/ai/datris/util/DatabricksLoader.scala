@@ -280,7 +280,7 @@ class DatabricksLoader(jobContext: JobContext) {
             if (db.keyFields != null) db.keyFields.asScala.map(_.toLowerCase).toSet else Set.empty
 
         val ucSync = config.unityCatalog != null && config.unityCatalog.enabled
-        val tableExisted = !ucSync || tableExists(statement)
+        val tableExisted = !ucSync || UnityCatalogMetadataSync.probeTableExisted(statusUtil)(tableExists(statement))
 
         val sql = new StringBuilder()
         sql.append("CREATE TABLE IF NOT EXISTS " + qualifiedTable() + " (")
