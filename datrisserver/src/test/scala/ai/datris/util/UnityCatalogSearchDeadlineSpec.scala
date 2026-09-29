@@ -8,6 +8,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.model.{DatrisEnvironment, TenantContext}
 import org.scalatest.funsuite.AnyFunSuite
 
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+
 /** Story: Unity Catalog 2: discovery — per-secret deadline for
   * `find_data includeUnityCatalog` (review follow-up 2). */
 class UnityCatalogSearchDeadlineSpec extends AnyFunSuite {
@@ -78,5 +80,37 @@ class UnityCatalogSearchDeadlineSpec extends AnyFunSuite {
             sys.props += key -> "abc"
             assert(UnityCatalogDiscovery.searchTimeoutSeconds == 45L)
         } finally sys.props -= key
+    }
+
+    test("an Error from the task arrives wrapped in an Exception, never as a raw Error") {
+        val e = intercept[Exception](UnityCatalogDiscovery.withDeadline(5)(throw new AssertionError("fatal-ish")))
+        assert(e.getCause.isInstanceOf[AssertionError])
+    }
+
+    test("a full search pool rejects the next search with Left(search pool busy)") {
+        val n = UnityCatalogDiscovery.SearchPoolSize
+        val started = new CountDownLatch(n)
+        val release = new CountDownLatch(1)
+        val callers = (1 to n).map { _ =>
+            val t = new Thread(() => {
+                // Retry while a thread from an earlier (interrupted) test is
+                // still winding down, so the pool always ends up exactly full.
+                var r: Either[String, Int] = Left("search pool busy")
+                while (r == Left("search pool busy")) {
+                    r = UnityCatalogDiscovery.withDeadline(30)({ started.countDown(); release.await(); 0 })
+                    if (r == Left("search pool busy")) Thread.sleep(10)
+                }
+            })
+            t.setDaemon(true)
+            t.start()
+            t
+        }
+        try {
+            assert(started.await(10, TimeUnit.SECONDS), "pool never filled")
+            assert(UnityCatalogDiscovery.withDeadline(5)(1) == Left("search pool busy"))
+        } finally {
+            release.countDown()
+            callers.foreach(_.join(10000))
+        }
     }
 }

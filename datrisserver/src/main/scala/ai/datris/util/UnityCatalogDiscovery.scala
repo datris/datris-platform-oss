@@ -10,7 +10,17 @@ import com.google.gson.{JsonArray, JsonObject}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.sql.Connection
-import java.util.concurrent.{Callable, ConcurrentHashMap, ExecutionException, Executors, ThreadFactory, TimeUnit, TimeoutException}
+import java.util.concurrent.{
+    Callable,
+    ConcurrentHashMap,
+    ExecutionException,
+    RejectedExecutionException,
+    SynchronousQueue,
+    ThreadFactory,
+    ThreadPoolExecutor,
+    TimeUnit,
+    TimeoutException
+}
 import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
@@ -339,33 +349,50 @@ object UnityCatalogDiscovery {
             .filter(_ > 0)
             .getOrElse(DefaultSearchTimeoutSeconds)
 
-    private lazy val searchPool = Executors.newCachedThreadPool(new ThreadFactory {
-        override def newThread(r: Runnable): Thread = {
-            val t = new Thread(r, "uc-search")
-            t.setDaemon(true)
-            t
+    /** Most concurrent Unity Catalog searches across all find_data calls. */
+    val SearchPoolSize = 8
+
+    // Bounded: at most SearchPoolSize threads, no queue. A full pool rejects
+    // the task and withDeadline answers Left("search pool busy").
+    private lazy val searchPool = new ThreadPoolExecutor(
+        0,
+        SearchPoolSize,
+        60L,
+        TimeUnit.SECONDS,
+        new SynchronousQueue[Runnable](),
+        new ThreadFactory {
+            override def newThread(r: Runnable): Thread = {
+                val t = new Thread(r, "uc-search")
+                t.setDaemon(true)
+                t
+            }
         }
-    })
+    )
 
     /** Run `f` on a pool thread carrying the caller's tenant environment
       * (TenantContext is thread-local) and wait at most `timeoutSeconds`.
       * Left("timed out after Ns") past the deadline (the task is interrupted
-      * and abandoned); an exception thrown by `f` is rethrown as-is. */
+      * and abandoned); Left("search pool busy") when SearchPoolSize searches
+      * are already running. An Exception thrown by `f` is rethrown as-is; an
+      * Error arrives wrapped in its ExecutionException. */
     def withDeadline[T](timeoutSeconds: Long)(f: => T): Either[String, T] = {
         val env = DatrisEnvironment.current
-        val future = searchPool.submit(new Callable[T] {
-            override def call(): T = {
-                TenantContext.set(env)
-                try f
-                finally TenantContext.clear()
-            }
-        })
+        val future =
+            try
+                searchPool.submit(new Callable[T] {
+                    override def call(): T = {
+                        TenantContext.set(env)
+                        try f
+                        finally TenantContext.clear()
+                    }
+                })
+            catch { case _: RejectedExecutionException => return Left("search pool busy") }
         try Right(future.get(timeoutSeconds, TimeUnit.SECONDS))
         catch {
             case _: TimeoutException =>
                 future.cancel(true)
                 Left("timed out after " + timeoutSeconds + "s")
-            case e: ExecutionException if e.getCause != null => throw e.getCause
+            case e: ExecutionException => throw Option(e.getCause).collect { case ex: Exception => ex }.getOrElse(e)
         }
     }
 
