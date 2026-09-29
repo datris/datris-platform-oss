@@ -147,9 +147,10 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         val iceberg: Option[IcebergWriter.WriteResult] = SparkObjectStoreLoader.withPipelineWriteLock(outputPath) {
             // catalogMode rest (IcebergRestSession): decided BEFORE the
             // delete-before-write, which it refuses on a table the catalog
-            // holds. Inactive for every other pipeline (path write). Throws
+            // holds (for any format: a parquet flip must not delete it either). Inactive for every other pipeline (path write). Throws
             // only when a path write would fork a catalog-committed table.
-            if (fileFormat == "iceberg") restPlan = IcebergRestSession.prepare(jobContext, outputPath, objectStore.deleteBeforeWrite)
+            if (fileFormat == "iceberg" || objectStore.deleteBeforeWrite)
+                restPlan = IcebergRestSession.prepare(jobContext, outputPath, objectStore.deleteBeforeWrite)
             // Delete existing data if requested. Route through the Hadoop FileSystem
             // (S3A) rather than the MinIO Java SDK, so it honors the per-bucket config
             // we just applied and works for both MinIO and AWS S3. Using the MinIO SDK

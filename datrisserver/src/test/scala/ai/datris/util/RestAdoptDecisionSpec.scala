@@ -125,4 +125,34 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
         // A new prefix is a new table: the guard does not follow the pipeline.
         assert(!IcebergRestSession.restCommitted(st("rest", restLoc), "s3a://datris-lake/orders_daily_v2"))
     }
+
+    test("IcebergRestSession.guardFailure: parquet + deleteBeforeWrite on a rest-committed table fails the run") {
+        import ai.datris.model.UnityCatalogSyncState
+        val committed = UnityCatalogSyncState(
+            pipeline = "p",
+            lastSyncAt = null,
+            lastRunId = null,
+            commentsHash = null,
+            tagsHash = null,
+            propertiesHash = null,
+            lastError = null,
+            catalogMode = "rest",
+            restMetadataLocation = n(ROOT) + "/metadata/00003-9b2d.metadata.json"
+        )
+        val Q = "unity.default.orders_daily"
+        val G = IcebergRestSession.guardFailure _
+        // Format flipped to parquet, unityCatalog removed, deleteBeforeWrite on.
+        val parquetDelete = G(committed, ROOT, false, true, false, Q)
+        assert(parquetDelete.exists(m => m.contains("deleteBeforeWrite cannot be used") && m.contains(Q)), s"$parquetDelete")
+        // Parquet without deleteBeforeWrite is the switch-back refusal.
+        val parquet = G(committed, ROOT, false, false, false, Q)
+        assert(parquet.exists(m => m.contains("not supported") && m.contains("have an admin drop " + Q)), s"$parquet")
+        // Iceberg with rest off: switch-back; rest on: no objection; rest on + delete: refused.
+        assert(G(committed, ROOT, true, false, false, Q).exists(_.contains("switching from catalogMode rest")))
+        assert(G(committed, ROOT, true, false, true, Q).isEmpty)
+        assert(G(committed, ROOT, true, true, true, Q).exists(_.contains("deleteBeforeWrite cannot be used")))
+        // Never committed, or committed at another prefix: no objection.
+        assert(G(null, ROOT, false, true, false, Q).isEmpty)
+        assert(G(committed, "s3a://datris-lake/orders_daily_v2", false, true, false, Q).isEmpty)
+    }
 }

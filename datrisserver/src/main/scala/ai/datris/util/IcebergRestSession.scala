@@ -101,17 +101,46 @@ object IcebergRestSession {
         previous != null && previous.catalogMode == "rest" && previous.restMetadataLocation != null &&
             IcebergCatalogRegistrar.classify(previous.restMetadataLocation, null, tableRoot) != IcebergCatalogRegistrar.Foreign
 
-    def switchBackMessage: String =
-        "switching from catalogMode rest back to register (or turning Unity Catalog off for this pipeline) is not supported: " +
-            "the table's current metadata is only known to the catalog; keep rest, or start a new prefix"
+    def switchBackMessage(qualified: String): String =
+        "switching from catalogMode rest back to register (or turning Unity Catalog off, or leaving Iceberg, for this pipeline) is not supported: " +
+            "the table's current metadata is only known to the catalog; keep rest, or start a new prefix and have an admin drop " + qualified +
+            " in Unity Catalog"
 
     def deleteBeforeWriteMessage(qualified: String): String =
         "deleteBeforeWrite cannot be used with catalogMode rest on a table the catalog holds; drop " + qualified +
             " in Unity Catalog (or use a new prefix) first"
 
-    private def committedMessage(previous: UnityCatalogSyncState, why: String): String =
+    private def committedMessage(previous: UnityCatalogSyncState, why: String, qualified: String): String =
         "this table is committed through Unity Catalog (last at " + IcebergCatalogRegistrar.normalize(previous.restMetadataLocation) + "); " +
-            why + "; a path-based write would fork its history. Fix the catalog connection, or point the pipeline at a new prefix"
+            why + "; a path-based write would fork its history. Fix the catalog connection, or point the pipeline at a new prefix " +
+            "and have an admin drop " + qualified + " in Unity Catalog"
+
+    /** `<catalog>.<schema>.<table>` for messages; placeholders when the
+      * unityCatalog block is gone. */
+    private[util] def qualifiedFor(config: ai.datris.model.PipelineConfig): String = {
+        val uc = config.unityCatalog
+        val cat = Option(uc).flatMap(u => Option(u.catalog)).map(_.trim).filter(_.nonEmpty).getOrElse("<catalog>")
+        val sch = Option(uc).map(_.schemaOrDefault).getOrElse("<schema>")
+        cat + "." + sch + "." + Option(config.name).map(IcebergCatalogRegistrar.tableName).getOrElse("<table>")
+    }
+
+    /** Run-failing guard, pure: a table committed through the catalog at
+      * `tableRoot` must not be deleted (deleteBeforeWrite) nor written by any
+      * path-based writer (rest not active, or a non-Iceberg format), whatever
+      * the rest of the config says. None = no objection. */
+    def guardFailure(
+        previous: UnityCatalogSyncState,
+        tableRoot: String,
+        iceberg: Boolean,
+        deleteBeforeWrite: Boolean,
+        restActive: Boolean,
+        qualified: String
+    ): Option[String] = {
+        val committed = restCommitted(previous, tableRoot)
+        if (committed && deleteBeforeWrite) Some(deleteBeforeWriteMessage(qualified))
+        else if (committed && (!iceberg || !restActive)) Some(switchBackMessage(qualified))
+        else None
+    }
 
     /** Raised inside `open` when the catalog holds the table and the run
       * would delete it first; rethrown by `prepare` as a run failure. */
@@ -126,27 +155,25 @@ object IcebergRestSession {
         val config = jobContext.config
         val statusUtil = jobContext.statusUtil
         val objectStore = if (config.destination != null) config.destination.objectStore else null
-        if (objectStore == null || objectStore.fileFormat == null || !objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")) return Inactive
+        if (objectStore == null) return Inactive
+        val iceberg = objectStore.fileFormat != null && objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")
+        // The loader calls this for every Iceberg write and every
+        // deleteBeforeWrite: the fork/delete guard holds even when the
+        // unityCatalog block was switched off or removed, or the format changed.
+        if (!iceberg && !deleteBeforeWrite) return Inactive
 
-        // Every object-store Iceberg pipeline: the fork guard must hold even
-        // when the unityCatalog block was switched off or removed.
         val previous = readState(config.name)
         val forkRisk = restCommitted(previous, outputPath)
         val uc = config.unityCatalog
         val restActive = uc != null && uc.enabled && uc.registerOn && uc.restMode
-        if (!restActive) {
-            if (forkRisk) throw new DatrisException(switchBackMessage)
-            return Inactive
-        }
-
-        val table = IcebergCatalogRegistrar.tableName(config.name)
-        val qualified = uc.catalog + "." + uc.schemaOrDefault + "." + table
-        if (deleteBeforeWrite && forkRisk) throw new DatrisException(deleteBeforeWriteMessage(qualified))
+        val qualified = qualifiedFor(config)
+        guardFailure(previous, outputPath, iceberg, deleteBeforeWrite, restActive, qualified).foreach(m => throw new DatrisException(m))
+        if (!iceberg || !restActive) return Inactive
         val base = Plan(active = true, target = None, refused = None, previous = previous, qualified = qualified, location = outputPath)
 
         if (!UnityCatalogMetadataSync.switchedOn) {
             if (forkRisk)
-                throw new DatrisException(committedMessage(previous, "Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false)"))
+                throw new DatrisException(committedMessage(previous, "Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false)", qualified))
             val msg = line("Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false); writing path-based")
             statusUtil.info("processing", msg)
             return base.copy(refused = Some(msg))
@@ -176,7 +203,7 @@ object IcebergRestSession {
             case Left(Fallback(reason)) =>
                 if (forkRisk) {
                     audit(config.name, line(reason))
-                    throw new DatrisException(committedMessage(previous, "the catalog is not usable this run (" + oneLine(reason) + ")"))
+                    throw new DatrisException(committedMessage(previous, "the catalog is not usable this run (" + oneLine(reason) + ")", qualified))
                 }
                 val msg = line(reason + "; falling back to the path-based write")
                 statusUtil.warn("processing", msg)
@@ -345,7 +372,14 @@ object IcebergRestSession {
                     base.copy(pipeline = config.name, catalogMode = "refused", restRefusedReason = plan.refused.orNull, lastError = keptErrors)
             }
             try UnityCatalogSyncIO.write(state)
-            catch { case NonFatal(e) => logger.warn("uc-rest state write failed for " + config.name + ": " + e.getMessage) }
+            catch {
+                case NonFatal(e) =>
+                    logger.warn("uc-rest state write failed for " + config.name + ": " + e.getMessage)
+                    Try(statusUtil.warn(
+                        "processing",
+                        line("could not record the catalog commit in the state doc: " + Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
+                    ))
+            }
         } catch {
             case NonFatal(e) => logger.warn("uc-rest record failed for " + config.name + ": " + e.getMessage)
         }

@@ -102,7 +102,7 @@ By default Datris writes the table by path and registers it once (`catalogMode: 
 }
 ```
 
-`catalogMode` accepts `register` or `rest` (any case) and applies to object store Iceberg pipelines only. The API returns `400` for any other value, for `catalogMode` on a Databricks destination, for `"register": false` together with `"rest"`, and for `deleteBeforeWrite` together with `"rest"` (deleting the files would leave the catalog pointing at a table that no longer exists; to start over, have an admin drop the Unity Catalog table, or use a new prefix). `rest` needs the same `credentialsSecret` and `catalog` as registration.
+`catalogMode` accepts `register` or `rest` (any case) and applies to object store Iceberg pipelines only. The API returns `400` for any other value, for `catalogMode` on a Databricks destination, for `"register": false` together with `"rest"`, and for `deleteBeforeWrite` together with `"rest"` (deleting the files would leave the catalog pointing at a table that no longer exists; to start over, have an admin drop the Unity Catalog table, or use a new prefix). `rest` needs the same `credentialsSecret` and `catalog` as registration. To convert an existing non-Iceberg pipeline (parquet, orc), take two steps: first switch `fileFormat` to `iceberg` with `deleteBeforeWrite` on and run it once, then remove `deleteBeforeWrite` and add `catalogMode: "rest"`.
 
 The first `rest` run looks at both the catalog and the table already at the pipeline's path:
 
@@ -119,10 +119,11 @@ There are two kinds of failure:
 - **Before the commit** (a wrong host, a missing grant, a network error while looking the table up): one warning, an audit entry, and the run writes by path as before. The pipeline page shows `refused` with the reason.
 - **During the commit** (the catalog rejects or loses the commit after data files are written): the write fails and so does the run, the same as any failed write.
 
-Once a table has been committed through the catalog, its current metadata is known only to the catalog: path-based readers and writers no longer see the latest version. From then on:
+Once a table has been committed through the catalog, its current metadata is known only to the catalog: path-based readers and writers no longer see the latest version. Starting over at a new prefix also needs an admin to drop the Unity Catalog table, because the table keeps the same name and a catalog entry pointing at the old prefix is refused. From then on:
 
-- If the catalog cannot be reached, or `DATRIS_UNITY_CATALOG_SYNC=false`, the run **fails** instead of writing by path, because a path write would split the table's history. Fix the catalog connection, or point the pipeline at a new prefix.
-- Switching `catalogMode` from `rest` back to `register` (or removing it, setting `"register": false` or `"enabled": false`, or removing the `unityCatalog` block) is not supported: the next run fails and says so. Keep `rest`, or start a new prefix.
+- If the catalog cannot be reached, or `DATRIS_UNITY_CATALOG_SYNC=false`, the run **fails** instead of writing by path, because a path write would split the table's history. Fix the catalog connection, or point the pipeline at a new prefix and have an admin drop the Unity Catalog table.
+- `deleteBeforeWrite` is refused, and so is changing `fileFormat` away from `iceberg`.
+- Switching `catalogMode` from `rest` back to `register` (or removing it, setting `"register": false` or `"enabled": false`, or removing the `unityCatalog` block) is not supported: the next run fails and says so. Keep `rest`, or start a new prefix and have an admin drop the Unity Catalog table.
 - If the pipeline's Unity Catalog state cannot be read (the config database is unavailable), the run fails rather than risk a path write.
 
 On a pipeline that has never committed through the catalog, `DATRIS_UNITY_CATALOG_SYNC=false` writes by path with one line saying the sync is off.
