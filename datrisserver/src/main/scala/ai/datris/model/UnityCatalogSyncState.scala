@@ -10,7 +10,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * statement group ("comments", "tags", "properties"); null means the group
   * has never succeeded (or failed last time), so the next run re-issues it.
   * `lastError` is null after a clean sync; lineage failures are lines
-  * prefixed `uc-lineage:`, register failures `uc-register:`. All timestamps are ISO-8601 UTC. */
+  * prefixed `uc-lineage:`, register failures `uc-register:`, REST catalog lines `uc-rest:`. All timestamps are ISO-8601 UTC. */
 case class UnityCatalogSyncState(
     pipeline: String,
     lastSyncAt: String,
@@ -34,5 +34,16 @@ case class UnityCatalogSyncState(
     // check); failures and the stale warning are `uc-register:` lines in
     // `lastError`.
     registeredMetadataLocation: String = null,
-    lastRegisterAt: String = null
+    lastRegisterAt: String = null,
+    // Iceberg via RESTCatalog (`unityCatalog.catalogMode: rest`,
+    // IcebergRestSession). Null on older docs ⇒ mode `register`.
+    // `catalogMode` is what the last run did: `register`, `rest` (the commit
+    // went through the catalog) or `refused` (the catalog path was refused or
+    // failed before the commit and the run wrote path-based; the reason is in
+    // `restRefusedReason`). `restMetadataLocation` / `lastRestCommitAt` are
+    // the metadata file and time of the last catalog commit.
+    catalogMode: String = null,
+    restMetadataLocation: String = null,
+    lastRestCommitAt: String = null,
+    restRefusedReason: String = null
 )

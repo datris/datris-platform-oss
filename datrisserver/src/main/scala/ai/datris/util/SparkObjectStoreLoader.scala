@@ -143,6 +143,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // the output path so two pipelines sharing a prefix serialise too.
         // Iceberg commits would otherwise race on metadata; parquet and ORC part
         // files would interleave.
+        var restPlan: IcebergRestSession.Plan = IcebergRestSession.Inactive
         val iceberg: Option[IcebergWriter.WriteResult] = SparkObjectStoreLoader.withPipelineWriteLock(outputPath) {
             // Delete existing data if requested. Route through the Hadoop FileSystem
             // (S3A) rather than the MinIO Java SDK, so it honors the per-bucket config
@@ -172,7 +173,22 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 // MERGE uses UPDATE SET * / INSERT *, so the source must carry
                 // exactly the dest schema's columns in its order.
                 val projected = df.select(sparkSchema.fieldNames.map(df.col): _*)
-                Some(IcebergWriter.write(projected, outputPath, writeModeName, partitions, keyFields, sparkSchema, statusUtil, config.name))
+                // catalogMode rest: commit through the Unity Catalog REST
+                // catalog. Inactive for every other pipeline (path write). Throws
+                // only when a path write would fork a catalog-committed table.
+                restPlan = IcebergRestSession.prepare(jobContext, outputPath, objectStore.deleteBeforeWrite)
+                try Some(IcebergWriter.write(
+                        projected,
+                        outputPath,
+                        writeModeName,
+                        partitions,
+                        keyFields,
+                        sparkSchema,
+                        statusUtil,
+                        config.name,
+                        restPlan.target
+                    ))
+                finally restPlan.close()
             } else {
                 val writeMode = writeModeName match {
                     case "overwrite" => SaveMode.Overwrite
@@ -203,9 +219,15 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         val snapshotId: Option[Long] = iceberg.map(_.snapshotId).filter(_ >= 0L)
         sendNotification(outputPath, snapshotId)
         // Unity Catalog registration (opt-in) runs before the `end` line:
-        // nothing may follow it. A no-op unless the pipeline opted in; never throws.
-        if (config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.registerOn && fileFormat == "iceberg")
+        // nothing may follow it. A no-op unless the pipeline opted in; never
+        // throws. In catalogMode rest the commit already went through the
+        // catalog, so the register hook is skipped and the REST state recorded.
+        if (
+            config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.registerOn && fileFormat == "iceberg" &&
+            !config.unityCatalog.restMode
+        )
             iceberg.filter(_.snapshotId >= 0L).foreach(r => IcebergCatalogRegistrar.sync(jobContext, r))
+        IcebergRestSession.record(jobContext, iceberg, restPlan)
         iceberg match {
             case Some(r) if r.snapshotId >= 0L =>
                 statusUtil.info(

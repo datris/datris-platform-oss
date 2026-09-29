@@ -92,10 +92,15 @@
     </div>
     <div class="lineage-row" *ngIf="unityCatalog.registerEnabled">
       <span class="lineage-label">Registered</span>
-      <span class="lineage-detail" *ngIf="unityCatalog.lastRegisterAt">registered in Unity Catalog at {{ unityCatalog.lastRegisterAt }}</span>
-      <span class="lineage-detail" *ngIf="!unityCatalog.lastRegisterAt">not registered yet</span>
+      <span class="fresh-chip fresh" *ngIf="unityCatalog.catalogMode === 'rest'">rest</span>
+      <span class="lineage-detail" *ngIf="unityCatalog.register === 'rest' && unityCatalog.lastRestCommitAt">kept current at {{ unityCatalog.lastRestCommitAt }}</span>
+      <ng-container *ngIf="unityCatalog.register !== 'rest'">
+        <span class="lineage-detail" *ngIf="unityCatalog.lastRegisterAt">registered in Unity Catalog at {{ unityCatalog.lastRegisterAt }}</span>
+        <span class="lineage-detail" *ngIf="!unityCatalog.lastRegisterAt">not registered yet</span>
+      </ng-container>
       <span class="fresh-chip stale" *ngIf="unityCatalog.register === 'stale'">stale</span>
       <span class="fresh-chip stale" *ngIf="unityCatalog.register === 'error'">error</span>
+      <span class="fresh-chip stale" *ngIf="unityCatalog.register === 'refused'" [title]="unityCatalog.restRefusedReason || ''">refused</span>
     </div>
     <div class="lineage-row">
       <span class="lineage-label">Lineage</span>

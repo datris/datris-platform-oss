@@ -19,8 +19,9 @@ export class PipelineService {
   /** Unity Catalog sync state (Databricks and object-store Iceberg pipelines that opted in):
    *  { enabled, coordinates, state: 'never' | 'synced' | 'error', lastSyncAt, lastRunId, lastError,
    *    lineage: 'off' | 'never' | 'published' | 'error', lineageEnabled, lineageHash, lastLineageAt,
-   *    register: 'off' | 'never' | 'registered' | 'stale' | 'error', registerEnabled,
-   *    registeredMetadataLocation, lastRegisterAt }. */
+   *    register: 'off' | 'never' | 'registered' | 'stale' | 'error' | 'rest' | 'refused', registerEnabled,
+   *    registeredMetadataLocation, lastRegisterAt, catalogMode: 'register' | 'rest',
+   *    restMetadataLocation, lastRestCommitAt, restRefusedReason }. */
   getUnityCatalog(name: string): Observable<any> {
     return this.http.get<any>('/api/v1/pipelines/' + encodeURIComponent(name) + '/unity-catalog');
   }

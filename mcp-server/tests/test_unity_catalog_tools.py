@@ -187,3 +187,47 @@ def test_databricks_unity_catalog_still_posts_enabled_only_even_with_register_ar
         captured, unity_catalog=True, unity_catalog_secret="uc_fixture", unity_catalog_catalog="unity"
     )
     assert posted.get("unityCatalog") == {"enabled": True}, posted
+
+
+# ======================================================================
+# Story: Unity Catalog 5: Iceberg via RESTCatalog (`catalogMode: rest`)
+# (plans/stories/unity-catalog-5-iceberg-restcatalog.md), Acceptance bullet 5.
+# create_pipeline gains an optional string arg unity_catalog_mode
+# (enum register|rest); objectstore posts it as unityCatalog.catalogMode,
+# Databricks ignores it.
+# ======================================================================
+
+def test_create_pipeline_schema_lists_optional_unity_catalog_mode():
+    tool = _tool("create_pipeline")
+    props = _props(tool)
+    assert "unity_catalog_mode" in props, sorted(props)
+    arg = props["unity_catalog_mode"]
+    assert arg["type"] == "string", arg
+    assert sorted(arg.get("enum", [])) == ["register", "rest"], arg
+    assert "unity_catalog_mode" not in tool.inputSchema.get("required", [])
+
+
+def test_objectstore_unity_catalog_mode_rest_posts_catalog_mode(captured):
+    posted = _create_objectstore(
+        captured,
+        unity_catalog=True,
+        unity_catalog_secret="uc_fixture",
+        unity_catalog_catalog="unity",
+        unity_catalog_mode="rest",
+    )
+    uc = posted.get("unityCatalog")
+    assert uc is not None, posted
+    assert uc.get("catalogMode") == "rest", uc
+    assert uc["enabled"] is True and uc["credentialsSecret"] == "uc_fixture" and uc["catalog"] == "unity", uc
+
+
+def test_objectstore_without_unity_catalog_mode_posts_no_catalog_mode(captured):
+    posted = _create_objectstore(
+        captured, unity_catalog=True, unity_catalog_secret="uc_fixture", unity_catalog_catalog="unity"
+    )
+    assert "catalogMode" not in posted["unityCatalog"], posted
+
+
+def test_databricks_ignores_unity_catalog_mode(captured):
+    posted = _create_databricks(captured, unity_catalog=True, unity_catalog_mode="rest")
+    assert posted.get("unityCatalog") == {"enabled": True}, posted

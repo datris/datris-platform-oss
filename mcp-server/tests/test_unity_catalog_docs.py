@@ -215,3 +215,64 @@ def test_openapi_create_pipeline_request_lists_unity_catalog_block():
     for field in ("enabled", "credentialsSecret", "catalog", "schema", "register", "lineage"):
         assert field in fields, f"unityCatalog.{field} missing from the create-pipeline request schema: {sorted(fields)}"
     assert fields["schema"].get("default") == "default", fields["schema"]
+
+
+# ======================================================================
+# Story: Unity Catalog 5: Iceberg via RESTCatalog (`catalogMode: rest`)
+# (plans/stories/unity-catalog-5-iceberg-restcatalog.md), Acceptance bullet 5.
+# ======================================================================
+
+def _unity_catalog_state_block(text):
+    start = text.index("/api/v1/pipelines/{name}/unity-catalog:")
+    nxt = re.search(r"\n  /api/", text[start + 1:])
+    return text[start: start + 1 + nxt.start()] if nxt else text[start:]
+
+
+def test_unity_catalog_page_has_keep_the_catalog_current_section():
+    text = _read(UNITY_CATALOG_MDX)
+    assert "catalogMode" in text
+    headings = [l.strip() for l in text.splitlines() if l.startswith("#")]
+    body = _section(text, r"^Keep the catalog current")
+    assert body is not None, headings
+    assert "catalogMode" in body and "rest" in body, body
+    # Placed after "How runs behave".
+    keep = next(i for i, h in enumerate(headings) if re.match(r"^#+\s+Keep the catalog current", h))
+    runs = next(i for i, h in enumerate(headings) if re.match(r"^#+\s+How runs behave$", h))
+    assert keep > runs, headings
+
+
+def test_unity_catalog_page_no_longer_says_in_a_later_release():
+    text = _read(UNITY_CATALOG_MDX)
+    assert "in a later release" not in text
+
+
+def test_openapi_unity_catalog_sync_has_catalog_mode_enum():
+    import yaml
+
+    spec = yaml.safe_load(_read(OPENAPI_YAML))
+    fields = spec["components"]["schemas"]["UnityCatalogSync"]["properties"]
+    assert "catalogMode" in fields, sorted(fields)
+    assert fields["catalogMode"].get("type") == "string", fields["catalogMode"]
+    assert fields["catalogMode"].get("enum") == ["register", "rest"], fields["catalogMode"]
+
+
+def test_openapi_unity_catalog_state_lists_catalog_mode_and_rest_fields():
+    import yaml
+
+    spec = yaml.safe_load(_read(OPENAPI_YAML))
+    get = spec["paths"]["/api/v1/pipelines/{name}/unity-catalog"]["get"]
+    schema = get["responses"]["200"]["content"]["application/json"]["schema"]
+    props = schema.get("properties", {})
+    for field in ("catalogMode", "restMetadataLocation", "lastRestCommitAt", "restRefusedReason"):
+        assert field in props, f"{field} must be in the /pipelines/{{name}}/unity-catalog schema: {sorted(props)}"
+    register_enum = props["register"].get("enum", [])
+    assert "rest" in register_enum and "refused" in register_enum, register_enum
+    # Story-4 values are kept.
+    for old in ("off", "never", "registered", "stale", "error"):
+        assert old in register_enum, register_enum
+
+
+def test_pipeline_config_reference_mentions_catalog_mode():
+    ref = server.PIPELINE_CONFIG_REFERENCE
+    assert "catalogMode" in ref
+    assert "keeping it current is not done yet" not in ref

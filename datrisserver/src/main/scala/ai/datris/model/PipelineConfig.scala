@@ -61,9 +61,13 @@ case class UnityCatalogSync @JsonCreator() (
     @JsonProperty("catalog") catalog: String = null,
     // Absent ⇒ null (Jackson/Gson skip Scala defaults); read via schemaOrDefault.
     @JsonProperty("schema") schema: String = null,
-    @JsonProperty("register") register: java.lang.Boolean = null
+    @JsonProperty("register") register: java.lang.Boolean = null,
+    // Object-store Iceberg only: `register` (null/absent: register after each
+    // commit, story 4) or `rest` (every commit goes through the Iceberg REST
+    // catalog, IcebergRestSession). Read via catalogModeOrDefault / restMode.
+    @JsonProperty("catalogMode") catalogMode: String = null
 ) {
-    def this() = this(false, null, null, null, null, null, null, null, null)
+    def this() = this(false, null, null, null, null, null, null, null, null, null)
 
     def commentsOn: Boolean = UnityCatalogSync.on(comments)
     def tagsOn: Boolean = UnityCatalogSync.on(tags)
@@ -71,6 +75,8 @@ case class UnityCatalogSync @JsonCreator() (
     def lineageOn: Boolean = UnityCatalogSync.on(lineage)
     def registerOn: Boolean = UnityCatalogSync.on(register)
     def schemaOrDefault: String = Option(schema).map(_.trim).filter(_.nonEmpty).getOrElse("default")
+    def catalogModeOrDefault: String = Option(catalogMode).map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("register")
+    def restMode: Boolean = catalogModeOrDefault == "rest"
 }
 
 object UnityCatalogSync {

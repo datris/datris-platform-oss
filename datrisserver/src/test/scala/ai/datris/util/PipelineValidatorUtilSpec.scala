@@ -670,4 +670,100 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val none = new ai.datris.model.UnityCatalogSync()
         assert(none.registerOn && none.schemaOrDefault == "default" && none.catalog == null && none.credentialsSecret == null, s"no-arg: $none")
     }
+
+    // --- Story: Unity Catalog 5: Iceberg via RESTCatalog -----------------------
+    // (plans/stories/unity-catalog-5-iceberg-restcatalog.md), Step 2 / Acceptance
+    // bullet 4. `unityCatalog.catalogMode` is a nullable String: null ⇒ register
+    // (story-4 behaviour), `register` or `rest` case-insensitively, anything
+    // else rejected; Databricks rejects any non-null value; `rest` needs the
+    // register knob on. Accepted s3 configs reach the s3 bucket sentinel.
+
+    private val ucModeRegister = """"enabled":true,"credentialsSecret":"uc_fixture","catalog":"unity","schema":"default""""
+    private def ucMode(mode: String, extra: String = ""): String = s"""{$ucModeRegister,"catalogMode":"$mode"$extra}"""
+    private val icebergS3 = """"fileFormat":"iceberg","provider":"s3""""
+
+    private def passesUcRule(cfg: PipelineConfig): Unit = {
+        val err = validationError(cfg)
+        assert(err.isDefined && err.get.contains(s3BucketSentinel), s"expected the s3 bucket sentinel (UC rule passed), got: $err")
+        assert(!err.get.contains("unityCatalog"), err.get)
+    }
+
+    test("catalogMode absent (null) on an objectStore iceberg destination is accepted") {
+        val cfg = ucObjectStore(icebergS3, ucRegister)
+        assert(cfg.unityCatalog.catalogMode == null, s"absent catalogMode must parse as null: ${cfg.unityCatalog}")
+        assert(cfg.unityCatalog.catalogModeOrDefault == "register" && !cfg.unityCatalog.restMode, s"${cfg.unityCatalog}")
+        passesUcRule(cfg)
+    }
+
+    test("catalogMode register on an objectStore iceberg destination is accepted") {
+        val cfg = ucObjectStore(icebergS3, ucMode("register"))
+        assert(cfg.unityCatalog.catalogMode == "register", s"fixture must parse catalogMode: ${cfg.unityCatalog}")
+        passesUcRule(cfg)
+        passesUcRule(ucObjectStore(icebergS3, ucMode("Register")))
+    }
+
+    test("catalogMode rest with credentialsSecret and catalog is accepted; without them it is rejected") {
+        val cfg = ucObjectStore(icebergS3, ucMode("rest"))
+        assert(cfg.unityCatalog.restMode, s"${cfg.unityCatalog}")
+        passesUcRule(cfg)
+        passesUcRule(ucObjectStore(icebergS3, ucMode("REST")))
+
+        val noCatalog = validationError(ucObjectStore(icebergS3, """{"enabled":true,"credentialsSecret":"uc_fixture","catalogMode":"rest"}"""))
+        assert(noCatalog.exists(_.contains("'unityCatalog.catalog'")), s"got: $noCatalog")
+        val noSecret = validationError(ucObjectStore(icebergS3, """{"enabled":true,"catalog":"unity","catalogMode":"rest"}"""))
+        assert(noSecret.exists(_.contains("'unityCatalog.credentialsSecret'")), s"got: $noSecret")
+    }
+
+    test("catalogMode bogus is rejected with the register-or-rest message") {
+        val cfg = ucObjectStore(icebergS3, ucMode("bogus"))
+        assert(cfg.unityCatalog.catalogMode == "bogus", s"${cfg.unityCatalog}")
+        val err = validationError(cfg)
+        assert(err.exists(_.contains("'unityCatalog.catalogMode' must be 'register' or 'rest'")), s"got: $err")
+    }
+
+    test("catalogMode rest with register:false is rejected") {
+        val err = validationError(ucObjectStore(icebergS3, ucMode("rest", extra = ""","register":false""")))
+        assert(err.exists(_.contains("'unityCatalog.catalogMode: rest' requires the register knob on")), s"got: $err")
+        // register:false without rest is still fine (story 4).
+        passesUcRule(ucObjectStore(icebergS3, s"""{$ucModeRegister,"register":false}"""))
+    }
+
+    test("Databricks destination with any catalogMode is rejected") {
+        Seq("rest", "register", "REST").foreach { mode =>
+            val cfg = ucConfig(databricksDb, unityCatalog = s"""{"enabled":true,"catalogMode":"$mode"}""")
+            assert(cfg.unityCatalog.catalogMode == mode, s"${cfg.unityCatalog}")
+            val err = validationError(cfg)
+            assert(err.exists(_.contains("'unityCatalog.catalogMode' applies to object-store Iceberg destinations only")), s"$mode: got $err")
+        }
+        // An invalid value on Databricks is rejected by either rule.
+        val bogus = validationError(ucConfig(databricksDb, unityCatalog = """{"enabled":true,"catalogMode":"bogus"}"""))
+        assert(bogus.exists(m => m.contains("'unityCatalog.catalogMode'")), s"bogus: got $bogus")
+        // Without catalogMode Databricks still validates.
+        assert(validationError(ucConfig(databricksDb)).isEmpty)
+    }
+
+    test("catalogMode defaults to register under Jackson (ParameterNamesModule) and Gson; REST reads as rest") {
+        val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+            .registerModule(new com.fasterxml.jackson.module.paramnames.ParameterNamesModule())
+            .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        val j = mapper.readValue("""{"enabled":true,"credentialsSecret":"uc_fixture","catalog":"unity"}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(j.catalogMode == null && j.catalogModeOrDefault == "register" && !j.restMode, s"Jackson absent catalogMode: $j")
+        assert(j.registerOn && j.catalog == "unity", s"$j")
+        val jr = mapper.readValue("""{"enabled":true,"catalogMode":"REST"}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(jr.catalogModeOrDefault == "rest" && jr.restMode, s"Jackson REST: $jr")
+        val js = mapper.readValue("""{"enabled":true,"catalogMode":"  Register "}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(js.catalogModeOrDefault == "register" && !js.restMode, s"Jackson padded Register: $js")
+        val blank = mapper.readValue("""{"enabled":true,"catalogMode":"  "}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(blank.catalogModeOrDefault == "register", s"blank catalogMode: $blank")
+        val cfg = mapper.readValue(s"""{"name":"p","unityCatalog":${ucMode("rest")}}""", classOf[PipelineConfig])
+        assert(cfg.unityCatalog.restMode && cfg.unityCatalog.registerOn && cfg.unityCatalog.catalog == "unity", s"$cfg")
+
+        val g = gson.fromJson("""{"enabled":true,"credentialsSecret":"uc_fixture","catalog":"unity"}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(g.catalogMode == null && g.catalogModeOrDefault == "register" && !g.restMode, s"Gson absent catalogMode: $g")
+        val gr = gson.fromJson("""{"enabled":true,"catalogMode":"REST"}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(gr.restMode, s"Gson REST: $gr")
+        assert(gson.fromJson(gson.toJson(gr), classOf[ai.datris.model.UnityCatalogSync]).restMode, "round trip keeps catalogMode")
+        val none = new ai.datris.model.UnityCatalogSync()
+        assert(none.catalogMode == null && none.catalogModeOrDefault == "register" && !none.restMode && none.registerOn, s"no-arg: $none")
+    }
 }

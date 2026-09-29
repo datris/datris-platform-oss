@@ -6,8 +6,9 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.model.DatrisException
-import org.apache.iceberg.hadoop.HadoopTables
-import org.apache.iceberg.{Snapshot, Table, TableUtil}
+import org.apache.iceberg.catalog.{Catalog, TableIdentifier}
+import org.apache.iceberg.hadoop.{HadoopCatalog, HadoopTables}
+import org.apache.iceberg.{HasTableOperations, Schema, Snapshot, Table, TableUtil}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.scalatest.BeforeAndAfterAll
@@ -20,7 +21,10 @@ import scala.collection.mutable.ListBuffer
 /** Go/no-go gate for the Iceberg destination: proves the embedded Spark 3.5 /
   *  Scala 2.12 session can create, append to, overwrite, MERGE INTO and evolve
   *  an Iceberg table addressed purely by path (no catalog registration), on the
-  *  pinned iceberg-spark-runtime jar.
+  *  pinned iceberg-spark-runtime jar. The "rest target" cases at the end
+  *  (Unity Catalog 5, `catalogMode: rest`) cover the one exception: with a
+  *  `RestTarget` every commit goes through a catalog identifier, exercised
+  *  against a path-backed HadoopCatalog stand-in instead of a REST server.
   *
   *  Expected API surface (plans/stories/iceberg-runtime-and-writer-spec.md, step 4):
   *
@@ -78,6 +82,29 @@ import scala.collection.mutable.ListBuffer
   *  Docker runtime are Temurin 17; on a newer dev JDK point sbt at a 17/21 JDK:
   *    JAVA_HOME=/path/to/jdk-17 sbt "testOnly ai.datris.util.IcebergWriterSpec"
   */
+/** Path-backed stand-in for the Unity Catalog REST catalog (Unity Catalog 5,
+  *  Step 5): a HadoopCatalog that records, per catalog name, every table it
+  *  loads and every table builder it hands out. Spark instantiates it through
+  *  `spark.sql.catalog.<name>.catalog-impl` (so `writeTo` / `MERGE INTO`
+  *  against `<name>.<schema>.<table>` show up as loads under `<name>`), and the
+  *  spec instantiates a second one directly as `RestTarget.catalog`. */
+class RecordingHadoopCatalog extends HadoopCatalog {
+    override def loadTable(ident: TableIdentifier): Table = {
+        RecordingHadoopCatalog.loads.add(name() + ":" + ident)
+        super.loadTable(ident)
+    }
+    override def buildTable(ident: TableIdentifier, schema: Schema): Catalog.TableBuilder = {
+        RecordingHadoopCatalog.builds.add(name() + ":" + ident)
+        super.buildTable(ident, schema)
+    }
+}
+
+object RecordingHadoopCatalog {
+    val loads = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+    val builds = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+    def clear(): Unit = { loads.clear(); builds.clear() }
+}
+
 class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
 
     private var warehouse: Path = _
@@ -630,5 +657,137 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         write(df((2L, "west", 2.0)), location, "append")
         val result = ObjectStoreQueryUtil.readPath(spark, location, "iceberg", 100)
         assert(result.rows.size() == 2)
+    }
+
+    // ---- Story: Unity Catalog 5: Iceberg via RESTCatalog --------------------
+    // (plans/stories/unity-catalog-5-iceberg-restcatalog.md), Acceptance bullet 3.
+    //
+    // Seam this block pins:
+    //   IcebergWriter.RestTarget(sparkCatalogName: String, ident: TableIdentifier,
+    //                            catalog: org.apache.iceberg.catalog.Catalog)
+    //   IcebergWriter.write(df, location, writeMode, partitionBy, keyFields, destSchema,
+    //                       statusUtil, pipelineName, restCatalog: Option[RestTarget]): WriteResult
+    //
+    // The stand-in: a Spark catalog `catalog-impl=RecordingHadoopCatalog` over
+    // a temp warehouse (so Spark SQL resolves `<name>.<schema>.<table>`), and a
+    // second RecordingHadoopCatalog instance over the same warehouse as
+    // RestTarget.catalog. HadoopCatalog only accepts its default location
+    // (<warehouse>/<schema>/<table>), so that is the location the writer is
+    // given. Loads recorded under the Spark catalog's name prove append and
+    // MERGE addressed the identifier; a path write (format("iceberg").save)
+    // resolves through default_iceberg and would not appear there.
+
+    private val RestSparkCatalog = "datris_uc_writer_spec"
+    private val RestJavaCatalog = "java_side"
+    private val RestSchema = "sales"
+
+    private lazy val restWarehouse: String = {
+        val dir = Files.createDirectories(warehouse.resolve("rest-warehouse")).toRealPath()
+        val uri = dir.toUri.toString.stripSuffix("/")
+        val root = "spark.sql.catalog." + RestSparkCatalog
+        spark.conf.set(root, "org.apache.iceberg.spark.SparkCatalog")
+        spark.conf.set(root + ".catalog-impl", classOf[RecordingHadoopCatalog].getName)
+        spark.conf.set(root + ".warehouse", uri)
+        spark.conf.set(root + ".cache-enabled", "false")
+        uri
+    }
+
+    private def javaCatalog(): RecordingHadoopCatalog = {
+        val c = new RecordingHadoopCatalog
+        c.setConf(spark.sessionState.newHadoopConf())
+        c.initialize(RestJavaCatalog, Map("warehouse" -> restWarehouse).asJava)
+        c
+    }
+
+    private def restIdent(table: String): TableIdentifier = TableIdentifier.of(RestSchema, table)
+    private def restLocation(table: String): String = restWarehouse + "/" + RestSchema + "/" + table
+    private def restSql(table: String): String = s"`$RestSparkCatalog`.`$RestSchema`.`$table`"
+
+    private def restWrite(
+        data: DataFrame,
+        table: String,
+        catalog: Catalog,
+        writeMode: String,
+        keyFields: Seq[String] = Nil,
+        pipelineName: String = null,
+        status: StatusUtil = new RecordingStatusUtil
+    ): IcebergWriter.WriteResult =
+        IcebergWriter.write(
+            data,
+            restLocation(table),
+            writeMode,
+            Nil,
+            keyFields,
+            baseSchema,
+            status,
+            pipelineName,
+            Some(IcebergWriter.RestTarget(sparkCatalogName = RestSparkCatalog, ident = restIdent(table), catalog = catalog))
+        )
+
+    private def currentMetadata(catalog: Catalog, table: String): String =
+        catalog.loadTable(restIdent(table)).asInstanceOf[HasTableOperations].operations().current().metadataFileLocation()
+
+    test("rest target: create through the catalog lands metadata under the requested location") {
+        val table = "rest_create"
+        val catalog = javaCatalog()
+        RecordingHadoopCatalog.clear()
+        assert(!catalog.tableExists(restIdent(table)))
+
+        val result = restWrite(df((1L, "east", 1.0), (2L, "west", 2.0)), table, catalog, "append", pipelineName = "Rest Create")
+
+        assert(
+            RecordingHadoopCatalog.builds.asScala.exists(_ == s"$RestJavaCatalog:$RestSchema.$table"),
+            s"the table must be created through RestTarget.catalog: builds=${RecordingHadoopCatalog.builds}"
+        )
+        assert(catalog.tableExists(restIdent(table)), "the catalog must know the table after the first write")
+        val loaded = catalog.loadTable(restIdent(table))
+        val want = new java.io.File(java.net.URI.create(restLocation(table))).getCanonicalPath
+        val have = new java.io.File(java.net.URI.create(loaded.location().replaceFirst("^file:/+", "file:///"))).getCanonicalPath
+        assert(have == want, s"table location ${loaded.location()} vs requested ${restLocation(table)}")
+        assert(loaded.properties().get(IcebergWriter.PipelineProperty) == "Rest Create", loaded.properties())
+        assert(TableUtil.formatVersion(loaded) == 2)
+        assert(loaded.properties().get("write.format.default") == "parquet")
+
+        assert(result.metadataLocation != null, s"$result")
+        val meta = new java.io.File(java.net.URI.create(result.metadataLocation.replaceFirst("^file:/+", "file:///")))
+        assert(meta.isFile, result.metadataLocation)
+        assert(meta.getCanonicalPath.startsWith(want + java.io.File.separator + "metadata" + java.io.File.separator), s"${meta.getCanonicalPath} vs $want")
+        assert(result.metadataLocation == currentMetadata(catalog, table), s"${result.metadataLocation} vs catalog")
+        assert(result.addedRecords == 2 && result.totalRecords == 2, s"$result")
+        assert(spark.table(restSql(table)).count() == 2)
+    }
+
+    test("rest target: append and MERGE commit through the catalog identifier and resultOf advances") {
+        val table = "rest_merge"
+        val catalog = javaCatalog()
+        val first = restWrite(df((1L, "east", 1.0), (2L, "west", 2.0)), table, catalog, "append")
+
+        RecordingHadoopCatalog.clear()
+        val second = restWrite(df((3L, "north", 3.0)), table, catalog, "append")
+        val sparkLoads = RecordingHadoopCatalog.loads.asScala.toList
+        assert(
+            sparkLoads.contains(s"$RestSparkCatalog:$RestSchema.$table"),
+            s"append must go through writeTo(<catalog>.<schema>.<table>), not a path save: loads=$sparkLoads"
+        )
+        assert(second.metadataLocation != null && second.metadataLocation != first.metadataLocation, s"$first vs $second")
+        assert(second.metadataLocation == currentMetadata(catalog, table), s"${second.metadataLocation} vs catalog")
+        assert(second.snapshotId != first.snapshotId && second.totalRecords == 3, s"$second")
+
+        RecordingHadoopCatalog.clear()
+        val status = new RecordingStatusUtil
+        val third = restWrite(df((1L, "east", 10.0), (4L, "south", 4.0)), table, catalog, "merge", keyFields = Seq("id"), status = status)
+        val mergeLoads = RecordingHadoopCatalog.loads.asScala.toList
+        assert(
+            mergeLoads.contains(s"$RestSparkCatalog:$RestSchema.$table"),
+            s"MERGE must target the catalog identifier, not the datris_cache table: loads=$mergeLoads"
+        )
+        assert(status.messages.exists(_._2.toLowerCase.contains("merge")), status.messages.mkString("\n"))
+        assert(third.metadataLocation != second.metadataLocation, s"$second vs $third")
+        assert(third.metadataLocation == currentMetadata(catalog, table), s"${third.metadataLocation} vs catalog")
+        assert(third.snapshotId == catalog.loadTable(restIdent(table)).currentSnapshot().snapshotId(), s"$third")
+
+        val rows = spark.table(restSql(table)).collect().map(r => r.getLong(0) -> r.getDouble(2)).toMap
+        assert(rows == Map(1L -> 10.0, 2L -> 2.0, 3L -> 3.0, 4L -> 4.0), s"$rows")
+        assert(third.totalRecords == 4, s"$third")
     }
 }

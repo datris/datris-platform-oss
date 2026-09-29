@@ -65,12 +65,24 @@ object PipelineValidatorUtil {
       * (the table is registered in Unity Catalog, which needs the secret and
       * the UC catalog). Any object-store provider is accepted: registering
       * only records a location. `enabled:false` is accepted anywhere (a
-      * harmless leftover). */
+      * harmless leftover). `catalogMode` (object-store Iceberg only) is
+      * `register` or `rest`; `rest` needs the register knob on and the same
+      * secret + catalog. */
     private def validateUnityCatalog(config: PipelineConfig): Unit = {
         val uc = config.unityCatalog
         if (uc == null || !uc.enabled) return
         val databricks = config.destination != null && config.destination.database != null &&
             config.destination.database.useDatabricks
+        // catalogMode first: Databricks returns early below.
+        if (uc.catalogMode != null) {
+            if (databricks)
+                throw new DatrisException("'unityCatalog.catalogMode' applies to object-store Iceberg destinations only")
+            val mode = uc.catalogModeOrDefault
+            if (mode != "register" && mode != "rest")
+                throw new DatrisException("'unityCatalog.catalogMode' must be 'register' or 'rest'")
+            if (mode == "rest" && !uc.registerOn)
+                throw new DatrisException("'unityCatalog.catalogMode: rest' requires the register knob on")
+        }
         if (databricks) return
         val objectStore = if (config.destination != null) config.destination.objectStore else null
         if (objectStore != null) {

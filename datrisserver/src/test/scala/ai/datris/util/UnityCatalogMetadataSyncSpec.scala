@@ -453,4 +453,34 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
         // A pre-story-4 doc stays null: "never registered".
         assert(synced.registeredMetadataLocation == null && synced.lastRegisterAt == null, s"$synced")
     }
+
+    // Story: Unity Catalog 5: Iceberg via RESTCatalog (plans/stories/unity-catalog-5-iceberg-restcatalog.md),
+    // Acceptance bullet 4. The REST session shares this state doc; execute must not wipe its fields.
+    test("execute keeps catalogMode, restMetadataLocation, lastRestCommitAt, restRefusedReason") {
+        val loc = "s3a://datris-lake/orders_daily/metadata/00003-9b2d4e.metadata.json"
+        val synced = runSync(new FakeWarehouse(), render(), previous = null, status = new RecordingStatusUtil)
+        val prevState = synced.copy(
+            catalogMode = "rest",
+            restMetadataLocation = loc,
+            lastRestCommitAt = "2026-09-29T10:00:03Z",
+            restRefusedReason = "uc-rest: earlier refusal"
+        )
+        def kept(st: UnityCatalogSyncState): Boolean =
+            st.catalogMode == "rest" && st.restMetadataLocation == loc && st.lastRestCommitAt == "2026-09-29T10:00:03Z" &&
+                st.restRefusedReason == "uc-rest: earlier refusal"
+
+        val next =
+            runSync(new FakeWarehouse(), render(runId = "run-token-0002"), previous = prevState, status = new RecordingStatusUtil, runId = "run-token-0002")
+        assert(kept(next), s"$next")
+
+        val failing =
+            runSync(new FakeWarehouse(failWhen = _.contains("SET TAGS")), render(), previous = prevState, status = new RecordingStatusUtil, tableCreated = true)
+        assert(kept(failing), s"$failing")
+
+        // A pre-story-5 doc stays null: mode reads as register.
+        assert(
+            synced.catalogMode == null && synced.restMetadataLocation == null && synced.lastRestCommitAt == null && synced.restRefusedReason == null,
+            s"$synced"
+        )
+    }
 }

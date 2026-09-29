@@ -198,21 +198,28 @@ object UnityCatalogMetadataSync {
         }
 
         val errs = errors.result()
-        UnityCatalogSyncState(
+        // The lineage publisher, the Iceberg registrar and the REST session
+        // share this doc; start from `previous` so every field they own
+        // (lineage, register, catalogMode/rest*) carries over untouched.
+        val base =
+            if (previous != null) previous
+            else UnityCatalogSyncState(
+                pipeline = pipeline,
+                lastSyncAt = null,
+                lastRunId = null,
+                commentsHash = null,
+                tagsHash = null,
+                propertiesHash = null,
+                lastError = null
+            )
+        base.copy(
             pipeline = pipeline,
             lastSyncAt = Instant.now().toString,
             lastRunId = runId,
             commentsHash = hashes.get(Comments).orNull,
             tagsHash = hashes.get(Tags).orNull,
             propertiesHash = hashes.get(Properties).orNull,
-            lastError = if (errs.isEmpty) null else errs.mkString("\n"),
-            // The lineage publisher shares this doc and runs after us; carry
-            // its fields over so the metadata sync never wipes them.
-            lineageHash = if (previous != null) previous.lineageHash else null,
-            lastLineageAt = if (previous != null) previous.lastLineageAt else null,
-            lineageRelationshipIds = if (previous != null) previous.lineageRelationshipIds else null,
-            registeredMetadataLocation = if (previous != null) previous.registeredMetadataLocation else null,
-            lastRegisterAt = if (previous != null) previous.lastRegisterAt else null
+            lastError = if (errs.isEmpty) null else errs.mkString("\n")
         )
     }
 

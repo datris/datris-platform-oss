@@ -381,6 +381,43 @@ class IcebergCatalogRegistrarSpec extends AnyFunSuite {
         assert(st.registeredMetadataLocation == OURS, s"$st")
     }
 
+    // Story: Unity Catalog 5: Iceberg via RESTCatalog (plans/stories/unity-catalog-5-iceberg-restcatalog.md),
+    // Acceptance bullet 4. register shares the state doc with the REST session; every outcome keeps its fields.
+    test("register keeps catalogMode, restMetadataLocation, lastRestCommitAt, restRefusedReason") {
+        val restLoc = ROOT + "/metadata/00003-9b2d4e.metadata.json"
+        val prev = UnityCatalogSyncState(
+            pipeline = TABLE,
+            lastSyncAt = null,
+            lastRunId = null,
+            commentsHash = null,
+            tagsHash = null,
+            propertiesHash = null,
+            lastError = null,
+            catalogMode = "refused",
+            restMetadataLocation = restLoc,
+            lastRestCommitAt = "2026-09-29T10:00:03Z",
+            restRefusedReason = "uc-rest: Unity Catalog points outside this pipeline's table"
+        )
+        def kept(st: UnityCatalogSyncState): Boolean =
+            st != null && st.catalogMode == "refused" && st.restMetadataLocation == restLoc &&
+                st.lastRestCommitAt == "2026-09-29T10:00:03Z" && st.restRefusedReason == "uc-rest: Unity Catalog points outside this pipeline's table"
+
+        val registered = register(new FakeCatalog(), previous = prev)
+        assert(kept(registered), s"2xx: $registered")
+        val current =
+            register(new FakeCatalog(registerResp = alreadyExists, loadResp = (200, s"""{"metadata-location":"$OURS","metadata":{}}""")), previous = prev)
+        assert(kept(current), s"already current: $current")
+        val stale =
+            register(new FakeCatalog(registerResp = alreadyExists, loadResp = (200, s"""{"metadata-location":"$OLDER","metadata":{}}""")), previous = prev)
+        assert(kept(stale), s"stale: $stale")
+        val failed = register(new FakeCatalog(registerResp = (403, """{"error":{"message":"denied"}}""")), previous = prev)
+        assert(kept(failed), s"403: $failed")
+
+        // A fresh state (no previous doc) leaves them null.
+        val fresh = register(new FakeCatalog())
+        assert(fresh.catalogMode == null && fresh.restMetadataLocation == null && fresh.lastRestCommitAt == null && fresh.restRefusedReason == null, s"$fresh")
+    }
+
     // --- review follow-ups -----------------------------------------------------
 
     test("409 without an already-exists marker is a failure, not an existing table (no GET)") {

@@ -100,9 +100,14 @@ class PipelineAPIController {
             val state = UnityCatalogSyncIO.read(config.name)
             val registerEnabled = icebergStore && uc != null && uc.enabled && uc.registerOn
             out.addProperty("registerEnabled", registerEnabled)
-            // Iceberg register status: off | never | registered | stale | error.
-            // stale/error come from the uc-register: lines in lastError; the
-            // stale warning carries the fixed "Unity Catalog still points at" text.
+            // Iceberg register status: off | never | registered | stale | error
+            // | rest | refused. stale/error come from the uc-register: lines in
+            // lastError; the stale warning carries the fixed "Unity Catalog still
+            // points at" text. In catalogMode rest, `rest` = the last run
+            // committed through the catalog (no stale pointer possible) and
+            // `refused` = it wrote path-based (restRefusedReason says why).
+            val restMode = uc != null && uc.restMode
+            if (icebergStore && uc != null) out.addProperty("catalogMode", uc.catalogModeOrDefault)
             val registerLines =
                 if (state != null && state.lastError != null)
                     state.lastError.split("\n").filter(_.startsWith(IcebergCatalogRegistrar.ErrorPrefix)).toSeq
@@ -110,6 +115,8 @@ class PipelineAPIController {
             out.addProperty(
                 "register",
                 if (!registerEnabled) "off"
+                else if (restMode && state != null && state.catalogMode == "rest") "rest"
+                else if (restMode && state != null && state.catalogMode == "refused") "refused"
                 else if (registerLines.exists(!_.contains("Unity Catalog still points at"))) "error"
                 else if (registerLines.nonEmpty) "stale"
                 else if (state != null && state.registeredMetadataLocation != null) "registered"
@@ -118,6 +125,9 @@ class PipelineAPIController {
             if (state != null) {
                 out.addProperty("registeredMetadataLocation", state.registeredMetadataLocation)
                 out.addProperty("lastRegisterAt", state.lastRegisterAt)
+                out.addProperty("restMetadataLocation", state.restMetadataLocation)
+                out.addProperty("lastRestCommitAt", state.lastRestCommitAt)
+                out.addProperty("restRefusedReason", state.restRefusedReason)
             }
             val lineageEnabled = config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.lineageOn
             out.addProperty("lineageEnabled", lineageEnabled)

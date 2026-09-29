@@ -77,6 +77,16 @@ components:
           type: boolean
           default: true
           description: Object-store Iceberg only. Set false to keep the block but skip registration.
+        catalogMode:
+          type: string
+          enum: [register, rest]
+          description: >-
+            Object-store Iceberg only (400 on a Databricks destination).
+            Absent means `register`: write by path and register the table once.
+            `rest` commits every write through the Unity Catalog Iceberg REST
+            catalog so its pointer stays current; it needs the register knob on.
+            Case-insensitive. Switching from `rest` back to `register` after a
+            catalog commit fails the next run.
     CatalogFailure:
       type: object
       properties:
@@ -1063,8 +1073,8 @@ paths:
         publish status (`lineage` is `off`, `never`, `published` or `error`;
         lineage failures appear in `lastError` as lines prefixed `uc-lineage:`),
         and the Iceberg register status (`register` is `off`, `never`,
-        `registered`, `stale` or `error`; register warnings appear in
-        `lastError` as lines prefixed `uc-register:`).
+        `registered`, `stale`, `error`, `rest` or `refused`; register warnings
+        appear in `lastError` as lines prefixed `uc-register:`).
       parameters:
         - in: path
           name: name
@@ -1120,7 +1130,7 @@ paths:
                     description: unityCatalog.enabled and the lineage knob (default on)
                   lineage:
                     type: string
-                    enum: [off, never, published, error]
+                    enum: ['off', never, published, error]
                   lineageHash:
                     type: string
                     description: Hash of the last published lineage definition; null until published
@@ -1132,16 +1142,32 @@ paths:
                     description: Object-store Iceberg destination with unityCatalog.enabled and the register knob (default on)
                   register:
                     type: string
-                    enum: [off, never, registered, stale, error]
+                    enum: ['off', never, registered, stale, error, rest, refused]
                     description: >-
                       Iceberg register status. `stale` means Unity Catalog still
-                      points at an older metadata file of the table.
+                      points at an older metadata file of the table. With
+                      `catalogMode: rest`, `rest` means the last run committed
+                      through the catalog and `refused` means it wrote by path
+                      instead (see `restRefusedReason`).
                   registeredMetadataLocation:
                     type: string
                     description: The table's metadata file at the last register (or stale-pointer check); null until registered
                   lastRegisterAt:
                     type: string
                     description: ISO-8601 UTC time the table was registered
+                  catalogMode:
+                    type: string
+                    enum: [register, rest]
+                    description: The pipeline's unityCatalog.catalogMode (absent means register); object-store Iceberg only
+                  restMetadataLocation:
+                    type: string
+                    description: The table's metadata file after the last commit through the catalog; null until then
+                  lastRestCommitAt:
+                    type: string
+                    description: ISO-8601 UTC time of the last commit through the catalog
+                  restRefusedReason:
+                    type: string
+                    description: Why the last catalogMode rest run wrote by path instead of through the catalog; null otherwise
         '404':
           description: Pipeline not configured
         '500':
