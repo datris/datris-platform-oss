@@ -17,7 +17,8 @@ export class PipelineService {
   }
 
   /** Unity Catalog metadata sync state (Databricks pipelines that opted in):
-   *  { enabled, coordinates, state: 'never' | 'synced' | 'error', lastSyncAt, lastRunId, lastError }. */
+   *  { enabled, coordinates, state: 'never' | 'synced' | 'error', lastSyncAt, lastRunId, lastError,
+   *    lineage: 'off' | 'never' | 'published' | 'error', lineageEnabled, lineageHash, lastLineageAt }. */
   getUnityCatalog(name: string): Observable<any> {
     return this.http.get<any>('/api/v1/pipelines/' + encodeURIComponent(name) + '/unity-catalog');
   }

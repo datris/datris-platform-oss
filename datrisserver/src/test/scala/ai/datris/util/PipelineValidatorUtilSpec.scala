@@ -541,4 +541,27 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
     test("absent unityCatalog parses as null") {
         assert(parse("""{"name":"p"}""").unityCatalog == null)
     }
+
+    // Story: Unity Catalog 3: lineage publish (plans/stories/unity-catalog-3-lineage-publish.md), Step 1.
+    test("unityCatalog.lineage defaults on under Jackson (ParameterNamesModule) and Gson; lineage:false turns it off") {
+        val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+            .registerModule(new com.fasterxml.jackson.module.paramnames.ParameterNamesModule())
+            .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        val j = mapper.readValue("""{"enabled":true}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(j.lineage == null && j.lineageOn, s"Jackson absent lineage: $j")
+        val off = mapper.readValue("""{"enabled":true,"lineage":false}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(!off.lineageOn && off.commentsOn && off.tagsOn && off.propertiesOn, s"Jackson lineage=false: $off")
+        val on = mapper.readValue("""{"enabled":true,"lineage":true}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(on.lineageOn, s"$on")
+        val cfg = mapper.readValue("""{"name":"p","unityCatalog":{"enabled":true,"lineage":false}}""", classOf[PipelineConfig])
+        assert(cfg.unityCatalog.enabled && !cfg.unityCatalog.lineageOn, s"$cfg")
+
+        val g = ucConfig(databricksDb).unityCatalog
+        assert(g.lineageOn, s"Gson absent lineage: $g")
+        val gOff = ucConfig(databricksDb, unityCatalog = """{"enabled":true,"lineage":false}""").unityCatalog
+        assert(!gOff.lineageOn, s"Gson lineage=false: $gOff")
+        assert(new ai.datris.model.UnityCatalogSync().lineageOn, "no-arg constructor leaves lineage on")
+        // Round trip keeps the explicit false (config DB write/read).
+        assert(!gson.fromJson(gson.toJson(gOff), classOf[ai.datris.model.UnityCatalogSync]).lineageOn)
+    }
 }

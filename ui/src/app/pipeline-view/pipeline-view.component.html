@@ -90,6 +90,15 @@
     <div class="lineage-row" *ngIf="unityCatalog.state === 'never'">
       <span class="lineage-detail">Comments, tags and table properties are pushed after the next successful load.</span>
     </div>
+    <div class="lineage-row">
+      <span class="lineage-label">Lineage</span>
+      <span class="lineage-detail" *ngIf="config.unityCatalog.lineage === false">off</span>
+      <ng-container *ngIf="config.unityCatalog.lineage !== false">
+        <span class="lineage-detail" *ngIf="unityCatalog.lastLineageAt">published {{ unityCatalog.lastLineageAt }}</span>
+        <span class="lineage-detail" *ngIf="!unityCatalog.lastLineageAt">not published yet</span>
+        <span class="fresh-chip stale" *ngIf="unityCatalog.lineage === 'error'">error</span>
+      </ng-container>
+    </div>
     <pre class="uc-error" *ngIf="unityCatalog.state === 'error' && unityCatalog.lastError">{{ unityCatalog.lastError }}</pre>
   </div>
 

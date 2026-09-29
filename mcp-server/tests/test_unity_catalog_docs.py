@@ -90,3 +90,62 @@ def test_no_markdown_files_on_disk_under_docs():
         dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", "config")]
         md += [os.path.relpath(os.path.join(root, f), REPO_ROOT) for f in files if f.lower().endswith(".md")]
     assert md == [], md
+
+
+# ======================================================================
+# Story: Unity Catalog 3: lineage publish
+# (plans/stories/unity-catalog-3-lineage-publish.md), Acceptance bullet 4.
+# ======================================================================
+
+UNITY_CATALOG_MDX = os.path.join(DOCS, "destinations", "unity-catalog.mdx")
+OPENAPI_YAML = os.path.join(DOCS, "openapi.yaml")
+
+
+def _section(text, heading_re):
+    """Body of the first heading matching heading_re, up to the next heading
+    of the same or higher level."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^(#+)\s+(.*?)\s*$", line)
+        if m and re.match(heading_re, m.group(2)):
+            level = len(m.group(1))
+            body = []
+            for nxt in lines[i + 1:]:
+                n = re.match(r"^(#+)\s", nxt)
+                if n and len(n.group(1)) <= level:
+                    break
+                body.append(nxt)
+            return "\n".join(body)
+    return None
+
+
+def test_unity_catalog_page_has_lineage_section_naming_create_external_metadata():
+    text = _read(UNITY_CATALOG_MDX)
+    body = _section(text, r"^Lineage in Unity Catalog$")
+    headings = [l.strip() for l in text.splitlines() if l.startswith("#")]
+    assert body is not None, headings
+    assert "CREATE EXTERNAL METADATA" in body, body
+
+
+def test_databricks_knob_table_has_lineage_row():
+    rows = [l for l in _read(DATABRICKS_MDX).splitlines() if l.startswith("| `lineage`")]
+    assert rows, "no `lineage` row in the databricks.mdx unityCatalog knob table"
+    assert "`true`" in rows[0], rows[0]
+
+
+def test_pipeline_config_reference_mentions_lineage_and_create_external_metadata():
+    ref = server.PIPELINE_CONFIG_REFERENCE
+    assert re.search(r"\blineage\b", ref), "PIPELINE_CONFIG_REFERENCE does not mention the lineage knob"
+    assert '"lineage"' in ref or "`lineage`" in ref or "lineage:" in ref or "lineage=" in ref, \
+        "the lineage knob must be named as a key, not just the word"
+    assert "CREATE EXTERNAL METADATA" in ref
+
+
+def test_openapi_lists_last_lineage_at():
+    text = _read(OPENAPI_YAML)
+    assert "lastLineageAt" in text
+    # It belongs to the unity-catalog state response.
+    start = text.index("/api/v1/pipelines/{name}/unity-catalog:")
+    nxt = re.search(r"\n  /api/", text[start + 1:])
+    block = text[start: start + 1 + nxt.start()] if nxt else text[start:]
+    assert "lastLineageAt" in block, "lastLineageAt must be in the /pipelines/{name}/unity-catalog schema"

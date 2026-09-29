@@ -38,7 +38,7 @@ The last Unity Catalog metadata push for a Databricks pipeline that sets `unityC
 curl http://localhost:8080/api/v1/pipelines/orders_pipeline/unity-catalog
 ```
 
-**Response:** `200 OK`. `enabled` says whether the pipeline opted in and `coordinates` gives the Unity Catalog table (Databricks destinations only). `state` is `never` (no sync yet), `synced`, or `error` (with `lastError` holding the warehouse's message). `lastSyncAt` and `lastRunId` identify the last sync. `404` if the pipeline does not exist.
+**Response:** `200 OK`. `enabled` says whether the pipeline opted in and `coordinates` gives the Unity Catalog table (Databricks destinations only). `state` is `never` (no sync yet), `synced`, or `error` (with `lastError` holding the warehouse's message). `lastSyncAt` and `lastRunId` identify the last sync. `lineage` is the lineage publish status: `off` (`unityCatalog.lineage` is `false`, or the push is off), `never`, `published`, or `error` (the failure is a `lastError` line starting with `uc-lineage:`); `lastLineageAt` is when lineage was last published and `lineageHash` identifies the published definition (see [Lineage in Unity Catalog](/destinations/unity-catalog#lineage-in-unity-catalog)). `404` if the pipeline does not exist.
 
 ```json
 {
@@ -47,7 +47,11 @@ curl http://localhost:8080/api/v1/pipelines/orders_pipeline/unity-catalog
   "coordinates": { "catalog": "datris", "schema": "default", "table": "orders", "qualified": "datris.default.orders" },
   "state": "synced",
   "lastSyncAt": "2026-09-29T12:00:00Z",
-  "lastRunId": "..."
+  "lastRunId": "...",
+  "lineageEnabled": true,
+  "lineage": "published",
+  "lineageHash": "...",
+  "lastLineageAt": "2026-09-29T12:00:01Z"
 }
 ```
 

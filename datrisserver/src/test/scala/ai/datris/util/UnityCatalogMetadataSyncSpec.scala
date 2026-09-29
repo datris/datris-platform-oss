@@ -10,6 +10,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import java.lang.reflect.{InvocationHandler, Method, Proxy}
 import java.sql.{Connection, SQLException, Statement}
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 
 /** Story: Unity Catalog 1: config + metadata push (Databricks)
@@ -406,5 +407,31 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
         val ok = new RecordingStatusUtil
         assert(!UnityCatalogMetadataSync.probeTableExisted(ok)(false))
         assert(ok.messages.isEmpty)
+    }
+
+    // Story: Unity Catalog 3: lineage publish (plans/stories/unity-catalog-3-lineage-publish.md),
+    // Acceptance bullet 3. The lineage publisher shares this state doc; the
+    // metadata sync runs first on every load and must not wipe its fields.
+    test("execute keeps lineageHash, lastLineageAt and relationship ids from the previous state") {
+        val ids = new java.util.HashMap[String, String]()
+        ids.put("source", "rel-src-1")
+        ids.put("table", "rel-tbl-1")
+        val synced = runSync(new FakeWarehouse(), render(), previous = null, status = new RecordingStatusUtil)
+        val prevState = synced.copy(lineageHash = "lineage-hash-1", lastLineageAt = "2026-09-28T10:00:00Z", lineageRelationshipIds = ids)
+
+        val next =
+            runSync(new FakeWarehouse(), render(runId = "run-token-0002"), previous = prevState, status = new RecordingStatusUtil, runId = "run-token-0002")
+        assert(next.lineageHash == "lineage-hash-1", s"$next")
+        assert(next.lastLineageAt == "2026-09-28T10:00:00Z", s"$next")
+        assert(next.lineageRelationshipIds != null && next.lineageRelationshipIds.asScala == Map("source" -> "rel-src-1", "table" -> "rel-tbl-1"), s"$next")
+
+        // Also on a failing metadata group and on a recreated table.
+        val failing =
+            runSync(new FakeWarehouse(failWhen = _.contains("SET TAGS")), render(), previous = prevState, status = new RecordingStatusUtil, tableCreated = true)
+        assert(failing.lineageHash == "lineage-hash-1" && failing.lastLineageAt == "2026-09-28T10:00:00Z", s"$failing")
+        assert(failing.lineageRelationshipIds != null && failing.lineageRelationshipIds.get("table") == "rel-tbl-1", s"$failing")
+
+        // A pre-story-3 doc (fields absent → null) stays null: "lineage never published".
+        assert(synced.lineageHash == null && synced.lastLineageAt == null && synced.lineageRelationshipIds == null, s"$synced")
     }
 }

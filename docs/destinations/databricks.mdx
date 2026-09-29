@@ -70,6 +70,11 @@ GRANT CREATE SCHEMA ON CATALOG datris TO `<sp-application-id>`;
 -- without it, tagging is reported as a warning on each run
 GRANT APPLY TAG ON SCHEMA datris.default TO `<sp-application-id>`;
 
+-- Optional: needed only for Unity Catalog lineage (`unityCatalog.lineage`,
+-- on by default when `unityCatalog.enabled`). A separate, metastore-admin-only
+-- step; without it, lineage is reported as a warning on each run
+GRANT CREATE EXTERNAL METADATA ON METASTORE TO `<sp-application-id>`;
+
 -- Recommended: let your own users read what Datris loads. Tables are OWNED
 -- by the service principal that created them, and Unity Catalog gives no
 -- implicit access to anyone else — not even workspace admins — so without
@@ -163,8 +168,9 @@ Set the top-level `"unityCatalog": { "enabled": true }` and every successful loa
 | `comments` | `true` | Write the table and provenance column comments |
 | `tags` | `true` | Write the four tags |
 | `properties` | `true` | Write the table properties |
+| `lineage` | `true` | Publish the tap or upload, the pipeline and the table as external lineage, with column mappings (see [Lineage in Unity Catalog](/destinations/unity-catalog#lineage-in-unity-catalog)) |
 
-Comments and tags are only re-issued when they change; properties are written on every run. With `manageTableManually: true`, if you drop and recreate the table yourself, Datris re-applies comments and tags only when their content changes. Tagging needs the `GRANT APPLY TAG ON SCHEMA` line from the setup script. A metadata failure (a missing grant, a warehouse hiccup) is recorded as a warning on the run and in the audit log; the load itself still succeeds, and the next run retries the failed part. The pipeline detail page shows the last sync or the last error, also available from `GET /api/v1/pipelines/{name}/unity-catalog`. Set `DATRIS_UNITY_CATALOG_SYNC=false` to switch the push off for the whole install.
+Comments and tags are only re-issued when they change; properties are written on every run. With `manageTableManually: true`, if you drop and recreate the table yourself, Datris re-applies comments and tags only when their content changes. Tagging needs the `GRANT APPLY TAG ON SCHEMA` line from the setup script. Lineage needs the metastore-level `GRANT CREATE EXTERNAL METADATA ON METASTORE` line, which only a metastore admin can run. A metadata failure (a missing grant, a warehouse hiccup) is recorded as a warning on the run and in the audit log; the load itself still succeeds, and the next run retries the failed part. The pipeline detail page shows the last sync or the last error, also available from `GET /api/v1/pipelines/{name}/unity-catalog`. Set `DATRIS_UNITY_CATALOG_SYNC=false` to switch the push off for the whole install.
 
 To see what a Databricks secret can already reach in Unity Catalog, or to search warehouse tables from `find_data`, see [Unity Catalog](/destinations/unity-catalog).
 

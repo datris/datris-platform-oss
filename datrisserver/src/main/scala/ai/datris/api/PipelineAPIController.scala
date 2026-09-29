@@ -77,6 +77,17 @@ class PipelineAPIController {
             }
 
             val state = UnityCatalogSyncIO.read(config.name)
+            val lineageEnabled = config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.lineageOn
+            out.addProperty("lineageEnabled", lineageEnabled)
+            // Lineage publish status: off (knob/opt-in) | never | error | published.
+            out.addProperty(
+                "lineage",
+                if (!lineageEnabled) "off"
+                else if (state != null && state.lastError != null && state.lastError.split("\n").exists(_.startsWith(UnityCatalogLineagePublisher.ErrorPrefix)))
+                    "error"
+                else if (state != null && state.lastLineageAt != null) "published"
+                else "never"
+            )
             if (state == null) out.addProperty("state", "never")
             else {
                 out.addProperty("state", if (state.lastError != null) "error" else "synced")
@@ -86,6 +97,8 @@ class PipelineAPIController {
                 out.addProperty("tagsHash", state.tagsHash)
                 out.addProperty("propertiesHash", state.propertiesHash)
                 out.addProperty("lastError", state.lastError)
+                out.addProperty("lineageHash", state.lineageHash)
+                out.addProperty("lastLineageAt", state.lastLineageAt)
             }
             new ResponseEntity[String](new Gson().toJson(out), HttpStatus.OK)
         } catch {

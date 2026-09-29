@@ -68,6 +68,9 @@ class DatabricksLoader(jobContext: JobContext) {
                         copyFields().map(_.name).filter(_.toLowerCase.startsWith(ProvenanceStamper.Prefix)),
                         tableCreated
                     )
+                    // Unity Catalog lineage publish (REST, not this
+                    // connection). Same guarantees: never fails the load.
+                    UnityCatalogLineagePublisher.sync(jobContext, tableCreated)
                 } finally {
                     if (stagedPath != null)
                         Try(statement.execute("REMOVE '" + sqlLiteral(stagedPath) + "'"))

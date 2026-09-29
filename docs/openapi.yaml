@@ -1006,8 +1006,10 @@ paths:
       summary: Unity Catalog metadata sync state for a pipeline
       description: >-
         Whether the pipeline opted into the Unity Catalog metadata push, its
-        three-level table coordinates (Databricks destinations), and the last
-        sync (`state` is `never`, `synced` or `error`).
+        three-level table coordinates (Databricks destinations), the last
+        sync (`state` is `never`, `synced` or `error`), and the lineage publish
+        status (`lineage` is `off`, `never`, `published` or `error`; lineage
+        failures appear in `lastError` as lines prefixed `uc-lineage:`).
       parameters:
         - in: path
           name: name
@@ -1052,6 +1054,18 @@ paths:
                     type: string
                   lastError:
                     type: string
+                  lineageEnabled:
+                    type: boolean
+                    description: unityCatalog.enabled and the lineage knob (default on)
+                  lineage:
+                    type: string
+                    enum: [off, never, published, error]
+                  lineageHash:
+                    type: string
+                    description: Hash of the last published lineage definition; null until published
+                  lastLineageAt:
+                    type: string
+                    description: ISO-8601 UTC time lineage was last published
         '404':
           description: Pipeline not configured
         '500':

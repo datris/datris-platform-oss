@@ -37,7 +37,8 @@ case class PipelineConfig(
 
 /** `unityCatalog: {"enabled": true}` — after each successful Databricks load,
   * push a table comment, `_datris_*` column comments, four stable tags and
-  * run-level TBLPROPERTIES to Unity Catalog. Each knob drops its group.
+  * run-level TBLPROPERTIES to Unity Catalog, and publish External Lineage
+  * (tap or upload → pipeline → table). Each knob drops its group.
   *
   * The knobs are boxed and null means on: Spring's `@RequestBody` Jackson
   * mapper does not apply Scala default arguments (an absent Boolean arrives
@@ -47,13 +48,17 @@ case class UnityCatalogSync @JsonCreator() (
     @JsonProperty("enabled") enabled: Boolean = false,
     @JsonProperty("comments") comments: java.lang.Boolean = null,
     @JsonProperty("tags") tags: java.lang.Boolean = null,
-    @JsonProperty("properties") properties: java.lang.Boolean = null
+    @JsonProperty("properties") properties: java.lang.Boolean = null,
+    // Publish External Metadata + External Lineage (tap/upload → pipeline →
+    // table) over the workspace REST API. See UnityCatalogLineagePublisher.
+    @JsonProperty("lineage") lineage: java.lang.Boolean = null
 ) {
-    def this() = this(false, null, null, null)
+    def this() = this(false, null, null, null, null)
 
     def commentsOn: Boolean = UnityCatalogSync.on(comments)
     def tagsOn: Boolean = UnityCatalogSync.on(tags)
     def propertiesOn: Boolean = UnityCatalogSync.on(properties)
+    def lineageOn: Boolean = UnityCatalogSync.on(lineage)
 }
 
 object UnityCatalogSync {

@@ -4,7 +4,7 @@ sidebarTitle: "Unity Catalog"
 description: "Browse the catalogs, schemas, tables and columns a Databricks secret can see, search warehouse tables from find_data, and mark the tables Datris loads with comments and tags."
 ---
 
-Use this page when an agent works against a Databricks workspace. Datris does two things with Unity Catalog: it **annotates** the tables its [Databricks](/destinations/databricks) pipelines load (comments, tags and table properties), and it lets an agent **discover** what a Databricks secret can already see before it creates a pipeline. Both are read-only toward your data; the annotations are the only thing Datris writes to Unity Catalog.
+Use this page when an agent works against a Databricks workspace. Datris does two things with Unity Catalog: it **annotates** the tables its [Databricks](/destinations/databricks) pipelines load (comments, tags and table properties), and it lets an agent **discover** what a Databricks secret can already see before it creates a pipeline. It also publishes **lineage**, so Catalog Explorer can trace a table back to the tap or upload that fed it. All of this is read-only toward your data; annotations and lineage are the only things Datris writes to Unity Catalog.
 
 ## Two meanings of "catalog"
 
@@ -20,6 +20,26 @@ The two are independent. A pipeline in the Datris catalog `finance` can load int
 With `"unityCatalog": { "enabled": true }` on a Databricks pipeline, every successful load annotates the table: a table comment naming the pipeline and source, comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog`, `datris_dq_status` and `managed_by = datris`, and `datris.*` table properties. See [Unity Catalog metadata](/destinations/databricks#unity-catalog-metadata) for the fields, the grant it needs, and `GET /api/v1/pipelines/{name}/unity-catalog`.
 
 The `datris_pipeline` tag is what discovery uses to recognize a table Datris loaded.
+
+## Lineage in Unity Catalog
+
+With the metadata push on, every successful load also publishes the pipeline's lineage to Unity Catalog, so the table's **External lineage** graph in Catalog Explorer shows where its data came from without opening Datris. Datris registers three external metadata objects and two lineage relationships:
+
+- **The source:** `datris-tap-<tap>` for a tap-fed pipeline (with the tap description, its declared source, the script identity and, for HTTP taps, the endpoint URL), or `datris-upload-<pipeline>` for a pipeline fed by file uploads.
+- **The pipeline:** `datris-pipeline-<pipeline>`, the transform node, with the Datris catalog, the pipeline definition version and the Datris lineage API path as properties.
+- **The table:** the Delta table the pipeline loads, `catalog.schema.table`.
+- **Source to pipeline, and pipeline to table:** the pipeline-to-table relationship carries the column mappings from Datris [column-level lineage](/provenance#column-level-lineage), one mapping per source column. Mappings Datris inferred with AI (rather than derived from the pipeline definition) are included, and they mark the whole relationship with the properties `datris.confidence = inferred` and `datris.evidence`. Unity Catalog keeps properties per relationship, not per column, so the flag applies to the relationship as a whole. Publishing never runs AI inference; only mappings already computed are sent.
+- **Run properties:** both relationships carry `datris.lastRunId`, `datris.recordCount`, `datris.status` (`pass` or `warn`) and `datris.lastRunAt`, overwritten on every run. Unity Catalog shows the latest run, not a history.
+
+Object names replace dots, slashes, spaces and backticks with `_`. The objects and column mappings are only re-sent when the pipeline definition, its column lineage or the tap script changes, or when Datris recreated the table; otherwise a run updates only the run properties.
+
+Lineage uses the workspace REST API with the same Databricks secret as the load, and needs privileges beyond the load grants:
+
+- `CREATE EXTERNAL METADATA` on the metastore, which only a metastore admin can grant: `` GRANT CREATE EXTERNAL METADATA ON METASTORE TO `<sp-application-id>` ``.
+- `MODIFY` on the external metadata objects Datris creates (the creator owns them, so this holds unless ownership changes).
+- `MODIFY` on the table, for the pipeline-to-table relationship. The setup grants on the schema already cover it.
+
+A missing privilege, a wrong host or a workspace without the external lineage API is recorded as a warning on the run and in the audit log, never a failed load, and the next run retries. The pipeline detail page shows when lineage was last published. To keep the comments, tags and properties but skip lineage, set `"unityCatalog": { "enabled": true, "lineage": false }`. `DATRIS_UNITY_CATALOG_SYNC=false` switches lineage off along with the rest of the push.
 
 ## Browse what a secret can see
 

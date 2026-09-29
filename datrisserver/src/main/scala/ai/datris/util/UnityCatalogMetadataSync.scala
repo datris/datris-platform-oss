@@ -205,7 +205,12 @@ object UnityCatalogMetadataSync {
             commentsHash = hashes.get(Comments).orNull,
             tagsHash = hashes.get(Tags).orNull,
             propertiesHash = hashes.get(Properties).orNull,
-            lastError = if (errs.isEmpty) null else errs.mkString("\n")
+            lastError = if (errs.isEmpty) null else errs.mkString("\n"),
+            // The lineage publisher shares this doc and runs after us; carry
+            // its fields over so the metadata sync never wipes them.
+            lineageHash = if (previous != null) previous.lineageHash else null,
+            lastLineageAt = if (previous != null) previous.lastLineageAt else null,
+            lineageRelationshipIds = if (previous != null) previous.lineageRelationshipIds else null
         )
     }
 
