@@ -766,13 +766,4 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         val none = new ai.datris.model.UnityCatalogSync()
         assert(none.catalogMode == null && none.catalogModeOrDefault == "register" && !none.restMode && none.registerOn, s"no-arg: $none")
     }
-
-    // --- Unity Catalog 5 review follow-ups -----------------------------------------
-
-    test("catalogMode rest with deleteBeforeWrite is rejected; register with deleteBeforeWrite is fine") {
-        val err = validationError(ucObjectStore(icebergS3 + ""","deleteBeforeWrite":true""", ucMode("rest")))
-        assert(err.exists(_.contains("deleteBeforeWrite cannot be used with catalogMode rest")), s"got: $err")
-        assert(err.exists(_.contains("unity.default.p")), s"message names the table: $err")
-        passesUcRule(ucObjectStore(icebergS3 + ""","deleteBeforeWrite":true""", ucMode("register")))
-    }
 }

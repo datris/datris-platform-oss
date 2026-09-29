@@ -179,18 +179,17 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 // MERGE uses UPDATE SET * / INSERT *, so the source must carry
                 // exactly the dest schema's columns in its order.
                 val projected = df.select(sparkSchema.fieldNames.map(df.col): _*)
-                try Some(IcebergWriter.write(
-                        projected,
-                        outputPath,
-                        writeModeName,
-                        partitions,
-                        keyFields,
-                        sparkSchema,
-                        statusUtil,
-                        config.name,
-                        restPlan.target
-                    ))
-                finally restPlan.close()
+                def writeIceberg(): IcebergWriter.WriteResult =
+                    IcebergWriter.write(projected, outputPath, writeModeName, partitions, keyFields, sparkSchema, statusUtil, config.name, restPlan.target)
+                try
+                    try Some(writeIceberg())
+                    catch {
+                        // Lost a create race for the identifier: re-decide once
+                        // (ours ⇒ retry through the catalog; foreign ⇒ path write).
+                        case e: org.apache.iceberg.exceptions.AlreadyExistsException if restPlan.created =>
+                            restPlan = IcebergRestSession.afterCreateConflict(jobContext, restPlan, e)
+                            Some(writeIceberg())
+                    } finally restPlan.close()
             } else {
                 val writeMode = writeModeName match {
                     case "overwrite" => SaveMode.Overwrite

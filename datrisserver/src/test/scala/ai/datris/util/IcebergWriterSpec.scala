@@ -790,4 +790,75 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(rows == Map(1L -> 10.0, 2L -> 2.0, 3L -> 3.0, 4L -> 4.0), s"$rows")
         assert(third.totalRecords == 4, s"$third")
     }
+
+    // ---- Unity Catalog 5 E2E follow-ups -------------------------------------
+    // A table committed through a catalog is read at the catalog's current
+    // metadata file, never through version-hint.text (REST commits do not
+    // update it). The stand-in commits through a path-backed HadoopCatalog,
+    // then rewinds the hint to simulate a REST catalog.
+
+    test("catalog-committed table is read at its current snapshot, not the version hint") {
+        val table = "rest_read"
+        val catalog = javaCatalog()
+        restWrite(df((1L, "east", 1.0), (2L, "west", 2.0)), table, catalog, "append")
+        val last = restWrite(df((3L, "north", 3.0)), table, catalog, "append")
+        val current = currentMetadata(catalog, table)
+        assert(last.metadataLocation == current, s"$last vs $current")
+
+        // Make the last commit look like a REST commit: a uuid-named metadata
+        // file that version-hint.text does not know about (HadoopTableOperations
+        // also probes v<N+1>, so the v3 name must go), hint at v2.
+        val metaDir = new java.io.File(java.net.URI.create(restLocation(table) + "/metadata"))
+        val v3 = new java.io.File(java.net.URI.create(current.replaceFirst("^file:/+", "file:///")))
+        assert(v3.getName == "v3.metadata.json", v3.getName)
+        val restStyle = new java.io.File(metaDir, "00003-5d6c7b8a-9e0f-4a1b-8c2d-3e4f5a6b7c8d.metadata.json")
+        Files.move(v3.toPath, restStyle.toPath)
+        Files.deleteIfExists(new java.io.File(metaDir, ".v3.metadata.json.crc").toPath)
+        Files.write(new java.io.File(metaDir, "version-hint.text").toPath, "2".getBytes("UTF-8"))
+        Files.deleteIfExists(new java.io.File(metaDir, ".version-hint.text.crc").toPath)
+        val restCurrent = restStyle.toURI.toString
+
+        val byPath = ObjectStoreQueryUtil.readPath(spark, restLocation(table), "iceberg", 100)
+        assert(byPath.rows.size() == 2, s"the stand-in must reproduce the stale path read: ${byPath.rows}")
+
+        val byCatalog = ObjectStoreQueryUtil.readPath(spark, restLocation(table), "iceberg", 100, Some(restCurrent))
+        assert(byCatalog.rows.size() == 3, s"${byCatalog.rows}")
+        assert(byCatalog.snapshotId == java.lang.Long.valueOf(last.snapshotId), s"${byCatalog.snapshotId} vs ${last.snapshotId}")
+        assert(byCatalog.path == restLocation(table))
+    }
+
+    test("orphan catalog metadata (uuid-named file only, no data) does not block a path-based create") {
+        val location = newLocation("orphan/t")
+        val metaDir = new java.io.File(java.net.URI.create(location + "/metadata"))
+        metaDir.mkdirs()
+        Files.write(new java.io.File(metaDir, "00000-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.metadata.json").toPath, "{}".getBytes("UTF-8"))
+
+        val status = new RecordingStatusUtil
+        val result = write(df((1L, "east", 1.0)), location, "append", status = status)
+        assert(result.totalRecords == 1, s"$result")
+        assert(status.messages.exists(_._2.contains("ignoring orphan catalog metadata file(s)")), status.messages.mkString("\n"))
+    }
+
+    test("a prefix with an orphan metadata file AND data/ is still refused") {
+        val location = newLocation("orphan-data/t")
+        val metaDir = new java.io.File(java.net.URI.create(location + "/metadata"))
+        metaDir.mkdirs()
+        Files.write(new java.io.File(metaDir, "00000-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.metadata.json").toPath, "{}".getBytes("UTF-8"))
+        val dataDir = new java.io.File(java.net.URI.create(location + "/data"))
+        dataDir.mkdirs()
+        Files.write(new java.io.File(dataDir, "part-0.parquet").toPath, "x".getBytes("UTF-8"))
+        val e = intercept[DatrisException](write(df((1L, "east", 1.0)), location, "append"))
+        assert(e.getMessage.contains("no loadable table"), e.getMessage)
+    }
+
+    test("orphanCatalogMetadata: only uuid-named catalog metadata files under a lone metadata/") {
+        val orphan = "00000-0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b.metadata.json"
+        assert(IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan)))
+        assert(IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "." + orphan + ".crc")))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Nil))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata", "data"), Seq(orphan)))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "version-hint.text")))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "v1.metadata.json")))
+        assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "snap-1-1-abc.avro")))
+    }
 }

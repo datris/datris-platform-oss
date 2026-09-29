@@ -102,12 +102,13 @@ object IcebergRestSession {
             IcebergCatalogRegistrar.classify(previous.restMetadataLocation, null, tableRoot) != IcebergCatalogRegistrar.Foreign
 
     def switchBackMessage(qualified: String): String =
-        "switching from catalogMode rest back to register (or turning Unity Catalog off, or leaving Iceberg, for this pipeline) is not supported: " +
+        "switching from catalogMode rest back to register (or turning Unity Catalog off for this pipeline) is not supported: " +
             "the table's current metadata is only known to the catalog; keep rest, or start a new prefix and have an admin drop " + qualified +
             " in Unity Catalog"
 
     def deleteBeforeWriteMessage(qualified: String): String =
-        "deleteBeforeWrite cannot be used with catalogMode rest on a table the catalog holds; drop " + qualified +
+        "deleteBeforeWrite cannot be used on a table Unity Catalog holds at this prefix (committed through the catalog, or registered at it); drop " +
+            qualified +
             " in Unity Catalog (or use a new prefix) first"
 
     private def committedMessage(previous: UnityCatalogSyncState, why: String, qualified: String): String =
@@ -145,6 +146,83 @@ object IcebergRestSession {
     /** Raised inside `open` when the catalog holds the table and the run
       * would delete it first; rethrown by `prepare` as a run failure. */
     private class DeleteRefused(message: String) extends DatrisException(message)
+
+    /** deleteBeforeWrite is refused when the catalog's table lives under our
+      * root (deleting the prefix would leave it pointing at deleted
+      * metadata). A foreign catalog table is not ours: deleting our own
+      * prefix is fine, and the run is then refused and writes by path. */
+    def deleteRefused(deleteBeforeWrite: Boolean, catalogHas: Option[String], tableRoot: String): Boolean =
+        deleteBeforeWrite && catalogHas.exists(c => IcebergCatalogRegistrar.classify(c, null, tableRoot) != IcebergCatalogRegistrar.Foreign)
+
+    /** Build the pipeline's RESTCatalog (caller closes it). */
+    private[util] def buildCatalog(config: ai.datris.model.PipelineConfig, creds: ResolvedDatabricksCredentials): (Catalog, Map[String, String], String) = {
+        val uc = config.unityCatalog
+        val props = IcebergRestCatalogConfig.catalogProperties(creds, creds.extra, uc.catalog)
+        val sparkName = IcebergRestCatalogConfig.sparkCatalogName(config.name, props)
+        val hadoopConf = SparkSessionManager.getOrCreate().sparkContext.hadoopConfiguration
+        (CatalogUtil.buildIcebergCatalog(sparkName, (props + ("type" -> "rest")).asJava, hadoopConf), props, sparkName)
+    }
+
+    private def closeQuietly(c: Catalog): Unit = c match {
+        case x: Closeable => Try(x.close())
+        case _ =>
+    }
+
+    /** The catalog's current metadata file for this pipeline's table (None
+      * when the catalog has no such table). Throws on any catalog failure.
+      * Used by readers of a catalog-committed table. */
+    def catalogCurrentMetadata(config: ai.datris.model.PipelineConfig): Option[String] = {
+        val uc = config.unityCatalog
+        val creds = CredentialResolver.resolveDatabricks(uc.credentialsSecret, requireCredentials = false)
+        val (catalog, _, _) = buildCatalog(config, creds)
+        try {
+            val ident = IcebergRestCatalogConfig.identifier(uc.schemaOrDefault, config.name)
+            if (!catalog.tableExists(ident)) None
+            else
+                catalog.loadTable(ident) match {
+                    case h: HasTableOperations => Option(h.operations().current()).map(_.metadataFileLocation())
+                    case _ => None
+                }
+        } finally closeQuietly(catalog)
+    }
+
+    /** The writer's catalog create lost to another create of the same
+      * identifier (AlreadyExists). Re-decide against the now-existing
+      * catalog table: under our root ⇒ retry through the catalog; anywhere
+      * else ⇒ refused (warning + audit) and the run writes by path. The plan
+      * is new-table only, so no path history can fork. */
+    def afterCreateConflict(jobContext: JobContext, plan: Plan, cause: Throwable): Plan = {
+        val statusUtil = jobContext.statusUtil
+        val config = jobContext.config
+        val target = plan.target.getOrElse(throw cause)
+        val catalogHas =
+            try
+                target.catalog.loadTable(target.ident) match {
+                    case h: HasTableOperations => Option(h.operations().current()).map(_.metadataFileLocation())
+                    case _ => None
+                }
+            catch { case NonFatal(_) => None }
+        RestAdoptDecision.decide(catalogHas, None, plan.location) match {
+            case RestAdoptDecision.AdoptCatalog =>
+                statusUtil.info("processing", line(s"${plan.qualified} was created concurrently at this table's location; committing through it"))
+                plan.copy(created = false)
+            case other =>
+                val where = other match {
+                    case RestAdoptDecision.RefuseForeign(c) => IcebergCatalogRegistrar.normalize(c)
+                    case _ => "an unknown location"
+                }
+                val msg = line(
+                    s"${plan.qualified} was created in Unity Catalog by someone else while this run was creating it, and points at $where, " +
+                        s"outside this pipeline's table ${IcebergCatalogRegistrar.normalize(plan.location)}; refusing to touch it (never merge, never drop); " +
+                        "rename the pipeline or choose another schema; falling back to the path-based write"
+                )
+                statusUtil.warn("processing", msg)
+                logger.warn("uc-rest create conflict for pipeline " + config.name + ": " + oneLine(cause.getMessage))
+                audit(config.name, msg)
+                plan.close()
+                plan.copy(target = None, refused = Some(msg), created = false, closeable = None)
+        }
+    }
 
     /** Guards and catalog session for one run, called under the write lock
       * BEFORE the loader's deleteBeforeWrite. Throws (a run failure) for the
@@ -228,16 +306,18 @@ object IcebergRestSession {
         val uc = config.unityCatalog
         val schema = uc.schemaOrDefault
         val qualified = base.qualified
-        val props = IcebergRestCatalogConfig.catalogProperties(creds, creds.extra, uc.catalog)
-        val sparkName = IcebergRestCatalogConfig.sparkCatalogName(config.name, props)
+        var props: Map[String, String] = Map.empty
+        var sparkName: String = null
         val ident = IcebergRestCatalogConfig.identifier(schema, config.name)
         var catalog: Catalog = null
         try {
             val spark = SparkSessionManager.getOrCreate()
             // The per-bucket s3a keys (ObjectStoreSpark.applyPerBucketConfig)
-            // live in this conf; SparkCatalog gets the same one.
-            val hadoopConf = spark.sparkContext.hadoopConfiguration
-            catalog = CatalogUtil.buildIcebergCatalog(sparkName, (props + ("type" -> "rest")).asJava, hadoopConf)
+            // live in the session's Hadoop conf; SparkCatalog gets the same one.
+            val built = buildCatalog(config, creds)
+            catalog = built._1
+            props = built._2
+            sparkName = built._3
 
             val (catalogHas, history) =
                 if (catalog.tableExists(ident)) {
@@ -252,7 +332,7 @@ object IcebergRestSession {
             // The loader deletes the prefix after this call: never leave the
             // catalog pointing at deleted metadata, never adopt what is about
             // to be deleted.
-            if (deleteBeforeWrite && catalogHas.isDefined) throw new DeleteRefused(deleteBeforeWriteMessage(qualified))
+            if (deleteRefused(deleteBeforeWrite, catalogHas, outputPath)) throw new DeleteRefused(deleteBeforeWriteMessage(qualified))
 
             val tables = new HadoopTables(spark.sessionState.newHadoopConf())
             val pathCurrent =
@@ -311,7 +391,7 @@ object IcebergRestSession {
                     case c: Closeable => Try(c.close())
                     case _ =>
                 }
-                val uri = props.getOrElse("uri", "")
+                val uri = Try(IcebergRestCatalogConfig.catalogProperties(creds, creds.extra, uc.catalog).getOrElse("uri", "")).getOrElse("")
                 val root = IcebergCatalogRegistrar.normalize(outputPath)
                 val msg = t match {
                     case e: NotAuthorizedException => IcebergCatalogRegistrar.describe(401, oneLine(e.getMessage), uri, uc.catalog, schema, root)

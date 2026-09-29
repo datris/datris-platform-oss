@@ -102,7 +102,7 @@ By default Datris writes the table by path and registers it once (`catalogMode: 
 }
 ```
 
-`catalogMode` accepts `register` or `rest` (any case) and applies to object store Iceberg pipelines only. The API returns `400` for any other value, for `catalogMode` on a Databricks destination, for `"register": false` together with `"rest"`, and for `deleteBeforeWrite` together with `"rest"` (deleting the files would leave the catalog pointing at a table that no longer exists; to start over, have an admin drop the Unity Catalog table, or use a new prefix). `rest` needs the same `credentialsSecret` and `catalog` as registration. To convert an existing non-Iceberg pipeline (parquet, orc), take two steps: first switch `fileFormat` to `iceberg` with `deleteBeforeWrite` on and run it once, then remove `deleteBeforeWrite` and add `catalogMode: "rest"`.
+`catalogMode` accepts `register` or `rest` (any case) and applies to object store Iceberg pipelines only. The API returns `400` for any other value, for `catalogMode` on a Databricks destination, and for `"register": false` together with `"rest"`. `rest` needs the same `credentialsSecret` and `catalog` as registration. To convert an existing non-Iceberg pipeline (parquet, orc), take two steps: first switch `fileFormat` to `iceberg` with `deleteBeforeWrite` on and run it once, then remove `deleteBeforeWrite` and add `catalogMode: "rest"`.
 
 The first `rest` run looks at both the catalog and the table already at the pipeline's path:
 
@@ -112,7 +112,11 @@ The first `rest` run looks at both the catalog and the table already at the pipe
 - **The catalog points at an older metadata file of the same table:** Datris refuses to use the catalog, because moving the pointer back in line would need the catalog table dropped, and Datris never drops a table. The warning names both files. An admin drops the Unity Catalog table; the next run registers the current file and continues through the catalog.
 - **The catalog has a table with that name somewhere else:** Datris refuses to touch it (never merge, never drop). Rename the pipeline or choose another schema.
 
-A refused run still writes the data by path and completes; the warning is recorded on the run and in the [audit log](/audit-log).
+A refused run still writes the data by path and completes; the warning is recorded on the run and in the [audit log](/audit-log). If another pipeline creates a table with the same name at the same moment, the run that loses the race is refused the same way.
+
+`deleteBeforeWrite` works with `rest` until the catalog holds a table at the pipeline's prefix. After that, a run with `deleteBeforeWrite` fails and names the Unity Catalog table to drop first. A catalog table with the same name somewhere else does not block it: only the pipeline's own prefix is deleted, and the run is then refused and writes by path.
+
+Reads follow the catalog: querying the pipeline's object store (the query API and MCP tool that `find_data` points to) reads a table committed through the catalog at the catalog's current metadata file. If the catalog cannot be reached, the query reads the table as of the last commit Datris recorded.
 
 There are two kinds of failure:
 
@@ -122,7 +126,7 @@ There are two kinds of failure:
 Once a table has been committed through the catalog, its current metadata is known only to the catalog: path-based readers and writers no longer see the latest version. Starting over at a new prefix also needs an admin to drop the Unity Catalog table, because the table keeps the same name and a catalog entry pointing at the old prefix is refused. From then on:
 
 - If the catalog cannot be reached, or `DATRIS_UNITY_CATALOG_SYNC=false`, the run **fails** instead of writing by path, because a path write would split the table's history. Fix the catalog connection, or point the pipeline at a new prefix and have an admin drop the Unity Catalog table.
-- `deleteBeforeWrite` is refused, and so is changing `fileFormat` away from `iceberg`.
+- `deleteBeforeWrite` fails the run, whatever the file format, because deleting the files would leave the catalog pointing at a table that no longer exists. To start over, have an admin drop the Unity Catalog table, or use a new prefix.
 - Switching `catalogMode` from `rest` back to `register` (or removing it, setting `"register": false` or `"enabled": false`, or removing the `unityCatalog` block) is not supported: the next run fails and says so. Keep `rest`, or start a new prefix and have an admin drop the Unity Catalog table.
 - If the pipeline's Unity Catalog state cannot be read (the config database is unavailable), the run fails rather than risk a path write.
 

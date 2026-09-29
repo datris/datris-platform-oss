@@ -118,7 +118,7 @@ object IcebergWriter {
             case Some(r) => r.catalog.tableExists(r.ident)
             case None => tables.exists(location)
         }
-        if (!exists) guardPrefix(conf, location)
+        if (!exists) guardPrefix(conf, location, statusUtil)
 
         if (exists && mode == "ignore") {
             val table = loadChecked(tables, location, restCatalog)
@@ -299,12 +299,24 @@ object IcebergWriter {
 
     /** Refuse to create a table over a prefix that already holds non-Iceberg
       *  objects (an existing non-iceberg pipeline output, for example). */
-    private def guardPrefix(conf: Configuration, location: String): Unit = {
+    private def guardPrefix(conf: Configuration, location: String, statusUtil: StatusUtil): Unit = {
         val path = new Path(location)
         val fs = path.getFileSystem(conf)
         if (!fs.exists(path)) return
         val children = fs.listStatus(path)
         if (children.isEmpty) return
+        if (children.length == 1 && children(0).isDirectory && children(0).getPath.getName == "metadata") {
+            val metadataEntries = fs.listStatus(children(0).getPath)
+            val names = metadataEntries.filter(_.isFile).map(_.getPath.getName).toSeq
+            if (metadataEntries.forall(_.isFile) && orphanCatalogMetadata(Seq("metadata"), names)) {
+                statusUtil.info(
+                    "processing",
+                    "ignoring orphan catalog metadata file(s) at " + location + "/metadata (" + names.mkString(", ") +
+                        "): left by a catalog create that did not complete; no data files exist under the prefix"
+                )
+                return
+            }
+        }
         if (children.exists(_.getPath.getName == "metadata"))
             throw new DatrisException(
                 "prefix " + location + " has an Iceberg metadata/ directory but no loadable table (missing or corrupt version-hint); " +
@@ -314,6 +326,22 @@ object IcebergWriter {
             "prefix contains non-Iceberg files at " + location + "; set deleteBeforeWrite or use a new prefix"
         )
     }
+
+    /** Catalog-style metadata file name: `<5+ digits>-<uuid>.metadata.json`
+      *  (optionally compressed), as a REST catalog writes on create. */
+    private val CatalogMetadataFile =
+        "^\\d{5,}-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(\\.gz)?\\.metadata\\.json(\\.gz)?$".r
+
+    /** A prefix whose only entry is `metadata/`, holding only catalog-style
+      *  metadata files (no `version-hint.text`, no `v<N>.metadata.json`, no
+      *  manifests): the leftover of a catalog create that failed. No data file
+      *  exists, so a path-based create over it loses nothing. Conservative:
+      *  anything else under the prefix is not an orphan. */
+    private[util] def orphanCatalogMetadata(rootChildren: Seq[String], metadataFiles: Seq[String]): Boolean =
+        rootChildren == Seq("metadata") && metadataFiles.exists(isCatalogMetadataFile) &&
+            metadataFiles.forall(n => isCatalogMetadataFile(n) || (n.startsWith(".") && n.endsWith(".crc") && isCatalogMetadataFile(n.drop(1).dropRight(4))))
+
+    private def isCatalogMetadataFile(n: String): Boolean = CatalogMetadataFile.pattern.matcher(n).matches()
 
     private def createTable(
         tables: HadoopTables,

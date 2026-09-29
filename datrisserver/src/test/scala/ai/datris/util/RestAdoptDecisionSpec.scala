@@ -155,4 +155,41 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
         assert(G(null, ROOT, false, true, false, Q).isEmpty)
         assert(G(committed, "s3a://datris-lake/orders_daily_v2", false, true, false, Q).isEmpty)
     }
+
+    test("IcebergRestSession.deleteRefused: only a catalog table under our root blocks deleteBeforeWrite") {
+        val DR = IcebergRestSession.deleteRefused _
+        assert(DR(true, Some(n(OURS)), ROOT))
+        assert(DR(true, Some(OLDER), ROOT + "/"))
+        assert(!DR(true, Some("s3://other-bucket/orders_daily/metadata/00001-aaaa.metadata.json"), ROOT), "foreign: our prefix may be deleted")
+        assert(!DR(true, Some("s3://datris-lake/orders_daily2/metadata/00001-bbbb.metadata.json"), ROOT), "sibling prefix is foreign")
+        assert(!DR(true, None, ROOT))
+        assert(!DR(false, Some(OURS), ROOT))
+    }
+
+    test("IcebergTableResolver.resolve: catalog-committed tables read at the catalog pointer, else the state doc; path tables unchanged") {
+        import ai.datris.model.UnityCatalogSyncState
+        val recorded = n(ROOT) + "/metadata/00003-9b2d.metadata.json"
+        val newer = n(ROOT) + "/metadata/00004-7c1e.metadata.json"
+        val st = UnityCatalogSyncState(
+            pipeline = "p",
+            lastSyncAt = null,
+            lastRunId = null,
+            commentsHash = null,
+            tagsHash = null,
+            propertiesHash = null,
+            lastError = null,
+            catalogMode = "rest",
+            restMetadataLocation = recorded
+        )
+        val R = IcebergTableResolver
+        // Not catalog-committed: path read (the catalog is never asked).
+        assert(R.resolve(null, ROOT, () => fail("must not ask the catalog")).isEmpty)
+        assert(R.resolve(st.copy(catalogMode = "refused"), ROOT, () => fail("must not ask the catalog")).isEmpty)
+        // Catalog answers: its pointer wins, as s3a.
+        assert(R.resolve(st, ROOT, () => Some(newer)).contains(newer.replace("s3://", "s3a://")))
+        // Catalog unreachable, empty, or pointing elsewhere: the recorded commit.
+        assert(R.resolve(st, ROOT, () => throw new RuntimeException("down")).contains(recorded.replace("s3://", "s3a://")))
+        assert(R.resolve(st, ROOT, () => None).contains(recorded.replace("s3://", "s3a://")))
+        assert(R.resolve(st, ROOT, () => Some("s3://elsewhere/t/metadata/00001-x.metadata.json")).contains(recorded.replace("s3://", "s3a://")))
+    }
 }
