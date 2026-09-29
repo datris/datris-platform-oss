@@ -82,6 +82,14 @@ object PipelineValidatorUtil {
                 throw new DatrisException("'unityCatalog.catalogMode' must be 'register' or 'rest'")
             if (mode == "rest" && !uc.registerOn)
                 throw new DatrisException("'unityCatalog.catalogMode: rest' requires the register knob on")
+            val store = if (config.destination != null) config.destination.objectStore else null
+            if (mode == "rest" && store != null && store.deleteBeforeWrite)
+                throw new DatrisException(
+                    IcebergRestSession.deleteBeforeWriteMessage(
+                        Option(uc.catalog).map(_.trim).getOrElse("<catalog>") + "." + uc.schemaOrDefault + "." +
+                            Option(config.name).map(IcebergCatalogRegistrar.tableName).getOrElse("<pipeline>")
+                    )
+                )
         }
         if (databricks) return
         val objectStore = if (config.destination != null) config.destination.objectStore else null

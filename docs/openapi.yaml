@@ -84,7 +84,8 @@ components:
             Object-store Iceberg only (400 on a Databricks destination).
             Absent means `register`: write by path and register the table once.
             `rest` commits every write through the Unity Catalog Iceberg REST
-            catalog so its pointer stays current; it needs the register knob on.
+            catalog so its pointer stays current; it needs the register knob on
+            and cannot be combined with `deleteBeforeWrite` (400).
             Case-insensitive. Switching from `rest` back to `register` after a
             catalog commit fails the next run.
     CatalogFailure:

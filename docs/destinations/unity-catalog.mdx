@@ -102,7 +102,7 @@ By default Datris writes the table by path and registers it once (`catalogMode: 
 }
 ```
 
-`catalogMode` accepts `register` or `rest` (any case) and applies to object store Iceberg pipelines only. The API returns `400` for any other value, for `catalogMode` on a Databricks destination, and for `"register": false` together with `"rest"`. `rest` needs the same `credentialsSecret` and `catalog` as registration.
+`catalogMode` accepts `register` or `rest` (any case) and applies to object store Iceberg pipelines only. The API returns `400` for any other value, for `catalogMode` on a Databricks destination, for `"register": false` together with `"rest"`, and for `deleteBeforeWrite` together with `"rest"` (deleting the files would leave the catalog pointing at a table that no longer exists; to start over, have an admin drop the Unity Catalog table, or use a new prefix). `rest` needs the same `credentialsSecret` and `catalog` as registration.
 
 The first `rest` run looks at both the catalog and the table already at the pipeline's path:
 
@@ -121,8 +121,9 @@ There are two kinds of failure:
 
 Once a table has been committed through the catalog, its current metadata is known only to the catalog: path-based readers and writers no longer see the latest version. From then on:
 
-- If the catalog cannot be reached, or `DATRIS_UNITY_CATALOG_SYNC=false`, the run **fails** instead of writing by path, because a path write would split the table's history. Fix the catalog connection, set `deleteBeforeWrite`, or point the pipeline at a new prefix.
-- Switching `catalogMode` from `rest` back to `register` (or removing it) is not supported: the next run fails and says so. Keep `rest`, or start a new prefix.
+- If the catalog cannot be reached, or `DATRIS_UNITY_CATALOG_SYNC=false`, the run **fails** instead of writing by path, because a path write would split the table's history. Fix the catalog connection, or point the pipeline at a new prefix.
+- Switching `catalogMode` from `rest` back to `register` (or removing it, setting `"register": false` or `"enabled": false`, or removing the `unityCatalog` block) is not supported: the next run fails and says so. Keep `rest`, or start a new prefix.
+- If the pipeline's Unity Catalog state cannot be read (the config database is unavailable), the run fails rather than risk a path write.
 
 On a pipeline that has never committed through the catalog, `DATRIS_UNITY_CATALOG_SYNC=false` writes by path with one line saying the sync is off.
 

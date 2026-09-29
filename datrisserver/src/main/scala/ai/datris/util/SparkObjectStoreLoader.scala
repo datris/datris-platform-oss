@@ -145,6 +145,11 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // files would interleave.
         var restPlan: IcebergRestSession.Plan = IcebergRestSession.Inactive
         val iceberg: Option[IcebergWriter.WriteResult] = SparkObjectStoreLoader.withPipelineWriteLock(outputPath) {
+            // catalogMode rest (IcebergRestSession): decided BEFORE the
+            // delete-before-write, which it refuses on a table the catalog
+            // holds. Inactive for every other pipeline (path write). Throws
+            // only when a path write would fork a catalog-committed table.
+            if (fileFormat == "iceberg") restPlan = IcebergRestSession.prepare(jobContext, outputPath, objectStore.deleteBeforeWrite)
             // Delete existing data if requested. Route through the Hadoop FileSystem
             // (S3A) rather than the MinIO Java SDK, so it honors the per-bucket config
             // we just applied and works for both MinIO and AWS S3. Using the MinIO SDK
@@ -173,10 +178,6 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 // MERGE uses UPDATE SET * / INSERT *, so the source must carry
                 // exactly the dest schema's columns in its order.
                 val projected = df.select(sparkSchema.fieldNames.map(df.col): _*)
-                // catalogMode rest: commit through the Unity Catalog REST
-                // catalog. Inactive for every other pipeline (path write). Throws
-                // only when a path write would fork a catalog-committed table.
-                restPlan = IcebergRestSession.prepare(jobContext, outputPath, objectStore.deleteBeforeWrite)
                 try Some(IcebergWriter.write(
                         projected,
                         outputPath,

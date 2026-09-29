@@ -31,14 +31,26 @@ object RestAdoptDecision {
       *   metadata log). When it contains `pathCurrent` the catalog is AHEAD of
       *   the path table (REST commits never update `version-hint.text`), which
       *   is our own table kept current by earlier `rest` runs, not a stale
-      *   pointer. */
-    def decide(catalogHas: Option[String], pathCurrent: Option[String], tableRoot: String, catalogHistory: Set[String] = Set.empty): Decision = {
+      *   pointer. The log is truncated (`write.metadata.previous-versions-max`),
+      *   so this is only a secondary signal.
+      * @param restCommitted the state doc says an earlier run committed this
+      *   table through the catalog (its last catalog commit is under our
+      *   metadata/): a catalog entry under our metadata/ is then ours and
+      *   ahead of the path table, whatever the log still holds. */
+    def decide(
+        catalogHas: Option[String],
+        pathCurrent: Option[String],
+        tableRoot: String,
+        catalogHistory: Set[String] = Set.empty,
+        restCommitted: Boolean = false
+    ): Decision = {
         val root = Option(tableRoot).map(_.trim.stripSuffix("/")).orNull
         def underRoot(loc: String): Boolean =
             root != null && IcebergCatalogRegistrar.normalize(loc).startsWith(IcebergCatalogRegistrar.normalize(root) + "/metadata/")
         (catalogHas.filter(s => s != null && s.trim.nonEmpty), pathCurrent.filter(s => s != null && s.trim.nonEmpty)) match {
             case (None, None) => CreateNew
             case (None, Some(p)) => AdoptPath(p)
+            case (Some(c), Some(_)) if restCommitted && underRoot(c) => AdoptCatalog
             case (Some(c), Some(p)) =>
                 IcebergCatalogRegistrar.classify(c, p, root) match {
                     case IcebergCatalogRegistrar.Current => AdoptCatalog

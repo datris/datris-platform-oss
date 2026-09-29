@@ -121,8 +121,25 @@ class IcebergRestCatalogConfigSpec extends AnyFunSuite {
         assert(C.sparkCatalogName("Orders.Daily v2") == "datris_uc_orders_daily_v2")
     }
 
+    // Review follow-up (finding 3): the Spark catalog the writes use is the
+    // base name plus a hash of the catalog properties, so a changed secret or
+    // catalog, or two pipelines whose table names collide, never share a
+    // cached Spark catalog plugin.
+    test("sparkCatalogName(pipeline, props) is datris_uc_<table>_<8 hex of the properties hash>") {
+        val name = C.sparkCatalogName("Orders.Daily v2", m2mProps)
+        assert(name.matches("datris_uc_orders_daily_v2_[0-9a-f]{8}"), name)
+        assert(C.sparkCatalogName("Orders.Daily v2", m2mProps) == name, "deterministic")
+        assert(C.sparkCatalogName("Orders.Daily v2", patProps) != name, "different credentials → different catalog")
+        val otherCatalog = C.catalogProperties(m2m, m2mFields, "other_cat")
+        assert(C.sparkCatalogName("Orders.Daily v2", otherCatalog) != name, "different UC catalog (prefix) → different catalog")
+        val rotated = m2m.copy(clientSecret = Some("sp-secret-2"))
+        assert(C.sparkCatalogName("Orders.Daily v2", C.catalogProperties(rotated, m2mFields, CAT)) != name, "rotated secret → different catalog")
+        // Colliding table names with different secrets do not share a catalog.
+        assert(C.sparkCatalogName("Orders Daily", m2mProps) != C.sparkCatalogName("orders_daily", patProps))
+    }
+
     test("sparkConf keys all start with spark.sql.catalog.datris_uc_<table>. and include type=rest") {
-        val name = C.sparkCatalogName("Orders.Daily v2")
+        val name = C.sparkCatalogName("Orders.Daily v2", m2mProps)
         val props = m2mProps
         val conf = C.sparkConf(name, props)
         val root = "spark.sql.catalog." + name

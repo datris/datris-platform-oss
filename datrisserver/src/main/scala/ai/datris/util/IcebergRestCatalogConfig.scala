@@ -45,9 +45,27 @@ object IcebergRestCatalogConfig {
         core ++ auth
     }
 
-    /** One Spark catalog per pipeline: Spark caches the catalog plugin per
-      * name, and two pipelines may use two secrets. */
+    /** Base of the Spark catalog name for a pipeline (no properties hash). */
     def sparkCatalogName(pipeline: String): String = SparkCatalogPrefix + IcebergCatalogRegistrar.tableName(pipeline)
+
+    /** The Spark catalog a pipeline's writes go through: the base name plus
+      * the first 8 hex of the SHA-256 of its sorted catalog properties
+      * (uri, prefix, credential/token, ...). Spark caches the catalog plugin
+      * per name for the session's life, so a changed secret or catalog, or
+      * two pipelines whose table names collide with different secrets, get a
+      * different name rather than a cached plugin pointing elsewhere. */
+    def sparkCatalogName(pipeline: String, props: Map[String, String]): String =
+        sparkCatalogName(pipeline) + "_" + propsHash(props)
+
+    private[util] def propsHash(props: Map[String, String]): String = {
+        val canonical = props.toSeq.sortBy(_._1).map { case (k, v) => k + "=" + v }.mkString("\n")
+        java.security.MessageDigest
+            .getInstance("SHA-256")
+            .digest(canonical.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            .take(4)
+            .map(b => f"${b & 0xff}%02x")
+            .mkString
+    }
 
     /** `spark.sql.catalog.<name>` = SparkCatalog, `.type` = rest, `.<k>` per property. */
     def sparkConf(name: String, props: Map[String, String]): Map[String, String] = {

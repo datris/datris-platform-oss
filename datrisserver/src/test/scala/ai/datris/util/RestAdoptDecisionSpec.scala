@@ -85,4 +85,44 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
             case other => fail(s"trailing-slash root: expected RefuseForeign, got $other")
         }
     }
+
+    // --- Unity Catalog 5 review follow-ups -----------------------------------------
+
+    test("catalog ahead with path file no longer in the metadata log but state says rest → AdoptCatalog") {
+        val restCommit = ROOT + "/metadata/00140-aa11.metadata.json"
+        // The adopted path file (v1) fell out of the truncated metadata log.
+        val log = Set(ROOT + "/metadata/00139-bb22.metadata.json")
+        assert(D.decide(Some(n(restCommit)), Some(OLDER), ROOT, log, restCommitted = true) == D.AdoptCatalog)
+        // Without the state signal and without the log entry it is still refused.
+        assert(D.decide(Some(n(restCommit)), Some(OLDER), ROOT, log).isInstanceOf[D.RefuseBehind])
+        // The log is still a secondary signal on its own.
+        assert(D.decide(Some(n(restCommit)), Some(OLDER), ROOT, Set(OLDER)) == D.AdoptCatalog)
+        // restCommitted never adopts a catalog entry outside our root.
+        val sibling = "s3://datris-lake/orders_daily2/metadata/00001-bbbb.metadata.json"
+        assert(D.decide(Some(sibling), Some(OURS), ROOT, Set.empty, restCommitted = true).isInstanceOf[D.RefuseForeign])
+    }
+
+    test("IcebergRestSession.restCommitted: state says rest and its last commit is under this table root") {
+        import ai.datris.model.UnityCatalogSyncState
+        def st(mode: String, loc: String) =
+            UnityCatalogSyncState(
+                pipeline = "p",
+                lastSyncAt = null,
+                lastRunId = null,
+                commentsHash = null,
+                tagsHash = null,
+                propertiesHash = null,
+                lastError = null,
+                catalogMode = mode,
+                restMetadataLocation = loc
+            )
+        val restLoc = n(ROOT) + "/metadata/00003-9b2d.metadata.json"
+        assert(IcebergRestSession.restCommitted(st("rest", restLoc), ROOT))
+        assert(IcebergRestSession.restCommitted(st("rest", restLoc), ROOT + "/"))
+        assert(!IcebergRestSession.restCommitted(st("refused", restLoc), ROOT))
+        assert(!IcebergRestSession.restCommitted(st("rest", null), ROOT))
+        assert(!IcebergRestSession.restCommitted(null, ROOT))
+        // A new prefix is a new table: the guard does not follow the pipeline.
+        assert(!IcebergRestSession.restCommitted(st("rest", restLoc), "s3a://datris-lake/orders_daily_v2"))
+    }
 }

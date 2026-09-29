@@ -80,46 +80,68 @@ object IcebergRestSession {
             )
         )
 
+    /** A state-read failure propagates: without the doc the run cannot tell
+      * whether a path write would fork a catalog-committed table. */
     private def readState(pipeline: String): UnityCatalogSyncState =
         try UnityCatalogSyncIO.read(pipeline)
         catch {
             case NonFatal(e) =>
-                logger.warn("uc-rest state read failed for " + pipeline + ": " + e.getMessage)
-                null
+                val ex = new DatrisException(
+                    "could not read the Unity Catalog state for pipeline " + pipeline + " (" + oneLine(e.getMessage) +
+                        "); refusing to write so a table committed through the catalog is never written by path"
+                )
+                ex.initCause(e)
+                throw ex
         }
 
-    /** Committed through the catalog on an earlier run. */
-    def restCommitted(previous: UnityCatalogSyncState): Boolean = previous != null && previous.catalogMode == "rest"
+    /** The table at `tableRoot` was committed through the catalog on an
+      * earlier run (the last catalog commit lives under its metadata/). A new
+      * prefix is a new table, so the guard does not follow the pipeline there. */
+    def restCommitted(previous: UnityCatalogSyncState, tableRoot: String): Boolean =
+        previous != null && previous.catalogMode == "rest" && previous.restMetadataLocation != null &&
+            IcebergCatalogRegistrar.classify(previous.restMetadataLocation, null, tableRoot) != IcebergCatalogRegistrar.Foreign
 
     def switchBackMessage: String =
-        "switching from catalogMode rest back to register is not supported: the table's current metadata is only known to the catalog; " +
-            "keep rest, or start a new prefix"
+        "switching from catalogMode rest back to register (or turning Unity Catalog off for this pipeline) is not supported: " +
+            "the table's current metadata is only known to the catalog; keep rest, or start a new prefix"
+
+    def deleteBeforeWriteMessage(qualified: String): String =
+        "deleteBeforeWrite cannot be used with catalogMode rest on a table the catalog holds; drop " + qualified +
+            " in Unity Catalog (or use a new prefix) first"
 
     private def committedMessage(previous: UnityCatalogSyncState, why: String): String =
         "this table is committed through Unity Catalog (last at " + IcebergCatalogRegistrar.normalize(previous.restMetadataLocation) + "); " +
-            why + "; a path-based write would fork its history. Fix the catalog connection, or set deleteBeforeWrite or a new prefix"
+            why + "; a path-based write would fork its history. Fix the catalog connection, or point the pipeline at a new prefix"
 
-    /** Guards and catalog session for one run. Throws (a run failure) only
-      * for the switch-back refusal and when a table already committed
-      * through the catalog cannot be committed through it this run. */
+    /** Raised inside `open` when the catalog holds the table and the run
+      * would delete it first; rethrown by `prepare` as a run failure. */
+    private class DeleteRefused(message: String) extends DatrisException(message)
+
+    /** Guards and catalog session for one run, called under the write lock
+      * BEFORE the loader's deleteBeforeWrite. Throws (a run failure) for the
+      * switch-back refusal, deleteBeforeWrite on a table the catalog holds,
+      * an unreadable state doc, and when a table already committed through
+      * the catalog cannot be committed through it this run. */
     def prepare(jobContext: JobContext, outputPath: String, deleteBeforeWrite: Boolean): Plan = {
         val config = jobContext.config
         val statusUtil = jobContext.statusUtil
-        val uc = config.unityCatalog
-        if (uc == null || !uc.enabled || !uc.registerOn) return Inactive
         val objectStore = if (config.destination != null) config.destination.objectStore else null
         if (objectStore == null || objectStore.fileFormat == null || !objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")) return Inactive
 
+        // Every object-store Iceberg pipeline: the fork guard must hold even
+        // when the unityCatalog block was switched off or removed.
         val previous = readState(config.name)
-        // deleteBeforeWrite wipes the table's history, so there is nothing to fork.
-        val forkRisk = restCommitted(previous) && !deleteBeforeWrite
-        if (!uc.restMode) {
+        val forkRisk = restCommitted(previous, outputPath)
+        val uc = config.unityCatalog
+        val restActive = uc != null && uc.enabled && uc.registerOn && uc.restMode
+        if (!restActive) {
             if (forkRisk) throw new DatrisException(switchBackMessage)
             return Inactive
         }
 
         val table = IcebergCatalogRegistrar.tableName(config.name)
         val qualified = uc.catalog + "." + uc.schemaOrDefault + "." + table
+        if (deleteBeforeWrite && forkRisk) throw new DatrisException(deleteBeforeWriteMessage(qualified))
         val base = Plan(active = true, target = None, refused = None, previous = previous, qualified = qualified, location = outputPath)
 
         if (!UnityCatalogMetadataSync.switchedOn) {
@@ -142,8 +164,9 @@ object IcebergRestSession {
                                 " and no token"
                         )
                     )
-                else open(jobContext, outputPath, creds, previous, statusUtil, base)
+                else open(jobContext, outputPath, creds, previous, statusUtil, base, deleteBeforeWrite)
             } catch {
+                case d: DeleteRefused => throw d
                 case t: Throwable if NonFatal(t) || t.isInstanceOf[LinkageError] =>
                     Left(Fallback("Unity Catalog REST catalog could not be opened: " + oneLine(Option(t.getMessage).getOrElse(t.getClass.getSimpleName))))
             }
@@ -171,14 +194,15 @@ object IcebergRestSession {
         creds: ResolvedDatabricksCredentials,
         previous: UnityCatalogSyncState,
         statusUtil: StatusUtil,
-        base: Plan
+        base: Plan,
+        deleteBeforeWrite: Boolean = false
     ): Either[Fallback, Plan] = {
         val config = jobContext.config
         val uc = config.unityCatalog
         val schema = uc.schemaOrDefault
         val qualified = base.qualified
         val props = IcebergRestCatalogConfig.catalogProperties(creds, creds.extra, uc.catalog)
-        val sparkName = IcebergRestCatalogConfig.sparkCatalogName(config.name)
+        val sparkName = IcebergRestCatalogConfig.sparkCatalogName(config.name, props)
         val ident = IcebergRestCatalogConfig.identifier(schema, config.name)
         var catalog: Catalog = null
         try {
@@ -198,10 +222,14 @@ object IcebergRestSession {
                         case _ => (None, Set.empty[String])
                     }
                 } else (None, Set.empty[String])
+            // The loader deletes the prefix after this call: never leave the
+            // catalog pointing at deleted metadata, never adopt what is about
+            // to be deleted.
+            if (deleteBeforeWrite && catalogHas.isDefined) throw new DeleteRefused(deleteBeforeWriteMessage(qualified))
 
             val tables = new HadoopTables(spark.sessionState.newHadoopConf())
             val pathCurrent =
-                if (tables.exists(outputPath))
+                if (!deleteBeforeWrite && tables.exists(outputPath))
                     tables.load(outputPath) match {
                         case h: HasTableOperations => Option(h.operations().current()).map(_.metadataFileLocation())
                         case _ => None
@@ -216,7 +244,7 @@ object IcebergRestSession {
             val ok = base.copy(target = Some(target), closeable = closeable)
             val n = IcebergCatalogRegistrar.normalize _
 
-            RestAdoptDecision.decide(catalogHas, pathCurrent, outputPath, history) match {
+            RestAdoptDecision.decide(catalogHas, pathCurrent, outputPath, history, restCommitted(previous, outputPath)) match {
                 case RestAdoptDecision.CreateNew =>
                     statusUtil.info("processing", line(s"$qualified is new; creating it through the catalog at $outputPath"))
                     Right(ok.copy(created = true))
@@ -245,6 +273,12 @@ object IcebergRestSession {
                     )
             }
         } catch {
+            case d: DeleteRefused =>
+                catalog match {
+                    case c: Closeable => Try(c.close())
+                    case _ =>
+                }
+                throw d
             case t: Throwable if NonFatal(t) || t.isInstanceOf[LinkageError] =>
                 catalog match {
                     case c: Closeable => Try(c.close())
