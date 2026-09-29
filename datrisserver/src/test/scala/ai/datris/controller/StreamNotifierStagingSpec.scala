@@ -553,4 +553,52 @@ class StreamNotifierStagingSpec extends AnyFunSuite with BeforeAndAfterAll {
         assertHeaderRejected(e, "object-store pickup")
         assert(!su.events.exists(_._2.contains("Schema evolution")), "no schema-evolution status event may be emitted: " + su.events)
     }
+
+    // Fix: a pipeline whose csvAttributes omits `delimiter` arrives with null
+    // through Spring's Jackson mapper (Scala default args ignored) and used to
+    // NPE in CSVFormat$Builder.setDelimiter.
+    private val nullDelimiterCsvConfig = config(FileAttributes(csvAttributes = CsvAttributes(delimiter = null)))
+
+    test("validatedCsvHeader with null delimiter defaults to comma") {
+        assert(ai.datris.util.DataUtil.validatedCsvHeader("ID,Amount", null, "orders") == List("id", "amount"))
+        assert(ai.datris.util.DataUtil.validatedCsvHeader("ID,Amount", "", "orders") == List("id", "amount"))
+        assert(ai.datris.util.DataUtil.validatedCsvHeader("ID|Amount", "|", "orders") == List("id", "amount"), "an explicit delimiter is still honoured")
+    }
+
+    test("read with csvAttributes lacking delimiter parses comma-separated rows") {
+        val files = Map("s3://raw/orders/nodelim.csv" -> "ID,Amount\n1,5\n2,\"x,y\"\n")
+        val (data, _) = StagingArea.withToken("pickup-nodelim") {
+            ai.datris.util.DataUtil.read(List("s3://raw/orders/nodelim.csv"), opener(files), 25L, nullDelimiterCsvConfig, new CapturingStatusUtil)
+        }
+        try {
+            assert(data.staged.format == StagedFormat.Delimited(","))
+            assert(data.header == List("id", "amount"))
+            assert(data.rowIterator().toList == List("1,5", "2,\"x,y\""))
+        } finally StagingArea.delete("pickup-nodelim")
+        assert(nullDelimiterCsvConfig.source.fileAttributes.csvAttributes.delimiter == null, "the stored config is not rewritten")
+    }
+
+    test("upload (stageData) with csvAttributes lacking delimiter parses comma-separated rows") {
+        val (data, _) = stage("Amount,ID\n5,1\n9,2\n", nullDelimiterCsvConfig)
+        assert(data.staged.format == StagedFormat.Delimited(","))
+        assert(data.rowIterator().toList == List("1,5", "2,9"))
+    }
+
+    test("Jackson (ParameterNamesModule) body without delimiter: delimiter is null, effectiveDelimiter is comma") {
+        // Spring Boot's @RequestBody mapper: ParameterNamesModule, no
+        // DefaultScalaModule, so Scala default arguments are NOT applied.
+        val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+            .registerModule(new com.fasterxml.jackson.module.paramnames.ParameterNamesModule())
+            .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        val fa = mapper.readValue("""{"csvAttributes":{"header":true}}""", classOf[FileAttributes])
+        assert(fa.csvAttributes.delimiter == null, s"Jackson: ${fa.csvAttributes}")
+        assert(fa.csvAttributes.effectiveDelimiter == ",")
+        assert(CsvAttributes(delimiter = "|").effectiveDelimiter == "|")
+        assert(CsvAttributes.delimiterOf(null) == ",")
+        assert(CsvAttributes.delimiterOf(config(FileAttributes(jsonAttributes = JsonAttributes()))) == ",")
+        assert(CsvAttributes.delimiterOf(config(FileAttributes(csvAttributes = CsvAttributes(delimiter = "\t")))) == "\t")
+        // The resolver is not a stored property.
+        assert(!mapper.writeValueAsString(fa.csvAttributes).contains("effectiveDelimiter"))
+        assert(!new com.google.gson.Gson().toJson(fa.csvAttributes).contains("effectiveDelimiter"))
+    }
 }

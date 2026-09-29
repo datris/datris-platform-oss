@@ -104,17 +104,7 @@ class KafkaLoader(jobContext: JobContext) {
         val header = data.header
         val keyIndex = if (keyField != null) header.indexWhere(_.equalsIgnoreCase(keyField)) else -1
 
-        val delimiter = {
-            if (
-                config.source != null
-                && config.source.fileAttributes != null
-                && config.source.fileAttributes.csvAttributes != null
-                && config.source.fileAttributes.csvAttributes.delimiter != null
-            )
-                config.source.fileAttributes.csvAttributes.delimiter
-            else
-                ","
-        }
+        val delimiter = CsvAttributes.delimiterOf(config)
 
         var count: Long = 0
         val gson = new Gson()

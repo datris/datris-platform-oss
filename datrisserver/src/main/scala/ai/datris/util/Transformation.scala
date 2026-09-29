@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.Gson
-import ai.datris.model.{DatrisEnvironment, DatrisException}
+import ai.datris.model.{CsvAttributes, DatrisEnvironment, DatrisException}
 import ai.datris.model.JobContext
 
 import java.text.SimpleDateFormat
@@ -111,7 +111,7 @@ class Transformation(jobContext: JobContext) {
                     val value = changedValues.get(field.name)
                     if (value == null) columnMap.getOrElse(field.name, "")
                     else value.toString
-                }).toList.mkString(config.source.fileAttributes.csvAttributes.delimiter)
+                }).toList.mkString(CsvAttributes.delimiterOf(config))
                 Some(newRow)
             } else {
                 removed = removed + 1
@@ -144,7 +144,7 @@ class Transformation(jobContext: JobContext) {
             if (rowFunction.parameters.size() > 5)
                 Option(rowFunction.parameters.get(5)).map(_.trim).filter(_.nonEmpty).flatMap(s => Try(s.toInt).toOption).map(math.max(0, _)).getOrElse(0)
             else 0
-        val delimiter = config.source.fileAttributes.csvAttributes.delimiter
+        val delimiter = CsvAttributes.delimiterOf(config)
         val pipelineName = config.name
         val pipelineToken = jobContext.pipelineToken
 
@@ -317,7 +317,7 @@ class Transformation(jobContext: JobContext) {
         // Dispatch on the staged format; the CodeGen script reads and writes
         // files, so the payload never passes through heap.
         if (data.isDelimited && data.rowCount > 0 && data.header != null) {
-            val delimiter = config.source.fileAttributes.csvAttributes.delimiter
+            val delimiter = CsvAttributes.delimiterOf(config)
             statusUtil.info("processing", "CodeGen transformation on " + data.rowCount + " rows")
             val result = CodeGenTransformationEvaluator.transformCsv(instruction, data, delimiter, config.name)
             // The transformation may add, drop or reorder columns. Carry the

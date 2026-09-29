@@ -222,11 +222,36 @@ case class FileAttributes(
     readOptions: java.util.Map[String, String] = null
 )
 
+/** `delimiter` may arrive null: Spring's `@RequestBody` Jackson mapper
+  * (ParameterNamesModule, no DefaultScalaModule) ignores Scala default
+  * arguments, so a body that omits it stores null. Every read goes through
+  * `effectiveDelimiter` / `CsvAttributes.delimiterOf`, which fall back to ","
+  * without rewriting the stored config. */
 case class CsvAttributes(
     delimiter: String = ",",
     header: Boolean = true,
     encoding: String = "UTF-8"
-)
+) {
+    def effectiveDelimiter: String = CsvAttributes.resolveDelimiter(delimiter)
+}
+
+object CsvAttributes {
+    val DefaultDelimiter: String = ","
+
+    /** Null or empty ⇒ ",". */
+    def resolveDelimiter(delimiter: String): String =
+        if (delimiter == null || delimiter.isEmpty) DefaultDelimiter else delimiter
+
+    /** The source csvAttributes delimiter of `config`, else "," (null-safe on
+      * config / source / fileAttributes / csvAttributes). */
+    def delimiterOf(config: PipelineConfig): String =
+        if (
+            config != null && config.source != null && config.source.fileAttributes != null
+            && config.source.fileAttributes.csvAttributes != null
+        )
+            config.source.fileAttributes.csvAttributes.effectiveDelimiter
+        else DefaultDelimiter
+}
 
 case class JsonAttributes(
     everyRowContainsObject: Boolean = false,

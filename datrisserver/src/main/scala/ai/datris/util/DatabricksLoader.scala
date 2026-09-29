@@ -360,10 +360,7 @@ class DatabricksLoader(jobContext: JobContext) {
         }
     }
 
-    private def csvDelimiter(): String =
-        if (config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null)
-            config.source.fileAttributes.csvAttributes.delimiter
-        else ","
+    private def csvDelimiter(): String = CsvAttributes.delimiterOf(config)
 
     // Identifier emission and paste-shape normalization live in
     // DatabricksConnectionUtil, shared with the query path.

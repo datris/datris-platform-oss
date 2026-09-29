@@ -104,10 +104,7 @@ object ProvenanceStamper {
         // Idempotence guard: never double-stamp (e.g. a replayed context).
         if (data.header.exists(_.startsWith(Prefix))) return ctx
 
-        val delimiter =
-            if (ctx.config.source != null && ctx.config.source.fileAttributes != null && ctx.config.source.fileAttributes.csvAttributes != null)
-                ctx.config.source.fileAttributes.csvAttributes.delimiter
-            else ","
+        val delimiter = CsvAttributes.delimiterOf(ctx.config)
 
         val names = values.map(_._1)
         val suffix = values.map(v => csvEncode(Option(v._2).getOrElse(""), delimiter)).mkString(delimiter)

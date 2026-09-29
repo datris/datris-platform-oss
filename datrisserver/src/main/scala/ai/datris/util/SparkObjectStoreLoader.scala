@@ -6,7 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import com.google.gson.Gson
-import ai.datris.model.{DatrisEnvironment, DatrisException, Notification, SchemaField, StagedFormat}
+import ai.datris.model.{CsvAttributes, DatrisEnvironment, DatrisException, Notification, SchemaField, StagedFormat}
 import ai.datris.model.JobContext
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{DataFrame, Row, SaveMode, SparkSession}
@@ -111,15 +111,7 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         val schemaFields = config.destination.schemaProperties.fields.asScala.toList
         val sparkSchema = SparkObjectStoreLoader.buildSchema(schemaFields)
 
-        val delimiter = {
-            if (
-                config.source.fileAttributes != null && config.source.fileAttributes.csvAttributes != null
-                && config.source.fileAttributes.csvAttributes.delimiter != null
-            )
-                config.source.fileAttributes.csvAttributes.delimiter
-            else
-                ","
-        }
+        val delimiter = CsvAttributes.delimiterOf(config)
 
         // Read the staged file directly (no driver-side row list). Only a
         // delimited payload has rows to write (the old `data.rows` was null —
