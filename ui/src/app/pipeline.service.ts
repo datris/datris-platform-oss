@@ -16,9 +16,11 @@ export class PipelineService {
     return this.http.get<any>('/api/v1/pipeline?pipeline=' + encodeURIComponent(name));
   }
 
-  /** Unity Catalog metadata sync state (Databricks pipelines that opted in):
+  /** Unity Catalog sync state (Databricks and object-store Iceberg pipelines that opted in):
    *  { enabled, coordinates, state: 'never' | 'synced' | 'error', lastSyncAt, lastRunId, lastError,
-   *    lineage: 'off' | 'never' | 'published' | 'error', lineageEnabled, lineageHash, lastLineageAt }. */
+   *    lineage: 'off' | 'never' | 'published' | 'error', lineageEnabled, lineageHash, lastLineageAt,
+   *    register: 'off' | 'never' | 'registered' | 'stale' | 'error', registerEnabled,
+   *    registeredMetadataLocation, lastRegisterAt }. */
   getUnityCatalog(name: string): Observable<any> {
     return this.http.get<any>('/api/v1/pipelines/' + encodeURIComponent(name) + '/unity-catalog');
   }

@@ -44,9 +44,11 @@ class PipelineAPIController {
         }
     }
 
-    /** Unity Catalog metadata sync state for one pipeline: the last sync doc
-      * (or `state: "never"`), whether the pipeline opted in, and the
-      * three-level table coordinates. 404 for an unknown pipeline. */
+    /** Unity Catalog sync state for one pipeline: the last sync doc (or
+      * `state: "never"`), whether the pipeline opted in, lineage and Iceberg
+      * register status, and the three-level table coordinates (Databricks
+      * table, or the registered Iceberg table for an object store). 404 for
+      * an unknown pipeline. */
     @GetMapping(path = Array("/pipelines/{name}/unity-catalog"), produces = Array(MediaType.APPLICATION_JSON_VALUE))
     def getUnityCatalogState(
         @RequestHeader(name = "x-api-key", required = false) apiKey: String,
@@ -76,7 +78,47 @@ class PipelineAPIController {
                 out.add("coordinates", coords)
             }
 
+            // Object-store Iceberg pipelines register as <catalog>.<schema>.<pipeline>.
+            val uc = config.unityCatalog
+            val objectStore = if (config.destination != null) config.destination.objectStore else null
+            val icebergStore = objectStore != null && objectStore.fileFormat != null && objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")
+            if (icebergStore && uc != null && uc.catalog != null && uc.catalog.trim.nonEmpty) {
+                val coords = new JsonObject
+                val table = IcebergCatalogRegistrar.tableName(config.name)
+                coords.addProperty("catalog", uc.catalog)
+                coords.addProperty("schema", uc.schemaOrDefault)
+                coords.addProperty("table", table)
+                coords.addProperty("qualified", uc.catalog + "." + uc.schemaOrDefault + "." + table)
+                coords.addProperty("kind", "iceberg")
+                val location =
+                    try "s3a://" + ObjectStoreSpark.resolveBucket(objectStore) + "/" + objectStore.prefixKey
+                    catch { case scala.util.control.NonFatal(_) => null }
+                coords.addProperty("location", location)
+                out.add("coordinates", coords)
+            }
+
             val state = UnityCatalogSyncIO.read(config.name)
+            val registerEnabled = icebergStore && uc != null && uc.enabled && uc.registerOn
+            out.addProperty("registerEnabled", registerEnabled)
+            // Iceberg register status: off | never | registered | stale | error.
+            // stale/error come from the uc-register: lines in lastError; the
+            // stale warning carries the fixed "Unity Catalog still points at" text.
+            val registerLines =
+                if (state != null && state.lastError != null)
+                    state.lastError.split("\n").filter(_.startsWith(IcebergCatalogRegistrar.ErrorPrefix)).toSeq
+                else Nil
+            out.addProperty(
+                "register",
+                if (!registerEnabled) "off"
+                else if (registerLines.exists(!_.contains("Unity Catalog still points at"))) "error"
+                else if (registerLines.nonEmpty) "stale"
+                else if (state != null && state.registeredMetadataLocation != null) "registered"
+                else "never"
+            )
+            if (state != null) {
+                out.addProperty("registeredMetadataLocation", state.registeredMetadataLocation)
+                out.addProperty("lastRegisterAt", state.lastRegisterAt)
+            }
             val lineageEnabled = config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.lineageOn
             out.addProperty("lineageEnabled", lineageEnabled)
             // Lineage publish status: off (knob/opt-in) | never | error | published.

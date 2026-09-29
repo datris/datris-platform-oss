@@ -434,4 +434,23 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
         // A pre-story-3 doc (fields absent → null) stays null: "lineage never published".
         assert(synced.lineageHash == null && synced.lastLineageAt == null && synced.lineageRelationshipIds == null, s"$synced")
     }
+
+    // Story: Unity Catalog 4: Iceberg register spike (plans/stories/unity-catalog-4-iceberg-register.md),
+    // Acceptance bullet 3. The registrar shares this state doc; execute must not wipe its fields.
+    test("execute keeps registeredMetadataLocation and lastRegisterAt from the previous state") {
+        val loc = "s3a://datris-lake/orders_daily/metadata/00002-7f1c.metadata.json"
+        val synced = runSync(new FakeWarehouse(), render(), previous = null, status = new RecordingStatusUtil)
+        val prevState = synced.copy(registeredMetadataLocation = loc, lastRegisterAt = "2026-09-28T10:00:02Z")
+
+        val next =
+            runSync(new FakeWarehouse(), render(runId = "run-token-0002"), previous = prevState, status = new RecordingStatusUtil, runId = "run-token-0002")
+        assert(next.registeredMetadataLocation == loc && next.lastRegisterAt == "2026-09-28T10:00:02Z", s"$next")
+
+        val failing =
+            runSync(new FakeWarehouse(failWhen = _.contains("SET TAGS")), render(), previous = prevState, status = new RecordingStatusUtil, tableCreated = true)
+        assert(failing.registeredMetadataLocation == loc && failing.lastRegisterAt == "2026-09-28T10:00:02Z", s"$failing")
+
+        // A pre-story-4 doc stays null: "never registered".
+        assert(synced.registeredMetadataLocation == null && synced.lastRegisterAt == null, s"$synced")
+    }
 }

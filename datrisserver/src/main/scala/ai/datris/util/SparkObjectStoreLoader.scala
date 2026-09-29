@@ -210,6 +210,10 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // ignore on an empty table): no snapshot to report.
         val snapshotId: Option[Long] = iceberg.map(_.snapshotId).filter(_ >= 0L)
         sendNotification(outputPath, snapshotId)
+        // Unity Catalog registration (opt-in) runs before the `end` line:
+        // nothing may follow it. A no-op unless the pipeline opted in; never throws.
+        if (config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.registerOn && fileFormat == "iceberg")
+            iceberg.filter(_.snapshotId >= 0L).foreach(r => IcebergCatalogRegistrar.sync(jobContext, r))
         iceberg match {
             case Some(r) if r.snapshotId >= 0L =>
                 statusUtil.info(

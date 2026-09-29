@@ -173,6 +173,30 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(second.totalRecords == 3)
     }
 
+    // Story: Unity Catalog 4: Iceberg register spike (plans/stories/unity-catalog-4-iceberg-register.md),
+    // Acceptance bullet 3. WriteResult gains `metadataLocation: String = null`,
+    // read from HasTableOperations.operations().current().metadataFileLocation().
+    test("result carries the current metadata file location, which advances on the next commit") {
+        val location = newLocation("metadata-location/t")
+
+        val first = write(df((1L, "east", 1.0)), location, "append")
+        assert(first.metadataLocation != null, s"$first")
+        assert(first.metadataLocation.endsWith(".metadata.json"), first.metadataLocation)
+        assert(first.metadataLocation.contains("/metadata/"), first.metadataLocation)
+        val onDisk = new java.io.File(java.net.URI.create(first.metadataLocation))
+        assert(onDisk.isFile, s"metadata file must exist on disk: ${first.metadataLocation}")
+        // Under this table's root.
+        val root = new java.io.File(java.net.URI.create(location)).getCanonicalPath
+        assert(onDisk.getCanonicalPath.startsWith(root + java.io.File.separator + "metadata" + java.io.File.separator), s"${onDisk.getCanonicalPath} vs $root")
+
+        val second = write(df((2L, "west", 2.0)), location, "append")
+        assert(second.metadataLocation != null && second.metadataLocation != first.metadataLocation, s"$first vs $second")
+        assert(new java.io.File(java.net.URI.create(second.metadataLocation)).isFile, second.metadataLocation)
+
+        val current = loadTable(location).asInstanceOf[org.apache.iceberg.HasTableOperations].operations().current().metadataFileLocation()
+        assert(second.metadataLocation == current, s"${second.metadataLocation} vs $current")
+    }
+
     // ---- Acceptance bullet 2: overwrite ---------------------------------
 
     test("overwrite -> old rows gone, exactly one new snapshot, table never observed empty") {

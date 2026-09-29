@@ -10,7 +10,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.iceberg.hadoop.HadoopTables
 import org.apache.iceberg.spark.{SparkCachedTableCatalog, SparkCatalog, SparkSchemaUtil, SparkTableCache}
-import org.apache.iceberg.{PartitionSpec, Schema, Snapshot, Table, TableProperties}
+import org.apache.iceberg.{HasTableOperations, PartitionSpec, Schema, Table, TableProperties}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.types.StructType
 import org.slf4j.{Logger, LoggerFactory}
@@ -19,8 +19,11 @@ import java.util.UUID
 import scala.collection.JavaConverters._
 
 /** All Apache Iceberg write logic for objectStore destinations. Tables are
-  *  addressed purely by path (`file://`, `s3a://`): no catalog registration,
+  *  addressed purely by path (`file://`, `s3a://`): no catalog in the write path,
   *  metadata lives at `<location>/metadata/`, data under `<location>/data/`.
+  *  When the pipeline opts in (`unityCatalog`), IcebergCatalogRegistrar
+  *  registers the table in Unity Catalog after the commit, from
+  *  `WriteResult.metadataLocation`.
   *
   *  Uses `df.sparkSession` rather than `SparkSessionManager.getOrCreate()` so
   *  it runs wherever the caller's session runs (including a plain local
@@ -33,7 +36,9 @@ object IcebergWriter {
     /** Table property naming the pipeline that owns the table. */
     val PipelineProperty = "datris.pipeline"
 
-    final case class WriteResult(snapshotId: Long, addedRecords: Long, deletedRecords: Long, totalRecords: Long)
+    /** `metadataLocation` is the table's current metadata file after the write
+      * (null only when it cannot be read). */
+    final case class WriteResult(snapshotId: Long, addedRecords: Long, deletedRecords: Long, totalRecords: Long, metadataLocation: String = null)
 
     /** Write `df` to the Iceberg table at `location`, creating it if absent.
       *
@@ -85,7 +90,7 @@ object IcebergWriter {
         if (exists && mode == "ignore") {
             val table = loadChecked(tables, location)
             statusUtil.info("processing", "Iceberg table exists at " + location + "; writeMode ignore, nothing written")
-            return resultOf(table.currentSnapshot())
+            return resultOf(table)
         }
         if (exists && mode == "errorifexists")
             throw new DatrisException("Iceberg table already exists at " + location + " and writeMode is errorifexists")
@@ -115,8 +120,7 @@ object IcebergWriter {
 
         table.refresh()
         assertTableLocation(table, location)
-        val snapshot = table.currentSnapshot()
-        val result = resultOf(snapshot)
+        val result = resultOf(table)
         statusUtil.info(
             "processing",
             "Iceberg commit at " + location + ": snapshot " + result.snapshotId +
@@ -368,13 +372,19 @@ object IcebergWriter {
         }
     }
 
-    private def resultOf(snapshot: Snapshot): WriteResult =
-        if (snapshot == null) WriteResult(-1L, 0L, 0L, 0L)
+    private def resultOf(table: Table): WriteResult = {
+        val metadataLocation = table match {
+            case t: HasTableOperations => Option(t.operations().current()).map(_.metadataFileLocation()).orNull
+            case _ => null
+        }
+        val snapshot = table.currentSnapshot()
+        if (snapshot == null) WriteResult(-1L, 0L, 0L, 0L, metadataLocation)
         else {
             val summary = snapshot.summary()
             def count(key: String): Long = Option(summary.get(key)).map(_.toLong).getOrElse(0L)
-            WriteResult(snapshot.snapshotId(), count("added-records"), count("deleted-records"), count("total-records"))
+            WriteResult(snapshot.snapshotId(), count("added-records"), count("deleted-records"), count("total-records"), metadataLocation)
         }
+    }
 
     private def quote(name: String): String = "`" + name.replace("`", "``") + "`"
 }

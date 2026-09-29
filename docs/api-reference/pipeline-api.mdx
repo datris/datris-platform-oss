@@ -31,14 +31,14 @@ curl "http://localhost:8080/api/v1/pipeline?pipeline=sales_data"
 GET /api/v1/pipelines/{name}/unity-catalog
 ```
 
-The last Unity Catalog metadata push for a Databricks pipeline that sets `unityCatalog.enabled` (see [Databricks](/destinations/databricks#unity-catalog-metadata)).
+The last Unity Catalog sync for a pipeline that sets `unityCatalog.enabled`: the metadata push and lineage for a Databricks pipeline (see [Databricks](/destinations/databricks#unity-catalog-metadata)), or the table registration for an object store Iceberg pipeline (see [Register Iceberg tables](/destinations/unity-catalog#register-iceberg-tables)).
 
 **Example:**
 ```bash
 curl http://localhost:8080/api/v1/pipelines/orders_pipeline/unity-catalog
 ```
 
-**Response:** `200 OK`. `enabled` says whether the pipeline opted in and `coordinates` gives the Unity Catalog table (Databricks destinations only). `state` is `never` (no sync yet), `synced`, or `error` (with `lastError` holding the warehouse's message). `lastSyncAt` and `lastRunId` identify the last sync. `lineage` is the lineage publish status: `off` (`unityCatalog.lineage` is `false`, or the push is off), `never`, `published`, or `error` (the failure is a `lastError` line starting with `uc-lineage:`); `lastLineageAt` is when lineage was last published and `lineageHash` identifies the published definition (see [Lineage in Unity Catalog](/destinations/unity-catalog#lineage-in-unity-catalog)). `404` if the pipeline does not exist.
+**Response:** `200 OK`. `enabled` says whether the pipeline opted in and `coordinates` gives the Unity Catalog table (Databricks destinations only). `state` is `never` (no sync yet), `synced`, or `error` (with `lastError` holding the warehouse's message). `lastSyncAt` and `lastRunId` identify the last sync. `lineage` is the lineage publish status: `off` (`unityCatalog.lineage` is `false`, or the push is off), `never`, `published`, or `error` (the failure is a `lastError` line starting with `uc-lineage:`); `lastLineageAt` is when lineage was last published and `lineageHash` identifies the published definition (see [Lineage in Unity Catalog](/destinations/unity-catalog#lineage-in-unity-catalog)). For an object store Iceberg pipeline, `coordinates` names the registered table (`catalog.schema.table`, with `kind: "iceberg"` and the table's `location`), `registerEnabled` says whether registration is on, and `register` is `off`, `never`, `registered`, `stale` (Unity Catalog still points at an older metadata file) or `error` (the failure is a `lastError` line starting with `uc-register:`); `registeredMetadataLocation` and `lastRegisterAt` record the last registration. `404` if the pipeline does not exist.
 
 ```json
 {
@@ -51,7 +51,23 @@ curl http://localhost:8080/api/v1/pipelines/orders_pipeline/unity-catalog
   "lineageEnabled": true,
   "lineage": "published",
   "lineageHash": "...",
-  "lastLineageAt": "2026-09-29T12:00:01Z"
+  "lastLineageAt": "2026-09-29T12:00:01Z",
+  "registerEnabled": false,
+  "register": "off"
+}
+```
+
+For an object store Iceberg pipeline:
+
+```json
+{
+  "pipeline": "orders_lake",
+  "enabled": true,
+  "coordinates": { "catalog": "analytics", "schema": "default", "table": "orders_lake", "qualified": "analytics.default.orders_lake", "kind": "iceberg", "location": "s3a://my-lake/orders" },
+  "registerEnabled": true,
+  "register": "registered",
+  "registeredMetadataLocation": "s3a://my-lake/orders/metadata/00001-....metadata.json",
+  "lastRegisterAt": "2026-09-29T12:00:02Z"
 }
 ```
 

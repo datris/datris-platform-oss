@@ -10,7 +10,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
   * statement group ("comments", "tags", "properties"); null means the group
   * has never succeeded (or failed last time), so the next run re-issues it.
   * `lastError` is null after a clean sync; lineage failures are lines
-  * prefixed `uc-lineage:`. All timestamps are ISO-8601 UTC. */
+  * prefixed `uc-lineage:`, register failures `uc-register:`. All timestamps are ISO-8601 UTC. */
 case class UnityCatalogSyncState(
     pipeline: String,
     lastSyncAt: String,
@@ -27,5 +27,12 @@ case class UnityCatalogSyncState(
     // table) so steady-state runs PATCH run properties without listing.
     lineageHash: String = null,
     lastLineageAt: String = null,
-    lineageRelationshipIds: java.util.Map[String, String] = null
+    lineageRelationshipIds: java.util.Map[String, String] = null,
+    // Iceberg register (IcebergCatalogRegistrar, object-store destinations).
+    // Null on older docs ⇒ "never registered". `registeredMetadataLocation` is
+    // our metadata file at the last register (or at the last stale-pointer
+    // check); failures and the stale warning are `uc-register:` lines in
+    // `lastError`.
+    registeredMetadataLocation: String = null,
+    lastRegisterAt: String = null
 )

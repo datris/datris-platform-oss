@@ -149,3 +149,54 @@ def test_openapi_lists_last_lineage_at():
     nxt = re.search(r"\n  /api/", text[start + 1:])
     block = text[start: start + 1 + nxt.start()] if nxt else text[start:]
     assert "lastLineageAt" in block, "lastLineageAt must be in the /pipelines/{name}/unity-catalog schema"
+
+
+# ======================================================================
+# Story: Unity Catalog 4: Iceberg register spike
+# (plans/stories/unity-catalog-4-iceberg-register.md), Acceptance bullet 4.
+# ======================================================================
+
+S3_MDX = os.path.join(DOCS, "destinations", "s3.mdx")
+OBJECT_STORE_MDX = os.path.join(DOCS, "destinations", "object-store.mdx")
+
+
+def test_unity_catalog_page_has_register_iceberg_tables_section():
+    text = _read(UNITY_CATALOG_MDX)
+    body = _section(text, r"^Register Iceberg tables$")
+    headings = [l.strip() for l in text.splitlines() if l.startswith("#")]
+    assert body is not None, headings
+    assert "EXTERNAL USE SCHEMA" in body, body
+    assert "external location" in body.lower(), body
+    assert "icebergRestPath" in body, body
+    assert "icebergRestPrefix" in body, body
+    # Placed before "Browse what a secret can see".
+    reg = next(i for i, h in enumerate(headings) if re.match(r"^#+\s+Register Iceberg tables$", h))
+    browse = next(i for i, h in enumerate(headings) if re.match(r"^#+\s+Browse what a secret can see$", h))
+    assert reg < browse, headings
+
+
+def test_unity_catalog_page_no_longer_says_iceberg_tables_are_not_registered():
+    text = _read(UNITY_CATALOG_MDX)
+    assert "are not registered in Unity Catalog" not in text
+
+
+def test_s3_and_object_store_pages_no_longer_say_not_registered():
+    for path in (S3_MDX, OBJECT_STORE_MDX):
+        text = _read(path)
+        assert "not registered" not in text, path
+        assert "/destinations/unity-catalog" in text, f"{path} must still point at the Unity Catalog page"
+
+
+def test_openapi_lists_registered_metadata_location_in_unity_catalog_block():
+    text = _read(OPENAPI_YAML)
+    start = text.index("/api/v1/pipelines/{name}/unity-catalog:")
+    nxt = re.search(r"\n  /api/", text[start + 1:])
+    block = text[start: start + 1 + nxt.start()] if nxt else text[start:]
+    for field in ("registeredMetadataLocation", "lastRegisterAt", "registerEnabled"):
+        assert field in block, f"{field} must be in the /pipelines/{{name}}/unity-catalog schema"
+
+
+def test_pipeline_config_reference_mentions_unity_catalog_catalog():
+    ref = server.PIPELINE_CONFIG_REFERENCE
+    assert "unityCatalog.catalog" in ref
+    assert "credentialsSecret" in ref

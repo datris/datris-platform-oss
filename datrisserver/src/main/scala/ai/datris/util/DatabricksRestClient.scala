@@ -75,20 +75,26 @@ object ApacheTransport extends HttpTransport {
 }
 
 /** A non-2xx answer from the workspace REST API. `status` lets callers treat
-  * an expected 404 (object not created yet) differently from a failure. */
-class DatabricksHttpException(val status: Int, message: String) extends DatrisException(message)
+  * an expected 404 (object not created yet) differently from a failure;
+  * `body` is the raw response body when the translator kept it (null
+  * otherwise), for callers that word their own message. */
+class DatabricksHttpException(val status: Int, message: String, val body: String = null) extends DatrisException(message)
 
-/** Minimal Databricks workspace REST client for the lineage-tracking API.
-  * Auth: OAuth M2M (client-credentials against `{host}/oidc/v1/token`, token
-  * cached until 60 s before expiry) when the secret carries clientId and
-  * clientSecret, otherwise the personal access token as a Bearer. */
+/** Minimal Databricks workspace REST client (lineage tracking, Iceberg REST
+  * register). Auth: OAuth M2M (client-credentials against
+  * `{host}/oidc/v1/token`, token cached until 60 s before expiry) when the
+  * secret carries clientId and clientSecret, otherwise the personal access
+  * token as a Bearer. With neither (host-only credentials, used only by the
+  * Iceberg register against an unauthenticated catalog) requests carry no
+  * Authorization header; `token()` still throws. `translate` turns a non-2xx
+  * answer into the exception thrown (default: lineage-worded). */
 class DatabricksRestClient(
     creds: ResolvedDatabricksCredentials,
     transport: HttpTransport = ApacheTransport,
-    clock: () => Long = System.currentTimeMillis
+    clock: () => Long = System.currentTimeMillis,
+    translate: (Int, String) => DatabricksHttpException = DatabricksRestClient.translate
 ) {
-    private val host: String = DatabricksConnectionUtil.normalizeHost(Option(creds.host).getOrElse("")).stripSuffix("/")
-    private val base: String = "https://" + host
+    private val base: String = DatabricksRestClient.baseUrl(Option(creds.host).getOrElse(""))
 
     private var cachedToken: String = _
     private var cachedUntil: Long = 0L
@@ -124,11 +130,17 @@ class DatabricksRestClient(
     def post(path: String, json: JsonObject): JsonObject = call("POST", path, json)
     def patch(path: String, json: JsonObject): JsonObject = call("PATCH", path, json)
 
+    /** Full URL for `path` (for messages naming what was called). */
+    def url(path: String): String = base + path
+
+    private def anonymous: Boolean = !m2m && creds.token.forall(_.isEmpty)
+
     private def call(method: String, path: String, json: JsonObject): JsonObject = {
-        val headers = Map("Authorization" -> ("Bearer " + token()), "Accept" -> "application/json") ++
+        val auth = if (anonymous) Map.empty[String, String] else Map("Authorization" -> ("Bearer " + token()))
+        val headers = auth ++ Map("Accept" -> "application/json") ++
             (if (json != null) Map("Content-Type" -> "application/json") else Map.empty)
         val (status, body) = transport(method, base + path, headers, if (json != null) json.toString else null)
-        if (status < 200 || status >= 300) throw DatabricksRestClient.translate(status, body)
+        if (status < 200 || status >= 300) throw translate(status, body)
         if (body == null || body.trim.isEmpty) new JsonObject()
         else {
             val el = JsonParser.parseString(body)
@@ -139,6 +151,24 @@ class DatabricksRestClient(
 
 object DatabricksRestClient {
     private val BodyHead = 1000
+
+    private val SchemeRe = "(?i)^(https?)://(.*)$".r
+
+    /** Base URL for `raw` (the secret's `host`). An explicit `http://` or
+      * `https://` keeps its scheme, host and a non-default port (a local
+      * Iceberg REST catalog is plain http on its own port); path, query,
+      * userinfo and the scheme's default port are dropped. A bare host (the
+      * usual Databricks shape) becomes `https://` + the normalized host. */
+    private[util] def baseUrl(raw: String): String =
+        raw.trim match {
+            case SchemeRe(scheme, rest) =>
+                val sch = scheme.toLowerCase
+                val hostPort = rest.replaceFirst("[/?#].*$", "").replaceFirst("^.*@", "")
+                val defaultPort = if (sch == "https") ":443" else ":80"
+                sch + "://" + (if (hostPort.endsWith(defaultPort)) hostPort.dropRight(defaultPort.length) else hostPort)
+            case other =>
+                "https://" + DatabricksConnectionUtil.normalizeHost(other).stripSuffix("/")
+        }
 
     private[util] def head(body: String): String =
         Option(body).map(_.trim).filter(_.nonEmpty).map(b => "Response: " + b.take(BodyHead)).getOrElse("")
@@ -155,6 +185,6 @@ object DatabricksRestClient {
             case _ =>
                 "Databricks REST call failed with status " + status + ". " + head(body)
         }
-        new DatabricksHttpException(status, msg.trim)
+        new DatabricksHttpException(status, msg.trim, body)
     }
 }

@@ -188,4 +188,72 @@ class DatabricksRestClientSpec extends AnyFunSuite {
         assert(fake3.apiCalls.head.url == s"https://$HOST$API", fake3.apiCalls.head.url)
         assert(DatabricksConnectionUtil.normalizeHost("a@b.example") == "b.example")
     }
+
+    // --- Story: Unity Catalog 4: Iceberg register spike ------------------------
+    // (plans/stories/unity-catalog-4-iceberg-register.md), Acceptance bullet 2.
+    // Seams: an explicit http(s):// scheme and port on `host` are kept (the
+    // local Iceberg REST fixture is plain http on 8181); credentials with
+    // neither M2M nor a token send no Authorization header (token() still
+    // throws for callers that need it); the constructor gains
+    //   translate: (Int, String) => DatabricksHttpException = DatabricksRestClient.translate
+    // used for every non-2xx answer.
+
+    private def anonymous(host: String) =
+        ResolvedDatabricksCredentials(host = host, clientId = None, clientSecret = None, token = None)
+
+    test("http://host:8181 base is preserved verbatim") {
+        val fake = new FakeTransport()
+        new DatabricksRestClient(pat(host = "http://iceberg-rest:8181"), fake.transport, new ManualClock().fn).get("/v1/config")
+        assert(fake.apiCalls.head.url == "http://iceberg-rest:8181/v1/config", fake.apiCalls.head.url)
+
+        val fake2 = new FakeTransport()
+        new DatabricksRestClient(pat(host = "http://iceberg-rest:8181/"), fake2.transport, new ManualClock().fn).get("/v1/config")
+        assert(fake2.apiCalls.head.url == "http://iceberg-rest:8181/v1/config", "trailing / stripped: " + fake2.apiCalls.head.url)
+
+        val fake3 = new FakeTransport()
+        new DatabricksRestClient(pat(host = "http://localhost:8181"), fake3.transport, new ManualClock().fn).get("/v1/namespaces")
+        assert(fake3.apiCalls.head.url == "http://localhost:8181/v1/namespaces", fake3.apiCalls.head.url)
+    }
+
+    test("bare host still becomes https") {
+        val fake = new FakeTransport()
+        new DatabricksRestClient(pat(host = "iceberg.example.com"), fake.transport, new ManualClock().fn).get("/v1/config")
+        assert(fake.apiCalls.head.url == "https://iceberg.example.com/v1/config", fake.apiCalls.head.url)
+
+        val fake2 = new FakeTransport()
+        new DatabricksRestClient(pat(), fake2.transport, new ManualClock().fn).get(API)
+        assert(fake2.apiCalls.head.url == s"https://$HOST$API", fake2.apiCalls.head.url)
+    }
+
+    test("anonymous credentials send no Authorization header") {
+        val fake = new FakeTransport()
+        val client = new DatabricksRestClient(anonymous("http://iceberg-rest:8181"), fake.transport, new ManualClock().fn)
+        val body = new JsonObject()
+        body.addProperty("name", "orders")
+        client.post("/v1/namespaces/default/register", body)
+        client.get("/v1/namespaces/default/tables/orders")
+        assert(fake.tokenCalls.isEmpty, fake.calls.mkString("\n"))
+        assert(fake.apiCalls.size == 2, fake.calls.mkString("\n"))
+        fake.apiCalls.foreach(c => assert(c.header("Authorization").isEmpty, s"no Authorization expected: ${c.headers}"))
+        assert(fake.apiCalls.head.url == "http://iceberg-rest:8181/v1/namespaces/default/register", fake.apiCalls.head.url)
+        // Paths that need credentials still fail loudly through token().
+        intercept[DatrisException](client.token())
+    }
+
+    test("custom translate is used for non-2xx") {
+        val fake = new FakeTransport(apiStatus = 404, apiBody = """{"error":{"message":"nope","code":404}}""")
+        val custom: (Int, String) => DatabricksHttpException =
+            (status: Int, body: String) => new DatabricksHttpException(status, "custom-translate " + status + " " + body)
+        val client = new DatabricksRestClient(pat(), fake.transport, new ManualClock().fn, translate = custom)
+        val e = intercept[DatabricksHttpException](client.get("/v1/namespaces/default/register"))
+        assert(e.status == 404)
+        assert(e.getMessage.startsWith("custom-translate 404"), e.getMessage)
+        assert(e.getMessage.contains("nope"), e.getMessage)
+        assert(!e.getMessage.contains("External Metadata API"), e.getMessage)
+
+        // The default is still the lineage-worded translate.
+        val fake2 = new FakeTransport(apiStatus = 404, apiBody = "{}")
+        val e2 = intercept[DatabricksHttpException](new DatabricksRestClient(pat(), fake2.transport, new ManualClock().fn).get(API))
+        assert(e2.getMessage.contains("External Metadata API"), e2.getMessage)
+    }
 }

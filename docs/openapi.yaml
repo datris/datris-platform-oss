@@ -1003,13 +1003,17 @@ paths:
   /api/v1/pipelines/{name}/unity-catalog:
     get:
       tags: [Pipelines]
-      summary: Unity Catalog metadata sync state for a pipeline
+      summary: Unity Catalog sync state for a pipeline
       description: >-
-        Whether the pipeline opted into the Unity Catalog metadata push, its
-        three-level table coordinates (Databricks destinations), the last
-        sync (`state` is `never`, `synced` or `error`), and the lineage publish
-        status (`lineage` is `off`, `never`, `published` or `error`; lineage
-        failures appear in `lastError` as lines prefixed `uc-lineage:`).
+        Whether the pipeline opted into Unity Catalog sync, its three-level
+        table coordinates (Databricks destinations, or the registered table of
+        an object-store Iceberg destination with `unityCatalog.catalog` set),
+        the last sync (`state` is `never`, `synced` or `error`), the lineage
+        publish status (`lineage` is `off`, `never`, `published` or `error`;
+        lineage failures appear in `lastError` as lines prefixed `uc-lineage:`),
+        and the Iceberg register status (`register` is `off`, `never`,
+        `registered`, `stale` or `error`; register warnings appear in
+        `lastError` as lines prefixed `uc-register:`).
       parameters:
         - in: path
           name: name
@@ -1039,6 +1043,12 @@ paths:
                         type: string
                       qualified:
                         type: string
+                      kind:
+                        type: string
+                        description: '`iceberg` for an object-store Iceberg table; absent for Databricks'
+                      location:
+                        type: string
+                        description: Table root of an object-store Iceberg table (s3a://bucket/prefix)
                   state:
                     type: string
                     enum: [never, synced, error]
@@ -1066,6 +1076,21 @@ paths:
                   lastLineageAt:
                     type: string
                     description: ISO-8601 UTC time lineage was last published
+                  registerEnabled:
+                    type: boolean
+                    description: Object-store Iceberg destination with unityCatalog.enabled and the register knob (default on)
+                  register:
+                    type: string
+                    enum: [off, never, registered, stale, error]
+                    description: >-
+                      Iceberg register status. `stale` means Unity Catalog still
+                      points at an older metadata file of the table.
+                  registeredMetadataLocation:
+                    type: string
+                    description: The table's metadata file at the last register (or stale-pointer check); null until registered
+                  lastRegisterAt:
+                    type: string
+                    description: ISO-8601 UTC time the table was registered
         '404':
           description: Pipeline not configured
         '500':

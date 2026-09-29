@@ -76,7 +76,7 @@
     </div>
   </div>
 
-  <!-- Unity Catalog metadata push (Databricks, opt-in via unityCatalog.enabled). -->
+  <!-- Unity Catalog sync (Databricks metadata push, object-store Iceberg register; opt-in via unityCatalog.enabled). -->
   <div class="uc-panel" *ngIf="showUnityCatalog()">
     <div class="lineage-row">
       <span class="lineage-label">Unity Catalog</span>
@@ -88,7 +88,14 @@
       <span class="lineage-detail">{{ unityCatalog.lastSyncAt }}<ng-container *ngIf="unityCatalog.lastRunId"> · run {{ unityCatalog.lastRunId }}</ng-container></span>
     </div>
     <div class="lineage-row" *ngIf="unityCatalog.state === 'never'">
-      <span class="lineage-detail">Comments, tags and table properties are pushed after the next successful load.</span>
+      <span class="lineage-detail">Metadata is pushed after the next successful load.</span>
+    </div>
+    <div class="lineage-row" *ngIf="unityCatalog.registerEnabled">
+      <span class="lineage-label">Registered</span>
+      <span class="lineage-detail" *ngIf="unityCatalog.lastRegisterAt">registered in Unity Catalog at {{ unityCatalog.lastRegisterAt }}</span>
+      <span class="lineage-detail" *ngIf="!unityCatalog.lastRegisterAt">not registered yet</span>
+      <span class="fresh-chip stale" *ngIf="unityCatalog.register === 'stale'">stale</span>
+      <span class="fresh-chip stale" *ngIf="unityCatalog.register === 'error'">error</span>
     </div>
     <div class="lineage-row">
       <span class="lineage-label">Lineage</span>

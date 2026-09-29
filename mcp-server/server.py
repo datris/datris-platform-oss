@@ -876,7 +876,9 @@ Snowflake is an EXTERNAL destination: credentials come from a human-owned Platfo
 
 Databricks is an EXTERNAL destination: credentials come from a human-owned Platform secret named by `credentialsSecret` (fields: `host` — the workspace hostname — plus `clientId`/`clientSecret` for service-principal OAuth, or `token` for a personal access token). Discover candidates via `list_platform_secrets` and verify fields via `get_platform_secret_fields`; the agent cannot create it. `dbName` is the Unity Catalog CATALOG (not a database) and `warehouse` is the SQL warehouse ID (from the warehouse's Connection details — the trailing segment of the HTTP path, not the warehouse name); neither has a default — ask the user. `schema` defaults to `default`. Identifiers resolve case-insensitively (Unity Catalog stores names lowercase); names with hyphens or spaces are backtick-quoted, so prefer underscore table names. `keyFields` upserts via `MERGE`; `truncateBeforeWrite` replaces the table contents atomically each run. Data stages through an auto-created `datris_staging` volume in the target schema. Read back / verify loads with `query_databricks` (pipeline-scoped; SELECT plus SHOW/DESCRIBE for metadata discovery). To see what a secret can already reach in Unity Catalog before creating a pipeline, use `browse_unity_catalog` (secret-scoped, no pipeline needed); its SQL warehouse comes from the `warehouse` argument, an optional `warehouse` field on the secret, or an existing Databricks pipeline using the secret.
 
-Unity Catalog metadata (Databricks only, opt-in): a top-level `"unityCatalog": {"enabled": true}` makes every successful load annotate the table in Unity Catalog — a table comment naming the pipeline and source, fixed comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog` (when the pipeline has a catalog), `datris_dq_status` and `managed_by=datris`, and `TBLPROPERTIES` (`datris.lastRunId`, `datris.configVersion`, `datris.lastRunAt`, `datris.lineagePath`, ...). Optional knobs `comments`, `tags`, `properties` (all default true) drop a group. Omit the block unless the user asks for it; the server rejects it on any non-Databricks destination. Tagging needs `GRANT APPLY TAG ON SCHEMA <catalog>.<schema> TO <service principal>`; without it the tag statement fails and is reported as a warning on the run — the load itself still succeeds. The block also publishes lineage to Unity Catalog (knob `"lineage"`, default true): the tap or file upload, the pipeline and the table appear in Catalog Explorer's External lineage graph with column mappings and last-run properties. It needs `GRANT CREATE EXTERNAL METADATA ON METASTORE` (metastore admin only) plus `MODIFY` on the table; without it lineage is a warning on the run, never a failed load. `"lineage": false` keeps the annotations and skips lineage. Last sync / last error / `lastLineageAt`: `GET /api/v1/pipelines/<name>/unity-catalog`.
+Unity Catalog metadata (Databricks, opt-in): a top-level `"unityCatalog": {"enabled": true}` makes every successful load annotate the table in Unity Catalog — a table comment naming the pipeline and source, fixed comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog` (when the pipeline has a catalog), `datris_dq_status` and `managed_by=datris`, and `TBLPROPERTIES` (`datris.lastRunId`, `datris.configVersion`, `datris.lastRunAt`, `datris.lineagePath`, ...). Optional knobs `comments`, `tags`, `properties` (all default true) drop a group. Omit the block unless the user asks for it; the server rejects it on any destination other than Databricks or an objectstore Iceberg table. Tagging needs `GRANT APPLY TAG ON SCHEMA <catalog>.<schema> TO <service principal>`; without it the tag statement fails and is reported as a warning on the run — the load itself still succeeds. The block also publishes lineage to Unity Catalog (knob `"lineage"`, default true): the tap or file upload, the pipeline and the table appear in Catalog Explorer's External lineage graph with column mappings and last-run properties. It needs `GRANT CREATE EXTERNAL METADATA ON METASTORE` (metastore admin only) plus `MODIFY` on the table; without it lineage is a warning on the run, never a failed load. `"lineage": false` keeps the annotations and skips lineage. Last sync / last error / `lastLineageAt`: `GET /api/v1/pipelines/<name>/unity-catalog`.
+
+Unity Catalog registration (objectstore with `fileFormat: "iceberg"`, opt-in): `"unityCatalog": {"enabled": true, "credentialsSecret": "<platform secret>", "catalog": "<uc catalog>", "schema": "default"}` registers the Iceberg table in Unity Catalog as `<unityCatalog.catalog>.<schema>.<pipeline name>` after each successful write, pointing Unity Catalog at the table's current metadata file. `credentialsSecret` (same field shape as a Databricks secret: `host` plus `clientId`/`clientSecret` or `token`) and `unityCatalog.catalog` are required; `schema` defaults to `default`; `"register": false` turns registration off. Prerequisites on the Databricks side: a metastore admin enables external data access, the catalog owner grants `EXTERNAL USE SCHEMA` on the schema to the principal, and an external location must cover the table's S3 path. The first run registers the table; later runs leave Unity Catalog alone and warn when its pointer is behind the table's latest metadata (keeping it current is not done yet). A table of the same name that is not this pipeline's is refused, never replaced or dropped. MinIO-hosted tables can be registered but Unity Catalog cannot serve them. Every failure is a warning on the run, never a failed load. Status: `register` / `registeredMetadataLocation` on `GET /api/v1/pipelines/<name>/unity-catalog`.
 
 ### objectStore — MinIO (default) or AWS S3
 
@@ -1725,7 +1727,19 @@ def _base_tools():
                     },
                     "unity_catalog": {
                         "type": "boolean",
-                        "description": "OMIT BY DEFAULT. Pass true only when the user asks for Unity Catalog metadata. Databricks destinations only (destination=databricks); the server rejects it elsewhere. After each successful load, pushes a table comment, provenance column comments, tags (datris_pipeline, datris_catalog, datris_dq_status, managed_by) and table properties (last run id, config version, lineage path) to Unity Catalog. The service principal needs GRANT APPLY TAG ON SCHEMA on the target schema, or tagging is reported as a warning on the run (the load still succeeds). Also publishes External Lineage (tap/upload → pipeline → table, the config key `lineage`, default on), which needs CREATE EXTERNAL METADATA on the metastore; a missing grant is a warning, not a failed load."
+                        "description": "OMIT BY DEFAULT. Pass true only when the user asks for Unity Catalog. Supported for destination=databricks and for destination=objectstore with fileFormat=iceberg; the server rejects it elsewhere. Object store + iceberg: after each successful write the table is registered in Unity Catalog as <catalog>.<schema>.<pipeline> — also pass unity_catalog_secret and unity_catalog_catalog (unity_catalog_schema optional, default \"default\"); the metastore needs external data access enabled, the principal EXTERNAL USE SCHEMA on the schema, and an external location covering the S3 path; a failed registration is a warning on the run, not a failed load. Databricks: after each successful load, pushes a table comment, provenance column comments, tags (datris_pipeline, datris_catalog, datris_dq_status, managed_by) and table properties (last run id, config version, lineage path) to Unity Catalog. The service principal needs GRANT APPLY TAG ON SCHEMA on the target schema, or tagging is reported as a warning on the run (the load still succeeds). Also publishes External Lineage (tap/upload → pipeline → table, the config key `lineage`, default on), which needs CREATE EXTERNAL METADATA on the metastore; a missing grant is a warning, not a failed load."
+                    },
+                    "unity_catalog_secret": {
+                        "type": "string",
+                        "description": "Only with unity_catalog=true on destination=objectstore + fileFormat=iceberg (ignored otherwise). Name of an existing PLATFORM secret for the Unity Catalog workspace: field host, plus clientId/clientSecret (service-principal OAuth) or token. Usually the same secret a Databricks pipeline uses. Discover via list_platform_secrets; the agent cannot create it."
+                    },
+                    "unity_catalog_catalog": {
+                        "type": "string",
+                        "description": "Only with unity_catalog=true on destination=objectstore + fileFormat=iceberg (ignored otherwise). The Unity Catalog catalog the table is registered under. No default — ask the user."
+                    },
+                    "unity_catalog_schema": {
+                        "type": "string",
+                        "description": "Only with unity_catalog=true on destination=objectstore + fileFormat=iceberg (ignored otherwise). The Unity Catalog schema the table is registered under. Default: default."
                     }
                 },
                 "required": ["pipeline"]
@@ -3521,9 +3535,21 @@ def _dispatch(name: str, args: dict) -> str:
         # Step 2e: Source-of-authority declaration (only when explicitly given)
         if "authoritative" in args and args["authoritative"] is not None:
             config["authoritative"] = bool(args["authoritative"])
-        # Step 2f: Unity Catalog metadata push (Databricks only; key absent unless true)
+        # Step 2f: Unity Catalog opt-in (key absent unless true). Databricks
+        # takes {"enabled": true}; an objectstore Iceberg table is registered
+        # in Unity Catalog and needs the secret + UC catalog (schema optional).
         if args.get("unity_catalog") is True:
-            config["unityCatalog"] = {"enabled": True}
+            if dest_type == "objectstore":
+                uc = {"enabled": True}
+                if args.get("unity_catalog_secret"):
+                    uc["credentialsSecret"] = args["unity_catalog_secret"]
+                if args.get("unity_catalog_catalog"):
+                    uc["catalog"] = args["unity_catalog_catalog"]
+                if args.get("unity_catalog_schema"):
+                    uc["schema"] = args["unity_catalog_schema"]
+                config["unityCatalog"] = uc
+            else:
+                config["unityCatalog"] = {"enabled": True}
 
         # Step 3: Register the pipeline
         create_result = _call("post", "/api/v1/pipeline", json=config)

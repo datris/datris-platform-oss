@@ -43,7 +43,8 @@ case class PipelineConfig(
   * The knobs are boxed and null means on: Spring's `@RequestBody` Jackson
   * mapper does not apply Scala default arguments (an absent Boolean arrives
   * as `false`), and Gson skips constructors on config DB reads. Read them
-  * through `commentsOn` / `tagsOn` / `propertiesOn`. */
+  * through `commentsOn` / `tagsOn` / `propertiesOn` / `lineageOn` /
+  * `registerOn`. */
 case class UnityCatalogSync @JsonCreator() (
     @JsonProperty("enabled") enabled: Boolean = false,
     @JsonProperty("comments") comments: java.lang.Boolean = null,
@@ -51,14 +52,25 @@ case class UnityCatalogSync @JsonCreator() (
     @JsonProperty("properties") properties: java.lang.Boolean = null,
     // Publish External Metadata + External Lineage (tap/upload → pipeline →
     // table) over the workspace REST API. See UnityCatalogLineagePublisher.
-    @JsonProperty("lineage") lineage: java.lang.Boolean = null
+    @JsonProperty("lineage") lineage: java.lang.Boolean = null,
+    // Object-store Iceberg destinations only (IcebergCatalogRegistrar): the
+    // Platform secret naming the Unity Catalog workspace, and the UC catalog
+    // and schema the table is registered under as <catalog>.<schema>.<pipeline>.
+    // A Databricks destination ignores these (its coordinates come from Database).
+    @JsonProperty("credentialsSecret") credentialsSecret: String = null,
+    @JsonProperty("catalog") catalog: String = null,
+    // Absent ⇒ null (Jackson/Gson skip Scala defaults); read via schemaOrDefault.
+    @JsonProperty("schema") schema: String = null,
+    @JsonProperty("register") register: java.lang.Boolean = null
 ) {
-    def this() = this(false, null, null, null, null)
+    def this() = this(false, null, null, null, null, null, null, null, null)
 
     def commentsOn: Boolean = UnityCatalogSync.on(comments)
     def tagsOn: Boolean = UnityCatalogSync.on(tags)
     def propertiesOn: Boolean = UnityCatalogSync.on(properties)
     def lineageOn: Boolean = UnityCatalogSync.on(lineage)
+    def registerOn: Boolean = UnityCatalogSync.on(register)
+    def schemaOrDefault: String = Option(schema).map(_.trim).filter(_.nonEmpty).getOrElse("default")
 }
 
 object UnityCatalogSync {

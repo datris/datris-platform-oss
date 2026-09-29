@@ -1,10 +1,10 @@
 ---
 title: "Discover and annotate Databricks Unity Catalog tables from an AI agent"
 sidebarTitle: "Unity Catalog"
-description: "Browse the catalogs, schemas, tables and columns a Databricks secret can see, search warehouse tables from find_data, and mark the tables Datris loads with comments and tags."
+description: "Browse the catalogs, schemas, tables and columns a Databricks secret can see, search warehouse tables from find_data, mark the tables Datris loads with comments and tags, and register Iceberg tables in Unity Catalog."
 ---
 
-Use this page when an agent works against a Databricks workspace. Datris does two things with Unity Catalog: it **annotates** the tables its [Databricks](/destinations/databricks) pipelines load (comments, tags and table properties), and it lets an agent **discover** what a Databricks secret can already see before it creates a pipeline. It also publishes **lineage**, so Catalog Explorer can trace a table back to the tap or upload that fed it. All of this is read-only toward your data; annotations and lineage are the only things Datris writes to Unity Catalog.
+Use this page when an agent works against a Databricks workspace. Datris does two things with Unity Catalog: it **annotates** the tables its [Databricks](/destinations/databricks) pipelines load (comments, tags and table properties), and it lets an agent **discover** what a Databricks secret can already see before it creates a pipeline. It also publishes **lineage**, so Catalog Explorer can trace a table back to the tap or upload that fed it, and it can **register** the Iceberg tables that [object store](/destinations/object-store) pipelines write, so warehouse users find them by name instead of by S3 path. All of this is read-only toward your data; annotations, lineage and table registrations are the only things Datris writes to Unity Catalog.
 
 ## Two meanings of "catalog"
 
@@ -40,6 +40,64 @@ Lineage uses the workspace REST API with the same Databricks secret as the load,
 - `MODIFY` on the table, for the pipeline-to-table relationship. The setup grants on the schema already cover it.
 
 A missing privilege, a wrong host or a workspace without the external lineage API is recorded as a warning on the run and in the audit log, never a failed load, and the next run retries. The pipeline detail page shows when lineage was last published. To keep the comments, tags and properties but skip lineage, set `"unityCatalog": { "enabled": true, "lineage": false }`. `DATRIS_UNITY_CATALOG_SYNC=false` switches lineage off along with the rest of the push.
+
+## Register Iceberg tables
+
+An [object store](/destinations/object-store) or [S3](/destinations/s3) pipeline with `fileFormat: "iceberg"` can register its table in Unity Catalog. After each successful write, Datris points Unity Catalog at the table's current Iceberg metadata file, so Databricks SQL and any Iceberg REST client can find the table by name.
+
+```json
+{
+  "destination": {
+    "objectStore": { "provider": "s3", "bucket": "my-lake", "prefixKey": "orders", "fileFormat": "iceberg", "credentialsSecret": "aws_lake" }
+  },
+  "unityCatalog": {
+    "enabled": true,
+    "credentialsSecret": "databricks_prod",
+    "catalog": "analytics",
+    "schema": "default"
+  }
+}
+```
+
+- `credentialsSecret` names a Databricks Platform secret with the same fields the [Databricks](/destinations/databricks) destination uses: `host`, plus `clientId`/`clientSecret` or `token`. It is separate from the object store's own `credentialsSecret`.
+- `catalog` is the Unity Catalog catalog. It is required and has no default.
+- `schema` is the Unity Catalog schema. It defaults to `default`.
+- The table is named after the pipeline: `<catalog>.<schema>.<pipeline name>`, lowercased, with dots, slashes, spaces and backticks replaced by `_`.
+- `"register": false` keeps the block but skips registration.
+
+The API returns `400` when `credentialsSecret` or `catalog` is missing, or when the object store writes `parquet` or `orc` (only Iceberg tables can be registered).
+
+### Databricks prerequisites
+
+Registration uses the Unity Catalog Iceberg REST catalog, which needs three things set up once:
+
+1. **External data access** enabled on the metastore. A metastore admin turns it on in Catalog Explorer, under the metastore's settings.
+2. **`EXTERNAL USE SCHEMA`** on the target schema for the secret's identity. Only the catalog owner can grant it: `` GRANT EXTERNAL USE SCHEMA ON SCHEMA analytics.default TO `<sp-application-id>` ``.
+3. An **external location** that covers the table's S3 path (the bucket and prefix above), with a storage credential that can read it.
+
+A missing prerequisite is a warning on the run that names what to fix: external data access or `EXTERNAL USE SCHEMA` for a permission error, or the S3 path that no external location covers.
+
+### How runs behave
+
+- The first successful write registers the table.
+- Later writes leave Unity Catalog alone. When Unity Catalog still points at an older metadata file of the same table, the run gets a warning that its pointer is behind; Unity Catalog readers see the table as of the first registration until that pointer is refreshed. Keeping the pointer current on every run is not done yet.
+- If a table with that name already exists and points somewhere other than this pipeline's table, Datris refuses to touch it. It never replaces, merges or drops a table. Rename the pipeline or choose another schema.
+- Any failure (a missing grant, a wrong host, a network error) is one warning on the run and an entry in the [audit log](/audit-log); the write itself still succeeds.
+- The pipeline detail page shows when the table was registered, and whether the pointer is stale or the last attempt failed. `GET /api/v1/pipelines/{name}/unity-catalog` returns `register` (`off`, `never`, `registered`, `stale` or `error`), `registeredMetadataLocation` and `lastRegisterAt`.
+- `DATRIS_UNITY_CATALOG_SYNC=false` switches registration off for the whole install.
+
+Tables in the built-in MinIO store can be registered, but Unity Catalog cannot read MinIO, so Databricks cannot serve them. Use an S3 bucket for tables you want to query from Databricks.
+
+### Other Iceberg REST catalogs
+
+For testing and for non-Databricks catalogs, the secret can carry two optional fields that change where the register call goes:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `icebergRestPath` | `/api/2.1/unity-catalog/iceberg-rest` | Path of the Iceberg REST catalog on `host`. `/` means the host root. |
+| `icebergRestPrefix` | `catalogs/<catalog>` | Catalog prefix in the REST path. An empty value, or `-`, means no prefix. |
+
+`host` may then include a scheme and port, for example `http://iceberg-rest:8181`, and a secret without `clientId`/`clientSecret` or `token` sends no credentials. Only registration is supported this way.
 
 ## Browse what a secret can see
 
@@ -98,5 +156,5 @@ Browse and search run as the secret's identity, so they see only what it is gran
 
 ## Not covered yet
 
-- Iceberg tables written by the [object store](/destinations/object-store) and [S3](/destinations/s3) destinations are not registered in Unity Catalog.
+- Keeping the Unity Catalog pointer current after the first run (RESTCatalog mode) is not done yet.
 - There is no Unity Catalog browser in the Datris UI yet; use the API or MCP tool.

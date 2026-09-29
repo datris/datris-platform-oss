@@ -60,17 +60,35 @@ object PipelineValidatorUtil {
             validateStructuredAndSemiStructured(config)
     }
 
-    /** `unityCatalog.enabled` pushes metadata over the Databricks SQL
-      * connection, so it is only meaningful for a Databricks destination.
-      * `enabled:false` is accepted anywhere (a harmless leftover). */
+    /** `unityCatalog.enabled` is meaningful for a Databricks destination
+      * (metadata push + lineage) and for an object-store Iceberg destination
+      * (the table is registered in Unity Catalog, which needs the secret and
+      * the UC catalog). Any object-store provider is accepted: registering
+      * only records a location. `enabled:false` is accepted anywhere (a
+      * harmless leftover). */
     private def validateUnityCatalog(config: PipelineConfig): Unit = {
-        if (config.unityCatalog == null || !config.unityCatalog.enabled) return
+        val uc = config.unityCatalog
+        if (uc == null || !uc.enabled) return
         val databricks = config.destination != null && config.destination.database != null &&
             config.destination.database.useDatabricks
-        if (!databricks)
-            throw new DatrisException(
-                "'unityCatalog.enabled' is only supported for a Databricks destination (destination.database.useDatabricks=true); object-store Iceberg support is planned"
-            )
+        if (databricks) return
+        val objectStore = if (config.destination != null) config.destination.objectStore else null
+        if (objectStore != null) {
+            val iceberg = objectStore.fileFormat != null && objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")
+            if (!iceberg)
+                throw new DatrisException(
+                    "'unityCatalog.enabled' on an object store requires fileFormat 'iceberg' (parquet and orc tables cannot be registered)"
+                )
+            def blank(v: String) = v == null || v.trim.isEmpty
+            if (blank(uc.credentialsSecret) || blank(uc.catalog))
+                throw new DatrisException(
+                    "'unityCatalog.credentialsSecret' and 'unityCatalog.catalog' are required for an object-store Iceberg destination"
+                )
+            return
+        }
+        throw new DatrisException(
+            "'unityCatalog.enabled' is only supported for a Databricks destination (destination.database.useDatabricks=true) or an object-store Iceberg destination"
+        )
     }
 
     private def validateUnstructured(config: PipelineConfig): Unit = {

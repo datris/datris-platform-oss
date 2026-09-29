@@ -210,7 +210,9 @@ object UnityCatalogMetadataSync {
             // its fields over so the metadata sync never wipes them.
             lineageHash = if (previous != null) previous.lineageHash else null,
             lastLineageAt = if (previous != null) previous.lastLineageAt else null,
-            lineageRelationshipIds = if (previous != null) previous.lineageRelationshipIds else null
+            lineageRelationshipIds = if (previous != null) previous.lineageRelationshipIds else null,
+            registeredMetadataLocation = if (previous != null) previous.registeredMetadataLocation else null,
+            lastRegisterAt = if (previous != null) previous.lastRegisterAt else null
         )
     }
 
