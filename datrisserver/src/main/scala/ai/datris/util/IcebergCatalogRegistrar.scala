@@ -26,7 +26,7 @@ import scala.util.control.NonFatal
   * Spike semantics: the first run registers; a later run that finds the table
   * already registered leaves Unity Catalog alone. If UC points at an older
   * metadata file of this table, the run gets a warning that the pointer is
-  * stale (keeping it current is RESTCatalog mode, story 5); if UC points
+  * stale (keeping it current is a later release); if UC points
   * anywhere else, the name belongs to another table and is refused. Nothing
   * is ever dropped or merged, and a failure is one warning plus an audit
   * entry, never a failed load. */
@@ -37,6 +37,9 @@ object IcebergCatalogRegistrar {
     val DefaultRestPath = "/api/2.1/unity-catalog/iceberg-rest"
     val RestPathField = "icebergRestPath"
     val RestPrefixField = "icebergRestPrefix"
+
+    /** Already-exists answered, but the table then 404s on GET. */
+    private class NotReadable(message: String) extends DatrisException(message)
 
     /** Where Unity Catalog's current pointer sits relative to our table. */
     sealed trait Classification
@@ -116,10 +119,25 @@ object IcebergCatalogRegistrar {
     }
 
     /** Already-exists answers: the Iceberg REST fixture's 409
-      * `AlreadyExistsException`, Databricks' `TABLE_ALREADY_EXISTS`. */
+      * `AlreadyExistsException`, Databricks' `TABLE_ALREADY_EXISTS`. A 400 or
+      * 409 without one of those markers (e.g. a commit conflict) is a failure,
+      * not "the table exists". */
     private[util] def alreadyExists(status: Int, body: String): Boolean = {
         val b = Option(body).getOrElse("").toLowerCase
-        status == 409 || ((status == 400 || status == 409) && (b.contains("table_already_exists") || b.contains("alreadyexistsexception")))
+        (status == 400 || status == 409) && (b.contains("table_already_exists") || b.contains("alreadyexists"))
+    }
+
+    /** A secret with half an OAuth pair and no token would silently fall back
+      * to an unauthenticated call; say so instead. None = usable shape. */
+    def credentialShape(creds: ResolvedDatabricksCredentials, secretName: String): Option[String] = {
+        val id = creds.clientId.exists(_.nonEmpty)
+        val secret = creds.clientSecret.exists(_.nonEmpty)
+        if (id != secret && !creds.token.exists(_.nonEmpty))
+            Some(
+                s"$ErrorPrefix secret $secretName has " + (if (id) "clientId without clientSecret" else "clientSecret without clientId") +
+                    " and no token; skipping registration"
+            )
+        else None
     }
 
     private def head(body: String): String =
@@ -207,7 +225,15 @@ object IcebergCatalogRegistrar {
             } else {
                 val tPath = tablePath(fields, catalog, schema, table)
                 currentUrl = client.url(tPath)
-                val loaded = client.get(tPath)
+                val loaded =
+                    try client.get(tPath)
+                    catch {
+                        case e: DatabricksHttpException if e.status == 404 =>
+                            throw new NotReadable(
+                                "the catalog reported " + qualified + " as existing but it is not readable at " + currentUrl +
+                                    "; leaving it untouched"
+                            )
+                    }
                 val ucLoc =
                     if (loaded.has("metadata-location") && loaded.get("metadata-location").isJsonPrimitive)
                         loaded.get("metadata-location").getAsString
@@ -223,7 +249,7 @@ object IcebergCatalogRegistrar {
                     case Stale =>
                         val line = warnLine(
                             s"Unity Catalog still points at ${normalize(ucLoc)}; the table has moved on to ${normalize(metadataLocation)}. " +
-                                "RESTCatalog mode (story 5) will keep it current"
+                                "Datris will keep it current in a later release"
                         )
                         statusUtil.warn("processing", line)
                         base.copy(registeredMetadataLocation = metadataLocation, lastError = joined(line +: others))
@@ -243,6 +269,7 @@ object IcebergCatalogRegistrar {
                 val msg = e match {
                     case h: DatabricksHttpException =>
                         describe(h.status, Option(h.body).getOrElse(""), currentUrl, catalog, schema, tableRoot)
+                    case n: NotReadable => n.getMessage
                     case other => "register of " + qualified + " failed: " + Option(other.getMessage).getOrElse(other.getClass.getSimpleName)
                 }
                 val line = warnLine(msg)
@@ -277,6 +304,13 @@ object IcebergCatalogRegistrar {
             val tableRoot = Option(tableRootOf(metadataLocation))
                 .getOrElse("s3a://" + ObjectStoreSpark.resolveBucket(objectStore) + "/" + objectStore.prefixKey)
             val creds = CredentialResolver.resolveDatabricks(uc.credentialsSecret, requireCredentials = false)
+            credentialShape(creds, uc.credentialsSecret) match {
+                case Some(line) =>
+                    statusUtil.warn("processing", line)
+                    audit(config.name, line)
+                    return
+                case None =>
+            }
             val previous =
                 try UnityCatalogSyncIO.read(config.name)
                 catch {

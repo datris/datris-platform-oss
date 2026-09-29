@@ -200,3 +200,18 @@ def test_pipeline_config_reference_mentions_unity_catalog_catalog():
     ref = server.PIPELINE_CONFIG_REFERENCE
     assert "unityCatalog.catalog" in ref
     assert "credentialsSecret" in ref
+
+
+def test_openapi_create_pipeline_request_lists_unity_catalog_block():
+    import yaml
+
+    spec = yaml.safe_load(_read(OPENAPI_YAML))
+    props = spec["paths"]["/api/v1/pipeline"]["post"]["requestBody"]["content"]["application/json"]["schema"]["properties"]
+    assert "unityCatalog" in props, sorted(props)
+    uc = props["unityCatalog"]
+    if "$ref" in uc:
+        uc = spec["components"]["schemas"][uc["$ref"].rsplit("/", 1)[-1]]
+    fields = uc.get("properties", {})
+    for field in ("enabled", "credentialsSecret", "catalog", "schema", "register", "lineage"):
+        assert field in fields, f"unityCatalog.{field} missing from the create-pipeline request schema: {sorted(fields)}"
+    assert fields["schema"].get("default") == "default", fields["schema"]

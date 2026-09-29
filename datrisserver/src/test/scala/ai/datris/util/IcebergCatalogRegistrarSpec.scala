@@ -246,7 +246,9 @@ class IcebergCatalogRegistrarSpec extends AnyFunSuite {
 
     private val alreadyExists = (409, """{"error":{"message":"Table already exists","type":"AlreadyExistsException","code":409}}""")
 
-    test("already-exists with UC at an older file under our metadata/ → warning naming story 5, registeredMetadataLocation updated, no further POST/DELETE") {
+    test(
+        "already-exists with UC at an older file under our metadata/ → warning saying a later release keeps it current, registeredMetadataLocation updated, no further POST/DELETE"
+    ) {
         // UC reports the s3:// spelling of our s3a:// root: still ours, just older.
         val fake = new FakeCatalog(registerResp = alreadyExists, loadResp = (200, s"""{"metadata-location":"${norm(OLDER)}","metadata":{}}"""))
         val status = new RecordingStatusUtil
@@ -256,7 +258,8 @@ class IcebergCatalogRegistrarSpec extends AnyFunSuite {
         assert(w.startsWith(R.ErrorPrefix), w)
         assert(w.contains("Unity Catalog still points at"), w)
         assert(norm(w).contains(norm(OLDER)) && norm(w).contains(norm(OURS)), w)
-        assert(w.contains("story 5"), w)
+        assert(w.contains("Datris will keep it current in a later release"), w)
+        assert(!w.contains("story 5") && !w.contains("RESTCatalog"), s"no internal plan names in user-facing text: $w")
         assert(st.registeredMetadataLocation == OURS, s"$st")
         assert(
             st.lastError != null && st.lastError.contains(R.ErrorPrefix) && st.lastError.contains("still points at"),
@@ -376,6 +379,44 @@ class IcebergCatalogRegistrarSpec extends AnyFunSuite {
         assert(st.lastError != null && st.lastError.contains("uc-lineage: lineage publish failed (status 403)"), s"foreign lines survive: $st")
         assert(!st.lastError.contains("uc-register:"), s"a clean register clears only its own lines: $st")
         assert(st.registeredMetadataLocation == OURS, s"$st")
+    }
+
+    // --- review follow-ups -----------------------------------------------------
+
+    test("409 without an already-exists marker is a failure, not an existing table (no GET)") {
+        val fake = new FakeCatalog(registerResp = (409, """{"error":{"message":"Commit conflict","type":"CommitFailedException","code":409}}"""))
+        val status = new RecordingStatusUtil
+        val st = register(fake, status)
+        assert(status.warnings.size == 1, status.messages.mkString("\n"))
+        assert(status.warnings.head.startsWith(R.ErrorPrefix) && status.warnings.head.contains("409"), status.warnings.head)
+        assert(st.registeredMetadataLocation == null, s"$st")
+        assert(fake.calls.map(_.method).toList == List("POST"), fake.calls.mkString("\n"))
+    }
+
+    test("already-exists then 404 on GET → 'not readable' warning naming the table URL, nothing else called") {
+        val fake = new FakeCatalog(registerResp = alreadyExists)
+        val status = new RecordingStatusUtil
+        val st = register(fake, status)
+        assert(status.warnings.size == 1, status.messages.mkString("\n"))
+        val w = status.warnings.head
+        assert(w.startsWith(R.ErrorPrefix), w)
+        assert(w.contains("reported") && w.contains("as existing but it is not readable at"), w)
+        assert(w.contains(s"https://$DBX_HOST/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/$CAT/namespaces/$SCH/tables/$TABLE"), w)
+        assert(st.lastError != null && st.lastError.contains("not readable"), s"$st")
+        assert(fake.calls.map(_.method).toList == List("POST", "GET"), fake.calls.mkString("\n"))
+    }
+
+    test("credentialShape flags half an OAuth pair without a token") {
+        def creds(id: Option[String], secret: Option[String], token: Option[String]) =
+            ResolvedDatabricksCredentials(host = DBX_HOST, clientId = id, clientSecret = secret, token = token)
+        val idOnly = R.credentialShape(creds(Some("sp"), None, None), "uc_sec")
+        assert(idOnly.exists(m => m.startsWith(R.ErrorPrefix) && m.contains("uc_sec") && m.contains("clientId without clientSecret")), idOnly)
+        val secretOnly = R.credentialShape(creds(None, Some("s"), None), "uc_sec")
+        assert(secretOnly.exists(_.contains("clientSecret without clientId")), secretOnly)
+        assert(R.credentialShape(creds(Some("sp"), None, Some("dapi")), "uc_sec").isEmpty, "a token covers the missing half")
+        assert(R.credentialShape(creds(Some("sp"), Some("s"), None), "uc_sec").isEmpty)
+        assert(R.credentialShape(creds(None, None, Some("dapi")), "uc_sec").isEmpty)
+        assert(R.credentialShape(creds(None, None, None), "uc_sec").isEmpty, "host-only (anonymous) is allowed for the register")
     }
 
     // --- sync fixtures ---------------------------------------------------------

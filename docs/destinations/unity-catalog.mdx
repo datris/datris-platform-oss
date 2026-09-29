@@ -80,7 +80,7 @@ A missing prerequisite is a warning on the run that names what to fix: external 
 ### How runs behave
 
 - The first successful write registers the table.
-- Later writes leave Unity Catalog alone. When Unity Catalog still points at an older metadata file of the same table, the run gets a warning that its pointer is behind; Unity Catalog readers see the table as of the first registration until that pointer is refreshed. Keeping the pointer current on every run is not done yet.
+- Later writes leave Unity Catalog alone. When Unity Catalog still points at an older metadata file of the same table, the run gets a warning that its pointer is behind; Unity Catalog readers see the table as of the first registration until that pointer is refreshed. Datris will keep the pointer current on every run in a later release.
 - If a table with that name already exists and points somewhere other than this pipeline's table, Datris refuses to touch it. It never replaces, merges or drops a table. Rename the pipeline or choose another schema.
 - Any failure (a missing grant, a wrong host, a network error) is one warning on the run and an entry in the [audit log](/audit-log); the write itself still succeeds.
 - The pipeline detail page shows when the table was registered, and whether the pointer is stale or the last attempt failed. `GET /api/v1/pipelines/{name}/unity-catalog` returns `register` (`off`, `never`, `registered`, `stale` or `error`), `registeredMetadataLocation` and `lastRegisterAt`.
@@ -156,5 +156,5 @@ Browse and search run as the secret's identity, so they see only what it is gran
 
 ## Not covered yet
 
-- Keeping the Unity Catalog pointer current after the first run (RESTCatalog mode) is not done yet.
+- Keeping the Unity Catalog pointer current after the first run is not done yet; Datris will keep it current in a later release.
 - There is no Unity Catalog browser in the Datris UI yet; use the API or MCP tool.

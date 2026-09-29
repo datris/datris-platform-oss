@@ -28,6 +28,55 @@ components:
       description: Optional API key for authentication (enabled via application.yaml)
 
   schemas:
+    UnityCatalogSync:
+      type: object
+      description: >-
+        Opt-in Unity Catalog sync. On a Databricks destination: metadata push
+        (comments, tags, table properties) and lineage publish. On an
+        object-store destination with `fileFormat: iceberg`: the table is
+        registered in Unity Catalog as `<catalog>.<schema>.<pipeline>`
+        (requires `credentialsSecret` and `catalog`). Rejected on any other
+        destination when `enabled` is true. Omitted booleans are treated as
+        true.
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          description: Turn Unity Catalog sync on for this pipeline
+        comments:
+          type: boolean
+          default: true
+          description: Databricks only. Write the table and provenance column comments
+        tags:
+          type: boolean
+          default: true
+          description: Databricks only. Write the datris_* and managed_by tags
+        properties:
+          type: boolean
+          default: true
+          description: Databricks only. Write the datris.* table properties
+        lineage:
+          type: boolean
+          default: true
+          description: Databricks only. Publish External Lineage (tap or upload → pipeline → table)
+        credentialsSecret:
+          type: string
+          description: >-
+            Object-store Iceberg only. Platform secret for the Unity Catalog
+            workspace (`host`, plus `clientId`/`clientSecret` or `token`;
+            optional `icebergRestPath`/`icebergRestPrefix` for testing and
+            non-Databricks catalogs). Ignored on Databricks.
+        catalog:
+          type: string
+          description: Object-store Iceberg only. Unity Catalog catalog the table is registered under. Ignored on Databricks.
+        schema:
+          type: string
+          default: default
+          description: Object-store Iceberg only. Unity Catalog schema the table is registered under. Ignored on Databricks.
+        register:
+          type: boolean
+          default: true
+          description: Object-store Iceberg only. Set false to keep the block but skip registration.
     CatalogFailure:
       type: object
       properties:
@@ -843,6 +892,8 @@ paths:
                     `fileFormat` accepts `parquet` (default), `orc`, or `iceberg`; with `iceberg`, `writeMode` may also be `merge`, which upserts on the `keyFields` array (each a destination schema column).
 
                     restEndpoint takes `endpoint`, `async`, `bearerToken`, `apiKey`, `timeoutMs` and an optional `batchSize` (default `0` = one call carrying every row). With `batchSize > 0`, row-based payloads are POSTed in batches of that many rows, each request also carrying top-level `batch` (1-based) and `ofBatches`.
+                unityCatalog:
+                  $ref: '#/components/schemas/UnityCatalogSync'
       responses:
         '200':
           description: Pipeline created/updated
