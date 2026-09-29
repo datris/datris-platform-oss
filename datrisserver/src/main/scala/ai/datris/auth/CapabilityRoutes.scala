@@ -199,7 +199,8 @@ object CapabilityRoutes {
         Route("GET", "/api/v1/catalog/find", "metadata", "read"),
         // Unity Catalog browse — read-only warehouse metadata. The controller
         // additionally requires that the caller could read the named secret
-        // (the list_platform_secrets predicate).
+        // (the list_platform_secrets predicate); an unreadable secret answers
+        // 404 like an unknown one.
         Route("GET", "/api/v1/unity-catalog/browse", "metadata", "read")
     )
 

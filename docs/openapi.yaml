@@ -5017,8 +5017,12 @@ paths:
             Datris hits with `source: unity-catalog`; every hit then carries
             `source`, and the response adds a `unityCatalog` block. A secret
             with no resolvable warehouse or a failed connection is listed under
-            `unityCatalog.skipped`, never an error. Without this flag the
-            response is unchanged.
+            `unityCatalog.skipped`, never an error; so is a secret whose
+            search exceeds the per-secret time limit
+            (`DATRIS_UNITY_CATALOG_SEARCH_TIMEOUT_SECONDS`, default 45; reason
+            "timed out after Ns"). `limit` applies separately: up to `limit`
+            Datris hits plus up to `limit` additional Unity Catalog hits.
+            Without this flag the response is unchanged.
       responses:
         '200':
           description: Ranked hits
@@ -5150,9 +5154,10 @@ paths:
           description: secret missing, schema/table without their parent level, or no resolvable warehouse (the message lists the three options)
         '401':
           description: Missing or invalid API key
-        '403':
-          description: The key may not read this secret (errorKind capability_denied)
         '404':
-          description: No Databricks Platform secret with that name
+          description: >-
+            No Databricks Platform secret with that name, or the key may not
+            read it (same response either way; the audit log records the
+            latter as denied)
         '502':
           description: Warehouse connection or metadata query failed

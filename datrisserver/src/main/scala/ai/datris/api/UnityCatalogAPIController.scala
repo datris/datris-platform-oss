@@ -42,9 +42,10 @@ class UnityCatalogAPIController {
         Option(schema).foreach(md.addProperty("schema", _))
         Option(table).foreach(md.addProperty("table", _))
 
-        def respond(status: HttpStatus, body: String, error: String = null): ResponseEntity[String] = {
+        def respond(status: HttpStatus, body: String, error: String = null, outcomeOverride: String = null): ResponseEntity[String] = {
             val outcome =
-                if (status.value() == 401 || status.value() == 403) "denied"
+                if (outcomeOverride != null) outcomeOverride
+                else if (status.value() == 401 || status.value() == 403) "denied"
                 else if (status.is2xxSuccessful) "success"
                 else "failure"
             try AuditLog.record(request, "unity-catalog", "browse", "secret", secretName, outcome, status.value(), md, error)
@@ -67,21 +68,18 @@ class UnityCatalogAPIController {
             if (given(table) && !given(schema))
                 return fail(HttpStatus.BAD_REQUEST, "table requires catalog and schema")
 
-            val fields = SecretsRetrieverUtil.platformSecrets().find(_._1 == secretName).map(_._2)
-                .filter(CredentialResolver.hasDatabricksCredentials)
-                .getOrElse(return fail(
-                    HttpStatus.NOT_FOUND,
-                    "No Databricks Platform secret named '" + secretName + "' (it must exist on Configuration → Secrets → Platform " +
-                        "with host and clientId/clientSecret or token). Use list_platform_secrets to see the available names."
-                ))
-
-            if (!UnityCatalogAPIController.canRead(request, fields)) {
-                val message = "this key may not read secret '" + secretName + "'"
-                return respond(
-                    HttpStatus.FORBIDDEN,
-                    "{\"error\":\"capability denied\",\"errorKind\":\"capability_denied\",\"message\":" + new Gson().toJson(message) + "}",
-                    message
-                )
+            // Unknown and unreadable secrets answer the same 404 so a key without
+            // read access to a secret cannot learn that it exists; the audit
+            // outcome ("denied" vs "failure") still tells them apart.
+            val fields = UnityCatalogAPIController.lookupSecret(
+                secretName,
+                SecretsRetrieverUtil.platformSecrets(),
+                f => UnityCatalogAPIController.canRead(request, f)
+            ) match {
+                case Right(f) => f
+                case Left(outcome) =>
+                    val message = UnityCatalogAPIController.notFoundMessage(secretName)
+                    return respond(HttpStatus.NOT_FOUND, QueryAPIController.errorBody(new DatrisException(message)), message, outcome)
             }
 
             val pipelines: List[PipelineConfig] =
@@ -111,6 +109,24 @@ class UnityCatalogAPIController {
 }
 
 object UnityCatalogAPIController {
+
+    private[api] def notFoundMessage(secretName: String): String =
+        "No Databricks Platform secret named '" + secretName + "' (it must exist on Configuration → Secrets → Platform " +
+            "with host and clientId/clientSecret or token). Use list_platform_secrets to see the available names."
+
+    /** The named Databricks Platform secret's fields, or Left(audit outcome):
+      * "failure" when no such secret exists, "denied" when it exists but this
+      * key may not read it. Both are answered with the same 404. */
+    private[api] def lookupSecret(
+        secretName: String,
+        platformSecrets: List[(String, java.util.Map[String, String])],
+        canRead: java.util.Map[String, String] => Boolean
+    ): Either[String, java.util.Map[String, String]] =
+        platformSecrets.find(_._1 == secretName).map(_._2).filter(CredentialResolver.hasDatabricksCredentials) match {
+            case None => Left("failure")
+            case Some(f) if !canRead(f) => Left("denied")
+            case Some(f) => Right(f)
+        }
 
     /** The list_platform_secrets read predicate for one secret. */
     private[api] def canRead(request: HttpServletRequest, fields: java.util.Map[String, String]): Boolean = {

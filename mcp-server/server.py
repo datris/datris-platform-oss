@@ -3132,7 +3132,9 @@ def _base_tools():
                             "(default: false). Warehouse hits follow the Datris hits, marked `source: \"unity-catalog\"`; "
                             "`howToQuery` points at query_databricks only when a Datris pipeline owns the table, otherwise it is "
                             "a plain SQL hint to run in your warehouse. Secrets without a known SQL warehouse are listed under "
-                            "`unityCatalog.skipped`. A stopped warehouse auto-starts on first use, which can add 5-20 s."
+                            "`unityCatalog.skipped`. A stopped warehouse auto-starts on first use, which can add 5-20 s; a warehouse "
+                            "that does not answer within the per-secret time limit (45 s by default) is skipped rather than "
+                            "blocking the call. Up to `limit` warehouse hits are added on top of the Datris hits."
                         ),
                     },
                 },

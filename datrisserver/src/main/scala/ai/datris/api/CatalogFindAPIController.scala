@@ -87,13 +87,22 @@ class CatalogFindAPIController {
         val searched = List.newBuilder[String]
         val skipped = List.newBuilder[(String, String)]
         val hits = List.newBuilder[UcHit]
+        val timeoutSeconds = UnityCatalogDiscovery.searchTimeoutSeconds
         secrets.foreach { case (name, fields) =>
             UnityCatalogDiscovery.resolveWarehouse(name, fields, None, pipelines) match {
                 case Left(reason) => skipped += (name -> reason)
                 case Right(warehouse) =>
+                    // Per-secret deadline: a slow (e.g. cold classic) warehouse
+                    // is skipped instead of holding the whole call.
                     try {
-                        hits ++= UnityCatalogDiscovery.search(name, warehouse, tokens, CatalogFind.MaxLimit)
-                        searched += name
+                        UnityCatalogDiscovery.withDeadline(timeoutSeconds)(UnityCatalogDiscovery.search(name, warehouse, tokens, CatalogFind.MaxLimit)) match {
+                            case Right(found) =>
+                                hits ++= found
+                                searched += name
+                            case Left(reason) =>
+                                logger.info("find_data: Unity Catalog search skipped for secret '" + name + "': " + reason)
+                                skipped += (name -> reason)
+                        }
                     } catch {
                         case e: Exception =>
                             logger.info("find_data: Unity Catalog search skipped for secret '" + name + "': " + e.getMessage)

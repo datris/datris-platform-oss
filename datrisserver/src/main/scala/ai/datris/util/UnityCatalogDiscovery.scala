@@ -5,12 +5,12 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
-import ai.datris.model.{Database, DatrisEnvironment, PipelineConfig}
+import ai.datris.model.{Database, DatrisEnvironment, PipelineConfig, TenantContext}
 import com.google.gson.{JsonArray, JsonObject}
 import org.slf4j.{Logger, LoggerFactory}
 
 import java.sql.Connection
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.{Callable, ConcurrentHashMap, ExecutionException, Executors, ThreadFactory, TimeUnit, TimeoutException}
 import scala.collection.mutable.ListBuffer
 import scala.util.Try
 
@@ -321,6 +321,51 @@ object UnityCatalogDiscovery {
                         "a 'warehouse' field on the secret, " +
                         "or a Databricks pipeline whose credentialsSecret is this secret (its destination warehouse is used)."
                 )
+        }
+    }
+
+    // ------------------------------------------------------------ search deadline
+
+    val DefaultSearchTimeoutSeconds = 45L
+
+    /** Per-secret deadline for `find_data includeUnityCatalog`:
+      * `DATRIS_UNITY_CATALOG_SEARCH_TIMEOUT_SECONDS` (or the
+      * `datris.unityCatalogSearchTimeoutSeconds` system property), default 45.
+      * Blank, non-numeric or non-positive values fall back to the default. */
+    def searchTimeoutSeconds: Long =
+        sys.props.get("datris.unityCatalogSearchTimeoutSeconds")
+            .orElse(sys.env.get("DATRIS_UNITY_CATALOG_SEARCH_TIMEOUT_SECONDS"))
+            .flatMap(v => Try(v.trim.toLong).toOption)
+            .filter(_ > 0)
+            .getOrElse(DefaultSearchTimeoutSeconds)
+
+    private lazy val searchPool = Executors.newCachedThreadPool(new ThreadFactory {
+        override def newThread(r: Runnable): Thread = {
+            val t = new Thread(r, "uc-search")
+            t.setDaemon(true)
+            t
+        }
+    })
+
+    /** Run `f` on a pool thread carrying the caller's tenant environment
+      * (TenantContext is thread-local) and wait at most `timeoutSeconds`.
+      * Left("timed out after Ns") past the deadline (the task is interrupted
+      * and abandoned); an exception thrown by `f` is rethrown as-is. */
+    def withDeadline[T](timeoutSeconds: Long)(f: => T): Either[String, T] = {
+        val env = DatrisEnvironment.current
+        val future = searchPool.submit(new Callable[T] {
+            override def call(): T = {
+                TenantContext.set(env)
+                try f
+                finally TenantContext.clear()
+            }
+        })
+        try Right(future.get(timeoutSeconds, TimeUnit.SECONDS))
+        catch {
+            case _: TimeoutException =>
+                future.cancel(true)
+                Left("timed out after " + timeoutSeconds + "s")
+            case e: ExecutionException if e.getCause != null => throw e.getCause
         }
     }
 

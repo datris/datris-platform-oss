@@ -42,7 +42,7 @@ curl -s -H 'x-api-key: <your-api-key>' \
 - A stopped SQL warehouse starts on the first call. Serverless warehouses take about 5 to 20 seconds; classic warehouses can take several minutes.
 - When the secret cannot read the tag views, the response has `tagsAvailable: false` and no tags. Browsing still works.
 
-Responses: `400` when `secret` is missing, when `schema` or `table` is given without the levels above it, or when no warehouse can be found; `403` (`errorKind: capability_denied`) when your API key may not read that secret; `404` when no Databricks Platform secret has that name; `502` when the warehouse connection or a metadata query fails, with the same message the Databricks destination gives. Every call is recorded in the [audit log](/audit-log) as `unity-catalog` / `browse` with the secret name.
+Responses: `400` when `secret` is missing, when `schema` or `table` is given without the levels above it, or when no warehouse can be found; `404` when no Databricks Platform secret has that name, or when your API key may not read it (the same response either way, so a key cannot probe for secret names it has no access to; the audit log records the second case as `denied`); `502` when the warehouse connection or a metadata query fails, with the same message the Databricks destination gives. Every call is recorded in the [audit log](/audit-log) as `unity-catalog` / `browse` with the secret name.
 
 Access: the route needs `metadata:read`, and your key must also be able to read the named secret, the same check `list_platform_secrets` applies. Keys without `metadata:read` do not see the MCP tool.
 
@@ -64,7 +64,8 @@ If none applies, the call returns `400` listing these three options. Existing Da
 - A table is **owned** when a Databricks pipeline you can see loads into those exact coordinates, or when its `datris_pipeline` tag names a pipeline you can see. Owned tables have `ownedByPipeline`, and their `howToQuery` points at `query_databricks` with that pipeline. Owned tables come before unowned ones. If the owning pipeline is already a Datris hit, the table is left out because the pipeline hit already covers it.
 - Unowned tables get a plain SQL hint (`SELECT * FROM catalog.schema.table LIMIT 100`) to run in your warehouse. `query_databricks` cannot run it, because that tool needs a pipeline.
 - The response adds `unityCatalog: { searched: [...], skipped: [{ secret, reason }] }`. A secret with no known warehouse (only options 2 and 3 above apply here) or a failed connection is listed under `skipped`; it never fails the call. With no Databricks secrets, `searched` is empty and you get the Datris hits only.
-- `count` and `totalMatches` include the Unity Catalog hits. The optional AI rerank orders Datris hits only.
+- `limit` applies to Datris hits and Unity Catalog hits separately: you get up to `limit` Datris hits plus up to `limit` additional Unity Catalog hits, so `limit: 5` can return 10 results. `count` and `totalMatches` include the Unity Catalog hits. The optional AI rerank orders Datris hits only.
+- Each secret has its own time limit, 45 seconds by default (`DATRIS_UNITY_CATALOG_SEARCH_TIMEOUT_SECONDS`, see the [configuration reference](/configuration-reference)). A slow warehouse is skipped with the reason `timed out after 45s` rather than blocking the call.
 
 Without the flag, `find_data` output is unchanged: no `source` field and no `unityCatalog` block.
 
