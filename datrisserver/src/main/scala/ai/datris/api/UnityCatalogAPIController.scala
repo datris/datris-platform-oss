@@ -8,7 +8,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 import ai.datris.audit.AuditLog
 import ai.datris.auth.CapabilityCheck
 import ai.datris.model.{DatrisEnvironment, DatrisException, PipelineConfig}
-import ai.datris.util.{APIKeyValidator, CredentialResolver, PipelineConfigIO, SecretsRetrieverUtil, UnityCatalogDiscovery}
+import ai.datris.util.{APIKeyValidator, CredentialResolver, DatabricksErrorText, PipelineConfigIO, SecretsRetrieverUtil, UnityCatalogDiscovery}
 import com.google.common.base.Throwables
 import com.google.gson.{Gson, JsonObject}
 import jakarta.servlet.http.HttpServletRequest
@@ -93,17 +93,20 @@ class UnityCatalogAPIController {
             val result =
                 try UnityCatalogDiscovery.browse(secretName, wh, Option(catalog), Option(schema), Option(table))
                 catch {
-                    case e: IllegalArgumentException => return fail(HttpStatus.BAD_REQUEST, e.getMessage)
+                    case e: IllegalArgumentException => return fail(HttpStatus.BAD_REQUEST, DatabricksErrorText.short(e.getMessage))
                     case e: Exception =>
-                        val message = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
-                        logger.info("Unity Catalog browse failed for secret '" + secretName + "': " + message)
-                        return fail(HttpStatus.BAD_GATEWAY, message)
+                        // The driver message can be tens of KB of Spark stack;
+                        // body, MCP text and audit entry all get the short form.
+                        val (status, message) = UnityCatalogDiscovery.translateWarehouseError(e)
+                        logger.info("Unity Catalog browse failed for secret '" + secretName + "' (" + status + "): " + message)
+                        logger.debug("Unity Catalog browse failure detail: " + Throwables.getStackTraceAsString(e))
+                        return fail(HttpStatus.valueOf(status), message)
                 }
             respond(HttpStatus.OK, new Gson().toJson(result))
         } catch {
             case e: Exception =>
                 logger.error("Error in Unity Catalog browse: " + Throwables.getStackTraceAsString(e))
-                fail(HttpStatus.INTERNAL_SERVER_ERROR, Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
+                fail(HttpStatus.INTERNAL_SERVER_ERROR, Option(DatabricksErrorText.short(e.getMessage)).filter(_.nonEmpty).getOrElse(e.getClass.getSimpleName))
         }
     }
 }

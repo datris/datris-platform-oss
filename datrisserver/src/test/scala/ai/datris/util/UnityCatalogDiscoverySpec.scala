@@ -276,4 +276,116 @@ class UnityCatalogDiscoverySpec extends AnyFunSuite {
         assert(msg.contains("secret"), "must mention the secret field: " + msg)
         assert(msg.contains("pipeline"), "must mention a pipeline using the secret: " + msg)
     }
+
+    // ---------------------------------------------------------------- warm cache skips the connection
+
+    test("with a warm cache, catalogs and schemas listings never open a connection; tables and columns always do") {
+        val now = 1000000L
+        val cache = new UnityCatalogCache(() => now)
+        val wh = new FakeWarehouse
+        var opened = 0
+        val connect: ((String => Iterator[Map[String, Any]]) => com.google.gson.JsonObject) => com.google.gson.JsonObject = { f =>
+            opened += 1
+            f(wh.run)
+        }
+
+        // Cold: each level opens once and fills the cache.
+        val cold = UnityCatalogDiscovery.browseVia(connect, "dbx-a", None, None, None, cache)
+        UnityCatalogDiscovery.browseVia(connect, "dbx-a", Some("main"), None, None, cache)
+        assert(opened == 2)
+
+        // Warm: no connection at all, same answer shape.
+        opened = 0
+        val warm = UnityCatalogDiscovery.browseVia(connect, "dbx-a", None, None, None, cache)
+        val warmSchemas = UnityCatalogDiscovery.browseVia(connect, "dbx-a", Some(" main "), None, None, cache)
+        assert(opened == 0, "a cached listing must not open a JDBC session")
+        assert(warm == cold, warm.toString + " vs " + cold.toString)
+        assert(warmSchemas.get("level").getAsString == "schemas")
+        assert(warmSchemas.get("catalog").getAsString == "main")
+        assert(warmSchemas.getAsJsonArray("schemas").get(0).getAsString == "sales")
+
+        UnityCatalogDiscovery.browseVia(connect, "dbx-a", Some("main"), Some("sales"), None, cache)
+        UnityCatalogDiscovery.browseVia(connect, "dbx-a", Some("main"), Some("sales"), Some("orders"), cache)
+        assert(opened == 2, "tables and columns always connect")
+
+        // Another secret is cold.
+        UnityCatalogDiscovery.browseVia(connect, "dbx-b", None, None, None, cache)
+        assert(opened == 3)
+    }
+
+    // ---------------------------------------------------------------- warehouse error translation
+
+    /** A ~30 KB Databricks JDBC message: driver prefix, the class twice (once
+      * before a Java class name), a sentence, then a Thrift status dump and
+      * hundreds of Spark stack frames. */
+    private def databricksError(cls: String, sentence: String): java.sql.SQLException = {
+        val frames = (1 to 400).map(i => "\n\tat org.apache.spark.sql.execution.SparkPlan.executeQuery" + i + "(SparkPlan.scala:" + i + ")").mkString
+        val msg = "[Databricks][JDBCDriver](500051) ERROR processing query/statement. Error Code: 0, SQL state: 42704, " +
+            "Query: SHOW SCH***, Error message from Server: org.apache.hive.service.cli.HiveSQLException: Error running query: [" + cls +
+            "] org.apache.spark.sql.catalyst.analysis.SomeException: [" + cls + "] " + sentence + " Please verify and retry. SQLSTATE: 42704" +
+            frames + "\nTGetOperationStatusResp(status:TStatus(statusCode:ERROR_STATUS, infoMessages:[*org.apache.hive.service.cli.HiveSQLException:" +
+            ("x" * 12000) + "))"
+        new java.sql.SQLException(msg)
+    }
+
+    test("warehouse errors map to a status and a short message without stack text") {
+        val cases = List(
+            ("NO_SUCH_CATALOG_EXCEPTION", "Catalog 'bogus' was not found.", 404),
+            ("SCHEMA_NOT_FOUND", "The schema `main`.`nope` cannot be found.", 404),
+            ("TABLE_OR_VIEW_NOT_FOUND", "The table or view `main`.`sales`.`gone` cannot be found.", 404),
+            ("INVALID_PARAMETER_VALUE.LOCATION_OVERLAP", "Input path overlaps with other external tables.", 400),
+            ("PERMISSION_DENIED", "User does not have USE CATALOG on Catalog 'restricted'.", 403),
+            ("INSUFFICIENT_PERMISSIONS", "User does not have USE SCHEMA on system.information_schema.", 403),
+            ("INTERNAL_ERROR", "Something went wrong on the server.", 502)
+        )
+        cases.foreach { case (cls, sentence, expected) =>
+            val e = databricksError(cls, sentence)
+            assert(e.getMessage.length > 25000, "fixture should be ~30 KB")
+            val (status, message) = UnityCatalogDiscovery.translateWarehouseError(e)
+            assert(status == expected, cls + " -> " + status + ": " + message)
+            assert(message == "[" + cls + "] " + sentence, cls + ": " + message)
+            assert(message.length <= DatabricksErrorText.MaxMessageLength)
+            assert(!message.contains("\tat ") && !message.contains("TGetOperationStatusResp") && !message.contains("org.apache"), message)
+        }
+    }
+
+    test("the class is found even when it appears only inside the Thrift status dump") {
+        val msg = "[Databricks][JDBCDriver](500051) ERROR processing query/statement. Error message from Server: " +
+            "TGetOperationStatusResp(status:TStatus(statusCode:ERROR_STATUS, infoMessages:[*org.apache.hive.service.cli.HiveSQLException:" +
+            "Error running query: [NO_SUCH_CATALOG_EXCEPTION] org.apache.spark.sql.catalyst.analysis.NoSuchCatalogException: " +
+            "[NO_SUCH_CATALOG_EXCEPTION] Catalog 'bogus' was not found. Please verify. SQLSTATE: 42704:17:16, org.apache.spark.X:run:X.java:1, " +
+            ("org.apache.spark.Y:run:Y.java:2, " * 800) + "])"
+        val (status, message) = UnityCatalogDiscovery.translateWarehouseError(new java.sql.SQLException(msg))
+        assert(status == 404)
+        assert(message == "[NO_SUCH_CATALOG_EXCEPTION] Catalog 'bogus' was not found.", message)
+    }
+
+    test("unclassified warehouse errors are 502 with the first line only, capped at 500 chars") {
+        val frames = (1 to 400).map(i => "\n\tat org.apache.spark.Foo.bar" + i + "(Foo.scala:" + i + ")").mkString
+        val (s1, m1) = UnityCatalogDiscovery.translateWarehouseError(new java.sql.SQLException("Connection reset by peer" + frames))
+        assert(s1 == 502 && m1 == "Connection reset by peer", m1)
+
+        val (s2, m2) = UnityCatalogDiscovery.translateWarehouseError(new RuntimeException("y" * 30000))
+        assert(s2 == 502 && m2.length <= 500, m2.length.toString)
+
+        val (s3, m3) = UnityCatalogDiscovery.translateWarehouseError(new RuntimeException("[SOME_CLASS] " + ("z" * 30000)))
+        assert(s3 == 502 && m3.length <= 500 && m3.startsWith("[SOME_CLASS] "), m3.take(40))
+
+        // A bare PERMISSION_DENIED (no brackets) is still 403.
+        val (s4, m4) = UnityCatalogDiscovery.translateWarehouseError(new java.sql.SQLException("PERMISSION_DENIED: no access to warehouse" + frames))
+        assert(s4 == 403 && m4 == "PERMISSION_DENIED: no access to warehouse", m4)
+
+        // Messages only in the cause chain are used; a message-less error names its class.
+        val (_, m5) = UnityCatalogDiscovery.translateWarehouseError(new RuntimeException(null, new java.sql.SQLException("[SCHEMA_NOT_FOUND] Schema gone.")))
+        assert(m5 == "[SCHEMA_NOT_FOUND] Schema gone.", m5)
+        assert(UnityCatalogDiscovery.translateWarehouseError(new NullPointerException())._2 == "NullPointerException")
+    }
+
+    test("connect-time DatrisExceptions stay 502 with their first line, capped") {
+        val e =
+            new DatrisException("Databricks SQL warehouse 'bogus' was not found in this workspace. [PERMISSION_DENIED] x" + ("\n\tat a.b.C.d(C.java:1)" * 200))
+        val (status, message) = UnityCatalogDiscovery.translateWarehouseError(e)
+        assert(status == 502)
+        assert(message == "Databricks SQL warehouse 'bogus' was not found in this workspace. [PERMISSION_DENIED] x", message)
+    }
 }

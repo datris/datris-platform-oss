@@ -49,6 +49,12 @@ class UnityCatalogCache(clock: () => Long = () => System.currentTimeMillis()) {
     private val TtlMillis = 5L * 60L * 1000L
     private val entries = new ConcurrentHashMap[(String, String, String), (Long, JsonArray)]()
 
+    /** The live cached listing, if any — never loads. */
+    def peek(secret: String, kind: String, key: String): Option[JsonArray] = {
+        val hit = entries.get((secret, kind, key))
+        if (hit != null && clock() < hit._1) Some(hit._2.deepCopy()) else None
+    }
+
     def getOrLoad(secret: String, kind: String, key: String)(load: => JsonArray): JsonArray = {
         val k = (secret, kind, key)
         val now = clock()
@@ -192,6 +198,53 @@ object UnityCatalogDiscovery {
         arr
     }
 
+    private def catalogsLevel(secret: String, arr: JsonArray): JsonObject = {
+        val out = new JsonObject()
+        out.addProperty("secret", secret)
+        out.addProperty("level", "catalogs")
+        out.add("catalogs", arr)
+        out
+    }
+
+    private def schemasLevel(secret: String, catalog: String, arr: JsonArray): JsonObject = {
+        val out = new JsonObject()
+        out.addProperty("secret", secret)
+        out.addProperty("level", "schemas")
+        out.addProperty("catalog", catalog)
+        out.add("schemas", arr)
+        out
+    }
+
+    /** A catalogs or schemas listing answered wholly from `cache`, or None
+      * (cache miss, or the tables/columns levels, which are never cached). */
+    def cachedBrowse(secret: String, catalog: Option[String], schema: Option[String], table: Option[String], cache: UnityCatalogCache): Option[JsonObject] = {
+        val cat = catalog.map(_.trim).filter(_.nonEmpty)
+        val sch = schema.map(_.trim).filter(_.nonEmpty)
+        val tbl = table.map(_.trim).filter(_.nonEmpty)
+        (cat, sch, tbl) match {
+            case (None, None, None) => cache.peek(secret, "catalogs", "").map(catalogsLevel(secret, _))
+            case (Some(c), None, None) => cache.peek(secret, "schemas", c).map(schemasLevel(secret, c, _))
+            case _ => None
+        }
+    }
+
+    /** `browseWith` behind a connection opener: a cached catalogs/schemas
+      * listing is returned without calling `connect` (no JDBC session);
+      * everything else runs `browseWith` inside it. */
+    def browseVia(
+        connect: ((String => Iterator[Map[String, Any]]) => JsonObject) => JsonObject,
+        secret: String,
+        catalog: Option[String],
+        schema: Option[String],
+        table: Option[String],
+        cache: UnityCatalogCache
+    ): JsonObject =
+        cachedBrowse(secret, catalog, schema, table, cache).getOrElse(connect(runQuery => browseWith(runQuery, secret, catalog, schema, table, cache)))
+
+    /** HTTP status and short message for a warehouse failure; see
+      * [[DatabricksErrorText.translateWarehouseError]]. */
+    def translateWarehouseError(e: Throwable): (Int, String) = DatabricksErrorText.translateWarehouseError(e)
+
     def browseWith(
         runQuery: String => Iterator[Map[String, Any]],
         secret: String,
@@ -210,14 +263,11 @@ object UnityCatalogDiscovery {
         out.addProperty("secret", secret)
         (cat, sch, tbl) match {
             case (None, _, _) =>
-                out.addProperty("level", "catalogs")
                 val arr = cache.getOrLoad(secret, "catalogs", "")(namesArray(runQuery(showCatalogsSql), "catalog", "catalogName"))
-                out.add("catalogs", arr)
+                return catalogsLevel(secret, arr)
             case (Some(c), None, _) =>
-                out.addProperty("level", "schemas")
-                out.addProperty("catalog", c)
                 val arr = cache.getOrLoad(secret, "schemas", c)(namesArray(runQuery(showSchemasSql(c)), "databaseName", "namespace", "schemaName"))
-                out.add("schemas", arr)
+                return schemasLevel(secret, c, arr)
             case (Some(c), Some(s), None) =>
                 out.addProperty("level", "tables")
                 out.addProperty("catalog", c)
@@ -421,9 +471,14 @@ object UnityCatalogDiscovery {
 
     def browse(secret: String, warehouse: String, catalog: Option[String], schema: Option[String], table: Option[String]): JsonObject = {
         val cacheKey = DatrisEnvironment.current.environment + "/" + secret
-        val out = DatabricksConnectionUtil.withConnection(target(secret, warehouse)) { conn =>
-            browseWith(sql => rowsOf(conn, sql), cacheKey, catalog, schema, table, cache)
-        }
+        val out = browseVia(
+            f => DatabricksConnectionUtil.withConnection(target(secret, warehouse))(conn => f(sql => rowsOf(conn, sql))),
+            cacheKey,
+            catalog,
+            schema,
+            table,
+            cache
+        )
         out.addProperty("secret", secret)
         out
     }

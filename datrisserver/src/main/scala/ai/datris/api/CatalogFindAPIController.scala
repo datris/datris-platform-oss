@@ -105,8 +105,9 @@ class CatalogFindAPIController {
                         }
                     } catch {
                         case e: Exception =>
-                            logger.info("find_data: Unity Catalog search skipped for secret '" + name + "': " + e.getMessage)
-                            skipped += (name -> Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
+                            val reason = UnityCatalogDiscovery.translateWarehouseError(e)._2
+                            logger.info("find_data: Unity Catalog search skipped for secret '" + name + "': " + reason)
+                            skipped += (name -> reason)
                     }
             }
         }

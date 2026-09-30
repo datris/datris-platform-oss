@@ -86,30 +86,36 @@ object DatabricksConnectionUtil {
         def causeChain(t: Throwable): List[Throwable] =
             if (t == null) Nil else t :: causeChain(t.getCause)
         val messages = causeChain(e).flatMap(t => Option(t.getMessage)).mkString(" | ")
+        // Classify on the full text; the driver messages can carry the server's
+        // stack dump, so only the first line of each (capped) is shown.
+        val shown = DatabricksErrorText.cap(
+            causeChain(e).flatMap(t => Option(t.getMessage)).map(DatabricksErrorText.firstLine).filter(_.nonEmpty).distinct.mkString(" | "),
+            300
+        )
 
         if (causeChain(e).exists(_.isInstanceOf[java.net.UnknownHostException]))
             new DatrisException("No Databricks workspace answers at " + jdbcUrl +
                 ". The credentials secret's 'host' field must be the workspace hostname — e.g. " +
                 "dbc-a1b2c3d4-e5f6.cloud.databricks.com or adb-1234567890123456.7.azuredatabricks.net — " +
-                "copied from the workspace URL. Underlying driver error: " + messages)
+                "copied from the workspace URL. Underlying driver error: " + shown)
         else if (messages.contains("RESOURCE_DOES_NOT_EXIST") || messages.toLowerCase.contains("invalid http path") || messages.contains("404"))
             new DatrisException("Databricks SQL warehouse '" + warehouse + "' was not found in this workspace. " +
                 "'warehouse' must be the warehouse ID — SQL Warehouses → your warehouse → Connection details, " +
                 "the trailing segment of the HTTP path (/sql/1.0/warehouses/<id>) — not the warehouse name. " +
-                "Underlying driver error: " + messages)
+                "Underlying driver error: " + shown)
         else if (messages.contains("invalid_client") || messages.contains("401") || messages.toLowerCase.contains("unauthorized"))
             new DatrisException((if (creds.clientId.isDefined)
                                      "Databricks OAuth M2M authentication failed — verify the secret's 'clientId'/'clientSecret', that the " +
                                          "service principal has been added to this workspace, and that its OAuth secret has not expired. "
                                  else
                                      "Databricks token authentication failed — verify the secret's 'token' is a current personal access token " +
-                                         "for this workspace. ") + "Underlying driver error: " + messages)
+                                         "for this workspace. ") + "Underlying driver error: " + shown)
         else if (messages.contains("503") || messages.toLowerCase.contains("timed out") || messages.toLowerCase.contains("timeout"))
             new DatrisException("Databricks connection timed out — the SQL warehouse may still be auto-starting " +
                 "(classic warehouses can take several minutes; serverless starts in seconds). Retry once it is RUNNING. " +
-                "Underlying driver error: " + messages)
+                "Underlying driver error: " + shown)
         else
-            new DatrisException("Databricks connection failed: " + messages)
+            new DatrisException("Databricks connection failed: " + shown)
     }
 
     /** The secret's `host` field should be a bare workspace hostname, but the
