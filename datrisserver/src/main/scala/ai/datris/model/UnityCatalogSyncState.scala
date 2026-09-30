@@ -45,5 +45,10 @@ case class UnityCatalogSyncState(
     catalogMode: String = null,
     restMetadataLocation: String = null,
     lastRestCommitAt: String = null,
-    restRefusedReason: String = null
+    restRefusedReason: String = null,
+    // `<catalog>.<schema>.<table>` of a table the catalog created for this
+    // pipeline at a location Datris refused (a Databricks managed table):
+    // never written to, but it exists in the catalog until an admin drops it.
+    // Cleared by the next successful catalog commit.
+    restCreatedTable: String = null
 )

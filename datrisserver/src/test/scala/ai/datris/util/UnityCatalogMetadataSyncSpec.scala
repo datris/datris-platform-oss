@@ -483,4 +483,10 @@ class UnityCatalogMetadataSyncSpec extends AnyFunSuite {
             s"$synced"
         )
     }
+
+    test("execute keeps restCreatedTable") {
+        val synced = runSync(new FakeWarehouse(), render(), previous = null, status = new RecordingStatusUtil)
+        val next = runSync(new FakeWarehouse(), render(), previous = synced.copy(restCreatedTable = "main.uc.t"), status = new RecordingStatusUtil)
+        assert(next.restCreatedTable == "main.uc.t", s"$next")
+    }
 }

@@ -899,6 +899,7 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         }
         assert(IcebergWriter.sameRestLocation(e.tableLocation, restLocation(table)), s"${e.tableLocation}")
         assert(e.requested == requested)
+        assert(e.created, "the refusal follows a catalog create")
         assert(created.isEmpty, "onCreated must not run for a refused table")
         // The catalog holds the (empty) table; nothing was written, anywhere.
         assert(catalog.loadTable(restIdent(table)).currentSnapshot() == null, "no data may be committed through the catalog")

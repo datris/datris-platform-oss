@@ -498,4 +498,11 @@ class IcebergCatalogRegistrarSpec extends AnyFunSuite {
             statusUtil = status
         )
     }
+
+    test("register keeps restCreatedTable") {
+        val prev = UnityCatalogSyncState(TABLE, null, null, null, null, null, null, restCreatedTable = "unity_cat.sales.orders_daily")
+        assert(register(new FakeCatalog(), previous = prev).restCreatedTable == "unity_cat.sales.orders_daily")
+        val failed = register(new FakeCatalog(registerResp = (403, """{"error":{"message":"denied"}}""")), previous = prev)
+        assert(failed.restCreatedTable == "unity_cat.sales.orders_daily", s"$failed")
+    }
 }

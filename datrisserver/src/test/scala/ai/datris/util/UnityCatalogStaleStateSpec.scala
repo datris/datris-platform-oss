@@ -133,4 +133,29 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         assert(IcebergRestSession.foreignAdvice(null, "q") == "rename the pipeline or choose another schema")
         assert(IcebergRestSession.foreignAdvice(doc(), "q") == "rename the pipeline or choose another schema")
     }
+
+    test("createdRefusedState records the created table and the reason, keeping other fields; a later catalog commit clears it") {
+        val prev = doc(mode = null, loc = null, at = null).copy(lineageHash = "h")
+        val st = IcebergRestSession.createdRefusedState(prev, "orders_daily", "main.uc.orders_daily", "uc-rest: refused")
+        assert(st.catalogMode == "refused" && st.restCreatedTable == "main.uc.orders_daily" && st.restRefusedReason == "uc-rest: refused", s"$st")
+        assert(st.lineageHash == "h")
+        assert(IcebergRestSession.createdRefusedState(null, "p", "q", "r").pipeline == "p")
+        // Carried by the stale-state clear; cleared by the next catalog commit.
+        assert(S.withoutRestCommit(st).restCreatedTable == "main.uc.orders_daily")
+        assert(IcebergRestSession.interimState(st, "orders_daily", "s3://lake/orders_daily/metadata/00000-a.metadata.json", "t").restCreatedTable == null)
+    }
+
+    test("foreignAdvice is state-independent for Databricks managed storage, and follows restCreatedTable") {
+        val managed = "s3://datris/uc/__unitystorage/schemas/a/tables/b/metadata/00000-x.metadata.json"
+        assert(IcebergRestSession.foreignAdvice(null, "q", managed).contains("renaming will not help: have an admin drop q"))
+        assert(IcebergRestSession.foreignAdvice(doc(), "q", managed).contains("renaming will not help"))
+        val created = doc(mode = null, loc = null, at = null).copy(restCreatedTable = "q")
+        assert(IcebergRestSession.foreignAdvice(created, "q", "s3://other/t/metadata/1.json").contains("renaming will not help"))
+        assert(IcebergRestSession.foreignAdvice(null, "q", "s3://other/t/metadata/1.json") == "rename the pipeline or choose another schema")
+    }
+
+    test("RestLocationRefused from a create carries created=true; from a load it does not") {
+        assert(new IcebergWriter.RestLocationRefused("a", "b", created = true).created)
+        assert(!new IcebergWriter.RestLocationRefused("a", "b").created)
+    }
 }

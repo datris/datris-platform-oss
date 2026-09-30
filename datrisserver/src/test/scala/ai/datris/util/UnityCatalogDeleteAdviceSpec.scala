@@ -118,4 +118,15 @@ class UnityCatalogDeleteAdviceSpec extends AnyFunSuite {
         assert(A.forPipeline(cfg, registered.copy(lastRegisterAt = null)).isEmpty)
         assert(A.forPipeline(cfg, registered.copy(registeredMetadataLocation = "s3://lake/orders_daily2/metadata/v2.metadata.json")).isEmpty)
     }
+
+    test("restCreatedTable (Databricks managed table Datris created but never wrote) → warns on delete and on reset") {
+        val created =
+            UnityCatalogSyncState("orders_daily", null, null, null, null, null, null, catalogMode = "refused", restCreatedTable = "main.sales.orders_daily")
+        val want =
+            "Unity Catalog holds main.sales.orders_daily, created by Datris but never written to (the catalog ignored the requested location); have an admin drop it"
+        assert(A.forPipeline(config("iceberg"), created).contains(want))
+        assert(A.forPipeline(config("iceberg"), created, configDeleted = false).contains(want))
+        assert(A.forPipeline(config("iceberg"), created, dataDeleted = false).contains(want))
+        assert(A.forPipeline(config("iceberg"), created.copy(restCreatedTable = null)).isEmpty)
+    }
 }

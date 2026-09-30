@@ -127,6 +127,7 @@ class PipelineAPIController {
                 out.addProperty("restMetadataLocation", state.restMetadataLocation)
                 out.addProperty("lastRestCommitAt", state.lastRestCommitAt)
                 out.addProperty("restRefusedReason", state.restRefusedReason)
+                out.addProperty("restCreatedTable", state.restCreatedTable)
             }
             val lineageEnabled = config.unityCatalog != null && config.unityCatalog.enabled && config.unityCatalog.lineageOn
             out.addProperty("lineageEnabled", lineageEnabled)

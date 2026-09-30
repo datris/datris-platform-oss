@@ -1177,6 +1177,12 @@ paths:
                   restRefusedReason:
                     type: string
                     description: Why the last catalogMode rest run wrote by path instead of through the catalog; null otherwise
+                  restCreatedTable:
+                    type: string
+                    description: >-
+                      catalog.schema.table of a table the catalog created for this pipeline at a location
+                      Datris refused (for example a Databricks managed table); never written to, still held
+                      by the catalog until an admin drops it. Null otherwise.
         '404':
           description: Pipeline not configured
         '500':

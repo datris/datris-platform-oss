@@ -67,7 +67,7 @@ object IcebergWriter {
     /** The catalog's table is not at the pipeline's table root (Databricks
       * creates managed Iceberg tables and ignores the requested location).
       * Thrown before any data is written through the catalog. */
-    final class RestLocationRefused(val tableLocation: String, val requested: String)
+    final class RestLocationRefused(val tableLocation: String, val requested: String, val created: Boolean = false)
         extends DatrisException(
             "the catalog placed the table at " + tableLocation + ", outside this pipeline's table root " + requested + "; nothing was written through the catalog"
         )
@@ -83,8 +83,8 @@ object IcebergWriter {
     /** Rest-mode sibling of assertTableLocation: a table elsewhere is a
       * refusal (RestLocationRefused), a manifest list on another
       * bucket is a hard error as in path mode. */
-    private[util] def assertRestTableLocation(table: Table, requested: String): Unit = {
-        if (!sameRestLocation(table.location(), requested)) throw new RestLocationRefused(table.location(), requested)
+    private[util] def assertRestTableLocation(table: Table, requested: String, created: Boolean = false): Unit = {
+        if (!sameRestLocation(table.location(), requested)) throw new RestLocationRefused(table.location(), requested, created)
         val snapshot = table.currentSnapshot()
         if (snapshot != null && snapshot.manifestListLocation() != null) {
             val want = LocationParts(normS3(requested))
@@ -426,7 +426,7 @@ object IcebergWriter {
                 val created = r.catalog.buildTable(r.ident, schema).withPartitionSpec(spec).withLocation(location).withProperties(props).create()
                 // A catalog may ignore the requested location (Databricks
                 // creates a managed table): check before any data is written.
-                assertRestTableLocation(created, location)
+                assertRestTableLocation(created, location, created = true)
                 r.onCreated(created)
                 created
             case None => tables.create(schema, spec, props, location)

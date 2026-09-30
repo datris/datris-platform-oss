@@ -212,7 +212,14 @@ object IcebergRestSession {
     def interimState(previous: UnityCatalogSyncState, pipeline: String, metadataLocation: String, now: String): UnityCatalogSyncState =
         Option(previous)
             .getOrElse(UnityCatalogSyncState(pipeline, null, null, null, null, null, null))
-            .copy(pipeline = pipeline, catalogMode = "rest", restMetadataLocation = metadataLocation, lastRestCommitAt = now, restRefusedReason = null)
+            .copy(
+                pipeline = pipeline,
+                catalogMode = "rest",
+                restMetadataLocation = metadataLocation,
+                lastRestCommitAt = now,
+                restRefusedReason = null,
+                restCreatedTable = null
+            )
 
     private def metadataOf(t: org.apache.iceberg.Table): String = t match {
         case h: HasTableOperations => Option(h.operations().current()).map(_.metadataFileLocation()).orNull
@@ -228,11 +235,21 @@ object IcebergRestSession {
       * earlier refused run it is most likely the managed table a catalog
       * that ignores the requested location created for us, and renaming
       * would just create another one. */
-    def foreignAdvice(previous: UnityCatalogSyncState, qualified: String): String =
-        if (previous != null && previous.catalogMode == "refused")
+    def foreignAdvice(previous: UnityCatalogSyncState, qualified: String, catalogLocation: String = null): String =
+        if (
+            Option(catalogLocation).exists(_.contains("/__unitystorage/")) ||
+            (previous != null && (previous.catalogMode == "refused" || previous.restCreatedTable != null))
+        )
             "if this table was created by an earlier Datris run against a catalog that ignores the requested location (Databricks managed tables), " +
                 s"renaming will not help: have an admin drop $qualified; for governed Databricks tables use the Databricks destination"
         else "rename the pipeline or choose another schema"
+
+    /** State after a catalog create whose location was refused: the table
+      * exists in the catalog (`restCreatedTable`) but was never written to. */
+    def createdRefusedState(previous: UnityCatalogSyncState, pipeline: String, qualified: String, reason: String): UnityCatalogSyncState =
+        Option(previous)
+            .getOrElse(UnityCatalogSyncState(pipeline, null, null, null, null, null, null))
+            .copy(pipeline = pipeline, catalogMode = "refused", restRefusedReason = reason, restCreatedTable = qualified)
 
     /** The warning for a catalog table outside the pipeline's table root. */
     def outsideRootMessage(qualified: String, tableLocation: String, root: String): String =
@@ -258,7 +275,16 @@ object IcebergRestSession {
         logger.warn("uc-rest location refused for pipeline " + jobContext.config.name + ": " + refused.getMessage)
         audit(jobContext.config.name, msg)
         plan.close()
-        plan.copy(target = None, refused = Some(msg), created = false, closeable = None)
+        // The catalog created the table (and still holds it): record that
+        // now, so a later failure in this run still leaves it known.
+        val previous =
+            if (refused.created) {
+                val st = createdRefusedState(plan.previous, jobContext.config.name, plan.qualified, msg)
+                try UnityCatalogSyncIO.write(st)
+                catch { case NonFatal(e) => logger.warn("uc-rest state write failed for " + jobContext.config.name + ": " + e.getMessage) }
+                st
+            } else plan.previous
+        plan.copy(target = None, refused = Some(msg), created = false, closeable = None, previous = previous)
     }
 
     /** The writer's catalog create lost to another create of the same
@@ -289,7 +315,7 @@ object IcebergRestSession {
                 val msg = line(
                     s"${plan.qualified} was created in Unity Catalog by someone else while this run was creating it, and points at $where, " +
                         s"outside this pipeline's table ${IcebergCatalogRegistrar.normalize(plan.location)}; refusing to touch it (never merge, never drop); " +
-                        foreignAdvice(plan.previous, plan.qualified) + "; falling back to the path-based write"
+                        foreignAdvice(plan.previous, plan.qualified, catalogHas.orNull) + "; falling back to the path-based write"
                 )
                 statusUtil.warn("processing", msg)
                 logger.warn("uc-rest create conflict for pipeline " + config.name + ": " + oneLine(cause.getMessage))
@@ -485,7 +511,7 @@ object IcebergRestSession {
                     Left(
                         Fallback(
                             s"$qualified already exists in Unity Catalog and points at ${n(c)}, outside this pipeline's table ${n(outputPath)}; " +
-                                "refusing to touch it (never merge, never drop); " + foreignAdvice(previous, qualified)
+                                "refusing to touch it (never merge, never drop); " + foreignAdvice(previous, qualified, c)
                         )
                     )
             }
@@ -554,6 +580,8 @@ object IcebergRestSession {
                         restMetadataLocation = Option(loc).getOrElse(base.restMetadataLocation),
                         lastRestCommitAt = now,
                         restRefusedReason = null,
+                        // The identifier now names our own table.
+                        restCreatedTable = null,
                         registeredMetadataLocation = Option(loc).getOrElse(base.registeredMetadataLocation),
                         lastRegisterAt = Option(base.lastRegisterAt).getOrElse(now),
                         lastError = keptErrors

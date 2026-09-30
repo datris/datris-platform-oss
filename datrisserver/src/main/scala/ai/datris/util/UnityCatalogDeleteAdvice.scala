@@ -59,6 +59,11 @@ object UnityCatalogDeleteAdvice {
                         "until an admin drops it (or the pipeline moves to a new prefix)"
                 else "Unity Catalog still holds " + qualified + "; have an admin drop it"
             )
+        else if (previous.restCreatedTable != null)
+            Some(
+                "Unity Catalog holds " + previous.restCreatedTable +
+                    ", created by Datris but never written to (the catalog ignored the requested location); have an admin drop it"
+            )
         else if (dataDeleted && registeredUnder(previous, root))
             Some("Unity Catalog still has " + qualified + " registered at a location that no longer exists; have an admin drop it")
         else None
