@@ -78,6 +78,21 @@ Registration uses the Unity Catalog Iceberg REST catalog, which needs three thin
 2. **`EXTERNAL USE SCHEMA`** on the target schema for the secret's identity. Only the catalog owner can grant it: `` GRANT EXTERNAL USE SCHEMA ON SCHEMA analytics.default TO `<sp-application-id>` ``.
 3. An **external location** that covers the table's S3 path (the bucket and prefix above), with a storage credential that can read it.
 
+<Warning>
+**The target schema must be on Unity Catalog managed cloud storage**, meaning a schema (or its catalog) created with `MANAGED LOCATION` on an external location. A schema on the workspace default storage (DBFS root) cannot be used: Databricks rejects `GRANT EXTERNAL USE SCHEMA` there with `PRIVILEGE_NOT_APPLICABLE_TO_ENTITY` (`SCHEMA_DB_STORAGE`), and the Iceberg REST endpoint does not serve its tables. Create the schema on an external location, then grant the secret's identity what it needs:
+
+```sql
+-- Only if the catalog itself is on DBFS root:
+CREATE CATALOG <catalog> MANAGED LOCATION 's3://<bucket>/<prefix>/';
+
+CREATE SCHEMA <catalog>.<schema> MANAGED LOCATION 's3://<bucket>/<prefix>/';
+
+GRANT USE CATALOG ON CATALOG <catalog> TO `<sp-application-id>`;
+GRANT USE SCHEMA, CREATE TABLE, EXTERNAL USE SCHEMA ON SCHEMA <catalog>.<schema> TO `<sp-application-id>`;
+GRANT CREATE EXTERNAL TABLE, READ FILES, WRITE FILES ON EXTERNAL LOCATION <external-location> TO `<sp-application-id>`;
+```
+</Warning>
+
 A missing prerequisite is a warning on the run that names what to fix: external data access or `EXTERNAL USE SCHEMA` for a permission error, or the S3 path that no external location covers.
 
 ### How runs behave
@@ -141,7 +156,7 @@ On a pipeline that has never committed through the catalog, `DATRIS_UNITY_CATALO
 
 The pipeline detail page shows a `rest` chip and when the table was last kept current, or `refused` with the reason. `GET /api/v1/pipelines/{name}/unity-catalog` adds `catalogMode`, `restMetadataLocation`, `lastRestCommitAt` and `restRefusedReason`, and `register` gains the values `rest` and `refused`.
 
-**Databricks prerequisites.** The same three as registration (external data access, `EXTERNAL USE SCHEMA`, an external location covering the S3 path), plus one that is not confirmed yet: the catalog must accept creating an Iceberg table at an external location through its REST catalog. Databricks documents Iceberg REST writes for managed Iceberg tables; writes to external locations are not confirmed. Databricks does not accept registering an existing table (it has no `register` call), so an existing path table cannot be adopted there. Also not confirmed: whether Databricks issues the service principal's OAuth token when the client ID and secret are sent in the token request body (a personal access token in the secret avoids the question). `register` stays the default for catalogs that implement it; on Databricks, set `rest`.
+**Databricks prerequisites.** The same three as registration (external data access, `EXTERNAL USE SCHEMA`, an external location covering the S3 path), on a schema with a `MANAGED LOCATION` rather than DBFS root (see [Databricks prerequisites](#databricks-prerequisites)), plus one that is not confirmed yet: the catalog must accept creating an Iceberg table at an external location through its REST catalog. Databricks documents Iceberg REST writes for managed Iceberg tables; writes to external locations are not confirmed. Databricks does not accept registering an existing table (it has no `register` call), so an existing path table cannot be adopted there. Also not confirmed: whether Databricks issues the service principal's OAuth token when the client ID and secret are sent in the token request body (a personal access token in the secret avoids the question). `register` stays the default for catalogs that implement it; on Databricks, set `rest`.
 
 **Testing locally.** The Iceberg REST catalog test fixture works as a stand-in for Unity Catalog: run the `apache/iceberg-rest-fixture` image on the Datris network, create its `default` namespace, and use a secret with `host` set to `http://iceberg-rest:8181`, `icebergRestPath` set to `/` and `icebergRestPrefix` set to `-` (see the next section). Point the pipeline at the built-in MinIO store for this test.
 

@@ -299,3 +299,11 @@ def test_pipeline_config_reference_and_mcp_arg_say_databricks_requires_rest():
     assert "Databricks Unity Catalog has no Iceberg REST `register` call" in ref
     src = _read(os.path.join(REPO_ROOT, "mcp-server", "server.py"))
     assert "Databricks requires rest" in src
+
+
+def test_unity_catalog_page_requires_managed_location_schema():
+    text = _read(UNITY_CATALOG_MDX)
+    # Schemas on DBFS root cannot take EXTERNAL USE SCHEMA; the page says so
+    # and gives the MANAGED LOCATION remedy.
+    assert "MANAGED LOCATION" in text
+    assert "SCHEMA_DB_STORAGE" in text
