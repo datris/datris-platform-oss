@@ -334,7 +334,7 @@ export class McpComponent implements OnInit {
     },
     {
       name: 'create_pipeline',
-      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule, objectstore settings) without delete-then-recreate. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks), objectstore (Parquet files, ORC files, or an Iceberg table in MinIO or AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). Snowflake and Databricks additionally require credentialsSecret, warehouse, and database.',
+      description: 'Create OR UPDATE a pipeline. Schema is auto-detected from a sample file for structured destinations. Upserts by name — calling again with the same name replaces the config in place without dropping the destination data, so you can change knobs (keyFields, truncate, codegen_rule, objectstore settings) without delete-then-recreate. Supports three destination categories: structured (postgres, mongodb, snowflake, databricks), objectstore (Parquet files, ORC files, or an Iceberg table in MinIO or AWS S3), and vector (pgvector, qdrant, weaviate, milvus, chroma). Snowflake and Databricks additionally require credentialsSecret, warehouse, and database — warehouse is required for Snowflake; for Databricks, optional when the secret has a `warehouse` field.',
       category: 'Pipeline Management',
       parameters: [
         { name: 'content', type: 'string', description: 'Base64-encoded sample data. Required for structured destinations AND objectstore; omit for vector destinations.', required: false, inputType: 'textarea' },
@@ -344,7 +344,7 @@ export class McpComponent implements OnInit {
         { name: 'table', type: 'string', description: 'Table/collection name (default: pipeline name). Ignored for objectstore.', required: false, inputType: 'text' },
         { name: 'database', type: 'string', description: 'Database name (default: datris). Ignored for objectstore. REQUIRED for snowflake (the Snowflake database) and databricks (the Unity Catalog name).', required: false, inputType: 'text' },
         { name: 'schema', type: 'string', description: 'Destination schema. Applies to snowflake (default: PUBLIC) and databricks (default: default).', required: false, inputType: 'text' },
-        { name: 'warehouse', type: 'string', description: 'Snowflake virtual warehouse NAME, or Databricks SQL warehouse ID (the trailing segment of the HTTP path in Connection details). REQUIRED for those destinations.', required: false, inputType: 'text' },
+        { name: 'warehouse', type: 'string', description: 'Snowflake virtual warehouse NAME, or Databricks SQL warehouse ID (the trailing segment of the HTTP path in Connection details). Required for Snowflake; for Databricks, optional when the secret has a `warehouse` field.', required: false, inputType: 'text' },
         { name: 'role', type: 'string', description: 'Optional Snowflake role to assume. Snowflake only.', required: false, inputType: 'text' },
         { name: 'delimiter', type: 'string', description: 'CSV delimiter (default: comma)', required: false, inputType: 'text' },
         { name: 'header', type: 'boolean', description: 'Whether CSV has a header row (default: true)', required: false, inputType: 'text' },

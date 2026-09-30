@@ -356,7 +356,7 @@ def pipeline_result(token, offset, limit, out, json_output):
 @click.option("--table", "-t", default=None, help="Table/collection name (default: pipeline name)")
 @click.option("--database", default="datris", help="Database name (for snowflake: the Snowflake database; for databricks: the Unity Catalog name — required for both)")
 @click.option("--schema", default=None, help="Destination schema (snowflake default: PUBLIC; databricks default: default)")
-@click.option("--warehouse", default=None, help="Snowflake warehouse name, or Databricks SQL warehouse ID (required for those destinations)")
+@click.option("--warehouse", default=None, help="Snowflake warehouse name, or Databricks SQL warehouse ID (required for Snowflake; for Databricks, optional when the secret has a `warehouse` field)")
 @click.option("--credentials-secret", default=None, help="Platform secret holding destination credentials (required for snowflake and databricks)")
 @click.option("--ai-validate", default=None, help="AI data quality rule (plain English, e.g. 'all prices must be positive')")
 @click.option("--ai-transform", default=None, help="AI transformation instruction (plain English, e.g. 'convert dates to YYYY/MM/DD')")

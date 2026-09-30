@@ -1586,9 +1586,10 @@ _DATABRICKS_WAREHOUSE_FIELDS = ("warehouse", "httpPath", "http_path", "DATABRICK
 
 
 def _databricks_secret_has_warehouse(secret_name):
-    """True/False when the secret's field NAMES can be read; None when they
-    can't (lookup failed) — the caller then defers to the server, which
-    resolves the warehouse at connection time. Never reads values."""
+    """True/False when the secret's fields can be read; None when they can't
+    (lookup failed) — the caller then defers to the server, which resolves
+    the warehouse at connection time. Uses only field presence; values are
+    discarded."""
     try:
         data = json.loads(_call("get", f"/api/v1/secrets/{secret_name}"))
     except (json.JSONDecodeError, TypeError, ValueError):

@@ -230,7 +230,7 @@ For S3-specific behavior — credentials secret format, per-bucket credential is
 | `useMongoDB` | boolean | false | Write to MongoDB |
 | `useSnowflake` | boolean | false | Write to the user's Snowflake account — see [Snowflake Destination](/destinations/snowflake) |
 | `useDatabricks` | boolean | false | Write a Unity Catalog managed Delta table in the user's Databricks workspace — see [Databricks Destination](/destinations/databricks) |
-| `warehouse` | string | null | Snowflake virtual warehouse name, or Databricks SQL warehouse ID (required for those destinations) |
+| `warehouse` | string | null | Snowflake virtual warehouse name, or Databricks SQL warehouse ID (required for Snowflake; for Databricks, optional when the secret has a `warehouse` field) |
 | `role` | string | null | Snowflake role to assume (optional, Snowflake only) |
 | `credentialsSecret` | string | null | Platform secret holding destination credentials (required for Snowflake and Databricks) |
 | `manageTableManually` | boolean | false | If false, auto-creates tables |

@@ -86,7 +86,7 @@ datris ingest <FILE> [OPTIONS]
 | `--table, -t` | Table/collection name (default: pipeline name) |
 | `--database` | Database name (default: `datris`). For `snowflake`: the Snowflake database; for `databricks`: the Unity Catalog name — required for both |
 | `--schema` | Destination schema (`snowflake` default: `PUBLIC`; `databricks` default: `default`) |
-| `--warehouse` | Snowflake warehouse name, or Databricks SQL warehouse ID (required for those destinations) |
+| `--warehouse` | Snowflake warehouse name, or Databricks SQL warehouse ID (required for Snowflake; for Databricks, optional when the secret has a `warehouse` field) |
 | `--credentials-secret` | Platform secret holding destination credentials (required for `snowflake` and `databricks`) |
 | `--ai-validate` | AI data quality rule — plain-English instruction |
 | `--ai-transform` | AI transformation instruction — plain-English instruction |

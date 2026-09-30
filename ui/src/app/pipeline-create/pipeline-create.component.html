@@ -581,13 +581,14 @@
       <ng-container *ngIf="destType === 'databricks'">
         <div class="form-row">
           <label class="form-label">Credentials Secret</label>
-          <input class="form-input" [(ngModel)]="dbxCredentialsSecret" placeholder="e.g. databricks/acme-lakehouse">
+          <input class="form-input" [(ngModel)]="dbxCredentialsSecret" (change)="checkDbxSecretWarehouse()" placeholder="e.g. databricks/acme-lakehouse">
           <p class="form-hint">Name of a Platform-tab secret containing <code>host</code> (the workspace hostname), plus <code>clientId</code> and <code>clientSecret</code> (service principal OAuth, recommended) or <code>token</code> (personal access token, fallback). Create it on Configuration → Secrets → Platform if it doesn't exist yet.</p>
         </div>
         <div class="form-row">
           <label class="form-label">SQL Warehouse ID</label>
           <input class="form-input" [(ngModel)]="dbxWarehouse" placeholder="e.g. 1a2b3c4d5e6f7a8b">
-          <p class="form-hint">The warehouse ID from SQL Warehouses → your warehouse → Connection details — the trailing segment of the HTTP path (<code>/sql/1.0/warehouses/&lt;id&gt;</code>), not the warehouse name. Pasting the full HTTP path also works.</p>
+          <p class="form-hint dbx-warehouse-hint" *ngIf="dbxSecretHasWarehouse && !dbxWarehouse.trim()">Using the secret's warehouse.</p>
+          <p class="form-hint">Optional if the secret has a <code>warehouse</code> field. The warehouse ID from SQL Warehouses → your warehouse → Connection details — the trailing segment of the HTTP path (<code>/sql/1.0/warehouses/&lt;id&gt;</code>), not the warehouse name. Pasting the full HTTP path also works.</p>
         </div>
         <div class="form-row-inline">
           <div class="form-field">
