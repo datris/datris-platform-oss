@@ -93,7 +93,11 @@ class UnityCatalogAPIController {
             val result =
                 try UnityCatalogDiscovery.browse(secretName, wh, Option(catalog), Option(schema), Option(table))
                 catch {
-                    case e: IllegalArgumentException => return fail(HttpStatus.BAD_REQUEST, DatabricksErrorText.short(e.getMessage))
+                    case e: IllegalArgumentException =>
+                        return fail(
+                            HttpStatus.BAD_REQUEST,
+                            Option(DatabricksErrorText.short(e.getMessage)).filter(_.nonEmpty).getOrElse(e.getClass.getSimpleName)
+                        )
                     case e: Exception =>
                         // The driver message can be tens of KB of Spark stack;
                         // body, MCP text and audit entry all get the short form.

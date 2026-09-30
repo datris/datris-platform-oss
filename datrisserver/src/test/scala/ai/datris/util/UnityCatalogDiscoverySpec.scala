@@ -388,4 +388,44 @@ class UnityCatalogDiscoverySpec extends AnyFunSuite {
         assert(status == 502)
         assert(message == "Databricks SQL warehouse 'bogus' was not found in this workspace. [PERMISSION_DENIED] x", message)
     }
+
+    test("a tagged [RequestId=... ErrorClass=X] error inside a Thrift dump maps by class, RPC prefix stripped") {
+        val frames = (1 to 300).map(i => "\n\tat com.databricks.sql.managedcatalog.Client.call" + i + "(Client.scala:" + i + ")").mkString
+        val msg = "Operation failed with error: [no error details from server] for statement [SHOW SCHEMAS IN `a b`], with response [" +
+            "TGetOperationStatusResp(status:TStatus(statusCode:ERROR_STATUS, infoMessages:[*org.apache.hive.service.cli.HiveSQLException:" +
+            "Error running query: com.databricks.sql.managedcatalog.UnityCatalogServiceException: " +
+            "[RequestId=6f1c2e4a-0b7d-4c1e-9a3f-2d5e8b7c9a10 ErrorClass=INVALID_PARAMETER_VALUE] Invalid input: RPC ListSchemas " +
+            "Field managedcatalog.ListSchemas.catalog_name: name \"a b\" is not a valid name. Valid names cannot contain spaces, periods, " +
+            "forward slashes, or control characters.:37:36, com.databricks.sql.X:run:X.scala:1, " + ("org.apache.spark.Y:run:Y.scala:2, " * 600) +
+            "])" + frames
+        assert(msg.length > 25000)
+        val (status, message) = UnityCatalogDiscovery.translateWarehouseError(new java.sql.SQLException(msg))
+        assert(status == 400, message)
+        assert(
+            message == "[INVALID_PARAMETER_VALUE] name \"a b\" is not a valid name. Valid names cannot contain spaces, periods, forward slashes, or control characters.",
+            message
+        )
+    }
+
+    test("NOT_FOUND classes naming no catalog/schema/table fall back to 'Object was not found.'") {
+        val (status, message) = UnityCatalogDiscovery.translateWarehouseError(new java.sql.SQLException("[FUNCTION_NOT_FOUND] [NO_SUCH_X]"))
+        assert(status == 404)
+        assert(message == "[FUNCTION_NOT_FOUND] Object was not found.", message)
+    }
+
+    test("connect failure against a bogus warehouse drops the Thrift request and names the warehouse to check") {
+        val creds = ResolvedDatabricksCredentials("dbc-a1b2c3d4-e5f6.cloud.databricks.com", Some("sp-id"), Some("sp-secret"), None)
+        val cause = new java.sql.SQLException(
+            "Connection failure while using the OSS Databricks JDBC driver. Failed to connect to server: https://dbc-a1b2c3d4-e5f6.cloud.databricks.com:443" +
+                " | Error while receiving response from Thrift server. Request {TOpenSessionReq(client_protocol:HIVE_CLI_SERVICE_PROTOCOL_V10, " +
+                ("configuration:{x=y}, " * 100) + ")}"
+        )
+        val e = DatabricksConnectionUtil.translateConnectError(cause, "jdbc:databricks://dbc-a1b2c3d4-e5f6.cloud.databricks.com:443", "bogus", creds)
+        val msg = e.getMessage
+        assert(msg.contains("check the warehouse ID/HTTP path ('bogus') and that the service principal can use the warehouse"), msg)
+        assert(msg.contains("Failed to connect to server"), msg)
+        assert(!msg.contains("TOpenSessionReq") && !msg.contains("Request {"), msg)
+        assert(msg.endsWith("Error while receiving response from Thrift server."), msg)
+        assert(msg.length <= DatabricksErrorText.MaxMessageLength, msg.length.toString)
+    }
 }

@@ -21,9 +21,15 @@ object DatabricksErrorText {
 
     private val ErrorClassRe = """\[([A-Z][A-Z0-9_]{2,}(?:\.[A-Z0-9_]+)*)\]""".r
     private val BareClassRe = """\b(PERMISSION_DENIED|INSUFFICIENT_PERMISSIONS)\b""".r
-    private val StackCutRe = """(\r?\n\s*at |\tat |TGetOperationStatusResp|\s+at [A-Za-z_$][\w$]*(?:\.[\w$]+)+\()""".r
+    // `[RequestId=<uuid> ErrorClass=INVALID_PARAMETER_VALUE] ...` (Unity Catalog RPC errors).
+    private val TaggedClassRe = """\[[^\[\]]*?\bErrorClass=([A-Z][A-Z0-9_.]*[A-Z0-9_])\]""".r
+    private val StackCutRe =
+        """(\r?\n\s*at |\tat |TGetOperationStatusResp|TOpenSessionReq|\s*Request\s*\{T|\s+at [A-Za-z_$][\w$]*(?:\.[\w$]+)+\()""".r
+    // `Invalid input: RPC ListSchemas Field managedcatalog.ListSchemas.catalog_name: ` before the real sentence.
+    private val RpcPrefixRe = """^Invalid input:\s*(?:RPC\s+\S+\s+)?(?:Field\s+\S+?:\s+)?""".r
     private val JavaClassPrefixRe = """^\s*(?:[a-z_$][\w$]*\.)+[A-Z][\w$]*:\s*""".r
-    private val SentenceRe = """^(.+?[.!?])(?=\s|$)""".r
+    // A sentence ends at . ! ? followed by whitespace, end, or dump punctuation (`.:37:36`, `.",`).
+    private val SentenceRe = """^(.+?[.!?])(?=\s|$|:\d|[,;")\]])""".r
 
     private def chain(t: Throwable): List[Throwable] = {
         val seen = new java.util.IdentityHashMap[Throwable, java.lang.Boolean]()
@@ -58,24 +64,45 @@ object DatabricksErrorText {
       * bracket or stack text. */
     private def sentenceAfter(text: String, cls: String): Option[String] = {
         val marker = "[" + cls + "]"
-        var idx = text.indexOf(marker)
-        while (idx >= 0) {
-            var rest = text.substring(idx + marker.length)
+        val starts = Iterator.iterate(text.indexOf(marker))(i => text.indexOf(marker, i + marker.length)).takeWhile(_ >= 0).map(_ + marker.length)
+        sentenceAt(text, starts, 1)
+    }
+
+    /** Up to `maxSentences` sentences from the first of `starts` that yields
+      * one: Java class prefixes and a Unity Catalog `Invalid input: RPC ...
+      * Field ...: ` prefix are removed first. */
+    private def sentenceAt(text: String, starts: Iterator[Int], maxSentences: Int): Option[String] = {
+        for (start <- starts) {
+            var rest = text.substring(start)
             var stripped = true
             while (stripped) {
                 val next = JavaClassPrefixRe.replaceFirstIn(rest, "")
                 stripped = next != rest
                 rest = next
             }
-            rest = rest.trim
+            rest = RpcPrefixRe.replaceFirstIn(rest.trim, "").trim
             if (rest.nonEmpty && !rest.startsWith("[")) {
                 val line = firstLine(rest)
-                val sentence = SentenceRe.findFirstMatchIn(line).map(_.group(1))
-                    .getOrElse(line.split("SQLSTATE", 2)(0))
-                    .trim
-                if (sentence.nonEmpty) return Some(sentence)
+                val first = SentenceRe.findFirstMatchIn(line).map(_.group(1))
+                val sentence = first match {
+                    case Some(one) =>
+                        var acc = one
+                        var more = maxSentences - 1
+                        while (more > 0) {
+                            val tail = line.substring(acc.length)
+                            val next = if (tail.nonEmpty && tail.charAt(0).isWhitespace) SentenceRe.findFirstMatchIn(tail.trim).map(_.group(1)) else None
+                            next.filter(n => n.headOption.exists(_.isUpper) && !n.contains("SQLSTATE")) match {
+                                case Some(n) =>
+                                    acc = acc + tail.takeWhile(_.isWhitespace) + n
+                                    more -= 1
+                                case None => more = 0
+                            }
+                        }
+                        acc
+                    case None => line.split("SQLSTATE", 2)(0)
+                }
+                if (sentence.trim.nonEmpty) return Some(sentence.trim)
             }
-            idx = text.indexOf(marker, idx + marker.length)
         }
         None
     }
@@ -95,6 +122,7 @@ object DatabricksErrorText {
         if (base.contains("CATALOG")) "Catalog was not found."
         else if (base.contains("SCHEMA")) "Schema was not found."
         else if (base.contains("TABLE") || base.contains("VIEW")) "Table or view was not found."
+        else if (statusFor(cls) == 404) "Object was not found."
         else if (statusFor(cls) == 403) "Permission denied."
         else if (statusFor(cls) == 400) "Invalid parameter value."
         else "Databricks query failed."
@@ -111,9 +139,14 @@ object DatabricksErrorText {
         val text = fullText(e)
         if (text.isEmpty) return (502, e.getClass.getSimpleName)
         if (e.isInstanceOf[DatrisException]) return (502, short(text))
-        ErrorClassRe.findFirstMatchIn(text).map(_.group(1)) match {
+        val bare = ErrorClassRe.findFirstMatchIn(text)
+        val tagged = TaggedClassRe.findFirstMatchIn(text)
+        val useTagged = tagged.isDefined && bare.forall(_.start > tagged.get.start)
+        (if (useTagged) tagged else bare).map(_.group(1)) match {
             case Some(cls) =>
-                val sentence = sentenceAfter(text, cls).getOrElse(fallbackSentence(cls))
+                val sentence =
+                    (if (useTagged) sentenceAt(text, TaggedClassRe.findAllMatchIn(text).filter(_.group(1) == cls).map(_.end), 2)
+                     else sentenceAfter(text, cls)).getOrElse(fallbackSentence(cls))
                 (statusFor(cls), cap("[" + cls + "] " + sentence))
             case None =>
                 val status = if (BareClassRe.findFirstIn(text).isDefined) 403 else 502

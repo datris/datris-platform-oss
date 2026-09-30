@@ -82,7 +82,7 @@ object DatabricksConnectionUtil {
 
     /** Convert the driver's opaque connect-time failures into actionable errors
      *  naming the secret/config field to fix. */
-    private def translateConnectError(e: Exception, jdbcUrl: String, warehouse: String, creds: ResolvedDatabricksCredentials): DatrisException = {
+    private[util] def translateConnectError(e: Exception, jdbcUrl: String, warehouse: String, creds: ResolvedDatabricksCredentials): DatrisException = {
         def causeChain(t: Throwable): List[Throwable] =
             if (t == null) Nil else t :: causeChain(t.getCause)
         val messages = causeChain(e).flatMap(t => Option(t.getMessage)).mkString(" | ")
@@ -114,6 +114,9 @@ object DatabricksConnectionUtil {
             new DatrisException("Databricks connection timed out — the SQL warehouse may still be auto-starting " +
                 "(classic warehouses can take several minutes; serverless starts in seconds). Retry once it is RUNNING. " +
                 "Underlying driver error: " + shown)
+        else if (messages.contains("Failed to connect to server") && warehouse != null && warehouse.trim.nonEmpty)
+            new DatrisException("Databricks connection failed — check the warehouse ID/HTTP path ('" + warehouse.trim + "') " +
+                "and that the service principal can use the warehouse. Underlying driver error: " + shown)
         else
             new DatrisException("Databricks connection failed: " + shown)
     }
