@@ -33,17 +33,22 @@ object UnityCatalogStaleState {
     def staleCommitted(committed: Boolean, catalogHasTable: Option[Boolean], prefixHasMetadata: Option[Boolean]): Boolean =
         committed && catalogHasTable.contains(false) && prefixHasMetadata.contains(false)
 
-    /** On create: keep a leftover doc only when it is the fork guard for the
-      * new pipeline's own table (committed at its root) and the prefix still
-      * has (or may have) the table's metadata. */
+    /** On create: keep a leftover doc when it is the fork guard for the new
+      * pipeline's own table (committed at its root, and the prefix still has
+      * or may have the table's metadata), or when it records a table the
+      * catalog created for this name (`restCreatedTable`), so the "created by
+      * Datris but never written to" delete warning survives. */
     def keepOnCreate(doc: UnityCatalogSyncState, tableRoot: Option[String], prefixHasMetadata: () => Option[Boolean]): Boolean =
-        doc != null && tableRoot.exists(r => IcebergRestSession.restCommitted(doc, r)) && !prefixHasMetadata().contains(false)
+        doc != null && (doc.restCreatedTable != null ||
+            (tableRoot.exists(r => IcebergRestSession.restCommitted(doc, r)) && !prefixHasMetadata().contains(false)))
 
-    /** Docs to delete on startup: no pipeline of that name, and not a
-      * catalog-committed doc (those guard files a delete kept). */
+    /** Docs to delete on startup: no pipeline of that name, and neither a
+      * catalog-committed doc (those guard files a delete kept) nor one that
+      * records a catalog-created table (`restCreatedTable`). */
     def orphanDocs(docs: Seq[UnityCatalogSyncState], existingPipelines: Set[String]): Seq[String] =
         docs.filter(d => d != null && d.pipeline != null && !existingPipelines.contains(d.pipeline))
             .filterNot(d => d.catalogMode == "rest" && d.restMetadataLocation != null && d.lastRestCommitAt != null)
+            .filterNot(_.restCreatedTable != null)
             .map(_.pipeline)
 
     /** Top-level `state` of the Unity Catalog state endpoint: `error` when

@@ -158,4 +158,12 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         assert(new IcebergWriter.RestLocationRefused("a", "b", created = true).created)
         assert(!new IcebergWriter.RestLocationRefused("a", "b").created)
     }
+
+    test("a doc recording restCreatedTable survives create-time clearing and startup cleanup") {
+        val created = doc(mode = "refused", loc = null, at = null).copy(restCreatedTable = "main.uc.orders_daily")
+        assert(S.keepOnCreate(created, Some(ROOT), () => fail("no prefix probe needed")))
+        assert(S.keepOnCreate(created, None, () => fail("no prefix probe needed")), "kept even without an object store root")
+        val gone = created.copy(pipeline = "gone_created")
+        assert(S.orphanDocs(Seq(gone, doc("gone_plain", mode = null, loc = null, at = null)), Set.empty) == Seq("gone_plain"))
+    }
 }

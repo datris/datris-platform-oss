@@ -263,7 +263,7 @@ def test_openapi_unity_catalog_state_lists_catalog_mode_and_rest_fields():
     get = spec["paths"]["/api/v1/pipelines/{name}/unity-catalog"]["get"]
     schema = get["responses"]["200"]["content"]["application/json"]["schema"]
     props = schema.get("properties", {})
-    for field in ("catalogMode", "restMetadataLocation", "lastRestCommitAt", "restRefusedReason"):
+    for field in ("catalogMode", "restMetadataLocation", "lastRestCommitAt", "restRefusedReason", "restCreatedTable"):
         assert field in props, f"{field} must be in the /pipelines/{{name}}/unity-catalog schema: {sorted(props)}"
     register_enum = props["register"].get("enum", [])
     assert "rest" in register_enum and "refused" in register_enum, register_enum

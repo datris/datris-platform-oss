@@ -21,7 +21,7 @@ export class PipelineService {
    *    lineage: 'off' | 'never' | 'published' | 'error', lineageEnabled, lineageHash, lastLineageAt,
    *    register: 'off' | 'never' | 'registered' | 'stale' | 'error' | 'rest' | 'refused', registerEnabled,
    *    registeredMetadataLocation, lastRegisterAt, catalogMode: 'register' | 'rest',
-   *    restMetadataLocation, lastRestCommitAt, restRefusedReason }. */
+   *    restMetadataLocation, lastRestCommitAt, restRefusedReason, restCreatedTable }. */
   getUnityCatalog(name: string): Observable<any> {
     return this.http.get<any>('/api/v1/pipelines/' + encodeURIComponent(name) + '/unity-catalog');
   }
