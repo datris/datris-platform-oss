@@ -276,3 +276,26 @@ def test_pipeline_config_reference_mentions_catalog_mode():
     ref = server.PIPELINE_CONFIG_REFERENCE
     assert "catalogMode" in ref
     assert "keeping it current is not done yet" not in ref
+
+
+# ======================================================================
+# Live Databricks probe (story 5 follow-up): Databricks Unity Catalog has no
+# Iceberg REST register endpoint, so register mode cannot work there.
+# ======================================================================
+
+def test_unity_catalog_page_says_databricks_requires_rest():
+    text = _read(UNITY_CATALOG_MDX)
+    assert 'With Databricks, `catalogMode: "rest"` is required.' in text
+    assert "does not implement the Iceberg REST `register` call" in text
+    # Adopting an existing path table is impossible there; the way out is stated.
+    assert "not possible on Databricks" in text
+    assert "start from a new prefix" in text and "deleteBeforeWrite" in text
+    # Register mode is still described as working where `register` exists.
+    assert "Register mode works with catalogs that implement `register`" in text
+
+
+def test_pipeline_config_reference_and_mcp_arg_say_databricks_requires_rest():
+    ref = server.PIPELINE_CONFIG_REFERENCE
+    assert "Databricks Unity Catalog has no Iceberg REST `register` call" in ref
+    src = _read(os.path.join(REPO_ROOT, "mcp-server", "server.py"))
+    assert "Databricks requires rest" in src

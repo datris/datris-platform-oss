@@ -325,6 +325,21 @@ class IcebergCatalogRegistrarSpec extends AnyFunSuite {
         assert(!text.contains("External Metadata API"), s"the lineage wording must not leak into register: $text")
     }
 
+    // Live Databricks probe: Unity Catalog has no Iceberg REST register verb.
+    test("404 ENDPOINT_NOT_FOUND → no register endpoint, use catalogMode rest; other 404s keep their wording") {
+        val text = failureText(
+            new FakeCatalog(registerResp =
+                (
+                    404,
+                    """{"error_code":"ENDPOINT_NOT_FOUND","message":"No API found for 'POST /unity-catalog/iceberg-rest/v1/catalogs/main/namespaces/default/register'"}"""
+                )
+            )
+        )
+        assert(text.contains("this catalog has no Iceberg REST register endpoint (Databricks Unity Catalog does not implement it)"), text)
+        assert(text.contains("catalogMode: \"rest\""), text)
+        assert(!text.contains("icebergRestPath"), s"the generic 404 wording must not apply: $text")
+    }
+
     test("transport exception → warning + audit failure, sync returns normally") {
         // register level: the cause surfaces with the uc-register: prefix.
         val text = failureText(new FakeCatalog(registerThrows = new java.io.IOException("Connection refused: iceberg-rest:8181")))

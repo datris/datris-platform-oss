@@ -248,17 +248,17 @@ datris status my_pipeline
 
 ### `datris delete`
 
-Delete a pipeline configuration and optionally its destination data.
+Delete a pipeline configuration together with its destination data.
 
 ```bash
 datris delete my_pipeline
-datris delete my_pipeline --keep-data
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--keep-data` | Keep destination data (only delete the pipeline config) |
 | `--json` | Return raw JSON |
+
+Deleting a pipeline always deletes its destination data. `--keep-data` is not supported: it exits with an error and deletes nothing. To keep the data, copy it or point a new pipeline at the same prefix before deleting.
 
 ---
 

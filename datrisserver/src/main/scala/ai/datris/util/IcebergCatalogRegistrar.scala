@@ -57,6 +57,9 @@ object IcebergCatalogRegistrar {
     private def field(fields: Map[String, String], name: String): Option[String] =
         Option(fields).flatMap(f => f.get(name).orElse(f.collectFirst { case (k, v) if k != null && k.equalsIgnoreCase(name) => v }))
 
+    /** True when the secret overrides the REST path (a non-Databricks catalog). */
+    def hasCustomRestPath(fields: Map[String, String]): Boolean = field(fields, RestPathField).isDefined
+
     /** REST root: the secret's `icebergRestPath` when present (`/` or empty ⇒
       * the host root), else Databricks' Iceberg REST catalog. */
     def restBase(fields: Map[String, String]): String =
@@ -151,6 +154,9 @@ object IcebergCatalogRegistrar {
         else if (status == 401 || status == 403)
             "Unity Catalog refused the register (status " + status + "): external data access is not enabled on the metastore, " +
                 "or the principal lacks EXTERNAL USE SCHEMA on " + catalog + "." + schema + " (the catalog owner grants it)." + head(body)
+        else if (status == 404 && b.contains("endpoint_not_found"))
+            "this catalog has no Iceberg REST register endpoint (Databricks Unity Catalog does not implement it); " +
+                "use `catalogMode: \"rest\"` so Datris commits through the catalog instead (status 404)." + head(body)
         else if (status == 404)
             "no Iceberg REST register at " + url + " (status 404): check the host, the secret's " + RestPathField + "/" + RestPrefixField +
                 " fields, and that external data access is enabled." + head(body)

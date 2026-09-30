@@ -14,8 +14,10 @@ import org.apache.iceberg.catalog.TableIdentifier
   * The endpoint and prefix reuse IcebergCatalogRegistrar's rules (so the
   * secret's `icebergRestPath` / `icebergRestPrefix` mean the same in both
   * modes). File IO is always HadoopFileIO: the runtime bundle has no AWS S3
-  * SDK, and the s3a keys applied per bucket live in the Hadoop conf. No
-  * `warehouse` is set: every create passes an explicit location. */
+  * SDK, and the s3a keys applied per bucket live in the Hadoop conf.
+  * `warehouse` is the UC catalog for Databricks (its config endpoint requires
+  * it) and absent for a custom REST path; every create still passes an
+  * explicit location. */
 object IcebergRestCatalogConfig {
 
     val SparkCatalogClass = "org.apache.iceberg.spark.SparkCatalog"
@@ -38,7 +40,13 @@ object IcebergRestCatalogConfig {
             // a hung endpoint must not pin a run or a query thread.
             ConnectionTimeoutKey -> "10000",
             SocketTimeoutKey -> "30000"
-        ) ++ IcebergCatalogRegistrar.prefix(fields, catalog).map(p => "prefix" -> p)
+        ) ++ IcebergCatalogRegistrar.prefix(fields, catalog).map(p => "prefix" -> p) ++
+            // Databricks' /v1/config rejects a request without `warehouse`
+            // ("Must provide 'warehouse' parameter"); it names the UC catalog.
+            // Server `overrides` are merged over client properties
+            // (ConfigResponse.merge: defaults < client < overrides), so an
+            // explicit prefix equal to the server's is harmless.
+            (if (IcebergCatalogRegistrar.hasCustomRestPath(fields)) Map.empty[String, String] else Map("warehouse" -> catalog))
         val id = creds.clientId.filter(_.nonEmpty)
         val secret = creds.clientSecret.filter(_.nonEmpty)
         val auth: Map[String, String] =

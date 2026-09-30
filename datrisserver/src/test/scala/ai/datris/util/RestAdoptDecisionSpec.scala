@@ -192,4 +192,18 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
         assert(R.resolve(st, ROOT, () => None).contains(recorded.replace("s3://", "s3a://")))
         assert(R.resolve(st, ROOT, () => Some("s3://elsewhere/t/metadata/00001-x.metadata.json")).contains(recorded.replace("s3://", "s3a://")))
     }
+
+    test("IcebergRestSession.registerUnsupported: Databricks ENDPOINT_NOT_FOUND and UnsupportedOperationException, nothing else") {
+        val U = IcebergRestSession.registerUnsupported _
+        assert(U(new UnsupportedOperationException("Server does not support endpoint: POST /v1/{prefix}/namespaces/{namespace}/register")))
+        assert(U(new RuntimeException(
+            """{"error_code":"ENDPOINT_NOT_FOUND","message":"No API found for 'POST /unity-catalog/iceberg-rest/v1/catalogs/main/namespaces/default/register'"}"""
+        )))
+        assert(U(new RuntimeException("wrapped", new RuntimeException("No API found for 'POST .../register'"))))
+        assert(!U(new RuntimeException("Forbidden: principal lacks EXTERNAL USE SCHEMA")))
+        assert(!U(new RuntimeException("Not found")))
+        assert(!U(null))
+        assert(IcebergRestSession.RegisterUnsupportedMessage.contains("start from a new prefix"))
+        assert(IcebergRestSession.RegisterUnsupportedMessage.contains("deleteBeforeWrite once"))
+    }
 }

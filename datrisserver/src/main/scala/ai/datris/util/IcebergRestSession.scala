@@ -154,6 +154,27 @@ object IcebergRestSession {
     def deleteRefused(deleteBeforeWrite: Boolean, catalogHas: Option[String], tableRoot: String): Boolean =
         deleteBeforeWrite && catalogHas.exists(c => IcebergCatalogRegistrar.classify(c, null, tableRoot) != IcebergCatalogRegistrar.Foreign)
 
+    val RegisterUnsupportedMessage =
+        "the catalog cannot register an existing path table; start from a new prefix (or set deleteBeforeWrite once — allowed because " +
+            "this table was never committed through the catalog) so Datris can create it through the catalog"
+
+    /** The catalog has no `register` verb: Databricks answers 404
+      * ENDPOINT_NOT_FOUND ("No API found for 'POST .../register'"), and
+      * Iceberg's REST client raises UnsupportedOperationException when the
+      * server does not advertise the endpoint. Walks the cause chain. */
+    def registerUnsupported(t: Throwable): Boolean = {
+        var cur = t
+        var depth = 0
+        while (cur != null && depth < 10) {
+            if (cur.isInstanceOf[UnsupportedOperationException]) return true
+            val m = Option(cur.getMessage).getOrElse("").toLowerCase
+            if (m.contains("endpoint_not_found") || m.contains("no api found") || m.contains("does not support endpoint")) return true
+            cur = cur.getCause
+            depth += 1
+        }
+        false
+    }
+
     /** Build the pipeline's RESTCatalog (caller closes it). */
     private[util] def buildCatalog(config: ai.datris.model.PipelineConfig, creds: ResolvedDatabricksCredentials): (Catalog, Map[String, String], String) = {
         val uc = config.unityCatalog
@@ -356,9 +377,18 @@ object IcebergRestSession {
                     statusUtil.info("processing", line(s"$qualified is new; creating it through the catalog at $outputPath"))
                     Right(ok.copy(created = true))
                 case RestAdoptDecision.AdoptPath(p) =>
-                    catalog.registerTable(ident, n(p))
-                    statusUtil.info("processing", line(s"adopted $qualified at ${n(p)}"))
-                    Right(ok.copy(adopted = Some(p)))
+                    val registered =
+                        try { catalog.registerTable(ident, n(p)); true }
+                        catch { case e: Exception if registerUnsupported(e) => false }
+                    if (registered) {
+                        statusUtil.info("processing", line(s"adopted $qualified at ${n(p)}"))
+                        Right(ok.copy(adopted = Some(p)))
+                    } else {
+                        // No register verb (Databricks): adopting is impossible;
+                        // say how to get a catalog-created table instead.
+                        closeable.foreach(x => Try(x.close()))
+                        Left(Fallback(RegisterUnsupportedMessage))
+                    }
                 case RestAdoptDecision.AdoptCatalog =>
                     statusUtil.info("processing", line(s"$qualified is in the catalog at ${n(catalogHas.orNull)}; committing through it"))
                     Right(ok)

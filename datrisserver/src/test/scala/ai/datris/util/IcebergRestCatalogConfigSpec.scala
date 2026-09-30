@@ -105,8 +105,16 @@ class IcebergRestCatalogConfigSpec extends AnyFunSuite {
         assert(p2.get("prefix").contains("wh1"), p2)
     }
 
-    test("warehouse is never set") {
-        Seq(m2mProps, patProps, fixtureProps).foreach(p => assert(!p.contains("warehouse"), p))
+    // Spec change (live Databricks probe): Databricks' GET /v1/config answers
+    // "Must provide 'warehouse' parameter" without it, so the Databricks shape
+    // sends the UC catalog as warehouse. A custom REST path (fixture, other
+    // catalogs) still sends none.
+    test("warehouse is the UC catalog for the Databricks shape and absent for a custom REST path") {
+        assert(m2mProps.get("warehouse").contains(CAT), m2mProps)
+        assert(patProps.get("warehouse").contains(CAT), patProps)
+        assert(!fixtureProps.contains("warehouse"), fixtureProps)
+        val f2 = Map("host" -> "http://iceberg-rest:8181/", "icebergRestPath" -> "/iceberg", "icebergRestPrefix" -> "wh1")
+        assert(!C.catalogProperties(fixture.copy(extra = f2), f2, "unity").contains("warehouse"))
     }
 
     // Round-3 review: every catalog call is bounded (connection 10 s, socket 30 s).

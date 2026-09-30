@@ -45,6 +45,8 @@ A missing privilege, a wrong host or a workspace without the external lineage AP
 
 An [object store](/destinations/object-store) or [S3](/destinations/s3) pipeline with `fileFormat: "iceberg"` can register its table in Unity Catalog. After each successful write, Datris points Unity Catalog at the table's current Iceberg metadata file, so Databricks SQL and any Iceberg REST client can find the table by name.
 
+**With Databricks, `catalogMode: "rest"` is required.** Databricks Unity Catalog does not implement the Iceberg REST `register` call, so the default `catalogMode: "register"` cannot work there: every run gets a warning that the catalog has no register endpoint. Set `"catalogMode": "rest"` (see [Keep the catalog current](#keep-the-catalog-current-catalogmode-rest)) and Datris creates and commits the table through the catalog instead. Register mode works with catalogs that implement `register`, such as the Apache Iceberg REST test fixture.
+
 ```json
 {
   "destination": {
@@ -54,7 +56,8 @@ An [object store](/destinations/object-store) or [S3](/destinations/s3) pipeline
     "enabled": true,
     "credentialsSecret": "databricks_prod",
     "catalog": "analytics",
-    "schema": "default"
+    "schema": "default",
+    "catalogMode": "rest"
   }
 }
 ```
@@ -107,7 +110,7 @@ By default Datris writes the table by path and registers it once (`catalogMode: 
 The first `rest` run looks at both the catalog and the table already at the pipeline's path:
 
 - **Nothing at either place:** the table is created through the catalog at the pipeline's path.
-- **A table Datris wrote at the path, and nothing in the catalog:** Datris registers the table's current metadata file once (the run says `adopted`), then commits through the catalog.
+- **A table Datris wrote at the path, and nothing in the catalog:** Datris registers the table's current metadata file once (the run says `adopted`), then commits through the catalog. This needs the `register` call, so it is not possible on Databricks: the run is refused and writes by path, and the warning says to start from a new prefix, or to set `deleteBeforeWrite` for one run (allowed because the table was never committed through the catalog) so Datris can create the table through the catalog.
 - **The catalog already points at the table's current metadata file** (for example, a table registered with `catalogMode: "register"` that has not been written since): Datris commits through the catalog.
 - **The catalog points at an older metadata file of the same table:** Datris refuses to use the catalog, because moving the pointer back in line would need the catalog table dropped, and Datris never drops a table. The warning names both files. An admin drops the Unity Catalog table; the next run registers the current file and continues through the catalog.
 - **The catalog has a table with that name somewhere else:** Datris refuses to touch it (never merge, never drop). Rename the pipeline or choose another schema.
@@ -135,7 +138,7 @@ On a pipeline that has never committed through the catalog, `DATRIS_UNITY_CATALO
 
 The pipeline detail page shows a `rest` chip and when the table was last kept current, or `refused` with the reason. `GET /api/v1/pipelines/{name}/unity-catalog` adds `catalogMode`, `restMetadataLocation`, `lastRestCommitAt` and `restRefusedReason`, and `register` gains the values `rest` and `refused`.
 
-**Databricks prerequisites.** The same three as registration (external data access, `EXTERNAL USE SCHEMA`, an external location covering the S3 path), plus one that is not confirmed yet: the catalog must accept creating or registering an Iceberg table at an external location through its REST catalog. Databricks documents Iceberg REST writes for managed Iceberg tables; writes to external locations are not confirmed. Also not confirmed: whether Databricks issues the service principal's OAuth token when the client ID and secret are sent in the token request body (a personal access token in the secret avoids the question). `catalogMode: "rest"` is opt-in for that reason; `register` stays the default.
+**Databricks prerequisites.** The same three as registration (external data access, `EXTERNAL USE SCHEMA`, an external location covering the S3 path), plus one that is not confirmed yet: the catalog must accept creating an Iceberg table at an external location through its REST catalog. Databricks documents Iceberg REST writes for managed Iceberg tables; writes to external locations are not confirmed. Databricks does not accept registering an existing table (it has no `register` call), so an existing path table cannot be adopted there. Also not confirmed: whether Databricks issues the service principal's OAuth token when the client ID and secret are sent in the token request body (a personal access token in the secret avoids the question). `register` stays the default for catalogs that implement it; on Databricks, set `rest`.
 
 **Testing locally.** The Iceberg REST catalog test fixture works as a stand-in for Unity Catalog: run the `apache/iceberg-rest-fixture` image on the Datris network, create its `default` namespace, and use a secret with `host` set to `http://iceberg-rest:8181`, `icebergRestPath` set to `/` and `icebergRestPrefix` set to `-` (see the next section). Point the pipeline at the built-in MinIO store for this test.
 
