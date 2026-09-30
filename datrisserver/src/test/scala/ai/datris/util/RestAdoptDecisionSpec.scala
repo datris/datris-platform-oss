@@ -152,7 +152,9 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
         val parquet = G(committed, ROOT, false, false, false, Q)
         assert(parquet.exists(m => m.contains("not supported") && m.contains("have an admin drop " + Q)), s"$parquet")
         // Iceberg with rest off: switch-back; rest on: no objection; rest on + delete: refused.
-        assert(G(committed, ROOT, true, false, false, Q).exists(_.contains("switching from catalogMode rest")))
+        assert(G(committed, ROOT, true, false, false, Q).exists(
+            _.contains("committed through Unity Catalog (catalogMode rest) but this pipeline is not in rest mode")
+        ))
         assert(G(committed, ROOT, true, false, true, Q).isEmpty)
         assert(G(committed, ROOT, true, true, true, Q).exists(_.contains("deleteBeforeWrite cannot be used")))
         // Never committed, or committed at another prefix: no objection.

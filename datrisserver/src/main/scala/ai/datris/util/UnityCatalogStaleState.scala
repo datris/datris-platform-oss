@@ -54,6 +54,26 @@ object UnityCatalogStaleState {
         else if (state.lastError != null || register == "refused") "error"
         else "synced"
 
+    /** Run-time stale check: when `previous` records a catalog commit at
+      * `tableRoot` but the catalog has no table and the prefix no metadata,
+      * persist the doc without its catalog-commit fields (`write`) and return
+      * it. None (probes not run) when the doc is not committed there; None
+      * when either probe finds the table or cannot tell. A `write` failure
+      * propagates: the run must not continue with a stale doc on disk. */
+    def clearIfStale(
+        previous: UnityCatalogSyncState,
+        tableRoot: String,
+        catalogHasTable: () => Option[Boolean],
+        prefixHasMetadata: () => Option[Boolean],
+        write: UnityCatalogSyncState => Unit
+    ): Option[UnityCatalogSyncState] = {
+        if (!IcebergRestSession.restCommitted(previous, tableRoot)) return None
+        if (!staleCommitted(committed = true, catalogHasTable(), prefixHasMetadata())) return None
+        val cleared = withoutRestCommit(previous)
+        write(cleared)
+        Some(cleared)
+    }
+
     def withoutRestCommit(doc: UnityCatalogSyncState): UnityCatalogSyncState =
         doc.copy(catalogMode = null, restMetadataLocation = null, lastRestCommitAt = null, restRefusedReason = null)
 

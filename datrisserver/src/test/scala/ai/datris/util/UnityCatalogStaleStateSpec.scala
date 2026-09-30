@@ -79,4 +79,29 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         // A refused reason left over after switching to register mode does not flip it.
         assert(S.topLevelState(doc(mode = "refused").copy(restRefusedReason = "uc-rest: refused"), "registered") == "synced")
     }
+
+    // E2E follow-up: the cleared doc must be PERSISTED, or a register-mode
+    // run (whose registrar re-reads the doc) writes the stale fields back.
+    test("clearIfStale persists the cleared doc when both sides are empty, and only then") {
+        val written = scala.collection.mutable.ListBuffer[UnityCatalogSyncState]()
+        val d = doc().copy(lineageHash = "h", registeredMetadataLocation = "r")
+        val cleared = S.clearIfStale(d, ROOT, () => Some(false), () => Some(false), written += _)
+        assert(cleared.isDefined, "stale")
+        assert(written.size == 1 && written.head == cleared.get, s"$written")
+        assert(!IcebergRestSession.restCommitted(written.head, ROOT), "the persisted doc no longer reads as committed")
+        assert(written.head.lineageHash == "h" && written.head.registeredMetadataLocation == "r" && written.head.pipeline == "orders_daily")
+
+        written.clear()
+        assert(S.clearIfStale(d, ROOT, () => Some(true), () => Some(false), written += _).isEmpty, "catalog has the table")
+        assert(S.clearIfStale(d, ROOT, () => Some(false), () => Some(true), written += _).isEmpty, "prefix has metadata")
+        assert(S.clearIfStale(d, ROOT, () => None, () => Some(false), written += _).isEmpty, "catalog unknown")
+        assert(written.isEmpty, s"nothing written when not stale: $written")
+        // Not committed at this root: the probes are never run.
+        assert(S.clearIfStale(d, "s3a://lake/orders_v2", () => fail("probe"), () => fail("probe"), _ => fail("write")).isEmpty)
+        assert(S.clearIfStale(null, ROOT, () => fail("probe"), () => fail("probe"), _ => fail("write")).isEmpty)
+    }
+
+    test("clearIfStale propagates a write failure (the run must not continue with the stale doc on disk)") {
+        intercept[RuntimeException](S.clearIfStale(doc(), ROOT, () => Some(false), () => Some(false), _ => throw new RuntimeException("mongo down")))
+    }
 }

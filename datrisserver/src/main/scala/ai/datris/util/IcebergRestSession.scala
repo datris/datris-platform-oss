@@ -102,9 +102,9 @@ object IcebergRestSession {
             IcebergCatalogRegistrar.classify(previous.restMetadataLocation, null, tableRoot) != IcebergCatalogRegistrar.Foreign
 
     def switchBackMessage(qualified: String): String =
-        "switching from catalogMode rest back to register (or turning Unity Catalog off for this pipeline) is not supported: " +
-            "the table's current metadata is only known to the catalog; keep rest, or start a new prefix and have an admin drop " + qualified +
-            " in Unity Catalog"
+        "this prefix holds a table that was committed through Unity Catalog (catalogMode rest) but this pipeline is not in rest mode; " +
+            "writing it by path is not supported because the table's current metadata is only known to the catalog. Set catalogMode rest, " +
+            "or start a new prefix and have an admin drop " + qualified + " in Unity Catalog"
 
     def deleteBeforeWriteMessage(qualified: String): String =
         "deleteBeforeWrite cannot be used on a table Unity Catalog holds at this prefix (committed through the catalog, or registered at it); drop " +
@@ -267,18 +267,22 @@ object IcebergRestSession {
         // A leftover doc (the pipeline was deleted out of band and recreated)
         // says "committed" while neither the catalog nor the prefix has the
         // table: ignore it rather than refuse a brand-new table.
-        if (
-            forkRisk && UnityCatalogStaleState.staleCommitted(
-                forkRisk,
-                UnityCatalogStaleState.catalogHasTable(config),
-                UnityCatalogStaleState.prefixHasMetadata(outputPath)
-            )
-        ) {
+        // The cleared doc is persisted here (under the write lock) so the
+        // register hook, which re-reads the doc after the write, and every
+        // later run see it; otherwise a register-mode run would write the
+        // stale fields back and the next run would refuse.
+        UnityCatalogStaleState.clearIfStale(
+            previous,
+            outputPath,
+            () => UnityCatalogStaleState.catalogHasTable(config),
+            () => UnityCatalogStaleState.prefixHasMetadata(outputPath),
+            UnityCatalogSyncIO.write
+        ).foreach { cleared =>
             statusUtil.warn(
                 "processing",
                 line("state doc says committed but neither the catalog nor the prefix has the table; ignoring stale state")
             )
-            previous = UnityCatalogStaleState.withoutRestCommit(previous)
+            previous = cleared
             forkRisk = false
         }
         val restActive = uc != null && uc.enabled && uc.registerOn && uc.restMode
