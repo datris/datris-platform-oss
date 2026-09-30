@@ -207,6 +207,50 @@ object IcebergRestSession {
         } finally closeQuietly(catalog)
     }
 
+    /** State written right after a catalog create or adopt, before the data
+      * write: the catalog now holds the table at `metadataLocation`. */
+    def interimState(previous: UnityCatalogSyncState, pipeline: String, metadataLocation: String, now: String): UnityCatalogSyncState =
+        Option(previous)
+            .getOrElse(UnityCatalogSyncState(pipeline, null, null, null, null, null, null))
+            .copy(pipeline = pipeline, catalogMode = "rest", restMetadataLocation = metadataLocation, lastRestCommitAt = now, restRefusedReason = null)
+
+    private def metadataOf(t: org.apache.iceberg.Table): String = t match {
+        case h: HasTableOperations => Option(h.operations().current()).map(_.metadataFileLocation()).orNull
+        case _ => null
+    }
+
+    private def recordInterim(pipeline: String, previous: UnityCatalogSyncState, metadataLocation: String): Unit =
+        if (metadataLocation != null)
+            try UnityCatalogSyncIO.write(interimState(previous, pipeline, metadataLocation, Instant.now().toString))
+            catch { case NonFatal(e) => logger.warn("uc-rest interim state write failed for " + pipeline + ": " + e.getMessage) }
+
+    /** The warning for a catalog table outside the pipeline's table root. */
+    def outsideRootMessage(qualified: String, tableLocation: String, root: String): String =
+        s"the catalog placed $qualified at ${IcebergCatalogRegistrar.normalize(tableLocation)}, outside this pipeline's table root " +
+            s"${IcebergCatalogRegistrar.normalize(root)} (Databricks creates managed Iceberg tables and ignores the requested location); " +
+            s"Datris will not write there. Have an admin drop $qualified; a catalog that honours the requested location is needed for " +
+            "catalogMode rest (for governed Databricks tables, use the Databricks destination); falling back to the path-based write"
+
+    /** The writer refused the catalog's table before writing anything
+      * (RestLocationRefused): warn + audit, close the catalog, and return a
+      * refused plan so the run writes by path. Nothing was committed through
+      * the catalog, so no path history can fork. */
+    def afterLocationRefused(jobContext: JobContext, plan: Plan, refused: IcebergWriter.RestLocationRefused): Plan = {
+        val msg = line(outsideRootMessage(plan.qualified, refused.tableLocation, plan.location))
+        // Defensive: a table already committed through the catalog must never
+        // be written by path (it would fork its history).
+        if (restCommitted(plan.previous, plan.location)) {
+            audit(jobContext.config.name, msg)
+            plan.close()
+            throw new DatrisException(committedMessage(plan.previous, "the catalog's table is now outside this pipeline's table root", plan.qualified))
+        }
+        jobContext.statusUtil.warn("processing", msg)
+        logger.warn("uc-rest location refused for pipeline " + jobContext.config.name + ": " + refused.getMessage)
+        audit(jobContext.config.name, msg)
+        plan.close()
+        plan.copy(target = None, refused = Some(msg), created = false, closeable = None)
+    }
+
     /** The writer's catalog create lost to another create of the same
       * identifier (AlreadyExists). Re-decide against the now-existing
       * catalog table: under our root ⇒ retry through the catalog; anywhere
@@ -385,7 +429,11 @@ object IcebergRestSession {
                     }
                 else None
 
-            val target = IcebergWriter.RestTarget(sparkName, ident, catalog, IcebergRestCatalogConfig.sparkConf(sparkName, props))
+            // Record a catalog-created table before any data is written, so a
+            // failure later in the run still leaves it known (delete advice,
+            // fork guard). Never throws.
+            val onCreated: org.apache.iceberg.Table => Unit = t => recordInterim(config.name, previous, metadataOf(t))
+            val target = IcebergWriter.RestTarget(sparkName, ident, catalog, IcebergRestCatalogConfig.sparkConf(sparkName, props), onCreated)
             val closeable = catalog match {
                 case c: Closeable => Some(c)
                 case _ => None
@@ -402,6 +450,7 @@ object IcebergRestSession {
                         try { catalog.registerTable(ident, n(p)); true }
                         catch { case e: Exception if registerUnsupported(e) => false }
                     if (registered) {
+                        recordInterim(config.name, previous, n(p))
                         statusUtil.info("processing", line(s"adopted $qualified at ${n(p)}"))
                         Right(ok.copy(adopted = Some(p)))
                     } else {

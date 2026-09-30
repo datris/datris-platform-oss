@@ -51,8 +51,50 @@ object IcebergWriter {
       * address, `catalog` the Iceberg catalog the writer creates and loads
       * through (both must see the same tables). `sparkConf` is set on the
       * thread-active session when `spark.sql.catalog.<name>` is absent. */
-    final case class RestTarget(sparkCatalogName: String, ident: TableIdentifier, catalog: Catalog, sparkConf: Map[String, String] = Map.empty) {
+    final case class RestTarget(
+        sparkCatalogName: String,
+        ident: TableIdentifier,
+        catalog: Catalog,
+        sparkConf: Map[String, String] = Map.empty,
+        // Called once right after a catalog create whose location checked
+        // out, before any data is written (IcebergRestSession records the
+        // table so a later failure still leaves it known).
+        onCreated: Table => Unit = _ => ()
+    ) {
         def sql: String = (sparkCatalogName +: ident.namespace().levels().toSeq :+ ident.name()).map(quote).mkString(".")
+    }
+
+    /** The catalog's table is not at the pipeline's table root (Databricks
+      * creates managed Iceberg tables and ignores the requested location).
+      * Thrown before any data is written through the catalog. */
+    final class RestLocationRefused(val tableLocation: String, val requested: String)
+        extends DatrisException(
+            "the catalog placed the table at " + tableLocation + ", outside this pipeline's table root " + requested + "; nothing was written through the catalog"
+        )
+
+    /** Same table location, with `s3a://` / `s3n://` equal to `s3://` (a
+      * catalog may answer in the `s3://` spelling) and trailing slashes and
+      * `file:` spellings normalised. */
+    private[util] def sameRestLocation(a: String, b: String): Boolean =
+        a != null && b != null && LocationParts(normS3(a)) == LocationParts(normS3(b))
+
+    private def normS3(loc: String): String = loc.trim.replaceFirst("(?i)^s3[an]://", "s3://")
+
+    /** Rest-mode sibling of assertTableLocation: a table elsewhere is a
+      * refusal (RestLocationRefused), a manifest list on another
+      * bucket is a hard error as in path mode. */
+    private[util] def assertRestTableLocation(table: Table, requested: String): Unit = {
+        if (!sameRestLocation(table.location(), requested)) throw new RestLocationRefused(table.location(), requested)
+        val snapshot = table.currentSnapshot()
+        if (snapshot != null && snapshot.manifestListLocation() != null) {
+            val want = LocationParts(normS3(requested))
+            val manifests = LocationParts(normS3(snapshot.manifestListLocation()))
+            if (manifests.scheme != want.scheme || manifests.authority != want.authority)
+                throw new DatrisException(
+                    "Iceberg table at " + requested + " has a snapshot whose manifest list lives elsewhere (" +
+                        snapshot.manifestListLocation() + "); refusing to read or write it"
+                )
+        }
     }
 
     /** Write `df` to the Iceberg table at `location`, creating it if absent.
@@ -152,7 +194,7 @@ object IcebergWriter {
         }
 
         table.refresh()
-        assertTableLocation(table, location)
+        if (restCatalog.isDefined) assertRestTableLocation(table, location) else assertTableLocation(table, location)
         val result = resultOf(table)
         statusUtil.info(
             "processing",
@@ -251,7 +293,8 @@ object IcebergWriter {
             case Some(r) => r.catalog.loadTable(r.ident)
             case None => tables.load(location)
         }
-        assertTableLocation(table, location)
+        // Before any read or write through it.
+        if (restCatalog.isDefined) assertRestTableLocation(table, location) else assertTableLocation(table, location)
         table
     }
 
@@ -371,7 +414,12 @@ object IcebergWriter {
             case Some(r) =>
                 // Explicit location, passed unchanged: the table lives at the
                 // pipeline's prefix whatever the catalog's default would be.
-                r.catalog.buildTable(r.ident, schema).withPartitionSpec(spec).withLocation(location).withProperties(props).create()
+                val created = r.catalog.buildTable(r.ident, schema).withPartitionSpec(spec).withLocation(location).withProperties(props).create()
+                // A catalog may ignore the requested location (Databricks
+                // creates a managed table): check before any data is written.
+                assertRestTableLocation(created, location)
+                r.onCreated(created)
+                created
             case None => tables.create(schema, spec, props, location)
         }
     }

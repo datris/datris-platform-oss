@@ -139,6 +139,15 @@ object ObjectStoreSpark {
         }
     }
 
+    /** Serve `s3://` and `s3n://` with S3A (unless already mapped), so
+      * locations a catalog reports in the `s3://` spelling (under the
+      * pipeline's own root) read and write through the same per-bucket
+      * `fs.s3a.bucket.<bucket>.*` settings. */
+    private[util] def mapS3Schemes(conf: org.apache.hadoop.conf.Configuration): Unit =
+        Seq("fs.s3.impl", "fs.s3n.impl").foreach { k =>
+            if (conf.get(k) == null) conf.set(k, "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        }
+
     /** Apply per-bucket S3A settings on top of the global SparkSession config.
       *  Per-bucket keys (`fs.s3a.bucket.<bucket>.*`) override globals only for
       *  that bucket, so MinIO writes elsewhere keep using the global config set
@@ -151,6 +160,7 @@ object ObjectStoreSpark {
       *  bucket name — hangs on connect / SSL until the request times out. */
     def applyPerBucketConfig(spark: SparkSession, bucket: String, objectStore: ObjectStore): Unit = {
         val hadoopConf = spark.sparkContext.hadoopConfiguration
+        mapS3Schemes(hadoopConf)
         val creds = CredentialResolver.resolve(objectStore)
 
         creds.accessKey.foreach(k => hadoopConf.set(s"fs.s3a.bucket.$bucket.access.key", k))

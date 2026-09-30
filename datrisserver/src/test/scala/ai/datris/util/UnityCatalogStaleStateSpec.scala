@@ -104,4 +104,23 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
     test("clearIfStale propagates a write failure (the run must not continue with the stale doc on disk)") {
         intercept[RuntimeException](S.clearIfStale(doc(), ROOT, () => Some(false), () => Some(false), _ => throw new RuntimeException("mongo down")))
     }
+
+    test("IcebergRestSession.interimState records the catalog table before the data write, keeping other fields") {
+        val prev = doc(mode = "refused", loc = null, at = null).copy(lineageHash = "h", restRefusedReason = "old")
+        val st = IcebergRestSession.interimState(prev, "orders_daily", "s3://lake/orders_daily/metadata/00000-a.metadata.json", "2026-09-30T12:00:00Z")
+        assert(st.catalogMode == "rest" && st.lastRestCommitAt == "2026-09-30T12:00:00Z" && st.restRefusedReason == null, s"$st")
+        assert(st.lineageHash == "h" && st.pipeline == "orders_daily")
+        assert(IcebergRestSession.restCommitted(st, ROOT), "the created table is guarded from then on")
+        val fresh = IcebergRestSession.interimState(null, "orders_daily", "s3://lake/orders_daily/metadata/00000-a.metadata.json", "t")
+        assert(fresh.pipeline == "orders_daily" && fresh.catalogMode == "rest")
+    }
+
+    test("outsideRootMessage names the table, both locations, the managed-table cause and the drop advice") {
+        val m = IcebergRestSession.outsideRootMessage("main.uc.probe", "s3://datris/uc/__unitystorage/schemas/x/tables/y", "s3a://datris/uc/probe/t")
+        assert(m.contains("the catalog placed main.uc.probe at s3://datris/uc/__unitystorage/schemas/x/tables/y"), m)
+        assert(m.contains("outside this pipeline's table root s3://datris/uc/probe/t"), m)
+        assert(m.contains("Databricks creates managed Iceberg tables and ignores the requested location"), m)
+        assert(m.contains("Have an admin drop main.uc.probe"), m)
+        assert(m.contains("falling back to the path-based write"), m)
+    }
 }

@@ -105,6 +105,27 @@ object RecordingHadoopCatalog {
     def clear(): Unit = { loads.clear(); builds.clear() }
 }
 
+/** Stand-in for a catalog that ignores the requested location (Databricks
+  *  creates a managed Iceberg table in the schema's storage): the table
+  *  builder drops `withLocation`, so the table lands at the HadoopCatalog
+  *  default `<warehouse>/<schema>/<table>`. */
+class IgnoringLocationCatalog extends HadoopCatalog {
+    override def buildTable(ident: TableIdentifier, schema: Schema): Catalog.TableBuilder = {
+        val inner = super.buildTable(ident, schema)
+        new Catalog.TableBuilder {
+            override def withPartitionSpec(spec: org.apache.iceberg.PartitionSpec): Catalog.TableBuilder = { inner.withPartitionSpec(spec); this }
+            override def withSortOrder(order: org.apache.iceberg.SortOrder): Catalog.TableBuilder = { inner.withSortOrder(order); this }
+            override def withLocation(location: String): Catalog.TableBuilder = this
+            override def withProperties(props: java.util.Map[String, String]): Catalog.TableBuilder = { inner.withProperties(props); this }
+            override def withProperty(key: String, value: String): Catalog.TableBuilder = { inner.withProperty(key, value); this }
+            override def create(): Table = inner.create()
+            override def createTransaction(): org.apache.iceberg.Transaction = inner.createTransaction()
+            override def replaceTransaction(): org.apache.iceberg.Transaction = inner.replaceTransaction()
+            override def createOrReplaceTransaction(): org.apache.iceberg.Transaction = inner.createOrReplaceTransaction()
+        }
+    }
+}
+
 class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
 
     private var warehouse: Path = _
@@ -860,5 +881,56 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "version-hint.text")))
         assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "v1.metadata.json")))
         assert(!IcebergWriter.orphanCatalogMetadata(Seq("metadata"), Seq(orphan, "snap-1-1-abc.avro")))
+    }
+
+    // ---- Live Databricks probe follow-ups -----------------------------------
+
+    test("rest target: a catalog that ignores the requested location is refused before any data is written") {
+        val table = "rest_managed"
+        val catalog = new IgnoringLocationCatalog
+        catalog.setConf(spark.sessionState.newHadoopConf())
+        catalog.initialize("managed_side", Map("warehouse" -> restWarehouse).asJava)
+        val requested = newLocation("requested-elsewhere/t")
+        val created = scala.collection.mutable.ListBuffer[Table]()
+        val target = IcebergWriter.RestTarget(RestSparkCatalog, restIdent(table), catalog, onCreated = t => created += t)
+
+        val e = intercept[IcebergWriter.RestLocationRefused] {
+            IcebergWriter.write(df((1L, "east", 1.0)), requested, "append", Nil, Nil, baseSchema, new RecordingStatusUtil, "p", Some(target))
+        }
+        assert(IcebergWriter.sameRestLocation(e.tableLocation, restLocation(table)), s"${e.tableLocation}")
+        assert(e.requested == requested)
+        assert(created.isEmpty, "onCreated must not run for a refused table")
+        // The catalog holds the (empty) table; nothing was written, anywhere.
+        assert(catalog.loadTable(restIdent(table)).currentSnapshot() == null, "no data may be committed through the catalog")
+        assert(!new java.io.File(java.net.URI.create(requested)).exists(), "nothing written at the requested location either")
+    }
+
+    test("rest target: onCreated runs once, after a create at the requested location and before the data commit") {
+        val table = "rest_oncreated"
+        val catalog = javaCatalog()
+        val seen = scala.collection.mutable.ListBuffer[(String, Boolean)]()
+        val target = IcebergWriter.RestTarget(
+            RestSparkCatalog,
+            restIdent(table),
+            catalog,
+            onCreated = t => seen += ((t.location(), t.currentSnapshot() == null))
+        )
+        val r = IcebergWriter.write(df((1L, "east", 1.0)), restLocation(table), "append", Nil, Nil, baseSchema, new RecordingStatusUtil, "p", Some(target))
+        assert(seen.size == 1, s"$seen")
+        assert(IcebergWriter.sameRestLocation(seen.head._1, restLocation(table)), s"$seen")
+        assert(seen.head._2, "called before any data commit")
+        assert(r.totalRecords == 1)
+        // A second write loads the existing table: onCreated is not called again.
+        IcebergWriter.write(df((2L, "west", 2.0)), restLocation(table), "append", Nil, Nil, baseSchema, new RecordingStatusUtil, "p", Some(target))
+        assert(seen.size == 1, s"$seen")
+    }
+
+    test("sameRestLocation: s3/s3a/s3n equal, trailing slash tolerant, different prefix or bucket not equal") {
+        assert(IcebergWriter.sameRestLocation("s3://datris/uc/probe/t", "s3a://datris/uc/probe/t/"))
+        assert(IcebergWriter.sameRestLocation("s3n://datris/uc/probe/t", "s3a://datris/uc/probe/t"))
+        assert(!IcebergWriter.sameRestLocation("s3://datris/uc/__unitystorage/schemas/a/tables/b", "s3a://datris/uc/probe/t"))
+        assert(!IcebergWriter.sameRestLocation("s3://other/uc/probe/t", "s3a://datris/uc/probe/t"))
+        assert(!IcebergWriter.sameRestLocation("s3a://datris/uc/probe/t/sub", "s3a://datris/uc/probe/t"))
+        assert(!IcebergWriter.sameRestLocation(null, "s3a://datris/uc/probe/t"))
     }
 }

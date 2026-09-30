@@ -283,22 +283,34 @@ def test_pipeline_config_reference_mentions_catalog_mode():
 # Iceberg REST register endpoint, so register mode cannot work there.
 # ======================================================================
 
-def test_unity_catalog_page_says_databricks_requires_rest():
+def test_unity_catalog_page_states_databricks_limits_honestly():
+    # Superseded "Databricks requires rest" (live probe: Databricks creates a
+    # MANAGED table and ignores the requested location).
     text = _read(UNITY_CATALOG_MDX)
-    assert 'With Databricks, `catalogMode: "rest"` is required.' in text
+    assert 'With Databricks, `catalogMode: "rest"` is required.' not in text
     assert "does not implement the Iceberg REST `register` call" in text
+    assert "ignores the requested location" in text
+    assert 'does not currently work against Databricks Unity Catalog' in text
+    assert "refuses to write into the managed location" in text
+    assert "[Databricks destination](/destinations/databricks)" in text
+    assert "not confirmed" not in text
     # Adopting an existing path table is impossible there; the way out is stated.
     assert "not possible on Databricks" in text
     assert "start from a new prefix" in text and "deleteBeforeWrite" in text
-    # Register mode is still described as working where `register` exists.
-    assert "Register mode works with catalogs that implement `register`" in text
+    # Both modes still described as working where the catalog supports them.
+    assert "Apache Iceberg REST" in text
+    # The example uses the real bucket field.
+    assert '"destinationBucketOverride": "my-lake"' in text
+    assert '"bucket": "my-lake"' not in text
 
 
-def test_pipeline_config_reference_and_mcp_arg_say_databricks_requires_rest():
+def test_pipeline_config_reference_and_mcp_arg_state_databricks_limits():
     ref = server.PIPELINE_CONFIG_REFERENCE
-    assert "Databricks Unity Catalog has no Iceberg REST `register` call" in ref
+    assert "has no Iceberg REST `register` call" in ref
+    assert "Databricks-managed" in ref
     src = _read(os.path.join(REPO_ROOT, "mcp-server", "server.py"))
-    assert "Databricks requires rest" in src
+    assert "Databricks requires rest" not in src
+    assert "use destination=databricks" in src
 
 
 def test_unity_catalog_page_requires_managed_location_schema():

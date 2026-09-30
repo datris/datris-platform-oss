@@ -54,6 +54,9 @@ object SparkSessionManager {
                     .config("spark.hadoop.fs.s3a.secret.key", minIOConfig.secretKey)
                     .config("spark.hadoop.fs.s3a.path.style.access", "true")
                     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+                    // Catalogs may report s3:// locations (ObjectStoreSpark.mapS3Schemes).
+                    .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+                    .config("spark.hadoop.fs.s3n.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
                     .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
             }
 
