@@ -49,7 +49,7 @@ class DatabricksLoader(jobContext: JobContext) {
 
         var dataFile: Path = null
         try {
-            DatabricksConnectionUtil.withConnection(db, msg => statusUtil.info("processing", msg)) { conn =>
+            DatabricksConnectionUtil.withConnection(db, msg => statusUtil.info("processing", msg), config.name) { conn =>
                 val statement = conn.createStatement()
                 var stagedPath: String = null
                 try {

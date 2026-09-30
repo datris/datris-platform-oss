@@ -277,6 +277,21 @@ class UnityCatalogDiscoverySpec extends AnyFunSuite {
         assert(msg.contains("pipeline"), "must mention a pipeline using the secret: " + msg)
     }
 
+    test("resolveWarehouse: a pipeline without an explicit warehouse is not a candidate (it resolves from the secret)") {
+        val fields = new java.util.HashMap[String, String]()
+        fields.put("host", "dbc-a1b2c3d4-e5f6.cloud.databricks.com")
+        fields.put("token", "dapi-test")
+        def dbx(name: String, warehouse: String) =
+            PipelineConfig(
+                name = name,
+                destination = Destination(database =
+                    Database(dbName = "main", schema = "sales", table = name, useDatabricks = true, credentialsSecret = "dbx", warehouse = warehouse)
+                )
+            )
+        assert(UnityCatalogDiscovery.resolveWarehouse("dbx", fields, None, List(dbx("a", null), dbx("b", "  "))).isLeft)
+        assert(UnityCatalogDiscovery.resolveWarehouse("dbx", fields, None, List(dbx("a", null), dbx("b", "explicitwh"))) == Right("explicitwh"))
+    }
+
     // ---------------------------------------------------------------- warm cache skips the connection
 
     test("with a warm cache, catalogs and schemas listings never open a connection; tables and columns always do") {

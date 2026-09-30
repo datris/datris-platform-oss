@@ -364,7 +364,10 @@ object PipelineValidatorUtil {
             if (!config.destination.database.useMongoDB) {
                 validateSqlIdentifier(config.destination.database.schema, "destination.database.schema")
                 validateSqlIdentifier(config.destination.database.table, "destination.database.table")
-                if (config.destination.database.warehouse != null)
+                // Databricks: a blank warehouse means "use the secret's", not an error.
+                val blankDatabricksWarehouse =
+                    config.destination.database.useDatabricks && Option(config.destination.database.warehouse).forall(_.trim.isEmpty)
+                if (config.destination.database.warehouse != null && !blankDatabricksWarehouse)
                     validateSqlIdentifier(config.destination.database.warehouse, "destination.database.warehouse")
             }
             // COPY options legitimately hold SQL option syntax (FORMAT csv,
@@ -423,10 +426,9 @@ object PipelineValidatorUtil {
                     throw new DatrisException(
                         "When 'destination.database.useDatabricks' is true, 'credentialsSecret' is required — the name of a Platform secret holding 'host', plus 'clientId'/'clientSecret' (service principal OAuth) or 'token' (personal access token). Create it on Configuration → Secrets → Platform"
                     )
-                if (config.destination.database.warehouse == null)
-                    throw new DatrisException(
-                        "When 'destination.database.useDatabricks' is true, 'warehouse' is required — the Databricks SQL warehouse ID (SQL Warehouses → Connection details, the trailing segment of the HTTP path)"
-                    )
+                // 'warehouse' is optional: when blank it resolves at connection time
+                // from the secret's 'warehouse' field (DatabricksWarehouse.effective).
+                // Validation never reads Vault, so a missing value surfaces there.
             }
         }
 

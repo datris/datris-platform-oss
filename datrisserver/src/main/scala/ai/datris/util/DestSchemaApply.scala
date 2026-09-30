@@ -119,7 +119,7 @@ object DestSchemaApply {
                 if (!exists) return None
                 SnowflakeQueryUtil.query(config.name, None, sampleLimit).results.asScala.map(_.asScala.toMap).toSeq
             case "databricks" =>
-                val exists = DatabricksConnectionUtil.withConnection(config.destination.database) { conn =>
+                val exists = DatabricksConnectionUtil.withConnection(config.destination.database, pipelineName = config.name) { conn =>
                     val statement = conn.createStatement()
                     try databricksTableExists(statement, config)
                     finally Try(statement.close())
@@ -165,7 +165,7 @@ object DestSchemaApply {
                     } finally Try(statement.close())
                 }
             case "databricks" =>
-                DatabricksConnectionUtil.withConnection(config.destination.database) { conn =>
+                DatabricksConnectionUtil.withConnection(config.destination.database, pipelineName = config.name) { conn =>
                     val statement = conn.createStatement()
                     try {
                         val exists = databricksTableExists(statement, config)

@@ -121,7 +121,7 @@ object AssistantAPIController {
             )
         if (structuredDests.contains("databricks"))
             sb.append(
-                " Databricks requires a `credentialsSecret` platform secret (host, plus clientId/clientSecret or token) plus a SQL warehouse ID (`warehouse`) and Unity Catalog catalog (`database`): same flow — discover the secret via `list_platform_secrets`, ask for the rest, never require any of it up front."
+                " Databricks requires a `credentialsSecret` platform secret (host, plus clientId/clientSecret or token) plus a SQL warehouse ID (`warehouse`) and Unity Catalog catalog (`database`): same flow — discover the secret via `list_platform_secrets`, ask for the rest, never require any of it up front. If the secret already has a `warehouse` field, omit `warehouse` and do not ask for it."
             )
         if (offerLiveRead) {
             sb.append(" Also name ").append(destinationBlurbs("scratch"))

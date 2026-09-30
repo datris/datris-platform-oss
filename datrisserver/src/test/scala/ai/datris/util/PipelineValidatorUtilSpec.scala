@@ -516,6 +516,24 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         assert(validationError(cfg).isEmpty, s"databricks + unityCatalog must validate, got: ${validationError(cfg)}")
     }
 
+    test("Databricks with credentialsSecret and no warehouse is accepted (resolved from the secret at connection time)") {
+        Seq(
+            """"useDatabricks":true,"credentialsSecret":"dbx"""",
+            """"useDatabricks":true,"credentialsSecret":"dbx","warehouse":""""",
+            """"useDatabricks":true,"credentialsSecret":"dbx","warehouse":"  """"
+        ).foreach { db =>
+            val cfg = ucConfig(db, unityCatalog = """{"enabled":false}""")
+            assert(validationError(cfg).isEmpty, s"$db must validate, got: ${validationError(cfg)}")
+        }
+    }
+
+    test("Databricks without credentialsSecret is still rejected, with or without a warehouse") {
+        Seq(""""useDatabricks":true""", """"useDatabricks":true,"warehouse":"abc123"""").foreach { db =>
+            val err = validationError(ucConfig(db, unityCatalog = """{"enabled":false}"""))
+            assert(err.exists(_.contains("'credentialsSecret' is required")), s"$db must be rejected, got: $err")
+        }
+    }
+
     test("unityCatalog.enabled=false on a non-Databricks destination passes") {
         val cfg = ucConfig(""""usePostgres":true""", unityCatalog = """{"enabled":false}""")
         assert(cfg.unityCatalog != null && !cfg.unityCatalog.enabled)

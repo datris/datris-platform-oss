@@ -92,7 +92,7 @@ object DatabricksQueryUtil {
 
         logger.info("Executing read-only Databricks query for pipeline '" + pipelineName + "': " + finalSql)
 
-        DatabricksConnectionUtil.withConnection(db) { conn =>
+        DatabricksConnectionUtil.withConnection(db, pipelineName = pipelineName) { conn =>
             val stmt = conn.createStatement()
             try {
                 if (!unlimited) stmt.setQueryTimeout(QUERY_TIMEOUT_SECONDS)

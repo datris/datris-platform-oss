@@ -536,7 +536,7 @@ class PipelineAPIController {
         // shared datris_staging volume is left alone — other pipelines use it.
         if (dest.database != null && dest.database.useDatabricks) {
             try {
-                DatabricksConnectionUtil.withConnection(dest.database) { conn =>
+                DatabricksConnectionUtil.withConnection(dest.database, pipelineName = config.name) { conn =>
                     val stmt = conn.createStatement()
                     try {
                         stmt.execute("DROP TABLE IF EXISTS " + DatabricksConnectionUtil.qualifiedTable(dest.database))

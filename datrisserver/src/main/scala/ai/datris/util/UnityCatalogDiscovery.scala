@@ -354,7 +354,9 @@ object UnityCatalogDiscovery {
 
     /** The SQL warehouse to browse with: explicit param → secret field
       * `warehouse` (aliases httpPath/http_path/DATABRICKS_WAREHOUSE) → the
-      * first Databricks pipeline using this secret. Left names all three. */
+      * first Databricks pipeline using this secret with an explicit warehouse
+      * (a pipeline that omits it resolves from the secret, so it is never a
+      * candidate). Left names all three. */
     def resolveWarehouse(
         secretName: String,
         secretFields: java.util.Map[String, String],
@@ -363,9 +365,7 @@ object UnityCatalogDiscovery {
     ): Either[String, String] = {
         def nonBlank(s: String): Option[String] = Option(s).map(_.trim).filter(_.nonEmpty)
         explicit.flatMap(nonBlank)
-            .orElse(Option(secretFields).flatMap(f => CredentialResolver.secretField(f, "warehouse", "httpPath", "http_path", "DATABRICKS_WAREHOUSE")).flatMap(
-                nonBlank
-            ))
+            .orElse(DatabricksWarehouse.fromSecret(secretFields))
             .orElse(
                 pipelines.iterator
                     .filter(p => p != null && p.destination != null && p.destination.database != null)

@@ -205,7 +205,7 @@ The secret holds the workspace host and credentials, not a warehouse. Browse pic
 
 1. the `warehouse` query parameter (MCP argument `warehouse`)
 2. an optional `warehouse` field on the secret (`httpPath`, `http_path` and `DATABRICKS_WAREHOUSE` also work). The value can be the warehouse ID, its HTTP path, or a JDBC URL
-3. the warehouse of the first Databricks pipeline whose `credentialsSecret` is this secret
+3. the warehouse of the first Databricks pipeline whose `credentialsSecret` is this secret and that sets `warehouse` itself (a pipeline that leaves it out uses the secret's field, so it adds nothing here)
 
 If none applies, the call returns `400` listing these three options. Existing Databricks secrets work unchanged; the `warehouse` field is optional.
 

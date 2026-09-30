@@ -20,21 +20,28 @@ import scala.util.Try
  *  Uses the Databricks OSS JDBC driver. Auth is OAuth M2M (service principal
  *  clientId/clientSecret) by default; a personal access token is the fallback.
  *  `db.dbName` is the Unity Catalog catalog; `db.warehouse` is the SQL
- *  warehouse ID (from Connection details), from which the httpPath derives. */
+ *  warehouse ID (from Connection details), from which the httpPath derives —
+ *  optional when the credentials secret has a `warehouse` field (see
+ *  [[DatabricksWarehouse.effective]]). */
 object DatabricksConnectionUtil {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
     /** Resolve the pipeline's `credentialsSecret`, open a connection routed at
      *  the config's catalog/schema/warehouse, run `f`, and clean up. `onInfo`
      *  lets callers mirror progress into their own status log. */
-    def withConnection[T](db: Database, onInfo: String => Unit = _ => ())(f: Connection => T): T = {
+    def withConnection[T](db: Database, onInfo: String => Unit = _ => (), pipelineName: String = null)(f: Connection => T): T = {
         val creds = CredentialResolver.resolveDatabricks(db.credentialsSecret)
+        // `warehouse` is optional on the destination when the secret carries one.
+        val warehouse = DatabricksWarehouse.effective(db.warehouse, creds.extra, pipelineName, db.credentialsSecret) match {
+            case Right(w) => w
+            case Left(message) => throw new DatrisException(message)
+        }
 
         Class.forName("com.databricks.client.jdbc.Driver")
 
         var conn: Connection = null
         try {
-            val httpPath = warehouseHttpPath(db.warehouse)
+            val httpPath = warehouseHttpPath(warehouse)
             val properties = new Properties()
             properties.setProperty("ssl", "1")
             properties.setProperty("httpPath", httpPath)
@@ -71,7 +78,7 @@ object DatabricksConnectionUtil {
                 try {
                     DriverManager.getConnection(jdbcUrl, properties)
                 } catch {
-                    case e: Exception => throw translateConnectError(e, jdbcUrl, db.warehouse, creds)
+                    case e: Exception => throw translateConnectError(e, jdbcUrl, warehouse, creds)
                 }
             onInfo("Databricks connection acquired")
             f(conn)

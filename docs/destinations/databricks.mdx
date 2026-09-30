@@ -32,7 +32,7 @@ HTTP path:     /sql/1.0/warehouses/a1b2c3d4e5f67890
 Warehouse ID:                      a1b2c3d4e5f67890
 ```
 
-This ID is what goes in the destination's `warehouse` field. (Pasting the whole HTTP path into Datris also works — the ID is extracted automatically.)
+This ID goes in the destination's `warehouse` field, or in a `warehouse` field on the platform secret (step 4) so every pipeline using that secret picks it up. (Pasting the whole HTTP path into Datris also works — the ID is extracted automatically.)
 
 On the warehouse's **Permissions**, grant the service principal **Can use**.
 
@@ -102,10 +102,11 @@ On **Configuration → Secrets → Platform**, create a secret (for example `dat
 | `clientId`     | yes*     | The service principal's client ID (application ID)                       |
 | `clientSecret` | yes*     | The OAuth secret generated in step 1                                     |
 | `token`        | no       | Personal access token — fallback when no `clientId`/`clientSecret` is present, see below |
+| `warehouse`    | no       | SQL warehouse ID (or its HTTP path). Used when a pipeline's destination leaves `warehouse` out, and by [Unity Catalog](/destinations/unity-catalog) browse. `httpPath`, `http_path` and `DATABRICKS_WAREHOUSE` also work |
 
 *Either the `clientId`/`clientSecret` pair or `token` must be present.
 
-The `host` lives in the secret rather than the pipeline config so it stays bound to the credential that authorizes it. If a required field is missing, the load fails at resolve time with an explicit error naming the secret and the field.
+The `host` lives in the secret rather than the pipeline config so it stays bound to the credential that authorizes it. If a required field is missing, the load fails at resolve time with an explicit error naming the secret and the field. With a `warehouse` field on the secret, pipelines (and agents creating them) can leave the destination's `warehouse` out.
 
 ### Secret rotation
 
@@ -142,7 +143,7 @@ For a quick evaluation you can skip the service principal: generate a PAT (**Set
 |-----------------------|----------|---------|--------------------------------------------------------------------|
 | `useDatabricks`       | yes      | `false` | Must be `true` to enable the Databricks destination                |
 | `credentialsSecret`   | yes      |         | Name of the Platform secret holding `host` + auth                  |
-| `warehouse`           | yes      |         | SQL warehouse **ID** — the 16-char hex trailing segment of the HTTP path in **SQL Warehouses → Connection details** (`/sql/1.0/warehouses/<id>`), not the warehouse's display name. A pasted full HTTP path is accepted too |
+| `warehouse`           | if not on secret |  | SQL warehouse **ID** — the 16-char hex trailing segment of the HTTP path in **SQL Warehouses → Connection details** (`/sql/1.0/warehouses/<id>`), not the warehouse's display name. A pasted full HTTP path is accepted too. Optional when the platform secret has a `warehouse` field; the pipeline's value wins when both are set, and a load with neither fails with an error naming both fixes |
 | `dbName`              | yes      |         | Target **Unity Catalog catalog**                                   |
 | `schema`              | yes      |         | Target schema                                                      |
 | `table`               | yes      |         | Target table                                                       |
