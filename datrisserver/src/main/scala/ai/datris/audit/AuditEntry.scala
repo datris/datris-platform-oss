@@ -69,7 +69,7 @@ case class AuditEntry(
     action: String,
     resourceType: Option[String],
     resourceName: Option[String],
-    outcome: String, // success | failure | denied
+    outcome: String, // success | failure | denied | warning
     httpStatus: Option[Int] = None,
     durationMs: Option[Long] = None,
     errorMessage: Option[String] = None,

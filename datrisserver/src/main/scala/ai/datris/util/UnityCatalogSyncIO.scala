@@ -23,6 +23,9 @@ object UnityCatalogSyncIO {
             .map(gson.fromJson(_, classOf[UnityCatalogSyncState]))
             .orNull
 
+    def delete(pipeline: String): Unit =
+        NoSQLDbUtil.deleteItemJSON(table, "pipeline", pipeline)
+
     def write(doc: UnityCatalogSyncState): Unit =
         NoSQLDbUtil.putItemJSON(table, "pipeline", doc.pipeline, "value", gson.toJson(doc))
 }

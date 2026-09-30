@@ -301,9 +301,13 @@ class PipelineAPIController {
             if (config == null)
                 throw new DatrisException("Pipeline: " + pipeline + " is not configured in the NoSQL database")
 
-            deletePipelineInternal(config, request, deleteData, deleteConfig)
+            val warnings = deletePipelineInternal(config, request, deleteData, deleteConfig)
 
-            new ResponseEntity[String](HttpStatus.OK)
+            val out = new JsonObject
+            val arr = new com.google.gson.JsonArray
+            warnings.foreach(arr.add(_))
+            out.add("warnings", arr)
+            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
@@ -316,14 +320,15 @@ class PipelineAPIController {
       * Shared with the catalog cascade delete (`CatalogAPIController`), which
       * deletes pipelines with their data as the UI does. Throws on failure.
       * `checkScope=false` only when the caller has already run a fuller
-      * (owner + catalog) scope check on this config. */
+      * (owner + catalog) scope check on this config. Returns warnings for the
+      * caller (e.g. a Unity Catalog table that still has to be dropped). */
     def deletePipelineInternal(
         config: PipelineConfig,
         request: HttpServletRequest,
         deleteData: String = "true",
         deleteConfig: String = "true",
         checkScope: Boolean = true
-    ): Unit = {
+    ): Seq[String] = {
         val pipeline = config.name
         // Scope check: a key with `pipeline:delete:owner=self` may only
         // delete pipelines it created. Loaded resource provides the
@@ -340,9 +345,21 @@ class PipelineAPIController {
         if (deleteConfigBool && config.source.databaseAttributes != null)
             PipelinePullTableUtil.deleteEntryIfExists(config.name)
 
+        // Unity Catalog state, read before anything is deleted: a table
+        // committed through the REST catalog is not dropped by Datris.
+        val ucPrevious = unityCatalogStateForDelete(config)
+        val warnings = Seq.newBuilder[String]
+        var ucTableFilesKept = false
+
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
-            cleanupDestinationData(config)
+            val objectStoreDataDeleted = cleanupDestinationData(config)
+            UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted).foreach { advice =>
+                warnings += advice
+                ucTableFilesKept = !objectStoreDataDeleted
+                logger.warn("Pipeline delete: " + pipeline + ": " + advice)
+                auditUnityCatalogDelete(request, pipeline, advice)
+            }
             // Wipe document-tap ledgers/staged files for any tap targeting this
             // pipeline. The ledger records "already-processed URIs"; leaving it
             // intact after the destination is emptied would cause the next tap
@@ -360,8 +377,49 @@ class PipelineAPIController {
             } catch {
                 case ex: Exception => logger.warn("Pipeline version cleanup failed for " + pipeline + ": " + ex.getMessage)
             }
+            // Unity Catalog sync state for this pipeline (<env>-uc-sync).
+            // Kept while the catalog-committed table's files still exist, so
+            // a pipeline recreated at the same name and prefix keeps the
+            // guard against a path write forking the catalog's history.
+            if (ucPrevious != null && !ucTableFilesKept) {
+                try UnityCatalogSyncIO.delete(pipeline)
+                catch {
+                    case ex: Exception => logger.warn("Unity Catalog state cleanup failed for " + pipeline + ": " + ex.getMessage)
+                }
+            }
         }
+        warnings.result()
     }
+
+    /** The pipeline's Unity Catalog sync state, or null (none, or unreadable:
+      * the delete goes ahead without the advice). */
+    private def unityCatalogStateForDelete(config: PipelineConfig): ai.datris.model.UnityCatalogSyncState =
+        try UnityCatalogSyncIO.read(config.name)
+        catch {
+            case ex: Exception =>
+                logger.warn("Could not read Unity Catalog state for pipeline " + config.name + " on delete: " + ex.getMessage)
+                null
+        }
+
+    private def auditUnityCatalogDelete(request: HttpServletRequest, pipeline: String, advice: String): Unit =
+        try {
+            if (ai.datris.audit.AuditLog.enabled)
+                ai.datris.audit.AuditLog.submit(
+                    ai.datris.audit.AuditEntry(
+                        ts = java.time.Instant.now(),
+                        actor = ai.datris.audit.AuditActor.resolve(request),
+                        category = "unity-catalog",
+                        action = "pipeline-delete",
+                        resourceType = Some("pipeline"),
+                        resourceName = Some(pipeline),
+                        outcome = "warning",
+                        errorMessage = Some(advice),
+                        request = Some(ai.datris.audit.AuditLog.requestInfo(request))
+                    )
+                )
+        } catch {
+            case ex: Exception => logger.warn("Audit of Unity Catalog delete advice failed for " + pipeline + ": " + ex.getMessage)
+        }
 
     /**
      * Clear tap-ledger entries and MinIO-staged files for every document tap
@@ -398,8 +456,11 @@ class PipelineAPIController {
         }
     }
 
-    private def cleanupDestinationData(config: PipelineConfig): Unit = {
+    /** Returns true when the object-store destination's files were deleted
+      * (false when there is none, the prefix is shared, or the delete failed). */
+    private def cleanupDestinationData(config: PipelineConfig): Boolean = {
         val dest = config.destination
+        var objectStoreDataDeleted = false
 
         // PostgreSQL — DROP TABLE
         if (dest.database != null && dest.database.usePostgres) {
@@ -665,6 +726,7 @@ class PipelineAPIController {
                     )
                 } else {
                     ObjectStoreSpark.deleteDestinationData(dest.objectStore)
+                    objectStoreDataDeleted = true
                 }
             } catch {
                 case e: Exception => logger.warn("Failed to delete object store data: " + e.getMessage)
@@ -685,6 +747,7 @@ class PipelineAPIController {
                 case e: Exception => logger.warn("Failed to delete scratch data for pipeline '" + config.name + "': " + e.getMessage)
             }
         }
+        objectStoreDataDeleted
     }
 
     /** Names of other pipelines whose objectStore destination would be hit by a

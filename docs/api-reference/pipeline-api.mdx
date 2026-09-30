@@ -146,8 +146,10 @@ DELETE /api/v1/pipeline?pipeline={name}
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `pipeline` | query | Yes | Pipeline name |
-| `deleteData` | query | No | Delete destination data (default: `true`) |
+| `deleteData` | query | No | Delete destination data (default: `true`). Only takes effect together with `deleteConfig=false`: deleting the configuration always deletes the data too, so `deleteData=false` on its own still removes the data. |
 | `deleteConfig` | query | No | Delete pipeline configuration (default: `true`). Set to `false` to delete data only while keeping the pipeline config. |
+
+There is no way to delete a pipeline's configuration and keep its destination data; a pipeline with no configuration would leave tables, collections, and files behind that nothing owns.
 
 **Examples:**
 ```bash
@@ -158,7 +160,13 @@ curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data"
 curl -X DELETE "http://localhost:8080/api/v1/pipeline?pipeline=sales_data&deleteData=true&deleteConfig=false"
 ```
 
-**Response:** `200 OK`
+**Response:** `200 OK` with a JSON body:
+
+```json
+{ "warnings": [] }
+```
+
+`warnings` lists anything left for you to handle. For an object-store Iceberg pipeline whose table was committed through Unity Catalog (`catalogMode: rest`), it says `Unity Catalog still holds <catalog>.<schema>.<table>; have an admin drop it`, because Datris removes the files but never drops the catalog table (see [Unity Catalog](/destinations/unity-catalog)).
 
 ---
 

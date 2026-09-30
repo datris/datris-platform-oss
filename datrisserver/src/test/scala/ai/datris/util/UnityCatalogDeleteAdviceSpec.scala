@@ -1,0 +1,77 @@
+package ai.datris.util
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+ */
+
+import ai.datris.model.{Destination, ObjectStore, PipelineConfig, UnityCatalogSync, UnityCatalogSyncState}
+import org.scalatest.funsuite.AnyFunSuite
+
+/** UnityCatalogDeleteAdvice.forPipeline: the warning a pipeline delete
+  * returns when Unity Catalog still holds the pipeline's Iceberg table
+  * (committed through the REST catalog). Buckets come from
+  * destinationBucketOverride so no environment is needed. */
+class UnityCatalogDeleteAdviceSpec extends AnyFunSuite {
+
+    private val A = UnityCatalogDeleteAdvice
+    private val ROOT = "s3a://lake/orders_daily"
+
+    private def config(fileFormat: String, prefix: String = "orders_daily", uc: UnityCatalogSync = null): PipelineConfig =
+        PipelineConfig(
+            name = "orders_daily",
+            destination = Destination(objectStore =
+                ObjectStore(prefixKey = prefix, fileFormat = fileFormat, destinationBucketOverride = "lake")
+            ),
+            unityCatalog =
+                if (uc != null) uc
+                else UnityCatalogSync(enabled = true, catalog = "main", schema = "sales", catalogMode = "rest")
+        )
+
+    private def state(mode: String, loc: String): UnityCatalogSyncState =
+        UnityCatalogSyncState("orders_daily", null, null, null, null, null, null, catalogMode = mode, restMetadataLocation = loc)
+
+    private val committed = state("rest", ROOT.replace("s3a://", "s3://") + "/metadata/00003-ab.metadata.json")
+
+    test("non-Iceberg object store → None") {
+        assert(A.forPipeline(config("parquet"), committed).isEmpty)
+        assert(A.forPipeline(config(null), committed).isEmpty)
+    }
+
+    test("no object store destination → None") {
+        assert(A.forPipeline(PipelineConfig(name = "p", destination = Destination()), committed).isEmpty)
+        assert(A.forPipeline(PipelineConfig(name = "p"), committed).isEmpty)
+    }
+
+    test("Iceberg never committed through the catalog → None") {
+        assert(A.forPipeline(config("iceberg"), null).isEmpty)
+        assert(A.forPipeline(config("iceberg"), state("register", null)).isEmpty)
+        assert(A.forPipeline(config("iceberg"), state("refused", null)).isEmpty)
+        // rest commit recorded for another table root (the prefix moved).
+        assert(A.forPipeline(config("iceberg", prefix = "orders_v2"), committed).isEmpty)
+        // sibling sharing the root as a string prefix is not this table
+        assert(A.forPipeline(config("iceberg", prefix = "orders"), committed).isEmpty)
+    }
+
+    test("committed → warning naming the qualified table") {
+        val msg = A.forPipeline(config("ICEBERG"), committed)
+        assert(msg.contains("Unity Catalog still holds main.sales.orders_daily; have an admin drop it"), msg)
+    }
+
+    test("committed, files kept → says the catalog can still read it") {
+        val msg = A.forPipeline(config("iceberg"), committed, dataDeleted = false).getOrElse("")
+        assert(msg.contains("main.sales.orders_daily"), msg)
+        assert(msg.contains("can still read it"), msg)
+        assert(msg.contains("have an admin drop it"), msg)
+    }
+
+    test("committed with the unityCatalog block removed → placeholders, still warns") {
+        val cfg = config("iceberg").copy(unityCatalog = null)
+        val msg = A.forPipeline(cfg, committed).getOrElse("")
+        assert(msg.contains("Unity Catalog still holds"), msg)
+    }
+
+    test("prefix with slashes normalizes to the same root") {
+        assert(A.forPipeline(config("iceberg", prefix = "/orders_daily/"), committed).nonEmpty)
+    }
+}

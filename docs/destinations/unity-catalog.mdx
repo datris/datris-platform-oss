@@ -128,7 +128,7 @@ Once a table has been committed through the catalog, its current metadata is kno
 - If the catalog cannot be reached, or `DATRIS_UNITY_CATALOG_SYNC=false`, the run **fails** instead of writing by path, because a path write would split the table's history. Fix the catalog connection, or point the pipeline at a new prefix and have an admin drop the Unity Catalog table.
 - `deleteBeforeWrite` fails the run, whatever the file format, because deleting the files would leave the catalog pointing at a table that no longer exists. To start over, have an admin drop the Unity Catalog table, or use a new prefix.
 - Switching `catalogMode` from `rest` back to `register` (or removing it, setting `"register": false` or `"enabled": false`, or removing the `unityCatalog` block) is not supported: the next run fails and says so. Keep `rest`, or start a new prefix and have an admin drop the Unity Catalog table.
-- Deleting the pipeline together with its data removes the files but not the Unity Catalog table; an admin drops it.
+- Deleting the pipeline together with its data removes the files but not the Unity Catalog table; an admin drops it. The delete response carries a `warnings` entry naming the table (`Unity Catalog still holds <catalog>.<schema>.<table>; have an admin drop it`), and the [audit log](/audit-log) records it as `unity-catalog` / `pipeline-delete` with outcome `warning`.
 - If the pipeline's Unity Catalog state cannot be read (the config database is unavailable), the run fails rather than risk a path write.
 
 On a pipeline that has never committed through the catalog, `DATRIS_UNITY_CATALOG_SYNC=false` writes by path with one line saying the sync is off.

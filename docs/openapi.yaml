@@ -926,7 +926,7 @@ paths:
           schema:
             type: string
             default: "true"
-          description: Delete destination data (default true)
+          description: Delete destination data (default true). Only takes effect with deleteConfig=false; deleting the configuration always deletes the data, so deleteData=false alone still removes it.
         - name: deleteConfig
           in: query
           required: false
@@ -936,7 +936,16 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    items:
+                      type: string
         '500':
           description: Error
 

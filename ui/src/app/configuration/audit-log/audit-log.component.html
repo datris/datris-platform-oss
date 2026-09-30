@@ -59,6 +59,7 @@
         <option value="success">success</option>
         <option value="failure">failure</option>
         <option value="denied">denied</option>
+        <option value="warning">warning</option>
       </select>
       <input type="text" placeholder="Resource name…" [ngModel]="filter.resource" (ngModelChange)="onResourceInput($event)" name="resource" />
       <button class="btn-secondary" (click)="clearFilters()" *ngIf="hasFilters">Clear</button>

@@ -18,7 +18,7 @@ export interface AuditEntry {
   category: string;
   action: string;
   resource?: { type?: string; name?: string };
-  outcome: 'success' | 'failure' | 'denied';
+  outcome: 'success' | 'failure' | 'denied' | 'warning';
   httpStatus?: number;
   durationMs?: number;
   errorMessage?: string;

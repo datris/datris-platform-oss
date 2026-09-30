@@ -75,7 +75,7 @@ Writes, runs, deletes, logins, key and user management, and every denied request
 | `audit` | CSV export of the audit log itself |
 | `mcp` | Clearing the Agent Monitor activity log |
 
-Each entry also carries the outcome (`success`, `failure`, `denied`), the HTTP status, how long the request took, the caller's IP address (first hop of `X-Forwarded-For` when the UI sits behind a proxy) and user agent, and the name of the resource touched.
+Each entry also carries the outcome (`success`, `failure`, `denied`, or `warning` for an action that succeeded but needs follow-up, such as a pipeline delete that leaves a Unity Catalog table behind), the HTTP status, how long the request took, the caller's IP address (first hop of `X-Forwarded-For` when the UI sits behind a proxy) and user agent, and the name of the resource touched.
 
 To record reads as well — every query, search, and listing an agent runs — set `AUDIT_LOG_READS=true` in `.env` and recreate the container. Expect a lot more rows: each query is its own entry, so filter by category when you're looking for changes rather than activity.
 
