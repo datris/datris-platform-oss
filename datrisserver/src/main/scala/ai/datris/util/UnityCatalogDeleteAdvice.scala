@@ -26,18 +26,41 @@ object UnityCatalogDeleteAdvice {
         config != null && config.destination != null && config.destination.objectStore != null &&
             Option(config.destination.objectStore.fileFormat).exists(_.trim.equalsIgnoreCase("iceberg"))
 
-    /** None unless the pipeline is an object-store Iceberg pipeline whose
-      * table at its prefix was committed through the catalog
-      * (IcebergRestSession.restCommitted). `dataDeleted=false` (the files
-      * were kept, e.g. a shared prefix) says the catalog can still read it. */
-    def forPipeline(config: PipelineConfig, previous: UnityCatalogSyncState, dataDeleted: Boolean = true): Option[String] = {
+    /** Whether the last register (story 4, register mode) left a Unity
+      * Catalog entry pointing under this table root. */
+    private def registeredUnder(previous: UnityCatalogSyncState, root: String): Boolean =
+        previous.lastRegisterAt != null && previous.registeredMetadataLocation != null &&
+            IcebergCatalogRegistrar.classify(previous.registeredMetadataLocation, null, root) != IcebergCatalogRegistrar.Foreign
+
+    /** None unless the pipeline is an object-store Iceberg pipeline that
+      * Unity Catalog still holds at its prefix:
+      *  - committed through the catalog (IcebergRestSession.restCommitted):
+      *    `dataDeleted=false` (files kept, e.g. a shared prefix) says the
+      *    catalog can still read it; `configDeleted=false` (a reset: data
+      *    wiped, config kept) says the next run fails until the table is
+      *    dropped or the pipeline moves to a new prefix;
+      *  - registered (register mode) with its data deleted: the entry points
+      *    at files that no longer exist. */
+    def forPipeline(
+        config: PipelineConfig,
+        previous: UnityCatalogSyncState,
+        dataDeleted: Boolean = true,
+        configDeleted: Boolean = true
+    ): Option[String] = {
         if (!isIceberg(config) || previous == null) return None
-        if (!IcebergRestSession.restCommitted(previous, tableRoot(config))) return None
+        val root = tableRoot(config)
         val qualified = IcebergRestSession.qualifiedFor(config)
-        Some(
-            if (dataDeleted) "Unity Catalog still holds " + qualified + "; have an admin drop it"
-            else
-                "Unity Catalog still holds " + qualified + " and can still read it (the data files were kept); have an admin drop it"
-        )
+        if (IcebergRestSession.restCommitted(previous, root))
+            Some(
+                if (!dataDeleted)
+                    "Unity Catalog still holds " + qualified + " and can still read it (the data files were kept); have an admin drop it"
+                else if (!configDeleted)
+                    "Unity Catalog still holds " + qualified + " at files that were just deleted; the next run of this pipeline will fail " +
+                        "until an admin drops it (or the pipeline moves to a new prefix)"
+                else "Unity Catalog still holds " + qualified + "; have an admin drop it"
+            )
+        else if (dataDeleted && registeredUnder(previous, root))
+            Some("Unity Catalog still has " + qualified + " registered at a location that no longer exists; have an admin drop it")
+        else None
     }
 }

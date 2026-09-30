@@ -112,8 +112,7 @@ class PipelineAPIController {
                 if (state != null && state.lastError != null)
                     state.lastError.split("\n").filter(_.startsWith(IcebergCatalogRegistrar.ErrorPrefix)).toSeq
                 else Nil
-            out.addProperty(
-                "register",
+            val registerStatus =
                 if (!registerEnabled) "off"
                 else if (restMode && state != null && state.catalogMode == "rest") "rest"
                 else if (restMode && state != null && state.catalogMode == "refused") "refused"
@@ -121,7 +120,7 @@ class PipelineAPIController {
                 else if (registerLines.nonEmpty) "stale"
                 else if (state != null && state.registeredMetadataLocation != null) "registered"
                 else "never"
-            )
+            out.addProperty("register", registerStatus)
             if (state != null) {
                 out.addProperty("registeredMetadataLocation", state.registeredMetadataLocation)
                 out.addProperty("lastRegisterAt", state.lastRegisterAt)
@@ -142,7 +141,7 @@ class PipelineAPIController {
             )
             if (state == null) out.addProperty("state", "never")
             else {
-                out.addProperty("state", if (state.lastError != null) "error" else "synced")
+                out.addProperty("state", UnityCatalogStaleState.topLevelState(state, registerStatus))
                 out.addProperty("lastSyncAt", state.lastSyncAt)
                 out.addProperty("lastRunId", state.lastRunId)
                 out.addProperty("commentsHash", state.commentsHash)
@@ -271,6 +270,9 @@ class PipelineAPIController {
             }
             val note = if (changeNote != null && changeNote.nonEmpty) changeNote
             else if (existing != null) "updated" else "created"
+            // A new pipeline must not inherit Unity Catalog sync state left by
+            // an earlier pipeline of the same name (deleted out of band).
+            if (existing == null) UnityCatalogStaleState.clearOnCreate(preserved)
             PipelineConfigIO.writeVersioned(preserved, note, VersionActor.resolve(request))
 
             // If the source is a database, initialize the pipeline pull table
@@ -354,7 +356,7 @@ class PipelineAPIController {
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
             val objectStoreDataDeleted = cleanupDestinationData(config)
-            UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted).foreach { advice =>
+            UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
                 ucTableFilesKept = !objectStoreDataDeleted
                 logger.warn("Pipeline delete: " + pipeline + ": " + advice)

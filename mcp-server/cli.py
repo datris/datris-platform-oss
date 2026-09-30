@@ -703,6 +703,10 @@ def delete(pipeline_name, keep_data, json_output):
         click.echo(json.dumps(result, indent=2))
         return
     click.echo(f"  ✓ Pipeline '{pipeline_name}' deleted")
+    # e.g. a Unity Catalog table an admin still has to drop
+    warnings = result.get("warnings") if isinstance(result, dict) else None
+    for warning in warnings or []:
+        click.echo(f"  ⚠ {warning}")
 
 
 @cli.command()

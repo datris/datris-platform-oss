@@ -114,7 +114,8 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
                 propertiesHash = null,
                 lastError = null,
                 catalogMode = mode,
-                restMetadataLocation = loc
+                restMetadataLocation = loc,
+                lastRestCommitAt = "2026-09-29T10:00:03Z"
             )
         val restLoc = n(ROOT) + "/metadata/00003-9b2d.metadata.json"
         assert(IcebergRestSession.restCommitted(st("rest", restLoc), ROOT))
@@ -122,6 +123,8 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
         assert(!IcebergRestSession.restCommitted(st("refused", restLoc), ROOT))
         assert(!IcebergRestSession.restCommitted(st("rest", null), ROOT))
         assert(!IcebergRestSession.restCommitted(null, ROOT))
+        // A doc without a recorded commit time is not a catalog commit.
+        assert(!IcebergRestSession.restCommitted(st("rest", restLoc).copy(lastRestCommitAt = null), ROOT))
         // A new prefix is a new table: the guard does not follow the pipeline.
         assert(!IcebergRestSession.restCommitted(st("rest", restLoc), "s3a://datris-lake/orders_daily_v2"))
     }
@@ -137,7 +140,8 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
             propertiesHash = null,
             lastError = null,
             catalogMode = "rest",
-            restMetadataLocation = n(ROOT) + "/metadata/00003-9b2d.metadata.json"
+            restMetadataLocation = n(ROOT) + "/metadata/00003-9b2d.metadata.json",
+            lastRestCommitAt = "2026-09-29T10:00:03Z"
         )
         val Q = "unity.default.orders_daily"
         val G = IcebergRestSession.guardFailure _
@@ -179,7 +183,8 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
             propertiesHash = null,
             lastError = null,
             catalogMode = "rest",
-            restMetadataLocation = recorded
+            restMetadataLocation = recorded,
+            lastRestCommitAt = "2026-09-29T10:00:03Z"
         )
         val R = IcebergTableResolver
         // Not catalog-committed: path read (the catalog is never asked).

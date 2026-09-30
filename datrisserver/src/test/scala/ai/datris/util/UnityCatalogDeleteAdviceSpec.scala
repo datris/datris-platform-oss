@@ -29,7 +29,19 @@ class UnityCatalogDeleteAdviceSpec extends AnyFunSuite {
         )
 
     private def state(mode: String, loc: String): UnityCatalogSyncState =
-        UnityCatalogSyncState("orders_daily", null, null, null, null, null, null, catalogMode = mode, restMetadataLocation = loc)
+        UnityCatalogSyncState(
+            "orders_daily",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            catalogMode = mode,
+            restMetadataLocation = loc,
+            // A catalog commit records its time (IcebergRestSession.record).
+            lastRestCommitAt = if (mode == "rest") "2026-09-29T10:00:03Z" else null
+        )
 
     private val committed = state("rest", ROOT.replace("s3a://", "s3://") + "/metadata/00003-ab.metadata.json")
 
@@ -73,5 +85,37 @@ class UnityCatalogDeleteAdviceSpec extends AnyFunSuite {
 
     test("prefix with slashes normalizes to the same root") {
         assert(A.forPipeline(config("iceberg", prefix = "/orders_daily/"), committed).nonEmpty)
+    }
+
+    // --- E2E upgrade-path follow-ups -------------------------------------------
+
+    test("reset (config kept, data deleted) on a committed table → the next run will fail until dropped or moved") {
+        val msg = A.forPipeline(config("iceberg"), committed, dataDeleted = true, configDeleted = false).getOrElse("")
+        assert(msg.contains("main.sales.orders_daily"), msg)
+        assert(msg.contains("the next run of this pipeline will fail until an admin drops it (or the pipeline moves to a new prefix)"), msg)
+    }
+
+    test("register mode: a registered entry under the root with its data deleted → warns it points at a location that no longer exists") {
+        val registered = UnityCatalogSyncState(
+            "orders_daily",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            registeredMetadataLocation = ROOT + "/metadata/v2.metadata.json",
+            lastRegisterAt = "2026-09-29T10:00:00Z"
+        )
+        val cfg = config("iceberg", uc = UnityCatalogSync(enabled = true, catalog = "main", schema = "sales"))
+        val msg = A.forPipeline(cfg, registered).getOrElse("")
+        assert(msg == "Unity Catalog still has main.sales.orders_daily registered at a location that no longer exists; have an admin drop it", msg)
+        // Reset in register mode: same advice.
+        assert(A.forPipeline(cfg, registered, configDeleted = false).contains(msg))
+        // Files kept: the registered entry still reads; nothing to say.
+        assert(A.forPipeline(cfg, registered, dataDeleted = false).isEmpty)
+        // Never actually registered (no lastRegisterAt), or registered elsewhere: nothing.
+        assert(A.forPipeline(cfg, registered.copy(lastRegisterAt = null)).isEmpty)
+        assert(A.forPipeline(cfg, registered.copy(registeredMetadataLocation = "s3://lake/orders_daily2/metadata/v2.metadata.json")).isEmpty)
     }
 }

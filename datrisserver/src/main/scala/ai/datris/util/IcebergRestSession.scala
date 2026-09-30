@@ -98,7 +98,7 @@ object IcebergRestSession {
       * earlier run (the last catalog commit lives under its metadata/). A new
       * prefix is a new table, so the guard does not follow the pipeline there. */
     def restCommitted(previous: UnityCatalogSyncState, tableRoot: String): Boolean =
-        previous != null && previous.catalogMode == "rest" && previous.restMetadataLocation != null &&
+        previous != null && previous.catalogMode == "rest" && previous.restMetadataLocation != null && previous.lastRestCommitAt != null &&
             IcebergCatalogRegistrar.classify(previous.restMetadataLocation, null, tableRoot) != IcebergCatalogRegistrar.Foreign
 
     def switchBackMessage(qualified: String): String =
@@ -261,9 +261,26 @@ object IcebergRestSession {
         // unityCatalog block was switched off or removed, or the format changed.
         if (!iceberg && !deleteBeforeWrite) return Inactive
 
-        val previous = readState(config.name)
-        val forkRisk = restCommitted(previous, outputPath)
+        var previous = readState(config.name)
+        var forkRisk = restCommitted(previous, outputPath)
         val uc = config.unityCatalog
+        // A leftover doc (the pipeline was deleted out of band and recreated)
+        // says "committed" while neither the catalog nor the prefix has the
+        // table: ignore it rather than refuse a brand-new table.
+        if (
+            forkRisk && UnityCatalogStaleState.staleCommitted(
+                forkRisk,
+                UnityCatalogStaleState.catalogHasTable(config),
+                UnityCatalogStaleState.prefixHasMetadata(outputPath)
+            )
+        ) {
+            statusUtil.warn(
+                "processing",
+                line("state doc says committed but neither the catalog nor the prefix has the table; ignoring stale state")
+            )
+            previous = UnityCatalogStaleState.withoutRestCommit(previous)
+            forkRisk = false
+        }
         val restActive = uc != null && uc.enabled && uc.registerOn && uc.restMode
         val qualified = qualifiedFor(config)
         guardFailure(previous, outputPath, iceberg, deleteBeforeWrite, restActive, qualified).foreach(m => throw new DatrisException(m))

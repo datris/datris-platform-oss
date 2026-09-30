@@ -258,7 +258,7 @@ datris delete my_pipeline
 |--------|-------------|
 | `--json` | Return raw JSON |
 
-Deleting a pipeline always deletes its destination data. `--keep-data` is not supported: it exits with an error and deletes nothing. To keep the data, copy it or point a new pipeline at the same prefix before deleting.
+Deleting a pipeline always deletes its destination data. `--keep-data` is not supported: it exits with an error and deletes nothing. To keep the data, copy it or point a new pipeline at the same prefix before deleting. Any warnings the server returns (for example, a Unity Catalog table an admin still has to drop) are printed after the success line, one per line, prefixed with `⚠`.
 
 ---
 

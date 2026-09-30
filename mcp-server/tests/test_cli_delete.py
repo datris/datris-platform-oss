@@ -49,3 +49,36 @@ def test_cli_docs_no_longer_offer_keep_data():
         text = fh.read()
     assert "datris delete my_pipeline --keep-data" not in text
     assert "`--keep-data` is not supported" in text
+
+
+class _McpWithWarnings(_Mcp):
+    def __init__(self, warnings):
+        super().__init__()
+        self.warnings = warnings
+
+    def __call__(self, name, args=None):
+        self.calls.append((name, dict(args or {})))
+        return {"warnings": self.warnings}
+
+
+def test_delete_prints_each_warning_after_the_success_line(monkeypatch):
+    stub = _McpWithWarnings([
+        "Unity Catalog still holds main.sales.orders; have an admin drop it",
+        "second warning",
+    ])
+    monkeypatch.setattr(cli, "mcp", stub)
+    res = _run(["delete", "orders"])
+    assert res.exit_code == 0, res.output
+    lines = [l.strip() for l in res.output.splitlines() if l.strip()]
+    assert lines[0] == "✓ Pipeline 'orders' deleted", lines
+    assert lines[1:] == [
+        "⚠ Unity Catalog still holds main.sales.orders; have an admin drop it",
+        "⚠ second warning",
+    ], lines
+
+
+def test_delete_with_empty_warnings_prints_only_the_success_line(monkeypatch):
+    monkeypatch.setattr(cli, "mcp", _McpWithWarnings([]))
+    res = _run(["delete", "orders"])
+    assert res.exit_code == 0, res.output
+    assert "⚠" not in res.output
