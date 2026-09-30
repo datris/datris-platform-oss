@@ -123,4 +123,14 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         assert(m.contains("Have an admin drop main.uc.probe"), m)
         assert(m.contains("falling back to the path-based write"), m)
     }
+
+    test("foreignAdvice: after a refused run, renaming will not help (managed table from an earlier run); otherwise rename") {
+        val refused = doc(mode = "refused", loc = null, at = null)
+        val a = IcebergRestSession.foreignAdvice(refused, "main.uc.probe")
+        assert(a.contains("renaming will not help: have an admin drop main.uc.probe"), a)
+        assert(a.contains("Databricks managed tables") && a.contains("use the Databricks destination"), a)
+        assert(!a.contains("rename the pipeline"), a)
+        assert(IcebergRestSession.foreignAdvice(null, "q") == "rename the pipeline or choose another schema")
+        assert(IcebergRestSession.foreignAdvice(doc(), "q") == "rename the pipeline or choose another schema")
+    }
 }

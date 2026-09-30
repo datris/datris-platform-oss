@@ -72,6 +72,8 @@ The API returns `400` when `credentialsSecret` or `catalog` is missing, or when 
 
 ### Databricks prerequisites
 
+These are the grants the planned Databricks managed-table support and the [Databricks destination](/destinations/databricks) need; today neither Iceberg mode keeps the pointer on a Datris-owned table (see **Databricks today** above).
+
 Registration uses the Unity Catalog Iceberg REST catalog, which needs three things set up once:
 
 1. **External data access** enabled on the metastore. A metastore admin turns it on in Catalog Explorer, under the metastore's settings.

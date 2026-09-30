@@ -300,4 +300,8 @@ class ObjectStoreSparkSpec extends AnyFunSuite with BeforeAndAfterEach with Befo
         assert(preset.get("fs.s3.impl") == "com.example.CustomS3")
         assert(preset.get("fs.s3n.impl") == "org.apache.hadoop.fs.s3a.S3AFileSystem")
     }
+
+    test("evictionUris covers s3a://, s3:// and s3n:// for the bucket (all served by S3A)") {
+        assert(ObjectStoreSpark.evictionUris("lake").map(_.toString) == Seq("s3a://lake", "s3://lake", "s3n://lake"))
+    }
 }

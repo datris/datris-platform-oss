@@ -194,7 +194,16 @@ object IcebergWriter {
         }
 
         table.refresh()
-        if (restCatalog.isDefined) assertRestTableLocation(table, location) else assertTableLocation(table, location)
+        // After the commit: a location change now is a failure, not a
+        // refusal (RestLocationRefused means nothing was written).
+        if (restCatalog.isDefined) {
+            if (!sameRestLocation(table.location(), location))
+                throw new DatrisException(
+                    "Iceberg table " + restCatalog.get.ident + " moved to " + table.location() + " during the write, outside this pipeline's table root " +
+                        location + "; the commit went through the catalog, so the run fails rather than write by path"
+                )
+            assertRestTableLocation(table, location)
+        } else assertTableLocation(table, location)
         val result = resultOf(table)
         statusUtil.info(
             "processing",

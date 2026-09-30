@@ -256,18 +256,26 @@ object ObjectStoreSpark {
     /** Test seam: forget every recorded fingerprint. */
     private[util] def resetAppliedFingerprints(): Unit = appliedFingerprints.clear()
 
-    /** Close (and thereby remove from Hadoop's FileSystem cache) the cached
-      *  s3a://<bucket> filesystem. Best-effort: a failed eviction must never
-      *  fail the run, so failures are logged at WARN and swallowed. */
+    /** The cached filesystems of a bucket: `s3a://`, plus `s3://` and
+      *  `s3n://`, which mapS3Schemes also serves with S3A (separate cache
+      *  entries, same per-bucket credentials). */
+    private[util] def evictionUris(bucket: String): Seq[URI] = Seq("s3a", "s3", "s3n").map(s => new URI(s + "://" + bucket))
+
+    /** Close (and thereby remove from Hadoop's FileSystem cache) every cached
+      *  filesystem of the bucket (see evictionUris). Best-effort, per scheme:
+      *  a failed eviction must never fail the run, so failures are logged at
+      *  WARN and swallowed. */
     private def evictCachedFileSystem(bucket: String, hadoopConf: Configuration): Unit = {
         logger.info(
-            s"S3A settings changed for s3a://$bucket/ — evicting cached filesystem so the next access re-initialises"
+            s"S3A settings changed for s3a://$bucket/ — evicting cached filesystems so the next access re-initialises"
         )
-        try {
-            FileSystem.get(new URI("s3a://" + bucket), hadoopConf).close()
-        } catch {
-            case e: Exception =>
-                logger.warn(s"Could not evict cached filesystem for s3a://$bucket/: ${e.getMessage}")
+        evictionUris(bucket).foreach { uri =>
+            try {
+                FileSystem.get(uri, hadoopConf).close()
+            } catch {
+                case e: Exception =>
+                    logger.warn(s"Could not evict cached filesystem for $uri/: ${e.getMessage}")
+            }
         }
     }
 }

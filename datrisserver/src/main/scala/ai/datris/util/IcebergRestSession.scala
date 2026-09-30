@@ -224,6 +224,16 @@ object IcebergRestSession {
             try UnityCatalogSyncIO.write(interimState(previous, pipeline, metadataLocation, Instant.now().toString))
             catch { case NonFatal(e) => logger.warn("uc-rest interim state write failed for " + pipeline + ": " + e.getMessage) }
 
+    /** What to do about a foreign catalog table of our name. After an
+      * earlier refused run it is most likely the managed table a catalog
+      * that ignores the requested location created for us, and renaming
+      * would just create another one. */
+    def foreignAdvice(previous: UnityCatalogSyncState, qualified: String): String =
+        if (previous != null && previous.catalogMode == "refused")
+            "if this table was created by an earlier Datris run against a catalog that ignores the requested location (Databricks managed tables), " +
+                s"renaming will not help: have an admin drop $qualified; for governed Databricks tables use the Databricks destination"
+        else "rename the pipeline or choose another schema"
+
     /** The warning for a catalog table outside the pipeline's table root. */
     def outsideRootMessage(qualified: String, tableLocation: String, root: String): String =
         s"the catalog placed $qualified at ${IcebergCatalogRegistrar.normalize(tableLocation)}, outside this pipeline's table root " +
@@ -279,7 +289,7 @@ object IcebergRestSession {
                 val msg = line(
                     s"${plan.qualified} was created in Unity Catalog by someone else while this run was creating it, and points at $where, " +
                         s"outside this pipeline's table ${IcebergCatalogRegistrar.normalize(plan.location)}; refusing to touch it (never merge, never drop); " +
-                        "rename the pipeline or choose another schema; falling back to the path-based write"
+                        foreignAdvice(plan.previous, plan.qualified) + "; falling back to the path-based write"
                 )
                 statusUtil.warn("processing", msg)
                 logger.warn("uc-rest create conflict for pipeline " + config.name + ": " + oneLine(cause.getMessage))
@@ -475,7 +485,7 @@ object IcebergRestSession {
                     Left(
                         Fallback(
                             s"$qualified already exists in Unity Catalog and points at ${n(c)}, outside this pipeline's table ${n(outputPath)}; " +
-                                "refusing to touch it (never merge, never drop); rename the pipeline or choose another schema"
+                                "refusing to touch it (never merge, never drop); " + foreignAdvice(previous, qualified)
                         )
                     )
             }

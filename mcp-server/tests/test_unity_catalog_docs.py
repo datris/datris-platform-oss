@@ -319,3 +319,12 @@ def test_unity_catalog_page_requires_managed_location_schema():
     # and gives the MANAGED LOCATION remedy.
     assert "MANAGED LOCATION" in text
     assert "SCHEMA_DB_STORAGE" in text
+
+
+def test_databricks_limits_precede_the_prerequisites():
+    ref = server.PIPELINE_CONFIG_REFERENCE
+    assert ref.index("supports neither mode") < ref.index("Databricks-side grants"), ref
+    text = _read(UNITY_CATALOG_MDX)
+    body = _section(text, r"^Databricks prerequisites$")
+    assert body is not None
+    assert body.strip().startswith("These are the grants the planned Databricks managed-table support"), body[:200]
