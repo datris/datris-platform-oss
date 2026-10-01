@@ -161,4 +161,27 @@ class UnityCatalogDeleteAdviceSpec extends AnyFunSuite {
         // No recorded commit: nothing to warn about.
         assert(A.forPipeline(config("iceberg", uc = managedUc), managed.copy(lastRestCommitAt = null)).isEmpty)
     }
+
+    test("keepStateOnDelete: a managed commit's doc always survives a delete; otherwise only while advised files were kept") {
+        val managed = UnityCatalogSyncState(
+            "orders_daily",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            catalogMode = "managed",
+            restMetadataLocation = "s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b/metadata/00002-e5f6.metadata.json",
+            lastRestCommitAt = "2026-10-01T09:00:00Z"
+        )
+        assert(A.keepStateOnDelete(managed, dataDeleted = true, adviceGiven = true))
+        assert(A.keepStateOnDelete(managed, dataDeleted = true, adviceGiven = false))
+        assert(!A.keepStateOnDelete(managed.copy(lastRestCommitAt = null), dataDeleted = true, adviceGiven = false))
+        // rest: kept only when advice was given and the files were kept (unchanged).
+        assert(A.keepStateOnDelete(committed, dataDeleted = false, adviceGiven = true))
+        assert(!A.keepStateOnDelete(committed, dataDeleted = true, adviceGiven = true))
+        assert(!A.keepStateOnDelete(committed, dataDeleted = false, adviceGiven = false))
+        assert(!A.keepStateOnDelete(null, dataDeleted = true, adviceGiven = false))
+    }
 }

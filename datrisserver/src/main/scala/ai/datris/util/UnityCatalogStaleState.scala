@@ -61,6 +61,9 @@ object UnityCatalogStaleState {
     def topLevelState(state: UnityCatalogSyncState, register: String): String =
         if (state == null) "never"
         else if (state.lastError != null || register == "refused") "error"
+        // catalogMode managed: the last run failed before writing (the table
+        // committed earlier is still current).
+        else if (register == "managed" && state.restRefusedReason != null) "error"
         else "synced"
 
     /** Run-time stale check: when `previous` records a catalog commit at
@@ -88,6 +91,16 @@ object UnityCatalogStaleState {
         write(cleared)
         Some(cleared)
     }
+
+    /** The run-time warning when [[clearIfStale]] cleared `previous`. A
+      * managed doc names the table it recorded: the catalog has no table at
+      * `qualified` (the catalog or schema changed, or an admin dropped it),
+      * so the run starts a new table and the old record is forgotten. */
+    def staleWarning(previous: UnityCatalogSyncState, qualified: String): String =
+        if (IcebergRestSession.managedCommitted(previous))
+            "state doc recorded a managed table at " + IcebergRestSession.tableLocationOf(previous.restMetadataLocation) + " that is not at " +
+                qualified + "; starting a new table and forgetting the old one (an admin can drop the old table in Unity Catalog)"
+        else "state doc says committed but neither the catalog nor the prefix has the table; ignoring stale state"
 
     def withoutRestCommit(doc: UnityCatalogSyncState): UnityCatalogSyncState =
         doc.copy(catalogMode = null, restMetadataLocation = null, lastRestCommitAt = null, restRefusedReason = null)

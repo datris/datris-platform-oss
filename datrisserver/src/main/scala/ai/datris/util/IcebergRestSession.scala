@@ -202,6 +202,21 @@ object IcebergRestSession {
       * would delete it first; rethrown by `prepare` as a run failure. */
     private class DeleteRefused(message: String) extends DatrisException(message)
 
+    /** State after a managed-mode run failed before writing (decision 3): the
+      * reason goes to `restRefusedReason` so the state endpoint reads `error`.
+      * A managed-committed doc keeps its commit fields (the table is still
+      * ours); otherwise the doc says `refused`. `restCreatedTable` is kept. */
+    def managedRefusedState(previous: UnityCatalogSyncState, pipeline: String, reason: String): UnityCatalogSyncState = {
+        val base = Option(previous).getOrElse(UnityCatalogSyncState(pipeline, null, null, null, null, null, null)).copy(pipeline = pipeline)
+        if (managedCommitted(previous)) base.copy(restRefusedReason = reason)
+        else base.copy(catalogMode = "refused", restRefusedReason = reason)
+    }
+
+    /** Never throws. */
+    private def recordManagedRefusal(pipeline: String, previous: UnityCatalogSyncState, reason: String): Unit =
+        try UnityCatalogSyncIO.write(managedRefusedState(previous, pipeline, reason))
+        catch { case NonFatal(e) => logger.warn("uc-rest state write failed for " + pipeline + ": " + e.getMessage) }
+
     /** A managed-mode refusal before any write (provider rule): rethrown by
       * `prepare` as a run failure, never turned into a Fallback. */
     private class ManagedRefused(message: String) extends DatrisException(message)
@@ -371,6 +386,7 @@ object IcebergRestSession {
         if (refused.created)
             try UnityCatalogSyncIO.write(createdRefusedState(plan.previous, jobContext.config.name, plan.qualified, msg))
             catch { case NonFatal(e) => logger.warn("uc-rest state write failed for " + jobContext.config.name + ": " + e.getMessage) }
+        else recordManagedRefusal(jobContext.config.name, plan.previous, msg)
         val ex = new DatrisException(msg)
         ex.initCause(refused)
         throw ex
@@ -409,6 +425,7 @@ object IcebergRestSession {
                     )
                     logger.warn("uc-rest managed create conflict for pipeline " + config.name + ": " + oneLine(cause.getMessage))
                     audit(config.name, msg)
+                    recordManagedRefusal(config.name, now, msg)
                     plan.close()
                     throw new DatrisException(msg)
             }
@@ -468,10 +485,7 @@ object IcebergRestSession {
             () => UnityCatalogStaleState.prefixHasMetadata(outputPath),
             UnityCatalogSyncIO.write
         ).foreach { cleared =>
-            statusUtil.warn(
-                "processing",
-                line("state doc says committed but neither the catalog nor the prefix has the table; ignoring stale state")
-            )
+            statusUtil.warn("processing", line(UnityCatalogStaleState.staleWarning(previous, qualifiedFor(config))))
             previous = cleared
             forkRisk = false
         }
@@ -497,11 +511,12 @@ object IcebergRestSession {
         )
 
         if (!UnityCatalogMetadataSync.switchedOn) {
-            if (managedActive)
-                throw new DatrisException(
-                    "Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false); catalogMode managed writes only through the catalog, " +
-                        "so the run fails (nothing was written)"
-                )
+            if (managedActive) {
+                val msg = "Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false); catalogMode managed writes only through the catalog, " +
+                    "so the run fails (nothing was written)"
+                recordManagedRefusal(config.name, previous, line(msg))
+                throw new DatrisException(msg)
+            }
             if (forkRisk)
                 throw new DatrisException(committedMessage(previous, "Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false)", qualified))
             val msg = line("Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false); writing path-based")
@@ -531,6 +546,7 @@ object IcebergRestSession {
                 case d: DeleteRefused => throw d
                 case m: ManagedRefused =>
                     audit(config.name, line(m.getMessage))
+                    recordManagedRefusal(config.name, previous, line(m.getMessage))
                     throw m
                 case t: Throwable if NonFatal(t) || t.isInstanceOf[LinkageError] =>
                     Left(Fallback("Unity Catalog REST catalog could not be opened: " + oneLine(Option(t.getMessage).getOrElse(t.getClass.getSimpleName))))
@@ -544,6 +560,7 @@ object IcebergRestSession {
                 val msg = line(reason + "; catalogMode managed never writes by path, so the run fails (nothing was written)")
                 logger.warn("uc-rest managed refusal for pipeline " + config.name + ": " + reason)
                 audit(config.name, msg)
+                recordManagedRefusal(config.name, previous, msg)
                 throw new DatrisException(msg)
             case Left(Fallback(reason)) =>
                 if (forkRisk) {

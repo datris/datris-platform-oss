@@ -236,7 +236,12 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
         // A WriteResult with snapshotId -1 means nothing was committed (writeMode
         // ignore on an empty table): no snapshot to report.
         val snapshotId: Option[Long] = iceberg.map(_.snapshotId).filter(_ >= 0L)
-        sendNotification(outputPath, snapshotId)
+        // catalogMode managed: the table lives where the catalog put it.
+        val notifyPath = iceberg match {
+            case Some(r) if restPlan.managed && r.metadataLocation != null => IcebergRestSession.tableLocationOf(r.metadataLocation)
+            case _ => outputPath
+        }
+        sendNotification(notifyPath, snapshotId)
         // Unity Catalog registration (opt-in) runs before the `end` line:
         // nothing may follow it. A no-op unless the pipeline opted in; never
         // throws. In catalogMode rest and managed the commit already went

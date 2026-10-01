@@ -202,4 +202,29 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         assert(S.clearIfStale(managedDoc(), ROOT, () => None, () => fail("probe"), written += _).isEmpty, "catalog unknown")
         assert(written.isEmpty, s"$written")
     }
+
+    test("staleWarning: a managed doc names the old table's location and the new identifier; rest keeps the old wording") {
+        val m = S.staleWarning(managedDoc(), "main.prod.orders_daily")
+        assert(
+            m == "state doc recorded a managed table at s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b that is not at main.prod.orders_daily; " +
+                "starting a new table and forgetting the old one (an admin can drop the old table in Unity Catalog)",
+            m
+        )
+        assert(S.staleWarning(doc(), "main.prod.orders_daily").startsWith("state doc says committed but neither the catalog nor the prefix"))
+    }
+
+    test("topLevelState: a managed doc with restRefusedReason reads error; managed without one reads synced") {
+        assert(S.topLevelState(managedDoc(), "managed") == "synced")
+        assert(S.topLevelState(managedDoc().copy(restRefusedReason = "uc-rest: refused"), "managed") == "error")
+    }
+
+    test("managedRefusedState: a managed commit keeps its commit fields and gains the reason; otherwise the doc says refused") {
+        val kept = IcebergRestSession.managedRefusedState(managedDoc(), "orders_daily", "uc-rest: why")
+        assert(IcebergRestSession.managedCommitted(kept) && kept.restRefusedReason == "uc-rest: why", s"$kept")
+        assert(kept.restMetadataLocation == MANAGED_LOC)
+        val fresh = IcebergRestSession.managedRefusedState(null, "orders_daily", "uc-rest: why")
+        assert(fresh.catalogMode == "refused" && fresh.restRefusedReason == "uc-rest: why" && fresh.pipeline == "orders_daily", s"$fresh")
+        val created = doc(mode = "refused", loc = null, at = null).copy(restCreatedTable = "main.sales.orders_daily")
+        assert(IcebergRestSession.managedRefusedState(created, "orders_daily", "x").restCreatedTable == "main.sales.orders_daily")
+    }
 }

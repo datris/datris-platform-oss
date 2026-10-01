@@ -361,14 +361,16 @@ class PipelineAPIController {
         // committed through the REST catalog is not dropped by Datris.
         val ucPrevious = unityCatalogStateForDelete(config)
         val warnings = Seq.newBuilder[String]
-        var ucTableFilesKept = false
+        // A managed commit's doc always survives (the table lives on in Unity
+        // Catalog and a recreated pipeline continues it).
+        var ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, dataDeleted = true, adviceGiven = false)
 
         // Clean up destination data
         if (deleteDataBool && config.destination != null) {
             val objectStoreDataDeleted = cleanupDestinationData(config)
             UnityCatalogDeleteAdvice.forPipeline(config, ucPrevious, objectStoreDataDeleted, deleteConfigBool).foreach { advice =>
                 warnings += advice
-                ucTableFilesKept = !objectStoreDataDeleted
+                ucTableFilesKept = UnityCatalogDeleteAdvice.keepStateOnDelete(ucPrevious, objectStoreDataDeleted, adviceGiven = true)
                 logger.warn("Pipeline delete: " + pipeline + ": " + advice)
                 auditUnityCatalogDelete(request, pipeline, advice)
             }
@@ -392,7 +394,8 @@ class PipelineAPIController {
             // Unity Catalog sync state for this pipeline (<env>-uc-sync).
             // Kept while the catalog-committed table's files still exist, so
             // a pipeline recreated at the same name and prefix keeps the
-            // guard against a path write forking the catalog's history.
+            // guard against a path write forking the catalog's history, and
+            // always for a catalogMode managed commit (keepStateOnDelete).
             if (ucPrevious != null && !ucTableFilesKept) {
                 try UnityCatalogSyncIO.delete(pipeline)
                 catch {

@@ -207,13 +207,16 @@ object ObjectStoreQueryUtil {
         val table = new HadoopTables(conf).load(source)
         if (resolved.exists(_.managed)) IcebergWriter.assertManagedLocation(table, bucket)
         else IcebergWriter.assertTableLocation(table, path)
+        // catalogMode managed: the rows live where the catalog put the table,
+        // not under prefixKey; report that location.
+        val reported = if (resolved.exists(_.managed)) Option(table.location()).getOrElse(path) else path
         val snapshot = table.currentSnapshot()
         if (snapshot == null) {
             // Table created but nothing ever committed: no rows, no snapshot.
             return QueryResult(
                 table.schema().columns().asScala.map(_.name()).toList.asJava,
                 new java.util.ArrayList[java.util.Map[String, Any]](),
-                path,
+                reported,
                 "iceberg"
             )
         }
@@ -223,7 +226,7 @@ object ObjectStoreQueryUtil {
         QueryResult(
             columns,
             rows,
-            path,
+            reported,
             "iceberg",
             java.lang.Long.valueOf(snapshot.snapshotId()),
             java.time.Instant.ofEpochMilli(snapshot.timestampMillis()).toString
