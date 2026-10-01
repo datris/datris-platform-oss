@@ -922,7 +922,17 @@ paths:
                   $ref: '#/components/schemas/UnityCatalogSync'
       responses:
         '200':
-          description: Pipeline created/updated
+          description: Pipeline created/updated. `warnings` is advisory; the pipeline is saved either way (empty array when there is nothing to say). Today it warns when an object-store Iceberg pipeline's Unity Catalog secret points at a Databricks workspace with catalogMode register or rest, which Databricks cannot serve; set catalogMode managed or use the databricks destination.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    description: Advisory messages about the saved configuration; the pipeline is saved regardless.
+                    items:
+                      type: string
         '500':
           description: Error
 

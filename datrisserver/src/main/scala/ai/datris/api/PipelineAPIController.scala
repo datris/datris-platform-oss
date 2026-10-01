@@ -286,7 +286,16 @@ class PipelineAPIController {
             if (modifiedConfig.source.databaseAttributes != null)
                 PipelinePullTableUtil.initialize(modifiedConfig.name, modifiedConfig.source.databaseAttributes.cronExpression)
 
-            new ResponseEntity[String](HttpStatus.OK)
+            // Advisory only: the pipeline is saved either way. Unity Catalog on
+            // Databricks cannot serve register/rest modes for an object-store
+            // Iceberg table; say so now rather than at the first run.
+            val warnings = UnityCatalogSaveHints.forConfig(preserved, UnityCatalogSaveHints.resolveHost)
+            warnings.foreach(w => logger.warn("POST /pipeline " + preserved.name + ": " + w))
+            val out = new JsonObject
+            val arr = new com.google.gson.JsonArray
+            warnings.foreach(arr.add(_))
+            out.add("warnings", arr)
+            ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(out.toString)
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))

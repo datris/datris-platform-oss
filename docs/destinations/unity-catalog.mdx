@@ -161,6 +161,8 @@ The pipeline detail page shows a `rest` chip and when the table was last kept cu
 
 `catalogMode: "rest"` works against catalogs that honour the requested location, such as the Apache Iceberg REST fixture. Datris checks where the catalog put the table before writing anything: if a catalog places the table outside the pipeline's prefix (Databricks does, it creates a managed table and ignores the requested location), Datris refuses to write there, warns (naming both locations and the table an admin should drop) and writes by path; the pipeline page shows `refused`. On Databricks, use `catalogMode: "managed"` instead.
 
+Saving the pipeline already warns about this. When the `credentialsSecret` host is a Databricks workspace (`*.databricks.com` or `*.azuredatabricks.net`) and `catalogMode` is `register` (the default) or `rest`, `POST /api/v1/pipeline` answers `200` with a `warnings` entry naming the host: with `register`, that Databricks has no Iceberg REST register call so the table will not be registered; with `rest`, that Databricks creates a managed table at its own location, which Datris refuses. Both point at `catalogMode: "managed"` or the databricks destination. The warning is advisory and the pipeline is saved; the MCP `create_pipeline` response carries the same `warnings`.
+
 **Testing locally.** The Iceberg REST catalog test fixture works as a stand-in for Unity Catalog: run the `apache/iceberg-rest-fixture` image on the Datris network, create its `default` namespace, and use a secret with `host` set to `http://iceberg-rest:8181`, `icebergRestPath` set to `/` and `icebergRestPrefix` set to `-` (see the next section). Point the pipeline at the built-in MinIO store for this test.
 
 ### Databricks: `catalogMode: managed`

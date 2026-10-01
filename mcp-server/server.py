@@ -878,7 +878,7 @@ Databricks is an EXTERNAL destination: credentials come from a human-owned Platf
 
 Unity Catalog metadata (Databricks): per-pipeline opt-in, or on by default when the install sets DATRIS_UNITY_CATALOG_DEFAULT=enabled (a pipeline can still opt out). A top-level `"unityCatalog": {"enabled": true}` makes every successful load annotate the table in Unity Catalog — a table comment naming the pipeline and source, fixed comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog` (when the pipeline has a catalog), `datris_dq_status` and `managed_by=datris`, and `TBLPROPERTIES` (`datris.lastRunId`, `datris.configVersion`, `datris.lastRunAt`, `datris.lineagePath`, ...). Optional knobs `comments`, `tags`, `properties` (all default true) drop a group. Omit the block unless the user asks to turn it on or off for this pipeline; to opt a pipeline out of an install-wide default, set `{"enabled": false}`. The server rejects the block on any destination other than Databricks or an objectstore Iceberg table. With `DATRIS_UNITY_CATALOG_DEFAULT=enabled`, a Databricks pipeline with no block behaves as `{"enabled": true}` with every knob on (`enabledBy: "default"` on the state endpoint), so the block is only needed to opt out or to drop a knob. Object store Iceberg pipelines are never defaulted. Tagging needs `GRANT APPLY TAG ON SCHEMA <catalog>.<schema> TO <service principal>`; without it the tag statement fails and is reported as a warning on the run — the load itself still succeeds. The block also publishes lineage to Unity Catalog (knob `"lineage"`, default true): the tap or file upload, the pipeline and the table appear in Catalog Explorer's External lineage graph with column mappings and last-run properties. It needs `GRANT CREATE EXTERNAL METADATA ON METASTORE` (metastore admin only) plus `MODIFY` on the table; without it lineage is a warning on the run, never a failed load. `"lineage": false` keeps the annotations and skips lineage. Last sync / last error / `lastLineageAt`: `GET /api/v1/pipelines/<name>/unity-catalog`.
 
-Unity Catalog registration (objectstore with `fileFormat: "iceberg"`, opt-in): `"unityCatalog": {"enabled": true, "credentialsSecret": "<platform secret>", "catalog": "<uc catalog>", "schema": "default"}` registers the Iceberg table in Unity Catalog as `<unityCatalog.catalog>.<schema>.<pipeline name>` after each successful write, pointing Unity Catalog at the table's current metadata file. For Databricks Unity Catalog use `"catalogMode": "managed"` (it has no Iceberg REST `register` call and ignores a requested location, so `register` and `rest` do not work there): `"destination": {"objectStore": {"provider": "s3", "destinationBucketOverride": "<bucket>", "prefixKey": "<prefix>", "fileFormat": "iceberg", "credentialsSecret": "<s3 secret>"}}, "unityCatalog": {"enabled": true, "credentialsSecret": "<databricks secret>", "catalog": "<uc catalog>", "schema": "<schema>", "catalogMode": "managed"}`. The schema must have a MANAGED LOCATION in the pipeline's bucket; the catalog chooses the table's location there, Datris writes the files with the pipeline's S3 secret and commits every write through the catalog, `prefixKey` holds no data, `deleteBeforeWrite` is rejected, provider must be s3 (minio only with a non-Databricks catalog secret carrying icebergRestPath), any refusal fails the run instead of writing by path, and deleting the pipeline leaves the table and its files to Unity Catalog. `credentialsSecret` (same field shape as a Databricks secret: `host` plus `clientId`/`clientSecret` or `token`) and `unityCatalog.catalog` are required; `schema` defaults to `default`; `"register": false` turns registration off. Databricks-side grants (what catalogMode managed and the databricks destination need): a metastore admin enables external data access, the catalog owner grants `EXTERNAL USE SCHEMA` on the schema to the principal, and an external location must cover the table's S3 path. The first run registers the table; later runs leave Unity Catalog alone and warn when its pointer is behind the table's latest metadata. With catalogs that implement `register` and honour the requested location, `"catalogMode": "rest"` (opt-in; default `register`) commits every write through the Unity Catalog Iceberg REST catalog so the pointer stays current: the first run adopts a table this pipeline already wrote, refuses a catalog table that is behind or belongs elsewhere (the run then writes by path), and once committed through the catalog the pipeline cannot switch back to `register`. A table of the same name that is not this pipeline's is refused, never replaced or dropped. MinIO-hosted tables can be registered but Unity Catalog cannot serve them. In register and rest mode a failure before any catalog commit is a warning on the run and the load still succeeds; a failure during a catalog commit, or on a table already committed through the catalog, fails the run. Status: `register` / `registeredMetadataLocation` on `GET /api/v1/pipelines/<name>/unity-catalog`.
+Unity Catalog registration (objectstore with `fileFormat: "iceberg"`, opt-in): `"unityCatalog": {"enabled": true, "credentialsSecret": "<platform secret>", "catalog": "<uc catalog>", "schema": "default"}` registers the Iceberg table in Unity Catalog as `<unityCatalog.catalog>.<schema>.<pipeline name>` after each successful write, pointing Unity Catalog at the table's current metadata file. For Databricks Unity Catalog use `"catalogMode": "managed"` (it has no Iceberg REST `register` call and ignores a requested location, so `register` and `rest` do not work there): `"destination": {"objectStore": {"provider": "s3", "destinationBucketOverride": "<bucket>", "prefixKey": "<prefix>", "fileFormat": "iceberg", "credentialsSecret": "<s3 secret>"}}, "unityCatalog": {"enabled": true, "credentialsSecret": "<databricks secret>", "catalog": "<uc catalog>", "schema": "<schema>", "catalogMode": "managed"}`. The schema must have a MANAGED LOCATION in the pipeline's bucket; the catalog chooses the table's location there, Datris writes the files with the pipeline's S3 secret and commits every write through the catalog, `prefixKey` holds no data, `deleteBeforeWrite` is rejected, provider must be s3 (minio only with a non-Databricks catalog secret carrying icebergRestPath), any refusal fails the run instead of writing by path, and deleting the pipeline leaves the table and its files to Unity Catalog. `credentialsSecret` (same field shape as a Databricks secret: `host` plus `clientId`/`clientSecret` or `token`) and `unityCatalog.catalog` are required; `schema` defaults to `default`; `"register": false` turns registration off. Databricks-side grants (what catalogMode managed and the databricks destination need): a metastore admin enables external data access, the catalog owner grants `EXTERNAL USE SCHEMA` on the schema to the principal, and an external location must cover the table's S3 path. The first run registers the table; later runs leave Unity Catalog alone and warn when its pointer is behind the table's latest metadata. With catalogs that implement `register` and honour the requested location, `"catalogMode": "rest"` (opt-in; default `register`) commits every write through the Unity Catalog Iceberg REST catalog so the pointer stays current: the first run adopts a table this pipeline already wrote, refuses a catalog table that is behind or belongs elsewhere (the run then writes by path), and once committed through the catalog the pipeline cannot switch back to `register`. A table of the same name that is not this pipeline's is refused, never replaced or dropped. MinIO-hosted tables can be registered but Unity Catalog cannot serve them. In register and rest mode a failure before any catalog commit is a warning on the run and the load still succeeds; a failure during a catalog commit, or on a table already committed through the catalog, fails the run. Status: `register` / `registeredMetadataLocation` on `GET /api/v1/pipelines/<name>/unity-catalog`. The save returns `warnings` when the secret points at a Databricks workspace and the mode cannot work there (`register` or `rest`); relay them to the user.
 
 ### objectStore — MinIO (default) or AWS S3
 
@@ -3320,6 +3320,19 @@ def _test_limit(value) -> int:
         raise ValueError(f"limit must be an integer, got {value!r}")
 
 
+def _save_warnings(body):
+    """Advisory `warnings` from a POST /api/v1/pipeline body. An older server
+    answers with an empty or non-JSON body; that yields no warnings."""
+    try:
+        parsed = json.loads(body) if body else None
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    warnings = parsed.get("warnings") or []
+    return [w for w in warnings if isinstance(w, str)] if isinstance(warnings, list) else []
+
+
 def _dispatch(name: str, args: dict) -> str:
     # --- Pipeline Management ---
     if name == "list_pipelines":
@@ -3593,6 +3606,9 @@ def _dispatch(name: str, args: dict) -> str:
 
         actual_name = config.get("name", pipeline_name)
         response = {"status": "Pipeline created", "pipeline": actual_name, "destination": dest_type, "table": table_name}
+        warnings = _save_warnings(create_result)
+        if warnings:
+            response["warnings"] = warnings
         if dest_type in ("pgvector", "qdrant", "weaviate", "milvus", "chroma"):
             response["nextStep"] = (
                 "Vector destination — call upload_data ONCE with the entire document content. "
@@ -4221,11 +4237,15 @@ def _dispatch(name: str, args: dict) -> str:
             save_result = _call("post", "/api/v1/pipeline", json=config)
             if save_result and ("Exception" in save_result or "error" in save_result.lower()):
                 return json.dumps({"error": "Failed to update pipeline: " + save_result[:500]})
-            return json.dumps({
+            response = {
                 "message": f"Pipeline '{pipeline_name}' catalog " + ("cleared" if not new_catalog else f"set to '{new_catalog}'"),
                 "pipeline": pipeline_name,
                 "catalog": new_catalog or None,
-            })
+            }
+            warnings = _save_warnings(save_result)
+            if warnings:
+                response["warnings"] = warnings
+            return json.dumps(response)
 
         # tap path
         existing = _call("get", f"/api/v1/tap?name={tap_name}")
