@@ -859,6 +859,19 @@ export class McpComponent implements OnInit {
       ],
       playgroundEnabled: true
     },
+    {
+      name: 'browse_unity_catalog',
+      description: 'Browse what a Databricks Platform secret can already see in Unity Catalog, one level per call: catalogs, then schemas, then tables (tables loaded by a Datris pipeline carry the datris_pipeline tag), then a table\'s columns and tags. No pipeline needed; read-only. A stopped SQL warehouse auto-starts on the first call, which can take 5-20 seconds.',
+      category: 'Discovery & Provenance',
+      parameters: [
+        { name: 'secret', type: 'string', description: 'Name of the Databricks Platform secret (from list_platform_secrets)', required: true, inputType: 'text' },
+        { name: 'warehouse', type: 'string', description: 'SQL warehouse ID (optional; falls back to the secret\'s warehouse field, then a Databricks pipeline using the secret)', required: false, inputType: 'text' },
+        { name: 'catalog', type: 'string', description: 'Unity Catalog catalog to list schemas of (optional)', required: false, inputType: 'text' },
+        { name: 'schema', type: 'string', description: 'Schema within catalog to list tables of (optional; requires catalog)', required: false, inputType: 'text' },
+        { name: 'table', type: 'string', description: 'Table within catalog.schema to describe (optional; requires catalog and schema)', required: false, inputType: 'text' }
+      ],
+      playgroundEnabled: true
+    },
   ];
 
   constructor(private mcpService: McpService) { }
