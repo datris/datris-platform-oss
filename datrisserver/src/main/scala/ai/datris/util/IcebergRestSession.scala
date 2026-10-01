@@ -118,6 +118,13 @@ object IcebergRestSession {
     def managedCommitted(previous: UnityCatalogSyncState): Boolean =
         previous != null && previous.catalogMode == "managed" && previous.restMetadataLocation != null && previous.lastRestCommitAt != null
 
+    /** `catalogLoc` (a metadata file) belongs to the table this pipeline's
+      * managed commit recorded: same table directory (`<table>/metadata/`),
+      * s3/s3a/s3n equal. A managed commit says nothing about any other table. */
+    def managedRecordedTable(catalogLoc: String, previous: UnityCatalogSyncState): Boolean =
+        managedCommitted(previous) && catalogLoc != null &&
+            IcebergWriter.sameRestLocation(tableLocationOf(catalogLoc), tableLocationOf(previous.restMetadataLocation))
+
     def switchFromManagedMessage(qualified: String): String =
         qualified + " is a Unity Catalog managed table (catalogMode managed) committed by this pipeline; its current metadata and files are " +
             "only known to the catalog, so it cannot be written by path or in another catalogMode. Set catalogMode managed again, or have an " +

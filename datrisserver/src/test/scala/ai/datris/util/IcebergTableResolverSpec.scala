@@ -77,4 +77,10 @@ class IcebergTableResolverSpec extends AnyFunSuite {
         // A rest doc at another prefix is a new table: path read.
         assert(R.resolve(rest, "s3a://datris/uc_managed_v2", () => fail("other root")).isEmpty)
     }
+
+    test("managed doc: a catalog answer in another table dir (same bucket) falls back to the recorded commit") {
+        // E.g. the schema was edited and the identifier now names another table.
+        val otherTable = "s3://datris/uc/__unitystorage/schemas/77aa/tables/c0ffee/metadata/00004-1a2b.metadata.json"
+        assert(R.resolve(managed, ROOT, () => Some(otherTable)).contains(R.Resolved(s3a(RECORDED), managed = true)))
+    }
 }

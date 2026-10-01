@@ -23,7 +23,8 @@ import scala.util.control.NonFatal
   *
   * A `catalogMode: managed` table lives where the catalog put it (not under
   * prefixKey): it is resolved whatever the table root, and the catalog's
-  * answer is accepted when it is in the pipeline's bucket. */
+  * answer is accepted when it is in the pipeline's bucket and is the same
+  * table (directory) the managed commit recorded. */
 object IcebergTableResolver {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
@@ -43,7 +44,7 @@ object IcebergTableResolver {
         if (!managed && !IcebergRestSession.restCommitted(previous, tableRoot)) return None
         val bucket = if (managed) Option(IcebergWriter.bucketOf(tableRoot)).getOrElse("") else null
         def accepted(loc: String): Boolean =
-            if (managed) IcebergWriter.inBucket(loc, bucket)
+            if (managed) IcebergWriter.inBucket(loc, bucket) && IcebergRestSession.managedRecordedTable(loc, previous)
             else IcebergCatalogRegistrar.classify(loc, null, tableRoot) != IcebergCatalogRegistrar.Foreign
         val fromCatalog =
             try catalogCurrent().filter(loc => loc != null && accepted(loc))

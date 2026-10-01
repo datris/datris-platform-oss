@@ -384,4 +384,22 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
         assert(G(null, throughCatalog = true, managedActive = true).isEmpty)
         assert(G(ucState("refused", loc = null, at = null, created = MQ), throughCatalog = true, managedActive = true).isEmpty)
     }
+
+    test("decideManaged: a managed commit only vouches for its own table dir; another table in the same bucket is foreign") {
+        // Pipeline committed managed to analytics.dev.orders_daily, then its schema
+        // was edited: the identifier now names another team's table in the same bucket.
+        val otherTable = "s3://datris/uc/__unitystorage/schemas/77aa/tables/c0ffee/metadata/00004-1a2b.metadata.json"
+        RestAdoptDecision.decideManaged(Some(otherTable), ucState("managed"), MQ, "datris") match {
+            case D.RefuseForeign(loc) => assert(n(loc) == n(otherTable), loc)
+            case other => fail(s"expected RefuseForeign, got $other")
+        }
+        // A newer metadata file of the recorded table (same dir) is still ours.
+        val newer = "s3a://datris/uc/__unitystorage/schemas/5e1f/tables/9a2b/metadata/00009-ffff.metadata.json"
+        assert(RestAdoptDecision.decideManaged(Some(newer), ucState("managed"), MQ, "datris") == D.AdoptCatalog)
+        // A sibling dir sharing the recorded dir as a string prefix is not.
+        val sibling = "s3://datris/uc/__unitystorage/schemas/5e1f/tables/9a2b0/metadata/00001-x.metadata.json"
+        assert(RestAdoptDecision.decideManaged(Some(sibling), ucState("managed"), MQ, "datris").isInstanceOf[D.RefuseForeign])
+        assert(!IcebergRestSession.managedRecordedTable(otherTable, ucState("managed")))
+        assert(IcebergRestSession.managedRecordedTable(newer, ucState("managed")))
+    }
 }

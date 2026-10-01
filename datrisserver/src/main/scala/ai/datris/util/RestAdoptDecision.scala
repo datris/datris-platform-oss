@@ -70,7 +70,8 @@ object RestAdoptDecision {
       * location, so there is no path table to adopt or be behind:
       *  - the catalog has no table ⇒ `CreateNew`;
       *  - it has one in the pipeline's `bucket` that this pipeline recorded
-      *    (an earlier managed commit, or the empty table a refused `rest` run
+      *    (an earlier managed commit of that same table, i.e. the same
+      *    `<table>/metadata/` directory, or the empty table a refused `rest` run
       *    created for this name, `restCreatedTable`) ⇒ `AdoptCatalog`;
       *  - anything else ⇒ `RefuseForeign` (never adopt someone else's managed
       *    table, even in our bucket; never one outside our bucket, which the
@@ -79,7 +80,10 @@ object RestAdoptDecision {
         catalogHas.filter(s => s != null && s.trim.nonEmpty) match {
             case None => CreateNew
             case Some(c) =>
-                val ours = IcebergRestSession.managedCommitted(previous) ||
+                // A managed commit only vouches for the table it recorded (same
+                // <table>/metadata/ dir): after a schema edit the identifier can
+                // name someone else's table in the same bucket.
+                val ours = IcebergRestSession.managedRecordedTable(c, previous) ||
                     (previous != null && previous.restCreatedTable != null && previous.restCreatedTable == qualified)
                 if (ours && IcebergWriter.inBucket(c, bucket)) AdoptCatalog else RefuseForeign(c)
         }
