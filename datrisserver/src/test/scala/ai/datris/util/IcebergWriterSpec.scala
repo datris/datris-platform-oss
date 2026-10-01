@@ -1143,4 +1143,99 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         )
         assert(m.getMessage.contains("manifest list"), m.getMessage)
     }
+
+    // ---- Adopted-table safety margin (plans/stories/uc-adopted-table-metadata-log-margin.md) ----
+    //
+    //   object IcebergWriter {
+    //       val PreviousVersionsMax = "1000"              // write.metadata.previous-versions-max on every create
+    //       val AdoptedFromProperty = "datris.adopted-from"
+    //   }
+    //   object IcebergRestSession {
+    //       // table.updateProperties().set(AdoptedFromProperty, pathFile)
+    //       //      .set(METADATA_PREVIOUS_VERSIONS_MAX, PreviousVersionsMax).commit(), inside Try;
+    //       // false + one `uc-rest:` warning when the commit fails; never throws.
+    //       def stampAdopted(table: Table, pathFile: String, statusUtil: StatusUtil): Boolean
+    //   }
+    //
+    // HadoopCatalog rejects registerTable, so the stamp is exercised on a table
+    // created through the RecordingHadoopCatalog stand-in, with its current
+    // metadata file playing the registered path file.
+
+    private val CapProperty = "write.metadata.previous-versions-max"
+
+    /** Keeps warnings apart from info lines. */
+    private class LevelledStatusUtil extends StatusUtil {
+        val infos = new ListBuffer[String]()
+        val warnings = new ListBuffer[String]()
+        override def overrideProcessName(processName: String): Unit = ()
+        override def info(state: String, description: String): Unit = infos += description
+        override def warn(state: String, description: String): Unit = warnings += description
+        override def error(state: String, description: String): Unit = warnings += description
+    }
+
+    test("new tables carry write.metadata.previous-versions-max=1000 (path and rest target)") {
+        assert(IcebergWriter.PreviousVersionsMax == "1000")
+
+        val location = newLocation("margin/path_cap")
+        write(df((1L, "east", 1.0)), location, "append")
+        val pathTable = loadTable(location)
+        assert(pathTable.properties().get(CapProperty) == "1000", s"path-created table: ${pathTable.properties()}")
+
+        val table = "rest_cap"
+        val catalog = javaCatalog()
+        restWrite(df((1L, "east", 1.0)), table, catalog, "append", pipelineName = "Rest Cap")
+        val restTable = catalog.loadTable(restIdent(table))
+        assert(restTable.properties().get(CapProperty) == "1000", s"rest-target-created table: ${restTable.properties()}")
+        // Neither create claims an adoption.
+        assert(!pathTable.properties().containsKey(IcebergWriter.AdoptedFromProperty), pathTable.properties())
+        assert(!restTable.properties().containsKey(IcebergWriter.AdoptedFromProperty), restTable.properties())
+    }
+
+    test("stampAdopted sets datris.adopted-from and the cap on a registered table and the adopted file is in its metadata log") {
+        assert(IcebergWriter.AdoptedFromProperty == "datris.adopted-from")
+        val table = "rest_stamp"
+        val catalog = javaCatalog()
+        restWrite(df((1L, "east", 1.0), (2L, "west", 2.0)), table, catalog, "append", pipelineName = "Rest Stamp")
+        val adopted = currentMetadata(catalog, table)
+        val status = new LevelledStatusUtil
+
+        val stamped = IcebergRestSession.stampAdopted(catalog.loadTable(restIdent(table)), adopted, status)
+
+        assert(stamped, s"stamp must succeed: warnings=${status.warnings}")
+        assert(status.warnings.isEmpty, status.warnings)
+        val reloaded = catalog.loadTable(restIdent(table))
+        assert(reloaded.properties().get(IcebergWriter.AdoptedFromProperty) == adopted, reloaded.properties())
+        assert(reloaded.properties().get(CapProperty) == IcebergWriter.PreviousVersionsMax, reloaded.properties())
+        val current = reloaded.asInstanceOf[HasTableOperations].operations().current()
+        assert(current.metadataFileLocation() != adopted, "the stamp is its own commit")
+        assert(current.previousFiles().asScala.map(_.file()).contains(adopted), s"log: ${current.previousFiles()}")
+        // Data untouched by the stamp.
+        assert(spark.table(restSql(table)).count() == 2)
+    }
+
+    test("stampAdopted failure is one non-fatal uc-rest: warning and returns false") {
+        val failing = java.lang.reflect.Proxy.newProxyInstance(
+            getClass.getClassLoader,
+            Array[Class[_]](classOf[Table]),
+            (_: Any, m: java.lang.reflect.Method, _: Array[AnyRef]) =>
+                m.getName match {
+                    case "updateProperties" => throw new org.apache.iceberg.exceptions.CommitFailedException("simulated conflict")
+                    case "toString" => "failing table"
+                    case "name" => "unity.default.failing"
+                    case "location" => "s3a://datris-lake/failing"
+                    case other => throw new UnsupportedOperationException(other)
+                }
+        ).asInstanceOf[Table]
+        val status = new LevelledStatusUtil
+
+        val stamped = IcebergRestSession.stampAdopted(failing, "s3a://datris-lake/failing/metadata/v1.metadata.json", status)
+
+        assert(!stamped)
+        assert(status.warnings.size == 1, status.warnings)
+        val w = status.warnings.head
+        assert(w.startsWith(IcebergRestSession.ErrorPrefix), w)
+        assert(w.contains("could not stamp the adopted table"), w)
+        assert(w.contains("state doc remains the only record of the adoption"), w)
+        assert(!w.contains("\n"), w)
+    }
 }

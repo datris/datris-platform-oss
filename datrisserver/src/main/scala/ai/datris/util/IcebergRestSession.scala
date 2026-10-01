@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.AuditLog
 import ai.datris.model.{DatrisException, JobContext, UnityCatalogSyncState}
-import org.apache.iceberg.{CatalogUtil, HasTableOperations}
+import org.apache.iceberg.{CatalogUtil, HasTableOperations, TableProperties}
 import org.apache.iceberg.catalog.Catalog
 import org.apache.iceberg.exceptions.{ForbiddenException, NoSuchNamespaceException, NotAuthorizedException}
 import org.apache.iceberg.hadoop.HadoopTables
@@ -303,6 +303,28 @@ object IcebergRestSession {
                 restRefusedReason = null,
                 restCreatedTable = null
             )
+
+    /** Stamp a just-adopted table with `datris.adopted-from` (the registered
+      * path metadata file) and the larger metadata-log cap, in one commit, so
+      * the adoption is recognised even if the state doc is lost. Never throws:
+      * a failure is one warning and `false` (the run goes on). */
+    def stampAdopted(table: org.apache.iceberg.Table, pathFile: String, statusUtil: StatusUtil): Boolean =
+        try {
+            table
+                .updateProperties()
+                .set(IcebergWriter.AdoptedFromProperty, pathFile)
+                .set(TableProperties.METADATA_PREVIOUS_VERSIONS_MAX, IcebergWriter.PreviousVersionsMax)
+                .commit()
+            true
+        } catch {
+            case NonFatal(e) =>
+                val name = Try(table.name()).getOrElse("the table")
+                statusUtil.warn(
+                    "processing",
+                    line(s"could not stamp the adopted table $name (${e.getMessage}); the state doc remains the only record of the adoption")
+                )
+                false
+        }
 
     private def metadataOf(t: org.apache.iceberg.Table): String = t match {
         case h: HasTableOperations => Option(h.operations().current()).map(_.metadataFileLocation()).orNull
@@ -626,16 +648,20 @@ object IcebergRestSession {
             props = built._2
             sparkName = built._3
 
-            val (catalogHas, history) =
+            val (catalogHas, history, adoptedFrom) =
                 if (catalog.tableExists(ident)) {
                     val t = catalog.loadTable(ident)
                     t match {
                         case h: HasTableOperations if h.operations().current() != null =>
                             val cur = h.operations().current()
-                            (Option(cur.metadataFileLocation()), cur.previousFiles().asScala.map(_.file()).toSet)
-                        case _ => (None, Set.empty[String])
+                            (
+                                Option(cur.metadataFileLocation()),
+                                cur.previousFiles().asScala.map(_.file()).toSet,
+                                Option(cur.properties()).flatMap(p => Option(p.get(IcebergWriter.AdoptedFromProperty)))
+                            )
+                        case _ => (None, Set.empty[String], None)
                     }
-                } else (None, Set.empty[String])
+                } else (None, Set.empty[String], None)
 
             if (base.managed) return openManaged(config.name, catalog, ident, sparkName, props, catalogHas, previous, statusUtil, base)
 
@@ -665,17 +691,21 @@ object IcebergRestSession {
             val ok = base.copy(target = Some(target), closeable = closeable)
             val n = IcebergCatalogRegistrar.normalize _
 
-            RestAdoptDecision.decide(catalogHas, pathCurrent, outputPath, history, restCommitted(previous, outputPath)) match {
+            RestAdoptDecision.decide(catalogHas, pathCurrent, outputPath, history, restCommitted(previous, outputPath), adoptedFrom) match {
                 case RestAdoptDecision.CreateNew =>
                     statusUtil.info("processing", line(s"$qualified is new; creating it through the catalog at $outputPath"))
                     Right(ok.copy(created = true))
                 case RestAdoptDecision.AdoptPath(p) =>
-                    val registered =
-                        try { catalog.registerTable(ident, n(p)); true }
-                        catch { case e: Exception if registerUnsupported(e) => false }
-                    if (registered) {
-                        recordInterim(config.name, previous, n(p))
-                        statusUtil.info("processing", line(s"adopted $qualified at ${n(p)}"))
+                    val registered: Option[org.apache.iceberg.Table] =
+                        try Some(catalog.registerTable(ident, n(p)))
+                        catch { case e: Exception if registerUnsupported(e) => None }
+                    if (registered.isDefined) {
+                        val table = registered.get
+                        val stamped = stampAdopted(table, n(p), statusUtil)
+                        // After the stamp, so the interim state names the post-stamp file.
+                        val interim = if (stamped) Option(Try(metadataOf(table)).getOrElse(null)).getOrElse(n(p)) else n(p)
+                        recordInterim(config.name, previous, interim)
+                        statusUtil.info("processing", line(s"adopted $qualified at ${n(p)}" + (if (stamped) " (stamped)" else "")))
                         Right(ok.copy(adopted = Some(p)))
                     } else {
                         // No register verb (Databricks): adopting is impossible;

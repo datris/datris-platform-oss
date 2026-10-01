@@ -428,4 +428,72 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
             IcebergRestSession.guardFailure(restDoc, ROOT, true, false, false, MQ, hasCatalogBlock = false).contains(IcebergRestSession.switchBackMessage(MQ))
         )
     }
+
+    // --- Adopted-table safety margin (plans/stories/uc-adopted-table-metadata-log-margin.md) ---
+    // decide gains `adoptedFrom: Option[String] = None`: the catalog table's
+    // `datris.adopted-from` property. After adoption the path table's
+    // version-hint.text never moves, so "adopted from the path's current file"
+    // proves the catalog entry is ours and ahead, even with the metadata log
+    // truncated and no state doc.
+
+    private val REST_COMMIT = ROOT + "/metadata/00140-aa11.metadata.json"
+
+    test("catalog at an older file, log truncated, no state doc, but adopted-from equals the path file → AdoptCatalog") {
+        // The path table still points at the adopted file (OLDER); the catalog
+        // moved on through 100+ REST commits and its log no longer holds OLDER.
+        assert(D.decide(Some(n(REST_COMMIT)), Some(OLDER), ROOT).isInstanceOf[D.RefuseBehind], "precondition: without the stamp it is refused")
+        assert(
+            D.decide(Some(n(REST_COMMIT)), Some(OLDER), ROOT, catalogHistory = Set.empty, restCommitted = false, adoptedFrom = Some(OLDER)) == D.AdoptCatalog
+        )
+        // A log that kept only recent entries does not change that.
+        val truncated = Set(ROOT + "/metadata/00139-bb22.metadata.json")
+        assert(D.decide(Some(n(REST_COMMIT)), Some(OLDER), ROOT, truncated, adoptedFrom = Some(OLDER)) == D.AdoptCatalog)
+    }
+
+    test("adopted-from naming a different file does not rescue RefuseBehind") {
+        val other = ROOT + "/metadata/00001-ffff.metadata.json"
+        D.decide(Some(n(REST_COMMIT)), Some(OURS), ROOT, adoptedFrom = Some(OLDER)) match {
+            case D.RefuseBehind(c, p) =>
+                assert(n(c) == n(REST_COMMIT), c)
+                assert(n(p) == n(OURS), p)
+            case x => fail(s"adopted-from $OLDER vs path $OURS: expected RefuseBehind, got $x")
+        }
+        assert(D.decide(Some(n(REST_COMMIT)), Some(OLDER), ROOT, adoptedFrom = Some(other)).isInstanceOf[D.RefuseBehind])
+        // Same file name under another table's root is a different file.
+        val siblingFile = OLDER.replace("/orders_daily/", "/orders_daily2/")
+        assert(D.decide(Some(n(REST_COMMIT)), Some(OLDER), ROOT, adoptedFrom = Some(siblingFile)).isInstanceOf[D.RefuseBehind])
+        // Blank and absent values are no signal.
+        assert(D.decide(Some(n(REST_COMMIT)), Some(OLDER), ROOT, adoptedFrom = Some("")).isInstanceOf[D.RefuseBehind])
+        assert(D.decide(Some(n(REST_COMMIT)), Some(OLDER), ROOT, adoptedFrom = None).isInstanceOf[D.RefuseBehind])
+        // Out of scope: adopted-from never overrides RefuseForeign.
+        val sibling = "s3://datris-lake/orders_daily2/metadata/00140-aa11.metadata.json"
+        assert(D.decide(Some(sibling), Some(OLDER), ROOT, adoptedFrom = Some(OLDER)).isInstanceOf[D.RefuseForeign])
+        val elsewhere = "s3://other-bucket/orders_daily/metadata/00140-aa11.metadata.json"
+        assert(D.decide(Some(elsewhere), Some(OLDER), ROOT, adoptedFrom = Some(OLDER)).isInstanceOf[D.RefuseForeign])
+    }
+
+    test("adopted-from compares s3 and s3a equal") {
+        val s3 = n(OLDER) // s3:// spelling, as the REST catalog reports it
+        assert(s3.startsWith("s3://"), s3)
+        assert(D.decide(Some(n(REST_COMMIT)), Some(OLDER), ROOT, adoptedFrom = Some(s3)) == D.AdoptCatalog)
+        assert(D.decide(Some(n(REST_COMMIT)), Some(s3), n(ROOT), adoptedFrom = Some(OLDER)) == D.AdoptCatalog)
+        assert(D.decide(Some(REST_COMMIT), Some(OLDER), ROOT, adoptedFrom = Some(OLDER.replace("s3a://", "s3n://"))) == D.AdoptCatalog)
+    }
+
+    test("adoptedFrom defaults to None: every earlier decision is unchanged") {
+        val sibling = "s3://datris-lake/orders_daily2/metadata/00001-bbbb.metadata.json"
+        val cases: Seq[(Option[String], Option[String], Set[String], Boolean)] = Seq(
+            (None, None, Set.empty, false),
+            (None, Some(OURS), Set.empty, false),
+            (Some(OURS), Some(OURS), Set.empty, false),
+            (Some(n(OLDER)), Some(OURS), Set.empty, false),
+            (Some(n(REST_COMMIT)), Some(OLDER), Set(OLDER), false),
+            (Some(n(REST_COMMIT)), Some(OLDER), Set.empty, true),
+            (Some(sibling), Some(OURS), Set.empty, true),
+            (Some(n(REST_COMMIT)), None, Set.empty, false)
+        )
+        cases.foreach { case (c, p, h, rc) =>
+            assert(D.decide(c, p, ROOT, h, rc, None) == D.decide(c, p, ROOT, h, rc), s"case $c / $p / $h / $rc")
+        }
+    }
 }

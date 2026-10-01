@@ -14,7 +14,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
   *  - only the path table ⇒ `AdoptPath` (register its current metadata file once)
   *  - the catalog points at our current file ⇒ `AdoptCatalog`
   *  - the catalog is ahead of the path table (its metadata log holds the
-  *    path's current file), or holds a catalog-created table under our root
+  *    path's current file, or its `datris.adopted-from` names it), or holds a catalog-created table under our root
   *    ⇒ `AdoptCatalog`
   *  - the catalog points at an older file of our table ⇒ `RefuseBehind`
   *    (moving the pointer needs a DROP, which Datris never does)
@@ -37,13 +37,20 @@ object RestAdoptDecision {
       * @param restCommitted the state doc says an earlier run committed this
       *   table through the catalog (its last catalog commit is under our
       *   metadata/): a catalog entry under our metadata/ is then ours and
-      *   ahead of the path table, whatever the log still holds. */
+      *   ahead of the path table, whatever the log still holds.
+      * @param adoptedFrom the catalog table's `datris.adopted-from` property,
+      *   stamped when a `rest` run adopted the path table. REST commits never
+      *   move the path table's `version-hint.text`, so its current file stays
+      *   the adopted file for the table's lifetime: a match proves the catalog
+      *   entry is ours and ahead. A table property, so it survives both log
+      *   truncation and a lost state doc. Never overrides `RefuseForeign`. */
     def decide(
         catalogHas: Option[String],
         pathCurrent: Option[String],
         tableRoot: String,
         catalogHistory: Set[String] = Set.empty,
-        restCommitted: Boolean = false
+        restCommitted: Boolean = false,
+        adoptedFrom: Option[String] = None
     ): Decision = {
         val root = Option(tableRoot).map(_.trim.stripSuffix("/")).orNull
         def underRoot(loc: String): Boolean =
@@ -56,7 +63,9 @@ object RestAdoptDecision {
                 IcebergCatalogRegistrar.classify(c, p, root) match {
                     case IcebergCatalogRegistrar.Current => AdoptCatalog
                     case IcebergCatalogRegistrar.Stale =>
-                        val ahead = catalogHistory.exists(h => IcebergCatalogRegistrar.normalize(h) == IcebergCatalogRegistrar.normalize(p))
+                        val np = IcebergCatalogRegistrar.normalize(p)
+                        val ahead = catalogHistory.exists(h => IcebergCatalogRegistrar.normalize(h) == np) ||
+                            adoptedFrom.exists(a => a != null && a.trim.nonEmpty && IcebergCatalogRegistrar.normalize(a.trim) == np)
                         if (ahead) AdoptCatalog else RefuseBehind(c, p)
                     case IcebergCatalogRegistrar.Foreign => RefuseForeign(c)
                 }

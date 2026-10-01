@@ -34,6 +34,9 @@ import scala.collection.JavaConverters._
   *  catalog, but lets the catalog choose the location (Databricks puts it
   *  under the schema's MANAGED LOCATION); the table must then be in the
   *  pipeline's bucket, and nothing is written under the pipeline's prefix.
+  *  Every created table carries `write.metadata.previous-versions-max=1000`
+  *  and an adopted one also `datris.adopted-from`, so the adoption stays
+  *  recognisable without Datris' own state doc.
   *
   *  Uses `df.sparkSession` rather than `SparkSessionManager.getOrCreate()` so
   *  it runs wherever the caller's session runs (including a plain local
@@ -45,6 +48,16 @@ object IcebergWriter {
 
     /** Table property naming the pipeline that owns the table. */
     val PipelineProperty = "datris.pipeline"
+
+    /** Table property set when `catalogMode: rest` adopts a path-written table:
+      * the path metadata file that was registered (where the frozen
+      * `version-hint.text` still points). */
+    val AdoptedFromProperty = "datris.adopted-from"
+
+    /** `write.metadata.previous-versions-max` on every table Datris creates or
+      * adopts (Iceberg default 100): a longer metadata log keeps the
+      * "catalog is ahead of the path table" signal alive for longer. */
+    val PreviousVersionsMax = "1000"
 
     /** `metadataLocation` is the table's current metadata file after the write
       * (null only when it cannot be read). */
@@ -473,6 +486,7 @@ object IcebergWriter {
         val props = Map(
             TableProperties.FORMAT_VERSION -> "2",
             TableProperties.DEFAULT_FILE_FORMAT -> "parquet",
+            TableProperties.METADATA_PREVIOUS_VERSIONS_MAX -> PreviousVersionsMax,
             PipelineProperty -> Option(pipelineName).map(_.trim).filter(_.nonEmpty).getOrElse(pipelineNameFrom(location))
         ).asJava
         val partitionNote = if (partitionBy.nonEmpty) " partitioned by " + partitionBy.mkString(", ") else ""
