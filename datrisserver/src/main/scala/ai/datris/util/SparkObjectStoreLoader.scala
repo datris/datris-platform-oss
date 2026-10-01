@@ -181,25 +181,24 @@ class SparkObjectStoreLoader(jobContext: JobContext) {
                 val projected = df.select(sparkSchema.fieldNames.map(df.col): _*)
                 def writeIceberg(): IcebergWriter.WriteResult =
                     IcebergWriter.write(projected, outputPath, writeModeName, partitions, keyFields, sparkSchema, statusUtil, config.name, restPlan.target)
-                try
-                    try Some(writeIceberg())
-                    catch {
-                        // Lost a create race for the identifier: re-decide once
-                        // (ours ⇒ retry through the catalog; foreign ⇒ path write).
-                        case e: org.apache.iceberg.exceptions.AlreadyExistsException if restPlan.created =>
-                            restPlan = IcebergRestSession.afterCreateConflict(jobContext, restPlan, e)
-                            try Some(writeIceberg())
-                            catch {
-                                case r: IcebergWriter.RestLocationRefused if restPlan.target.isDefined =>
-                                    restPlan = IcebergRestSession.afterLocationRefused(jobContext, restPlan, r)
-                                    Some(writeIceberg())
-                            }
-                        // The catalog's table is outside our root (a managed
-                        // table): nothing was written through it; write by path.
-                        case r: IcebergWriter.RestLocationRefused if restPlan.target.isDefined =>
-                            restPlan = IcebergRestSession.afterLocationRefused(jobContext, restPlan, r)
-                            Some(writeIceberg())
-                    } finally restPlan.close()
+                try Some(writeIceberg())
+                catch {
+                    // Lost a create race for the identifier: re-decide once
+                    // (ours ⇒ retry through the catalog; foreign ⇒ path write).
+                    case e: org.apache.iceberg.exceptions.AlreadyExistsException if restPlan.created =>
+                        restPlan = IcebergRestSession.afterCreateConflict(jobContext, restPlan, e)
+                        try Some(writeIceberg())
+                        catch {
+                            case r: IcebergWriter.RestLocationRefused if restPlan.target.isDefined =>
+                                restPlan = IcebergRestSession.afterLocationRefused(jobContext, restPlan, r)
+                                Some(writeIceberg())
+                        }
+                    // The catalog's table is outside our root (a managed
+                    // table): nothing was written through it; write by path.
+                    case r: IcebergWriter.RestLocationRefused if restPlan.target.isDefined =>
+                        restPlan = IcebergRestSession.afterLocationRefused(jobContext, restPlan, r)
+                        Some(writeIceberg())
+                } finally restPlan.close()
             } else {
                 val writeMode = writeModeName match {
                     case "overwrite" => SaveMode.Overwrite
