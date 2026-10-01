@@ -31,7 +31,8 @@ class VaultSecretsUtil(val vault: Vault) extends SecretsManagerUtility {
     override def tryGetSecretMap(secretName: String): scala.util.Try[Option[java.util.Map[String, String]]] = {
         try {
             val response = vault.logical().read(s"secret/$secretName")
-            val status = Option(response.getRestResponse).map(_.getStatus).getOrElse(200)
+            // A missing RestResponse is unknown, not success: -1 fails closed.
+            val status = Option(response.getRestResponse).map(_.getStatus).getOrElse(-1)
             val result = VaultSecretsUtil.readResult(status, response.getData)
             result.failed.foreach(e => logger.error("Vault read failed for secret path: secret/" + secretName + ": " + e.getMessage))
             result
