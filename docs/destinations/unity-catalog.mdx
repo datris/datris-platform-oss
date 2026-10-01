@@ -17,7 +17,7 @@ The two are independent. A pipeline in the Datris catalog `finance` can load int
 
 ## What Datris writes
 
-With `"unityCatalog": { "enabled": true }` on a Databricks pipeline, every successful load annotates the table: a table comment naming the pipeline and source, comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog`, `datris_dq_status` and `managed_by = datris`, and `datris.*` table properties. See [Unity Catalog metadata](/destinations/databricks#unity-catalog-metadata) for the fields, the grant it needs, and `GET /api/v1/pipelines/{name}/unity-catalog`. To turn it on for every Databricks pipeline without a block, set `DATRIS_UNITY_CATALOG_DEFAULT=enabled` on the server; a pipeline opts out with `"unityCatalog": { "enabled": false }`.
+With `"unityCatalog": { "enabled": true }` on a Databricks pipeline, every successful load annotates the table: a table comment naming the pipeline and source, comments on the `_datris_*` provenance columns, the tags `datris_pipeline`, `datris_catalog`, `datris_dq_status` and `managed_by = datris`, and `datris.*` table properties (Iceberg tables also carry `write.metadata.previous-versions-max=1000`, and an adopted table `datris.adopted-from`). See [Unity Catalog metadata](/destinations/databricks#unity-catalog-metadata) for the fields, the grant it needs, and `GET /api/v1/pipelines/{name}/unity-catalog`. To turn it on for every Databricks pipeline without a block, set `DATRIS_UNITY_CATALOG_DEFAULT=enabled` on the server; a pipeline opts out with `"unityCatalog": { "enabled": false }`.
 
 The `datris_pipeline` tag is what discovery uses to recognize a table Datris loaded.
 
