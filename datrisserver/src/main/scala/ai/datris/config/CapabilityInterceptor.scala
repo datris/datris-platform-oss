@@ -26,8 +26,8 @@ object CapabilityInterceptor {
     /** Status and body for a rejected key: 503 when the rejection is a
       * metadata-store outage (a transient server condition), 401 otherwise. */
     def rejectionResponse(reason: String): (Int, String) =
-        if (reason == APIKeyValidator.MetadataUnavailableMessage)
-            (HttpServletResponse.SC_SERVICE_UNAVAILABLE, MetadataUnavailableBody)
+        if (APIKeyValidator.isStoreOutage(reason))
+            (HttpServletResponse.SC_SERVICE_UNAVAILABLE, "{\"error\":\"" + reason + "\"}")
         else (HttpServletResponse.SC_UNAUTHORIZED, RejectedKeyBody)
 
     /** Pure decision for the no-ResolvedKey case. Deny only when the request
@@ -104,7 +104,8 @@ class CapabilityInterceptor extends HandlerInterceptor {
         response.getWriter.flush()
         AuditLog.denied(
             request,
-            if (status == HttpServletResponse.SC_SERVICE_UNAVAILABLE) APIKeyValidator.MetadataUnavailableMessage
+            if (status == HttpServletResponse.SC_SERVICE_UNAVAILABLE)
+                String.valueOf(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr))
             else "API key is revoked or invalid",
             status,
             required = required

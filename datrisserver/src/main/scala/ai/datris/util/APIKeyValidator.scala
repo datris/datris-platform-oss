@@ -57,10 +57,7 @@ object APIKeyValidator {
             if (apiKey == null)
                 throw new DatrisException("x-api-key does not exist or is invalid")
 
-            val apiKeysMap = ai.datris.util.SecretsUtil.getSecretMap(DatrisEnvironment.values.apiKeysSecretName)
-                .getOrElse(throw new DatrisException("The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"))
-
-            validateAgainst(apiKey, apiKeysMap.asScala.toMap, readMetadataMap())
+            validateAgainst(apiKey, readKeysMap(), readMetadataMap())
         }
     }
 
@@ -85,6 +82,27 @@ object APIKeyValidator {
     /** Error message when `oss/api-key-metadata` cannot be read. The
       * interceptor maps a rejection with this reason to 503. */
     val MetadataUnavailableMessage: String = "API key metadata unavailable"
+
+    /** Error message when the key store (`oss/api-keys`) itself cannot be
+      * read — a secret-store outage, not a bad key. Also mapped to 503. */
+    val KeyStoreUnavailableMessage: String = "API key store unavailable"
+
+    /** True when the rejection reason is a secret-store outage rather than a
+      * bad key, i.e. the caller should see 503 instead of 401. */
+    def isStoreOutage(reason: String): Boolean =
+        reason == MetadataUnavailableMessage || reason == KeyStoreUnavailableMessage
+
+    /** `oss/api-keys` read that fails closed: absent → "not found" (no key
+      * can be valid), read failure → store outage. */
+    private def readKeysMap(): Map[String, String] =
+        SecretsUtil.tryGetSecretMap(DatrisEnvironment.values.apiKeysSecretName) match {
+            case Success(Some(m)) => m.asScala.toMap
+            case Success(None) =>
+                throw new DatrisException(
+                    "The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"
+                )
+            case Failure(_) => throw new DatrisException(KeyStoreUnavailableMessage)
+        }
 
     private def readMetadataMap(): Map[String, String] =
         metadataFrom(SecretsUtil.tryGetSecretMap(apiKeyMetadataSecretName))
@@ -174,11 +192,7 @@ object APIKeyValidator {
             throw new DatrisException("x-api-key does not exist or is invalid")
 
         // Single-tenant with API keys enabled: find the label by value.
-        val keysMap = SecretsUtil.getSecretMap(DatrisEnvironment.values.apiKeysSecretName)
-            .getOrElse(throw new DatrisException(
-                "The Secrets Manager entry for value: " + DatrisEnvironment.values.apiKeysSecretName + " was not found"
-            ))
-        resolveAgainst(apiKey, keysMap.asScala.toMap, readMetadataMap())
+        resolveAgainst(apiKey, readKeysMap(), readMetadataMap())
     }
 
     /** Pure core of the single-tenant, keys-enabled branch of [[resolveKey]]:
