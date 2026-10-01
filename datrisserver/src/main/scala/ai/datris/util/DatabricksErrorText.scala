@@ -109,10 +109,15 @@ object DatabricksErrorText {
 
     private val NotFoundClasses = Set("NO_SUCH_CATALOG_EXCEPTION", "SCHEMA_NOT_FOUND", "TABLE_OR_VIEW_NOT_FOUND", "CATALOG_NOT_FOUND")
 
+    // Errors in the caller's SQL (syntax, unknown column/table/function,
+    // ambiguity, type mismatch, bad cast) — the caller's to fix, so 400.
+    private val ClientSqlErrorPrefixes =
+        Seq("PARSE_SYNTAX_ERROR", "UNRESOLVED_COLUMN", "UNRESOLVED_TABLE", "UNRESOLVED_ROUTINE", "AMBIGUOUS_", "DATATYPE_MISMATCH", "CAST_INVALID_INPUT")
+
     private def statusFor(cls: String): Int = {
         val base = cls.takeWhile(_ != '.')
         if (NotFoundClasses.contains(base) || base.startsWith("NO_SUCH_") || base.endsWith("_NOT_FOUND")) 404
-        else if (base == "INVALID_PARAMETER_VALUE") 400
+        else if (base == "INVALID_PARAMETER_VALUE" || ClientSqlErrorPrefixes.exists(base.startsWith)) 400
         else if (base == "PERMISSION_DENIED" || base.startsWith("INSUFFICIENT")) 403
         else 502
     }
@@ -124,13 +129,15 @@ object DatabricksErrorText {
         else if (base.contains("TABLE") || base.contains("VIEW")) "Table or view was not found."
         else if (statusFor(cls) == 404) "Object was not found."
         else if (statusFor(cls) == 403) "Permission denied."
+        else if (ClientSqlErrorPrefixes.exists(base.startsWith)) "The SQL is invalid."
         else if (statusFor(cls) == 400) "Invalid parameter value."
         else "Databricks query failed."
     }
 
     /** HTTP status and a short (≤ [[MaxMessageLength]]) message for a SQL
       * warehouse failure: 404 for missing catalog/schema/table, 400 for
-      * INVALID_PARAMETER_VALUE, 403 for PERMISSION_DENIED/INSUFFICIENT_*,
+      * INVALID_PARAMETER_VALUE and SQL errors (PARSE_SYNTAX_ERROR,
+      * UNRESOLVED_*, AMBIGUOUS_*, DATATYPE_MISMATCH*, CAST_INVALID_INPUT), 403 for PERMISSION_DENIED/INSUFFICIENT_*,
       * else 502. Connect-time failures (already translated into a
       * [[DatrisException]] naming the field to fix) keep their text, first
       * line only. */

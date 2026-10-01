@@ -83,4 +83,32 @@ class QueryAPIControllerWarehouseErrorSpec extends AnyFunSuite {
         val access = new java.sql.SQLException("SQL access control error:\nInsufficient privileges to operate on table 'T'")
         assert(QueryAPIController.snowflakeQueryError(access)._1 == 400)
     }
+
+    test("Databricks SQL errors in the caller's query -> 400") {
+        val syntax = QueryAPIController.databricksQueryError(databricksDump("PARSE_SYNTAX_ERROR", "Syntax error at or near 'FORM'."))
+        assert(syntax._1 == 400, syntax._2)
+        assert(errorOf(syntax._2) == "[PARSE_SYNTAX_ERROR] Syntax error at or near 'FORM'.", syntax._2)
+        val col = QueryAPIController.databricksQueryError(
+            databricksDump("UNRESOLVED_COLUMN.WITH_SUGGESTION", "A column, variable, or function parameter with name `nme` cannot be resolved.")
+        )
+        assert(col._1 == 400, col._2)
+        assert(
+            errorOf(col._2).startsWith("[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name `nme` cannot be resolved."),
+            col._2
+        )
+        Seq("AMBIGUOUS_REFERENCE", "DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES", "CAST_INVALID_INPUT", "UNRESOLVED_ROUTINE")
+            .foreach(cls => assert(QueryAPIController.databricksQueryError(databricksDump(cls, "Bad SQL."))._1 == 400, cls))
+        // Unknown classes stay upstream failures.
+        assert(QueryAPIController.databricksQueryError(databricksDump("SOME_NEW_CLASS", "Something."))._1 == 502)
+    }
+
+    test("parseLimit: numbers and numeric strings parse, absent uses the default, junk is a 400 InvalidLimitException") {
+        assert(QueryAPIController.parseLimit(null, 100) == 100)
+        assert(QueryAPIController.parseLimit(java.lang.Integer.valueOf(25), 100) == 25)
+        assert(QueryAPIController.parseLimit(java.lang.Double.valueOf(-1.0), 100) == -1)
+        assert(QueryAPIController.parseLimit("50", 20) == 50)
+        val e = intercept[QueryAPIController.InvalidLimitException](QueryAPIController.parseLimit("abc", 100))
+        assert(e.getMessage == "limit must be an integer (got \"abc\")")
+        assert(errorOf(QueryAPIController.jsonError(e.getMessage)) == "limit must be an integer (got \"abc\")")
+    }
 }

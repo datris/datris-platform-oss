@@ -43,11 +43,7 @@ class QueryAPIController {
                 .getOrElse(throw new ai.datris.model.DatrisException("'sql' parameter is required"))
             val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
             else Option(body.get("database")).map(_.toString).getOrElse(DatrisEnvironment.current.postgresDatabase)
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(100)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val results = PostgresQueryUtil.query(sql, database, limit)
 
@@ -57,6 +53,9 @@ class QueryAPIController {
             response.put("count", results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("queryPostgres: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
@@ -80,11 +79,7 @@ class QueryAPIController {
             val projection = Option(body.get("projection"))
                 .map(_.asInstanceOf[java.util.Map[String, Any]])
                 .orNull
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(20)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 20)
 
             val database = if (DatrisEnvironment.current.multiTenant) DatrisEnvironment.current.environment
             else Option(body.get("database")).map(_.toString).orNull
@@ -101,6 +96,9 @@ class QueryAPIController {
             response.put("count", parsedResults.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("queryMongoDB: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
                 ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
@@ -118,15 +116,14 @@ class QueryAPIController {
 
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(100)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = ObjectStoreQueryUtil.query(pipelineName, limit)
             new ResponseEntity[String](QueryAPIController.objectStoreResponseJson(pipelineName, result), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("queryObjectStore: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: DatrisException =>
                 logger.warn("query/objectstore: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -148,11 +145,7 @@ class QueryAPIController {
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             val sql = Option(body.get("sql")).map(_.toString)
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(100)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = SnowflakeQueryUtil.query(pipelineName, sql, limit)
 
@@ -164,6 +157,9 @@ class QueryAPIController {
             response.put("count", result.results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("querySnowflake: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: DatrisException =>
                 logger.warn("query/snowflake: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -191,11 +187,7 @@ class QueryAPIController {
             val pipelineName = Option(body.get("pipeline")).map(_.toString)
                 .getOrElse(throw new DatrisException("'pipeline' parameter is required"))
             val sql = Option(body.get("sql")).map(_.toString)
-            val limit = Option(body.get("limit")).map {
-                case d: java.lang.Double => d.intValue()
-                case i: java.lang.Integer => i.intValue()
-                case other => other.toString.toInt
-            }.getOrElse(100)
+            val limit = QueryAPIController.parseLimit(body.get("limit"), 100)
 
             val result = DatabricksQueryUtil.query(pipelineName, sql, limit)
 
@@ -207,6 +199,9 @@ class QueryAPIController {
             response.put("count", result.results.size())
             new ResponseEntity[String](gson.toJson(response), HttpStatus.OK)
         } catch {
+            case e: QueryAPIController.InvalidLimitException =>
+                logger.warn("queryDatabricks: " + e.getMessage)
+                ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String](QueryAPIController.jsonError(e.getMessage))
             case e: DatrisException =>
                 logger.warn("query/databricks: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
@@ -348,7 +343,25 @@ class QueryAPIController {
 
 object QueryAPIController {
 
-    private def jsonError(message: String): String = "{\"error\": " + new Gson().toJson(message) + "}"
+    /** A `limit` request field that is not an integer. */
+    final class InvalidLimitException(message: String) extends DatrisException(message)
+
+    /** The request's `limit` (JSON number or numeric string) as an Int, or
+      *  `default` when absent. Anything else throws
+      *  [[InvalidLimitException]], which the handlers answer with 400. */
+    private[api] def parseLimit(raw: Any, default: Int): Int = raw match {
+        case null => default
+        case d: java.lang.Double => d.intValue()
+        case i: java.lang.Integer => i.intValue()
+        case other =>
+            try other.toString.trim.toInt
+            catch {
+                case _: NumberFormatException =>
+                    throw new InvalidLimitException("limit must be an integer (got \"" + other.toString + "\")")
+            }
+    }
+
+    private[api] def jsonError(message: String): String = "{\"error\": " + new Gson().toJson(message) + "}"
 
     /** Status and `{"error": ...}` body for a SQLException failure of
       *  `POST /query/databricks`: the Databricks error class and first
