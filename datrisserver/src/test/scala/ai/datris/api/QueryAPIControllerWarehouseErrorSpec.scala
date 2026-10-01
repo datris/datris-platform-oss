@@ -61,4 +61,26 @@ class QueryAPIControllerWarehouseErrorSpec extends AnyFunSuite {
         assert(errorOf(QueryAPIController.snowflakeQueryError(new RuntimeException())._2) == "RuntimeException")
         assert(errorOf(QueryAPIController.snowflakeQueryError(new java.sql.SQLException("z" * 3000))._2).length <= 500)
     }
+
+    test("only SQLException failures (anywhere in the cause chain) are translated; others stay 500") {
+        assert(!QueryAPIController.isSqlFailure(new RuntimeException("boom")))
+        assert(!QueryAPIController.isSqlFailure(new NumberFormatException("For input string: \"abc\"")))
+        assert(!QueryAPIController.isSqlFailure(new NullPointerException()))
+        val dump = databricksDump("TABLE_OR_VIEW_NOT_FOUND", "The table or view `datris`.`default`.`nosuch` cannot be found.")
+        assert(QueryAPIController.isSqlFailure(dump))
+        val wrapped = new RuntimeException("query failed", dump)
+        assert(QueryAPIController.isSqlFailure(wrapped))
+        val (status, body) = QueryAPIController.databricksQueryError(wrapped)
+        assert(status == 404, body)
+        assert(errorOf(body) == "[TABLE_OR_VIEW_NOT_FOUND] The table or view `datris`.`default`.`nosuch` cannot be found.", body)
+    }
+
+    test("Snowflake transport / warehouse failures -> 502") {
+        val e = new java.sql.SQLException("JDBC driver encountered communication error. Message: HTTP status=503.")
+        assert(QueryAPIController.snowflakeQueryError(e)._1 == 502)
+        val missing = new java.sql.SQLException("Object 'X' does not exist or not authorized.")
+        assert(QueryAPIController.snowflakeQueryError(missing)._1 == 400)
+        val access = new java.sql.SQLException("SQL access control error:\nInsufficient privileges to operate on table 'T'")
+        assert(QueryAPIController.snowflakeQueryError(access)._1 == 400)
+    }
 }
