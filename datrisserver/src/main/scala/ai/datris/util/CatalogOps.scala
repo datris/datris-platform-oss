@@ -163,7 +163,9 @@ object CatalogOps {
         finally catalogLock.unlock()
     }
 
-    case class Result(ok: Seq[String], failed: Seq[(String, String)])
+    /** `warnings` are follow-up notes per item (name -> message) from a write
+      * that succeeded, e.g. a Unity Catalog table Datris could not drop. */
+    case class Result(ok: Seq[String], failed: Seq[(String, String)], warnings: Seq[(String, String)] = Nil)
 
     /** 403 body for a scope denial, in the same shape as CapabilityInterceptor
       * and SecretsAPIController, so clients branching on `errorKind` see a
@@ -183,18 +185,29 @@ object CatalogOps {
 
     /** Apply `write` to every name, continuing past failures. Not
       * transactional: the caller reports `failed` back to the user. */
-    def execute(names: Seq[String])(write: String => Unit): Result = {
+    def execute(names: Seq[String])(write: String => Unit): Result =
+        executeCollecting(names) { n =>
+            write(n)
+            Nil
+        }
+
+    /** Like `execute`, but every string `write` returns becomes a
+      * `(name, message)` warning, in order. A throw marks the name failed
+      * and keeps any warnings it would have returned out of the result. */
+    def executeCollecting(names: Seq[String])(write: String => Seq[String]): Result = {
         val ok = Seq.newBuilder[String]
         val failed = Seq.newBuilder[(String, String)]
+        val warnings = Seq.newBuilder[(String, String)]
         names.foreach { n =>
             try {
-                write(n)
+                val notes = Option(write(n)).getOrElse(Nil)
                 ok += n
+                notes.foreach(m => warnings += (n -> m))
             } catch {
                 case e: Exception =>
                     failed += (n -> Option(e.getMessage).getOrElse(e.getClass.getSimpleName))
             }
         }
-        Result(ok.result(), failed.result())
+        Result(ok.result(), failed.result(), warnings.result())
     }
 }

@@ -258,7 +258,9 @@ class CatalogAPIController {
                             if (t.failed.nonEmpty)
                                 CatalogOps.skipped(members.pipelines.map(_.name), "skipped: tap deletions in this catalog failed")
                             else
-                                CatalogOps.execute(members.pipelines.map(_.name)) { n =>
+                                // deletePipelineInternal's advice (e.g. a Unity Catalog
+                                // table Datris could not drop) becomes a warning.
+                                CatalogOps.executeCollecting(members.pipelines.map(_.name)) { n =>
                                     trackDenied(denied, n) {
                                         val live = readPipeline(n, name)
                                         CapabilityCheck.assertScope(
@@ -284,6 +286,7 @@ class CatalogAPIController {
                 val out = new JsonObject
                 out.add(if (m == "detach") "detached" else "deleted", toArray(okNames))
                 out.add("failed", failedArray(failures))
+                if (m == "cascade") out.add("warnings", warningsArray(pipelineResult.warnings))
                 respond(out, failures)
             }
         } catch {
@@ -337,7 +340,7 @@ class CatalogAPIController {
 
     /** Record a member refused by the caller's capability scope, then rethrow
       * so `CatalogOps.execute` lists it under `failed`. */
-    private def trackDenied(denied: mutable.ArrayBuffer[String], n: String)(f: => Unit): Unit =
+    private def trackDenied[T](denied: mutable.ArrayBuffer[String], n: String)(f: => T): T =
         try f
         catch {
             case e: CapabilityDeniedException =>
@@ -410,6 +413,17 @@ class CatalogAPIController {
             val o = new JsonObject
             o.addProperty("name", n)
             o.addProperty("error", err)
+            arr.add(o)
+        }
+        arr
+    }
+
+    private def warningsArray(warnings: Seq[(String, String)]): JsonArray = {
+        val arr = new JsonArray
+        warnings.foreach { case (n, msg) =>
+            val o = new JsonObject
+            o.addProperty("pipeline", n)
+            o.addProperty("message", msg)
             arr.add(o)
         }
         arr

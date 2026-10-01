@@ -66,6 +66,11 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
    *  `failed[]`). Persistent until dismissed or the next catalog operation. */
   opFailures: CatalogOpFailure[] = [];
   opFailuresLabel = '';
+  /** Follow-up notes from the last cascade delete (`warnings[]`), e.g. a
+   *  pipeline whose Unity Catalog table Datris could not drop. Persistent
+   *  until dismissed or the next catalog operation. */
+  opWarnings: { pipeline: string; message: string }[] = [];
+  opWarningsLabel = '';
   /** API keys whose catalog scope still names a catalog that was just renamed.
    *  Persistent until dismissed: the user has to update them by hand. */
   affectedKeys: string[] = [];
@@ -354,6 +359,7 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
       next: (res) => {
         this.clearMoveError();
         this.showOpFailures(`Deleting catalog '${catalog.name}'`, res && res.failed);
+        this.showOpWarnings(`Deleting catalog '${catalog.name}'`, res && res.warnings);
         finish();
       },
       error: (err) => {
@@ -475,6 +481,21 @@ export class DataCatalogComponent implements OnInit, OnDestroy {
   private clearOpBanners(): void {
     this.opFailures = [];
     this.opFailuresLabel = '';
+    this.opWarnings = [];
+    this.opWarningsLabel = '';
+  }
+
+  private showOpWarnings(label: string, warnings: any): void {
+    const list = Array.isArray(warnings)
+      ? warnings.map((w: any) => ({ pipeline: String(w && w.pipeline || ''), message: String(w && w.message || '') }))
+      : [];
+    this.opWarnings = list;
+    this.opWarningsLabel = list.length > 0 ? label : '';
+  }
+
+  dismissOpWarnings(): void {
+    this.opWarnings = [];
+    this.opWarningsLabel = '';
   }
 
   private showOpFailures(label: string, failed: any): void {

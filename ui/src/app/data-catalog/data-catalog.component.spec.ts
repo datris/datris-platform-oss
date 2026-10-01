@@ -679,4 +679,90 @@ describe('DataCatalogComponent — catalog rename and delete', () => {
     expect(pipeSvc.renameCatalog).toHaveBeenCalledTimes(1);
     expect(pipeSvc.renameCatalog.calls.mostRecent().args.slice(0, 2)).toEqual(['DatrisFund', 'DATRISFUND']);
   }));
+
+  // ── Story: Catalog cascade delete surfaces Unity Catalog warnings ───────
+  // (plans/stories/uc-catalog-cascade-delete-warnings.md)
+  // Contract: cascade response `warnings: [{pipeline, message}]` -> component
+  // `opWarnings` / `opWarningsLabel`, rendered as `.op-failures-banner.warn`
+  // reading "Deleting catalog '<name>': N pipeline(s) left a table in Unity
+  // Catalog" with one <li> per warning and a `.move-error-close` dismiss.
+
+  function cascadeDelete(name: string): void {
+    const confirm = openDelete(name);
+    if (!confirm) return;
+    (confirm.querySelector('input[type=radio][value=cascade]') as HTMLInputElement).click();
+    settle();
+    typeInto(confirm.querySelector('input[type=text]') as HTMLInputElement, name);
+    (confirm.querySelector('.del-yes') as HTMLButtonElement).click();
+    settle();
+  }
+
+  function warnBanner(): HTMLElement | null {
+    return el.querySelector('.op-failures-banner.warn') as HTMLElement | null;
+  }
+
+  it('a cascade delete with warnings shows a warning banner listing each pipeline that survives until dismissed', fa(() => {
+    const msg = 'Unity Catalog still holds main.sales.p_a; have an admin drop it';
+    pipeSvc.deleteCatalog.and.returnValue(of({
+      deleted: ['t_a', 'p_a'], failed: [], warnings: [{ pipeline: 'p_a', message: msg }]
+    }));
+    settle();
+    cascadeDelete('e2e_a');
+    expect(pipeSvc.deleteCatalog.calls.mostRecent().args).toEqual(['e2e_a', 'cascade', 'e2e_a']);
+    let banner = warnBanner();
+    expect(banner).withContext('.op-failures-banner.warn after a cascade with warnings').not.toBeNull();
+    if (!banner) return;
+    const text = (banner.textContent || '').replace(/\s+/g, ' ');
+    expect(text).toContain("Deleting catalog 'e2e_a'");
+    expect(text).toContain('left a table in Unity Catalog');
+    const items = Array.from(banner.querySelectorAll('li'));
+    expect(items.length).toBe(1);
+    expect(items[0].querySelector('strong')?.textContent?.trim()).toBe('p_a');
+    expect(items[0].textContent).toContain(msg);
+    expect(component.opWarnings).toEqual([{ pipeline: 'p_a', message: msg }]);
+    expect(el.querySelector('.op-failures-banner:not(.warn)'))
+      .withContext('no failures banner when failed is empty').toBeNull();
+    // Persistent: outlives the 6 s move-error timeout and a list reload.
+    tick(7000);
+    fixture.detectChanges();
+    banner = warnBanner();
+    expect(banner).withContext('warning banner survives until dismissed').not.toBeNull();
+    if (!banner) return;
+    (banner.querySelector('.move-error-close') as HTMLButtonElement).click();
+    settle();
+    expect(warnBanner()).withContext('dismiss clears the warning banner').toBeNull();
+    expect(component.opWarnings).toEqual([]);
+  }));
+
+  it('a clean cascade (warnings: []) and a detach without the key show no warning banner', fa(() => {
+    pipeSvc.deleteCatalog.and.returnValue(of({ deleted: ['t_a', 'p_a'], failed: [], warnings: [] }));
+    settle();
+    cascadeDelete('e2e_a');
+    expect(warnBanner()).withContext('clean cascade').toBeNull();
+    expect(component.opWarnings).toEqual([]);
+
+    pipeSvc.deleteCatalog.and.returnValue(of({ detached: ['t_a', 'p_a'], failed: [] }));
+    const confirm = openDelete('e2e_a');
+    if (!confirm) return;
+    (confirm.querySelector('.del-yes') as HTMLButtonElement).click();
+    settle();
+    expect(pipeSvc.deleteCatalog.calls.mostRecent().args[1]).toBe('detach');
+    expect(warnBanner()).withContext('detach response has no warnings key').toBeNull();
+    expect(component.opWarnings).toEqual([]);
+  }));
+
+  it('a new catalog operation clears a previous warning banner', fa(() => {
+    pipeSvc.deleteCatalog.and.returnValue(of({
+      deleted: ['p_a'], failed: [], warnings: [{ pipeline: 'p_a', message: 'Unity Catalog still holds a.b.c; have an admin drop it' }]
+    }));
+    settle();
+    cascadeDelete('e2e_a');
+    expect(warnBanner()).not.toBeNull();
+    pipeSvc.deleteCatalog.and.returnValue(of({ detached: [], failed: [] }));
+    const confirm = openDelete('e2e_a');
+    if (!confirm) return;
+    (confirm.querySelector('.del-yes') as HTMLButtonElement).click();
+    settle();
+    expect(warnBanner()).withContext('clearOpBanners clears warnings too').toBeNull();
+  }));
 });
