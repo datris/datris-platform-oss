@@ -3333,6 +3333,22 @@ def _save_warnings(body):
     return [w for w in warnings if isinstance(w, str)] if isinstance(warnings, list) else []
 
 
+def _save_failed(body):
+    """Whether a POST /api/v1/pipeline body reports a failure. A JSON object
+    carrying a `warnings` list is the success shape (200 + advisories), so it
+    is never substring-checked: a hint may quote a host or name containing
+    "error". Anything else keeps the legacy Exception/error substring check."""
+    if not body:
+        return False
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict) and isinstance(parsed.get("warnings"), list):
+        return False
+    return "Exception" in body or "error" in body.lower()
+
+
 def _dispatch(name: str, args: dict) -> str:
     # --- Pipeline Management ---
     if name == "list_pipelines":
@@ -3596,7 +3612,7 @@ def _dispatch(name: str, args: dict) -> str:
         create_result = _call("post", "/api/v1/pipeline", json=config)
 
         # Check if registration failed
-        if create_result and ("Exception" in create_result or "error" in create_result.lower()):
+        if _save_failed(create_result):
             return json.dumps({"error": "Failed to register pipeline: " + create_result[:500]})
 
         # Verify the pipeline was actually created by reading it back
@@ -4235,7 +4251,7 @@ def _dispatch(name: str, args: dict) -> str:
                 return json.dumps({"error": f"Pipeline '{pipeline_name}' not found"})
             config["catalog"] = new_catalog if new_catalog else None
             save_result = _call("post", "/api/v1/pipeline", json=config)
-            if save_result and ("Exception" in save_result or "error" in save_result.lower()):
+            if _save_failed(save_result):
                 return json.dumps({"error": "Failed to update pipeline: " + save_result[:500]})
             response = {
                 "message": f"Pipeline '{pipeline_name}' catalog " + ("cleared" if not new_catalog else f"set to '{new_catalog}'"),

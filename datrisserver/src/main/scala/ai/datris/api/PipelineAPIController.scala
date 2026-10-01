@@ -289,7 +289,19 @@ class PipelineAPIController {
             // Advisory only: the pipeline is saved either way. Unity Catalog on
             // Databricks cannot serve register/rest modes for an object-store
             // Iceberg table; say so now rather than at the first run.
-            val warnings = UnityCatalogSaveHints.forConfig(preserved, UnityCatalogSaveHints.resolveHost)
+            // The hint names the secret's workspace host, so it is only built
+            // for a secret this caller may read (same predicate as
+            // list_platform_secrets); otherwise it would be an existence and
+            // host oracle for secrets behind a narrower read scope.
+            val canReadSecret: String => Boolean = s =>
+                scala.util.Try(
+                    SecretsUtil.getSecretMap(DatrisEnvironment.current.environment + "/" + s)
+                        .exists(f => UnityCatalogAPIController.canRead(request, f))
+                ).getOrElse(false)
+            val warnings = UnityCatalogSaveHints.forConfig(
+                preserved,
+                PipelineAPIController.hintHostOf(canReadSecret, UnityCatalogSaveHints.resolveHost)
+            )
             warnings.foreach(w => logger.warn("POST /pipeline " + preserved.name + ": " + w))
             val out = new JsonObject
             val arr = new com.google.gson.JsonArray
@@ -791,4 +803,13 @@ class PipelineAPIController {
             )
             .map(_.name)
     }
+}
+
+object PipelineAPIController {
+
+    /** Host lookup for the save-time Unity Catalog hint: the secret's host
+      * only when the caller may read the secret, else None (no hint). The
+      * readability check runs first so an unreadable secret is never resolved. */
+    private[api] def hintHostOf(canRead: String => Boolean, resolve: String => Option[String]): String => Option[String] =
+        s => if (canRead(s)) resolve(s) else None
 }

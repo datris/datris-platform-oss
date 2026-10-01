@@ -204,3 +204,32 @@ def test_pipeline_config_reference_tells_agent_to_relay_warnings():
     para = paras[0]
     assert "`warnings`" in para, para[:400]
     assert re.search(r"relay", para, re.IGNORECASE), para[:400]
+
+
+# ------------------------------------- "error" inside a warning's host ---
+
+ERROR_HOST_HINT = REGISTER_HINT.replace(HOST, "dbc-error-team.cloud.databricks.com")
+
+
+def test_create_pipeline_warning_with_error_in_host_is_still_success(monkeypatch):
+    out = _create(monkeypatch, json.dumps({"warnings": [ERROR_HOST_HINT]}))
+    assert "error" not in out, out
+    assert out.get("status") == "Pipeline created", out
+    assert out.get("warnings") == [ERROR_HOST_HINT], out
+
+
+def test_set_catalog_warning_with_error_in_host_is_still_success(monkeypatch):
+    out = _set_catalog(monkeypatch, json.dumps({"warnings": [ERROR_HOST_HINT]}))
+    assert "error" not in out, out
+    assert out.get("pipeline") == "hint_reg", out
+    assert out.get("warnings") == [ERROR_HOST_HINT], out
+
+
+@pytest.mark.parametrize("body", [
+    json.dumps({"error": "Pipeline config is invalid"}),
+    "java.lang.IllegalStateException: boom",
+])
+def test_non_warnings_failure_body_is_still_a_failure(monkeypatch, body):
+    out = _create(monkeypatch, body)
+    assert "error" in out, out
+    assert out["error"].startswith("Failed to register pipeline"), out
