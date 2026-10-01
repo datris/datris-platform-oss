@@ -346,7 +346,7 @@ object IcebergRestSession {
             (previous != null && (previous.catalogMode == "refused" || previous.restCreatedTable != null))
         )
             "if this table was created by an earlier Datris run against a catalog that ignores the requested location (Databricks managed tables), " +
-                s"renaming will not help: have an admin drop $qualified; for governed Databricks tables use the Databricks destination"
+                s"renaming will not help: have an admin drop $qualified; on Databricks set catalogMode managed or use the Databricks destination"
         else "rename the pipeline or choose another schema"
 
     /** State after a catalog create whose location was refused: the table
@@ -361,7 +361,7 @@ object IcebergRestSession {
         s"the catalog placed $qualified at ${IcebergCatalogRegistrar.normalize(tableLocation)}, outside this pipeline's table root " +
             s"${IcebergCatalogRegistrar.normalize(root)} (Databricks creates managed Iceberg tables and ignores the requested location); " +
             s"Datris will not write there. Have an admin drop $qualified; a catalog that honours the requested location is needed for " +
-            "catalogMode rest (for governed Databricks tables, use the Databricks destination); falling back to the path-based write"
+            "catalogMode rest (on Databricks, set catalogMode managed or use the Databricks destination); falling back to the path-based write"
 
     /** The writer refused the catalog's table before writing anything
       * (RestLocationRefused): warn + audit, close the catalog, and return a
