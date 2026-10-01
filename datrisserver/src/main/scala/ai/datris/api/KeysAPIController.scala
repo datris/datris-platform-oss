@@ -480,7 +480,7 @@ object KeysAPIController {
     /** Capability templates the Keys-UI wizard offers as starting points.
       * Each is (name, description, capability list). Operators pick a
       * template and edit from there. */
-    private val Templates: Seq[(String, String, Seq[String])] = Seq(
+    private[api] val Templates: Seq[(String, String, Seq[String])] = Seq(
         (
             "read-only",
             "Pure observer: every read-only action across pipelines, taps, jobs, metadata, configuration, plus data queries and vector search. Cannot create, edit, delete, run, or kill anything.",
@@ -492,6 +492,9 @@ object KeysAPIController {
                 "config:read",
                 "query:postgres",
                 "query:mongodb",
+                "query:objectstore",
+                "query:snowflake",
+                "query:databricks",
                 "search:vector"
             )
         ),
@@ -524,6 +527,9 @@ object KeysAPIController {
                 "tap:read",
                 "query:postgres",
                 "query:mongodb",
+                "query:objectstore",
+                "query:snowflake",
+                "query:databricks",
                 "search:vector",
                 "metadata:read",
                 "job:read"
