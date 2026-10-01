@@ -7,7 +7,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
 
 import ai.datris.audit.{AuditActor, AuditLog}
 import ai.datris.model.{DatrisEnvironment, ResolvedKey, TenantContext}
-import ai.datris.util.{APIKeyValidator, UserStore}
+import ai.datris.util.{APIKeyValidator, RevokedKeyException, UserStore}
 import jakarta.servlet.http.{HttpServletRequest, HttpServletResponse}
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -25,6 +25,11 @@ object TenantInterceptor {
       * or malformed. CapabilityInterceptor denies such requests instead of
       * treating them like a request that carried no key at all. */
     val ApiKeyRejectedAttr: String = "datris.apiKeyRejected"
+
+    /** Request attribute set (to the key's LABEL, never its value) when the
+      * rejected key was a known-but-revoked key. Unknown values leave it unset
+      * so the audit log never echoes a presented value. */
+    val ApiKeyRejectedLabelAttr: String = "datris.apiKeyRejectedLabel"
 
     /** True when the header carries a non-blank value. A blank header is
       * treated exactly like no header (pre-existing behaviour). */
@@ -67,6 +72,10 @@ class TenantInterceptor extends HandlerInterceptor {
                     val reason = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
                     logger.info("Rejected presented x-api-key: {}", reason)
                     request.setAttribute(TenantInterceptor.ApiKeyRejectedAttr, reason)
+                    e match {
+                        case r: RevokedKeyException => request.setAttribute(TenantInterceptor.ApiKeyRejectedLabelAttr, r.label)
+                        case _ =>
+                    }
                 } else
                     logger.debug("Could not resolve x-api-key into ResolvedKey: {}", e.getMessage)
         }

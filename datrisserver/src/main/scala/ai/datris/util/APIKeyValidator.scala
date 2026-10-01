@@ -14,6 +14,11 @@ import java.util.concurrent.TimeUnit
 import scala.collection.JavaConverters._
 import scala.util.{Failure, Success, Try}
 
+/** A presented key value that matches a known key whose metadata is flagged
+  * revoked. Carries the label (never the value) so the audit log can name
+  * which revoked key was used. */
+class RevokedKeyException(val label: String) extends DatrisException(s"API key '$label' is revoked")
+
 object APIKeyValidator {
 
     /** Companion secret to `oss/api-keys` (single-tenant). Holds per-key
@@ -70,7 +75,7 @@ object APIKeyValidator {
             .getOrElse(throw new DatrisException("Invalid x-api-key"))
         metadata.get(label).foreach { json =>
             val (revoked, _, _) = parseMetadata(label, json)
-            if (revoked) throw new DatrisException("API key is revoked")
+            if (revoked) throw new RevokedKeyException(label)
         }
     }
 
@@ -187,7 +192,7 @@ object APIKeyValidator {
         metadata.get(label) match {
             case Some(json) =>
                 val (revoked, capabilities, keyId) = parseMetadata(label, json)
-                if (revoked) throw new DatrisException(s"API key '$label' is revoked")
+                if (revoked) throw new RevokedKeyException(label)
                 ResolvedKey(None, label, capabilities, isLegacyFullAccess = false, keyId = keyId)
             case None =>
                 ResolvedKey(None, label, Seq(Capability.FullAccess), isLegacyFullAccess = true)

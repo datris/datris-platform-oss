@@ -78,6 +78,19 @@ class AuditActorSpec extends AnyFunSuite {
         assert(a.legacyFullAccess)
     }
 
+    test("rejected revoked key → api-key actor named by label, never legacy full access") {
+        val a = AuditActor.from(None, None, None, None, rejectedKey = Some("old-reader"))
+        assert(a.actorType == "api-key")
+        assert(a.label == "old-reader")
+        assert(a.keyLabel.contains("old-reader"))
+        assert(!a.legacyFullAccess)
+    }
+
+    test("rejected unknown key → placeholder label, the presented value is never recorded") {
+        val a = AuditActor.from(None, None, None, None, rejectedKey = Some(AuditActor.UnknownKey))
+        assert(a.label == "unknown-key" && !a.legacyFullAccess)
+    }
+
     test("only the ui key may vouch for a user when API keys are on") {
         assert(AuditActor.trustsOnBehalfOf("ui", useApiKeys = true))
         assert(!AuditActor.trustsOnBehalfOf("claude-desktop", useApiKeys = true))

@@ -75,6 +75,43 @@ class CapabilityInterceptor extends HandlerInterceptor {
         if (enforce) "enforce" else "log-only"
     )
 
+    private def presentedButRejected(request: HttpServletRequest): Boolean =
+        CapabilityInterceptor.denyPresentedButUnresolved(
+            TenantInterceptor.presented(request.getHeader("x-api-key")),
+            resolved = readResolvedKey(request).isDefined,
+            Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr)).map(_.toString)
+        )
+
+    /** Writes the 401/503 rejection, audits it as security:denied, and
+      * returns false so the controller never runs. */
+    private def rejectPresentedKey(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        method: String,
+        path: String,
+        required: Option[String]
+    ): Boolean = {
+        logger.info(
+            "capability check: route={} {} required={} outcome=rejected-key",
+            Array[AnyRef](method, path, required.getOrElse("-")): _*
+        )
+        val (status, body) = CapabilityInterceptor.rejectionResponse(
+            String.valueOf(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr))
+        )
+        response.setStatus(status)
+        response.setContentType("application/json")
+        response.getWriter.write(body)
+        response.getWriter.flush()
+        AuditLog.denied(
+            request,
+            if (status == HttpServletResponse.SC_SERVICE_UNAVAILABLE) APIKeyValidator.MetadataUnavailableMessage
+            else "API key is revoked or invalid",
+            status,
+            required = required
+        )
+        false
+    }
+
     override def preHandle(request: HttpServletRequest, response: HttpServletResponse, handler: Any): Boolean = {
         val method = request.getMethod
         val path = request.getRequestURI
@@ -82,6 +119,13 @@ class CapabilityInterceptor extends HandlerInterceptor {
         CapabilityRoutes.lookup(method, path) match {
             case RouteCheck.Skip =>
                 true
+
+            case RouteCheck.Unmapped if presentedButRejected(request) =>
+                // A revoked or unknown key on a route the table does not
+                // classify yet. Authentication failure regardless of mapping:
+                // without this the controller's own validate() threw and the
+                // caller got a 500 with a stack trace instead of a 401.
+                rejectPresentedKey(request, response, method, path, required = None)
 
             case RouteCheck.Unmapped =>
                 // No mapping for this route. In log-only mode this is just
@@ -97,37 +141,14 @@ class CapabilityInterceptor extends HandlerInterceptor {
             case RouteCheck.Require(resource, action) =>
                 val resolvedOpt = readResolvedKey(request)
                 resolvedOpt match {
-                    case None
-                        if CapabilityInterceptor.denyPresentedButUnresolved(
-                            TenantInterceptor.presented(request.getHeader("x-api-key")),
-                            resolved = false,
-                            Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr)).map(_.toString)
-                        ) =>
+                    case None if presentedButRejected(request) =>
                         // A key WAS presented but could not be resolved
                         // (revoked, unknown, malformed). Authentication
                         // failure, not a capability question — denied in both
                         // enforce and log-only modes. Without this the request
                         // fell into the no-key branch below and skipped the
                         // capability check entirely.
-                        logger.info(
-                            "capability check: route={} {} required={}:{} outcome=rejected-key",
-                            Array[AnyRef](method, path, resource, action): _*
-                        )
-                        val (status, body) = CapabilityInterceptor.rejectionResponse(
-                            String.valueOf(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr))
-                        )
-                        response.setStatus(status)
-                        response.setContentType("application/json")
-                        response.getWriter.write(body)
-                        response.getWriter.flush()
-                        AuditLog.denied(
-                            request,
-                            if (status == HttpServletResponse.SC_SERVICE_UNAVAILABLE) APIKeyValidator.MetadataUnavailableMessage
-                            else "API key is revoked or invalid",
-                            status,
-                            required = Some(resource + ":" + action)
-                        )
-                        false
+                        rejectPresentedKey(request, response, method, path, required = Some(resource + ":" + action))
 
                     case None =>
                         // No ResolvedKey on the request. This happens for

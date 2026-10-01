@@ -6,6 +6,7 @@ Copyright (C) 2026 Datris (https://datris.ai)
  */
 
 import ai.datris.auth.{ResolvedKeyAccess, TapRunTokens}
+import ai.datris.config.TenantInterceptor
 import ai.datris.model.{ResolvedKey, User, UserContext}
 import jakarta.servlet.http.HttpServletRequest
 
@@ -65,6 +66,10 @@ object AuditActor {
 
     val Anonymous = "anonymous"
 
+    /** Actor label when a presented key was rejected and its label is not
+      * known (unknown value). The value itself is never recorded. */
+    val UnknownKey = "unknown-key"
+
     /** May this key vouch for a user via `X-Datris-On-Behalf-Of`?
       *
       * Only the platform's own `ui` key — its value lives in Vault and is
@@ -81,7 +86,8 @@ object AuditActor {
         resolved: Option[ResolvedKey],
         sessionUser: Option[User],
         onBehalfOf: Option[User],
-        carrierKeyLabel: Option[String]
+        carrierKeyLabel: Option[String],
+        rejectedKey: Option[String] = None
     ): AuditActorInfo = {
         // A tap-run token resolves to label `tap:<name>` (see TapRunTokens).
         val tapName = resolved.map(_.label).filter(TapRunTokens.isTapLabel).map(TapRunTokens.tapName)
@@ -114,18 +120,31 @@ object AuditActor {
                     keyId = rk.keyId,
                     legacyFullAccess = rk.isLegacyFullAccess
                 )
+            case (None, None, None, None) if rejectedKey.isDefined =>
+                // A key WAS presented but was revoked or unknown. Record its
+                // label (revoked) or a placeholder (unknown) — never the
+                // value — and never claim legacy full access for a request
+                // that was denied.
+                val label = rejectedKey.get
+                AuditActorInfo(actorType = "api-key", label = label, keyLabel = Some(label), legacyFullAccess = false)
             case (None, None, None, None) =>
-                // Legacy no-auth mode, or a key that failed to resolve: be
-                // honest that there is no identity to record.
+                // Legacy no-auth mode with no key at all: be honest that
+                // there is no identity to record.
                 AuditActorInfo(actorType = "api-key", label = Anonymous, keyLabel = Some(Anonymous), legacyFullAccess = true)
         }
     }
+
+    /** Some(label-or-placeholder) when TenantInterceptor rejected a presented key. */
+    def rejectedKeyOf(request: HttpServletRequest): Option[String] =
+        Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr)).map { _ =>
+            Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedLabelAttr)).map(_.toString).getOrElse(UnknownKey)
+        }
 
     def resolve(request: HttpServletRequest): AuditActorInfo = {
         val onBehalfOf = Option(request.getAttribute(OnBehalfOfAttr)).collect { case u: User => u }
         val carrier = Option(request.getAttribute(CarrierKeyLabelAttr)).collect { case s: String => s }
         val replay = request.getAttribute(ApprovalReplayAttr) != null
         val sessionUser = UserContext.get().orElse(if (replay) onBehalfOf else None)
-        from(ResolvedKeyAccess.fromRequest(request), sessionUser, if (replay) None else onBehalfOf, carrier)
+        from(ResolvedKeyAccess.fromRequest(request), sessionUser, if (replay) None else onBehalfOf, carrier, rejectedKeyOf(request))
     }
 }

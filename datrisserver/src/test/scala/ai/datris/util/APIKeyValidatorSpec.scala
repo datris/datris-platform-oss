@@ -23,7 +23,8 @@ class APIKeyValidatorSpec extends AnyFunSuite {
 
     test("validate rejects a revoked key whose value is still in oss/api-keys") {
         val e = intercept[DatrisException](APIKeyValidator.validateAgainst("val-reader", keys, metadata))
-        assert(e.getMessage == "API key is revoked")
+        assert(e.getMessage == "API key 'reader' is revoked")
+        assert(e.isInstanceOf[RevokedKeyException] && e.asInstanceOf[RevokedKeyException].label == "reader")
     }
 
     test("validate accepts a live scoped key") {
