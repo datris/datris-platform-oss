@@ -442,13 +442,8 @@ export class SearchComponent implements OnInit, OnDestroy {
         }
       },
       error: (err: any) => {
-        // Warehouse endpoints answer {"error": "..."}; show the message, not the object.
-        const body = err.error;
-        if (this.isWarehouse() && body && typeof body === 'object' && body.error) {
-          this.error = String(body.error);
-        } else {
-          this.error = err.error || err.message || 'An error occurred';
-        }
+        // Query endpoints answer {"error": "..."}; show the message, not the object.
+        this.error = err.error?.error || err.error || err.message || 'An error occurred';
         this.loading = false;
       }
     });

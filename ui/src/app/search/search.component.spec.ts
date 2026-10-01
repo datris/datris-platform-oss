@@ -13,7 +13,8 @@ import { FormsModule } from '@angular/forms';
 import { provideRouter } from '@angular/router';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
 
 import { SearchComponent } from './search.component';
 import { SearchService } from '../search.service';
@@ -98,5 +99,18 @@ describe('SearchComponent — object-store snapshot id', () => {
     expect(text).toContain('1 result');
     expect(text).not.toMatch(/snapshot/i);
     expect(text).not.toContain('null');
+  });
+
+  it('shows the server error message from a 400 {"error": ...} response', () => {
+    searchService.queryObjectstore.and.returnValue(throwError(() => new HttpErrorResponse({
+      status: 400, error: { error: 'x' }
+    })));
+
+    component.execute();
+    fixture.detectChanges();
+
+    const box = el.querySelector('.error-box');
+    expect(box).not.toBeNull();
+    expect((box!.textContent || '').trim()).toBe('x');
   });
 });
