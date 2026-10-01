@@ -48,7 +48,7 @@ class DestSchemaAPIController {
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
         }
     }
 
@@ -79,7 +79,7 @@ class DestSchemaAPIController {
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
         }
     }
 }

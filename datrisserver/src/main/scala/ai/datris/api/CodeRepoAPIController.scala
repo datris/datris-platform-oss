@@ -34,7 +34,7 @@ class CodeRepoAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
         }
     }
 
@@ -70,7 +70,7 @@ class CodeRepoAPIController {
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": \"" + e.getMessage.replace("\"", "'") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
         }
     }
 
@@ -173,7 +173,7 @@ class CodeRepoAPIController {
         } catch {
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
         }
     }
 
@@ -228,7 +228,7 @@ class CodeRepoAPIController {
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": \"" + e.getMessage.replace("\"", "'") + "\"}")
             case e: Exception =>
                 logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](Throwables.getStackTraceAsString(e))
+                ApiErrors.internal(e)
         }
     }
 }

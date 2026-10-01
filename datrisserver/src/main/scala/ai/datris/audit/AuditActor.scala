@@ -128,9 +128,11 @@ object AuditActor {
                 val label = rejectedKey.get
                 AuditActorInfo(actorType = "api-key", label = label, keyLabel = Some(label), legacyFullAccess = false)
             case (None, None, None, None) =>
-                // Legacy no-auth mode with no key at all: be honest that
-                // there is no identity to record.
-                AuditActorInfo(actorType = "api-key", label = Anonymous, keyLabel = Some(Anonymous), legacyFullAccess = true)
+                // No identity at all: a request that carried no key where one
+                // is required (the no-auth mode resolves to a named anonymous
+                // ResolvedKey and lands in the arm above). Nothing was
+                // granted, so never claim legacy full access here.
+                AuditActorInfo(actorType = "api-key", label = Anonymous, keyLabel = Some(Anonymous), legacyFullAccess = false)
         }
     }
 

@@ -39,7 +39,7 @@ import anyio
 import requests
 from dotenv import load_dotenv
 from mcp.server import Server
-from mcp.types import Resource, Tool, TextContent
+from mcp.types import Resource, Tool, TextContent, CallToolResult
 
 load_dotenv()
 
@@ -3265,8 +3265,25 @@ def _base_tools():
     ]
 
 
+def _is_error_payload(text):
+    """True when a tool result is a REST error body rather than data.
+
+    The platform answers failures with ``{"error": ...}`` (plus ``errorKind``
+    and friends for capability denials). Results that carry data AND an
+    ``error`` field (partial results) are not errors."""
+    if not text or text[0] != "{":
+        return False
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        return False
+    if not isinstance(obj, dict) or "error" not in obj:
+        return False
+    return len(obj) == 1 or "errorKind" in obj
+
+
 @server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
     started = time.time()
     session_id = _session_id.get() or "stdio"
     api_key = _session_api_key.get()
@@ -3289,12 +3306,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result_text = await asyncio.to_thread(_dispatch, name, dispatch_args)
         finally:
             _call_reason.reset(reason_token)
-        return [TextContent(type="text", text=result_text)]
+        # A REST error body is a failed call: flag it so MCP clients see
+        # isError instead of a successful-looking text result.
+        is_error = _is_error_payload(result_text)
+        if is_error:
+            status = "error"
+            try:
+                error_msg = str(json.loads(result_text).get("error", ""))
+            except ValueError:
+                error_msg = result_text[:200]
+        return CallToolResult(content=[TextContent(type="text", text=result_text)], isError=is_error)
     except Exception as e:
         status = "error"
         error_msg = str(e)
         result_text = json.dumps({"error": error_msg})
-        return [TextContent(type="text", text=result_text)]
+        return CallToolResult(content=[TextContent(type="text", text=result_text)], isError=True)
     finally:
         latency_ms = int((time.time() - started) * 1000)
         _activity_record(session_id, name, status, latency_ms, api_key,

@@ -55,7 +55,7 @@ object APIKeyValidator {
             if (TapRunTokens.lookup(apiKey).isDefined) return
 
             if (apiKey == null)
-                throw new DatrisException("x-api-key does not exist or is invalid")
+                throw new DatrisException(MissingKeyMessage)
 
             validateAgainst(apiKey, readKeysMap(), readMetadataMap())
         }
@@ -69,7 +69,7 @@ object APIKeyValidator {
       * `metadata` is by-name: it is only read once the value is known. */
     private[util] def validateAgainst(apiKey: String, keys: Map[String, String], metadata: => Map[String, String]): Unit = {
         val label = labelForValue(keys, apiKey)
-            .getOrElse(throw new DatrisException("Invalid x-api-key"))
+            .getOrElse(throw new DatrisException(InvalidKeyMessage))
         metadata.get(label).foreach { json =>
             val (revoked, _, _) = parseMetadata(label, json)
             if (revoked) throw new RevokedKeyException(label)
@@ -91,6 +91,23 @@ object APIKeyValidator {
       * bad key, i.e. the caller should see 503 instead of 401. */
     def isStoreOutage(reason: String): Boolean =
         reason == MetadataUnavailableMessage || reason == KeyStoreUnavailableMessage
+
+    /** Thrown when a key is required and none was presented. */
+    val MissingKeyMessage: String = "x-api-key does not exist or is invalid"
+
+    /** Thrown when the presented value matches no known key. Never echoes the value. */
+    val InvalidKeyMessage: String = "Invalid x-api-key"
+
+    /** True when `e` is one of this validator's own rejections (missing,
+      * unknown, revoked, or store outage) — an authentication failure a
+      * controller should answer with 401/503, never a 500. */
+    def isKeyRejection(e: Throwable): Boolean = e match {
+        case _: RevokedKeyException => true
+        case d: DatrisException =>
+            val m = d.getMessage
+            m == InvalidKeyMessage || m == MissingKeyMessage || isStoreOutage(m)
+        case _ => false
+    }
 
     /** `oss/api-keys` read that fails closed: absent → "not found" (no key
       * can be valid), read failure → store outage. */
@@ -171,11 +188,11 @@ object APIKeyValidator {
     private def doResolve(apiKey: String): ResolvedKey = {
         if (DatrisEnvironment.values.multiTenant) {
             if (apiKey == null || apiKey.isEmpty)
-                throw new DatrisException("x-api-key does not exist or is invalid")
+                throw new DatrisException(MissingKeyMessage)
             val mappings = SecretsUtil.getSecretMap("api-key-mappings")
                 .getOrElse(throw new DatrisException("api-key-mappings secret not found"))
             val env = mappings.asScala.get(apiKey)
-                .getOrElse(throw new DatrisException("Invalid x-api-key"))
+                .getOrElse(throw new DatrisException(InvalidKeyMessage))
             // Multi-tenant labels are not tracked per-key in v1; the env name
             // doubles as the label and all multi-tenant keys are legacy.
             return ResolvedKey(Some(env), env, Seq(Capability.FullAccess), isLegacyFullAccess = true)
@@ -189,7 +206,7 @@ object APIKeyValidator {
         }
 
         if (apiKey == null || apiKey.isEmpty)
-            throw new DatrisException("x-api-key does not exist or is invalid")
+            throw new DatrisException(MissingKeyMessage)
 
         // Single-tenant with API keys enabled: find the label by value.
         resolveAgainst(apiKey, readKeysMap(), readMetadataMap())
@@ -200,7 +217,7 @@ object APIKeyValidator {
       * no metadata → legacy full access. */
     private[util] def resolveAgainst(apiKey: String, keys: Map[String, String], metadata: => Map[String, String]): ResolvedKey = {
         val label = labelForValue(keys, apiKey)
-            .getOrElse(throw new DatrisException("Invalid x-api-key"))
+            .getOrElse(throw new DatrisException(InvalidKeyMessage))
 
         // Look up per-key metadata. Absence = legacy full-access.
         metadata.get(label) match {

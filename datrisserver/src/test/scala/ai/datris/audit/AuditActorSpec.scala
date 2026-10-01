@@ -75,7 +75,7 @@ class AuditActorSpec extends AnyFunSuite {
         assert(a.actorType == "api-key")
         assert(a.label == AuditActor.Anonymous)
         assert(a.keyId.isEmpty)
-        assert(a.legacyFullAccess)
+        assert(!a.legacyFullAccess, "nothing was granted to a request with no identity")
     }
 
     test("rejected revoked key → api-key actor named by label, never legacy full access") {
