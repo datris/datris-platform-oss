@@ -496,4 +496,35 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
             assert(D.decide(c, p, ROOT, h, rc, None) == D.decide(c, p, ROOT, h, rc), s"case $c / $p / $h / $rc")
         }
     }
+
+    // A register-mode table later switched to rest takes AdoptCatalog and
+    // must get datris.adopted-from, once.
+
+    private val PATH_FILE = ROOT + "/metadata/v3.metadata.json"
+
+    test("needsStamp: unstamped catalog table with a path table → stamp") {
+        assert(D.needsStamp(Map("owner" -> "datris"), Some(PATH_FILE)))
+        assert(D.needsStamp(Map.empty, Some(PATH_FILE)))
+    }
+
+    test("needsStamp: never when datris.adopted-from already exists, whatever its value") {
+        assert(!D.needsStamp(Map(IcebergWriter.AdoptedFromProperty -> PATH_FILE), Some(PATH_FILE)))
+        assert(!D.needsStamp(Map(IcebergWriter.AdoptedFromProperty -> (ROOT + "/metadata/v1.metadata.json")), Some(PATH_FILE)))
+        assert(!D.needsStamp(Map(IcebergWriter.AdoptedFromProperty -> ""), Some(PATH_FILE)))
+    }
+
+    test("needsStamp: no path table (catalog-created) → nothing to stamp with") {
+        assert(!D.needsStamp(Map.empty, None))
+        assert(!D.needsStamp(Map.empty, Some("  ")))
+        assert(!D.needsStamp(null, None))
+    }
+
+    test("metadataUnderRoot: our metadata dir in any s3 spelling; not a sibling or foreign table") {
+        assert(D.metadataUnderRoot(OURS, ROOT))
+        assert(D.metadataUnderRoot(OURS.replace("s3a://", "s3://"), ROOT + "/"))
+        assert(!D.metadataUnderRoot("s3a://datris-lake/orders_daily_v2/metadata/00001-a.metadata.json", ROOT))
+        assert(!D.metadataUnderRoot("s3://other/__unitystorage/t/metadata/00001-a.metadata.json", ROOT))
+        assert(!D.metadataUnderRoot(null, ROOT))
+        assert(!D.metadataUnderRoot(OURS, null))
+    }
 }

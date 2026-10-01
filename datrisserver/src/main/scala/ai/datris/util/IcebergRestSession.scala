@@ -648,20 +648,22 @@ object IcebergRestSession {
             props = built._2
             sparkName = built._3
 
-            val (catalogHas, history, adoptedFrom) =
+            val (catalogTable, catalogHas, history, catalogProps) =
                 if (catalog.tableExists(ident)) {
                     val t = catalog.loadTable(ident)
                     t match {
                         case h: HasTableOperations if h.operations().current() != null =>
                             val cur = h.operations().current()
                             (
+                                Some(t),
                                 Option(cur.metadataFileLocation()),
                                 cur.previousFiles().asScala.map(_.file()).toSet,
-                                Option(cur.properties()).flatMap(p => Option(p.get(IcebergWriter.AdoptedFromProperty)))
+                                Option(cur.properties()).map(_.asScala.toMap).getOrElse(Map.empty[String, String])
                             )
-                        case _ => (None, Set.empty[String], None)
+                        case _ => (None, None, Set.empty[String], Map.empty[String, String])
                     }
-                } else (None, Set.empty[String], None)
+                } else (None, None, Set.empty[String], Map.empty[String, String])
+            val adoptedFrom = catalogProps.get(IcebergWriter.AdoptedFromProperty)
 
             if (base.managed) return openManaged(config.name, catalog, ident, sparkName, props, catalogHas, previous, statusUtil, base)
 
@@ -714,7 +716,18 @@ object IcebergRestSession {
                         Left(Fallback(RegisterUnsupportedMessage))
                     }
                 case RestAdoptDecision.AdoptCatalog =>
-                    statusUtil.info("processing", line(s"$qualified is in the catalog at ${n(catalogHas.orNull)}; committing through it"))
+                    // A table registered in register mode and now committed
+                    // through rest was never stamped: stamp it with the frozen
+                    // path file so a lost state doc cannot strand it.
+                    val stamped = catalogTable.exists { t =>
+                        catalogHas.exists(c => RestAdoptDecision.metadataUnderRoot(c, outputPath)) &&
+                        RestAdoptDecision.needsStamp(catalogProps, pathCurrent) &&
+                        stampAdopted(t, n(pathCurrent.get), statusUtil)
+                    }
+                    statusUtil.info(
+                        "processing",
+                        line(s"$qualified is in the catalog at ${n(catalogHas.orNull)}; committing through it" + (if (stamped) " (stamped)" else ""))
+                    )
                     Right(ok)
                 case RestAdoptDecision.RefuseBehind(c, p) =>
                     closeable.foreach(x => Try(x.close()))

@@ -44,6 +44,24 @@ object RestAdoptDecision {
       *   the adopted file for the table's lifetime: a match proves the catalog
       *   entry is ours and ahead. A table property, so it survives both log
       *   truncation and a lost state doc. Never overrides `RefuseForeign`. */
+    /** `loc` (a metadata file) lives under `tableRoot`'s `metadata/` directory,
+      * s3/s3a/s3n equal. */
+    def metadataUnderRoot(loc: String, tableRoot: String): Boolean = {
+        val root = Option(tableRoot).map(_.trim.stripSuffix("/")).orNull
+        root != null && loc != null &&
+        IcebergCatalogRegistrar.normalize(loc).startsWith(IcebergCatalogRegistrar.normalize(root) + "/metadata/")
+    }
+
+    /** An `AdoptCatalog` table under our root that has never been stamped
+      * (registered in `register` mode, then switched to `rest`) gets
+      * `datris.adopted-from` = the path table's current file, which REST
+      * commits never move. Without it a lost state doc after the metadata
+      * log has dropped that file would read as an unstamped adoption and be
+      * refused. Never re-stamps: an existing property is left as is. */
+    def needsStamp(props: Map[String, String], pathCurrent: Option[String]): Boolean =
+        pathCurrent.exists(p => p != null && p.trim.nonEmpty) &&
+            !Option(props).exists(_.contains(IcebergWriter.AdoptedFromProperty))
+
     def decide(
         catalogHas: Option[String],
         pathCurrent: Option[String],
@@ -53,8 +71,7 @@ object RestAdoptDecision {
         adoptedFrom: Option[String] = None
     ): Decision = {
         val root = Option(tableRoot).map(_.trim.stripSuffix("/")).orNull
-        def underRoot(loc: String): Boolean =
-            root != null && IcebergCatalogRegistrar.normalize(loc).startsWith(IcebergCatalogRegistrar.normalize(root) + "/metadata/")
+        def underRoot(loc: String): Boolean = metadataUnderRoot(loc, root)
         (catalogHas.filter(s => s != null && s.trim.nonEmpty), pathCurrent.filter(s => s != null && s.trim.nonEmpty)) match {
             case (None, None) => CreateNew
             case (None, Some(p)) => AdoptPath(p)
