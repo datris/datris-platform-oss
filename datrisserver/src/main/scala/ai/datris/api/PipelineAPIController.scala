@@ -70,6 +70,8 @@ class PipelineAPIController {
             val (ucEnabled, ucEnabledBy, lineageEnabled) = UnityCatalogSync.stateFields(config, UnityCatalogSync.defaultEnabledFromEnv)
             out.addProperty("enabled", ucEnabled)
             out.addProperty("enabledBy", ucEnabledBy)
+            // DATRIS_UNITY_CATALOG_SYNC=false: enabled may be true, but nothing is written.
+            out.addProperty("syncSwitchedOff", UnityCatalogMetadataSync.syncSwitchedOff)
 
             val db = if (config.destination != null) config.destination.database else null
             if (db != null && db.useDatabricks) {

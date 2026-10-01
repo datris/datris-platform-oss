@@ -85,6 +85,7 @@
       <span class="fresh-chip" [class.fresh]="unityCatalog.state === 'synced'" [class.stale]="unityCatalog.state === 'error'">{{ unityCatalog.state === 'never' ? 'never synced' : unityCatalog.state }}</span>
       <span class="lineage-detail" *ngIf="unityCatalog.coordinates?.qualified">{{ unityCatalog.coordinates.qualified }}</span>
       <span class="fresh-chip" *ngIf="unityCatalog.enabledBy === 'default'" title="Turned on by the install default (DATRIS_UNITY_CATALOG_DEFAULT=enabled); add &quot;unityCatalog&quot;: {&quot;enabled&quot;: false} to opt out">enabled by default</span>
+      <span class="fresh-chip stale" *ngIf="unityCatalog.syncSwitchedOff" title="DATRIS_UNITY_CATALOG_SYNC=false on the server: nothing is written to Unity Catalog">sync switched off</span>
     </div>
     <div class="lineage-row" *ngIf="unityCatalog.state !== 'never'">
       <span class="lineage-label">Last sync</span>

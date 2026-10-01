@@ -55,6 +55,11 @@ object UnityCatalogMetadataSync {
         !sys.props.get("datris.unityCatalogSync").orElse(sys.env.get("DATRIS_UNITY_CATALOG_SYNC"))
             .exists(_.trim.equalsIgnoreCase("false"))
 
+    /** State endpoint `syncSwitchedOff`: true only while the kill switch is off,
+      * so a pipeline reported enabled (by its block or the install default)
+      * is known to write nothing. */
+    def syncSwitchedOff: Boolean = !switchedOn
+
     /** Single-quoted Databricks string literal. Databricks SQL processes
       * backslash escapes inside literals, so backslashes are doubled before
       * quotes; otherwise a trailing `\` would un-terminate the literal. */

@@ -50,4 +50,19 @@ class UnityCatalogStateFieldsSpec extends AnyFunSuite {
     test("null config → off, never throws") {
         assert(UnityCatalogSync.stateFields(null, defaultEnabled = true) == ((false, null, false)))
     }
+
+    test("syncSwitchedOff: true only when DATRIS_UNITY_CATALOG_SYNC (sys.prop datris.unityCatalogSync) is false") {
+        val key = "datris.unityCatalogSync"
+        val old = System.getProperty(key)
+        try {
+            System.setProperty(key, "false")
+            assert(UnityCatalogMetadataSync.syncSwitchedOff)
+            System.setProperty(key, " FALSE ")
+            assert(UnityCatalogMetadataSync.syncSwitchedOff)
+            System.setProperty(key, "true")
+            assert(!UnityCatalogMetadataSync.syncSwitchedOff)
+            System.setProperty(key, "")
+            assert(!UnityCatalogMetadataSync.syncSwitchedOff)
+        } finally if (old == null) System.clearProperty(key) else System.setProperty(key, old)
+    }
 }

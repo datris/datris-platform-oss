@@ -1119,6 +1119,11 @@ paths:
                       opt-out), `default` (DATRIS_UNITY_CATALOG_DEFAULT=enabled
                       filled in a missing block on a Databricks pipeline), or
                       null (off, no block).
+                  syncSwitchedOff:
+                    type: boolean
+                    description: >-
+                      True while DATRIS_UNITY_CATALOG_SYNC=false: nothing is
+                      written to Unity Catalog even when `enabled` is true.
                   coordinates:
                     type: object
                     properties:

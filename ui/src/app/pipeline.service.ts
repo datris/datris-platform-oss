@@ -17,7 +17,7 @@ export class PipelineService {
   }
 
   /** Unity Catalog sync state (Databricks and object-store Iceberg pipelines that opted in, or Databricks pipelines the install default turned on):
-   *  { enabled, enabledBy: 'pipeline' | 'default' | null (null = off, no block), coordinates, state: 'never' | 'synced' | 'error', lastSyncAt, lastRunId, lastError,
+   *  { enabled, enabledBy: 'pipeline' | 'default' | null (null = off, no block), syncSwitchedOff (DATRIS_UNITY_CATALOG_SYNC=false), coordinates, state: 'never' | 'synced' | 'error', lastSyncAt, lastRunId, lastError,
    *    lineage: 'off' | 'never' | 'published' | 'error', lineageEnabled, lineageHash, lastLineageAt,
    *    register: 'off' | 'never' | 'registered' | 'stale' | 'error' | 'rest' | 'managed' | 'refused', registerEnabled,
    *    registeredMetadataLocation, lastRegisterAt, catalogMode: 'register' | 'rest' | 'managed',
