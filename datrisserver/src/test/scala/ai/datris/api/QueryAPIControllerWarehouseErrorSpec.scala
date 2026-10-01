@@ -1,0 +1,64 @@
+package ai.datris.api
+
+/*
+Datris
+Copyright (C) 2026 Datris (https://datris.ai)
+ */
+
+import com.google.gson.JsonParser
+import org.scalatest.funsuite.AnyFunSuite
+
+/** `POST /query/databricks` and `/query/snowflake` used to answer a driver
+  *  SQLException with HTTP 500 and the raw ~16 KB driver dump. The handlers now
+  *  route every non-DatrisException through these helpers. */
+class QueryAPIControllerWarehouseErrorSpec extends AnyFunSuite {
+
+    private def errorOf(body: String): String = JsonParser.parseString(body).getAsJsonObject.get("error").getAsString
+
+    private def databricksDump(cls: String, sentence: String): java.sql.SQLException = {
+        val frames = (1 to 110).map(i => "\n\tat org.apache.spark.sql.execution.SparkPlan.executeQuery" + i + "(SparkPlan.scala:" + i + ")").mkString
+        val msg = "[Databricks][JDBCDriver](500051) ERROR processing query/statement. Error Code: 0, SQL state: 42P01, " +
+            "Query: SELECT * FROM dat***, Error message from Server: org.apache.hive.service.cli.HiveSQLException: Error running query: [" + cls +
+            "] org.apache.spark.sql.catalyst.ExtendedAnalysisException: [" + cls + "] " + sentence +
+            " Verify the spelling and correctness of the schema and catalog. SQLSTATE: 42P01; line 1 pos 14" +
+            frames + "\nTGetOperationStatusResp(status:TStatus(statusCode:ERROR_STATUS, infoMessages:[*org.apache.hive.service.cli.HiveSQLException:" +
+            ("x" * 6000) + "))"
+        new java.sql.SQLException(msg)
+    }
+
+    test("Databricks TABLE_OR_VIEW_NOT_FOUND dump -> 404 with the class and first sentence only") {
+        val e = databricksDump("TABLE_OR_VIEW_NOT_FOUND", "The table or view `datris`.`default`.`nosuch` cannot be found.")
+        assert(e.getMessage.length > 10000)
+        val (status, body) = QueryAPIController.databricksQueryError(e)
+        assert(status == 404, body)
+        assert(errorOf(body) == "[TABLE_OR_VIEW_NOT_FOUND] The table or view `datris`.`default`.`nosuch` cannot be found.", body)
+        assert(!body.contains("TGetOperationStatusResp") && !body.contains("\\tat "), body)
+    }
+
+    test("Databricks INVALID_PARAMETER_VALUE -> 400, PERMISSION_DENIED -> 403, other class -> 502") {
+        assert(QueryAPIController.databricksQueryError(databricksDump("INVALID_PARAMETER_VALUE", "Bad value."))._1 == 400)
+        assert(QueryAPIController.databricksQueryError(databricksDump("PERMISSION_DENIED", "User does not have SELECT on Table 't'."))._1 == 403)
+        assert(QueryAPIController.databricksQueryError(databricksDump("INTERNAL_ERROR", "Something broke."))._1 == 502)
+    }
+
+    test("Databricks error without a class -> 502 with the first line, capped at 500 chars") {
+        val (status, body) = QueryAPIController.databricksQueryError(new java.sql.SQLException("Connection reset " + ("y" * 2000) + "\n\tat a.b.C.d(C.java:1)"))
+        assert(status == 502)
+        assert(errorOf(body).length <= 500, body)
+        assert(errorOf(body).startsWith("Connection reset"))
+    }
+
+    test("Snowflake SQLException -> 400 with the message lines joined and no stack text") {
+        val e = new java.sql.SQLException(
+            "SQL compilation error:\nObject 'ANALYTICS.PUBLIC.NOSUCH' does not exist or not authorized.\n\tat net.snowflake.client.jdbc.SnowflakeUtil.checkErrorAndThrowExceptionSub(SnowflakeUtil.java:127)"
+        )
+        val (status, body) = QueryAPIController.snowflakeQueryError(e)
+        assert(status == 400, body)
+        assert(errorOf(body) == "SQL compilation error: Object 'ANALYTICS.PUBLIC.NOSUCH' does not exist or not authorized.", body)
+    }
+
+    test("Snowflake exception with no message -> class name, long message capped") {
+        assert(errorOf(QueryAPIController.snowflakeQueryError(new RuntimeException())._2) == "RuntimeException")
+        assert(errorOf(QueryAPIController.snowflakeQueryError(new java.sql.SQLException("z" * 3000))._2).length <= 500)
+    }
+}

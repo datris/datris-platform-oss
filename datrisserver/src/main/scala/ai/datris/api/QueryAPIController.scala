@@ -11,6 +11,7 @@ import ai.datris.model.{DatrisEnvironment, DatrisException, GlobalJobContext}
 import ai.datris.util.{
     AIUtil,
     APIKeyValidator,
+    DatabricksErrorText,
     DatabricksQueryUtil,
     ObjectStoreQueryUtil,
     PostgresQueryUtil,
@@ -167,8 +168,11 @@ class QueryAPIController {
                 logger.warn("query/snowflake: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
-                logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+                // Warehouse driver failures (SQLException) carry the whole
+                // server stack in the message: answer with a short message.
+                logger.error("query/snowflake: " + Throwables.getStackTraceAsString(e))
+                val (status, body) = QueryAPIController.snowflakeQueryError(e)
+                ResponseEntity.status(status).body[String](body)
         }
     }
 
@@ -204,8 +208,11 @@ class QueryAPIController {
                 logger.warn("query/databricks: " + e.getMessage)
                 ResponseEntity.status(HttpStatus.BAD_REQUEST).body[String]("{\"error\": " + new Gson().toJson(e.getMessage) + "}")
             case e: Exception =>
-                logger.error("Error: " + Throwables.getStackTraceAsString(e))
-                ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body[String](QueryAPIController.errorBody(e))
+                // Warehouse driver failures (SQLException) carry the whole
+                // server stack in the message: answer with a short message.
+                logger.error("query/databricks: " + Throwables.getStackTraceAsString(e))
+                val (status, body) = QueryAPIController.databricksQueryError(e)
+                ResponseEntity.status(status).body[String](body)
         }
     }
 
@@ -334,6 +341,29 @@ class QueryAPIController {
 }
 
 object QueryAPIController {
+
+    private def jsonError(message: String): String = "{\"error\": " + new Gson().toJson(message) + "}"
+
+    /** Status and `{"error": ...}` body for a non-DatrisException failure of
+      *  `POST /query/databricks`: the Databricks error class and first
+      *  sentence (404 not found, 400 INVALID_PARAMETER_VALUE, 403 permission,
+      *  else 502), never the driver's Thrift dump or stack frames. */
+    private[api] def databricksQueryError(e: Throwable): (Int, String) = {
+        val (status, message) = DatabricksErrorText.translateWarehouseError(e)
+        (status, jsonError(message))
+    }
+
+    /** Status and `{"error": ...}` body for a non-DatrisException failure of
+      *  `POST /query/snowflake`: 400 with the message's text before any stack
+      *  frame, lines joined (Snowflake splits "SQL compilation error:" from the
+      *  reason), capped at [[DatabricksErrorText.MaxMessageLength]]. */
+    private[api] def snowflakeQueryError(e: Throwable): (Int, String) = {
+        val text = if (e == null) "" else DatabricksErrorText.fullText(e)
+        val joined = DatabricksErrorText.stripStack(text).linesIterator.map(_.trim).filter(_.nonEmpty).mkString(" ")
+        val message = if (joined.nonEmpty) DatabricksErrorText.cap(joined)
+        else if (e == null) "Snowflake query failed" else e.getClass.getSimpleName
+        (400, jsonError(message))
+    }
 
     /** The body every catch-all 500 in this controller and PipelineAPIController
       *  returns: `{"error": "<message>"}` on one line. The full stack trace is
