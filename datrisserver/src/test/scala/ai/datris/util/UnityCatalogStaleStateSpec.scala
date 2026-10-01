@@ -166,4 +166,40 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         val gone = created.copy(pipeline = "gone_created")
         assert(S.orphanDocs(Seq(gone, doc("gone_plain", mode = null, loc = null, at = null)), Set.empty) == Seq("gone_plain"))
     }
+
+    // ---- Story: Unity Catalog 7: Databricks-managed Iceberg mode -----------
+    // (plans/stories/unity-catalog-7-managed-iceberg.md), Acceptance bullet 6
+    // (Step 7). A managed doc (`catalogMode: "managed"` + a recorded commit)
+    // guards the catalog's table, which never lives under prefixKey.
+
+    private val MANAGED_LOC = "s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b/metadata/00002-e5f6.metadata.json"
+    private def managedDoc(name: String = "orders_daily"): UnityCatalogSyncState = doc(name, mode = "managed", loc = MANAGED_LOC)
+
+    test("orphanDocs keeps a managed-committed doc") {
+        val docs = Seq(
+            managedDoc("gone_managed"),
+            doc("gone_managed_uncommitted", mode = "managed", loc = MANAGED_LOC, at = null),
+            doc("gone_plain", mode = null, loc = null, at = null)
+        )
+        assert(S.orphanDocs(docs, Set.empty) == Seq("gone_managed_uncommitted", "gone_plain"))
+    }
+
+    test("keepOnCreate keeps a managed-committed doc even with an empty prefix (it holds no data in managed mode)") {
+        assert(S.keepOnCreate(managedDoc(), Some(ROOT), () => Some(false)), "prefix empty is normal for managed: keep")
+        assert(S.keepOnCreate(managedDoc(), Some("s3a://lake/orders_v2"), () => Some(false)), "root-independent: keep")
+        assert(!S.keepOnCreate(doc(mode = "managed", loc = MANAGED_LOC, at = null), Some(ROOT), () => Some(false)), "no commit: clear")
+    }
+
+    test("clearIfStale on a managed doc: stale when the catalog is known to have no table; the prefix is never probed") {
+        val written = scala.collection.mutable.ListBuffer[UnityCatalogSyncState]()
+        val cleared = S.clearIfStale(managedDoc(), ROOT, () => Some(false), () => fail("managed: prefix never probed"), written += _)
+        assert(cleared.isDefined, "catalog has no table: stale")
+        assert(written.size == 1 && written.head == cleared.get, s"$written")
+        assert(!IcebergRestSession.managedCommitted(written.head), "the persisted doc no longer reads as committed")
+
+        written.clear()
+        assert(S.clearIfStale(managedDoc(), ROOT, () => Some(true), () => fail("probe"), written += _).isEmpty, "catalog has the table")
+        assert(S.clearIfStale(managedDoc(), ROOT, () => None, () => fail("probe"), written += _).isEmpty, "catalog unknown")
+        assert(written.isEmpty, s"$written")
+    }
 }

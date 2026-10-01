@@ -934,4 +934,213 @@ class IcebergWriterSpec extends AnyFunSuite with BeforeAndAfterAll {
         assert(!IcebergWriter.sameRestLocation("s3a://datris/uc/probe/t/sub", "s3a://datris/uc/probe/t"))
         assert(!IcebergWriter.sameRestLocation(null, "s3a://datris/uc/probe/t"))
     }
+
+    // ---- Story: Unity Catalog 7: Databricks-managed Iceberg mode -----------
+    // (plans/stories/unity-catalog-7-managed-iceberg.md), Acceptance bullet 3
+    // (Step 2). Seam this block pins:
+    //
+    //   IcebergWriter.RestTarget(..., managed: Boolean = false, bucket: String = null)
+    //     managed: create WITHOUT withLocation (the catalog chooses), never
+    //     guard or write the pipeline's prefix, and accept the table wherever
+    //     the catalog put it as long as it is in `bucket`.
+    //   IcebergWriter.assertManagedLocation(table: Table, bucket: String, created: Boolean = false): Unit
+    //     RestLocationRefused(table.location(), "s3://<bucket>/ (the pipeline's bucket)", created)
+    //     when the location's authority (s3/s3a/s3n equal) is not `bucket`.
+    //   IcebergTableResolver.resolve(...): Option[IcebergTableResolver.Resolved]
+    //   ObjectStoreQueryUtil.readPath(spark, path, format, limit,
+    //                                 resolved: Option[IcebergTableResolver.Resolved], bucket: String): QueryResult
+    //
+    // The stand-in is IgnoringLocationCatalog over the rest warehouse (the
+    // table lands at <warehouse>/<schema>/<table>, like a Databricks managed
+    // table under __unitystorage). The pipeline's "bucket" is the warehouse
+    // URI's authority (empty for file://), so the bucket check passes there and
+    // fails for any named bucket.
+
+    private lazy val managedBucket: String = Option(java.net.URI.create(restWarehouse).getAuthority).getOrElse("")
+
+    private def ignoringCatalog(name: String): IgnoringLocationCatalog = {
+        val c = new IgnoringLocationCatalog
+        c.setConf(spark.sessionState.newHadoopConf())
+        c.initialize(name, Map("warehouse" -> restWarehouse).asJava)
+        c
+    }
+
+    private def isEmptyOrMissing(location: String): Boolean = {
+        val f = new java.io.File(java.net.URI.create(location))
+        !f.exists() || Option(f.list()).forall(_.isEmpty)
+    }
+
+    private def managedState(metadataLocation: String): ai.datris.model.UnityCatalogSyncState =
+        ai.datris.model.UnityCatalogSyncState(
+            "managed_rw",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            catalogMode = "managed",
+            restMetadataLocation = metadataLocation,
+            lastRestCommitAt = "2026-10-01T09:00:00Z"
+        )
+
+    test("managed target: creates at the catalog-chosen location, appends and merges through the identifier, resolver reads it back") {
+        val table = "managed_rw"
+        val catalog = ignoringCatalog("managed_rw_side")
+        // The pipeline's prefixKey: holds no data in managed mode.
+        val prefix = newLocation("managed-prefix/managed_rw")
+        val created = ListBuffer[Table]()
+        val target = IcebergWriter.RestTarget(
+            RestSparkCatalog,
+            restIdent(table),
+            catalog,
+            onCreated = t => created += t,
+            managed = true,
+            bucket = managedBucket
+        )
+        def w(data: DataFrame, mode: String, keys: Seq[String] = Nil, schema: StructType = baseSchema): IcebergWriter.WriteResult =
+            IcebergWriter.write(data, prefix, mode, Nil, keys, schema, new RecordingStatusUtil, "managed_rw", Some(target))
+
+        // Create + first append, at the catalog's location.
+        val first = w(df((1L, "east", 1.0), (2L, "west", 2.0)), "append")
+        assert(catalog.tableExists(restIdent(table)), "the catalog must hold the table")
+        val loaded = catalog.loadTable(restIdent(table))
+        assert(IcebergWriter.sameRestLocation(loaded.location(), restLocation(table)), s"catalog-chosen location: ${loaded.location()}")
+        assert(created.size == 1, s"onCreated runs once after the managed create: $created")
+        assert(loaded.properties().get(IcebergWriter.PipelineProperty) == "managed_rw", loaded.properties())
+        assert(first.metadataLocation == currentMetadata(catalog, table), s"${first.metadataLocation}")
+        assert(first.totalRecords == 2, s"$first")
+
+        // Append through the identifier.
+        RecordingHadoopCatalog.clear()
+        val second = w(df((3L, "north", 3.0)), "append")
+        assert(
+            RecordingHadoopCatalog.loads.asScala.exists(_ == s"$RestSparkCatalog:$RestSchema.$table"),
+            s"append must go through writeTo(<catalog>.<schema>.<table>): ${RecordingHadoopCatalog.loads}"
+        )
+        assert(second.metadataLocation != first.metadataLocation && second.metadataLocation == currentMetadata(catalog, table), s"$second")
+        assert(second.totalRecords == 3, s"$second")
+
+        // MERGE through the identifier.
+        RecordingHadoopCatalog.clear()
+        val third = w(df((1L, "east", 10.0), (4L, "south", 4.0)), "merge", keys = Seq("id"))
+        assert(
+            RecordingHadoopCatalog.loads.asScala.exists(_ == s"$RestSparkCatalog:$RestSchema.$table"),
+            s"MERGE must target the catalog identifier: ${RecordingHadoopCatalog.loads}"
+        )
+        assert(third.metadataLocation == currentMetadata(catalog, table) && third.totalRecords == 4, s"$third")
+
+        // Schema evolution through the catalog table.
+        val evolvedSchema = StructType(baseSchema.fields :+ StructField("note", StringType, nullable = true))
+        val evolvedRows = spark.createDataFrame(Seq(Row(5L, "east", 5.0, "new")).asJava, evolvedSchema)
+        val fourth = w(evolvedRows, "append", schema = evolvedSchema)
+        assert(catalog.loadTable(restIdent(table)).schema().findField("note") != null, "added column committed through the catalog")
+        assert(fourth.metadataLocation == currentMetadata(catalog, table) && fourth.totalRecords == 5, s"$fourth")
+
+        val rows = spark.table(restSql(table)).collect().map(r => r.getLong(0) -> r.getDouble(2)).toMap
+        assert(rows == Map(1L -> 10.0, 2L -> 2.0, 3L -> 3.0, 4L -> 4.0, 5L -> 5.0), s"$rows")
+        assert(isEmptyOrMissing(prefix), "nothing may be written under the pipeline's prefix in managed mode")
+
+        // Read back: the resolver follows the catalog within the bucket, the
+        // reader applies the bucket check instead of the prefix check.
+        val resolved = IcebergTableResolver.resolve(managedState(first.metadataLocation), prefix, () => Some(currentMetadata(catalog, table)))
+        assert(resolved.contains(IcebergTableResolver.Resolved(IcebergTableResolver.readable(fourth.metadataLocation), managed = true)), s"$resolved")
+        val read = ObjectStoreQueryUtil.readPath(spark, prefix, "iceberg", 100, resolved, managedBucket)
+        assert(read.rows.size() == 5, s"${read.rows}")
+        assert(read.snapshotId == java.lang.Long.valueOf(fourth.snapshotId), s"${read.snapshotId} vs ${fourth.snapshotId}")
+    }
+
+    test("managed target: a catalog location in another bucket is refused before any data is written") {
+        val table = "managed_refused"
+        val catalog = ignoringCatalog("managed_refused_side")
+        val prefix = newLocation("managed-prefix/managed_refused")
+        val created = ListBuffer[Table]()
+        val target = IcebergWriter.RestTarget(
+            RestSparkCatalog,
+            restIdent(table),
+            catalog,
+            onCreated = t => created += t,
+            managed = true,
+            bucket = "pipeline-bucket"
+        )
+        val e = intercept[IcebergWriter.RestLocationRefused] {
+            IcebergWriter.write(df((1L, "east", 1.0)), prefix, "append", Nil, Nil, baseSchema, new RecordingStatusUtil, "p", Some(target))
+        }
+        assert(e.created, "the refusal follows the catalog create")
+        assert(IcebergWriter.sameRestLocation(e.tableLocation, restLocation(table)), e.tableLocation)
+        assert(e.requested.contains("s3://pipeline-bucket/"), s"names the pipeline's bucket: ${e.requested}")
+        assert(e.getMessage.contains("pipeline-bucket") && e.getMessage.contains(e.tableLocation), e.getMessage)
+        assert(created.isEmpty, "onCreated must not run for a refused table")
+        assert(catalog.loadTable(restIdent(table)).currentSnapshot() == null, "no data may be committed through the catalog")
+        assert(isEmptyOrMissing(restLocation(table) + "/data"), "no data files at the catalog's location")
+        assert(isEmptyOrMissing(prefix), "nothing written at the pipeline's prefix either")
+    }
+
+    test("managed target: the create requests no location (a catalog that rejects custom locations still works)") {
+        // HadoopCatalog refuses withLocation(<anything but its default>): a
+        // managed create that still passed the prefix would fail here.
+        val table = "managed_nolocation"
+        val catalog = javaCatalog()
+        val prefix = newLocation("managed-prefix/managed_nolocation")
+        val target = IcebergWriter.RestTarget(RestSparkCatalog, restIdent(table), catalog, managed = true, bucket = managedBucket)
+        val r = IcebergWriter.write(df((1L, "east", 1.0)), prefix, "append", Nil, Nil, baseSchema, new RecordingStatusUtil, "p", Some(target))
+        assert(r.totalRecords == 1, s"$r")
+        assert(IcebergWriter.sameRestLocation(catalog.loadTable(restIdent(table)).location(), restLocation(table)))
+        assert(isEmptyOrMissing(prefix))
+    }
+
+    /** A Table whose only answers are location() and currentSnapshot()
+      * (manifest list), for the pure bucket check on s3 locations. */
+    private def fakeTable(location: String, manifestList: String = null): Table = {
+        val snapshot: Snapshot =
+            if (manifestList == null) null
+            else
+                java.lang.reflect.Proxy.newProxyInstance(
+                    getClass.getClassLoader,
+                    Array[Class[_]](classOf[Snapshot]),
+                    (_: Any, m: java.lang.reflect.Method, _: Array[AnyRef]) =>
+                        m.getName match {
+                            case "manifestListLocation" => manifestList
+                            case "snapshotId" => java.lang.Long.valueOf(1L)
+                            case "toString" => "fake snapshot"
+                            case other => throw new UnsupportedOperationException(other)
+                        }
+                ).asInstanceOf[Snapshot]
+        java.lang.reflect.Proxy.newProxyInstance(
+            getClass.getClassLoader,
+            Array[Class[_]](classOf[Table]),
+            (_: Any, m: java.lang.reflect.Method, _: Array[AnyRef]) =>
+                m.getName match {
+                    case "location" => location
+                    case "currentSnapshot" => snapshot
+                    case "toString" => "fake table at " + location
+                    case other => throw new UnsupportedOperationException(other)
+                }
+        ).asInstanceOf[Table]
+    }
+
+    test("assertManagedLocation: the catalog's location must be in the pipeline's bucket (s3/s3a/s3n equal); another bucket is refused naming both") {
+        val inBucket = "s3://datris/uc/__unitystorage/schemas/5e1f/tables/9a2b"
+        IcebergWriter.assertManagedLocation(fakeTable(inBucket), "datris")
+        IcebergWriter.assertManagedLocation(fakeTable(inBucket.replace("s3://", "s3a://")), "datris")
+        IcebergWriter.assertManagedLocation(fakeTable(inBucket.replace("s3://", "s3n://")), "Datris")
+        IcebergWriter.assertManagedLocation(
+            fakeTable(inBucket, manifestList = "s3a://datris/uc/__unitystorage/schemas/5e1f/tables/9a2b/metadata/snap-1.avro"),
+            "datris"
+        )
+
+        val other = "s3://datris-archive/uc/__unitystorage/schemas/5e1f/tables/9a2b"
+        val e = intercept[IcebergWriter.RestLocationRefused](IcebergWriter.assertManagedLocation(fakeTable(other), "datris"))
+        assert(e.tableLocation == other, e.tableLocation)
+        assert(e.requested.contains("s3://datris/"), e.requested)
+        assert(e.getMessage.contains(other) && e.getMessage.contains("s3://datris/"), e.getMessage)
+        assert(!e.created, "a load-time refusal is not a create")
+        assert(intercept[IcebergWriter.RestLocationRefused](IcebergWriter.assertManagedLocation(fakeTable(other), "datris", created = true)).created)
+
+        // A manifest list in another bucket is a hard error, as in rest mode.
+        val m = intercept[DatrisException](
+            IcebergWriter.assertManagedLocation(fakeTable(inBucket, manifestList = "s3://elsewhere/m/snap-1.avro"), "datris")
+        )
+        assert(m.getMessage.contains("manifest list"), m.getMessage)
+    }
 }

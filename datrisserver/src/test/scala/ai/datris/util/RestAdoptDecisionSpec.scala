@@ -5,6 +5,7 @@ Datris
 Copyright (C) 2026 Datris (https://datris.ai)
  */
 
+import ai.datris.model.UnityCatalogSyncState
 import org.scalatest.funsuite.AnyFunSuite
 
 /** Story: Unity Catalog 5: Iceberg via RESTCatalog (`catalogMode: rest`)
@@ -144,7 +145,10 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
             lastRestCommitAt = "2026-09-29T10:00:03Z"
         )
         val Q = "unity.default.orders_daily"
-        val G = IcebergRestSession.guardFailure _
+        // A local def, not `guardFailure _`: Unity Catalog 7 adds a defaulted
+        // `managedActive` parameter, which eta-expansion would not default.
+        def G(p: UnityCatalogSyncState, r: String, i: Boolean, d: Boolean, a: Boolean, q: String): Option[String] =
+            IcebergRestSession.guardFailure(p, r, i, d, a, q)
         // Format flipped to parquet, unityCatalog removed, deleteBeforeWrite on.
         val parquetDelete = G(committed, ROOT, false, true, false, Q)
         assert(parquetDelete.exists(m => m.contains("deleteBeforeWrite cannot be used") && m.contains(Q)), s"$parquetDelete")
@@ -189,15 +193,18 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
             lastRestCommitAt = "2026-09-29T10:00:03Z"
         )
         val R = IcebergTableResolver
+        // Unity Catalog 7: resolve returns Resolved(metadataLocation, managed);
+        // a rest doc is never `managed`.
+        def rest(loc: String) = IcebergTableResolver.Resolved(loc.replace("s3://", "s3a://"), managed = false)
         // Not catalog-committed: path read (the catalog is never asked).
         assert(R.resolve(null, ROOT, () => fail("must not ask the catalog")).isEmpty)
         assert(R.resolve(st.copy(catalogMode = "refused"), ROOT, () => fail("must not ask the catalog")).isEmpty)
         // Catalog answers: its pointer wins, as s3a.
-        assert(R.resolve(st, ROOT, () => Some(newer)).contains(newer.replace("s3://", "s3a://")))
+        assert(R.resolve(st, ROOT, () => Some(newer)).contains(rest(newer)))
         // Catalog unreachable, empty, or pointing elsewhere: the recorded commit.
-        assert(R.resolve(st, ROOT, () => throw new RuntimeException("down")).contains(recorded.replace("s3://", "s3a://")))
-        assert(R.resolve(st, ROOT, () => None).contains(recorded.replace("s3://", "s3a://")))
-        assert(R.resolve(st, ROOT, () => Some("s3://elsewhere/t/metadata/00001-x.metadata.json")).contains(recorded.replace("s3://", "s3a://")))
+        assert(R.resolve(st, ROOT, () => throw new RuntimeException("down")).contains(rest(recorded)))
+        assert(R.resolve(st, ROOT, () => None).contains(rest(recorded)))
+        assert(R.resolve(st, ROOT, () => Some("s3://elsewhere/t/metadata/00001-x.metadata.json")).contains(rest(recorded)))
     }
 
     test("IcebergRestSession.registerUnsupported: Databricks ENDPOINT_NOT_FOUND and UnsupportedOperationException, nothing else") {
@@ -212,5 +219,169 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
         assert(!U(null))
         assert(IcebergRestSession.RegisterUnsupportedMessage.contains("start from a new prefix"))
         assert(IcebergRestSession.RegisterUnsupportedMessage.contains("deleteBeforeWrite once"))
+    }
+
+    // ---- Story: Unity Catalog 7: Databricks-managed Iceberg mode -----------
+    // (plans/stories/unity-catalog-7-managed-iceberg.md), Acceptance bullets 2
+    // and 4. Seam these tests pin:
+    //
+    //   RestAdoptDecision.decideManaged(catalogHas: Option[String], previous: UnityCatalogSyncState,
+    //                                   qualified: String, bucket: String): Decision
+    //     only CreateNew | AdoptCatalog | RefuseForeign(c), never AdoptPath / RefuseBehind
+    //   IcebergRestSession.managedCommitted(previous: UnityCatalogSyncState): Boolean   (root-independent)
+    //   IcebergRestSession.managedProviderRefusal(provider: String, secretFields: Map[String, String],
+    //                                             secretName: String): Option[String]
+    //   IcebergRestSession.guardFailure(previous, tableRoot, iceberg, deleteBeforeWrite,
+    //                                   restActive /* commits through the catalog: rest OR managed */,
+    //                                   qualified, managedActive: Boolean = false): Option[String]
+    //   IcebergRestSession.switchFromManagedMessage(qualified: String): String
+
+    private val MQ = "datris.uc.orders_daily"
+    private val MANAGED_LOC = "s3://datris/uc/__unitystorage/schemas/5e1f/tables/9a2b/metadata/00001-c3d4.metadata.json"
+
+    private def ucState(
+        mode: String,
+        loc: String = MANAGED_LOC,
+        at: String = "2026-10-01T09:00:00Z",
+        created: String = null
+    ): UnityCatalogSyncState =
+        UnityCatalogSyncState(
+            pipeline = "orders_daily",
+            lastSyncAt = null,
+            lastRunId = null,
+            commentsHash = null,
+            tagsHash = null,
+            propertiesHash = null,
+            lastError = null,
+            catalogMode = mode,
+            restMetadataLocation = loc,
+            lastRestCommitAt = at,
+            restCreatedTable = created
+        )
+
+    test("IcebergRestSession.managedCommitted: a managed doc with a recorded commit, whatever the table root") {
+        val M = IcebergRestSession.managedCommitted _
+        assert(M(ucState("managed")))
+        // Root-independent: the managed table lives where the catalog put it,
+        // not under prefixKey; restCommitted (root-checked) does not see it.
+        assert(!IcebergRestSession.restCommitted(ucState("managed"), ROOT))
+        assert(!M(ucState("rest", loc = n(ROOT) + "/metadata/00003-9b2d.metadata.json")), "a rest commit is not managed")
+        assert(!M(ucState("refused")))
+        assert(!M(ucState("managed", loc = null)))
+        assert(!M(ucState("managed", at = null)), "no commit time: not a catalog commit")
+        assert(!M(null))
+    }
+
+    test("decideManaged: adopts only a table this pipeline recorded; foreign otherwise") {
+        val DM = RestAdoptDecision.decideManaged _
+        val inBucket = Some(MANAGED_LOC)
+        val inBucketS3a = Some(MANAGED_LOC.replace("s3://", "s3a://"))
+        val otherBucket = Some("s3://datris-archive/uc/__unitystorage/schemas/5e1f/tables/9a2b/metadata/00001-c3d4.metadata.json")
+
+        // Nothing in the catalog: create, whatever the doc says.
+        assert(DM(None, null, MQ, "datris") == D.CreateNew)
+        assert(DM(None, ucState("managed"), MQ, "datris") == D.CreateNew)
+        assert(DM(None, ucState("refused", loc = null, at = null, created = MQ), MQ, "datris") == D.CreateNew)
+
+        // Ours: an earlier managed commit (s3/s3a spellings compare equal).
+        assert(DM(inBucket, ucState("managed"), MQ, "datris") == D.AdoptCatalog)
+        assert(DM(inBucketS3a, ucState("managed"), MQ, "datris") == D.AdoptCatalog)
+        // Ours: the empty table a refused Databricks rest run created for this name.
+        assert(DM(inBucket, ucState("refused", loc = null, at = null, created = MQ), MQ, "datris") == D.AdoptCatalog)
+
+        // Not recorded by this pipeline: never adopt someone else's managed table, even in our bucket.
+        def foreign(d: RestAdoptDecision.Decision, c: String): Unit = d match {
+            case D.RefuseForeign(loc) => assert(n(loc) == n(c), s"$loc vs $c")
+            case other => fail(s"expected RefuseForeign($c), got $other")
+        }
+        foreign(DM(inBucket, null, MQ, "datris"), MANAGED_LOC)
+        foreign(DM(inBucket, ucState("refused", loc = null, at = null, created = "datris.uc.other_table"), MQ, "datris"), MANAGED_LOC)
+        foreign(DM(inBucket, ucState("managed", at = null), MQ, "datris"), MANAGED_LOC)
+        foreign(DM(inBucket, ucState("rest", loc = n(ROOT) + "/metadata/00003-9b2d.metadata.json"), MQ, "datris"), MANAGED_LOC)
+        // Another bucket: foreign even when this pipeline recorded it
+        // (the pipeline's S3 secret only covers its own bucket).
+        foreign(DM(otherBucket, ucState("managed"), MQ, "datris"), otherBucket.get)
+        foreign(DM(otherBucket, ucState("refused", loc = null, at = null, created = MQ), MQ, "datris"), otherBucket.get)
+
+        // No path-table outcomes exist in managed mode.
+        val all = Seq(
+            DM(None, null, MQ, "datris"),
+            DM(inBucket, ucState("managed"), MQ, "datris"),
+            DM(inBucket, null, MQ, "datris"),
+            DM(otherBucket, ucState("managed"), MQ, "datris")
+        )
+        assert(!all.exists(d => d.isInstanceOf[D.AdoptPath] || d.isInstanceOf[D.RefuseBehind]), s"$all")
+    }
+
+    test("managedProviderRefusal: minio + Databricks-shaped secret refused, minio + icebergRestPath allowed, s3 always allowed") {
+        def P(provider: String, fields: Map[String, String]): Option[String] =
+            IcebergRestSession.managedProviderRefusal(provider = provider, secretFields = fields, secretName = "databricks_uc")
+        val databricks = Map("host" -> "https://dbc-1.cloud.databricks.com", "clientId" -> "id", "clientSecret" -> "s")
+        val fixture = Map("host" -> "http://iceberg-rest:8181", "icebergRestPath" -> "/")
+
+        val refused = P("minio", databricks)
+        assert(refused.isDefined, "minio with a Databricks secret must be refused before any write")
+        refused.foreach { m =>
+            assert(m.contains("databricks_uc"), s"names the secret: $m")
+            assert(m.contains("MinIO"), s"names MinIO: $m")
+            assert(m.contains("'s3'"), s"says provider s3 is needed: $m")
+            assert(m.contains("icebergRestPath"), s"says what would allow minio: $m")
+            assert(m.contains("managed"), m)
+        }
+        // Absent provider is MinIO (ObjectStoreSpark default).
+        assert(P(null, databricks).isDefined)
+        assert(P("MinIO", databricks).isDefined, "provider is case-insensitive")
+
+        assert(P("minio", fixture).isEmpty, "a custom icebergRestPath (non-Databricks catalog) allows MinIO")
+        assert(P("minio", Map("host" -> "http://iceberg-rest:8181", "icebergrestpath" -> "")).isEmpty, "field name is case-insensitive, any value")
+        assert(P(null, fixture).isEmpty)
+        assert(P("s3", databricks).isEmpty)
+        assert(P("s3", fixture).isEmpty)
+        assert(P("S3", Map.empty).isEmpty)
+    }
+
+    test("guardFailure: switching a managed-committed table to rest/register or adding deleteBeforeWrite fails the run") {
+        val managed = ucState("managed")
+        val restDoc = ucState("rest", loc = n(ROOT) + "/metadata/00003-9b2d.metadata.json")
+        def G(
+            p: UnityCatalogSyncState,
+            iceberg: Boolean = true,
+            delete: Boolean = false,
+            throughCatalog: Boolean,
+            managedActive: Boolean,
+            root: String = ROOT
+        ): Option[String] =
+            IcebergRestSession.guardFailure(p, root, iceberg, delete, throughCatalog, MQ, managedActive = managedActive)
+
+        // Managed stays managed: no objection, also from a new prefix (root-independent).
+        assert(G(managed, throughCatalog = true, managedActive = true).isEmpty)
+        assert(G(managed, throughCatalog = true, managedActive = true, root = "s3a://datris-lake/orders_daily_v2").isEmpty)
+
+        val switchMsg = IcebergRestSession.switchFromManagedMessage(MQ)
+        assert(switchMsg.contains(MQ) && switchMsg.contains("managed"), switchMsg)
+        // managed -> rest, managed -> register, managed -> unityCatalog removed / parquet.
+        assert(G(managed, throughCatalog = true, managedActive = false).contains(switchMsg), "managed -> rest")
+        assert(G(managed, throughCatalog = false, managedActive = false).contains(switchMsg), "managed -> register / off")
+        assert(G(managed, iceberg = false, throughCatalog = false, managedActive = false).isDefined, "managed -> parquet")
+        assert(
+            G(managed, throughCatalog = false, managedActive = false, root = "s3a://datris-lake/orders_daily_v2").contains(switchMsg),
+            "the managed guard follows the pipeline to a new prefix"
+        )
+
+        // deleteBeforeWrite on a managed-committed table fails the run (the files are the catalog's).
+        val del = G(managed, delete = true, throughCatalog = true, managedActive = true)
+        assert(del.isDefined, "deleteBeforeWrite + managed-committed must fail")
+        assert(del.exists(_.contains("deleteBeforeWrite")), s"$del")
+        assert(G(managed, delete = true, throughCatalog = false, managedActive = false).isDefined)
+
+        // rest-committed -> managed: the existing switch-back refusal.
+        assert(G(restDoc, throughCatalog = true, managedActive = true).contains(IcebergRestSession.switchBackMessage(MQ)), "rest -> managed")
+        // rest stays rest: unchanged.
+        assert(G(restDoc, throughCatalog = true, managedActive = false).isEmpty)
+
+        // Never committed: managed with or without delete has no guard objection
+        // (deleteBeforeWrite + managed is a validation 400, PipelineValidatorUtilSpec).
+        assert(G(null, throughCatalog = true, managedActive = true).isEmpty)
+        assert(G(ucState("refused", loc = null, at = null, created = MQ), throughCatalog = true, managedActive = true).isEmpty)
     }
 }

@@ -79,14 +79,18 @@ components:
           description: Object-store Iceberg only. Set false to keep the block but skip registration.
         catalogMode:
           type: string
-          enum: [register, rest]
+          enum: [register, rest, managed]
           description: >-
             Object-store Iceberg only (400 on a Databricks destination).
             Absent means `register`: write by path and register the table once.
             `rest` commits every write through the Unity Catalog Iceberg REST
-            catalog so its pointer stays current; it needs the register knob on.
-            Case-insensitive. Switching from `rest` back to `register` after a
-            catalog commit fails the next run.
+            catalog at the pipeline's prefix so its pointer stays current.
+            `managed` (the mode for Databricks Unity Catalog) lets the catalog
+            choose the table's location in the pipeline's bucket and commits
+            every write through it; any refusal fails the run, and
+            deleteBeforeWrite is rejected (400). `rest` and `managed` need the
+            register knob on. Case-insensitive. Switching a catalog-committed
+            table to another mode fails the next run.
     CatalogFailure:
       type: object
       properties:
@@ -936,7 +940,7 @@ paths:
           description: Delete pipeline configuration (default true). Set to false to delete data only.
       responses:
         '200':
-          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop.
+          description: Pipeline deleted. `warnings` lists follow-up actions, e.g. a Unity Catalog table (catalogMode rest) an admin has to drop, or a catalogMode managed table Unity Catalog owns (Datris deleted nothing there).
           content:
             application/json:
               schema:
@@ -1151,13 +1155,16 @@ paths:
                     description: Object-store Iceberg destination with unityCatalog.enabled and the register knob (default on)
                   register:
                     type: string
-                    enum: ['off', never, registered, stale, error, rest, refused]
+                    enum: ['off', never, registered, stale, error, rest, managed, refused]
                     description: >-
                       Iceberg register status. `stale` means Unity Catalog still
                       points at an older metadata file of the table. With
                       `catalogMode: rest`, `rest` means the last run committed
                       through the catalog and `refused` means it wrote by path
-                      instead (see `restRefusedReason`).
+                      instead (see `restRefusedReason`). With `catalogMode:
+                      managed`, `managed` means the last run committed through
+                      the catalog at the catalog-chosen location (see
+                      `restMetadataLocation`).
                   registeredMetadataLocation:
                     type: string
                     description: The table's metadata file at the last register (or stale-pointer check); null until registered
@@ -1166,7 +1173,7 @@ paths:
                     description: ISO-8601 UTC time the table was registered
                   catalogMode:
                     type: string
-                    enum: [register, rest]
+                    enum: [register, rest, managed]
                     description: The pipeline's unityCatalog.catalogMode (absent means register); object-store Iceberg only
                   restMetadataLocation:
                     type: string

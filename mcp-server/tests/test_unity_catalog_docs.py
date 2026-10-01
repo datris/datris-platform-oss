@@ -253,7 +253,8 @@ def test_openapi_unity_catalog_sync_has_catalog_mode_enum():
     fields = spec["components"]["schemas"]["UnityCatalogSync"]["properties"]
     assert "catalogMode" in fields, sorted(fields)
     assert fields["catalogMode"].get("type") == "string", fields["catalogMode"]
-    assert fields["catalogMode"].get("enum") == ["register", "rest"], fields["catalogMode"]
+    # Unity Catalog 7 adds `managed` (Databricks).
+    assert fields["catalogMode"].get("enum") == ["register", "rest", "managed"], fields["catalogMode"]
 
 
 def test_openapi_unity_catalog_state_lists_catalog_mode_and_rest_fields():
@@ -267,6 +268,9 @@ def test_openapi_unity_catalog_state_lists_catalog_mode_and_rest_fields():
         assert field in props, f"{field} must be in the /pipelines/{{name}}/unity-catalog schema: {sorted(props)}"
     register_enum = props["register"].get("enum", [])
     assert "rest" in register_enum and "refused" in register_enum, register_enum
+    # Unity Catalog 7: `register` gains `managed`, and so does the state's catalogMode.
+    assert "managed" in register_enum, register_enum
+    assert props["catalogMode"].get("enum") == ["register", "rest", "managed"], props["catalogMode"]
     # Story-4 values are kept.
     for old in ("off", "never", "registered", "stale", "error"):
         assert old in register_enum, register_enum
@@ -279,38 +283,62 @@ def test_pipeline_config_reference_mentions_catalog_mode():
 
 
 # ======================================================================
-# Live Databricks probe (story 5 follow-up): Databricks Unity Catalog has no
-# Iceberg REST register endpoint, so register mode cannot work there.
+# Live Databricks probe (story 5 follow-up), rewritten by Unity Catalog 7
+# (plans/stories/unity-catalog-7-managed-iceberg.md), Acceptance bullet 8:
+# Databricks Unity Catalog has no register call and ignores the requested
+# location, so Databricks uses `catalogMode: "managed"` (the catalog chooses
+# the location). The "neither mode works" wording is gone.
 # ======================================================================
 
-def test_unity_catalog_page_states_databricks_limits_honestly():
-    # Superseded "Databricks requires rest" (live probe: Databricks creates a
-    # MANAGED table and ignores the requested location).
+MANAGED_HEADING = r"^Databricks:\s*`?catalogMode:?\s*\"?managed\"?`?$"
+
+
+def test_unity_catalog_page_has_databricks_catalog_mode_managed_section():
     text = _read(UNITY_CATALOG_MDX)
-    assert 'With Databricks, `catalogMode: "rest"` is required.' not in text
-    assert "does not implement the Iceberg REST `register` call" in text
-    assert "ignores the requested location" in text
-    assert 'does not currently work against Databricks Unity Catalog' in text
-    assert "refuses to write into the managed location" in text
-    assert "[Databricks destination](/destinations/databricks)" in text
-    assert "not confirmed" not in text
-    # Adopting an existing path table is impossible there; the way out is stated.
-    assert "not possible on Databricks" in text
-    assert "start from a new prefix" in text and "deleteBeforeWrite" in text
-    # Both modes still described as working where the catalog supports them.
+    headings = [l.strip() for l in text.splitlines() if l.startswith("#")]
+    body = _section(text, MANAGED_HEADING)
+    assert body is not None, headings
+    # Prerequisites: a schema on MANAGED LOCATION in the pipeline's bucket, provider s3.
+    assert "MANAGED LOCATION" in body, body
+    assert '"provider": "s3"' in body or "`provider: s3`" in body or "provider `s3`" in body, body
+    # MinIO only with a custom icebergRestPath secret (a non-Databricks catalog).
+    assert "icebergRestPath" in body and "minio" in body.lower(), body
+    # Behaviour: the catalog chooses the location, prefixKey holds no data,
+    # a refusal before the write fails the run, deleteBeforeWrite is rejected,
+    # deleting the pipeline leaves the table and its files to Unity Catalog.
+    assert "prefixKey" in body, body
+    assert re.search(r"fails the run|the run fails", body), body
+    assert "deleteBeforeWrite" in body, body
+    assert "__unitystorage" in body or "chooses the location" in body, body
+    # Example config.
+    assert '"catalogMode": "managed"' in body, body
+    assert '"destinationBucketOverride"' in body, body
+
+
+def test_unity_catalog_page_no_longer_says_neither_mode_works_on_databricks():
+    text = _read(UNITY_CATALOG_MDX)
+    assert "supports neither mode" not in text
+    assert "**Databricks today.**" not in text
+    assert "**On Databricks.**" not in text
+    assert "Neither mode currently keeps Databricks Unity Catalog" not in text
+    assert "does not currently work against Databricks Unity Catalog" not in text
+    assert "is planned" not in text
+    # register/rest still described for catalogs that honour the requested location.
     assert "Apache Iceberg REST" in text
-    # The example uses the real bucket field.
-    assert '"destinationBucketOverride": "my-lake"' in text
     assert '"bucket": "my-lake"' not in text
 
 
-def test_pipeline_config_reference_and_mcp_arg_state_databricks_limits():
+def test_pipeline_config_reference_and_mcp_args_say_databricks_uses_managed():
     ref = server.PIPELINE_CONFIG_REFERENCE
-    assert "has no Iceberg REST `register` call" in ref
-    assert "Databricks-managed" in ref
+    assert "supports neither mode" not in ref
+    assert "planned managed-table support" not in ref
+    assert re.search(r'"catalogMode":\s*"managed"', ref), "PIPELINE_CONFIG_REFERENCE must give the managed recipe"
     src = _read(os.path.join(REPO_ROOT, "mcp-server", "server.py"))
     assert "Databricks requires rest" not in src
-    assert "use destination=databricks" in src
+    # Neither the unity_catalog nor the unity_catalog_mode description may keep
+    # the "does not work in either mode" wording.
+    assert "in either mode" not in src
+    assert "with either mode" not in src
 
 
 def test_unity_catalog_page_requires_managed_location_schema():
@@ -321,10 +349,13 @@ def test_unity_catalog_page_requires_managed_location_schema():
     assert "SCHEMA_DB_STORAGE" in text
 
 
-def test_databricks_limits_precede_the_prerequisites():
+def test_databricks_prerequisites_no_longer_say_planned():
+    # Unity Catalog 7: managed-table support exists; the grants intro says so.
     ref = server.PIPELINE_CONFIG_REFERENCE
-    assert ref.index("supports neither mode") < ref.index("Databricks-side grants"), ref
+    grants = ref[ref.index("Databricks-side grants"):]
+    assert "planned" not in grants[:300], grants[:300]
     text = _read(UNITY_CATALOG_MDX)
     body = _section(text, r"^Databricks prerequisites$")
     assert body is not None
-    assert body.strip().startswith("These are the grants the planned Databricks managed-table support"), body[:200]
+    assert "planned" not in body, body[:300]
+    assert "managed" in body, body[:300]

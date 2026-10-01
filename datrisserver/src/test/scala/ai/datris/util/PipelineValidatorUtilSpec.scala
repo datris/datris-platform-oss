@@ -732,11 +732,12 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         assert(noSecret.exists(_.contains("'unityCatalog.credentialsSecret'")), s"got: $noSecret")
     }
 
-    test("catalogMode bogus is rejected with the register-or-rest message") {
+    test("catalogMode bogus is rejected with the register-rest-or-managed message") {
+        // Unity Catalog 7 adds the third value to the message.
         val cfg = ucObjectStore(icebergS3, ucMode("bogus"))
         assert(cfg.unityCatalog.catalogMode == "bogus", s"${cfg.unityCatalog}")
         val err = validationError(cfg)
-        assert(err.exists(_.contains("'unityCatalog.catalogMode' must be 'register' or 'rest'")), s"got: $err")
+        assert(err.exists(_.contains("'unityCatalog.catalogMode' must be 'register', 'rest' or 'managed'")), s"got: $err")
     }
 
     test("catalogMode rest with register:false is rejected") {
@@ -783,5 +784,66 @@ class PipelineValidatorUtilSpec extends AnyFunSuite {
         assert(gson.fromJson(gson.toJson(gr), classOf[ai.datris.model.UnityCatalogSync]).restMode, "round trip keeps catalogMode")
         val none = new ai.datris.model.UnityCatalogSync()
         assert(none.catalogMode == null && none.catalogModeOrDefault == "register" && !none.restMode && none.registerOn, s"no-arg: $none")
+    }
+
+    // --- Story: Unity Catalog 7: Databricks-managed Iceberg mode ---------------
+    // (plans/stories/unity-catalog-7-managed-iceberg.md), Step 1 / Acceptance
+    // bullet 1. `managed` is a third value of the nullable catalogMode String
+    // (`managedMode`, and `throughCatalog` = rest or managed). Any provider is
+    // accepted at save time (the provider rule needs the secret, so it is a
+    // run-time refusal); the register knob must stay on; deleteBeforeWrite,
+    // Databricks destinations and non-Iceberg formats are rejected.
+
+    test("catalogMode managed on an s3 iceberg destination is accepted") {
+        val cfg = ucObjectStore(icebergS3, ucMode("managed"))
+        assert(cfg.unityCatalog.catalogMode == "managed", s"${cfg.unityCatalog}")
+        assert(cfg.unityCatalog.managedMode && cfg.unityCatalog.throughCatalog && !cfg.unityCatalog.restMode, s"${cfg.unityCatalog}")
+        passesUcRule(cfg)
+        passesUcRule(ucObjectStore(icebergS3, ucMode("MANAGED")))
+        // rest is still through the catalog, register is not.
+        val rest = ucObjectStore(icebergS3, ucMode("rest")).unityCatalog
+        assert(rest.throughCatalog && !rest.managedMode, s"$rest")
+        val register = ucObjectStore(icebergS3, ucRegister).unityCatalog
+        assert(!register.throughCatalog && !register.managedMode, s"$register")
+    }
+
+    test("catalogMode managed on a minio iceberg destination is accepted (provider is a run-time rule)") {
+        val err = anyError(ucObjectStore(""""fileFormat":"iceberg","provider":"minio"""", ucMode("managed")))
+        assert(!err.exists(m => m.contains("unityCatalog") || m.contains("catalogMode")), s"minio + managed must pass the UC rule, got: $err")
+        val noProvider = anyError(ucObjectStore(""""fileFormat":"iceberg"""", ucMode("managed")))
+        assert(!noProvider.exists(m => m.contains("unityCatalog") || m.contains("catalogMode")), s"default provider must pass the UC rule, got: $noProvider")
+    }
+
+    test("managed is rejected with deleteBeforeWrite, with register:false, on a Databricks destination, and on parquet") {
+        val withDelete = validationError(ucObjectStore(icebergS3 + ""","deleteBeforeWrite":true""", ucMode("managed")))
+        assert(
+            withDelete.exists(_.contains("'deleteBeforeWrite' cannot be combined with catalogMode 'managed': the catalog owns the table's files")),
+            s"got: $withDelete"
+        )
+        // deleteBeforeWrite with rest is not a validation error (the run-time guard handles a committed table).
+        passesUcRule(ucObjectStore(icebergS3 + ""","deleteBeforeWrite":true""", ucMode("rest")))
+
+        val registerOff = validationError(ucObjectStore(icebergS3, ucMode("managed", extra = ""","register":false""")))
+        assert(registerOff.exists(m => m.contains("requires the register knob on") && m.contains("managed")), s"got: $registerOff")
+
+        val dbx = ucConfig(databricksDb, unityCatalog = """{"enabled":true,"catalogMode":"managed"}""")
+        val dbxErr = validationError(dbx)
+        assert(dbxErr.exists(_.contains("'unityCatalog.catalogMode' applies to object-store Iceberg destinations only")), s"got: $dbxErr")
+
+        val parquet = validationError(ucObjectStore(""""fileFormat":"parquet","provider":"s3"""", ucMode("managed")))
+        assert(parquet.exists(m => m.contains("'unityCatalog.enabled'") && m.contains("iceberg")), s"got: $parquet")
+    }
+
+    test("catalogMode managed parses under Jackson (ParameterNamesModule) and Gson and round-trips") {
+        val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+            .registerModule(new com.fasterxml.jackson.module.paramnames.ParameterNamesModule())
+            .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+        val j = mapper.readValue("""{"enabled":true,"catalogMode":" Managed "}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(j.managedMode && j.throughCatalog && !j.restMode && j.catalogModeOrDefault == "managed", s"$j")
+        val g = gson.fromJson("""{"enabled":true,"catalogMode":"managed"}""", classOf[ai.datris.model.UnityCatalogSync])
+        assert(g.managedMode && g.throughCatalog, s"$g")
+        assert(gson.fromJson(gson.toJson(g), classOf[ai.datris.model.UnityCatalogSync]).managedMode, "round trip keeps managed")
+        val none = new ai.datris.model.UnityCatalogSync()
+        assert(!none.managedMode && !none.throughCatalog, s"no-arg: $none")
     }
 }

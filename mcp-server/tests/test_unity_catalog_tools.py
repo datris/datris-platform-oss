@@ -203,7 +203,8 @@ def test_create_pipeline_schema_lists_optional_unity_catalog_mode():
     assert "unity_catalog_mode" in props, sorted(props)
     arg = props["unity_catalog_mode"]
     assert arg["type"] == "string", arg
-    assert sorted(arg.get("enum", [])) == ["register", "rest"], arg
+    # Unity Catalog 7 adds managed (the mode for Databricks Unity Catalog).
+    assert arg.get("enum", []) == ["register", "rest", "managed"], arg
     assert "unity_catalog_mode" not in tool.inputSchema.get("required", [])
 
 
@@ -231,3 +232,16 @@ def test_objectstore_without_unity_catalog_mode_posts_no_catalog_mode(captured):
 def test_databricks_ignores_unity_catalog_mode(captured):
     posted = _create_databricks(captured, unity_catalog=True, unity_catalog_mode="rest")
     assert posted.get("unityCatalog") == {"enabled": True}, posted
+
+
+# ======================================================================
+# Story: Unity Catalog 7: Databricks-managed Iceberg mode
+# (plans/stories/unity-catalog-7-managed-iceberg.md), Acceptance bullet 8.
+# ======================================================================
+
+def test_unity_catalog_mode_description_names_managed_for_databricks():
+    desc = _props(_tool("create_pipeline"))["unity_catalog_mode"]["description"]
+    assert "managed" in desc, desc
+    assert "the mode for Databricks Unity Catalog" in desc, desc
+    assert "does not currently work with either mode" not in desc, desc
+

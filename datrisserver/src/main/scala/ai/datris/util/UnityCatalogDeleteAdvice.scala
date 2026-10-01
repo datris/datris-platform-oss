@@ -50,7 +50,18 @@ object UnityCatalogDeleteAdvice {
         if (!isIceberg(config) || previous == null) return None
         val root = tableRoot(config)
         val qualified = IcebergRestSession.qualifiedFor(config)
-        if (IcebergRestSession.restCommitted(previous, root))
+        // catalogMode managed: the table and its files live where the catalog
+        // put them (Databricks: under the schema's __unitystorage), never
+        // under prefixKey. PipelineAPIController.cleanupDestinationData
+        // (ObjectStoreSpark.deleteDestinationData) only deletes
+        // s3a://<bucket>/<prefixKey>, which holds nothing in this mode, so
+        // Datris deleted nothing of the table whatever dataDeleted says.
+        if (IcebergRestSession.managedCommitted(previous))
+            Some(
+                "Unity Catalog owns " + qualified + " and its files (catalogMode managed); Datris deleted nothing there; drop " + qualified +
+                    " in Unity Catalog to remove the data"
+            )
+        else if (IcebergRestSession.restCommitted(previous, root))
             Some(
                 if (!dataDeleted)
                     "Unity Catalog still holds " + qualified + " and can still read it (the data files were kept); have an admin drop it"

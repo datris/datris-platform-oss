@@ -45,7 +45,7 @@ A missing privilege, a wrong host or a workspace without the external lineage AP
 
 An [object store](/destinations/object-store) or [S3](/destinations/s3) pipeline with `fileFormat: "iceberg"` can register its table in Unity Catalog. After each successful write, Datris points Unity Catalog at the table's current Iceberg metadata file, so Databricks SQL and any Iceberg REST client can find the table by name.
 
-**Databricks today.** Neither mode currently keeps Databricks Unity Catalog pointing at a table Datris writes to its own S3 prefix. Databricks does not implement the Iceberg REST `register` call, so the default `catalogMode: "register"` gets a warning on every run that the catalog has no register endpoint. And when a table is created through Databricks' Iceberg REST catalog (`catalogMode: "rest"`), Databricks creates a managed Iceberg table in the schema's own storage and ignores the location Datris asks for, so Datris refuses to write there and writes by path instead (see [Keep the catalog current](#keep-the-catalog-current-catalogmode-rest)). Support for Databricks-managed Iceberg tables, where the catalog chooses the location, is planned. Until then, use the [Databricks destination](/destinations/databricks) for tables you want governed in Unity Catalog. Both modes work with catalogs that implement `register` and honour the requested location, such as the Apache Iceberg REST test fixture.
+Three modes decide how the table gets into the catalog: `catalogMode: "register"` (the default) points the catalog at the table Datris writes under the pipeline's prefix, `"rest"` commits every write through the catalog at that prefix, and `"managed"` lets the catalog choose where the table lives and commits every write through it. `register` and `rest` need a catalog that implements the Iceberg REST `register` call and honours the location Datris asks for, such as the Apache Iceberg REST test fixture. Databricks Unity Catalog does neither, so **on Databricks use `catalogMode: "managed"`** (see [Databricks: catalogMode managed](#databricks-catalogmode-managed)).
 
 ```json
 {
@@ -72,7 +72,7 @@ The API returns `400` when `credentialsSecret` or `catalog` is missing, or when 
 
 ### Databricks prerequisites
 
-These are the grants the planned Databricks managed-table support and the [Databricks destination](/destinations/databricks) need; today neither Iceberg mode keeps the pointer on a Datris-owned table (see **Databricks today** above).
+These are the grants `catalogMode: "managed"` (see [Databricks: catalogMode managed](#databricks-catalogmode-managed)) and the [Databricks destination](/destinations/databricks) need.
 
 Registration uses the Unity Catalog Iceberg REST catalog, which needs three things set up once:
 
@@ -123,7 +123,7 @@ By default Datris writes the table by path and registers it once (`catalogMode: 
 }
 ```
 
-`catalogMode` accepts `register` or `rest` (any case) and applies to object store Iceberg pipelines only. The API returns `400` for any other value, for `catalogMode` on a Databricks destination, and for `"register": false` together with `"rest"`. `rest` needs the same `credentialsSecret` and `catalog` as registration. To convert an existing non-Iceberg pipeline (parquet, orc), take two steps: first switch `fileFormat` to `iceberg` with `deleteBeforeWrite` on and run it once, then remove `deleteBeforeWrite` and add `catalogMode: "rest"`.
+`catalogMode` accepts `register`, `rest` or `managed` (any case) and applies to object store Iceberg pipelines only. The API returns `400` for any other value, for `catalogMode` on a Databricks destination, and for `"register": false` together with `"rest"` or `"managed"`. `rest` needs the same `credentialsSecret` and `catalog` as registration. To convert an existing non-Iceberg pipeline (parquet, orc), take two steps: first switch `fileFormat` to `iceberg` with `deleteBeforeWrite` on and run it once, then remove `deleteBeforeWrite` and add `catalogMode: "rest"`.
 
 The first `rest` run looks at both the catalog and the table already at the pipeline's path:
 
@@ -157,11 +157,51 @@ Once a table has been committed through the catalog, its current metadata is kno
 
 On a pipeline that has never committed through the catalog, `DATRIS_UNITY_CATALOG_SYNC=false` writes by path with one line saying the sync is off.
 
-The pipeline detail page shows a `rest` chip and when the table was last kept current, or `refused` with the reason. `GET /api/v1/pipelines/{name}/unity-catalog` adds `catalogMode`, `restMetadataLocation`, `lastRestCommitAt`, `restRefusedReason` and `restCreatedTable`, and `register` gains the values `rest` and `refused`.
+The pipeline detail page shows a `rest` chip and when the table was last kept current, or `refused` with the reason. `GET /api/v1/pipelines/{name}/unity-catalog` adds `catalogMode`, `restMetadataLocation`, `lastRestCommitAt`, `restRefusedReason` and `restCreatedTable`, and `register` gains the values `rest`, `managed` and `refused`.
 
-**On Databricks.** Confirmed against a live workspace: the service principal's OAuth client-credentials token works, and Databricks' Iceberg REST catalog accepts creating a table, but it creates a MANAGED Iceberg table in the schema's storage (under `__unitystorage/`) and ignores the requested location. `catalogMode: "rest"` therefore does not currently work against Databricks Unity Catalog: Datris checks where the catalog put the table before writing anything, refuses to write into the managed location, warns (naming both locations and the table an admin should drop) and writes by path; the pipeline page shows `refused`. Databricks also has no `register` call, so an existing path table cannot be adopted there. Supporting Databricks-managed Iceberg tables (letting the catalog choose the location) is a follow-up. `catalogMode: "rest"` works against catalogs that honour the requested location, such as the Apache Iceberg REST fixture. If a run ever places a table outside the pipeline's prefix, the same refusal applies with any catalog.
+`catalogMode: "rest"` works against catalogs that honour the requested location, such as the Apache Iceberg REST fixture. Datris checks where the catalog put the table before writing anything: if a catalog places the table outside the pipeline's prefix (Databricks does, it creates a managed table and ignores the requested location), Datris refuses to write there, warns (naming both locations and the table an admin should drop) and writes by path; the pipeline page shows `refused`. On Databricks, use `catalogMode: "managed"` instead.
 
 **Testing locally.** The Iceberg REST catalog test fixture works as a stand-in for Unity Catalog: run the `apache/iceberg-rest-fixture` image on the Datris network, create its `default` namespace, and use a secret with `host` set to `http://iceberg-rest:8181`, `icebergRestPath` set to `/` and `icebergRestPrefix` set to `-` (see the next section). Point the pipeline at the built-in MinIO store for this test.
+
+### Databricks: `catalogMode: managed`
+
+Databricks Unity Catalog creates Iceberg tables as managed tables: it chooses where the table lives (under the schema's `MANAGED LOCATION`, in a `__unitystorage/` folder) and has no `register` call. With `catalogMode: "managed"`, Datris works the same way: it creates `<catalog>.<schema>.<pipeline>` through the Unity Catalog Iceberg REST catalog without asking for a location, the catalog chooses the location, Datris writes the data files there with the pipeline's own S3 credentials, and every append, overwrite, merge and added column is committed through the catalog. Catalog Explorer, Databricks SQL and the pipeline's object store query all see the same current table.
+
+```json
+{
+  "destination": {
+    "objectStore": { "provider": "s3", "destinationBucketOverride": "my-lake", "prefixKey": "orders", "fileFormat": "iceberg", "credentialsSecret": "aws_lake" }
+  },
+  "unityCatalog": {
+    "enabled": true,
+    "credentialsSecret": "databricks_prod",
+    "catalog": "analytics",
+    "schema": "uc",
+    "catalogMode": "managed"
+  }
+}
+```
+
+**Prerequisites**
+
+- A schema created with `MANAGED LOCATION 's3://<pipeline bucket>/<prefix>/'` in the pipeline's own bucket (the bucket in `destinationBucketOverride`), for example `CREATE SCHEMA analytics.uc MANAGED LOCATION 's3://my-lake/uc/'`, and the grants from [Databricks prerequisites](#databricks-prerequisites).
+- `provider: s3`, with an object store `credentialsSecret` that can read and write that bucket, including the catalog's `__unitystorage/` folder under the schema's location. The pipeline's S3 credentials cover the whole bucket, so they reach wherever the catalog puts the table in it.
+- `provider: minio` is accepted only when the Unity Catalog secret has a custom `icebergRestPath`, meaning a non-Databricks catalog such as the test fixture (see [Other Iceberg REST catalogs](#other-iceberg-rest-catalogs)). With a Databricks secret, a MinIO pipeline fails the run before anything is written, because Unity Catalog cannot place a managed table in the built-in MinIO store.
+
+**How runs behave**
+
+- The catalog chooses the location. It must be in the pipeline's bucket: a table the catalog places in another bucket is refused before any data is written, and the run fails, naming both buckets.
+- `prefixKey` holds no data in this mode. Datris never writes under it, and queries read the table where the catalog put it. The run log names the catalog location (`created analytics.uc.orders at s3://my-lake/uc/__unitystorage/... through the catalog`).
+- Datris only writes to a table it created for this pipeline. If the catalog already has a table with that name that this pipeline did not create, the run fails; have an admin drop it or choose another schema. The one exception is the empty table an earlier `catalogMode: "rest"` run created on Databricks for this pipeline: managed mode adopts it.
+- Unlike `rest`, managed mode never falls back to a path write. Any refusal before the commit (a wrong host, a missing grant, a network error, the sync switched off with `DATRIS_UNITY_CATALOG_SYNC=false`) fails the run, because a path table nobody reads would silently strand the rows. A failure during the commit fails the run as in every mode.
+- `deleteBeforeWrite` is rejected with `400`: there is nothing at the prefix to delete, and the table's files belong to the catalog.
+- Switching a table that has been committed in managed mode to `rest` or `register` (or switching a `rest` table to `managed`) fails the next run. Datris never converts a table between modes; to change, have an admin drop the table first.
+- Deleting or resetting the pipeline leaves the table and its files to Unity Catalog: Datris deletes only the pipeline's prefix, which is empty in this mode. The delete response carries the warning `Unity Catalog owns <catalog>.<schema>.<table> and its files (catalogMode managed); Datris deleted nothing there; drop <catalog>.<schema>.<table> in Unity Catalog to remove the data`.
+- The pipeline detail page shows a `managed` chip and when the table was last committed. `GET /api/v1/pipelines/{name}/unity-catalog` returns `catalogMode: "managed"`, `register: "managed"` and `restMetadataLocation` under the catalog's location.
+
+<Note>
+Creating a managed table through Databricks' Iceberg REST catalog has been verified against a live workspace. Committing data files to it from Datris has not been verified against a live workspace yet. If Databricks rejects the commit, or the S3 credentials cannot write under `__unitystorage/`, the run fails as a write failure and the catalog keeps an empty table, which the next run adopts and retries.
+</Note>
 
 ### Other Iceberg REST catalogs
 
@@ -172,7 +212,7 @@ For testing and for non-Databricks catalogs, the secret can carry two optional f
 | `icebergRestPath` | `/api/2.1/unity-catalog/iceberg-rest` | Path of the Iceberg REST catalog on `host`. `/` means the host root. |
 | `icebergRestPrefix` | `catalogs/<catalog>` | Catalog prefix in the REST path. An empty value, or `-`, means no prefix. |
 
-`host` may then include a scheme and port, for example `http://iceberg-rest:8181`, and a secret without `clientId`/`clientSecret` or `token` sends no credentials. Both registration and `catalogMode: "rest"` work this way.
+`host` may then include a scheme and port, for example `http://iceberg-rest:8181`, and a secret without `clientId`/`clientSecret` or `token` sends no credentials. Registration, `catalogMode: "rest"` and `catalogMode: "managed"` all work this way.
 
 ## Browse what a secret can see
 

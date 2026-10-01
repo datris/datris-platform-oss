@@ -18,7 +18,8 @@ Copyright (C) 2026 Datris (https://datris.ai)
   *    ⇒ `AdoptCatalog`
   *  - the catalog points at an older file of our table ⇒ `RefuseBehind`
   *    (moving the pointer needs a DROP, which Datris never does)
-  *  - the catalog points anywhere else ⇒ `RefuseForeign` */
+  *  - the catalog points anywhere else ⇒ `RefuseForeign`
+  * `decideManaged` is the `catalogMode: managed` variant. */
 object RestAdoptDecision {
     sealed trait Decision
     case object CreateNew extends Decision
@@ -64,4 +65,22 @@ object RestAdoptDecision {
             case (Some(c), None) => if (underRoot(c)) AdoptCatalog else RefuseForeign(c)
         }
     }
+
+    /** First-run decision for `catalogMode: managed`. The catalog chooses the
+      * location, so there is no path table to adopt or be behind:
+      *  - the catalog has no table ⇒ `CreateNew`;
+      *  - it has one in the pipeline's `bucket` that this pipeline recorded
+      *    (an earlier managed commit, or the empty table a refused `rest` run
+      *    created for this name, `restCreatedTable`) ⇒ `AdoptCatalog`;
+      *  - anything else ⇒ `RefuseForeign` (never adopt someone else's managed
+      *    table, even in our bucket; never one outside our bucket, which the
+      *    pipeline's S3 secret does not cover). */
+    def decideManaged(catalogHas: Option[String], previous: ai.datris.model.UnityCatalogSyncState, qualified: String, bucket: String): Decision =
+        catalogHas.filter(s => s != null && s.trim.nonEmpty) match {
+            case None => CreateNew
+            case Some(c) =>
+                val ours = IcebergRestSession.managedCommitted(previous) ||
+                    (previous != null && previous.restCreatedTable != null && previous.restCreatedTable == qualified)
+                if (ours && IcebergWriter.inBucket(c, bucket)) AdoptCatalog else RefuseForeign(c)
+        }
 }

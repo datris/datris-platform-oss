@@ -66,8 +66,11 @@ object PipelineValidatorUtil {
       * the UC catalog). Any object-store provider is accepted: registering
       * only records a location. `enabled:false` is accepted anywhere (a
       * harmless leftover). `catalogMode` (object-store Iceberg only) is
-      * `register` or `rest`; `rest` needs the register knob on and the same
-      * secret + catalog. */
+      * `register`, `rest` or `managed`; `rest` and `managed` need the register
+      * knob on and the same secret + catalog; `managed` also refuses
+      * deleteBeforeWrite (the catalog owns the table's files). The managed
+      * provider rule (s3, or minio with a custom icebergRestPath secret) needs
+      * the secret, so it is a run-time refusal (IcebergRestSession.prepare). */
     private def validateUnityCatalog(config: PipelineConfig): Unit = {
         val uc = config.unityCatalog
         if (uc == null || !uc.enabled) return
@@ -78,10 +81,10 @@ object PipelineValidatorUtil {
             if (databricks)
                 throw new DatrisException("'unityCatalog.catalogMode' applies to object-store Iceberg destinations only")
             val mode = uc.catalogModeOrDefault
-            if (mode != "register" && mode != "rest")
-                throw new DatrisException("'unityCatalog.catalogMode' must be 'register' or 'rest'")
-            if (mode == "rest" && !uc.registerOn)
-                throw new DatrisException("'unityCatalog.catalogMode: rest' requires the register knob on")
+            if (mode != "register" && mode != "rest" && mode != "managed")
+                throw new DatrisException("'unityCatalog.catalogMode' must be 'register', 'rest' or 'managed'")
+            if ((mode == "rest" || mode == "managed") && !uc.registerOn)
+                throw new DatrisException("'unityCatalog.catalogMode: " + mode + "' requires the register knob on")
         }
         if (databricks) return
         val objectStore = if (config.destination != null) config.destination.objectStore else null
@@ -96,6 +99,8 @@ object PipelineValidatorUtil {
                 throw new DatrisException(
                     "'unityCatalog.credentialsSecret' and 'unityCatalog.catalog' are required for an object-store Iceberg destination"
                 )
+            if (uc.managedMode && objectStore.deleteBeforeWrite)
+                throw new DatrisException("'deleteBeforeWrite' cannot be combined with catalogMode 'managed': the catalog owns the table's files")
             return
         }
         throw new DatrisException(

@@ -129,4 +129,36 @@ class UnityCatalogDeleteAdviceSpec extends AnyFunSuite {
         assert(A.forPipeline(config("iceberg"), created, dataDeleted = false).contains(want))
         assert(A.forPipeline(config("iceberg"), created.copy(restCreatedTable = null)).isEmpty)
     }
+
+    // ---- Story: Unity Catalog 7: Databricks-managed Iceberg mode -----------
+    // (plans/stories/unity-catalog-7-managed-iceberg.md), Acceptance bullet 6.
+    // A managed-committed table lives where the catalog put it (not under
+    // prefixKey): Datris deleted nothing there, whatever dataDeleted /
+    // configDeleted say.
+
+    test("managed table: advice says Unity Catalog owns the files") {
+        val managedUc = UnityCatalogSync(enabled = true, catalog = "main", schema = "sales", catalogMode = "managed")
+        val managed = UnityCatalogSyncState(
+            "orders_daily",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            catalogMode = "managed",
+            restMetadataLocation = "s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b/metadata/00002-e5f6.metadata.json",
+            lastRestCommitAt = "2026-10-01T09:00:00Z"
+        )
+        val want =
+            "Unity Catalog owns main.sales.orders_daily and its files (catalogMode managed); Datris deleted nothing there; " +
+                "drop main.sales.orders_daily in Unity Catalog to remove the data"
+        assert(A.forPipeline(config("iceberg", uc = managedUc), managed).contains(want))
+        assert(A.forPipeline(config("iceberg", uc = managedUc), managed, configDeleted = false).contains(want))
+        assert(A.forPipeline(config("iceberg", uc = managedUc), managed, dataDeleted = false).contains(want))
+        // A different prefixKey does not matter (root-independent).
+        assert(A.forPipeline(config("iceberg", prefix = "orders_v2", uc = managedUc), managed).contains(want))
+        // No recorded commit: nothing to warn about.
+        assert(A.forPipeline(config("iceberg", uc = managedUc), managed.copy(lastRestCommitAt = null)).isEmpty)
+    }
 }

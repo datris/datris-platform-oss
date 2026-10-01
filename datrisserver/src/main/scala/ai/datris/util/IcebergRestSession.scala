@@ -36,7 +36,14 @@ import scala.util.control.NonFatal
   *  - switching from `rest` back to `register` is refused for the same reason.
   * A failure during the catalog commit itself is a write failure (the writer
   * throws as usual). [[record]] writes the state doc before the run's `end`
-  * line. */
+  * line.
+  *
+  * `catalogMode: managed` (Databricks) shares the session: the catalog
+  * chooses the table's location (it must be in the pipeline's bucket),
+  * `prefixKey` holds no data, only a table this pipeline recorded is adopted,
+  * and ANY refusal or pre-commit failure fails the run (there is no path
+  * write to fall back to). A managed-committed table is never switched to
+  * another mode, nor a rest-committed one to managed. */
 object IcebergRestSession {
     private val logger: Logger = LoggerFactory.getLogger(getClass)
 
@@ -57,7 +64,10 @@ object IcebergRestSession {
         location: String = null,
         adopted: Option[String] = None,
         created: Boolean = false,
-        closeable: Option[Closeable] = None
+        closeable: Option[Closeable] = None,
+        // catalogMode managed: the catalog chooses the location in `bucket`.
+        managed: Boolean = false,
+        bucket: String = null
     ) {
         def close(): Unit = closeable.foreach(c => Try(c.close()))
     }
@@ -101,6 +111,36 @@ object IcebergRestSession {
         previous != null && previous.catalogMode == "rest" && previous.restMetadataLocation != null && previous.lastRestCommitAt != null &&
             IcebergCatalogRegistrar.classify(previous.restMetadataLocation, null, tableRoot) != IcebergCatalogRegistrar.Foreign
 
+    /** An earlier `catalogMode: managed` run committed this pipeline's table
+      * through the catalog. Root-independent: a managed table lives where the
+      * catalog put it, not under prefixKey, so the guard follows the pipeline
+      * to a new prefix. */
+    def managedCommitted(previous: UnityCatalogSyncState): Boolean =
+        previous != null && previous.catalogMode == "managed" && previous.restMetadataLocation != null && previous.lastRestCommitAt != null
+
+    def switchFromManagedMessage(qualified: String): String =
+        qualified + " is a Unity Catalog managed table (catalogMode managed) committed by this pipeline; its current metadata and files are " +
+            "only known to the catalog, so it cannot be written by path or in another catalogMode. Set catalogMode managed again, or have an " +
+            "admin drop " + qualified + " in Unity Catalog first (Datris never converts a managed table)"
+
+    def managedDeleteBeforeWriteMessage(qualified: String): String =
+        "deleteBeforeWrite cannot be used on " + qualified + ": it is a Unity Catalog managed table (catalogMode managed) whose files belong to " +
+            "the catalog; drop " + qualified + " in Unity Catalog first"
+
+    /** catalogMode managed needs the pipeline's own S3 bucket: Databricks
+      * cannot place a managed table in the built-in MinIO store. MinIO is
+      * allowed only with a custom `icebergRestPath` on the Unity Catalog
+      * secret (a non-Databricks catalog). `provider` absent means MinIO. */
+    def managedProviderRefusal(provider: String, secretFields: Map[String, String], secretName: String): Option[String] = {
+        val p = Option(provider).map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("minio")
+        if (p == "minio" && !IcebergCatalogRegistrar.hasCustomRestPath(secretFields))
+            Some(
+                "catalogMode managed needs objectStore.provider 's3' with a Databricks secret: Unity Catalog cannot place a managed table in the " +
+                    "built-in MinIO store (secret " + secretName + " has no icebergRestPath)"
+            )
+        else None
+    }
+
     def switchBackMessage(qualified: String): String =
         "this prefix holds a table that was committed through Unity Catalog (catalogMode rest) but this pipeline is not in rest mode; " +
             "writing it by path is not supported because the table's current metadata is only known to the catalog. Set catalogMode rest, " +
@@ -128,24 +168,36 @@ object IcebergRestSession {
     /** Run-failing guard, pure: a table committed through the catalog at
       * `tableRoot` must not be deleted (deleteBeforeWrite) nor written by any
       * path-based writer (rest not active, or a non-Iceberg format), whatever
-      * the rest of the config says. None = no objection. */
+      * the rest of the config says. `restActive` = this run commits through
+      * the catalog (rest OR managed), `managedActive` = it is in managed mode.
+      * A managed-committed table (any root) must stay managed and is never
+      * deleted; a rest-committed one never switches to managed. None = no
+      * objection. */
     def guardFailure(
         previous: UnityCatalogSyncState,
         tableRoot: String,
         iceberg: Boolean,
         deleteBeforeWrite: Boolean,
         restActive: Boolean,
-        qualified: String
+        qualified: String,
+        managedActive: Boolean = false
     ): Option[String] = {
         val committed = restCommitted(previous, tableRoot)
-        if (committed && deleteBeforeWrite) Some(deleteBeforeWriteMessage(qualified))
-        else if (committed && (!iceberg || !restActive)) Some(switchBackMessage(qualified))
+        val managed = managedCommitted(previous)
+        if (managed && deleteBeforeWrite) Some(managedDeleteBeforeWriteMessage(qualified))
+        else if (managed && (!iceberg || !restActive || !managedActive)) Some(switchFromManagedMessage(qualified))
+        else if (committed && deleteBeforeWrite) Some(deleteBeforeWriteMessage(qualified))
+        else if (committed && (!iceberg || !restActive || managedActive)) Some(switchBackMessage(qualified))
         else None
     }
 
     /** Raised inside `open` when the catalog holds the table and the run
       * would delete it first; rethrown by `prepare` as a run failure. */
     private class DeleteRefused(message: String) extends DatrisException(message)
+
+    /** A managed-mode refusal before any write (provider rule): rethrown by
+      * `prepare` as a run failure, never turned into a Fallback. */
+    private class ManagedRefused(message: String) extends DatrisException(message)
 
     /** deleteBeforeWrite is refused when the catalog's table lives under our
       * root (deleting the prefix would leave it pointing at deleted
@@ -209,12 +261,18 @@ object IcebergRestSession {
 
     /** State written right after a catalog create or adopt, before the data
       * write: the catalog now holds the table at `metadataLocation`. */
-    def interimState(previous: UnityCatalogSyncState, pipeline: String, metadataLocation: String, now: String): UnityCatalogSyncState =
+    def interimState(
+        previous: UnityCatalogSyncState,
+        pipeline: String,
+        metadataLocation: String,
+        now: String,
+        mode: String = "rest"
+    ): UnityCatalogSyncState =
         Option(previous)
             .getOrElse(UnityCatalogSyncState(pipeline, null, null, null, null, null, null))
             .copy(
                 pipeline = pipeline,
-                catalogMode = "rest",
+                catalogMode = mode,
                 restMetadataLocation = metadataLocation,
                 lastRestCommitAt = now,
                 restRefusedReason = null,
@@ -226,9 +284,9 @@ object IcebergRestSession {
         case _ => null
     }
 
-    private def recordInterim(pipeline: String, previous: UnityCatalogSyncState, metadataLocation: String): Unit =
+    private def recordInterim(pipeline: String, previous: UnityCatalogSyncState, metadataLocation: String, mode: String = "rest"): Unit =
         if (metadataLocation != null)
-            try UnityCatalogSyncIO.write(interimState(previous, pipeline, metadataLocation, Instant.now().toString))
+            try UnityCatalogSyncIO.write(interimState(previous, pipeline, metadataLocation, Instant.now().toString, mode))
             catch { case NonFatal(e) => logger.warn("uc-rest interim state write failed for " + pipeline + ": " + e.getMessage) }
 
     /** What to do about a foreign catalog table of our name. After an
@@ -263,6 +321,7 @@ object IcebergRestSession {
       * refused plan so the run writes by path. Nothing was committed through
       * the catalog, so no path history can fork. */
     def afterLocationRefused(jobContext: JobContext, plan: Plan, refused: IcebergWriter.RestLocationRefused): Plan = {
+        if (plan.managed) failManagedLocation(jobContext, plan, refused)
         val msg = line(outsideRootMessage(plan.qualified, refused.tableLocation, plan.location))
         // Defensive: a table already committed through the catalog must never
         // be written by path (it would fork its history).
@@ -287,6 +346,29 @@ object IcebergRestSession {
         plan.copy(target = None, refused = Some(msg), created = false, closeable = None, previous = previous)
     }
 
+    /** The warning for a managed table the catalog placed outside the
+      * pipeline's bucket. */
+    def outsideBucketMessage(qualified: String, tableLocation: String, bucket: String): String =
+        s"the catalog placed $qualified at ${IcebergCatalogRegistrar.normalize(tableLocation)}, outside the pipeline's bucket s3://$bucket/; " +
+            s"catalogMode managed only writes in the pipeline's bucket (its S3 secret covers that bucket). Give the schema a MANAGED LOCATION " +
+            s"in s3://$bucket/ (or point the pipeline at the schema's bucket) and have an admin drop $qualified; the run fails, nothing was written"
+
+    /** Managed mode: the writer refused the catalog's table before writing
+      * anything. Never a path write: record a catalog-created table, audit,
+      * close the catalog, and fail the run. */
+    private def failManagedLocation(jobContext: JobContext, plan: Plan, refused: IcebergWriter.RestLocationRefused): Nothing = {
+        val msg = line(outsideBucketMessage(plan.qualified, refused.tableLocation, plan.bucket))
+        logger.warn("uc-rest managed location refused for pipeline " + jobContext.config.name + ": " + refused.getMessage)
+        audit(jobContext.config.name, msg)
+        plan.close()
+        if (refused.created)
+            try UnityCatalogSyncIO.write(createdRefusedState(plan.previous, jobContext.config.name, plan.qualified, msg))
+            catch { case NonFatal(e) => logger.warn("uc-rest state write failed for " + jobContext.config.name + ": " + e.getMessage) }
+        val ex = new DatrisException(msg)
+        ex.initCause(refused)
+        throw ex
+    }
+
     /** The writer's catalog create lost to another create of the same
       * identifier (AlreadyExists). Re-decide against the now-existing
       * catalog table: under our root ⇒ retry through the catalog; anywhere
@@ -303,6 +385,27 @@ object IcebergRestSession {
                     case _ => None
                 }
             catch { case NonFatal(_) => None }
+        if (plan.managed) {
+            // Ours only when the state doc now records it (another run of this
+            // pipeline created it); anything else fails the run.
+            val now = Try(UnityCatalogSyncIO.read(config.name)).getOrElse(plan.previous)
+            RestAdoptDecision.decideManaged(catalogHas, now, plan.qualified, plan.bucket) match {
+                case RestAdoptDecision.AdoptCatalog =>
+                    statusUtil.info("processing", line(s"${plan.qualified} was created concurrently by this pipeline; committing through it"))
+                    return plan.copy(created = false, previous = now)
+                case _ =>
+                    val msg = line(
+                        s"${plan.qualified} was created in Unity Catalog by someone else while this run was creating it" +
+                            catalogHas.map(c => " (at " + IcebergCatalogRegistrar.normalize(c) + ")").getOrElse("") +
+                            "; catalogMode managed never adopts a table Datris did not create; have an admin drop " + plan.qualified +
+                            " or choose another schema"
+                    )
+                    logger.warn("uc-rest managed create conflict for pipeline " + config.name + ": " + oneLine(cause.getMessage))
+                    audit(config.name, msg)
+                    plan.close()
+                    throw new DatrisException(msg)
+            }
+        }
         RestAdoptDecision.decide(catalogHas, None, plan.location) match {
             case RestAdoptDecision.AdoptCatalog =>
                 statusUtil.info("processing", line(s"${plan.qualified} was created concurrently at this table's location; committing through it"))
@@ -342,7 +445,7 @@ object IcebergRestSession {
         if (!iceberg && !deleteBeforeWrite) return Inactive
 
         var previous = readState(config.name)
-        var forkRisk = restCommitted(previous, outputPath)
+        var forkRisk = restCommitted(previous, outputPath) || managedCommitted(previous)
         val uc = config.unityCatalog
         // A leftover doc (the pipeline was deleted out of band and recreated)
         // says "committed" while neither the catalog nor the prefix has the
@@ -365,13 +468,33 @@ object IcebergRestSession {
             previous = cleared
             forkRisk = false
         }
-        val restActive = uc != null && uc.enabled && uc.registerOn && uc.restMode
+        // Commits through the catalog this run: rest or managed.
+        val restActive = uc != null && uc.enabled && uc.registerOn && uc.throughCatalog
+        val managedActive = restActive && uc.managedMode
         val qualified = qualifiedFor(config)
-        guardFailure(previous, outputPath, iceberg, deleteBeforeWrite, restActive, qualified).foreach(m => throw new DatrisException(m))
+        guardFailure(previous, outputPath, iceberg, deleteBeforeWrite, restActive, qualified, managedActive).foreach { m =>
+            if (managedActive || managedCommitted(previous)) audit(config.name, line(m))
+            throw new DatrisException(m)
+        }
         if (!iceberg || !restActive) return Inactive
-        val base = Plan(active = true, target = None, refused = None, previous = previous, qualified = qualified, location = outputPath)
+        val bucket = if (managedActive) ObjectStoreSpark.resolveBucket(objectStore) else null
+        val base = Plan(
+            active = true,
+            target = None,
+            refused = None,
+            previous = previous,
+            qualified = qualified,
+            location = outputPath,
+            managed = managedActive,
+            bucket = bucket
+        )
 
         if (!UnityCatalogMetadataSync.switchedOn) {
+            if (managedActive)
+                throw new DatrisException(
+                    "Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false); catalogMode managed writes only through the catalog, " +
+                        "so the run fails (nothing was written)"
+                )
             if (forkRisk)
                 throw new DatrisException(committedMessage(previous, "Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false)", qualified))
             val msg = line("Unity Catalog sync is switched off (DATRIS_UNITY_CATALOG_SYNC=false); writing path-based")
@@ -391,15 +514,30 @@ object IcebergRestSession {
                                 " and no token"
                         )
                     )
-                else open(jobContext, outputPath, creds, previous, statusUtil, base, deleteBeforeWrite)
+                else {
+                    // Before any write: Databricks cannot place a managed table in MinIO.
+                    if (managedActive)
+                        managedProviderRefusal(objectStore.provider, creds.extra, uc.credentialsSecret).foreach(m => throw new ManagedRefused(m))
+                    open(jobContext, outputPath, creds, previous, statusUtil, base, deleteBeforeWrite)
+                }
             } catch {
                 case d: DeleteRefused => throw d
+                case m: ManagedRefused =>
+                    audit(config.name, line(m.getMessage))
+                    throw m
                 case t: Throwable if NonFatal(t) || t.isInstanceOf[LinkageError] =>
                     Left(Fallback("Unity Catalog REST catalog could not be opened: " + oneLine(Option(t.getMessage).getOrElse(t.getClass.getSimpleName))))
             }
 
         opened match {
             case Right(plan) => plan
+            case Left(Fallback(reason)) if managedActive =>
+                // Decision 3: managed mode never writes by path (prefixKey holds
+                // no data and readers follow the catalog), so a refusal fails.
+                val msg = line(reason + "; catalogMode managed never writes by path, so the run fails (nothing was written)")
+                logger.warn("uc-rest managed refusal for pipeline " + config.name + ": " + reason)
+                audit(config.name, msg)
+                throw new DatrisException(msg)
             case Left(Fallback(reason)) =>
                 if (forkRisk) {
                     audit(config.name, line(reason))
@@ -451,6 +589,9 @@ object IcebergRestSession {
                         case _ => (None, Set.empty[String])
                     }
                 } else (None, Set.empty[String])
+
+            if (base.managed) return openManaged(config.name, catalog, ident, sparkName, props, catalogHas, previous, statusUtil, base)
+
             // The loader deletes the prefix after this call: never leave the
             // catalog pointing at deleted metadata, never adopt what is about
             // to be deleted.
@@ -542,6 +683,75 @@ object IcebergRestSession {
         }
     }
 
+    /** catalogMode managed: no path table, no prefix delete guard (the prefix
+      * holds nothing). Create through the catalog (it chooses the location in
+      * the pipeline's bucket) or adopt a table this pipeline recorded;
+      * anything else is a Fallback, which `prepare` turns into a run failure. */
+    private def openManaged(
+        pipeline: String,
+        catalog: Catalog,
+        ident: org.apache.iceberg.catalog.TableIdentifier,
+        sparkName: String,
+        props: Map[String, String],
+        catalogHas: Option[String],
+        previous: UnityCatalogSyncState,
+        statusUtil: StatusUtil,
+        base: Plan
+    ): Either[Fallback, Plan] = {
+        val qualified = base.qualified
+        val n = IcebergCatalogRegistrar.normalize _
+        val onCreated: org.apache.iceberg.Table => Unit = t => recordInterim(pipeline, previous, metadataOf(t), "managed")
+        val target = IcebergWriter.RestTarget(
+            sparkName,
+            ident,
+            catalog,
+            IcebergRestCatalogConfig.sparkConf(sparkName, props),
+            onCreated,
+            managed = true,
+            bucket = base.bucket
+        )
+        val closeable = catalog match {
+            case c: Closeable => Some(c)
+            case _ => None
+        }
+        val ok = base.copy(target = Some(target), closeable = closeable)
+        RestAdoptDecision.decideManaged(catalogHas, previous, qualified, base.bucket) match {
+            case RestAdoptDecision.CreateNew =>
+                statusUtil.info(
+                    "processing",
+                    line(s"$qualified is new; creating it through the catalog (the catalog chooses the location in s3://${base.bucket}/)")
+                )
+                Right(ok.copy(created = true))
+            case RestAdoptDecision.AdoptCatalog =>
+                statusUtil.info("processing", line(s"$qualified is in the catalog at ${n(catalogHas.orNull)}; committing through it"))
+                Right(ok)
+            case other =>
+                closeable.foreach(x => Try(x.close()))
+                val c = other match {
+                    case RestAdoptDecision.RefuseForeign(loc) => loc
+                    case _ => catalogHas.orNull
+                }
+                Left(
+                    Fallback(
+                        if (c != null && !IcebergWriter.inBucket(c, base.bucket))
+                            s"$qualified already exists in Unity Catalog at ${n(c)}, outside the pipeline's bucket s3://${base.bucket}/; " +
+                                s"catalogMode managed only writes in the pipeline's bucket; have an admin drop $qualified or choose another schema"
+                        else
+                            s"$qualified already exists in Unity Catalog at ${n(c)} and this pipeline did not create it; " +
+                                s"catalogMode managed never adopts a table Datris did not create; have an admin drop $qualified or choose another schema"
+                    )
+                )
+        }
+    }
+
+    /** Where a table lives, from its metadata file (`<table>/metadata/x.json`). */
+    def tableLocationOf(metadataLocation: String): String =
+        Option(metadataLocation).map { m =>
+            val n = IcebergCatalogRegistrar.normalize(m)
+            val i = n.lastIndexOf("/metadata/")
+            if (i > 0) n.substring(0, i) else n
+        }.orNull
+
     /** Write the state doc for this run (before the `end` line). Never throws. */
     def record(jobContext: JobContext, result: Option[IcebergWriter.WriteResult], plan: Plan): Unit = {
         if (!plan.active) return
@@ -569,14 +779,15 @@ object IcebergRestSession {
                     val loc = result.map(_.metadataLocation).orNull
                     if (loc != null) {
                         val verb = if (plan.created) "created" else "committed"
+                        val where = if (plan.managed) tableLocationOf(loc) else plan.location
                         statusUtil.info(
                             "processing",
-                            line(s"$verb ${plan.qualified} at ${plan.location} through the catalog; current metadata ${IcebergCatalogRegistrar.normalize(loc)}")
+                            line(s"$verb ${plan.qualified} at $where through the catalog; current metadata ${IcebergCatalogRegistrar.normalize(loc)}")
                         )
                     }
                     base.copy(
                         pipeline = config.name,
-                        catalogMode = "rest",
+                        catalogMode = if (plan.managed) "managed" else "rest",
                         restMetadataLocation = Option(loc).getOrElse(base.restMetadataLocation),
                         lastRestCommitAt = now,
                         restRefusedReason = null,

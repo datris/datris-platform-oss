@@ -38,7 +38,8 @@ case class UnityCatalogSyncState(
     // Iceberg via RESTCatalog (`unityCatalog.catalogMode: rest`,
     // IcebergRestSession). Null on older docs ⇒ mode `register`.
     // `catalogMode` is what the last run did: `register`, `rest` (the commit
-    // went through the catalog) or `refused` (the catalog path was refused or
+    // went through the catalog), `managed` (catalogMode managed: the commit
+    // went through the catalog at the location it chose) or `refused` (the catalog path was refused or
     // failed before the commit and the run wrote path-based; the reason is in
     // `restRefusedReason`). `restMetadataLocation` / `lastRestCommitAt` are
     // the metadata file and time of the last catalog commit.

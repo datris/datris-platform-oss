@@ -82,6 +82,7 @@ class PipelineAPIController {
             val uc = config.unityCatalog
             val objectStore = if (config.destination != null) config.destination.objectStore else null
             val icebergStore = objectStore != null && objectStore.fileFormat != null && objectStore.fileFormat.trim.equalsIgnoreCase("iceberg")
+            val state = UnityCatalogSyncIO.read(config.name)
             if (icebergStore && uc != null && uc.catalog != null && uc.catalog.trim.nonEmpty) {
                 val coords = new JsonObject
                 val table = IcebergCatalogRegistrar.tableName(config.name)
@@ -90,14 +91,18 @@ class PipelineAPIController {
                 coords.addProperty("table", table)
                 coords.addProperty("qualified", uc.catalog + "." + uc.schemaOrDefault + "." + table)
                 coords.addProperty("kind", "iceberg")
+                // catalogMode managed: the table lives where the catalog put
+                // it (known after the first commit), not under prefixKey.
                 val location =
-                    try "s3a://" + ObjectStoreSpark.resolveBucket(objectStore) + "/" + objectStore.prefixKey
-                    catch { case scala.util.control.NonFatal(_) => null }
+                    if (uc.managedMode)
+                        Option(state).filter(_.catalogMode == "managed").map(s => IcebergRestSession.tableLocationOf(s.restMetadataLocation)).orNull
+                    else
+                        try "s3a://" + ObjectStoreSpark.resolveBucket(objectStore) + "/" + objectStore.prefixKey
+                        catch { case scala.util.control.NonFatal(_) => null }
                 coords.addProperty("location", location)
                 out.add("coordinates", coords)
             }
 
-            val state = UnityCatalogSyncIO.read(config.name)
             val registerEnabled = icebergStore && uc != null && uc.enabled && uc.registerOn
             out.addProperty("registerEnabled", registerEnabled)
             // Iceberg register status: off | never | registered | stale | error
@@ -106,7 +111,10 @@ class PipelineAPIController {
             // points at" text. In catalogMode rest, `rest` = the last run
             // committed through the catalog (no stale pointer possible) and
             // `refused` = it wrote path-based (restRefusedReason says why).
+            // In catalogMode managed, `managed` = the last run committed
+            // through the catalog at the catalog-chosen location.
             val restMode = uc != null && uc.restMode
+            val managedMode = uc != null && uc.managedMode
             if (icebergStore && uc != null) out.addProperty("catalogMode", uc.catalogModeOrDefault)
             val registerLines =
                 if (state != null && state.lastError != null)
@@ -115,7 +123,8 @@ class PipelineAPIController {
             val registerStatus =
                 if (!registerEnabled) "off"
                 else if (restMode && state != null && state.catalogMode == "rest") "rest"
-                else if (restMode && state != null && state.catalogMode == "refused") "refused"
+                else if (managedMode && state != null && state.catalogMode == "managed") "managed"
+                else if ((restMode || managedMode) && state != null && state.catalogMode == "refused") "refused"
                 else if (registerLines.exists(!_.contains("Unity Catalog still points at"))) "error"
                 else if (registerLines.nonEmpty) "stale"
                 else if (state != null && state.registeredMetadataLocation != null) "registered"
@@ -728,6 +737,10 @@ class PipelineAPIController {
                             dest.objectStore.prefixKey + "' overlaps with pipeline(s): " + sharedWith.mkString(", ")
                     )
                 } else {
+                    // Deletes only s3a://<bucket>/<prefixKey>. A catalogMode
+                    // managed table lives where Unity Catalog put it (e.g.
+                    // __unitystorage), never under prefixKey, so it is never
+                    // touched here (UnityCatalogDeleteAdvice says so).
                     ObjectStoreSpark.deleteDestinationData(dest.objectStore)
                     objectStoreDataDeleted = true
                 }

@@ -63,8 +63,11 @@ case class UnityCatalogSync @JsonCreator() (
     @JsonProperty("schema") schema: String = null,
     @JsonProperty("register") register: java.lang.Boolean = null,
     // Object-store Iceberg only: `register` (null/absent: register after each
-    // commit, story 4) or `rest` (every commit goes through the Iceberg REST
-    // catalog, IcebergRestSession). Read via catalogModeOrDefault / restMode.
+    // commit, story 4), `rest` (every commit goes through the Iceberg REST
+    // catalog at the pipeline's prefix, IcebergRestSession) or `managed` (the
+    // catalog chooses the table's location in the pipeline's bucket, e.g. a
+    // Databricks managed table; commits go through the catalog). Read via
+    // catalogModeOrDefault / restMode / managedMode / throughCatalog.
     @JsonProperty("catalogMode") catalogMode: String = null
 ) {
     def this() = this(false, null, null, null, null, null, null, null, null, null)
@@ -77,6 +80,10 @@ case class UnityCatalogSync @JsonCreator() (
     def schemaOrDefault: String = Option(schema).map(_.trim).filter(_.nonEmpty).getOrElse("default")
     def catalogModeOrDefault: String = Option(catalogMode).map(_.trim.toLowerCase).filter(_.nonEmpty).getOrElse("register")
     def restMode: Boolean = catalogModeOrDefault == "rest"
+    def managedMode: Boolean = catalogModeOrDefault == "managed"
+
+    /** Every commit goes through the Iceberg REST catalog (rest or managed). */
+    def throughCatalog: Boolean = restMode || managedMode
 }
 
 object UnityCatalogSync {

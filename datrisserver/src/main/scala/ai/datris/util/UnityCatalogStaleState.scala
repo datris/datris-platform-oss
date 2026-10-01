@@ -37,9 +37,11 @@ object UnityCatalogStaleState {
       * pipeline's own table (committed at its root, and the prefix still has
       * or may have the table's metadata), or when it records a table the
       * catalog created for this name (`restCreatedTable`), so the "created by
-      * Datris but never written to" delete warning survives. */
+      * Datris but never written to" delete warning survives. A managed
+      * commit (`catalogMode: managed`) is always kept: its table lives where
+      * the catalog put it, so an empty prefix says nothing (never probed). */
     def keepOnCreate(doc: UnityCatalogSyncState, tableRoot: Option[String], prefixHasMetadata: () => Option[Boolean]): Boolean =
-        doc != null && (doc.restCreatedTable != null ||
+        doc != null && (doc.restCreatedTable != null || IcebergRestSession.managedCommitted(doc) ||
             (tableRoot.exists(r => IcebergRestSession.restCommitted(doc, r)) && !prefixHasMetadata().contains(false)))
 
     /** Docs to delete on startup: no pipeline of that name, and neither a
@@ -47,7 +49,9 @@ object UnityCatalogStaleState {
       * records a catalog-created table (`restCreatedTable`). */
     def orphanDocs(docs: Seq[UnityCatalogSyncState], existingPipelines: Set[String]): Seq[String] =
         docs.filter(d => d != null && d.pipeline != null && !existingPipelines.contains(d.pipeline))
-            .filterNot(d => d.catalogMode == "rest" && d.restMetadataLocation != null && d.lastRestCommitAt != null)
+            .filterNot(d =>
+                (d.catalogMode == "rest" || d.catalogMode == "managed") && d.restMetadataLocation != null && d.lastRestCommitAt != null
+            )
             .filterNot(_.restCreatedTable != null)
             .map(_.pipeline)
 
@@ -64,7 +68,9 @@ object UnityCatalogStaleState {
       * persist the doc without its catalog-commit fields (`write`) and return
       * it. None (probes not run) when the doc is not committed there; None
       * when either probe finds the table or cannot tell. A `write` failure
-      * propagates: the run must not continue with a stale doc on disk. */
+      * propagates: the run must not continue with a stale doc on disk. A
+      * managed doc (any root) is stale when the catalog is known to have no
+      * table; its prefix holds nothing and is never probed. */
     def clearIfStale(
         previous: UnityCatalogSyncState,
         tableRoot: String,
@@ -72,8 +78,12 @@ object UnityCatalogStaleState {
         prefixHasMetadata: () => Option[Boolean],
         write: UnityCatalogSyncState => Unit
     ): Option[UnityCatalogSyncState] = {
-        if (!IcebergRestSession.restCommitted(previous, tableRoot)) return None
-        if (!staleCommitted(committed = true, catalogHasTable(), prefixHasMetadata())) return None
+        if (IcebergRestSession.managedCommitted(previous)) {
+            if (!catalogHasTable().contains(false)) return None
+        } else {
+            if (!IcebergRestSession.restCommitted(previous, tableRoot)) return None
+            if (!staleCommitted(committed = true, catalogHasTable(), prefixHasMetadata())) return None
+        }
         val cleared = withoutRestCommit(previous)
         write(cleared)
         Some(cleared)
