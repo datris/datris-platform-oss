@@ -1,6 +1,7 @@
 import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from '@angular/core';
 import { PipelineService } from '../pipeline.service';
 import { sanitizeIdentifier } from '../shared/sanitize';
+import { httpErrorText } from '../shared/http-error';
 
 export interface DqTxValue {
   dataQuality: any | null;
@@ -137,7 +138,7 @@ export class PipelineDqTxEditorComponent implements OnChanges {
         this.emit();
       },
       error: (err: any) => {
-        this.dqGenerateError = 'Failed to generate schema: ' + (err.error || err.message);
+        this.dqGenerateError = 'Failed to generate schema: ' + httpErrorText(err);
         this.dqGenerating = false;
       }
     });

@@ -8,6 +8,7 @@ import { SearchService } from '../search.service';
 import { AuthService } from '../auth.service';
 import { CodeRepoService } from '../configuration/code-repo/code-repo.service';
 import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName } from '../shared/sanitize';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-tap-create',
@@ -439,7 +440,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         requestAnimationFrame(() => this.brainstormInputEl?.nativeElement.focus());
       },
       error: (err) => {
-        this.error = 'Brainstorm failed: ' + (err.error || err.message);
+        this.error = 'Brainstorm failed: ' + httpErrorText(err);
         this.brainstorming = false;
       }
     });
@@ -466,7 +467,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.scriptDirty = true;
       },
       error: (err) => {
-        this.error = 'Generation failed: ' + (err.error || err.message);
+        this.error = 'Generation failed: ' + httpErrorText(err);
         this.generating = false;
         this.stopGenPolling();
       }
@@ -570,7 +571,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         this.storingUserScript = false;
-        this.error = 'Failed to upload script: ' + (err.error || err.message);
+        this.error = 'Failed to upload script: ' + httpErrorText(err);
       }
     });
   }
@@ -1312,7 +1313,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
               'The script changed in the repository since you opened it. Use "Load latest" in the drift banner, reapply your edits, and save again.');
             this.checkDrift();
           } else {
-            this.error = prefix + 'Save failed (could not store script): ' + (err.error || err.message);
+            this.error = prefix + 'Save failed (could not store script): ' + httpErrorText(err);
           }
           this.saving = false;
         }
@@ -1458,7 +1459,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.router.navigate(['/taps']);
       },
       error: (err) => {
-        this.runError = 'Run failed: ' + (err.error || err.message || 'unknown');
+        this.runError = 'Run failed: ' + httpErrorText(err, 'unknown');
         this.runningTap = false;
       }
     });
@@ -1790,7 +1791,7 @@ export class TapCreateComponent implements OnInit, OnDestroy {
         this.showGenerateModal = false;
       },
       error: (err) => {
-        this.generateError = 'Pipeline create failed: ' + (err.error || err.message || 'unknown');
+        this.generateError = 'Pipeline create failed: ' + httpErrorText(err, 'unknown');
         this.generatingPipeline = false;
       }
     });

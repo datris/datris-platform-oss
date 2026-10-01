@@ -6,6 +6,7 @@ import { SearchService } from '../search.service';
 import { HealthService } from '../health.service';
 import { TapService } from '../tap.service';
 import { caseTwinMessage, findCaseTwin, sanitizeCatalogName, tapCatalogName, sanitizeIdentifier } from '../shared/sanitize';
+import { httpErrorText } from '../shared/http-error';
 
 interface SchemaField {
   name: string;
@@ -245,7 +246,7 @@ export class PipelineCreateComponent implements OnInit {
       this.isEditMode = true;
       this.pipelineService.getPipeline(editName).subscribe({
         next: (config) => this.loadFromConfig(config),
-        error: (err) => this.error = 'Failed to load dataset: ' + (err.error || err.message)
+        error: (err) => this.error = 'Failed to load dataset: ' + httpErrorText(err)
       });
     }
   }
@@ -681,7 +682,7 @@ export class PipelineCreateComponent implements OnInit {
           this.dqValidationSchema = resp.filename;
         },
         error: (err) => {
-          this.error = 'Failed to upload validation schema: ' + (err.error || err.message);
+          this.error = 'Failed to upload validation schema: ' + httpErrorText(err);
         }
       });
     }
@@ -714,7 +715,7 @@ export class PipelineCreateComponent implements OnInit {
         this.dqGenerating = false;
       },
       error: (err) => {
-        this.dqGenerateError = 'Failed to generate schema: ' + (err.error || err.message);
+        this.dqGenerateError = 'Failed to generate schema: ' + httpErrorText(err);
         this.dqGenerating = false;
       }
     });
@@ -775,7 +776,7 @@ export class PipelineCreateComponent implements OnInit {
           this.generatingSchema = false;
         },
         error: (err: any) => {
-          this.error = 'Schema generation failed: ' + (err.error || err.message);
+          this.error = 'Schema generation failed: ' + httpErrorText(err);
           this.generatingSchema = false;
         }
       });
@@ -801,7 +802,7 @@ export class PipelineCreateComponent implements OnInit {
         this.generatingSchema = false;
       },
       error: (err: any) => {
-        this.error = 'Schema generation failed: ' + (err.error || err.message);
+        this.error = 'Schema generation failed: ' + httpErrorText(err);
         this.generatingSchema = false;
       }
     });

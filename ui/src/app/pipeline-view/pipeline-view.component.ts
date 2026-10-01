@@ -4,6 +4,7 @@ import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
 import { isAllTextDestination } from '../shared/dest-types';
 import { LineageService, LineageNeighborhood } from '../lineage.service';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-pipeline-view',
@@ -83,7 +84,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
         }
       },
       error: (err) => {
-        this.error = err.error || err.message || 'Failed to load pipeline';
+        this.error = httpErrorText(err, 'Failed to load pipeline');
       }
     });
   }
@@ -122,7 +123,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
           this.router.navigate(['/catalog']);
         },
         error: (err) => {
-          this.error = err.error || err.message || 'Failed to delete pipeline';
+          this.error = httpErrorText(err, 'Failed to delete pipeline');
           this.deleteLoading = false;
           this.confirmDelete = false;
         }
@@ -136,7 +137,7 @@ export class PipelineViewComponent implements OnInit, OnDestroy {
           this.error = '';
         },
         error: (err) => {
-          this.error = err.error || err.message || 'Failed to delete data';
+          this.error = httpErrorText(err, 'Failed to delete data');
           this.deleteLoading = false;
           this.confirmDelete = false;
         }

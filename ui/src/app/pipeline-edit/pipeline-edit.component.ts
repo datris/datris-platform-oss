@@ -1,6 +1,7 @@
 import { Component, OnInit } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { PipelineService } from '../pipeline.service';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-pipeline-edit',
@@ -28,7 +29,7 @@ export class PipelineEditComponent implements OnInit {
         this.configJson = JSON.stringify(data, null, 2);
       },
       error: (err) => {
-        this.error = err.error || err.message || 'Failed to load dataset';
+        this.error = httpErrorText(err, 'Failed to load dataset');
       }
     });
   }
@@ -54,7 +55,7 @@ export class PipelineEditComponent implements OnInit {
         setTimeout(() => this.router.navigate(['/pipelines']), 1000);
       },
       error: (err) => {
-        this.error = 'Failed to save: ' + (err.error || err.message);
+        this.error = 'Failed to save: ' + httpErrorText(err);
         this.saving = false;
       }
     });

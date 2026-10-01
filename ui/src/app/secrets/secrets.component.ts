@@ -4,6 +4,7 @@ import { filter } from 'rxjs/operators';
 import { ConfigAssistantStateService } from '../config-chat/config-assistant-state.service';
 import { HttpClient } from '@angular/common/http';
 import { SecretsService } from '../secrets.service';
+import { httpErrorText } from '../shared/http-error';
 
 interface SecretField {
   key: string;
@@ -86,7 +87,7 @@ export class SecretsComponent implements OnInit, OnDestroy {
     this.secretsService.listSecrets().subscribe({
       next: (names) => { this.allNames = names || []; allDone = true; finish(); },
       error: (err) => {
-        this.error = err.error || err.message || 'Failed to load secrets';
+        this.error = httpErrorText(err, 'Failed to load secrets');
         allDone = true; finish();
       }
     });
@@ -130,7 +131,7 @@ export class SecretsComponent implements OnInit, OnDestroy {
         this.detailLoading = false;
       },
       error: (err) => {
-        this.detailError = err.error || err.message || 'Failed to load secret';
+        this.detailError = httpErrorText(err, 'Failed to load secret');
         this.detailLoading = false;
       }
     });
@@ -197,7 +198,7 @@ export class SecretsComponent implements OnInit, OnDestroy {
         setTimeout(() => this.saveSuccess = false, 3000);
       },
       error: (err) => {
-        this.saveError = err.error || err.message || 'Failed to save';
+        this.saveError = httpErrorText(err, 'Failed to save');
         this.saveLoading = false;
       }
     });
@@ -223,7 +224,7 @@ export class SecretsComponent implements OnInit, OnDestroy {
         this.loadSecrets();
       },
       error: (err) => {
-        this.detailError = err.error || err.message || 'Failed to delete';
+        this.detailError = httpErrorText(err, 'Failed to delete');
         this.deleteLoading = false;
         this.confirmDelete = false;
       }
@@ -292,7 +293,7 @@ export class SecretsComponent implements OnInit, OnDestroy {
         }, 4000);
       },
       error: (err) => {
-        this.createError = err.error || err.message || 'Failed to create';
+        this.createError = httpErrorText(err, 'Failed to create');
       }
     });
   }

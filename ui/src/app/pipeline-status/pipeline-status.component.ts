@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import { PipelineStatusService, PipelineStatus } from '../pipeline-status.service';
 import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
+import { httpErrorText } from '../shared/http-error';
 
 @Component({
     selector: 'app-pipeline-status',
@@ -177,7 +178,7 @@ export class PipelineStatusComponent implements OnInit, OnDestroy {
         }, 1500);
       },
       error: (err) => {
-        this.uploadError = err.error || err.message || 'Upload failed';
+        this.uploadError = httpErrorText(err, 'Upload failed');
         this.uploading = false;
       }
     });

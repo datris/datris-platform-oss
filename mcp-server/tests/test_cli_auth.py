@@ -200,6 +200,19 @@ def test_tool_result_invalid_key_exits_with_rejected_hint(monkeypatch):
     assert "Traceback" not in result.output
 
 
+def test_tool_result_revoked_key_body_exits_with_rejected_hint(monkeypatch):
+    # The server's actual body for a revoked or unknown key.
+    monkeypatch.setenv("DATRIS_API_KEY", "abc")
+    t = _Transport(tool_text=json.dumps({"error": "API key is revoked or invalid"}))
+    _install(monkeypatch, t)
+
+    result = CliRunner().invoke(cli.cli, ["pipelines"])
+
+    assert result.exit_code == 1, result.output
+    assert "rejected DATRIS_API_KEY" in result.output
+    assert "abc" not in result.output
+
+
 def test_tool_data_mentioning_invalid_key_is_not_a_rejection(monkeypatch):
     # e.g. tap logs from a vendor API that also uses x-api-key
     monkeypatch.setenv("DATRIS_API_KEY", "abc")

@@ -1,6 +1,7 @@
 import { Component, EventEmitter, Input, OnInit, Output } from '@angular/core';
 import { PipelineService } from '../pipeline.service';
 import { AuthService } from '../auth.service';
+import { httpErrorText } from '../shared/http-error';
 
 /** Destination-side typing dialog: shows the types inferred on demand from
  *  landed data (with per-column sample values as evidence), lets the user
@@ -40,7 +41,7 @@ export class DestTypesDialogComponent implements OnInit {
         this.loading = false;
       },
       error: (err) => {
-        this.error = err.error?.error || err.error || err.message || 'Failed to infer types';
+        this.error = err.error?.error || httpErrorText(err, 'Failed to infer types');
         this.loading = false;
       }
     });
@@ -66,7 +67,7 @@ export class DestTypesDialogComponent implements OnInit {
       },
       error: (err) => {
         this.applying = false;
-        this.error = err.error?.error || err.error || err.message || 'Apply failed';
+        this.error = err.error?.error || httpErrorText(err, 'Apply failed');
       }
     });
   }

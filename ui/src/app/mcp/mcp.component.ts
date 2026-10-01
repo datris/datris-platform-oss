@@ -1,5 +1,6 @@
 import { Component, OnInit, ViewChild, ElementRef } from '@angular/core';
 import { McpService } from '../mcp.service';
+import { httpErrorText } from '../shared/http-error';
 
 export interface McpToolParam {
   name: string;
@@ -913,7 +914,7 @@ export class McpComponent implements OnInit {
         this.healthLoading = false;
       },
       error: (err) => {
-        this.healthError = err.error || err.message || 'Failed to load health status';
+        this.healthError = httpErrorText(err, 'Failed to load health status');
         this.healthLoading = false;
       }
     });
