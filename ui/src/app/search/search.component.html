@@ -224,6 +224,13 @@
     <pre>{{ error }}</pre>
   </div>
 
+  <!-- Executed, no rows -->
+  <div class="results-section" *ngIf="executed && !loading && !error && results.length === 0">
+    <div class="results-header">
+      <span class="results-count">0 results</span>
+    </div>
+  </div>
+
   <!-- Results -->
   <div class="results-section" *ngIf="results.length > 0">
     <div class="results-header">
@@ -240,7 +247,7 @@
         <tbody>
           <tr *ngFor="let row of results">
             <td *ngFor="let col of columns">
-              <span class="cell-value" [class.score-cell]="col === '_score'">{{ row[col] }}</span>
+              <span class="cell-value" [class.score-cell]="col === '_score'">{{ isStructured(row[col]) ? (row[col] | json) : row[col] }}</span>
             </td>
           </tr>
         </tbody>

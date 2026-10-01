@@ -19,6 +19,8 @@ export class SearchComponent implements OnInit, OnDestroy {
   results: any[] = [];
   columns: string[] = [];
   resultCount = 0;
+  /** True once a query has succeeded (drives the "0 results" line). */
+  executed = false;
   /** Iceberg snapshot id carried by the last object-store query, if any. */
   snapshotId: string | null = null;
   snapshotTimestamp: string | null = null;
@@ -305,6 +307,7 @@ export class SearchComponent implements OnInit, OnDestroy {
     this.columns = [];
     this.error = '';
     this.resultCount = 0;
+    this.executed = false;
     this.snapshotId = null;
     this.snapshotTimestamp = null;
     this.vectorSecretName = this.getDefaultVectorSecret();
@@ -382,6 +385,7 @@ export class SearchComponent implements OnInit, OnDestroy {
     }
 
     this.loading = true;
+    this.executed = false;
     this.results = [];
     this.columns = [];
 
@@ -429,6 +433,7 @@ export class SearchComponent implements OnInit, OnDestroy {
       next: (response: QueryResponse) => {
         this.results = response.results || [];
         this.resultCount = response.count || 0;
+        this.executed = true;
         this.snapshotId = response.snapshotId ? String(response.snapshotId) : null;
         this.snapshotTimestamp = response.snapshotTimestamp || null;
         if (this.results.length > 0) {
@@ -442,11 +447,29 @@ export class SearchComponent implements OnInit, OnDestroy {
         }
       },
       error: (err: any) => {
-        // Query endpoints answer {"error": "..."}; show the message, not the object.
-        this.error = err.error?.error || err.error || err.message || 'An error occurred';
+        this.error = this.errorMessage(err);
         this.loading = false;
       }
     });
+  }
+
+  /** Message for the error box. Query endpoints answer {"error": "..."};
+   *  some answer {"message": "..."}; a network failure (status 0) carries a
+   *  ProgressEvent body, which is never rendered. */
+  private errorMessage(err: any): string {
+    const body = err ? err.error : null;
+    if (body && typeof body === 'object') {
+      if (typeof body.error === 'string' && body.error) return body.error;
+      if (typeof body.message === 'string' && body.message) return body.message;
+    }
+    if (typeof body === 'string' && body) return body;
+    if (err && typeof err.message === 'string' && err.message) return err.message;
+    return 'An error occurred';
+  }
+
+  /** Objects and arrays render through the json pipe, not "[object Object]". */
+  isStructured(value: any): boolean {
+    return value !== null && typeof value === 'object';
   }
 
   askAI(): void {

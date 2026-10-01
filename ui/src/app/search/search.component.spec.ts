@@ -113,4 +113,52 @@ describe('SearchComponent — object-store snapshot id', () => {
     expect(box).not.toBeNull();
     expect((box!.textContent || '').trim()).toBe('x');
   });
+
+  it('shows the HTTP message, never a ProgressEvent, for a status-0 network failure', () => {
+    searchService.queryObjectstore.and.returnValue(throwError(() => new HttpErrorResponse({
+      status: 0, statusText: 'Unknown Error', url: '/api/v1/query/objectstore', error: new ProgressEvent('error')
+    })));
+
+    component.execute();
+    fixture.detectChanges();
+
+    const text = (el.querySelector('.error-box')!.textContent || '').trim();
+    expect(text).toContain('0 Unknown Error');
+    expect(text).not.toContain('[object');
+  });
+
+  it('prefers a string "message" when the body has no "error"', () => {
+    searchService.queryObjectstore.and.returnValue(throwError(() => new HttpErrorResponse({
+      status: 403, error: { message: 'capability denied' }
+    })));
+
+    component.execute();
+    fixture.detectChanges();
+
+    expect((el.querySelector('.error-box')!.textContent || '').trim()).toBe('capability denied');
+  });
+
+  it('shows "0 results" when a query succeeds with no rows, and nothing before executing', () => {
+    expect(el.querySelector('.results-header')).toBeNull();
+    searchService.queryObjectstore.and.returnValue(of({ results: [], count: 0, snapshotId: null, snapshotTimestamp: null }));
+
+    component.execute();
+    fixture.detectChanges();
+
+    expect(headerText()).toBe('0 results');
+    expect(el.querySelector('table')).toBeNull();
+  });
+
+  it('renders object and array cells as JSON, not [object Object]', () => {
+    searchService.queryObjectstore.and.returnValue(of({
+      results: [{ id: 1, attrs: { a: 1 }, tags: ['x', 'y'], note: null }], count: 1, snapshotId: null, snapshotTimestamp: null
+    }));
+
+    component.execute();
+    fixture.detectChanges();
+
+    const cells = Array.from(el.querySelectorAll('tbody td')).map(td => (td.textContent || '').replace(/\s+/g, ''));
+    expect(cells).toEqual(['1', '{"a":1}', '["x","y"]', '']);
+    expect(el.querySelector('tbody')!.textContent).not.toContain('[object Object]');
+  });
 });
