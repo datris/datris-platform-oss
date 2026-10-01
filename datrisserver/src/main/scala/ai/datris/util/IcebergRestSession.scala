@@ -178,8 +178,10 @@ object IcebergRestSession {
       * the rest of the config says. `restActive` = this run commits through
       * the catalog (rest OR managed), `managedActive` = it is in managed mode.
       * A managed-committed table (any root) must stay managed and is never
-      * deleted; a rest-committed one never switches to managed. None = no
-      * objection. */
+      * deleted; a rest-committed one never switches to managed, unless the
+      * pipeline has no usable unityCatalog block (`hasCatalogBlock` false):
+      * it cannot reach the managed table, which lives outside its prefix,
+      * so there is nothing to protect. None = no objection. */
     def guardFailure(
         previous: UnityCatalogSyncState,
         tableRoot: String,
@@ -187,10 +189,11 @@ object IcebergRestSession {
         deleteBeforeWrite: Boolean,
         restActive: Boolean,
         qualified: String,
-        managedActive: Boolean = false
+        managedActive: Boolean = false,
+        hasCatalogBlock: Boolean = true
     ): Option[String] = {
         val committed = restCommitted(previous, tableRoot)
-        val managed = managedCommitted(previous)
+        val managed = managedCommitted(previous) && hasCatalogBlock
         if (managed && deleteBeforeWrite) Some(managedDeleteBeforeWriteMessage(qualified))
         else if (managed && (!iceberg || !restActive || !managedActive)) Some(switchFromManagedMessage(qualified))
         else if (committed && deleteBeforeWrite) Some(deleteBeforeWriteMessage(qualified))
@@ -489,11 +492,22 @@ object IcebergRestSession {
             previous = cleared
             forkRisk = false
         }
+        // A managed table lives outside the prefix: a pipeline without a
+        // usable unityCatalog block (the block was removed) cannot reach it
+        // and a path write cannot fork it. Forget it, say where it is.
+        val hasCatalogBlock = UnityCatalogStaleState.hasCatalogBlock(uc)
+        if (managedCommitted(previous) && !hasCatalogBlock) {
+            statusUtil.warn("processing", line(UnityCatalogStaleState.staleWarning(previous, null)))
+            val cleared = UnityCatalogStaleState.withoutRestCommit(previous)
+            UnityCatalogSyncIO.write(cleared)
+            previous = cleared
+            forkRisk = restCommitted(previous, outputPath)
+        }
         // Commits through the catalog this run: rest or managed.
         val restActive = uc != null && uc.enabled && uc.registerOn && uc.throughCatalog
         val managedActive = restActive && uc.managedMode
         val qualified = qualifiedFor(config)
-        guardFailure(previous, outputPath, iceberg, deleteBeforeWrite, restActive, qualified, managedActive).foreach { m =>
+        guardFailure(previous, outputPath, iceberg, deleteBeforeWrite, restActive, qualified, managedActive, hasCatalogBlock).foreach { m =>
             if (managedActive || managedCommitted(previous)) audit(config.name, line(m))
             throw new DatrisException(m)
         }

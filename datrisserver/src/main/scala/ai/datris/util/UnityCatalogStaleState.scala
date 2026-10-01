@@ -38,11 +38,26 @@ object UnityCatalogStaleState {
       * or may have the table's metadata), or when it records a table the
       * catalog created for this name (`restCreatedTable`), so the "created by
       * Datris but never written to" delete warning survives. A managed
-      * commit (`catalogMode: managed`) is always kept: its table lives where
-      * the catalog put it, so an empty prefix says nothing (never probed). */
-    def keepOnCreate(doc: UnityCatalogSyncState, tableRoot: Option[String], prefixHasMetadata: () => Option[Boolean]): Boolean =
-        doc != null && (doc.restCreatedTable != null || IcebergRestSession.managedCommitted(doc) ||
+      * commit (`catalogMode: managed`) is kept when the new pipeline has a
+      * usable unityCatalog block (`hasCatalogBlock`): its table lives where
+      * the catalog put it, so an empty prefix says nothing (never probed).
+      * Without a block the new pipeline cannot reach that table, and the
+      * doc would only fail its runs, so it is forgotten. */
+    def keepOnCreate(
+        doc: UnityCatalogSyncState,
+        tableRoot: Option[String],
+        prefixHasMetadata: () => Option[Boolean],
+        hasCatalogBlock: Boolean = true
+    ): Boolean =
+        doc != null && (doc.restCreatedTable != null || (IcebergRestSession.managedCommitted(doc) && hasCatalogBlock) ||
             (tableRoot.exists(r => IcebergRestSession.restCommitted(doc, r)) && !prefixHasMetadata().contains(false)))
+
+    /** A unityCatalog block that can reach a catalog: present, with a
+      * non-blank `catalog` and `credentialsSecret`. */
+    def hasCatalogBlock(uc: ai.datris.model.UnityCatalogSync): Boolean = {
+        def blank(s: String) = s == null || s.trim.isEmpty
+        uc != null && !blank(uc.catalog) && !blank(uc.credentialsSecret)
+    }
 
     /** Docs to delete on startup: no pipeline of that name, and neither a
       * catalog-committed doc (those guard files a delete kept) nor one that
@@ -95,9 +110,13 @@ object UnityCatalogStaleState {
     /** The run-time warning when [[clearIfStale]] cleared `previous`. A
       * managed doc names the table it recorded: the catalog has no table at
       * `qualified` (the catalog or schema changed, or an admin dropped it),
-      * so the run starts a new table and the old record is forgotten. */
+      * so the run starts a new table and the old record is forgotten.
+      * `qualified` null: the pipeline has no usable unityCatalog block. */
     def staleWarning(previous: UnityCatalogSyncState, qualified: String): String =
-        if (IcebergRestSession.managedCommitted(previous))
+        if (IcebergRestSession.managedCommitted(previous) && qualified == null)
+            "state doc recorded a managed table at " + IcebergRestSession.tableLocationOf(previous.restMetadataLocation) +
+                ", but this pipeline has no Unity Catalog block; writing by path and forgetting the old table (an admin can drop it in Unity Catalog)"
+        else if (IcebergRestSession.managedCommitted(previous))
             "state doc recorded a managed table at " + IcebergRestSession.tableLocationOf(previous.restMetadataLocation) + " that is not at " +
                 qualified + "; starting a new table and forgetting the old one (an admin can drop the old table in Unity Catalog)"
         else "state doc says committed but neither the catalog nor the prefix has the table; ignoring stale state"
@@ -145,13 +164,19 @@ object UnityCatalogStaleState {
             val doc = UnityCatalogSyncIO.read(config.name)
             if (doc == null) return
             val root = tableRootOf(config)
-            if (keepOnCreate(doc, root, () => root.flatMap(r => prefixMetadataFor(config, r)))) {
+            val block = hasCatalogBlock(config.unityCatalog)
+            if (keepOnCreate(doc, root, () => root.flatMap(r => prefixMetadataFor(config, r)), block)) {
                 logger.info(
                     "kept Unity Catalog sync state for " + config.name + ": its catalog-committed table's files may still exist at " + root.orNull
                 )
             } else {
                 UnityCatalogSyncIO.delete(config.name)
-                logger.info("cleared stale Unity Catalog sync state for " + config.name)
+                if (IcebergRestSession.managedCommitted(doc) && !block)
+                    logger.warn(
+                        "forgetting managed table at " + IcebergRestSession.tableLocationOf(doc.restMetadataLocation) + " for recreated pipeline " +
+                            config.name + " (no Unity Catalog block); drop it in Unity Catalog if unwanted"
+                    )
+                else logger.info("cleared stale Unity Catalog sync state for " + config.name)
             }
         } catch {
             case NonFatal(e) => logger.warn("Unity Catalog sync state check on create failed for " + config.name + ": " + e.getMessage)

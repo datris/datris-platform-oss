@@ -227,4 +227,26 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         val created = doc(mode = "refused", loc = null, at = null).copy(restCreatedTable = "main.sales.orders_daily")
         assert(IcebergRestSession.managedRefusedState(created, "orders_daily", "x").restCreatedTable == "main.sales.orders_daily")
     }
+
+    test("keepOnCreate: a managed doc is kept only when the recreated pipeline has a usable unityCatalog block") {
+        assert(S.keepOnCreate(managedDoc(), Some(ROOT), () => fail("managed: prefix never probed"), hasCatalogBlock = true))
+        assert(!S.keepOnCreate(managedDoc(), Some(ROOT), () => Some(false), hasCatalogBlock = false), "no block: forget the managed doc")
+        assert(!S.keepOnCreate(managedDoc(), None, () => fail("no object store"), hasCatalogBlock = false))
+        // rest and restCreatedTable rules do not depend on the block.
+        assert(S.keepOnCreate(doc(), Some(ROOT), () => Some(true), hasCatalogBlock = false))
+        assert(S.keepOnCreate(managedDoc().copy(restCreatedTable = "main.sales.orders_daily"), Some(ROOT), () => None, hasCatalogBlock = false))
+    }
+
+    test("hasCatalogBlock: present with non-blank catalog and credentialsSecret") {
+        import ai.datris.model.UnityCatalogSync
+        assert(S.hasCatalogBlock(UnityCatalogSync(enabled = true, credentialsSecret = "dbx", catalog = "main", catalogMode = "managed")))
+        assert(!S.hasCatalogBlock(null))
+        assert(!S.hasCatalogBlock(UnityCatalogSync(enabled = true, credentialsSecret = " ", catalog = "main")))
+        assert(!S.hasCatalogBlock(UnityCatalogSync(enabled = true, credentialsSecret = "dbx", catalog = null)))
+    }
+
+    test("staleWarning without a qualified name: the managed table is forgotten because the pipeline has no Unity Catalog block") {
+        val m = S.staleWarning(managedDoc(), null)
+        assert(m.contains("s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b") && m.contains("no Unity Catalog block") && m.contains("writing by path"), m)
+    }
 }

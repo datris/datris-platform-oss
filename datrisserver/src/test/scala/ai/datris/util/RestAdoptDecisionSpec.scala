@@ -402,4 +402,30 @@ class RestAdoptDecisionSpec extends AnyFunSuite {
         assert(!IcebergRestSession.managedRecordedTable(otherTable, ucState("managed")))
         assert(IcebergRestSession.managedRecordedTable(newer, ucState("managed")))
     }
+
+    test("guardFailure: a managed-committed doc does not block a pipeline without a usable unityCatalog block") {
+        val managed = ucState("managed")
+        def G(iceberg: Boolean, delete: Boolean, block: Boolean): Option[String] =
+            IcebergRestSession.guardFailure(
+                managed,
+                ROOT,
+                iceberg,
+                delete,
+                false,
+                "<catalog>.<schema>.orders_daily",
+                managedActive = false,
+                hasCatalogBlock = block
+            )
+        // Block removed: plain Iceberg path write, or parquet + deleteBeforeWrite, proceeds.
+        assert(G(iceberg = true, delete = false, block = false).isEmpty)
+        assert(G(iceberg = false, delete = true, block = false).isEmpty)
+        // A usable block in another mode still fails ("set managed again or drop the table").
+        assert(G(iceberg = true, delete = false, block = true).contains(IcebergRestSession.switchFromManagedMessage("<catalog>.<schema>.orders_daily")))
+        assert(G(iceberg = true, delete = true, block = true).exists(_.contains("deleteBeforeWrite")))
+        // A rest-committed table keeps its guard without a block (its files are at the prefix).
+        val restDoc = ucState("rest", loc = n(ROOT) + "/metadata/00003-9b2d.metadata.json")
+        assert(
+            IcebergRestSession.guardFailure(restDoc, ROOT, true, false, false, MQ, hasCatalogBlock = false).contains(IcebergRestSession.switchBackMessage(MQ))
+        )
+    }
 }
