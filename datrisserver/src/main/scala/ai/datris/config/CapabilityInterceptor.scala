@@ -14,6 +14,20 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import org.springframework.web.servlet.HandlerInterceptor
 
+object CapabilityInterceptor {
+
+    /** Body returned when a presented x-api-key failed resolution. */
+    val RejectedKeyBody: String = "{\"error\":\"API key is revoked or invalid\"}"
+
+    /** Pure decision for the no-ResolvedKey case. Deny only when the request
+      * presented a key AND TenantInterceptor recorded that it could not be
+      * resolved (revoked/unknown/malformed) AND no other identity (session)
+      * was found. No key at all → pass through unchanged; a resolved key
+      * (legacy full access or scoped) → normal capability check. */
+    def denyPresentedButUnresolved(presentedKey: Boolean, resolved: Boolean, rejection: Option[String]): Boolean =
+        presentedKey && !resolved && rejection.isDefined
+}
+
 /** Checks every request against the capability declared for its route in
   * [[CapabilityRoutes]]. Reads the [[ResolvedKey]] attached by
   * [[TenantInterceptor]] and verifies the key holds the required capability.
@@ -72,6 +86,34 @@ class CapabilityInterceptor extends HandlerInterceptor {
             case RouteCheck.Require(resource, action) =>
                 val resolvedOpt = readResolvedKey(request)
                 resolvedOpt match {
+                    case None
+                        if CapabilityInterceptor.denyPresentedButUnresolved(
+                            TenantInterceptor.presented(request.getHeader("x-api-key")),
+                            resolved = false,
+                            Option(request.getAttribute(TenantInterceptor.ApiKeyRejectedAttr)).map(_.toString)
+                        ) =>
+                        // A key WAS presented but could not be resolved
+                        // (revoked, unknown, malformed). Authentication
+                        // failure, not a capability question — denied in both
+                        // enforce and log-only modes. Without this the request
+                        // fell into the no-key branch below and skipped the
+                        // capability check entirely.
+                        logger.info(
+                            "capability check: route={} {} required={}:{} outcome=rejected-key",
+                            Array[AnyRef](method, path, resource, action): _*
+                        )
+                        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED)
+                        response.setContentType("application/json")
+                        response.getWriter.write(CapabilityInterceptor.RejectedKeyBody)
+                        response.getWriter.flush()
+                        AuditLog.denied(
+                            request,
+                            "API key is revoked or invalid",
+                            HttpServletResponse.SC_UNAUTHORIZED,
+                            required = Some(resource + ":" + action)
+                        )
+                        false
+
                     case None =>
                         // No ResolvedKey on the request. This happens for
                         // routes that don't require a key, or when auth is

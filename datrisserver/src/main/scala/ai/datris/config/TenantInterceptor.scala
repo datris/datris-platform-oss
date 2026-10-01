@@ -19,6 +19,16 @@ object TenantInterceptor {
       * Controllers and the CapabilityInterceptor read it via
       * `request.getAttribute(TenantInterceptor.ResolvedKeyAttr)`. */
     val ResolvedKeyAttr: String = "ai.datris.resolvedKey"
+
+    /** Request attribute set (to the failure reason) when the request
+      * PRESENTED an x-api-key that could not be resolved — revoked, unknown,
+      * or malformed. CapabilityInterceptor denies such requests instead of
+      * treating them like a request that carried no key at all. */
+    val ApiKeyRejectedAttr: String = "datris.apiKeyRejected"
+
+    /** True when the header carries a non-blank value. A blank header is
+      * treated exactly like no header (pre-existing behaviour). */
+    def presented(apiKey: String): Boolean = apiKey != null && apiKey.trim.nonEmpty
 }
 
 @Component
@@ -43,14 +53,22 @@ class TenantInterceptor extends HandlerInterceptor {
         // and scope checks. resolveKey handles the no-key case for anonymous
         // mode (`useApiKeys=false`) — we always get a ResolvedKey there even
         // without a header. Failures only happen in modes where a key IS
-        // required; those are swallowed so the existing per-controller
-        // `validate()` calls remain the source of truth for missing-key errors.
+        // required. With NO key presented the failure is left to the
+        // per-controller `validate()` calls (missing-key errors, session
+        // flows). With a key presented, the failure is recorded on the
+        // request so CapabilityInterceptor fails closed — a revoked or
+        // unknown key must never be treated like an anonymous request.
         try {
             val resolved = APIKeyValidator.resolveKey(apiKey)
             request.setAttribute(TenantInterceptor.ResolvedKeyAttr, applyOnBehalfOf(request, resolved))
         } catch {
             case e: Throwable =>
-                logger.debug("Could not resolve x-api-key into ResolvedKey: {}", e.getMessage)
+                if (TenantInterceptor.presented(apiKey)) {
+                    val reason = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+                    logger.info("Rejected presented x-api-key: {}", reason)
+                    request.setAttribute(TenantInterceptor.ApiKeyRejectedAttr, reason)
+                } else
+                    logger.debug("Could not resolve x-api-key into ResolvedKey: {}", e.getMessage)
         }
 
         true
