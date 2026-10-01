@@ -249,4 +249,39 @@ class UnityCatalogStaleStateSpec extends AnyFunSuite {
         val m = S.staleWarning(managedDoc(), null)
         assert(m.contains("s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b") && m.contains("no Unity Catalog block") && m.contains("writing by path"), m)
     }
+
+    test("registerStatus: a managed-commit doc wins over the config's mode; refused when the guard refused the last run") {
+        val reason = "uc-rest: " + IcebergRestSession.switchFromManagedMessage("main.sales.orders_daily")
+        // Config switched to rest (or register): the doc still says managed.
+        assert(S.registerStatus(managedDoc(), registerEnabled = true, configMode = "rest") == "managed")
+        assert(S.registerStatus(managedDoc(), registerEnabled = true, configMode = "register") == "managed")
+        val refused = managedDoc().copy(restRefusedReason = reason, registeredMetadataLocation = MANAGED_LOC)
+        assert(S.registerStatus(refused, registerEnabled = true, configMode = "rest") == "refused")
+        assert(S.registerStatus(refused, registerEnabled = false, configMode = "register") == "refused")
+        assert(S.topLevelState(refused, S.registerStatus(refused, registerEnabled = true, configMode = "rest")) == "error")
+        assert(S.reportedCatalogMode(refused, "rest") == "managed")
+        // Unchanged for everything else.
+        assert(S.registerStatus(doc(), registerEnabled = true, configMode = "rest") == "rest")
+        assert(S.registerStatus(doc(mode = "refused", loc = null, at = null), registerEnabled = true, configMode = "rest") == "refused")
+        assert(S.registerStatus(doc(mode = null, loc = null, at = null).copy(registeredMetadataLocation = "r"), true, "register") == "registered")
+        assert(S.registerStatus(null, registerEnabled = true, configMode = "register") == "never")
+        assert(S.registerStatus(doc(), registerEnabled = false, configMode = "rest") == "off")
+        assert(S.reportedCatalogMode(doc(), "rest") == "rest")
+        assert(S.reportedCatalogMode(null, null) == null)
+    }
+
+    test("topLevelState: a rest-committed doc refused by the guard reads error, even in register mode") {
+        val refusedRest = doc().copy(restRefusedReason = "uc-rest: switch back", registeredMetadataLocation = "r")
+        assert(S.topLevelState(refusedRest, S.registerStatus(refusedRest, registerEnabled = true, configMode = "register")) == "error")
+        // A leftover reason on a plain register doc does not.
+        val plain = doc(mode = null, loc = null, at = null).copy(restRefusedReason = "old", registeredMetadataLocation = "r")
+        assert(S.topLevelState(plain, "registered") == "synced")
+    }
+
+    test("reportedLocation: the managed table's directory whatever the config mode; null for a managed config before its first commit") {
+        assert(S.reportedLocation(managedDoc(), configManaged = false, "s3a://lake/orders_daily") == "s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b")
+        assert(S.reportedLocation(managedDoc(), configManaged = true, fail("prefix not needed")) == "s3://lake/uc/__unitystorage/schemas/5e1f/tables/9a2b")
+        assert(S.reportedLocation(null, configManaged = true, fail("prefix not needed")) == null)
+        assert(S.reportedLocation(doc(), configManaged = false, "s3a://lake/orders_daily") == "s3a://lake/orders_daily")
+    }
 }

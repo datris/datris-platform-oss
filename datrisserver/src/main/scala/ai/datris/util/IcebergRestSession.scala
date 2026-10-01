@@ -509,6 +509,15 @@ object IcebergRestSession {
         val qualified = qualifiedFor(config)
         guardFailure(previous, outputPath, iceberg, deleteBeforeWrite, restActive, qualified, managedActive, hasCatalogBlock).foreach { m =>
             if (managedActive || managedCommitted(previous)) audit(config.name, line(m))
+            // So the state endpoint reads `error` (not "synced") while the
+            // guard refuses runs; commit fields are kept. The next run that
+            // commits clears the reason.
+            if (previous != null) {
+                val refusedDoc =
+                    if (managedCommitted(previous)) managedRefusedState(previous, config.name, line(m)) else previous.copy(restRefusedReason = line(m))
+                try UnityCatalogSyncIO.write(refusedDoc)
+                catch { case NonFatal(e) => logger.warn("uc-rest state write failed for " + config.name + ": " + e.getMessage) }
+            }
             throw new DatrisException(m)
         }
         if (!iceberg || !restActive) return Inactive

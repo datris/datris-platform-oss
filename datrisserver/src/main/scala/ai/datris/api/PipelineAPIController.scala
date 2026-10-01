@@ -93,12 +93,12 @@ class PipelineAPIController {
                 coords.addProperty("kind", "iceberg")
                 // catalogMode managed: the table lives where the catalog put
                 // it (known after the first commit), not under prefixKey.
-                val location =
-                    if (uc.managedMode)
-                        Option(state).filter(_.catalogMode == "managed").map(s => IcebergRestSession.tableLocationOf(s.restMetadataLocation)).orNull
-                    else
-                        try "s3a://" + ObjectStoreSpark.resolveBucket(objectStore) + "/" + objectStore.prefixKey
-                        catch { case scala.util.control.NonFatal(_) => null }
+                val location = UnityCatalogStaleState.reportedLocation(
+                    state,
+                    uc.managedMode,
+                    try "s3a://" + ObjectStoreSpark.resolveBucket(objectStore) + "/" + objectStore.prefixKey
+                    catch { case scala.util.control.NonFatal(_) => null }
+                )
                 coords.addProperty("location", location)
                 out.add("coordinates", coords)
             }
@@ -113,22 +113,12 @@ class PipelineAPIController {
             // `refused` = it wrote path-based (restRefusedReason says why).
             // In catalogMode managed, `managed` = the last run committed
             // through the catalog at the catalog-chosen location.
-            val restMode = uc != null && uc.restMode
-            val managedMode = uc != null && uc.managedMode
-            if (icebergStore && uc != null) out.addProperty("catalogMode", uc.catalogModeOrDefault)
-            val registerLines =
-                if (state != null && state.lastError != null)
-                    state.lastError.split("\n").filter(_.startsWith(IcebergCatalogRegistrar.ErrorPrefix)).toSeq
-                else Nil
-            val registerStatus =
-                if (!registerEnabled) "off"
-                else if (restMode && state != null && state.catalogMode == "rest") "rest"
-                else if (managedMode && state != null && state.catalogMode == "managed") "managed"
-                else if ((restMode || managedMode) && state != null && state.catalogMode == "refused") "refused"
-                else if (registerLines.exists(!_.contains("Unity Catalog still points at"))) "error"
-                else if (registerLines.nonEmpty) "stale"
-                else if (state != null && state.registeredMetadataLocation != null) "registered"
-                else "never"
+            // A doc recording a managed commit wins over the config's current
+            // mode (UnityCatalogStaleState.registerStatus).
+            val configMode = if (uc != null) uc.catalogModeOrDefault else null
+            if (icebergStore && (uc != null || IcebergRestSession.managedCommitted(state)))
+                out.addProperty("catalogMode", UnityCatalogStaleState.reportedCatalogMode(state, configMode))
+            val registerStatus = UnityCatalogStaleState.registerStatus(state, registerEnabled, configMode)
             out.addProperty("register", registerStatus)
             if (state != null) {
                 out.addProperty("registeredMetadataLocation", state.registeredMetadataLocation)

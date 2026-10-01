@@ -76,10 +76,52 @@ object UnityCatalogStaleState {
     def topLevelState(state: UnityCatalogSyncState, register: String): String =
         if (state == null) "never"
         else if (state.lastError != null || register == "refused") "error"
-        // catalogMode managed: the last run failed before writing (the table
-        // committed earlier is still current).
-        else if (register == "managed" && state.restRefusedReason != null) "error"
+        // A catalog-committed table whose last run failed before writing
+        // (refused by the guard, or a managed refusal): the table committed
+        // earlier is still current, but the pipeline is not running.
+        else if (state.restRefusedReason != null && (register == "managed" || register == "rest" || isCatalogCommitDoc(state))) "error"
         else "synced"
+
+    private def isCatalogCommitDoc(state: UnityCatalogSyncState): Boolean =
+        state != null && (state.catalogMode == "rest" || state.catalogMode == "managed") && state.restMetadataLocation != null &&
+            state.lastRestCommitAt != null
+
+    /** `register` of the state endpoint. A doc that records a managed commit
+      * wins over the config's current mode (the table is the catalog's
+      * whatever the config now says): `managed`, or `refused` when the last
+      * run was refused (`restRefusedReason`). Otherwise as before: `off`
+      * without the register knob, `rest` / `managed` / `refused` from the
+      * doc in the matching config mode, then `error` / `stale` from the
+      * uc-register: lines, `registered`, `never`. */
+    def registerStatus(state: UnityCatalogSyncState, registerEnabled: Boolean, configMode: String): String = {
+        val restMode = configMode == "rest"
+        val managedMode = configMode == "managed"
+        val registerLines =
+            if (state != null && state.lastError != null) state.lastError.split("\n").filter(_.startsWith(IcebergCatalogRegistrar.ErrorPrefix)).toSeq
+            else Nil
+        if (IcebergRestSession.managedCommitted(state)) { if (state.restRefusedReason != null) "refused" else "managed" }
+        else if (!registerEnabled) "off"
+        else if (restMode && state != null && state.catalogMode == "rest") "rest"
+        else if (managedMode && state != null && state.catalogMode == "managed") "managed"
+        else if ((restMode || managedMode) && state != null && state.catalogMode == "refused") "refused"
+        else if (registerLines.exists(!_.contains("Unity Catalog still points at"))) "error"
+        else if (registerLines.nonEmpty) "stale"
+        else if (state != null && state.registeredMetadataLocation != null) "registered"
+        else "never"
+    }
+
+    /** `catalogMode` of the state endpoint: `managed` when the doc records a
+      * managed commit, else the config's mode. */
+    def reportedCatalogMode(state: UnityCatalogSyncState, configMode: String): String =
+        if (IcebergRestSession.managedCommitted(state)) "managed" else configMode
+
+    /** `coordinates.location`: the managed table's directory when the doc
+      * records a managed commit; null for a managed config before its first
+      * commit; else the pipeline's prefix. */
+    def reportedLocation(state: UnityCatalogSyncState, configManaged: Boolean, prefixLocation: => String): String =
+        if (IcebergRestSession.managedCommitted(state)) IcebergRestSession.tableLocationOf(state.restMetadataLocation)
+        else if (configManaged) null
+        else prefixLocation
 
     /** Run-time stale check: when `previous` records a catalog commit at
       * `tableRoot` but the catalog has no table and the prefix no metadata,
